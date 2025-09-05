@@ -31,8 +31,7 @@ inkscape-open-all-svg-files-in-current-folder() {
     fd -e svg -x inkscape.exe --app-id-tag a{/} {} & exit
 }
 
-copyq.exe() { /mnt/c/Windows/system32/WindowsPowerShell/v1.0/powershell.exe -Command "& \"\$env:APPDATA\copyq\copyq.exe\" $@ | Write-Output"; }
-alias clip.exe='/mnt/c/Windows/system32/clip.exe'
+copyq.exe() { powershell.exe -Command "& \"\$env:APPDATA\copyq\copyq.exe\" $@ | Write-Output"; }
 
 # Auto-start tmux if not already running in a tmux session
 if [ -z "$TMUX" ]; then
