@@ -17,9 +17,6 @@ HISTFILE="$HOME/.zsh_history"
 # delimits words
 WORDCHARS='*?[]~&;!#$%^(){}<>,|=+'
 
-# change location of .zcompdump
-export ZSH_COMPDUMP="${XDG_CACHE_HOME:-$HOME/.cache}/zsh/.zcompdump-${ZSH_VERSION}"
-
 setopt auto_pushd
 autoload -Uz compinit
 
@@ -79,8 +76,7 @@ e(){ (emacsclient --create-frame $@ &) }
 ec(){ (emacsclient --create-frame $@ &); exit }
 et(){ emacsclient --tty $@ }
 
-copyq.exe(){ /mnt/c/Windows/system32/WindowsPowerShell/v1.0/powershell.exe -Command "& \"\$env:APPDATA\copyq\copyq.exe\" $@ | Write-Output" }
-alias clip.exe='/mnt/c/Windows/system32/clip.exe'
+copyq.exe(){ powershell.exe -Command "& \"\$env:APPDATA\copyq\copyq.exe\" $@ | Write-Output" }
 
 # preview directory's content with eza when completing cd
 zstyle ':fzf-tab:complete:cd:*' fzf-preview 'eza -1 --color=always $realpath'
