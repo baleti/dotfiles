@@ -1,0 +1,17 @@
+#!/bin/sh
+rotate() {
+	degree="$1"
+	tr '\n' '\0' | xargs -0 realpath | sort | uniq | while read file; do
+		case "$(file -b -i "$file")" in
+		image/jpeg*) jpegtran -rotate "$degree" -copy all -outfile "$file" "$file" ;;
+		*)           mogrify  -rotate "$degree" "$file" ;;
+		esac
+	done
+}
+case "$1" in
+"c")      while read file; do realpath "$file" | clip.exe; done ;;
+"d")      while read file; do rm "$file"; done ;;
+"o")      while read file; do thunar "$file"; done ;;
+"r") rotate 90 ;;
+"R") rotate 270 ;;
+esac
