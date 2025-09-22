@@ -179,3 +179,6 @@ source $HOME/.config/zsh/motions.zsh
 
 bindkey '^Z' undo
 bindkey '^Y' redo
+
+# sorts 3330 before 3330A
+export LC_COLLATE=C
