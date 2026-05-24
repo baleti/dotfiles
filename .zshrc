@@ -182,3 +182,26 @@ bindkey '^Y' redo
 
 # sorts 3330 before 3330A
 export LC_COLLATE=C
+
+# use alternate buffer for fzf fuzzy search of past commands
+# by default ctrl+r binding provided with fzf shows results in the same buffer
+# prevents bug when results don't get cleared up if called from the top
+_fzf_history_widget_wrapper() {
+    local row
+    exec {tty}<>/dev/tty
+    printf '\e[6n' >&$tty
+    IFS='[;' read -rs -d'R' _ row _ <&$tty
+    exec {tty}<&-
+
+    if (( row <= LINES / 3 )); then
+        FZF_CTRL_R_OPTS='--tmux top,60%'
+    elif (( row >= LINES * 2 / 3 )); then
+        FZF_CTRL_R_OPTS='--tmux bottom,60%'
+    else
+        FZF_CTRL_R_OPTS='--tmux center,100%,60%'
+    fi
+
+    fzf-history-widget
+}
+zle -N _fzf_history_widget_wrapper
+bindkey '^R' _fzf_history_widget_wrapper
