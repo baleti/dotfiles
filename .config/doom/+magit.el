@@ -22,7 +22,7 @@
 
 ;;; Stage-hunk helpers
 
-(defun my/magit--selection-lines ()
+(defun branch-off/magit--selection-lines ()
   "Return (START-LINE . END-LINE) for the active region, or both = point's line.
 Handles the evil/vim visual-mode case where region-end may sit at the
 beginning of the line after the visual selection."
@@ -40,7 +40,7 @@ beginning of the line after the visual selection."
         (cons (line-number-at-pos beg) end-line))
     (cons (line-number-at-pos) (line-number-at-pos))))
 
-(defun my/magit--stage-hunks-for-file-lines (file start-line end-line)
+(defun branch-off/magit--stage-hunks-for-file-lines (file start-line end-line)
   "Stage every unstaged hunk in FILE that overlaps lines START-LINE..END-LINE.
 Opens a minimal \\='-U1\\=' diff buffer for precise hunk detection, re-opening it
 after each staging because magit refreshes the buffer in place.
@@ -92,7 +92,7 @@ or selection misses all hunks, or when FILE has no unstaged changes."
               (kill-buffer diff-buf))))))
     count))
 
-(defun my/magit--stage-hunk-at-point ()
+(defun branch-off/magit--stage-hunk-at-point ()
   "Stage the unstaged hunk(s) at point, or within the active visual selection.
 
 With no active region: stages the single hunk whose range covers the current
@@ -104,14 +104,14 @@ Saves the buffer before staging.  Signals `user-error' if no hunk is found."
     (user-error "Not visiting a file"))
   (let* ((file  (or (magit-file-relative-name)
                     (user-error "File is not inside a git repository")))
-         (range (my/magit--selection-lines)))
+         (range (branch-off/magit--selection-lines)))
     (when (buffer-modified-p)
       (save-buffer))
-    (my/magit--stage-hunks-for-file-lines file (car range) (cdr range))))
+    (branch-off/magit--stage-hunks-for-file-lines file (car range) (cdr range))))
 
 ;;; Select-hunk command
 
-(defun my/magit-select-hunk-at-point ()
+(defun branch-off/magit-select-hunk ()
   "Select the diff hunk at point in evil visual-line mode.
 Parses `git diff -U0' to find the hunk whose new-file range contains
 the current line, then activates an evil visual-line selection covering
@@ -162,23 +162,23 @@ those lines.  Signals `user-error' when point is not within any hunk."
 ;;; Stage-hunk commands
 
 
-(defun my/magit-stage-hunk-and-amend ()
+(defun branch-off/magit-amend-hunk ()
   "Stage the hunk(s) at point / visual selection and amend the previous commit.
 Opens the commit message editor."
   (interactive)
-  (my/magit--stage-hunk-at-point)
+  (branch-off/magit--stage-hunk-at-point)
   (magit-commit-amend))
 
-(defun my/magit-stage-hunk-and-amend-no-edit ()
+(defun branch-off/magit-amend-hunk-no-edit ()
   "Stage the hunk(s) at point / visual selection and amend the previous commit.
 Reuses the existing commit message without opening an editor."
   (interactive)
-  (my/magit--stage-hunk-at-point)
+  (branch-off/magit--stage-hunk-at-point)
   (magit-commit-extend))
 
 ;;; Stage-lines command (sub-hunk / line precision)
 
-(defun my/magit--patch-from-diff (diff-text rel-path sel-start sel-end)
+(defun branch-off/magit--patch-from-diff (diff-text rel-path sel-start sel-end)
   "Build a patch from DIFF-TEXT staging all changes in new-file range [SEL-START..SEL-END].
 REL-PATH is unused (the header is taken verbatim from DIFF-TEXT).
 Handles additions, deletions, and modifications:
@@ -350,7 +350,7 @@ Returns (PATCH-STRING . CHANGE-COUNT) or nil when no changes fall in the range."
                                       (length (nth 3 h)))) ; add-lines
                                  output-hunks)))))))
 
-(defun my/magit-stage-and-commit-selected-lines ()
+(defun branch-off/magit-stage-and-commit ()
   "Stage the selected lines and open a new commit.
 Requires an active region.  Stages only the +lines within the selection
 (line precision), skipping context and deleted lines."
@@ -361,13 +361,13 @@ Requires an active region.  Stages only the +lines within the selection
     (user-error "Not visiting a file"))
   (let* ((top  (or (magit-toplevel) (user-error "Not in a git repository")))
          (rel  (file-relative-name buffer-file-name top))
-         (range (my/magit--selection-lines)))
+         (range (branch-off/magit--selection-lines)))
     (when (buffer-modified-p) (save-buffer))
     (let* ((default-directory top)
            (diff   (with-temp-buffer
                      (call-process "git" nil t nil "diff" "-U0" "--" rel)
                      (buffer-string)))
-           (result (my/magit--patch-from-diff diff rel (car range) (cdr range))))
+           (result (branch-off/magit--patch-from-diff diff rel (car range) (cdr range))))
       (unless result
         (user-error "No changes in selection to stage"))
       (let* ((patch (car result))
@@ -386,70 +386,70 @@ Requires an active region.  Stages only the +lines within the selection
 
 (map! :after magit
       :leader
-      "g c c" #'my/magit-stage-and-commit-selected-lines
-      "g c o" #'my/magit-commit-and-branch-off
-      "g l l" #'my/magit-log-all-flat
+      "g c c" #'branch-off/magit-stage-and-commit
+      "g c o" #'branch-off/magit-stage-and-commit-and-branch-off
+      "g l l" #'branch-off/magit-log
       (:prefix ("g a" . "amend hunk")
-       "a" #'my/magit-stage-hunk-and-amend
-       "n" #'my/magit-stage-hunk-and-amend-no-edit))
+       "a" #'branch-off/magit-amend-hunk
+       "n" #'branch-off/magit-amend-hunk-no-edit))
 
 ;;; Log / revision navigation
 
 (after! magit
-  (defvar my/magit-log-nav-overlay nil)
+  (defvar branch-off/magit-log-nav-overlay nil)
 
-  (defun my/magit-revision-navigate (move-fn)
+  (defun branch-off/magit-revision-navigate (move-fn)
     (when-let* ((log-buf (magit-get-mode-buffer 'magit-log-mode)))
       (with-current-buffer log-buf
         (funcall move-fn)
         (mapc #'delete-overlay magit-section-highlight-overlays)
         (setq magit-section-highlight-overlays nil)
-        (unless (overlayp my/magit-log-nav-overlay)
-          (setq my/magit-log-nav-overlay (make-overlay 1 1))
-          (overlay-put my/magit-log-nav-overlay 'face 'magit-section-highlight)
-          (overlay-put my/magit-log-nav-overlay 'priority 200))
-        (move-overlay my/magit-log-nav-overlay
+        (unless (overlayp branch-off/magit-log-nav-overlay)
+          (setq branch-off/magit-log-nav-overlay (make-overlay 1 1))
+          (overlay-put branch-off/magit-log-nav-overlay 'face 'magit-section-highlight)
+          (overlay-put branch-off/magit-log-nav-overlay 'priority 200))
+        (move-overlay branch-off/magit-log-nav-overlay
                       (line-beginning-position)
                       (1+ (line-end-position)))
         (when-let ((commit (magit-section-value-if 'commit)))
           (let ((magit-display-buffer-noselect t))
             (magit-show-commit commit))))))
 
-  (defun my/magit-revision-next ()
+  (defun branch-off/magit-revision-next ()
     (interactive)
-    (my/magit-revision-navigate #'magit-section-forward))
+    (branch-off/magit-revision-navigate #'magit-section-forward))
 
-  (defun my/magit-revision-prev ()
+  (defun branch-off/magit-revision-prev ()
     (interactive)
-    (my/magit-revision-navigate #'magit-section-backward))
+    (branch-off/magit-revision-navigate #'magit-section-backward))
 
   (add-hook 'magit-log-mode-hook
             (lambda ()
               (setq-local hl-line-sticky-flag t)
               (hl-line-mode 1)))
 
-  (defvar-local my/magit-log-flat nil
-    "Non-nil in log buffers opened with `my/magit-log-all-flat'.")
+  (defvar-local branch-off/magit-log-flat nil
+    "Non-nil in log buffers opened with `branch-off/magit-log'.")
 
-  (defvar my/magit-log-flat--pending nil
-    "Dynamic flag set during `my/magit-log-all-flat' so the hook fires correctly.")
+  (defvar branch-off/magit-log-flat--pending nil
+    "Dynamic flag set during `branch-off/magit-log' so the hook fires correctly.")
 
-  (defun my/magit-log-all-flat ()
+  (defun branch-off/magit-log ()
     "Log all refs without --graph; commits not ancestral to HEAD are marked with 2-space indent."
     (interactive)
-    (let ((my/magit-log-flat--pending t))
+    (let ((branch-off/magit-log-flat--pending t))
       (magit-log-setup-buffer (list "--all") (list "--color" "--decorate" "--topo-order" "-n256") nil)))
 
-  (defun my/magit-log-mark-archive-commits ()
+  (defun branch-off/magit-log-mark-archive ()
     "Overlay 2-space indent on branched-off commits in flat log buffers.
 A commit is considered branched off when it is reachable from any ref
 but is not an ancestor of HEAD — regardless of which ref namespace holds it."
     (when (derived-mode-p 'magit-log-mode)
-      (when my/magit-log-flat--pending
-        (setq-local my/magit-log-flat t))
-      (remove-overlays (point-min) (point-max) 'my/archive-marker t))
+      (when branch-off/magit-log-flat--pending
+        (setq-local branch-off/magit-log-flat t))
+      (remove-overlays (point-min) (point-max) 'branch-off/archive-marker t))
     (when (and (derived-mode-p 'magit-log-mode)
-               (bound-and-true-p my/magit-log-flat))
+               (bound-and-true-p branch-off/magit-log-flat))
       (let ((hashes (magit-git-lines "log" "--format=%H" "--all" "--not" "HEAD")))
         (when hashes
           (save-excursion
@@ -460,19 +460,19 @@ but is not an ancestor of HEAD — regardless of which ref namespace holds it."
                            (cl-some (lambda (full) (string-prefix-p h full)) hashes)))
                 (let ((ov (make-overlay (point) (point))))
                   (overlay-put ov 'before-string "  ")
-                  (overlay-put ov 'my/archive-marker t)))
+                  (overlay-put ov 'branch-off/archive-marker t)))
               (forward-line 1)))))))
 
-  (add-hook 'magit-refresh-buffer-hook #'my/magit-log-mark-archive-commits)
+  (add-hook 'magit-refresh-buffer-hook #'branch-off/magit-log-mark-archive)
 
-  (defun my/magit-status-tab-dwim ()
+  (defun branch-off/magit-status-tab ()
     "On a commit section show it; otherwise toggle the section."
     (interactive)
     (if-let ((commit (magit-section-value-if 'commit)))
         (magit-show-commit commit)
       (call-interactively #'magit-section-toggle)))
 
-  (defun my/magit-status-navigate (move-fn)
+  (defun branch-off/magit-status-navigate (move-fn)
     (condition-case nil
         (progn
           (funcall move-fn)
@@ -481,41 +481,41 @@ but is not an ancestor of HEAD — regardless of which ref namespace holds it."
               (magit-show-commit commit))))
       (error nil)))
 
-  (defun my/magit-status-next ()
+  (defun branch-off/magit-status-next ()
     (interactive)
-    (my/magit-status-navigate #'magit-section-forward))
+    (branch-off/magit-status-navigate #'magit-section-forward))
 
-  (defun my/magit-status-prev ()
+  (defun branch-off/magit-status-prev ()
     (interactive)
-    (my/magit-status-navigate #'magit-section-backward))
+    (branch-off/magit-status-navigate #'magit-section-backward))
 
   (map! :map magit-log-mode-map
         :n "TAB" #'magit-visit-thing)
 
   (map! :map magit-status-mode-map
-        :n "TAB" #'my/magit-status-tab-dwim
-        :m "n"   #'my/magit-status-next
-        :m "p"   #'my/magit-status-prev)
+        :n "TAB" #'branch-off/magit-status-tab
+        :m "n"   #'branch-off/magit-status-next
+        :m "p"   #'branch-off/magit-status-prev)
 
   (map! :map magit-revision-mode-map
         :n "TAB" #'magit-diff-visit-file
-        :n "n" #'my/magit-revision-next
-        :n "p" #'my/magit-revision-prev))
+        :n "n" #'branch-off/magit-revision-next
+        :n "p" #'branch-off/magit-revision-prev))
 
 ;;; Commit reword
 
-(defvar-local my/magit-reword--commit nil)
-(defvar-local my/magit-reword--source-buffer nil)
-(defvar-local my/magit-reword--source-line nil)
-(defvar-local my/magit-reword--from-revision nil)
+(defvar-local branch-off/magit-reword--commit nil)
+(defvar-local branch-off/magit-reword--source-buffer nil)
+(defvar-local branch-off/magit-reword--source-line nil)
+(defvar-local branch-off/magit-reword--from-revision nil)
 
-(defun my/magit-reword--fix-highlight ()
+(defun branch-off/magit-reword--fix-highlight ()
   "Reposition highlights to the current line after a programmatic cursor move."
   (mapc #'delete-overlay magit-section-highlight-overlays)
   (setq magit-section-highlight-overlays nil)
   (hl-line-highlight))
 
-(defun my/magit-reword--refresh-log (line)
+(defun branch-off/magit-reword--refresh-log (line)
   "Refresh the magit-log buffer and restore point to LINE."
   (when-let ((log-buf (magit-get-mode-buffer 'magit-log-mode)))
     (with-current-buffer log-buf (magit-refresh))
@@ -523,7 +523,7 @@ but is not an ancestor of HEAD — regardless of which ref namespace holds it."
       (with-selected-window win
         (goto-char (point-min))
         (forward-line (1- line))
-        (my/magit-reword--fix-highlight))
+        (branch-off/magit-reword--fix-highlight))
       (run-with-timer 0 nil
         (lambda ()
           (when-let ((w (get-buffer-window log-buf)))
@@ -531,7 +531,7 @@ but is not an ancestor of HEAD — regardless of which ref namespace holds it."
               (forward-line 1)
               (forward-line -1))))))))
 
-(defun my/magit-reword--parse-commit (hash)
+(defun branch-off/magit-reword--parse-commit (hash)
   "Return plist for HASH: :tree :parent :author-name :author-email :author-date
 :committer-name :committer-email :committer-date."
   (let (result)
@@ -555,7 +555,7 @@ but is not an ancestor of HEAD — regardless of which ref namespace holds it."
         (setq result (plist-put result :committer-date  (match-string 3 line))))))
     result))
 
-(defun my/magit-reword--new-commit (info new-parent msg)
+(defun branch-off/magit-reword--new-commit (info new-parent msg)
   "Create a commit object from INFO plist, overriding parent with NEW-PARENT and message with MSG.
 NEW-PARENT nil keeps the :parent from INFO.  Return new hash string."
   (let* ((tree   (plist-get info :tree))
@@ -573,7 +573,7 @@ NEW-PARENT nil keeps the :parent from INFO.  Return new hash string."
                        (when parent (list "-p" parent)))))
     (apply #'magit-git-string args)))
 
-(defun my/magit-reword--cascade-branch-off (remap)
+(defun branch-off/magit-reword--cascade-branch-off (remap)
   "Rewrite all refs/branch-off/* whose parent changed according to REMAP.
 Scans all branch-off refs; for each whose parent is a key in REMAP, creates
 a new commit with the updated parent, replaces the ref, and adds the mapping
@@ -588,11 +588,11 @@ commits are fully propagated.  Returns the augmented remap."
         (changed nil))
     (dolist (ref bo-refs)
       (let* ((bo-hash   (magit-git-string "rev-parse" ref))
-             (bo-info   (my/magit-reword--parse-commit bo-hash))
+             (bo-info   (branch-off/magit-reword--parse-commit bo-hash))
              (bo-parent (plist-get bo-info :parent))
              (new-par   (cdr (assoc bo-parent remap))))
         (when new-par
-          (let ((new-bo (my/magit-reword--new-commit
+          (let ((new-bo (branch-off/magit-reword--new-commit
                          bo-info new-par
                          (with-temp-buffer
                            (call-process "git" nil t nil "log" "-1" "--format=%B" bo-hash)
@@ -602,10 +602,10 @@ commits are fully propagated.  Returns the augmented remap."
             (push (cons bo-hash new-bo) remap)
             (setq changed t)))))
     (if changed
-        (my/magit-reword--cascade-branch-off remap)
+        (branch-off/magit-reword--cascade-branch-off remap)
       remap)))
 
-(defun my/magit-reword--apply (hash new-msg)
+(defun branch-off/magit-reword--apply (hash new-msg)
   "Reword HASH with NEW-MSG using git plumbing.
 For branch-off refs, rewrites the commit and cascades through any chained
 branch-off descendants.  For current-branch commits, rebases all descendants,
@@ -615,12 +615,12 @@ updates the branch ref, then cascades through all affected branch-off refs."
          (is-branch-off  (equal full-hash
                                 (magit-git-string "rev-parse" "--verify" branch-off-ref))))
     (if is-branch-off
-        (let* ((info     (my/magit-reword--parse-commit full-hash))
-               (new-hash (my/magit-reword--new-commit info nil new-msg)))
+        (let* ((info     (branch-off/magit-reword--parse-commit full-hash))
+               (new-hash (branch-off/magit-reword--new-commit info nil new-msg)))
           (unless new-hash (user-error "git commit-tree failed"))
           (magit-call-git "update-ref" (format "refs/branch-off/%s" new-hash) new-hash)
           (magit-call-git "update-ref" "-d" branch-off-ref)
-          (my/magit-reword--cascade-branch-off (list (cons full-hash new-hash))))
+          (branch-off/magit-reword--cascade-branch-off (list (cons full-hash new-hash))))
       (let ((branch (magit-git-string "symbolic-ref" "--short" "HEAD")))
         (unless branch
           (user-error "Cannot reword a branch commit in detached HEAD state"))
@@ -634,47 +634,47 @@ updates the branch ref, then cascades through all affected branch-off refs."
                           (buffer-string))
                         "\n" t))
                (remap  nil)
-               (target-info (my/magit-reword--parse-commit full-hash))
-               (new-target  (my/magit-reword--new-commit target-info nil new-msg)))
+               (target-info (branch-off/magit-reword--parse-commit full-hash))
+               (new-target  (branch-off/magit-reword--new-commit target-info nil new-msg)))
           (unless new-target (user-error "git commit-tree failed"))
           (push (cons full-hash new-target) remap)
           (dolist (old-hash (cdr chain))
-            (let* ((info       (my/magit-reword--parse-commit old-hash))
+            (let* ((info       (branch-off/magit-reword--parse-commit old-hash))
                    (old-parent (plist-get info :parent))
                    (new-parent (or (cdr (assoc old-parent remap)) old-parent))
                    (msg        (with-temp-buffer
                                  (call-process "git" nil t nil "log" "-1" "--format=%B" old-hash)
                                  (buffer-string)))
-                   (new-hash   (my/magit-reword--new-commit info new-parent msg)))
+                   (new-hash   (branch-off/magit-reword--new-commit info new-parent msg)))
               (push (cons old-hash new-hash) remap)))
           (magit-call-git "update-ref"
                           (format "refs/heads/%s" branch)
                           (cdr (assoc (car (last chain)) remap)))
-          (my/magit-reword--cascade-branch-off remap))))))
+          (branch-off/magit-reword--cascade-branch-off remap))))))
 
-(defun my/magit-reword--finish ()
+(defun branch-off/magit-reword--finish ()
   "Reword the target commit using git plumbing."
   (interactive)
   (let ((msg           (string-trim (buffer-substring-no-properties (point-min) (point-max))))
-        (hash          my/magit-reword--commit)
+        (hash          branch-off/magit-reword--commit)
         (dir           default-directory)
-        (source        my/magit-reword--source-buffer)
-        (line          my/magit-reword--source-line)
-        (from-revision my/magit-reword--from-revision))
+        (source        branch-off/magit-reword--source-buffer)
+        (line          branch-off/magit-reword--source-line)
+        (from-revision branch-off/magit-reword--from-revision))
     (kill-buffer-and-window)
     (let ((default-directory dir))
-      (my/magit-reword--apply hash msg)
+      (branch-off/magit-reword--apply hash msg)
       (when (and from-revision (buffer-live-p source))
         (kill-buffer source))
-      (my/magit-reword--refresh-log line))))
+      (branch-off/magit-reword--refresh-log line))))
 
-(defun my/magit-reword--abort ()
+(defun branch-off/magit-reword--abort ()
   "Abort reword without applying changes."
   (interactive)
   (kill-buffer-and-window)
   (message "reword: aborted"))
 
-(defun my/magit-branch-off-reword (commit)
+(defun branch-off/magit-commit-reword (commit)
   "Reword COMMIT message, editing in a dedicated buffer.
 Pre-fills the buffer with the current message.  C-c C-c applies, C-c C-k aborts.
 Works for both branch commits (rebases descendants and updates any branch-off refs
@@ -700,12 +700,12 @@ whose parents are in the rewritten chain) and refs/branch-off/ commits directly.
       (insert msg)
       (git-commit-mode)
       (setq-local default-directory dir)
-      (setq-local my/magit-reword--commit commit)
-      (setq-local my/magit-reword--source-buffer source-buf)
-      (setq-local my/magit-reword--source-line source-line)
-      (setq-local my/magit-reword--from-revision from-revision)
-      (local-set-key (kbd "C-c C-c") #'my/magit-reword--finish)
-      (local-set-key (kbd "C-c C-k") #'my/magit-reword--abort)
+      (setq-local branch-off/magit-reword--commit commit)
+      (setq-local branch-off/magit-reword--source-buffer source-buf)
+      (setq-local branch-off/magit-reword--source-line source-line)
+      (setq-local branch-off/magit-reword--from-revision from-revision)
+      (local-set-key (kbd "C-c C-c") #'branch-off/magit-reword--finish)
+      (local-set-key (kbd "C-c C-k") #'branch-off/magit-reword--abort)
       (setq-local header-line-format
                   (list " "
                         (propertize "C-c C-c" 'face 'transient-key)
@@ -715,7 +715,7 @@ whose parents are in the rewritten chain) and refs/branch-off/ commits directly.
       (goto-char (point-min)))
     (pop-to-buffer buf)))
 
-(defun my/magit-branch-off-remove (commit)
+(defun branch-off/magit-commit-remove (commit)
   "Delete the refs/branch-off ref for COMMIT without touching history."
   (interactive (list (or (magit-commit-at-point)
                          (and (derived-mode-p 'magit-revision-mode)
@@ -731,66 +731,107 @@ whose parents are in the rewritten chain) and refs/branch-off/ commits directly.
 
 ;;; Squash commits (branch-off suite)
 
-(defvar-local my/magit-squash--chain nil)
-(defvar-local my/magit-squash--parent nil)
-(defvar-local my/magit-squash--tree nil)
-(defvar-local my/magit-squash--bo-p nil)
-(defvar-local my/magit-squash--branch nil)
-(defvar-local my/magit-squash--source-line nil)
-(defvar-local my/magit-squash--dir nil)
-(defvar-local my/magit-squash--log-buf nil)
+(defvar-local branch-off/magit-squash--chain nil)
+(defvar-local branch-off/magit-squash--parent nil)
+(defvar-local branch-off/magit-squash--tree nil)
+(defvar-local branch-off/magit-squash--bo-p nil)
+(defvar-local branch-off/magit-squash--branch nil)
+(defvar-local branch-off/magit-squash--source-line nil)
+(defvar-local branch-off/magit-squash--dir nil)
+(defvar-local branch-off/magit-squash--log-buf nil)
 
-(defvar-local my/magit-squash--marks nil
+(defvar-local branch-off/magit-squash--marks nil
   "Ordered list of commit hashes marked for squashing in this log buffer.")
 
-(defvar-local my/magit-squash--overlays nil
+(defvar-local branch-off/magit-squash--overlays nil
   "Alist of (full-hash . overlay) for marked commits in this log buffer.")
 
-(defface my/magit-squash-marked
+(defface branch-off/magit-squash-marked
   '((t :extend t))
   "Face applied to commit lines marked for squashing.")
 
 (after! doom-themes
   (custom-set-faces!
-    `(my/magit-squash-marked
+    `(branch-off/magit-squash-marked
       :background ,(doom-blend (doom-color 'orange) (doom-color 'bg) 0.25)
       :extend t)))
 
-(defun my/magit-squash--clear-overlays ()
+(defun branch-off/magit-squash--clear-overlays ()
   "Delete all squash-mark overlays in the current buffer."
-  (dolist (pair my/magit-squash--overlays)
+  (dolist (pair branch-off/magit-squash--overlays)
     (delete-overlay (cdr pair)))
-  (setq my/magit-squash--overlays nil))
+  (setq branch-off/magit-squash--overlays nil))
 
-(defun my/magit-squash-mark-commit ()
-  "Toggle the squash mark on the commit at point.
-The line is highlighted with `my/magit-squash-marked' face.
-Marks are used by `my/magit-squash-commits' instead of the visual
-selection whenever any are present."
+(defun branch-off/magit-squash--mark-one (full bol)
+  "Add FULL hash to marks with an overlay starting at BOL."
+  (setq branch-off/magit-squash--marks (append branch-off/magit-squash--marks (list full)))
+  (let* ((eol (save-excursion (goto-char bol) (end-of-line) (point)))
+         (ov  (make-overlay bol (1+ eol) nil t nil)))
+    (overlay-put ov 'face 'branch-off/magit-squash-marked)
+    (push (cons full ov) branch-off/magit-squash--overlays)))
+
+(defun branch-off/magit-squash--unmark-one (full)
+  "Remove FULL hash from marks and delete its overlay."
+  (setq branch-off/magit-squash--marks (delete full branch-off/magit-squash--marks))
+  (when-let ((ov (cdr (assoc full branch-off/magit-squash--overlays))))
+    (delete-overlay ov))
+  (setq branch-off/magit-squash--overlays
+        (cl-remove full branch-off/magit-squash--overlays :key #'car :test #'equal)))
+
+(defun branch-off/magit-mark ()
+  "Toggle squash mark on the commit at point, or on all commits in the visual selection.
+With an active region (evil V), marks every commit in the selection — or
+unmarks them all when every one is already marked.
+Lines are highlighted with `branch-off/magit-squash-marked'.  Marks are used by
+`branch-off/magit-squash' in preference to a live visual selection."
   (interactive)
-  (let ((hash (magit-section-value-if 'commit)))
-    (unless hash
-      (user-error "No commit at point"))
-    (let ((full (magit-git-string "rev-parse" hash)))
-      (if (member full my/magit-squash--marks)
+  (if (not (use-region-p))
+      ;; ── single commit at point ──────────────────────────────────────────────
+      (let ((hash (magit-section-value-if 'commit)))
+        (unless hash (user-error "No commit at point"))
+        (let ((full (magit-git-string "rev-parse" hash)))
+          (if (member full branch-off/magit-squash--marks)
+              (progn
+                (branch-off/magit-squash--unmark-one full)
+                (message "Unmarked %s (%d remaining)"
+                         (substring full 0 8) (length branch-off/magit-squash--marks)))
+            (branch-off/magit-squash--mark-one full (line-beginning-position))
+            (message "Marked %s (%d total)"
+                     (substring full 0 8) (length branch-off/magit-squash--marks)))))
+    ;; ── visual selection: mark/unmark all commits in region ─────────────────
+    (let* ((beg (region-beginning))
+           (end (region-end))
+           (end-pos (save-excursion
+                      (goto-char end)
+                      (when (and (bolp) (> end beg)) (forward-line -1))
+                      (line-beginning-position)))
+           entries)
+      (save-excursion
+        (goto-char beg)
+        (beginning-of-line)
+        (while (<= (point) end-pos)
+          (when-let ((hash (magit-section-value-if 'commit)))
+            (let ((full (magit-git-string "rev-parse" hash)))
+              (cl-pushnew (cons full (line-beginning-position)) entries
+                          :key #'car :test #'equal)))
+          (forward-line 1)))
+      (unless entries (user-error "No commits in selection"))
+      (if (cl-every (lambda (e) (member (car e) branch-off/magit-squash--marks)) entries)
           (progn
-            (setq my/magit-squash--marks (delete full my/magit-squash--marks))
-            (when-let ((ov (cdr (assoc full my/magit-squash--overlays))))
-              (delete-overlay ov))
-            (setq my/magit-squash--overlays
-                  (cl-remove full my/magit-squash--overlays :key #'car :test #'equal))
-            (message "Unmarked %s (%d remaining)"
-                     (substring full 0 8) (length my/magit-squash--marks)))
-        (setq my/magit-squash--marks (append my/magit-squash--marks (list full)))
-        (let* ((bol (line-beginning-position))
-               (eol (save-excursion (end-of-line) (point)))
-               (ov  (make-overlay bol (1+ eol) nil t nil)))
-          (overlay-put ov 'face 'my/magit-squash-marked)
-          (push (cons full ov) my/magit-squash--overlays))
-        (message "Marked %s (%d total)"
-                 (substring full 0 8) (length my/magit-squash--marks))))))
+            (dolist (e entries) (branch-off/magit-squash--unmark-one (car e)))
+            (message "Unmarked %d commit%s (%d remaining)"
+                     (length entries) (if (= (length entries) 1) "" "s")
+                     (length branch-off/magit-squash--marks)))
+        (let ((newly 0))
+          (dolist (e entries)
+            (unless (member (car e) branch-off/magit-squash--marks)
+              (branch-off/magit-squash--mark-one (car e) (cdr e))
+              (cl-incf newly)))
+          (message "Marked %d commit%s (%d total)"
+                   newly (if (= newly 1) "" "s")
+                   (length branch-off/magit-squash--marks)))))))
 
-(defun my/magit-squash--commits-in-region ()
+(defun branch-off/magit-squash--commits-in-region ()
   "Return commit hashes in the active region (display order), adjusted for evil visual-line."
   (when (use-region-p)
     (let* ((beg (region-beginning))
@@ -809,7 +850,7 @@ selection whenever any are present."
           (forward-line 1)))
       (nreverse commits))))
 
-(defun my/magit-squash--build-chain (full-hashes)
+(defun branch-off/magit-squash--build-chain (full-hashes)
   "Sort FULL-HASHES into a contiguous linear chain oldest-first.
 Returns (SORTED-CHAIN . PARENT-OF-OLDEST) or signals `user-error'."
   (let ((parent-of (make-hash-table :test #'equal))
@@ -837,13 +878,13 @@ Returns (SORTED-CHAIN . PARENT-OF-OLDEST) or signals `user-error'."
             (user-error "Selected commits are not a contiguous linear chain — cannot squash"))
           (cons sorted (gethash root parent-of)))))))
 
-(defun my/magit-squash--try-chain (full-hashes)
-  "Try `my/magit-squash--build-chain'; return nil instead of signaling on chain failure."
+(defun branch-off/magit-squash--try-chain (full-hashes)
+  "Try `branch-off/magit-squash--build-chain'; return nil instead of signaling on chain failure."
   (condition-case nil
-      (my/magit-squash--build-chain full-hashes)
+      (branch-off/magit-squash--build-chain full-hashes)
     (user-error nil)))
 
-(defun my/magit-squash--sort-siblings (full-hashes)
+(defun branch-off/magit-squash--sort-siblings (full-hashes)
   "Sort branch-off FULL-HASHES by committer date (oldest first) and verify a shared parent.
 Returns (SORTED-LIST . COMMON-PARENT) or signals `user-error'."
   (let* ((dated (mapcar (lambda (h)
@@ -863,7 +904,7 @@ Returns (SORTED-LIST . COMMON-PARENT) or signals `user-error'."
 select commits that chain (each parent is the previous) or that all branch from the same commit"))
     (cons sorted (car parents))))
 
-(defun my/magit-squash--commit-tree (hash)
+(defun branch-off/magit-squash--commit-tree (hash)
   "Return the tree SHA of commit HASH."
   (with-temp-buffer
     (call-process "git" nil t nil "rev-parse" (format "%s^{tree}" hash))
@@ -871,28 +912,28 @@ select commits that chain (each parent is the previous) or that all branch from 
 
 ;;; Conflict resolution via smerge (ediff available via C-c ^ e inside smerge)
 
-(defvar-local my/magit-squash--conflict-done-fn nil
+(defvar-local branch-off/magit-squash--conflict-done-fn nil
   "Continuation called with the resolved blob SHA from the conflict buffer.")
 
-(defvar my/magit-squash--verbose nil
+(defvar branch-off/magit-squash--verbose nil
   "When non-nil, append the squash diff as comments to the message buffer.")
 
-(defun my/magit-squash--finish-conflict ()
+(defun branch-off/magit-squash--finish-conflict ()
   "Confirm conflict resolution and resume the in-progress squash."
   (interactive)
   (when (save-excursion
           (goto-char (point-min))
           (re-search-forward "^<<<<<<< " nil t))
     (user-error "Unresolved conflicts remain — use smerge (C-c ^ n/p) or ediff (C-c ^ e)"))
-  (funcall my/magit-squash--conflict-done-fn))
+  (funcall branch-off/magit-squash--conflict-done-fn))
 
-(defun my/magit-squash--abort-conflict ()
+(defun branch-off/magit-squash--abort-conflict ()
   "Abort the squash from the conflict resolution buffer."
   (interactive)
   (kill-buffer-and-window)
   (message "Squash aborted"))
 
-(defun my/magit-squash--open-conflict-buffer (path commit-hash conflicted-content mode done-fn)
+(defun branch-off/magit-squash--open-conflict-buffer (path commit-hash conflicted-content mode done-fn)
   "Open a smerge buffer for CONFLICTED-CONTENT of PATH.
 DONE-FN is called with the resolved blob SHA when the user confirms with C-c C-c."
   (let ((buf (get-buffer-create (format "*squash conflict: %s*" path))))
@@ -900,7 +941,7 @@ DONE-FN is called with the resolved blob SHA when the user confirms with C-c C-c
       (erase-buffer)
       (insert conflicted-content)
       (smerge-mode 1)
-      (setq-local my/magit-squash--conflict-done-fn
+      (setq-local branch-off/magit-squash--conflict-done-fn
                   (lambda ()
                     (let ((sha (with-temp-buffer
                                  (insert-buffer-substring buf)
@@ -911,8 +952,8 @@ DONE-FN is called with the resolved blob SHA when the user confirms with C-c C-c
                                  (string-trim (buffer-string)))))
                       (kill-buffer-and-window)
                       (funcall done-fn sha))))
-      (local-set-key (kbd "C-c C-c") #'my/magit-squash--finish-conflict)
-      (local-set-key (kbd "C-c C-k") #'my/magit-squash--abort-conflict)
+      (local-set-key (kbd "C-c C-c") #'branch-off/magit-squash--finish-conflict)
+      (local-set-key (kbd "C-c C-k") #'branch-off/magit-squash--abort-conflict)
       (setq-local header-line-format
                   (list (format " Conflict in %s (from %s) — " path (substring commit-hash 0 8))
                         (propertize "C-c C-c" 'face 'transient-key) " done  "
@@ -922,7 +963,7 @@ DONE-FN is called with the resolved blob SHA when the user confirms with C-c C-c
       (ignore-errors (smerge-next)))
     (pop-to-buffer buf)))
 
-(defun my/magit-squash--resolve-path-list (paths by-path commit-hash penv all-resolved-fn)
+(defun branch-off/magit-squash--resolve-path-list (paths by-path commit-hash penv all-resolved-fn)
   "Open smerge for each path in PATHS in turn; when all done call ALL-RESOLVED-FN.
 Temp index (in PENV via GIT_INDEX_FILE) is updated after each resolution."
   (if (null paths)
@@ -951,7 +992,7 @@ Temp index (in PENV via GIT_INDEX_FILE) is updated after each resolution."
                             (insert-file-contents ours-f)
                             (buffer-string))))
           (ignore-errors (delete-file ours-f))
-          (my/magit-squash--open-conflict-buffer
+          (branch-off/magit-squash--open-conflict-buffer
            path commit-hash conflicted mode
            (lambda (resolved-sha)
              (let ((process-environment penv))
@@ -964,10 +1005,10 @@ Temp index (in PENV via GIT_INDEX_FILE) is updated after each resolution."
                  (unless (= 0 (call-process-region (point-min) (point-max) "git" t t nil
                                                     "update-index" "--index-info"))
                    (user-error "git update-index failed for %s" path))))
-             (my/magit-squash--resolve-path-list rest by-path commit-hash penv
+             (branch-off/magit-squash--resolve-path-list rest by-path commit-hash penv
                                                   all-resolved-fn))))))))
 
-(defun my/magit-squash--merge-commits (remaining parent-tree current-tree temp-index penv done-fn)
+(defun branch-off/magit-squash--merge-commits (remaining parent-tree current-tree temp-index penv done-fn)
   "Iteratively 3-way-merge REMAINING sibling commits into CURRENT-TREE.
 PARENT-TREE is the constant base (shared ancestor of all siblings).
 Calls DONE-FN with the final tree hash; may suspend for interactive conflict resolution."
@@ -976,7 +1017,7 @@ Calls DONE-FN with the final tree hash; may suspend for interactive conflict res
     (let* ((process-environment penv)
            (h        (car remaining))
            (rest     (cdr remaining))
-           (bon-tree (my/magit-squash--commit-tree h)))
+           (bon-tree (branch-off/magit-squash--commit-tree h)))
       (call-process "git" nil nil nil "read-tree" "-i" "-m" parent-tree current-tree bon-tree)
       (let ((unmerged (with-temp-buffer
                         (call-process "git" nil t nil "ls-files" "--unmerged")
@@ -987,7 +1028,7 @@ Calls DONE-FN with the final tree hash; may suspend for interactive conflict res
                               (unless (= 0 (call-process "git" nil t nil "write-tree"))
                                 (user-error "git write-tree failed merging %s" (substring h 0 8)))
                               (string-trim (buffer-string)))))
-              (my/magit-squash--merge-commits rest parent-tree new-tree temp-index penv done-fn))
+              (branch-off/magit-squash--merge-commits rest parent-tree new-tree temp-index penv done-fn))
           ;; Conflict: parse unmerged entries, open smerge for each file, then resume
           (let ((by-path (make-hash-table :test #'equal)))
             (dolist (line (split-string unmerged "\n" t))
@@ -1002,7 +1043,7 @@ Calls DONE-FN with the final tree hash; may suspend for interactive conflict res
                     (plist-put e :mode mode)))))
             (let (paths)
               (maphash (lambda (k _) (push k paths)) by-path)
-              (my/magit-squash--resolve-path-list
+              (branch-off/magit-squash--resolve-path-list
                paths by-path h penv
                (lambda ()
                  (let ((new-tree (let ((process-environment penv))
@@ -1011,13 +1052,13 @@ Calls DONE-FN with the final tree hash; may suspend for interactive conflict res
                                        (user-error "git write-tree failed after resolving %s"
                                                    (substring h 0 8)))
                                      (string-trim (buffer-string))))))
-                   (my/magit-squash--merge-commits
+                   (branch-off/magit-squash--merge-commits
                     rest parent-tree new-tree temp-index penv done-fn)))))))))))
 
-(defun my/magit-squash--combined-tree (parent-hash sorted-commits done-fn)
+(defun branch-off/magit-squash--combined-tree (parent-hash sorted-commits done-fn)
   "Async: build a merged tree from sibling SORTED-COMMITS branched from PARENT-HASH.
 Calls DONE-FN with the merged tree hash; may open smerge buffers for conflicts."
-  (let* ((parent-tree (my/magit-squash--commit-tree parent-hash))
+  (let* ((parent-tree (branch-off/magit-squash--commit-tree parent-hash))
          (temp-index  (make-temp-file "git-squash" nil))
          (penv (append (list (format "GIT_INDEX_FILE=%s" temp-index)) process-environment)))
     (let ((process-environment penv))
@@ -1025,13 +1066,13 @@ Calls DONE-FN with the merged tree hash; may open smerge buffers for conflicts."
         (unless (= 0 (call-process "git" nil t nil "read-tree" parent-tree))
           (ignore-errors (delete-file temp-index))
           (user-error "git read-tree failed: %s" (buffer-string)))))
-    (my/magit-squash--merge-commits
+    (branch-off/magit-squash--merge-commits
      sorted-commits parent-tree parent-tree temp-index penv
      (lambda (tree-hash)
        (ignore-errors (delete-file temp-index))
        (funcall done-fn tree-hash)))))
 
-(defun my/magit-squash--make-info (tree-hash first-info)
+(defun branch-off/magit-squash--make-info (tree-hash first-info)
   "Build a commit info plist: TREE-HASH as tree, author/committer identity from FIRST-INFO."
   (list :tree            tree-hash
         :author-name     (plist-get first-info :author-name)
@@ -1041,26 +1082,26 @@ Calls DONE-FN with the merged tree hash; may open smerge buffers for conflicts."
         :committer-email (plist-get first-info :committer-email)
         :committer-date  (plist-get first-info :committer-date)))
 
-(defun my/magit-squash--apply-branch-off (sorted-chain parent-of-first tree-hash new-msg)
+(defun branch-off/magit-squash--apply-branch-off (sorted-chain parent-of-first tree-hash new-msg)
   "Squash SORTED-CHAIN branch-off commits into one new branch-off commit."
-  (let* ((first-info (my/magit-reword--parse-commit (car sorted-chain)))
-         (info       (my/magit-squash--make-info tree-hash first-info))
-         (new-hash   (my/magit-reword--new-commit info parent-of-first new-msg)))
+  (let* ((first-info (branch-off/magit-reword--parse-commit (car sorted-chain)))
+         (info       (branch-off/magit-squash--make-info tree-hash first-info))
+         (new-hash   (branch-off/magit-reword--new-commit info parent-of-first new-msg)))
     (unless new-hash (user-error "git commit-tree failed"))
     (magit-call-git "update-ref" (format "refs/branch-off/%s" new-hash) new-hash)
     (dolist (h sorted-chain)
       (magit-call-git "update-ref" "-d" (format "refs/branch-off/%s" h)))
-    (my/magit-reword--cascade-branch-off
+    (branch-off/magit-reword--cascade-branch-off
      (mapcar (lambda (h) (cons h new-hash)) sorted-chain))
     (magit-refresh)
     (message "Squashed %d branch-off commits → %s"
              (length sorted-chain) (substring new-hash 0 8))))
 
-(defun my/magit-squash--apply-branch (sorted-chain parent-of-first tree-hash new-msg branch)
+(defun branch-off/magit-squash--apply-branch (sorted-chain parent-of-first tree-hash new-msg branch)
   "Squash SORTED-CHAIN branch commits into one, rebasing HEAD descendants."
-  (let* ((first-info (my/magit-reword--parse-commit (car sorted-chain)))
-         (info       (my/magit-squash--make-info tree-hash first-info))
-         (new-squash (my/magit-reword--new-commit info parent-of-first new-msg)))
+  (let* ((first-info (branch-off/magit-reword--parse-commit (car sorted-chain)))
+         (info       (branch-off/magit-squash--make-info tree-hash first-info))
+         (new-squash (branch-off/magit-reword--new-commit info parent-of-first new-msg)))
     (unless new-squash (user-error "git commit-tree failed"))
     (let* ((last-hash   (car (last sorted-chain)))
            (descendants (split-string
@@ -1072,23 +1113,23 @@ Calls DONE-FN with the merged tree hash; may open smerge buffers for conflicts."
                          "\n" t))
            (remap (mapcar (lambda (h) (cons h new-squash)) sorted-chain)))
       (dolist (old-hash descendants)
-        (let* ((d-info   (my/magit-reword--parse-commit old-hash))
+        (let* ((d-info   (branch-off/magit-reword--parse-commit old-hash))
                (old-par  (plist-get d-info :parent))
                (new-par  (or (cdr (assoc old-par remap)) old-par))
                (msg      (with-temp-buffer
                            (call-process "git" nil t nil "log" "-1" "--format=%B" old-hash)
                            (buffer-string)))
-               (new-hash (my/magit-reword--new-commit d-info new-par msg)))
+               (new-hash (branch-off/magit-reword--new-commit d-info new-par msg)))
           (push (cons old-hash new-hash) remap)))
       (let* ((head-hash (magit-git-string "rev-parse" "HEAD"))
              (new-head  (or (cdr (assoc head-hash remap)) new-squash)))
         (magit-call-git "update-ref" (format "refs/heads/%s" branch) new-head))
-      (my/magit-reword--cascade-branch-off remap)
+      (branch-off/magit-reword--cascade-branch-off remap)
       (magit-refresh)
       (message "Squashed %d commits → %s"
                (length sorted-chain) (substring new-squash 0 8)))))
 
-(defun my/magit-squash--finish ()
+(defun branch-off/magit-squash--finish ()
   "Apply the squash using the message in the current buffer."
   (interactive)
   (let* ((msg    (string-trim
@@ -1098,34 +1139,34 @@ Calls DONE-FN with the merged tree hash; may open smerge buffers for conflicts."
                                           (buffer-substring-no-properties (point-min) (point-max))
                                           "\n"))
                              "\n")))
-         (chain  my/magit-squash--chain)
-         (parent my/magit-squash--parent)
-         (tree   my/magit-squash--tree)
-         (bo-p   my/magit-squash--bo-p)
-         (branch my/magit-squash--branch)
-         (line   my/magit-squash--source-line)
-         (dir    my/magit-squash--dir))
+         (chain  branch-off/magit-squash--chain)
+         (parent branch-off/magit-squash--parent)
+         (tree   branch-off/magit-squash--tree)
+         (bo-p   branch-off/magit-squash--bo-p)
+         (branch branch-off/magit-squash--branch)
+         (line   branch-off/magit-squash--source-line)
+         (dir    branch-off/magit-squash--dir))
     (when (string-empty-p msg)
       (user-error "Commit message cannot be empty"))
-    (let ((log-buf my/magit-squash--log-buf))
+    (let ((log-buf branch-off/magit-squash--log-buf))
       (kill-buffer-and-window)
       (when (buffer-live-p log-buf)
         (with-current-buffer log-buf
-          (setq my/magit-squash--marks nil)
-          (my/magit-squash--clear-overlays)))
+          (setq branch-off/magit-squash--marks nil)
+          (branch-off/magit-squash--clear-overlays)))
       (let ((default-directory dir))
         (if bo-p
-            (my/magit-squash--apply-branch-off chain parent tree msg)
-          (my/magit-squash--apply-branch chain parent tree msg branch))
-        (my/magit-reword--refresh-log line)))))
+            (branch-off/magit-squash--apply-branch-off chain parent tree msg)
+          (branch-off/magit-squash--apply-branch chain parent tree msg branch))
+        (branch-off/magit-reword--refresh-log line)))))
 
-(defun my/magit-squash--abort ()
+(defun branch-off/magit-squash--abort ()
   "Abort the squash."
   (interactive)
   (kill-buffer-and-window)
   (message "squash: aborted"))
 
-(defun my/magit-squash-commits ()
+(defun branch-off/magit-squash ()
   "Squash visually selected commits in the magit-log buffer into one.
 Requires a visual selection; signals an error if none is active.
 Opens a pre-filled message buffer combining the selected commits' messages.
@@ -1141,15 +1182,15 @@ Respects branch-off refs and rebases HEAD after squashing branch commits."
                    (or (magit-get-mode-buffer 'magit-log-mode)
                        (user-error "No magit-log buffer found")))))
     (with-current-buffer log-buf
-      (let* ((raw  (if my/magit-squash--marks
+      (let* ((raw  (if branch-off/magit-squash--marks
                        ;; Marks take priority; leave overlays visible until
                        ;; finish so abort restores the user's selection.
-                       my/magit-squash--marks
+                       branch-off/magit-squash--marks
                      (unless (use-region-p)
                        (user-error
                         "No commits selected — mark commits with %s or visually select with V"
-                        (substitute-command-keys "\\[my/magit-squash-mark-commit]")))
-                     (my/magit-squash--commits-in-region))))
+                        (substitute-command-keys "\\[branch-off/magit-mark]")))
+                     (branch-off/magit-squash--commits-in-region))))
         (when (< (length raw) 2)
           (user-error "Select at least 2 commits to squash (got %d)" (length raw)))
         (let* ((full  (mapcar (lambda (h) (magit-git-string "rev-parse" h)) raw))
@@ -1161,11 +1202,11 @@ Respects branch-off refs and rebases HEAD after squashing branch commits."
                        full))
                ;; For branch-off: try chain first, fall back to sibling grouping.
                ;; For branch commits: require a chain (signal on failure).
-               (chain-try (and bo-p (my/magit-squash--try-chain full)))
+               (chain-try (and bo-p (branch-off/magit-squash--try-chain full)))
                (sort-result
-                (cond ((not bo-p) (my/magit-squash--build-chain full))
+                (cond ((not bo-p) (branch-off/magit-squash--build-chain full))
                       (chain-try  chain-try)
-                      (t          (my/magit-squash--sort-siblings full))))
+                      (t          (branch-off/magit-squash--sort-siblings full))))
                (chain  (car sort-result))
                (par    (cdr sort-result))
                (branch (unless bo-p
@@ -1197,7 +1238,7 @@ Respects branch-off refs and rebases HEAD after squashing branch commits."
                      (with-current-buffer buf
                        (erase-buffer)
                        (insert combined)
-                       (when my/magit-squash--verbose
+                       (when branch-off/magit-squash--verbose
                          (insert "\n\n")
                          (let ((diff (with-temp-buffer
                                        (let ((default-directory dir))
@@ -1209,16 +1250,16 @@ Respects branch-off refs and rebases HEAD after squashing branch commits."
                              (insert "# " line "\n"))))
                        (git-commit-mode)
                        (setq-local default-directory dir)
-                       (setq-local my/magit-squash--chain chain)
-                       (setq-local my/magit-squash--parent par)
-                       (setq-local my/magit-squash--tree tree-hash)
-                       (setq-local my/magit-squash--bo-p bo-p)
-                       (setq-local my/magit-squash--branch branch)
-                       (setq-local my/magit-squash--source-line source-line)
-                       (setq-local my/magit-squash--dir dir)
-                       (setq-local my/magit-squash--log-buf log-buf)
-                       (local-set-key (kbd "C-c C-c") #'my/magit-squash--finish)
-                       (local-set-key (kbd "C-c C-k") #'my/magit-squash--abort)
+                       (setq-local branch-off/magit-squash--chain chain)
+                       (setq-local branch-off/magit-squash--parent par)
+                       (setq-local branch-off/magit-squash--tree tree-hash)
+                       (setq-local branch-off/magit-squash--bo-p bo-p)
+                       (setq-local branch-off/magit-squash--branch branch)
+                       (setq-local branch-off/magit-squash--source-line source-line)
+                       (setq-local branch-off/magit-squash--dir dir)
+                       (setq-local branch-off/magit-squash--log-buf log-buf)
+                       (local-set-key (kbd "C-c C-c") #'branch-off/magit-squash--finish)
+                       (local-set-key (kbd "C-c C-k") #'branch-off/magit-squash--abort)
                        (setq-local header-line-format
                                    (list " "
                                          (propertize "C-c C-c" 'face 'transient-key)
@@ -1228,23 +1269,23 @@ Respects branch-off refs and rebases HEAD after squashing branch commits."
                        (goto-char (point-min)))
                      (pop-to-buffer buf)))))
             (if (and bo-p (null chain-try))
-                (my/magit-squash--combined-tree par chain open-buf-fn)
+                (branch-off/magit-squash--combined-tree par chain open-buf-fn)
               (funcall open-buf-fn
-                       (plist-get (my/magit-reword--parse-commit (car (last chain)))
+                       (plist-get (branch-off/magit-reword--parse-commit (car (last chain)))
                                   :tree)))))))))
 
 (after! magit
   ;; Define here so transient is guaranteed loaded (magit requires it)
-  (transient-define-suffix my/magit-squash-toggle-verbose ()
+  (transient-define-suffix branch-off/magit-squash-verbose ()
     "Toggle whether the branch-off edit buffer shows the diff as comments."
     :transient t
     :description (lambda ()
                    (concat "show diff in edit buffer "
-                           (if my/magit-squash--verbose
+                           (if branch-off/magit-squash--verbose
                                (propertize "(on) " 'face 'success)
                              (propertize "(off)" 'face 'shadow))))
     (interactive)
-    (setq my/magit-squash--verbose (not my/magit-squash--verbose)))
+    (setq branch-off/magit-squash--verbose (not branch-off/magit-squash--verbose)))
   ;; Rebase transient — Branch-off section
   (ignore-errors (transient-remove-suffix 'magit-rebase "W"))
   (ignore-errors (transient-remove-suffix 'magit-rebase "K"))
@@ -1252,240 +1293,65 @@ Respects branch-off refs and rebases HEAD after squashing branch commits."
   (ignore-errors (transient-remove-suffix 'magit-rebase "v"))
   (transient-append-suffix 'magit-rebase '(2)
     ["Branch-off"
-     [("W" "reword" my/magit-branch-off-reword)
-      ("K" "remove" my/magit-branch-off-remove)
-      ("S" "squash" my/magit-squash-commits)]
-     [("v" my/magit-squash-toggle-verbose)]])
-  ;; Merge transient — Marker section (appended after group 1 = "Actions")
+     [("W" "reword" branch-off/magit-commit-reword)
+      ("K" "remove" branch-off/magit-commit-remove)
+      ("S" "squash" branch-off/magit-squash)]
+     [("v" branch-off/magit-squash-verbose)]])
+  ;; Merge transient — Branch Off section (appended after group 1 = "Actions")
   (ignore-errors (transient-remove-suffix 'magit-merge "M"))
   (transient-append-suffix 'magit-merge '(1)
-    ["Marker"
-     ("M" "mark for squash" my/magit-squash-mark-commit)]))
+    ["Branch Off"
+     ("M" "toggle marker" branch-off/magit-mark)]))
 
 ;;; Commit-and-branch-off
 
-(defun my/magit--revert-committed-in-buffer (rel top &optional skip-del-contents)
-  "Remove changes introduced by HEAD vs HEAD~1 from the buffer visiting REL.
-Uses content-based matching so adjacent unstaged changes in the same file
-don't cause conflicts.  Handles additions (delete), modifications (replace),
-and deletions (re-insert after the preceding context line).
-SKIP-DEL-CONTENTS is an optional list of line-content strings; any pure-deletion
-hunk whose entire content is a subset of this list is skipped (the lines were
-intentionally committed as ctx-line deletions and must stay gone from the
-working tree).
-Returns t on success, nil if any hunk could not be located."
-  (let* ((diff   (with-temp-buffer
-                   (call-process "git" nil t nil "diff" "HEAD~1" "HEAD" "--" rel)
-                   (buffer-string)))
-         (buf    (find-buffer-visiting (expand-file-name rel top)))
-         (hunks  nil)
-         ;; Parse diff into (ctx-before del-lines add-lines) triples per hunk
-         (cur-ctx nil) (cur-del nil) (cur-add nil) (in-hunk nil))
-    (dolist (line (split-string diff "\n"))
-      (cond
-       ((or (string-prefix-p "diff " line) (string-prefix-p "index " line)
-            (string-prefix-p "--- "  line) (string-prefix-p "+++ "  line)) nil)
-       ((string-match "^@@" line)
-        (when in-hunk
-          (push (list (nreverse cur-ctx) (nreverse cur-del) (nreverse cur-add)) hunks)
-          (setq cur-ctx nil cur-del nil cur-add nil))
-        (setq in-hunk t))
-       ((not in-hunk) nil)
-       ((string-prefix-p " " line)
-        (when (null cur-del) (push (substring line 1) cur-ctx)))
-       ((string-prefix-p "-" line) (push (substring line 1) cur-del))
-       ((string-prefix-p "+" line) (push (substring line 1) cur-add))))
-    (when in-hunk
-      (push (list (nreverse cur-ctx) (nreverse cur-del) (nreverse cur-add)) hunks))
-    (setq hunks (nreverse hunks))
-    (when (and buf hunks)
-      (with-current-buffer buf
-        (let ((all-ok t))
-          ;; Apply in reverse order so earlier hunks aren't shifted by later ones.
-          (dolist (h (nreverse hunks))
-            (let* ((ctx   (nth 0 h))
-                   (del   (nth 1 h))
-                   (add   (nth 2 h))
-                   (ok
-                    (cond
-                     ;; Modification: replace the added content with the deleted content.
-                     ((and del add)
-                      (let ((search (mapconcat #'identity add "\n")))
-                        (save-excursion
-                          (goto-char (point-min))
-                          (if (search-forward search nil t)
-                              (progn (replace-match
-                                      (mapconcat #'identity del "\n") t t)
-                                     t)
-                            nil))))
-                     ;; Pure addition: delete the block from the working tree.
-                     (add
-                      (let ((search (concat (mapconcat #'identity add "\n") "\n")))
-                        (save-excursion
-                          (goto-char (point-min))
-                          (if (search-forward search nil t)
-                              (progn (delete-region (match-beginning 0) (match-end 0))
-                                     t)
-                            nil))))
-                     ;; Pure deletion: re-insert after the last context line before it,
-                     ;; unless every deleted line is a ctx-line we intentionally removed.
-                     (del
-                      (if (and skip-del-contents
-                               (cl-every (lambda (l) (member l skip-del-contents)) del))
-                          t  ; ctx-line committed as deletion — leave it gone
-                        (let ((anchor (car (last ctx))))
-                          (if (null anchor)
-                              nil
-                            (save-excursion
-                              (goto-char (point-min))
-                              (if (search-forward (concat anchor "\n") nil t)
-                                  (progn
-                                    (insert (mapconcat #'identity del "\n") "\n")
-                                    t)
-                                nil))))))
-                     (t t))))
-              (unless ok (setq all-ok nil))))
-          (when all-ok (save-buffer) (revert-buffer t t))
-          all-ok)))))
+(defun branch-off/magit--only-additions-in-selection-p (diff sel-start sel-end)
+  "Return nil if every line in [SEL-START..SEL-END] is a pure addition in DIFF.
+Returns a human-readable error string describing the first problem found."
+  (let ((new-cursor 0)
+        (hunk-has-del nil)
+        (covered nil)
+        (result nil))
+    (catch 'done
+      (dolist (line (split-string diff "\n"))
+        (cond
+         ((string-match
+           (rx bol "@@ -" (group (+ digit)) (? "," (group (+ digit)))
+               " +" (group (+ digit)) (? "," (+ digit)) " @@")
+           line)
+          (let ((old-count (if (match-string 2 line)
+                               (string-to-number (match-string 2 line))
+                             1)))
+            (setq new-cursor   (string-to-number (match-string 3 line))
+                  hunk-has-del (> old-count 0))))
+         ((string-prefix-p "+" line)
+          (when (and (>= new-cursor sel-start) (<= new-cursor sel-end))
+            (push new-cursor covered)
+            (when hunk-has-del
+              (setq result "selection contains modified lines — select only newly added lines")
+              (throw 'done nil)))
+          (setq new-cursor (1+ new-cursor)))
+         ((string-prefix-p " " line)
+          (when (and (>= new-cursor sel-start) (<= new-cursor sel-end))
+            (setq result "selection contains unchanged lines — select only newly added lines")
+            (throw 'done nil))
+          (setq new-cursor (1+ new-cursor))))))
+    (or result
+        (let ((missing (cl-loop for p from sel-start to sel-end
+                                unless (memq p covered) collect p)))
+          (when missing
+            "selection contains unchanged lines — select only newly added lines")))))
 
-(defun my/magit--ctx-positions-in-selection (diff-text sel-start sel-end)
-  "Return sorted list of working-tree line numbers in [SEL-START..SEL-END] not covered by DIFF-TEXT.
-These are unchanged lines the user has selected."
-  (let ((plus-positions nil)
-        (new-cursor 0))
-    (dolist (line (split-string diff-text "\n"))
-      (cond
-       ((string-match
-         (rx bol "@@ " (+ nonl) " +" (group (+ digit)) (? "," (+ digit)) " @@")
-         line)
-        (setq new-cursor (string-to-number (match-string 1 line))))
-       ((string-prefix-p "+" line)
-        (when (and (>= new-cursor sel-start) (<= new-cursor sel-end))
-          (push new-cursor plus-positions))
-        (setq new-cursor (1+ new-cursor)))
-       ((string-prefix-p " " line)
-        (setq new-cursor (1+ new-cursor)))))
-    (cl-loop for pos from sel-start to sel-end
-             unless (memq pos plus-positions)
-             collect pos)))
+(defun branch-off/magit-stage-and-commit-and-branch-off ()
+  "Stage the selected newly-added lines, commit, preserve under refs/branch-off/, then rewind.
 
-(defun my/magit--stage-ctx-deletions (rel ctx-lines)
-  "Remove CTX-LINES from REL's current staged index entry.
-Reads the index blob that the selection patch already staged, removes each
-ctx-line by content-based search, and writes the result back to the index.
-CTX-LINES is ((WT-POS . CONTENT) ...)."
-  (let* (;; Read from the STAGED index, not the working-tree buffer.  The
-         ;; staging-patch has already been applied --cached, so the index
-         ;; contains exactly the selected diff changes; we must not replace
-         ;; that with the full working-tree blob.
-         (index-content
-          (with-temp-buffer
-            (unless (zerop (call-process "git" nil t nil
-                                         "cat-file" "-p" (format ":%s" rel)))
-              (error "git cat-file -p :%s failed: %s" rel (buffer-string)))
-            (buffer-string)))
-         (new-content
-          (with-temp-buffer
-            (insert index-content)
-            (dolist (cl (sort (copy-sequence ctx-lines)
-                              (lambda (a b) (> (car a) (car b)))))
-              (let ((search (concat (cdr cl) "\n")))
-                (goto-char (point-max))
-                (unless (search-backward search nil t)
-                  (error "Ctx-line %S not found in staged index for %s" (cdr cl) rel))
-                (delete-region (match-beginning 0) (match-end 0))))
-            (buffer-string)))
-         (blob-sha
-          (with-temp-buffer
-            (insert new-content)
-            (unless (zerop (call-process-region (point-min) (point-max)
-                                                "git" t t nil
-                                                "hash-object" "-w" "--stdin"))
-              (error "git hash-object failed: %s" (buffer-string)))
-            (string-trim (buffer-string))))
-         (ls-out
-          (with-temp-buffer
-            (call-process "git" nil t nil "ls-files" "-s" "--" rel)
-            (buffer-string)))
-         (mode (if (string-match "\\`\\([0-9]+\\)" ls-out)
-                   (match-string 1 ls-out)
-                 "100644")))
-    (with-temp-buffer
-      (unless (zerop (call-process "git" nil t nil "update-index" "--cacheinfo"
-                                   (format "%s,%s,%s" mode blob-sha rel)))
-        (error "git update-index --cacheinfo failed: %s" (buffer-string))))))
-
-(defun my/magit--adjust-ctx-positions (ctx-lines staging-patch)
-  "Return CTX-LINES with positions adjusted for lines removed by reversing STAGING-PATCH.
-The staging patch added certain lines to the working tree; reversing it removes
-them, shifting ctx-lines that came after each removed block upward.
-CTX-LINES is ((WT-POS . CONTENT) ...).  Returns ((BUF-POS . CONTENT) ...)."
-  (let ((added-ranges
-         (with-temp-buffer
-           (insert-file-contents staging-patch)
-           (let (ranges)
-             (goto-char (point-min))
-             (while (re-search-forward
-                     (rx bol "@@ " (+ nonl) " +" (group (+ digit))
-                         (? "," (group (+ digit))) " @@")
-                     nil t)
-               (let* ((start (string-to-number (match-string 1)))
-                      (count (if (match-string 2)
-                                 (string-to-number (match-string 2))
-                               1)))
-                 (when (> count 0)
-                   (push (cons start count) ranges))))
-             (sort (nreverse ranges) (lambda (a b) (< (car a) (car b))))))))
-    (mapcar (lambda (cl)
-              (let ((pos (car cl))
-                    (shift 0))
-                (dolist (r added-ranges)
-                  ;; Lines in [rstart, rstart+rcount-1] will be removed.
-                  ;; Any line at position >= rstart+rcount shifts up by rcount.
-                  (when (<= (+ (car r) (cdr r)) pos)
-                    (cl-incf shift (cdr r))))
-                (cons (- pos shift) (cdr cl))))
-            ctx-lines)))
-
-(defun my/magit--delete-ctx-lines-from-worktree (rel ctx-lines top)
-  "Delete CTX-LINES from the working-tree buffer of REL by exact line number.
-CTX-LINES is ((BUF-LINE . CONTENT) ...) where BUF-LINE is the line number in
-the current buffer state (already adjusted for any prior patch reversals).
-Verifies the content matches before deleting; returns t on success."
-  (let ((buf (find-buffer-visiting (expand-file-name rel top))))
-    (if (null buf)
-        nil
-      (with-current-buffer buf
-        (let* ((all-ok t)
-               ;; Bottom-to-top so each deletion doesn't shift positions of
-               ;; lines still to delete.
-               (ctx-sorted (sort (copy-sequence ctx-lines)
-                                 (lambda (a b) (> (car a) (car b))))))
-          (dolist (cl ctx-sorted)
-            (let* ((line-no  (car cl))
-                   (expected (cdr cl)))
-              (goto-char (point-min))
-              (forward-line (1- line-no))
-              (if (string= expected
-                           (buffer-substring-no-properties
-                            (line-beginning-position) (line-end-position)))
-                  (delete-region (line-beginning-position)
-                                 (min (1+ (line-end-position)) (point-max)))
-                (setq all-ok nil))))
-          (when all-ok (save-buffer))
-          all-ok)))))
-
-(defun my/magit-commit-and-branch-off ()
-  "Stage the selected lines, commit, preserve under refs/branch-off/, then rewind.
-
-Requires an active region.  Stages all lines within the selection at line
-precision — additions, deletions, modifications, and unchanged lines (which
-are committed as deletions and removed from the working tree).
+Requires an active region containing only pure additions (lines added since
+the last commit, not modifications or deletions).  Aborts with an explanation
+if the selection contains anything else.
 
 The commit is preserved under refs/branch-off/<full-hash>.  HEAD and the
-index are rewound with --mixed.  The branched-off changes are then removed
-from the working tree so adjacent unstaged changes in the same file are
-never disturbed."
+index are rewound with --mixed.  The committed additions are removed from the
+working tree by reversing the staging patch."
   (interactive)
   (unless (use-region-p)
     (user-error "Select lines first"))
@@ -1494,96 +1360,142 @@ never disturbed."
   (let* ((top (or (magit-toplevel) (user-error "Not in a git repository")))
          (default-directory top)
          (rel (file-relative-name buffer-file-name top))
-         (commit-msg (read-string "Commit message: "))
-         staging-patch
-         ctx-lines)    ; ((wt-pos . content) ...) for unchanged selected lines
-    (when (string-empty-p commit-msg)
-      (user-error "Commit message cannot be empty"))
-    (let* ((range (my/magit--selection-lines)))
-      (when (buffer-modified-p) (save-buffer))
-      (let* ((sel-start (car range))
-             (sel-end   (cdr range))
-             (diff      (with-temp-buffer
-                          (call-process "git" nil t nil "diff" "-U0" "--" rel)
-                          (buffer-string)))
-             (result    (my/magit--patch-from-diff diff rel sel-start sel-end))
-             (ctx-pos   (my/magit--ctx-positions-in-selection diff sel-start sel-end)))
-        (setq ctx-lines
-              (when ctx-pos
-                (save-excursion
-                  (mapcar (lambda (pos)
-                            (goto-char (point-min))
-                            (forward-line (1- pos))
-                            (cons pos (buffer-substring-no-properties
-                                       (line-beginning-position)
-                                       (line-end-position))))
-                          ctx-pos))))
-        (unless (or result ctx-lines)
-          (user-error "No changes in selection to stage"))
-        ;; Stage diff changes (additions/deletions).
-        (when result
-          (setq staging-patch (make-temp-file "magit-lines" nil ".patch"))
+         (range     (branch-off/magit--selection-lines)))
+    (when (buffer-modified-p) (save-buffer))
+    (let* ((sel-start (car range))
+           (sel-end   (cdr range))
+           (diff      (with-temp-buffer
+                        (call-process "git" nil t nil "diff" "-U0" "--" rel)
+                        (buffer-string)))
+           (err-msg   (branch-off/magit--only-additions-in-selection-p diff sel-start sel-end))
+           (result    (unless err-msg
+                        (branch-off/magit--patch-from-diff diff rel sel-start sel-end))))
+      (when err-msg   (user-error "%s" err-msg))
+      (unless result  (user-error "No new additions in selection"))
+      (let* ((commit-msg (read-string "Commit message: ")))
+        (when (string-empty-p commit-msg)
+          (user-error "Commit message cannot be empty"))
+        (let ((staging-patch (make-temp-file "magit-lines" nil ".patch")))
           (write-region (car result) nil staging-patch nil 'silent)
-          (with-temp-buffer
-            (let ((exit (call-process "git" staging-patch (list t t) nil
-                                      "apply" "--cached" "--unidiff-zero" "--")))
-              (unless (and (integerp exit) (= exit 0))
-                (ignore-errors (delete-file staging-patch))
-                (setq staging-patch nil)
-                (user-error "git apply --cached failed:\n%s" (buffer-string))))))
-        ;; Stage unchanged-line deletions via index-blob update.
-        (when ctx-lines
-          (condition-case err
-              (my/magit--stage-ctx-deletions rel ctx-lines)
-            (error
-             (when staging-patch
-               (magit-call-git "reset" "HEAD" "--" rel))
-             (user-error "Failed to stage unchanged lines: %s"
-                         (error-message-string err)))))))
-    (magit-call-git "commit" "-m" commit-msg)
-    (let ((hash (magit-git-string "rev-parse" "HEAD")))
-      (magit-call-git "update-ref" (format "refs/branch-off/%s" hash) hash)
-      ;; Remove the branched-off changes from the working tree.
-      ;; If there were diff changes, reverse the staging patch (falling back to
-      ;; content-based reversal).  Then delete ctx-lines by exact position.
-      (unwind-protect
-          (let* ((diff-ok
-                  (if staging-patch
-                      (let ((exit (call-process "git" nil nil nil
-                                                "apply" "-R" "--unidiff-zero"
-                                                "--" staging-patch)))
-                        (if (and (integerp exit) (= exit 0))
-                            (progn (revert-buffer t t) t)
-                          ;; Fallback: content-based reversal.  Pass ctx-line
-                          ;; contents so the helper skips re-inserting them.
-                          (my/magit--revert-committed-in-buffer
-                           rel top (mapcar #'cdr ctx-lines))))
-                    t))  ; ctx-only selection: nothing to reverse-apply
-                 ;; Only attempt ctx-line deletion after diff changes are gone —
-                 ;; otherwise ctx-lines would be removed from their original
-                 ;; positions while additions still sit above them.
-                 (adj-ctx
-                  (when (and ctx-lines diff-ok)
-                    (if staging-patch
-                        (my/magit--adjust-ctx-positions ctx-lines staging-patch)
-                      ctx-lines)))
-                 (ctx-ok
-                  (cond
-                   ((null ctx-lines) t)
-                   (diff-ok (my/magit--delete-ctx-lines-from-worktree
-                             rel adj-ctx top))
-                   (t nil)))
-                 (ok (and diff-ok ctx-ok)))
-            (unless ok
-              (message "Warning: could not remove branched-off changes from working tree; \
+          (unwind-protect
+              (progn
+                (with-temp-buffer
+                  (let ((exit (call-process "git" staging-patch (list t t) nil
+                                            "apply" "--cached" "--unidiff-zero" "--")))
+                    (unless (and (integerp exit) (= exit 0))
+                      (user-error "git apply --cached failed:\n%s" (buffer-string)))))
+                (magit-call-git "commit" "-m" commit-msg)
+                (let ((hash (magit-git-string "rev-parse" "HEAD")))
+                  (magit-call-git "update-ref"
+                                  (format "refs/branch-off/%s" hash) hash)
+                  (let ((exit (call-process "git" nil nil nil
+                                            "apply" "-R" "--unidiff-zero"
+                                            "--" staging-patch)))
+                    (if (and (integerp exit) (= exit 0))
+                        (revert-buffer t t)
+                      (message "Warning: could not remove additions from working tree; \
 check %s manually" (file-name-nondirectory buffer-file-name))))
-        (when staging-patch (ignore-errors (delete-file staging-patch))))
-      ;; Rewind HEAD and index; working tree is already correct.
-      (condition-case err
-          (magit-call-git "reset" "--mixed" "HEAD~1")
-        (error
-         (magit-refresh)
-         (user-error "refs/branch-off/%s created but reset failed: %s"
-                     (substring hash 0 8) (error-message-string err))))
-      (magit-refresh)
-      (message "Branched off %s — changes removed from working tree" (substring hash 0 8)))))
+                  (condition-case err
+                      (magit-call-git "reset" "--mixed" "HEAD~1")
+                    (error
+                     (magit-refresh)
+                     (user-error "refs/branch-off/%s created but reset failed: %s"
+                                 (substring hash 0 8) (error-message-string err))))
+                  (magit-refresh)
+                  (message "Branched off %s — additions removed from working tree"
+                           (substring hash 0 8))))
+            (ignore-errors (delete-file staging-patch))))))))
+
+;;; magit-blob navigation with branch-off awareness
+
+(after! magit
+  (defun branch-off/magit-blob--current-hash ()
+    "Return the full 40-char hash if the current blob buffer is on a branch-off commit, else nil."
+    (when (and (bound-and-true-p magit-blob-mode)
+               (bound-and-true-p magit-buffer-revision))
+      (let ((full (magit-git-string "rev-parse" "--verify" magit-buffer-revision)))
+        (when (and full
+                   (equal full (magit-git-string "rev-parse" "--verify"
+                                                  (format "refs/branch-off/%s" full))))
+          full))))
+
+  (defun branch-off/magit-blob--parent-of (hash)
+    "Return the full hash of HASH's parent commit, or nil for a root commit."
+    (let ((p (magit-git-string "rev-parse" "--verify" (concat hash "^"))))
+      (when (and p (not (string-empty-p p))) p)))
+
+  (defun branch-off/magit-blob--branch-offs-by-date ()
+    "Return all refs/branch-off/* hashes sorted by committer date ascending (oldest first)."
+    (sort (magit-git-lines "for-each-ref" "--format=%(objectname)" "refs/branch-off/")
+          (lambda (a b)
+            (< (string-to-number
+                (or (magit-git-string "log" "-1" "--format=%ct" a) "0"))
+               (string-to-number
+                (or (magit-git-string "log" "-1" "--format=%ct" b) "0"))))))
+
+  (defun branch-off/magit-blob--touches-file-p (hash file-rel)
+    "Return non-nil when HASH added or modified FILE-REL (path relative to repo root)."
+    (magit-git-lines "log" "-1" "--format=%H" "--diff-filter=AM" hash "--" file-rel))
+
+  (defun branch-off/magit-blob-next ()
+    "Go to the next (more recent) blob revision, respecting the git DAG.
+For branch-off commits: navigates to chain children first (branch-offs whose
+parent is the current commit), then to same-parent siblings with a newer
+committer date.  Falls through to `magit-blob-next' for regular commits."
+    (interactive)
+    (if-let ((full (branch-off/magit-blob--current-hash)))
+        (let* ((file-abs      (magit-buffer-file-name))
+               (file-rel      (file-relative-name file-abs (magit-toplevel)))
+               (parent        (branch-off/magit-blob--parent-of full))
+               (all-bo        (branch-off/magit-blob--branch-offs-by-date))   ; oldest -> newest
+               (idx           (cl-position full all-bo :test #'equal))
+               ;; chain children: branch-offs whose immediate parent is the current commit
+               (chain-kids    (cl-remove-if-not
+                               (lambda (h) (equal full (branch-off/magit-blob--parent-of h)))
+                               all-bo))
+               ;; newer siblings: same parent, appear after current in date-sorted order
+               (newer-siblings (when idx
+                                 (cl-remove-if-not
+                                  (lambda (h) (equal parent (branch-off/magit-blob--parent-of h)))
+                                  (nthcdr (1+ idx) all-bo))))
+               (succ (or (cl-find-if (lambda (h) (branch-off/magit-blob--touches-file-p h file-rel))
+                                     chain-kids)
+                         (cl-find-if (lambda (h) (branch-off/magit-blob--touches-file-p h file-rel))
+                                     newer-siblings))))
+          (if succ
+              (magit-blob-visit succ file-rel)
+            (user-error "No next blob")))
+      (call-interactively #'magit-blob-next)))
+
+  (defun branch-off/magit-blob-prev ()
+    "Go to the previous (older) blob revision, respecting the git DAG.
+For branch-off commits: navigates to same-parent siblings with an older
+committer date.  When no older same-parent sibling exists, falls through to
+`magit-blob-previous' — which correctly follows git ancestry (including back
+to a branch-off chain parent when the parent commit is itself branch-off).
+Also falls through for regular (non-branch-off) commits."
+    (interactive)
+    (if-let ((full (branch-off/magit-blob--current-hash)))
+        (let* ((file-abs       (magit-buffer-file-name))
+               (file-rel       (file-relative-name file-abs (magit-toplevel)))
+               (parent         (branch-off/magit-blob--parent-of full))
+               (all-bo         (branch-off/magit-blob--branch-offs-by-date))  ; oldest -> newest
+               (idx            (cl-position full all-bo :test #'equal))
+               ;; older siblings: same parent, appear before current in date-sorted order
+               (older-siblings (when idx
+                                 (cl-remove-if-not
+                                  (lambda (h) (equal parent (branch-off/magit-blob--parent-of h)))
+                                  (reverse (seq-take all-bo idx)))))
+               (pred           (cl-find-if
+                                (lambda (h) (branch-off/magit-blob--touches-file-p h file-rel))
+                                older-siblings)))
+          (if pred
+              (magit-blob-visit pred file-rel)
+            ;; no older same-parent sibling: fall through to magit-blob-previous,
+            ;; which follows git ancestry (handles chains and goes to parent commit)
+            (call-interactively #'magit-blob-previous)))
+      (call-interactively #'magit-blob-previous)))
+
+  (map! :map magit-blob-mode-map
+        :n "n" #'branch-off/magit-blob-next
+        :n "p" #'branch-off/magit-blob-prev))
