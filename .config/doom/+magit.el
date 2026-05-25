@@ -389,6 +389,7 @@ Requires an active region.  Stages only the +lines within the selection
       "g c c" #'branch-off/magit-stage-and-commit
       "g c o" #'branch-off/magit-stage-and-commit-and-branch-off
       "g l l" #'branch-off/magit-log
+      "g w" #'branch-off/create-worktree
       (:prefix ("g a" . "amend hunk")
        "a" #'branch-off/magit-amend-hunk
        "n" #'branch-off/magit-amend-hunk-no-edit))
@@ -501,6 +502,110 @@ but is not an ancestor of HEAD — regardless of which ref namespace holds it."
         :n "TAB" #'magit-diff-visit-file
         :n "n" #'branch-off/magit-revision-next
         :n "p" #'branch-off/magit-revision-prev))
+
+;;; Create worktree
+
+(after! magit
+  (defvar-local branch-off/create-worktree--pick-source nil
+    "Cons of (top . rel-path) for a pending worktree commit-pick in this log buffer.")
+
+  (define-minor-mode branch-off/create-worktree--pick-mode
+    "Transient: RET picks a commit at point to create a detached worktree."
+    :lighter nil
+    :keymap (let ((m (make-sparse-keymap)))
+              (define-key m (kbd "RET") #'branch-off/create-worktree--pick-commit)
+              (define-key m (kbd "C-g") #'branch-off/create-worktree--pick-abort)
+              m)
+    (when (bound-and-true-p evil-local-mode)
+      (evil-normalize-keymaps)))
+
+  (after! evil
+    (evil-make-overriding-map branch-off/create-worktree--pick-mode-map))
+
+  (defun branch-off/create-worktree--pick-abort ()
+    "Abort the pending worktree commit-pick."
+    (interactive)
+    (setq-local branch-off/create-worktree--pick-source nil)
+    (branch-off/create-worktree--pick-mode -1)
+    (setq-local header-line-format nil)
+    (message "create-worktree: aborted"))
+
+  (defun branch-off/create-worktree--pick-commit ()
+    "Pick the commit at point, create a detached worktree, and open the source file there."
+    (interactive)
+    (let ((commit (or (magit-section-value-if 'commit)
+                      (user-error "No commit at point"))))
+      (let ((source branch-off/create-worktree--pick-source))
+        (setq-local branch-off/create-worktree--pick-source nil)
+        (branch-off/create-worktree--pick-mode -1)
+        (setq-local header-line-format nil)
+        (branch-off/create-worktree--do commit (when source (cdr source))))))
+
+  (defun branch-off/create-worktree--do (commit &optional rel-file)
+    "Create a detached worktree for COMMIT at .worktree/<full-hash> under the repo root.
+Opens REL-FILE (path relative to repo root) in the new worktree when given; otherwise
+opens dired at the worktree root.  Silently reuses an existing worktree directory."
+    (let* ((top     (or (magit-toplevel) (user-error "Not in a git repository")))
+           (full    (magit-git-string "rev-parse" commit))
+           (wt-dir  (expand-file-name (concat ".worktree/" full) top)))
+      (unless (file-exists-p wt-dir)
+        (with-temp-buffer
+          (let ((exit (call-process "git" nil t nil
+                                    "worktree" "add" "--detach" wt-dir full)))
+            (unless (= exit 0)
+              (user-error "git worktree add --detach failed: %s"
+                          (string-trim (buffer-string))))))
+        (message "Created worktree at .worktree/%s" (substring full 0 8)))
+      (if rel-file
+          (find-file (expand-file-name rel-file wt-dir))
+        (dired wt-dir))))
+
+  (defun branch-off/create-worktree ()
+    "Create a detached worktree at .worktree/<commit-hash> for a selected commit.
+
+Context-sensitive behaviour:
+- magit-log: uses the commit at point, then opens dired at the worktree root.
+- magit-revision: uses the buffer's revision, then opens dired at the worktree root.
+- magit-blob: uses the buffer's revision and opens the same file in the worktree.
+- File buffer: opens `branch-off/magit-log' and enters pick mode — press RET on
+  any commit to create the worktree and open that file at the same relative path."
+    (interactive)
+    (cond
+     ((derived-mode-p 'magit-log-mode)
+      (let ((commit (or (magit-section-value-if 'commit)
+                        (user-error "No commit at point"))))
+        (branch-off/create-worktree--do commit)))
+     ((derived-mode-p 'magit-revision-mode)
+      (let ((commit (or (and (bound-and-true-p magit-buffer-revision)
+                             magit-buffer-revision)
+                        (user-error "No revision in current buffer"))))
+        (branch-off/create-worktree--do commit)))
+     ((bound-and-true-p magit-blob-mode)
+      (let* ((commit (or (and (bound-and-true-p magit-buffer-revision)
+                              magit-buffer-revision)
+                         (user-error "No revision in current buffer")))
+             (top    (or (magit-toplevel) (user-error "Not in a git repository")))
+             (rel    (file-relative-name (magit-buffer-file-name) top)))
+        (branch-off/create-worktree--do commit rel)))
+     (buffer-file-name
+      (let* ((top (or (magit-toplevel) (user-error "Not in a git repository")))
+             (rel (file-relative-name buffer-file-name top)))
+        (branch-off/magit-log)
+        (let ((log-buf (or (magit-get-mode-buffer 'magit-log-mode)
+                           (user-error "Could not find magit-log buffer"))))
+          (with-current-buffer log-buf
+            (setq-local branch-off/create-worktree--pick-source (cons top rel))
+            (branch-off/create-worktree--pick-mode 1)
+            (setq-local header-line-format
+                        (list (format " Worktree ← %s — " rel)
+                              (propertize "RET" 'face 'transient-key)
+                              " create  "
+                              (propertize "C-g" 'face 'transient-key)
+                              " abort"))))))
+     (t
+      (user-error "Invoke from magit-log, magit-revision, magit-blob, or a file buffer"))))
+
+)
 
 ;;; Commit reword
 
