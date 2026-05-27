@@ -420,10 +420,24 @@ Requires an active region.  Stages only the +lines within the selection
       "g c c" #'branch-off/magit-stage-and-commit
       "g c o" #'branch-off/magit-stage-and-commit-and-branch-off
       "g l l" #'branch-off/magit-log
-      "g w" #'branch-off/create-worktree
+      "g w"   nil                           ; clear any existing terminal binding first
+      (:prefix ("g w" . "worktree")
+       "c" #'branch-off/create-worktree
+       "w" #'branch-off/create-worktree
+       "d" #'branch-off/delete-worktree)
       (:prefix ("g a" . "amend hunk")
        "a" #'branch-off/magit-amend-hunk
        "n" #'branch-off/magit-amend-hunk-no-edit))
+
+(defface branch-off/log-worktree-marker
+  '((((class color) (background dark))  :foreground "cyan"      :weight bold)
+    (((class color) (background light)) :foreground "dark cyan"  :weight bold))
+  "Face for the @ symbol that marks a worktree HEAD commit in the log.")
+
+(defface branch-off/log-worktree-hash
+  '((((class color) (background dark))  :foreground "cyan3")
+    (((class color) (background light)) :foreground "cyan4"))
+  "Face for the hash text of a worktree HEAD commit in the log.")
 
 ;;; Log / revision navigation
 
@@ -473,12 +487,7 @@ Requires an active region.  Stages only the +lines within the selection
       (magit-log-setup-buffer (list "--all") (list "--color" "--decorate" "--topo-order" "-n256") nil)))
 
   (defun branch-off/magit-log--mark ()
-    "Overlay depth-based indent on branch-off commits in flat log buffers.
-Commits reachable from any ref but not from refs/heads/* are candidates;
-this includes branch-off refs and detached worktree HEADs.  Depth is
-computed from ancestry: depth 1 = directly off a branch head, crossing
-a commit with a refs/branch-off/* ref adds one level (2 spaces).
-Uses magit's section API for hash extraction."
+    "Overlay depth-based indent on branch-off commits and @ on worktree HEADs."
     (when (derived-mode-p 'magit-log-mode)
       (when branch-off/magit-log-flat--pending
         (setq-local branch-off/magit-log-flat t))
@@ -497,6 +506,11 @@ Uses magit's section API for hash extraction."
                                                         "refs/branch-off/"))
                               (puthash h t tbl))
                             tbl))
+             (wt-hashes   (let (acc)
+                            (dolist (line (magit-git-lines "worktree" "list" "--porcelain"))
+                              (when (string-prefix-p "HEAD " line)
+                                (push (substring line 5) acc)))
+                            acc))
              (depth-cache (make-hash-table :test #'equal)))
         (dolist (line raw)
           (when (string-match
@@ -505,7 +519,7 @@ Uses magit's section API for hash extraction."
                   (p (match-string 2 line)))
               (puthash h p parent-map)
               (push h all-hashes))))
-        (when all-hashes
+        (when (or all-hashes wt-hashes)
           (cl-labels
               ((in-bo-p (h)
                  (not (eq (gethash h parent-map 'absent) 'absent)))
@@ -524,14 +538,27 @@ Uses magit's section API for hash extraction."
             (save-excursion
               (goto-char (point-min))
               (while (not (eobp))
-                (when-let* ((h    (magit-section-value-if 'commit))
-                            (full (cl-find-if (lambda (f) (string-prefix-p h f))
-                                              all-hashes)))
-                  (let* ((d  (depth-of full))
-                         (ov (make-overlay (line-beginning-position)
-                                           (line-beginning-position))))
-                    (overlay-put ov 'before-string (make-string (* d 2) ?\s))
-                    (overlay-put ov 'branch-off/log-marker t)))
+                (when-let ((h (magit-section-value-if 'commit)))
+                  (let* ((bo-full (cl-find-if (lambda (f) (string-prefix-p h f)) all-hashes))
+                         (wt-full (cl-find-if (lambda (f) (string-prefix-p h f)) wt-hashes))
+                         (d       (when bo-full (depth-of bo-full)))
+                         (bol     (line-beginning-position)))
+                    ;; depth indentation for branch-off commits (low priority)
+                    (when d
+                      (let ((ov (make-overlay bol bol)))
+                        (overlay-put ov 'before-string (make-string (* d 2) ?\s))
+                        (overlay-put ov 'priority 10)
+                        (overlay-put ov 'branch-off/log-marker t)))
+                    ;; @ before hash + hash face for worktree HEADs (higher priority)
+                    (when wt-full
+                      (let ((ov-at   (make-overlay bol bol))
+                            (ov-hash (make-overlay bol (+ bol (length h)))))
+                        (overlay-put ov-at 'before-string
+                                     (propertize "@" 'face 'branch-off/log-worktree-marker))
+                        (overlay-put ov-at 'priority 20)
+                        (overlay-put ov-at 'branch-off/log-marker t)
+                        (overlay-put ov-hash 'face 'branch-off/log-worktree-hash)
+                        (overlay-put ov-hash 'branch-off/log-marker t)))))
                 (forward-line 1))))))))
 
   (add-hook 'magit-refresh-buffer-hook #'branch-off/magit-log--mark)
@@ -561,7 +588,9 @@ Uses magit's section API for hash extraction."
     (branch-off/magit-status-navigate #'magit-section-backward))
 
   (map! :map magit-log-mode-map
-        :n "TAB" #'magit-visit-thing)
+        :n "TAB" #'magit-visit-thing
+        :n "m"   #'branch-off/magit-mark
+        :n "M"   #'branch-off/magit-mark)
 
   (map! :map magit-status-mode-map
         :n "TAB" #'branch-off/magit-status-tab
@@ -676,6 +705,287 @@ Context-sensitive behaviour:
       (user-error "Invoke from magit-log, magit-revision, magit-blob, or a file buffer"))))
 
 )
+
+;;; Delete worktree
+
+(after! magit
+
+  (defface branch-off/worktree-delete-marked
+    '((t :inherit magit-diff-removed :extend t))
+    "Face for worktree entries marked for deletion.")
+
+  (defvar-local branch-off/delete-worktree--entries nil)
+  (defvar-local branch-off/delete-worktree--marks nil)
+  (defvar-local branch-off/delete-worktree--overlays nil)
+
+  (define-derived-mode branch-off/delete-worktree-mode special-mode "WTDelete"
+    "Major mode for selecting git worktrees to remove."
+    (setq truncate-lines t)
+    (setq-local branch-off/delete-worktree--entries nil
+                branch-off/delete-worktree--marks   nil
+                branch-off/delete-worktree--overlays (make-hash-table :test #'equal)))
+
+  (after! evil
+    (evil-make-overriding-map branch-off/delete-worktree-mode-map 'normal))
+
+  (defun branch-off/delete-worktree--status (path)
+    "Return a short status summary string for the worktree at PATH."
+    (condition-case _
+        (let ((lines (process-lines "git" "-C" path "status" "--short" "--ignore-submodules")))
+          (if (null lines)
+              "clean"
+            (let ((staged 0) (modified 0) (untracked 0))
+              (dolist (l lines)
+                (when (>= (length l) 2)
+                  (let ((x (aref l 0)) (y (aref l 1)))
+                    (cond ((char-equal x ??) (cl-incf untracked))
+                          ((not (char-equal x ?\s)) (cl-incf staged))
+                          ((not (char-equal y ?\s)) (cl-incf modified))))))
+              (string-join
+               (delq nil (list (when (> staged 0)    (format "%d staged"    staged))
+                               (when (> modified 0)  (format "%d modified"  modified))
+                               (when (> untracked 0) (format "%d untracked" untracked))))
+               ", "))))
+      (error "?")))
+
+  (defun branch-off/delete-worktree--parse-raw ()
+    "Return list of plists for all worktrees (path/head/branch/flags, no status check)."
+    (let* ((top (or (magit-toplevel) (user-error "Not in a git repository")))
+           (raw (with-temp-buffer
+                  (call-process "git" nil t nil "worktree" "list" "--porcelain")
+                  (buffer-string)))
+           result)
+      (dolist (block (split-string raw "\n\n" t))
+        (let (path head branch detached locked)
+          (dolist (line (split-string block "\n" t))
+            (cond
+             ((string-prefix-p "worktree " line) (setq path    (substring line 9)))
+             ((string-prefix-p "HEAD "     line) (setq head    (substring line 5)))
+             ((string-prefix-p "branch "   line) (setq branch  (string-remove-prefix
+                                                                  "refs/heads/"
+                                                                  (substring line 7))))
+             ((string= "detached" (string-trim line)) (setq detached t))
+             ((string-prefix-p "locked"    line) (setq locked  t))))
+          (when path
+            (push (list :path path :head head :branch branch :detached detached
+                        :locked locked :current (file-equal-p path top)
+                        :subject (when head
+                                   (magit-git-string "log" "-1" "--format=%s" head)))
+                  result))))
+      (nreverse result)))
+
+  (defun branch-off/delete-worktree--gather ()
+    "Return list of plists for all worktrees, including :status."
+    (mapcar (lambda (e)
+              (append e (list :status (branch-off/delete-worktree--status
+                                       (plist-get e :path)))))
+            (branch-off/delete-worktree--parse-raw)))
+
+  (defun branch-off/delete-worktree--mark-toggle ()
+    "Toggle deletion mark on the worktree entry at point."
+    (interactive)
+    (let* ((idx   (get-text-property (point) 'branch-off/wt-idx))
+           (entry (and (numberp idx) (nth idx branch-off/delete-worktree--entries)))
+           (path  (plist-get entry :path)))
+      (unless path (user-error "No worktree at point"))
+      (when (plist-get entry :current)
+        (user-error "Cannot delete the current worktree"))
+      (let ((inhibit-read-only t)
+            (bol (line-beginning-position))
+            (eol (1+ (line-end-position))))
+        (if (member path branch-off/delete-worktree--marks)
+            (progn
+              (setq branch-off/delete-worktree--marks
+                    (delete path branch-off/delete-worktree--marks))
+              (when-let ((ov (gethash path branch-off/delete-worktree--overlays)))
+                (delete-overlay ov)
+                (remhash path branch-off/delete-worktree--overlays))
+              (save-excursion (goto-char bol) (delete-char 1) (insert " ")))
+          (push path branch-off/delete-worktree--marks)
+          (let ((ov (make-overlay bol eol)))
+            (overlay-put ov 'face 'branch-off/worktree-delete-marked)
+            (puthash path ov branch-off/delete-worktree--overlays))
+          (save-excursion
+            (goto-char bol)
+            (delete-char 1)
+            (insert (propertize "*" 'face 'branch-off/worktree-delete-marked)))))))
+
+  (defun branch-off/delete-worktree--confirm ()
+    "Remove marked worktrees; prompts y/n before each with uncommitted changes."
+    (interactive)
+    (unless branch-off/delete-worktree--marks (user-error "No worktrees marked"))
+    (let* ((entries  (copy-sequence branch-off/delete-worktree--entries))
+           (paths    (copy-sequence branch-off/delete-worktree--marks))
+           ;; Ask about dirty worktrees now, while the buffer is still visible
+           (approved (delq nil
+                           (mapcar (lambda (path)
+                                     (let* ((entry  (cl-find-if
+                                                     (lambda (e)
+                                                       (string= (plist-get e :path) path))
+                                                     entries))
+                                            (status (or (plist-get entry :status) "?")))
+                                       (when (or (string= status "clean")
+                                                 (y-or-n-p
+                                                  (format "Worktree %s has changes (%s) — remove anyway? "
+                                                          (file-name-nondirectory path) status)))
+                                         path)))
+                                   paths))))
+      (if (null approved)
+          (message "Nothing to remove.")
+        (kill-buffer (current-buffer))
+        (let (removed failed)
+          (dolist (path approved)
+            (with-temp-buffer
+              (if (= 0 (call-process "git" nil t nil "worktree" "remove" path))
+                  (push path removed)
+                (push (format "%s: %s" (file-name-nondirectory path)
+                              (string-trim (buffer-string)))
+                      failed))))
+          (if failed
+              (message "Removed %d; failed — %s" (length removed)
+                       (string-join (nreverse failed) " | "))
+            (message "Removed %d worktree(s)" (length removed)))))))
+
+  (defun branch-off/delete-worktree--abort ()
+    "Abort the delete-worktree operation."
+    (interactive)
+    (kill-buffer (current-buffer))
+    (message "delete-worktree: aborted"))
+
+  (let ((m branch-off/delete-worktree-mode-map))
+    (define-key m (kbd "m")       #'branch-off/delete-worktree--mark-toggle)
+    (define-key m (kbd "C-c C-c") #'branch-off/delete-worktree--confirm)
+    (define-key m (kbd "C-g")     #'branch-off/delete-worktree--abort))
+
+  (defun branch-off/delete-worktree--interactive ()
+    "Open the interactive worktree selection buffer."
+    (let* ((entries (branch-off/delete-worktree--gather))
+           (buf     (get-buffer-create "*branch-off: delete worktrees*")))
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (branch-off/delete-worktree-mode)
+          (erase-buffer)
+          (setq-local branch-off/delete-worktree--entries entries
+                      branch-off/delete-worktree--marks   nil
+                      branch-off/delete-worktree--overlays (make-hash-table :test #'equal))
+          (setq header-line-format
+                (list "  "
+                      (propertize "m" 'face 'transient-key)
+                      " mark  "
+                      (propertize "C-c C-c" 'face 'transient-key)
+                      " delete marked  "
+                      (propertize "C-g" 'face 'transient-key)
+                      " abort"))
+          (cl-loop for entry in entries
+                   for idx from 0 do
+                   (let* ((path    (plist-get entry :path))
+                          (branch  (plist-get entry :branch))
+                          (head    (plist-get entry :head))
+                          (det     (plist-get entry :detached))
+                          (cur     (plist-get entry :current))
+                          (locked  (plist-get entry :locked))
+                          (status  (plist-get entry :status))
+                          (ref-str (cond (branch branch)
+                                         (det    (format "detached:%s" (substring head 0 8)))
+                                         (t      "?")))
+                          (tags    (string-join
+                                    (delq nil (list (when cur    "current")
+                                                    (when locked "locked")))
+                                    " "))
+                          (subject (plist-get entry :subject))
+                          (start   (point)))
+                     (insert " ")
+                     (insert (propertize path 'face 'magit-filename))
+                     (insert "  ")
+                     (insert (propertize ref-str 'face
+                                         (if det 'magit-hash 'magit-branch-local)))
+                     (unless (string-empty-p tags)
+                       (insert "  ")
+                       (insert (propertize (format "[%s]" tags) 'face 'shadow)))
+                     (insert "  ")
+                     (insert (propertize status 'face
+                                         (if (string= status "clean")
+                                             'magit-dimmed
+                                           'warning)))
+                     (when (and subject (not (string-empty-p subject)))
+                       (insert "  ")
+                       (insert (propertize subject 'face 'magit-log-message)))
+                     (add-text-properties start (point)
+                                          (list 'branch-off/wt-idx idx))
+                     (insert "\n")))
+          (goto-char (point-min))))
+      (display-buffer buf
+                      '((display-buffer-at-bottom)
+                        (window-height . (lambda (win)
+                                           (fit-window-to-buffer win 20 5)))))))
+
+  (defun branch-off/delete-worktree--from-log ()
+    "Delete worktrees for commits selected in magit-log.
+Source priority: branch-off markers (m/M) → visual selection → point."
+    (let* ((full-hashes
+            (cond
+             ;; 1. branch-off markers (already full 40-char hashes)
+             ((bound-and-true-p branch-off/magit-squash--marks)
+              (copy-sequence branch-off/magit-squash--marks))
+             ;; 2. visual selection (short hashes — expand)
+             ((use-region-p)
+              (mapcar (lambda (h) (magit-git-string "rev-parse" h))
+                      (branch-off/magit-squash--commits-in-region)))
+             ;; 3. commit at point
+             (t
+              (when-let ((h (magit-section-value-if 'commit)))
+                (list (magit-git-string "rev-parse" h))))))
+           (_ (unless full-hashes (user-error "No commits selected")))
+           (all-wt     (branch-off/delete-worktree--parse-raw))
+           (targets    (delq nil
+                             (mapcar (lambda (full)
+                                       (cl-find-if
+                                        (lambda (e) (string= (plist-get e :head) full))
+                                        all-wt))
+                                     full-hashes)))
+           (skipped    (cl-remove-if-not (lambda (e) (plist-get e :current)) targets))
+           (candidates (cl-remove-if     (lambda (e) (plist-get e :current)) targets)))
+      (when skipped
+        (message "Skipping current worktree: %s"
+                 (mapconcat (lambda (e) (file-name-nondirectory (plist-get e :path)))
+                            skipped ", ")))
+      (unless candidates
+        (user-error "No removable worktree found for the selected commit(s)"))
+      (when (y-or-n-p
+             (format "Remove worktree%s %s? "
+                     (if (> (length candidates) 1) "s" "")
+                     (mapconcat (lambda (e) (file-name-nondirectory (plist-get e :path)))
+                                candidates " ")))
+        (let (removed failed)
+          (dolist (entry candidates)
+            (let* ((path   (plist-get entry :path))
+                   (status (branch-off/delete-worktree--status path)))
+              (when (or (string= status "clean")
+                        (y-or-n-p
+                         (format "Worktree %s has changes (%s) — remove anyway? "
+                                 (file-name-nondirectory path) status)))
+                (with-temp-buffer
+                  (if (= 0 (call-process "git" nil t nil "worktree" "remove" path))
+                      (push path removed)
+                    (push (format "%s: %s" (file-name-nondirectory path)
+                                  (string-trim (buffer-string)))
+                          failed))))))
+          (magit-refresh)
+          (if failed
+              (message "Removed %d; failed — %s" (length removed)
+                       (string-join (nreverse failed) " | "))
+            (message "Removed %d worktree(s)" (length removed)))))))
+
+  (defun branch-off/delete-worktree ()
+    "Delete git worktrees.
+
+From magit-log: reads branch-off markers (m/M), visual selection, or commit at
+point — in that order.  Asks y/n to confirm, then per dirty worktree if needed.
+Otherwise: opens an interactive buffer — mark with m, C-c C-c to delete, C-g abort."
+    (interactive)
+    (if (derived-mode-p 'magit-log-mode)
+        (branch-off/delete-worktree--from-log)
+      (branch-off/delete-worktree--interactive))))
 
 ;;; Commit reword
 
@@ -1675,9 +1985,19 @@ Also falls through for regular (non-branch-off) commits."
         :n "n" #'branch-off/magit-blob-next
         :n "p" #'branch-off/magit-blob-prev))
 
-;;; Pickaxe — SPC s g
-;; git grep across ALL committed blobs; consult preview via `git show sha:file';
-;; selection opens the exact blob in magit-find-file (magit-blob-mode → n/p navigates history).
+;;; Git history search — SPC s g {f,g,S,a}
+;; Four commands sharing a common preview mechanism:
+;;   SPC s g f  — filename history (add/remove events only)
+;;   SPC s g g  — pickaxe -G: commits where lines matching the regex changed
+;;   SPC s g S  — pickaxe -S: commits where literal match count changed
+;;   SPC s g a  — all-commits grep: git grep across every committed blob
+
+(defun my/magit-pickaxe--check-deps ()
+  "Signal `user-error' if required packages are not loaded."
+  (unless (require 'consult nil t)
+    (user-error "Package `consult' is required; add it to your packages.el"))
+  (unless (require 'magit nil t)
+    (user-error "Package `magit' is required; add it to your packages.el")))
 
 (defun my/magit-pickaxe--commit-cache ()
   "Return a hash table mapping full SHA → \"YYYY-MM-DD  author\" for all commits."
@@ -1696,11 +2016,28 @@ Also falls through for regular (non-branch-off) commits."
     tbl))
 
 (defun my/magit-pickaxe--parse-line (line cache)
-  "Parse one `git grep -n' history line into a propertized candidate, or nil.
-Expected format from searching explicit commits: <40-sha>:<file>:<lineno>:<content>"
-  (when (string-match
-         "^\\([0-9a-f]\\{40\\}\\):\\([^:\n]+\\):\\([0-9]+\\):\\(.*\\)$"
-         line)
+  "Parse one git history search line into a propertized candidate, or nil.
+Handles two formats:
+  <40-sha>:+commit+:<subject>          — commit message match
+  <40-sha>:<file>:<lineno>:<content>   — blob content match"
+  (cond
+   ;; Commit message (check first — sentinel avoids false blob match)
+   ((string-match "^\\([0-9a-f]\\{40\\}\\):+commit+:\\(.*\\)$" line)
+    (let* ((hash    (match-string 1 line))
+           (subject (match-string 2 line))
+           (short   (substring hash 0 8))
+           (info    (gethash hash cache ""))
+           (cand    (concat (propertize short 'face 'magit-hash)
+                            " " (propertize "[msg] " 'face 'font-lock-comment-face)
+                            subject)))
+      (put-text-property 0 1 'my/hash  hash    cand)
+      (put-text-property 0 1 'my/type  'commit cand)
+      (put-text-property 0 1 'consult--prefix-group (concat short "  " info) cand)
+      cand))
+   ;; Blob content
+   ((string-match
+     "^\\([0-9a-f]\\{40\\}\\):\\([^:\n]+\\):\\([0-9]+\\):\\(.*\\)$"
+     line)
     (let* ((hash   (match-string 1 line))
            (file   (match-string 2 line))
            (lineno (string-to-number (match-string 3 line)))
@@ -1715,29 +2052,73 @@ Expected format from searching explicit commits: <40-sha>:<file>:<lineno>:<conte
       (put-text-property 0 1 'my/hash  hash   cand)
       (put-text-property 0 1 'my/file  file   cand)
       (put-text-property 0 1 'my/line  lineno cand)
-      ;; Group header shown in vertico: "abc12345  2026-05-26  author"
+      (put-text-property 0 1 'my/type  'blob  cand)
       (put-text-property 0 1 'consult--prefix-group
                          (concat short "  " info) cand)
-      cand)))
+      cand))))
 
 (defun my/magit-pickaxe--format-lines (lines cache)
   "Filter and format a batch of git grep output LINES into candidates using CACHE."
   (delq nil (mapcar (lambda (l) (my/magit-pickaxe--parse-line l cache)) lines)))
 
-(defun my/magit-pickaxe--git-builder (input)
-  "Return (cmd . nil) running git grep across every committed blob for INPUT."
+(defun my/magit-all-grep--builder (input)
+  "Command builder: git grep across all blobs and commit messages for INPUT."
   (pcase-let ((`(,arg . ,_) (consult--command-split input)))
     (unless (string-blank-p arg)
-      (cons (list "sh" "-c"
-                  (format
-                   "git --no-pager grep -In -e %s $(git rev-list --all 2>/dev/null) 2>/dev/null"
-                   (shell-quote-argument arg)))
-            nil))))
+      (let ((q (shell-quote-argument arg)))
+        (cons (list "sh" "-c"
+                    (format "{ git --no-pager grep -In -e %s \
+$(git rev-list --all 2>/dev/null) 2>/dev/null; \
+git log --all --format='%%H:+commit+:%%s' --grep=%s 2>/dev/null; } 2>/dev/null"
+                            q q))
+              nil)))))
 
-(defun my/magit-pickaxe--state ()
-  "State: preview git blobs in-place via git-show; open as magit-find-file on return.
-Consult calls us inside `with-selected-window' on the original (non-minibuffer) window,
-so `selected-window' is the right target for showing the preview."
+(defun my/magit-pickaxe-S--builder (input)
+  "Command builder: git grep limited to commits where literal count of INPUT changed."
+  (pcase-let ((`(,arg . ,_) (consult--command-split input)))
+    (unless (string-blank-p arg)
+      (let ((q (shell-quote-argument arg)))
+        (cons (list "sh" "-c"
+                    (format "git --no-pager grep -In -e %s \
+$(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
+                            q q))
+              nil)))))
+
+(defun my/magit-filename-history--collect (cache)
+  "Return a list of propertized candidates for file add/remove events from git history."
+  (let (result cur-hash)
+    (with-temp-buffer
+      (call-process "git" nil t nil "log" "--all"
+                    "--diff-filter=AD" "--name-status"
+                    "--format=COMMIT\t%H\t%as\t%an")
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let ((line (buffer-substring-no-properties
+                     (line-beginning-position) (line-end-position))))
+          (cond
+           ((string-match "^COMMIT\t\\([0-9a-f]\\{40\\}\\)" line)
+            (setq cur-hash (match-string 1 line)))
+           ((and cur-hash (string-match "^\\([AD]\\)\t\\(.*\\)$" line))
+            (let* ((status (match-string 1 line))
+                   (file   (match-string 2 line))
+                   (short  (substring cur-hash 0 8))
+                   (info   (gethash cur-hash cache ""))
+                   (label  (if (equal status "A") "Added" "Deleted"))
+                   (cand   (concat (propertize short 'face 'magit-hash)
+                                   ":" (propertize file 'face 'consult-file)
+                                   ":1: [" label "] " file)))
+              (put-text-property 0 1 'my/hash   cur-hash cand)
+              (put-text-property 0 1 'my/file   file     cand)
+              (put-text-property 0 1 'my/line   1        cand)
+              (put-text-property 0 1 'my/status status   cand)
+              (put-text-property 0 1 'consult--prefix-group
+                                 (concat short "  " info) cand)
+              (push cand result)))))
+        (forward-line 1)))
+    (nreverse result)))
+
+(defun my/magit-pickaxe--make-state (on-return)
+  "Return a consult state function; ON-RETURN is called with the selected candidate."
   (let ((pbuf (get-buffer-create " *pickaxe-preview*"))
         restore-fn
         line-ov)
@@ -1746,39 +2127,63 @@ so `selected-window' is the right target for showing the preview."
         ('preview
          (when restore-fn (funcall restore-fn) (setq restore-fn nil))
          (when cand
-           (let* ((hash (get-text-property 0 'my/hash cand))
-                  (file (get-text-property 0 'my/file cand))
-                  (line (get-text-property 0 'my/line cand))
-                  (win  (selected-window)))
-             (when (and hash file line)
-               (with-current-buffer pbuf
-                 (let ((inhibit-read-only t))
-                   (when (overlayp line-ov) (delete-overlay line-ov) (setq line-ov nil))
-                   (erase-buffer)
-                   (when (= 0 (call-process "git" nil t nil "show"
-                                            (format "%s:%s" hash file)))
-                     ;; Auto-detect mode from filename.
-                     ;; Suppress the three change-major-mode hooks to prevent global
-                     ;; side-effects (e.g. org-mode installing global hooks during
-                     ;; mode switch that later fire in vertico's candidate rendering).
-                     ;; delay-mode-hooks defers mode-specific hooks; clearing
-                     ;; delayed-mode-hooks discards them so they never fire elsewhere.
-                     (let ((change-major-mode-hook nil)
-                           (change-major-mode-after-body-hook nil)
-                           (after-change-major-mode-hook nil))
-                       (delay-mode-hooks
-                         (let ((buffer-file-name file))
-                           (set-auto-mode)))
-                       (setq delayed-mode-hooks nil))
-                     (font-lock-ensure)
-                     (goto-char (point-min))
-                     (forward-line (1- line))
-                     (setq line-ov
-                           (make-overlay (line-beginning-position)
-                                         (min (1+ (line-end-position)) (point-max))))
-                     (overlay-put line-ov 'face 'consult-preview-line)
-                     (overlay-put line-ov 'priority 2)
+           (let* ((hash   (get-text-property 0 'my/hash cand))
+                  (type   (get-text-property 0 'my/type cand))
+                  (file   (get-text-property 0 'my/file cand))
+                  (line   (get-text-property 0 'my/line cand))
+                  (status (get-text-property 0 'my/status cand))
+                  (rev    (if (equal status "D")
+                              (concat hash "^")
+                            hash))
+                  (win    (selected-window)))
+             (when hash
+               (cond
+                ((eq type 'commit)
+                 (with-current-buffer pbuf
+                   (let ((inhibit-read-only t))
+                     (when (overlayp line-ov) (delete-overlay line-ov) (setq line-ov nil))
+                     (erase-buffer)
+                     (call-process "git" nil t nil "show" "--stat" hash)
                      (setq buffer-read-only t))))
+                ((and file line)
+                 (with-current-buffer pbuf
+                   (let* ((inhibit-read-only t)
+                          (ext (downcase (or (file-name-extension file) "")))
+                          (binary-p (member ext '("pdf" "png" "jpg" "jpeg" "gif"
+                                                  "bmp" "webp" "ico" "tiff" "svg"
+                                                  "zip" "gz" "tar" "bz2" "xz"
+                                                  "jar" "class" "so" "dylib"
+                                                  "exe" "dll" "o" "elc" "pyc"))))
+                     (when (overlayp line-ov) (delete-overlay line-ov) (setq line-ov nil))
+                     (erase-buffer)
+                     (when (and (not binary-p)
+                                (= 0 (call-process "git" nil t nil "show"
+                                                   (format "%s:%s" rev file))))
+                       ;; Detect mode in a fully isolated temp-buffer; apply only
+                       ;; font-lock-defaults + syntax-table to pbuf so that
+                       ;; kill-all-local-variables is never called here (avoiding
+                       ;; change-major-mode-hook side-effects during candidate rendering).
+                       (pcase-let ((`(,fl-defs . ,syn-tbl)
+                                    (condition-case nil
+                                        (with-temp-buffer
+                                          (let ((buffer-file-name file))
+                                            (delay-mode-hooks (set-auto-mode))
+                                            (setq delayed-mode-hooks nil))
+                                          (cons font-lock-defaults (syntax-table)))
+                                      (error (cons nil nil)))))
+                         (when fl-defs
+                           (set-syntax-table syn-tbl)
+                           (setq-local font-lock-defaults fl-defs)
+                           (font-lock-mode 1)
+                           (font-lock-ensure)))
+                       (goto-char (point-min))
+                       (forward-line (1- line))
+                       (setq line-ov
+                             (make-overlay (line-beginning-position)
+                                           (min (1+ (line-end-position)) (point-max))))
+                       (overlay-put line-ov 'face 'consult-preview-line)
+                       (overlay-put line-ov 'priority 2)
+                       (setq buffer-read-only t))))))
                (let ((prev-buf (window-buffer win))
                      (prev-pt  (window-point win)))
                  (setq restore-fn
@@ -1789,36 +2194,50 @@ so `selected-window' is the right target for showing the preview."
                  (set-window-buffer win pbuf)
                  (set-window-point win (with-current-buffer pbuf (point))))))))
         ('return
-         ;; 'exit fires before 'return and already cleans up; guard defensively.
          (when (overlayp line-ov) (delete-overlay line-ov) (setq line-ov nil))
          (when restore-fn (funcall restore-fn) (setq restore-fn nil))
          (when (buffer-live-p pbuf) (kill-buffer pbuf))
-         (when cand
-           (let* ((hash (get-text-property 0 'my/hash cand))
-                  (file (get-text-property 0 'my/file cand))
-                  (line (get-text-property 0 'my/line cand)))
-             (when (and hash file line)
-               (magit-find-file hash file)
-               (goto-char (point-min))
-               (forward-line (1- line))
-               (recenter)))))
+         (when cand (funcall on-return cand)))
         ('exit
          (when (overlayp line-ov) (delete-overlay line-ov) (setq line-ov nil))
          (when restore-fn (funcall restore-fn) (setq restore-fn nil))
          (when (buffer-live-p pbuf) (kill-buffer pbuf)))))))
 
-(defun my/magit-pickaxe-ripgrep ()
-  "Search ALL committed git blobs for a pattern; consult preview; open as magit-find-file."
-  (interactive)
+(defun my/magit-pickaxe--state ()
+  "State: preview git blobs and commits; open blob or commit on return."
+  (my/magit-pickaxe--make-state
+   (lambda (cand)
+     (let ((type (get-text-property 0 'my/type cand))
+           (hash (get-text-property 0 'my/hash cand))
+           (file (get-text-property 0 'my/file cand))
+           (line (get-text-property 0 'my/line cand)))
+       (pcase type
+         ('commit (when hash (magit-show-commit hash)))
+         (_       (when (and hash file line)
+                    (magit-find-file hash file)
+                    (goto-char (point-min))
+                    (forward-line (1- line))
+                    (recenter))))))))
+
+(defun my/magit-filename-history--state ()
+  "State: preview git blobs; open commit via magit-show-commit on return."
+  (my/magit-pickaxe--make-state
+   (lambda (cand)
+     (when-let ((hash (get-text-property 0 'my/hash cand)))
+       (magit-show-commit hash)))))
+
+(defun my/magit-grep-read (builder prompt)
+  "Run an async git grep CONSULT session using BUILDER and PROMPT."
+  (my/magit-pickaxe--check-deps)
   (let* ((top   (or (magit-toplevel) (user-error "Not in a git repository")))
          (default-directory top)
          (cache (my/magit-pickaxe--commit-cache)))
     (consult--read
-     (consult--process-collection #'my/magit-pickaxe--git-builder
+     (consult--process-collection builder
        :transform (consult--async-transform
                    (lambda (lines) (my/magit-pickaxe--format-lines lines cache)))
        :file-handler t)
-     :prompt "Pickaxe: "
+     :prompt prompt
      :lookup #'consult--lookup-member
      :state (my/magit-pickaxe--state)
      :add-history (thing-at-point 'symbol)
@@ -1828,5 +2247,39 @@ so `selected-window' is the right target for showing the preview."
      :history '(:input consult--grep-history)
      :sort nil)))
 
+(defun my/magit-all-grep ()
+  "Search all committed blobs and commit messages for a pattern."
+  (interactive)
+  (my/magit-grep-read #'my/magit-all-grep--builder "All-commits grep: "))
+
+(defun my/magit-pickaxe-S ()
+  "Pickaxe -S: search commits where the literal count of a string changed."
+  (interactive)
+  (my/magit-grep-read #'my/magit-pickaxe-S--builder "Pickaxe -S (count changed): "))
+
+(defun my/magit-filename-history ()
+  "Show all commits where a file was Added or Deleted; filter by filename."
+  (interactive)
+  (my/magit-pickaxe--check-deps)
+  (let* ((top   (or (magit-toplevel) (user-error "Not in a git repository")))
+         (default-directory top)
+         (cache (my/magit-pickaxe--commit-cache))
+         (cands (my/magit-filename-history--collect cache)))
+    (if (null cands)
+        (message "No file add/remove events found in git history")
+      (consult--read
+       cands
+       :prompt "File history (add/remove): "
+       :lookup #'consult--lookup-member
+       :state (my/magit-filename-history--state)
+       :require-match t
+       :category 'consult-grep
+       :group #'consult--prefix-group
+       :history '(:input my/magit-filename-history-history)
+       :sort nil))))
+
 (map! :leader
-      :desc "Pickaxe (git history → magit-blob)" "s g" #'my/magit-pickaxe-ripgrep)
+      "s g" nil                                                             ; clear terminal binding
+      :desc "Git: file add/remove history"    "s g f" #'my/magit-filename-history
+      :desc "Git: pickaxe -S (count changed)" "s g S" #'my/magit-pickaxe-S
+      :desc "Git: grep all committed blobs"   "s g a" #'my/magit-all-grep)
