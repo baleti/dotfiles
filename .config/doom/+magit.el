@@ -1757,13 +1757,19 @@ so `selected-window' is the right target for showing the preview."
                    (erase-buffer)
                    (when (= 0 (call-process "git" nil t nil "show"
                                             (format "%s:%s" hash file)))
-                     ;; Auto-detect mode from filename. delay-mode-hooks queues hooks;
-                     ;; clearing delayed-mode-hooks after discards them so they never
-                     ;; fire in a wrong context (e.g. vertico's minibuffer rendering).
-                     (delay-mode-hooks
-                       (let ((buffer-file-name file))
-                         (set-auto-mode)))
-                     (setq delayed-mode-hooks nil)
+                     ;; Auto-detect mode from filename.
+                     ;; Suppress the three change-major-mode hooks to prevent global
+                     ;; side-effects (e.g. org-mode installing global hooks during
+                     ;; mode switch that later fire in vertico's candidate rendering).
+                     ;; delay-mode-hooks defers mode-specific hooks; clearing
+                     ;; delayed-mode-hooks discards them so they never fire elsewhere.
+                     (let ((change-major-mode-hook nil)
+                           (change-major-mode-after-body-hook nil)
+                           (after-change-major-mode-hook nil))
+                       (delay-mode-hooks
+                         (let ((buffer-file-name file))
+                           (set-auto-mode)))
+                       (setq delayed-mode-hooks nil))
                      (font-lock-ensure)
                      (goto-char (point-min))
                      (forward-line (1- line))
