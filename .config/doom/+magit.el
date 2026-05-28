@@ -1988,9 +1988,8 @@ Also falls through for regular (non-branch-off) commits."
 ;;; Git history search — SPC s g {f,g,S,a}
 ;; Four commands sharing a common preview mechanism:
 ;;   SPC s g f  — filename history (add/remove events only)
-;;   SPC s g g  — pickaxe -G: commits where lines matching the regex changed
 ;;   SPC s g S  — pickaxe -S: commits where literal match count changed
-;;   SPC s g a  — all-commits grep: git grep across every committed blob
+;;   SPC s g a  — git history search: blobs + commit messages (git grep + git log --grep)
 
 (defun my/magit-pickaxe--check-deps ()
   "Signal `user-error' if required packages are not loaded."
@@ -1998,6 +1997,15 @@ Also falls through for regular (non-branch-off) commits."
     (user-error "Package `consult' is required; add it to your packages.el"))
   (unless (require 'magit nil t)
     (user-error "Package `magit' is required; add it to your packages.el")))
+
+(defun my/magit-pickaxe--group-fn (cand transform)
+  "Vertico group function for pickaxe/grep candidates.
+Group title comes from the `my/group' text property.  When TRANSFORM is
+non-nil vertico wants a display string: skip to `my/content-start'."
+  (if transform
+      (let ((start (get-text-property 0 'my/content-start cand)))
+        (substring cand (or start 9)))
+    (get-text-property 0 'my/group cand)))
 
 (defun my/magit-pickaxe--commit-cache ()
   "Return a hash table mapping full SHA → \"YYYY-MM-DD  author\" for all commits."
@@ -2030,31 +2038,38 @@ Handles two formats:
            (cand    (concat (propertize short 'face 'magit-hash)
                             " " (propertize "[msg] " 'face 'font-lock-comment-face)
                             subject)))
-      (put-text-property 0 1 'my/hash  hash    cand)
-      (put-text-property 0 1 'my/type  'commit cand)
-      (put-text-property 0 1 'consult--prefix-group (concat short "  " info) cand)
+      (put-text-property 0 1 'my/hash          hash    cand)
+      (put-text-property 0 1 'my/type          'commit cand)
+      (put-text-property 0 1 'my/content-start 9       cand) ; skip "XXXXXXXX "
+      (put-text-property 0 1 'my/group         (concat short "  " info) cand)
       cand))
    ;; Blob content
    ((string-match
      "^\\([0-9a-f]\\{40\\}\\):\\([^:\n]+\\):\\([0-9]+\\):\\(.*\\)$"
      line)
-    (let* ((hash   (match-string 1 line))
-           (file   (match-string 2 line))
-           (lineno (string-to-number (match-string 3 line)))
-           (cont   (match-string 4 line))
-           (short  (substring hash 0 8))
-           (info   (gethash hash cache ""))
-           (cand   (concat (propertize short 'face 'magit-hash)
-                           ":" (propertize file 'face 'consult-file)
-                           ":" (propertize (number-to-string lineno)
-                                           'face 'consult-line-number)
-                           ": " cont)))
-      (put-text-property 0 1 'my/hash  hash   cand)
-      (put-text-property 0 1 'my/file  file   cand)
-      (put-text-property 0 1 'my/line  lineno cand)
-      (put-text-property 0 1 'my/type  'blob  cand)
-      (put-text-property 0 1 'consult--prefix-group
-                         (concat short "  " info) cand)
+    (let* ((hash       (match-string 1 line))
+           (file       (match-string 2 line))
+           (lineno     (string-to-number (match-string 3 line)))
+           (cont       (match-string 4 line))
+           (short      (substring hash 0 8))
+           (info       (gethash hash cache ""))
+           (lineno-str (number-to-string lineno))
+           ;; content-start: skip "XXXXXXXX:file:NN: "
+           (content-start (+ 8 1 (length file) 1 (length lineno-str) 2))
+           (date       (car (split-string info "  " t)))
+           (cand       (concat (propertize short 'face 'magit-hash)
+                               ":" (propertize file 'face 'consult-file)
+                               ":" (propertize lineno-str 'face 'consult-line-number)
+                               ": " cont)))
+      (put-text-property 0 1 'my/hash          hash           cand)
+      (put-text-property 0 1 'my/file          file           cand)
+      (put-text-property 0 1 'my/line          lineno         cand)
+      (put-text-property 0 1 'my/type          'blob          cand)
+      (put-text-property 0 1 'my/content-start content-start  cand)
+      (put-text-property 0 1 'my/group
+                         (concat short "  " (or date "") "  "
+                                 (file-name-nondirectory file))
+                         cand)
       cand))))
 
 (defun my/magit-pickaxe--format-lines (lines cache)
@@ -2107,11 +2122,13 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                    (cand   (concat (propertize short 'face 'magit-hash)
                                    ":" (propertize file 'face 'consult-file)
                                    ":1: [" label "] " file)))
-              (put-text-property 0 1 'my/hash   cur-hash cand)
-              (put-text-property 0 1 'my/file   file     cand)
-              (put-text-property 0 1 'my/line   1        cand)
-              (put-text-property 0 1 'my/status status   cand)
-              (put-text-property 0 1 'consult--prefix-group
+              (put-text-property 0 1 'my/hash          cur-hash cand)
+              (put-text-property 0 1 'my/file          file     cand)
+              (put-text-property 0 1 'my/line          1        cand)
+              (put-text-property 0 1 'my/status        status   cand)
+              ;; content-start: skip "XXXXXXXX:file:1: "  (8+1+len+4)
+              (put-text-property 0 1 'my/content-start (+ 13 (length file)) cand)
+              (put-text-property 0 1 'my/group
                                  (concat short "  " info) cand)
               (push cand result)))))
         (forward-line 1)))
@@ -2135,7 +2152,10 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                   (rev    (if (equal status "D")
                               (concat hash "^")
                             hash))
-                  (win    (selected-window)))
+                  (win              (selected-window))
+                  ;; Suppress intermediate redraws: render atomically,
+                  ;; one redisplay after the entire sequence completes.
+                  (inhibit-redisplay t))
              (when hash
                (cond
                 ((eq type 'commit)
@@ -2159,23 +2179,26 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                      (when (and (not binary-p)
                                 (= 0 (call-process "git" nil t nil "show"
                                                    (format "%s:%s" rev file))))
-                       ;; Detect mode in a fully isolated temp-buffer; apply only
-                       ;; font-lock-defaults + syntax-table to pbuf so that
-                       ;; kill-all-local-variables is never called here (avoiding
-                       ;; change-major-mode-hook side-effects during candidate rendering).
-                       (pcase-let ((`(,fl-defs . ,syn-tbl)
-                                    (condition-case nil
-                                        (with-temp-buffer
-                                          (let ((buffer-file-name file))
-                                            (delay-mode-hooks (set-auto-mode))
-                                            (setq delayed-mode-hooks nil))
-                                          (cons font-lock-defaults (syntax-table)))
-                                      (error (cons nil nil)))))
-                         (when fl-defs
-                           (set-syntax-table syn-tbl)
-                           (setq-local font-lock-defaults fl-defs)
-                           (font-lock-mode 1)
-                           (font-lock-ensure)))
+                       ;; Set the real major mode so font-lock works correctly
+                       ;; (e.g. org-mode checks derived-mode-p internally).
+                       ;; delay-mode-hooks is permanent-local so it survives
+                       ;; kill-all-local-variables inside the mode function.
+                       (condition-case nil
+                           (let ((buffer-file-name file))
+                             (delay-mode-hooks (set-auto-mode))
+                             (setq delayed-mode-hooks nil))
+                         (error nil))
+                       ;; org-indent-mode schedules display-property computation
+                       ;; via an idle timer, causing a second redraw after the
+                       ;; buffer becomes visible. Drive the agent synchronously
+                       ;; now so indentation is ready before inhibit-redisplay
+                       ;; is released.
+                       (when (and (derived-mode-p 'org-mode)
+                                  (bound-and-true-p org-indent-mode))
+                         (condition-case nil
+                             (org-indent-initialize-agent)
+                           (error nil)))
+                       (font-lock-ensure)
                        (goto-char (point-min))
                        (forward-line (1- line))
                        (setq line-ov
@@ -2243,14 +2266,14 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
      :add-history (thing-at-point 'symbol)
      :require-match t
      :category 'consult-grep
-     :group #'consult--prefix-group
+     :group #'my/magit-pickaxe--group-fn
      :history '(:input consult--grep-history)
      :sort nil)))
 
 (defun my/magit-all-grep ()
   "Search all committed blobs and commit messages for a pattern."
   (interactive)
-  (my/magit-grep-read #'my/magit-all-grep--builder "All-commits grep: "))
+  (my/magit-grep-read #'my/magit-all-grep--builder "Git history search: "))
 
 (defun my/magit-pickaxe-S ()
   "Pickaxe -S: search commits where the literal count of a string changed."
@@ -2274,12 +2297,12 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
        :state (my/magit-filename-history--state)
        :require-match t
        :category 'consult-grep
-       :group #'consult--prefix-group
+       :group #'my/magit-pickaxe--group-fn
        :history '(:input my/magit-filename-history-history)
        :sort nil))))
 
 (map! :leader
       "s g" nil                                                             ; clear terminal binding
-      :desc "Git: file add/remove history"    "s g f" #'my/magit-filename-history
-      :desc "Git: pickaxe -S (count changed)" "s g S" #'my/magit-pickaxe-S
-      :desc "Git: grep all committed blobs"   "s g a" #'my/magit-all-grep)
+      :desc "File add/remove history"    "s g f" #'my/magit-filename-history
+      :desc "Pickaxe -S (count changed)" "s g S" #'my/magit-pickaxe-S
+      :desc "Grep all committed blobs"   "s g a" #'my/magit-all-grep)
