@@ -1,5 +1,8 @@
 ;;; $DOOMDIR/config.el -*- lexical-binding: t; -*-
 
+(after! vertico
+  (setq vertico-cycle nil))
+
 (setq doom-theme 'doom-one)
 
 (setenv "SSH_AUTH_SOCK"
