@@ -1985,12 +1985,14 @@ Also falls through for regular (non-branch-off) commits."
         :n "n" #'branch-off/magit-blob-next
         :n "p" #'branch-off/magit-blob-prev))
 
-;;; Git history search — SPC s g {f,F,S,a}
+;;; Git history search — SPC s g {f,F,S,G,b,c}
 ;; Commands sharing a common preview mechanism:
-;;   SPC s g f  — file revision browser: pick a file, flick through every revision
+;;   SPC s g f  — file revision browser: all (commit,file) pairs; filter by path
 ;;   SPC s g F  — file add/remove events only (when was a file born/deleted)
-;;   SPC s g S  — pickaxe -S: commits where literal match count changed
-;;   SPC s g a  — git history search: blobs + commit messages (git grep + git log --grep)
+;;   SPC s g S  — pickaxe -S: commits where literal string count changed
+;;   SPC s g G  — pickaxe -G: commits where diff has a line matching regex
+;;   SPC s g b  — git blob search: grep content across all committed blobs
+;;   SPC s g c  — commit message search: all commits on open, filter as you type
 
 (defun my/magit-pickaxe--check-deps ()
   "Signal `user-error' if required packages are not loaded."
@@ -2002,25 +2004,31 @@ Also falls through for regular (non-branch-off) commits."
 (defun my/magit-pickaxe--group-fn (cand transform)
   "Vertico group function for pickaxe/grep candidates.
 Group title comes from the `my/group' text property.  When TRANSFORM is
-non-nil vertico wants a display string: skip to `my/content-start'."
+non-nil vertico wants a display string: skip to `my/content-start', then
+strip anything after a \\x00 separator (used by commit-search to embed the
+full message body for filtering without displaying it)."
   (if transform
-      (let ((start (get-text-property 0 'my/content-start cand)))
-        (substring cand (or start 9)))
+      (let* ((start (get-text-property 0 'my/content-start cand))
+             (disp  (substring cand (or start 9)))
+             (sep   (string-match "\x00" disp)))
+        (if sep (substring disp 0 sep) disp))
     (get-text-property 0 'my/group cand)))
 
 (defun my/magit-pickaxe--commit-cache ()
-  "Return a hash table mapping full SHA → \"YYYY-MM-DD  author\" for all commits."
+  "Return a hash table mapping full SHA → \"YYYY-MM-DD HH:MM  author\" for all commits."
   (let ((tbl (make-hash-table :test #'equal :size 256)))
     (with-temp-buffer
-      (call-process "git" nil t nil "log" "--all" "--format=%H\t%as\t%an")
+      (call-process "git" nil t nil "log" "--all" "--format=%H\t%ai\t%an")
       (goto-char (point-min))
       (while (not (eobp))
         (let ((line (buffer-substring-no-properties
                      (line-beginning-position) (line-end-position))))
           (when (string-match "^\\([0-9a-f]\\{40\\}\\)\t\\([^\t]*\\)\t\\(.*\\)$" line)
-            (puthash (match-string 1 line)
-                     (concat (match-string 2 line) "  " (match-string 3 line))
-                     tbl)))
+            (let ((dt (match-string 2 line)))
+              (puthash (match-string 1 line)
+                       (concat (if (>= (length dt) 16) (substring dt 0 16) dt)
+                               "  " (match-string 3 line))
+                       tbl))))
         (forward-line 1)))
     tbl))
 
@@ -2079,26 +2087,78 @@ Handles two formats:
 
 (defun my/magit-all-grep--builder (input)
   "Command builder: git grep across all blobs and commit messages for INPUT."
-  (pcase-let ((`(,arg . ,_) (consult--command-split input)))
-    (unless (string-blank-p arg)
-      (let ((q (shell-quote-argument arg)))
-        (cons (list "sh" "-c"
-                    (format "{ git --no-pager grep -In -e %s \
+  (if (string-blank-p input)
+      nil
+    (let ((q (shell-quote-argument input)))
+      (cons (list "sh" "-c"
+                  (format "{ git --no-pager grep -In -e %s \
 $(git rev-list --all 2>/dev/null) 2>/dev/null; \
 git log --all --format='%%H:+commit+:%%s' --grep=%s 2>/dev/null; } 2>/dev/null"
-                            q q))
-              nil)))))
+                          q q))
+            nil))))
 
 (defun my/magit-pickaxe-S--builder (input)
   "Command builder: git grep limited to commits where literal count of INPUT changed."
-  (pcase-let ((`(,arg . ,_) (consult--command-split input)))
-    (unless (string-blank-p arg)
-      (let ((q (shell-quote-argument arg)))
-        (cons (list "sh" "-c"
-                    (format "git --no-pager grep -In -e %s \
+  (if (string-blank-p input)
+      nil
+    (let ((q (shell-quote-argument input)))
+      (cons (list "sh" "-c"
+                  (format "git --no-pager grep -In -e %s \
 $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
-                            q q))
-              nil)))))
+                          q q))
+            nil))))
+
+(defun my/magit-pickaxe-G--builder (input)
+  "Command builder: git grep limited to commits whose diff has a line matching regex INPUT."
+  (if (string-blank-p input)
+      nil
+    (let ((q (shell-quote-argument input)))
+      (cons (list "sh" "-c"
+                  (format "git --no-pager grep -In -e %s \
+$(git log --all -G%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
+                          q q))
+            nil))))
+
+(defun my/magit-commit-search--collect (cache)
+  "Return a list of propertized commit candidates from the full git history.
+Each candidate embeds the full commit message after \\x00 (Lisp string only,
+not from git output — call-process strips NUL bytes) so vertico filters on
+all message text while the group transform displays only the subject.
+
+Parsing is line-by-line: a line of exactly 40 hex chars is a commit boundary.
+No special separator bytes are used in the git format string."
+  (let (result cur-hash cur-parts)
+    (cl-flet ((flush ()
+                (when cur-hash
+                  (let* ((parts   (nreverse cur-parts))
+                         (subject (or (seq-find (lambda (l) (not (string-empty-p l)))
+                                                parts)
+                                      ""))
+                         (message (mapconcat #'identity parts "\n"))
+                         (short   (substring cur-hash 0 8))
+                         (info    (gethash cur-hash cache ""))
+                         (cand    (concat (propertize short 'face 'magit-hash)
+                                          " " (propertize "[msg] " 'face 'font-lock-comment-face)
+                                          subject
+                                          "\x00" message)))
+                    (put-text-property 0 1 'my/hash          cur-hash cand)
+                    (put-text-property 0 1 'my/type          'commit  cand)
+                    (put-text-property 0 1 'my/content-start 9        cand)
+                    (put-text-property 0 1 'my/group         (concat short "  " info) cand)
+                    (push cand result))
+                  (setq cur-hash nil cur-parts nil))))
+      (with-temp-buffer
+        (call-process "git" nil t nil "log" "--all" "--format=tformat:%H%n%B")
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (if (string-match "\\`[0-9a-f]\\{40\\}\\'" line)
+                (progn (flush) (setq cur-hash line cur-parts nil))
+              (when cur-hash (push line cur-parts))))
+          (forward-line 1))
+        (flush)))
+    (nreverse result)))
 
 (defun my/magit-filename-history--collect (cache)
   "Return a list of propertized candidates for file add/remove events from git history."
@@ -2135,9 +2195,28 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
         (forward-line 1)))
     (nreverse result)))
 
-(defun my/magit-pickaxe--make-state (on-return)
-  "Return a consult state function; ON-RETURN is called with the selected candidate."
-  (let ((pbuf (get-buffer-create " *pickaxe-preview*"))
+(defun my/magit-pickaxe--apply-highlights (query)
+  "Add highlight overlays for each word in QUERY in the current buffer.
+Overlays layer on top of font-lock so they add a background without losing the
+foreground colour. Background comes from the `match' face (no inheritance, so
+only an explicitly-defined theme background is used) with #5f4000 as fallback."
+  (let ((case-fold-search t)
+        (bg (or (face-background 'match nil nil) "#5f4000")))
+    (when (and query (not (string-blank-p query)))
+      (dolist (term (split-string query nil t))
+        (save-excursion
+          (goto-char (point-min))
+          (while (re-search-forward (regexp-quote term) nil t)
+            (let ((ov (make-overlay (match-beginning 0) (match-end 0))))
+              (overlay-put ov 'face `(:background ,bg :extend nil))
+              (overlay-put ov 'priority 3)
+              (overlay-put ov 'my/query-hl t))))))))
+
+(defun my/magit-pickaxe--make-state (on-return &optional highlight-query)
+  "Return a consult state function; ON-RETURN is called with the selected candidate.
+When HIGHLIGHT-QUERY is non-nil, query terms get an amber background in the
+preview via text properties (wiped automatically by erase-buffer each cycle)."
+  (let ((pbuf (get-buffer-create " *git preview*"))
         restore-fn
         line-ov)
     (lambda (action cand)
@@ -2150,12 +2229,22 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                   (file   (get-text-property 0 'my/file cand))
                   (line   (get-text-property 0 'my/line cand))
                   (status (get-text-property 0 'my/status cand))
-                  (rev    (if (equal status "D")
-                              (concat hash "^")
-                            hash))
+                  (rev    (if (equal status "D") (concat hash "^") hash))
+                  (short  (when hash (substring hash 0 8)))
+                  (date   (nth 1 (split-string
+                                  (or (get-text-property 0 'my/group cand) "")
+                                  "  " t)))
                   (win              (selected-window))
-                  ;; Suppress intermediate redraws: render atomically,
-                  ;; one redisplay after the entire sequence completes.
+                  ;; Capture minibuffer input HERE before with-current-buffer pbuf.
+                  ;; minibuffer-contents-no-properties reads the CURRENT buffer's
+                  ;; content when not in a real minibuffer (field-string fallback),
+                  ;; so calling it inside with-current-buffer pbuf returns pbuf's
+                  ;; entire text — causing every character to be highlighted.
+                  (mbquery          (when highlight-query
+                                      (condition-case nil
+                                          (with-current-buffer (window-buffer (minibuffer-window))
+                                            (minibuffer-contents-no-properties))
+                                        (error nil))))
                   (inhibit-redisplay t))
              (when hash
                (cond
@@ -2164,7 +2253,14 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                    (let ((inhibit-read-only t))
                      (when (overlayp line-ov) (delete-overlay line-ov) (setq line-ov nil))
                      (erase-buffer)
-                     (call-process "git" nil t nil "show" "--stat" hash)
+                     (fundamental-mode)
+                     (call-process "git" nil t nil "-c" "color.ui=never" "show" "--stat" hash)
+                     (rename-buffer (format " *preview: %s  %s  [commit]*"
+                                            short (or date "")) t)
+                     (setq-local truncate-lines nil)
+                     (when highlight-query
+                       (my/magit-pickaxe--apply-highlights mbquery))
+                     (goto-char (point-min))
                      (setq buffer-read-only t))))
                 ((and file line)
                  (with-current-buffer pbuf
@@ -2177,36 +2273,31 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                                                   "exe" "dll" "o" "elc" "pyc"))))
                      (when (overlayp line-ov) (delete-overlay line-ov) (setq line-ov nil))
                      (erase-buffer)
+                     (rename-buffer (format " *preview: %s  %s  %s*"
+                                            short (or date "")
+                                            (file-name-nondirectory file)) t)
                      (when (and (not binary-p)
                                 (= 0 (call-process "git" nil t nil "show"
                                                    (format "%s:%s" rev file))))
-                       ;; Set the real major mode so font-lock works correctly
-                       ;; (e.g. org-mode checks derived-mode-p internally).
-                       ;; delay-mode-hooks is permanent-local so it survives
-                       ;; kill-all-local-variables inside the mode function.
                        (condition-case nil
                            (let ((buffer-file-name file))
                              (delay-mode-hooks (set-auto-mode))
                              (setq delayed-mode-hooks nil))
                          (error nil))
-                       ;; org-indent-mode schedules display-property computation
-                       ;; via an idle timer, causing a second redraw after the
-                       ;; buffer becomes visible. Drive the agent synchronously
-                       ;; now so indentation is ready before inhibit-redisplay
-                       ;; is released.
                        (when (and (derived-mode-p 'org-mode)
                                   (bound-and-true-p org-indent-mode))
-                         (condition-case nil
-                             (org-indent-initialize-agent)
-                           (error nil)))
+                         (condition-case nil (org-indent-initialize-agent) (error nil)))
                        (font-lock-ensure)
                        (goto-char (point-min))
                        (forward-line (1- line))
-                       (setq line-ov
-                             (make-overlay (line-beginning-position)
-                                           (min (1+ (line-end-position)) (point-max))))
-                       (overlay-put line-ov 'face 'consult-preview-line)
-                       (overlay-put line-ov 'priority 2)
+                       (if highlight-query
+                           (my/magit-pickaxe--apply-highlights mbquery)
+                         (setq line-ov
+                               (make-overlay (line-beginning-position)
+                                             (min (1+ (line-end-position)) (point-max))))
+                         (overlay-put line-ov 'face 'consult-preview-line)
+                         (overlay-put line-ov 'priority 2))
+                       (setq-local truncate-lines nil)
                        (setq buffer-read-only t))))))
                (let ((prev-buf (window-buffer win))
                      (prev-pt  (window-point win)))
@@ -2227,22 +2318,6 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
          (when restore-fn (funcall restore-fn) (setq restore-fn nil))
          (when (buffer-live-p pbuf) (kill-buffer pbuf)))))))
 
-(defun my/magit-pickaxe--state ()
-  "State: preview git blobs and commits; open blob or commit on return."
-  (my/magit-pickaxe--make-state
-   (lambda (cand)
-     (let ((type (get-text-property 0 'my/type cand))
-           (hash (get-text-property 0 'my/hash cand))
-           (file (get-text-property 0 'my/file cand))
-           (line (get-text-property 0 'my/line cand)))
-       (pcase type
-         ('commit (when hash (magit-show-commit hash)))
-         (_       (when (and hash file line)
-                    (magit-find-file hash file)
-                    (goto-char (point-min))
-                    (forward-line (1- line))
-                    (recenter))))))))
-
 (defun my/magit-filename-history--state ()
   "State: preview git blobs; open commit via magit-show-commit on return."
   (my/magit-pickaxe--make-state
@@ -2250,36 +2325,93 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
      (when-let ((hash (get-text-property 0 'my/hash cand)))
        (magit-show-commit hash)))))
 
-(defun my/magit-grep-read (builder prompt)
-  "Run an async git grep CONSULT session using BUILDER and PROMPT."
+(defun my/magit-commit-search--state ()
+  "State for commit-message search; enables query-term highlighting in preview."
+  (my/magit-pickaxe--make-state
+   (lambda (cand)
+     (when-let ((hash (get-text-property 0 'my/hash cand)))
+       (magit-show-commit hash)))
+   t))
+
+(defun my/magit-grep-read (builder prompt &optional highlight-query)
+  "Run an async git content-search session using BUILDER and PROMPT.
+When HIGHLIGHT-QUERY is non-nil, blob previews use substring highlights
+instead of a line overlay (intended for SPC s g S and SPC s g G)."
   (my/magit-pickaxe--check-deps)
   (let* ((top   (or (magit-toplevel) (user-error "Not in a git repository")))
          (default-directory top)
          (cache (my/magit-pickaxe--commit-cache)))
     (consult--read
      (consult--process-collection builder
+       :min-input 0
        :transform (consult--async-transform
                    (lambda (lines) (my/magit-pickaxe--format-lines lines cache)))
        :file-handler t)
      :prompt prompt
      :lookup #'consult--lookup-member
-     :state (my/magit-pickaxe--state)
+     :state (my/magit-pickaxe--make-state
+             (lambda (cand)
+               (let ((type (get-text-property 0 'my/type cand))
+                     (hash (get-text-property 0 'my/hash cand))
+                     (file (get-text-property 0 'my/file cand))
+                     (line (get-text-property 0 'my/line cand)))
+                 (pcase type
+                   ('commit (when hash (magit-show-commit hash)))
+                   (_       (when (and hash file line)
+                              (magit-find-file hash file)
+                              (goto-char (point-min))
+                              (forward-line (1- line))
+                              (recenter))))))
+             highlight-query)
      :add-history (thing-at-point 'symbol)
      :require-match t
      :category 'consult-grep
      :group #'my/magit-pickaxe--group-fn
-     :history '(:input consult--grep-history)
-     :sort nil)))
+     :history '(:input my/magit-grep-history)
+     :sort nil
+     ;; Drop consult--async-split from the wrap so the builder receives
+     ;; raw input and fires on open without requiring the user to type #.
+     :async-wrap (lambda (async)
+                   (consult--async-pipeline
+                    async
+                    (consult--async-indicator)
+                    (consult--async-refresh))))))
 
 (defun my/magit-all-grep ()
-  "Search all committed blobs and commit messages for a pattern."
+  "Search content across all committed blobs and commit messages."
   (interactive)
-  (my/magit-grep-read #'my/magit-all-grep--builder "Git history search: "))
+  (my/magit-grep-read #'my/magit-all-grep--builder "Git blob search: " t))
 
 (defun my/magit-pickaxe-S ()
-  "Pickaxe -S: search commits where the literal count of a string changed."
+  "Pickaxe -S: find commits where the literal occurrence count of a string changed."
   (interactive)
-  (my/magit-grep-read #'my/magit-pickaxe-S--builder "Pickaxe -S (count changed): "))
+  (my/magit-grep-read #'my/magit-pickaxe-S--builder "Pickaxe -S (count changed): " t))
+
+(defun my/magit-pickaxe-G ()
+  "Pickaxe -G: find commits whose diff has a line matching a regex."
+  (interactive)
+  (my/magit-grep-read #'my/magit-pickaxe-G--builder "Pickaxe -G (regex): " t))
+
+(defun my/magit-commit-search ()
+  "Search commit messages; shows all commits on open, type to filter by subject."
+  (interactive)
+  (my/magit-pickaxe--check-deps)
+  (let* ((top   (or (magit-toplevel) (user-error "Not in a git repository")))
+         (default-directory top)
+         (cache (my/magit-pickaxe--commit-cache))
+         (cands (my/magit-commit-search--collect cache)))
+    (if (null cands)
+        (message "No commits found in git history")
+      (consult--read
+       cands
+       :prompt "Commit messages: "
+       :lookup #'consult--lookup-member
+       :state (my/magit-commit-search--state)
+       :require-match t
+       :category 'consult-grep
+       :group #'my/magit-pickaxe--group-fn
+       :history '(:input my/magit-commit-search-history)
+       :sort nil))))
 
 (defun my/magit-filename-history ()
   "Show all commits where a file was Added or Deleted; filter by filename."
@@ -2364,4 +2496,6 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
       :desc "File revision browser"      "s g f" #'my/magit-file-revisions
       :desc "File add/remove events"     "s g F" #'my/magit-filename-history
       :desc "Pickaxe -S (count changed)" "s g S" #'my/magit-pickaxe-S
-      :desc "Grep all committed blobs"   "s g a" #'my/magit-all-grep)
+      :desc "Pickaxe -G (regex)"         "s g G" #'my/magit-pickaxe-G
+      :desc "Blob search (all history)"  "s g b" #'my/magit-all-grep
+      :desc "Commit message search"      "s g c" #'my/magit-commit-search)
