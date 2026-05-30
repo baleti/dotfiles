@@ -1,8 +1,9 @@
+[[ $- == *i* ]] || return
+
 export GPG_AGENT_SOCK="$HOME/.gnupg/S.gpg-agent"
 export SSH_AUTH_SOCK="$HOME/.gnupg/S.gpg-agent.ssh"
 export EDITOR="emacsclient -t"
 
-# set locale
 export LANG=C.utf8
 export LC_ALL=C.utf8
 
@@ -11,7 +12,6 @@ alias fd="fdfind -H -I"
 alias ll='eza -alF'
 
 ec() { emacsclient --create-frame "$@" & exit; }
-e() { emacsclient --create-frame "$@" & }
 et() { emacsclient --tty $@; }
 
 # command line interface to voidtools everything
@@ -53,10 +53,6 @@ if [ -z "$TMUX" ]; then
   exit
 fi
 
-# If not running interactively, don't do anything
-[[ $- == *i* ]] || return
-
-# don't put duplicate lines or lines starting with space in the history.
 HISTCONTROL=ignoreboth
 # append to the history file, don't overwrite it
 shopt -s histappend
@@ -64,59 +60,9 @@ shopt -s histappend
 HISTSIZE=-1
 HISTFILESIZE=-1
 
-# check the window size after each command and, if necessary,
-# update the values of LINES and COLUMNS.
-shopt -s checkwinsize
-
-# set variable identifying the chroot you work in (used in the prompt below)
-if [ -z "${debian_chroot:-}" ] && [ -r /etc/debian_chroot ]; then
-    debian_chroot=$(cat /etc/debian_chroot)
-fi
-
-# set a fancy prompt (non-color, unless we know we "want" color)
-case "$TERM" in
-    xterm-color|*-256color) color_prompt=yes;;
-esac
-
-if [ -n "$force_color_prompt" ]; then
-    if [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
-	# We have color support; assume it's compliant with Ecma-48
-	# (ISO/IEC-6429). (Lack of such support is extremely rare, and such
-	# a case would tend to support setf rather than setaf.)
-	color_prompt=yes
-    else
-	color_prompt=
-    fi
-fi
-
-if [ "$color_prompt" = yes ]; then
-    PS1='\[\033[01;34m\]$PWD\[\033[00m\] > '
-else
-    PS1='$PWD > '
-fi
-unset color_prompt force_color_prompt
-
-# If this is an xterm set the title to user@host:dir
-case "$TERM" in
-xterm*|rxvt*)
-    PS1="\[\e]0;${debian_chroot:+($debian_chroot)}\u@\h: \w\a\]$PS1"
-    ;;
-*)
-    ;;
-esac
+PS1='\[\033[01;34m\]$PWD\[\033[00m\] > '
 
 source /usr/share/doc/fzf/examples/key-bindings.bash
-source $HOME/bin/fzf-tab-completion-bash.sh
 bind -x '"\t": fzf_bash_completion'
 
-# enable programmable completion features (you don't need to enable
-# this, if it's already enabled in /etc/bash.bashrc and /etc/profile
-# sources /etc/bash.bashrc).
-if ! shopt -oq posix; then
-  if [ -f /usr/share/bash-completion/bash_completion ]; then
-    . /usr/share/bash-completion/bash_completion
-  elif [ -f /etc/bash_completion ]; then
-    . /etc/bash_completion
-  fi
-fi
-. "$HOME/.cargo/env"
+source /usr/share/bash-completion/bash_completion
