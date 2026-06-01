@@ -1,7 +1,5 @@
 [[ $- == *i* ]] || return
 
-export GPG_AGENT_SOCK="$HOME/.gnupg/S.gpg-agent"
-export SSH_AUTH_SOCK="$HOME/.gnupg/S.gpg-agent.ssh"
 export EDITOR="emacsclient -t"
 
 export LANG=C.utf8
