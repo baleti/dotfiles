@@ -58,6 +58,25 @@ Expected format from searching explicit commits: <40-sha>:<file>:<lineno>:<conte
   "Filter and format a batch of git grep output LINES into candidates using CACHE."
   (delq nil (mapcar (lambda (l) (my/magit-pickaxe--parse-line l cache)) lines)))
 
+(defun my/magit-pickaxe--apply-highlights (query &optional cur-beg cur-end case-sensitive)
+  "Highlight QUERY matches in current buffer; use `isearch' face at CUR-BEG..CUR-END."
+  (let ((case-fold-search (not case-sensitive))
+        (bg (or (and (fboundp 'doom-color) (doom-color 'orange))
+                (face-background 'lazy-highlight nil t)
+                "#af7800")))
+    (when (and query (not (string-blank-p query)))
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward (regexp-quote query) nil t)
+          (let* ((mbeg (match-beginning 0))
+                 (mend (match-end 0))
+                 (current-p (and cur-beg cur-end
+                                 (>= mbeg cur-beg) (<= mend cur-end)))
+                 (ov (make-overlay mbeg mend)))
+            (overlay-put ov 'face (if current-p 'isearch `(:background ,bg :extend nil)))
+            (overlay-put ov 'priority (if current-p 4 3))
+            (overlay-put ov 'my/query-hl t)))))))
+
 (defun my/magit-all-grep--builder (input)
   "Command builder: git grep across every committed blob for INPUT."
   (pcase-let ((`(,arg . ,_) (consult--command-split input)))
@@ -76,6 +95,17 @@ $(git rev-list --all 2>/dev/null) 2>/dev/null"
         (cons (list "sh" "-c"
                     (format "git --no-pager grep -In -e %s \
 $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
+                            q q))
+              nil)))))
+
+(defun my/magit-pickaxe-G--builder (input)
+  "Command builder: git grep limited to commits where a line matching INPUT changed."
+  (pcase-let ((`(,arg . ,_) (consult--command-split input)))
+    (unless (string-blank-p arg)
+      (let ((q (shell-quote-argument arg)))
+        (cons (list "sh" "-c"
+                    (format "git --no-pager grep -In -e %s \
+$(git log --all -G%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                             q q))
               nil)))))
 
@@ -112,8 +142,10 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
         (forward-line 1)))
     (nreverse result)))
 
-(defun my/magit-pickaxe--make-state (on-return)
-  "Return a consult state function; ON-RETURN is called with the selected candidate."
+(defun my/magit-pickaxe--make-state (on-return &optional highlight-query case-sensitive)
+  "Return a consult state function; ON-RETURN is called with the selected candidate.
+When HIGHLIGHT-QUERY is non-nil, query matches are highlighted in the preview.
+CASE-SENSITIVE controls whether match highlighting respects case."
   (let ((pbuf (get-buffer-create " *pickaxe-preview*"))
         restore-fn
         line-ov)
@@ -163,11 +195,22 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
                          (font-lock-ensure)))
                      (goto-char (point-min))
                      (forward-line (1- line))
-                     (setq line-ov
-                           (make-overlay (line-beginning-position)
-                                         (min (1+ (line-end-position)) (point-max))))
-                     (overlay-put line-ov 'face 'consult-preview-line)
-                     (overlay-put line-ov 'priority 2)
+                     (if highlight-query
+                         (let* ((cur-beg (line-beginning-position))
+                                (cur-end (line-end-position))
+                                (mbquery (condition-case nil
+                                             (with-current-buffer
+                                                 (window-buffer (active-minibuffer-window))
+                                               (minibuffer-contents-no-properties))
+                                           (error nil)))
+                                (arg (car (consult--command-split mbquery))))
+                           (my/magit-pickaxe--apply-highlights
+                            arg cur-beg cur-end case-sensitive))
+                       (setq line-ov
+                             (make-overlay (line-beginning-position)
+                                           (min (1+ (line-end-position)) (point-max))))
+                       (overlay-put line-ov 'face 'consult-preview-line)
+                       (overlay-put line-ov 'priority 2))
                      (setq buffer-read-only t))))
                (let ((prev-buf (window-buffer win))
                      (prev-pt  (window-point win)))
@@ -188,7 +231,7 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
          (when restore-fn (funcall restore-fn) (setq restore-fn nil))
          (when (buffer-live-p pbuf) (kill-buffer pbuf)))))))
 
-(defun my/magit-pickaxe--state ()
+(defun my/magit-pickaxe--state (&optional highlight-query case-sensitive)
   "State: preview git blobs; open blob in magit-find-file on return."
   (my/magit-pickaxe--make-state
    (lambda (cand)
@@ -199,7 +242,8 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
          (magit-find-file hash file)
          (goto-char (point-min))
          (forward-line (1- line))
-         (recenter))))))
+         (recenter))))
+   highlight-query case-sensitive))
 
 (defun my/magit-filename-history--state ()
   "State: preview git blobs; open commit via magit-show-commit on return."
@@ -208,7 +252,7 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
      (when-let ((hash (get-text-property 0 'my/hash cand)))
        (magit-show-commit hash)))))
 
-(defun my/magit-grep-read (builder prompt)
+(defun my/magit-grep-read (builder prompt &optional highlight-query case-sensitive)
   "Run an async git grep CONSULT session using BUILDER and PROMPT."
   (my/magit-pickaxe--check-deps)
   (let* ((top   (or (magit-toplevel) (user-error "Not in a git repository")))
@@ -221,7 +265,7 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
        :file-handler t)
      :prompt prompt
      :lookup #'consult--lookup-member
-     :state (my/magit-pickaxe--state)
+     :state (my/magit-pickaxe--state highlight-query case-sensitive)
      :add-history (thing-at-point 'symbol)
      :require-match t
      :category 'consult-grep
@@ -232,12 +276,17 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
 (defun my/magit-all-grep ()
   "Search ALL committed blobs for a pattern (may show duplicates across commits)."
   (interactive)
-  (my/magit-grep-read #'my/magit-all-grep--builder "All-commits grep: "))
+  (my/magit-grep-read #'my/magit-all-grep--builder "All-commits grep: " t))
 
 (defun my/magit-pickaxe-S ()
   "Pickaxe -S: search commits where the literal count of a string changed."
   (interactive)
-  (my/magit-grep-read #'my/magit-pickaxe-S--builder "Pickaxe -S (count changed): "))
+  (my/magit-grep-read #'my/magit-pickaxe-S--builder "Pickaxe -S (count changed): " t t))
+
+(defun my/magit-pickaxe-G ()
+  "Pickaxe -G: search commits where a line matching a regex changed."
+  (interactive)
+  (my/magit-grep-read #'my/magit-pickaxe-G--builder "Pickaxe -G (regex changed): " t t))
 
 (defun my/magit-filename-history ()
   "Show all commits where a file was Added or Deleted; filter by filename."
@@ -263,5 +312,6 @@ $(git log --all -S%s --format=%%H 2>/dev/null | head -n 500) 2>/dev/null"
 (map! :leader
       "s g" nil                                                             ; clear terminal binding
       :desc "Git: file add/remove history"    "s g f" #'my/magit-filename-history
+      :desc "Git: pickaxe -G (regex changed)" "s g g" #'my/magit-pickaxe-G
       :desc "Git: pickaxe -S (count changed)" "s g S" #'my/magit-pickaxe-S
       :desc "Git: grep all committed blobs"   "s g a" #'my/magit-all-grep)
