@@ -204,3 +204,11 @@ _fzf_history_widget_wrapper() {
 }
 zle -N _fzf_history_widget_wrapper
 bindkey '^R' _fzf_history_widget_wrapper
+
+# auto close pass coffin after 5 minutes, no systemd timers
+pass() {
+  command pass "$@"
+  if [[ "$1" == "open" && "$#" -eq 1 ]]; then
+    (sleep 300; command pass close >/dev/null 2>&1) & disown
+  fi
+}
