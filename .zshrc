@@ -58,7 +58,6 @@ bindkey -M menuselect 'up' vi-up-line-or-history
 bindkey -M menuselect 'right' vi-forward-char
 
 export PATH="$HOME/.config/emacs/bin:$PATH"
-export SSH_AUTH_SOCK="$HOME/.gnupg/S.gpg-agent.ssh"
 export EDITOR="emacsclient -t"
 
 source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
