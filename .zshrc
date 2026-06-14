@@ -66,11 +66,9 @@ source /usr/share/doc/fzf/examples/key-bindings.zsh
 source "$HOME/src/fzf-tab/fzf-tab.plugin.zsh"
 
 alias b="batcat --wrap never"
-alias fd='fd -H -I'
 alias ll='eza -lah'
 alias fd="fdfind -H -I"
 
-e(){ (emacsclient --create-frame $@ &) }
 ec(){ (emacsclient --create-frame $@ &); exit }
 et(){ emacsclient --tty $@ }
 
