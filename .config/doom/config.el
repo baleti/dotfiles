@@ -358,4 +358,51 @@
             (message "File does not exist: %s" full-path)))
       (message "No valid file link under cursor."))))
 
-(load! "+magit")
+(use-package! git-branch-off
+  :after magit
+  :config
+  (git-branch-off-setup))
+
+(after! magit
+  (custom-set-faces!
+    '(magit-diff-added
+      :foreground "#98be65" :background "#1e2b1e")
+    '(magit-diff-added-highlight
+      :foreground "#b0d47a" :background "#263626" :weight bold)
+    '(magit-diff-removed
+      :foreground "#ff6c6b" :background "#2b1e1e")
+    '(magit-diff-removed-highlight
+      :foreground "#ff8080" :background "#3a2020" :weight bold)
+    '(magit-diff-hunk-heading
+      :foreground "#51afef" :background "#1e2535" :weight bold)
+    '(magit-diff-hunk-heading-highlight
+      :foreground "#7bc8f5" :background "#243050" :weight bold)
+    '(magit-section-highlight
+      :background "#3d4451" :extend t)))
+
+(after! doom-themes
+  (custom-set-faces!
+    `(branch-off/magit-squash-marked
+      :background ,(doom-blend (doom-color 'orange) (doom-color 'bg) 0.25)
+      :extend t)))
+
+(map! :after magit
+      :leader
+      "g c c" #'git-branch-off-stage-and-commit
+      "g c o" #'git-branch-off-stage-and-commit-branch-off
+      "g l l" #'git-branch-off-log
+      "g w"   nil
+      (:prefix ("g w" . "worktree")
+       "c" #'git-branch-off-worktree-create
+       "w" #'git-branch-off-worktree-create
+       "d" #'git-branch-off-worktree-delete)
+      (:prefix ("g a" . "amend hunk")
+       "a" #'git-branch-off-amend-hunk
+       "n" #'git-branch-off-amend-hunk-no-edit))
+
+(map! :leader
+      "s g" nil
+      :desc "Git: file add/remove history"    "s g f" #'git-branch-off-search-filename-history
+      :desc "Git: pickaxe -G (regex changed)" "s g g" #'git-branch-off-search-pickaxe-g
+      :desc "Git: pickaxe -S (count changed)" "s g S" #'git-branch-off-search-pickaxe-s
+      :desc "Git: grep all committed blobs"   "s g a" #'git-branch-off-search-all-grep)
