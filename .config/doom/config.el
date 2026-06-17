@@ -5,10 +5,6 @@
 
 (setq doom-theme 'doom-one)
 
-(setenv "SSH_AUTH_SOCK"
-        (string-trim (shell-command-to-string
-                      "gpgconf --list-dirs agent-ssh-socket")))
-
 (setq display-line-numbers-type 'absolute)
 ;; reassign SPC t l directly to display-line-numbers-mode
 (map! :leader
@@ -33,6 +29,7 @@
       :n "TAB" #'hs-toggle-hiding
       :n "H" #'hs-hide-level)
 
+;; save recentf on schedule not to lose entries if emacs exits incorrectly
 (after! recentf
   (recentf-load-list)
   (run-at-time nil (* 5 60)
