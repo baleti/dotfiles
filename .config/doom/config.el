@@ -1,5 +1,7 @@
 ;;; $DOOMDIR/config.el -*- lexical-binding: t; -*-
 
+(setq initial-scratch-message nil)
+
 (after! vertico
   (setq vertico-cycle nil))
 
