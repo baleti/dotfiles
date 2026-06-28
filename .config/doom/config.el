@@ -1,6 +1,7 @@
 ;;; $DOOMDIR/config.el -*- lexical-binding: t; -*-
 
 (setq initial-scratch-message nil)
+(setq initial-major-mode 'org-mode)
 
 (after! vertico
   (setq vertico-cycle nil))
