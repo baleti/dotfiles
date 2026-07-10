@@ -13,7 +13,6 @@ PS1='\h:\w $ '
 source /usr/share/bash-completion/bash_completion
 
 export GPG_TTY=$(tty)
-export EDITOR=/usr/bin/vi
 alias ls="/usr/bin/eza"
 alias ll="/usr/bin/eza -alF"
 alias fd="/usr/bin/fdfind -H -I"
