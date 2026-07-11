@@ -199,6 +199,20 @@
   "C-<return>" #'org-insert-heading
   "C-S-<return>" #'+org/insert-item-above))
 
+(defun osc52-copy-region-to-clipboard (beg end)
+  "Send the selected region to the host clipboard via OSC 52.
+
+Bypasses Emacs' own kill-ring/clipboard entirely, so the default
+yank/paste behavior stays local to Emacs. Works over SSH because
+tmux (set-clipboard on, see .tmux.conf) forwards OSC 52 sequences to
+the outer terminal, which then sets the local system clipboard."
+  (interactive "r")
+  (let* ((text (buffer-substring-no-properties beg end))
+         (b64 (base64-encode-string (encode-coding-string text 'utf-8) t)))
+    (send-string-to-terminal (concat "\e]52;c;" b64 "\a"))))
+
+(map! :v "C-c c" #'osc52-copy-region-to-clipboard)
+
 (defun insert-custom-timestamp-with-date ()
   "Insert the current date and time in the format: [YYYY-MM-DD Day HH:MM]."
   (interactive)
