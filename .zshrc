@@ -5,7 +5,7 @@
 autoload -U colors && colors
 
 # PROMPT='%~ > '
-PROMPT='%F{245}%~%f %F{38}$%f '
+PROMPT='%F{245}%m:%~%f %F{38}$%f '
 # show time on the right
 # RPROMPT='%*'
 
