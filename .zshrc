@@ -63,7 +63,33 @@ export EDITOR="emacsclient -t"
 source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
 source /usr/share/doc/fzf/examples/key-bindings.zsh
-source "$HOME/src/fzf-tab/fzf-tab.plugin.zsh"
+
+# self-healing fzf-tab checkout: clone on first run (e.g. fresh machine),
+# keep it updated in the background so shell startup never blocks on git
+FZF_TAB_DIR="$HOME/.config/zsh/plugins/fzf-tab"
+FZF_TAB_PLUGIN="$FZF_TAB_DIR/fzf-tab.plugin.zsh"
+
+[[ -f $FZF_TAB_PLUGIN ]] || git clone --quiet --depth 1 https://github.com/Aloxaf/fzf-tab "$FZF_TAB_DIR"
+
+if [[ -f $FZF_TAB_PLUGIN ]]; then
+  source "$FZF_TAB_PLUGIN"
+
+  zmodload -F zsh/stat b:zstat
+  zmodload -F zsh/datetime p:EPOCHSECONDS
+
+  fetch_head="$FZF_TAB_DIR/.git/FETCH_HEAD"
+  fetch_mtime=0
+  zstat -A fetch_mtime +mtime "$fetch_head" 2>/dev/null
+
+  # update at most once every 3 days; touch FETCH_HEAD first so concurrent
+  # shells started in the same window don't all race to spawn a pull
+  if (( fetch_mtime[1] < EPOCHSECONDS - 3 * 24 * 60 * 60 )); then
+    touch "$fetch_head" 2>/dev/null
+    ( cd "$FZF_TAB_DIR" && git pull --quiet ) &>/dev/null &!
+  fi
+  unset fetch_head fetch_mtime
+fi
+unset FZF_TAB_DIR FZF_TAB_PLUGIN
 
 alias b="batcat --wrap never"
 alias ll='eza -lah'
