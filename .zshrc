@@ -17,7 +17,6 @@ WORDCHARS='*?[]~&;!#$%^(){}<>,|=+'
 setopt auto_pushd
 autoload -Uz compinit
 
-# toggle if fzf-tab lists prefixes look weird
 zstyle ':completion:*' menu select
 
 # Auto complete with case insenstivity
@@ -45,9 +44,41 @@ setopt interactive_comments
 export PATH="$HOME/.config/emacs/bin:$PATH"
 export EDITOR="emacsclient -t"
 
+alias b="batcat --wrap never"
+alias ll='eza -lah'
+alias fd="fdfind -H -I"
+
+et(){ emacsclient --tty $@ }
+
 source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
 source /usr/share/doc/fzf/examples/key-bindings.zsh
+
+# sorts 3330 before 3330A
+export LC_COLLATE=C
+
+# bindings to ctrl shift arrow keys and ctrl alt backspace
+source $HOME/.config/zsh/motions.zsh
+
+# Auto-start tmux if not already running in a tmux session
+if [ -z "$TMUX" ]; then
+  # Create a unique session name based on the terminal process ID
+  SESSION_NAME="auto-$(basename "$SHELL")-$$"
+
+  # Check if a tmux session with this name already exists
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null
+
+  if [ $? != 0 ]; then
+    # If the session does not exist, create a new one
+    tmux new-session -s "$SESSION_NAME"
+  else
+    # If it exists, attach to the existing session
+    tmux attach-session -t "$SESSION_NAME"
+  fi
+
+  # Exit the shell when tmux exits
+  exit
+fi
 
 # self-healing fzf-tab checkout: clone on first run (e.g. fresh machine),
 # keep it updated in the background so shell startup never blocks on git
@@ -75,12 +106,6 @@ if [[ -f $FZF_TAB_PLUGIN ]]; then
   unset fetch_head fetch_mtime
 fi
 unset FZF_TAB_DIR FZF_TAB_PLUGIN
-
-alias b="batcat --wrap never"
-alias ll='eza -lah'
-alias fd="fdfind -H -I"
-
-et(){ emacsclient --tty $@ }
 
 # preview directory's content with eza when completing cd
 zstyle ':fzf-tab:complete:cd:*' fzf-preview 'eza -1 --color=always $realpath'
@@ -153,37 +178,11 @@ cd_up() {
 zle -N cd_up
 bindkey '^[[1;3A' cd_up
 
-# Auto-start tmux if not already running in a tmux session
-if [ -z "$TMUX" ]; then
-  # Create a unique session name based on the terminal process ID
-  SESSION_NAME="auto-$(basename "$SHELL")-$$"
-
-  # Check if a tmux session with this name already exists
-  tmux has-session -t "$SESSION_NAME" 2>/dev/null
-
-  if [ $? != 0 ]; then
-    # If the session does not exist, create a new one
-    tmux new-session -s "$SESSION_NAME"
-  else
-    # If it exists, attach to the existing session
-    tmux attach-session -t "$SESSION_NAME"
-  fi
-
-  # Exit the shell when tmux exits
-  exit
-fi
-
 bindkey '^[[1;5D' emacs-backward-word  # Ctrl + Left Arrow
 bindkey '^[[1;5C' emacs-forward-word   # Ctrl + Right Arrow
 
-# bindings to ctrl shift arrow keys and ctrl alt backspace
-source $HOME/.config/zsh/motions.zsh
-
 bindkey '^Z' undo
 bindkey '^Y' redo
-
-# sorts 3330 before 3330A
-export LC_COLLATE=C
 
 # use alternate buffer for fzf fuzzy search of past commands
 # by default ctrl+r binding provided with fzf shows results in the same buffer
