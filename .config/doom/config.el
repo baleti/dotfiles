@@ -3,7 +3,10 @@
 (setq initial-scratch-message nil)
 
 (after! vertico
-  (setq vertico-cycle nil))
+  (setq vertico-cycle nil)
+  (map! :map (minibuffer-local-map vertico-map)
+      "C-w" evil-window-map)
+)
 
 (setq doom-theme 'doom-one)
 
