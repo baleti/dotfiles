@@ -4,10 +4,7 @@
 # Enable colors and change prompt:
 autoload -U colors && colors
 
-# PROMPT='%~ > '
 PROMPT='%F{245}%~%f %F{38}$%f '
-# show time on the right
-# RPROMPT='%*'
 
 # History in cache directory:
 HISTSIZE=99999999
@@ -22,7 +19,6 @@ autoload -Uz compinit
 
 # toggle if fzf-tab lists prefixes look weird
 zstyle ':completion:*' menu select
-#zstyle ':completion:*' menu no
 
 # Auto complete with case insenstivity
 zstyle ':completion:*' matcher-list '' 'm:{a-zA-Z}={A-Za-z}' 'r:|[._-]=* r:|=*' 'l:|=* r:|=*'
@@ -35,7 +31,6 @@ _comp_options+=(globdots)		# Include hidden files.
 setopt HIST_EXPIRE_DUPS_FIRST
 setopt HIST_IGNORE_DUPS
 setopt HIST_IGNORE_ALL_DUPS
-# setopt HIST_IGNORE_SPACE
 setopt HIST_FIND_NO_DUPS
 setopt HIST_SAVE_NO_DUPS
 setopt HIST_REDUCE_BLANKS
@@ -162,8 +157,6 @@ zle -N _cd_next_dir
 
 bindkey '^[[1;3C' _cd_next_dir
 bindkey '^[[1;3D' _cd_prev_dir
-#bindkey '^[r' _cd_prev_dir
-#bindkey '^[g' _cd_next_dir
 
 # alt up arrow to move up directory
 cd_up() { 
