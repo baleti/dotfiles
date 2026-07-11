@@ -9,10 +9,10 @@ backward_over_quoted_string() {
         if [[ $char == $quote ]]; then
             # Check if the quote is escaped
             backslash_count=0
-            back_pos=$pos-1
+            ((back_pos = pos - 1))
             while ((back_pos >= 0)); do
                 c=${BUFFER:$back_pos:1}
-                if [[ $c == '\\' ]]; then
+                if [[ $c == "\\" ]]; then
                     ((backslash_count++))
                     ((back_pos--))
                 else
@@ -24,7 +24,7 @@ backward_over_quoted_string() {
                 CURSOR=$pos
                 return
             fi
-        elif [[ $char == '\\' ]]; then
+        elif [[ $char == "\\" ]]; then
             # Skip the escaped character
             ((pos--))
         fi
@@ -43,10 +43,10 @@ forward_over_quoted_string() {
         if [[ $char == $quote ]]; then
             # Check if the quote is escaped
             backslash_count=0
-            back_pos=$pos-1
+            ((back_pos = pos - 1))
             while ((back_pos >= 0)); do
                 c=${BUFFER:$back_pos:1}
-                if [[ $c == '\\' ]]; then
+                if [[ $c == "\\" ]]; then
                     ((backslash_count++))
                     ((back_pos--))
                 else
@@ -58,7 +58,7 @@ forward_over_quoted_string() {
                 CURSOR=$((pos + 1))
                 return
             fi
-        elif [[ $char == '\\' ]]; then
+        elif [[ $char == "\\" ]]; then
             # Skip the escaped character
             ((pos += 2))
             continue
