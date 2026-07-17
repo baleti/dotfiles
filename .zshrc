@@ -224,24 +224,26 @@ pass() {
 # wraps git network and signing commands push/fetch/pull (auth) and commit/merge/tag/rebase (signing)
 # opens password store and loads the right SSH key for current repo using custom ssh-agent
 git() {
-  local class toplevel entry
+  local class toplevel entry key
+
   case "$1" in
     push|fetch|pull)         class=net ;;
     commit|merge|tag|rebase) class=sign ;;
-    *) command git "$@"; return ;;
+    *) command git "$@"; return ;; # any other git subcommand
   esac
 
   toplevel=$(command git rev-parse --show-toplevel 2>/dev/null)
-  # no .git -> no key handling
-  [[ -z "$toplevel" ]] && { command git "$@"; return; }
+  [[ -z "$toplevel" ]] && { command git "$@"; return; }  # no .git
 
-  case "$toplevel|$class" in
-    # "$HOME/qemu|net")   entry=github-qemu-auth ;;
-    # "$HOME/qemu|sign")  entry=github-qemu-sign ;;
-    "$HOME/bin|net")    entry=baleti-github-ssh-key ;;
-    "$HOME|net")        entry=baleti-github-ssh-key ;;
-    *) command git "$@"; return ;;   # unknown repo -> no key handling
-  esac
+  local -A ssh_key_map=(
+    ["$HOME/revit-ballet|net"]=baleti-github-ssh-key
+    ["$HOME/bin|net"]=baleti-github-ssh-key
+    ["$HOME|net"]=baleti-github-ssh-key
+  )
+
+  key="$toplevel|$class"
+  entry=${ssh_key_map[$key]:-}
+  [[ -z "$entry" ]] && { command git "$@"; return; }
 
   echo "+ pass close && pass open; eval \$(~/bin/ssh-agent); ssh-add <(pass $entry); git $*" >&2
   pass close; pass open
