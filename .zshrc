@@ -217,7 +217,7 @@ pass() {
   command pass "$@"
   if [[ "$1" == "open" && "$#" -eq 1 ]]; then
     pkill -f '_PASS_AUTOCLOSE_TIMER_' 2>/dev/null
-    exec -a _PASS_AUTOCLOSE_TIMER_ bash -c 'sleep 300; command pass close > /dev/null 2>&1' & disown
+    ( exec -a _PASS_AUTOCLOSE_TIMER_ bash -c 'sleep 300; command pass close' </dev/null >/dev/null 2>&1 & )
   fi
 }
 
