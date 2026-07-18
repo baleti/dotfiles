@@ -60,26 +60,6 @@ export LC_COLLATE=C
 # bindings to ctrl shift arrow keys and ctrl alt backspace
 source $HOME/.config/zsh/motions.zsh
 
-# Auto-start tmux if not already running in a tmux session
-if [ -z "$TMUX" ]; then
-  # Create a unique session name based on the terminal process ID
-  SESSION_NAME="auto-$(basename "$SHELL")-$$"
-
-  # Check if a tmux session with this name already exists
-  tmux has-session -t "$SESSION_NAME" 2>/dev/null
-
-  if [ $? != 0 ]; then
-    # If the session does not exist, create a new one
-    tmux new-session -s "$SESSION_NAME"
-  else
-    # If it exists, attach to the existing session
-    tmux attach-session -t "$SESSION_NAME"
-  fi
-
-  # Exit the shell when tmux exits
-  exit
-fi
-
 # self-healing fzf-tab checkout: clone on first run (e.g. fresh machine),
 # keep it updated in the background so shell startup never blocks on git
 FZF_TAB_DIR="$HOME/.config/zsh/plugins/fzf-tab"
