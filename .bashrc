@@ -1,69 +1,23 @@
 [[ $- == *i* ]] || return
 
-export EDITOR="emacsclient -t"
-
-export LANG=C.utf8
-export LC_ALL=C.utf8
-
-alias b="batcat --wrap never"
-alias fd="fdfind -H -I"
-alias ll='eza -alF'
-
-ec() { emacsclient --create-frame "$@" & exit; }
-et() { emacsclient --tty $@; }
-
-# command line interface to voidtools everything
-# maps results to wsl paths
-# -p - search paths
-# -sort date-modified - sensible default
-es() {
-    USER_HOME=$(wslpath "$(cmd.exe /c "echo %userprofile%" 2>/dev/null | sed 's/\r$//')")
-    "$USER_HOME/Downloads/ES-1.1.0.27.x64/es.exe" -p -sort date-modified -instance 1.5a "$@" | sed 's/\r$//' | xargs -n1 -d'\n' wslpath 2>/dev/null
-}
-# ignore png files by default - for my current use case which is only full-text search they pollute the results
-es-no-png() {
-    USER_HOME=$(wslpath "$(cmd.exe /c "echo %userprofile%" 2>/dev/null | sed 's/\r$//')")
-    "$USER_HOME/Downloads/ES-1.1.0.27.x64/es.exe" -p -sort date-modified -instance 1.5a "$@" | sed 's/\r$//' | grep -v \.png$ | xargs -n1 -d'\n' wslpath 2>/dev/null
-}
-inkscape-open-all-svg-files-in-current-folder() {
-    fd -e svg -x inkscape.exe --app-id-tag a{/} {} & exit
-}
-
-copyq.exe() { powershell.exe -Command "& \"\$env:APPDATA\copyq\copyq.exe\" $@ | Write-Output"; }
-
-# Auto-start tmux if not already running in a tmux session
-if [ -z "$TMUX" ]; then
-  # Create a unique session name based on the terminal process ID
-  SESSION_NAME="auto-$(basename "$SHELL")-$$"
-
-  # Check if a tmux session with this name already exists
-  tmux has-session -t "$SESSION_NAME" 2>/dev/null
-
-  if [ $? != 0 ]; then
-    # If the session does not exist, create a new one
-    tmux new-session -s "$SESSION_NAME"
-  else
-    # If it exists, attach to the existing session
-    tmux attach-session -t "$SESSION_NAME"
-  fi
-
-  # Exit the shell when tmux exits
-  exit
-fi
-
 HISTCONTROL=ignoreboth
-# append to the history file, don't overwrite it
-shopt -s histappend
-# for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
 HISTSIZE=-1
 HISTFILESIZE=-1
+shopt -s histappend
 
-PS1='\[\033[01;34m\]$PWD\[\033[00m\] > '
-
-source /usr/share/doc/fzf/examples/key-bindings.bash
-bind -x '"\t": fzf_bash_completion'
+PS1='\h:\w $ '
 
 source /usr/share/bash-completion/bash_completion
+
+export GPG_TTY=$(tty)
+export EDITOR=/usr/bin/vi
+alias ls="/usr/bin/eza"
+alias ll="/usr/bin/eza -alF"
+alias fd="/usr/bin/fdfind -H -I"
+alias b="/usr/bin/batcat --wrap never"
+shopt -s histappend
+PROMPT_COMMAND="history -a;$PROMPT_COMMAND"
+source /usr/share/doc/fzf/examples/key-bindings.bash
 
 # auto close pass coffin after 5 minutes, no systemd timers
 # tag via argv[0] so a later `pass open` can find and kill any timer
@@ -72,6 +26,38 @@ pass() {
   command pass "$@"
   if [[ "$1" == "open" && "$#" -eq 1 ]]; then
     pkill -f '_PASS_AUTOCLOSE_TIMER_' 2>/dev/null
-    exec -a _PASS_AUTOCLOSE_TIMER_ bash -c 'sleep 300; command pass close > /dev/null 2>&1' & disown
+    ( exec -a _PASS_AUTOCLOSE_TIMER_ bash -c 'sleep 300; command pass close' </dev/null >/dev/null 2>&1 & )
   fi
+}
+
+# wraps git network and signing commands push/fetch/pull (auth) and commit/merge/tag/rebase (signing)
+# opens password store and loads the right SSH key for current repo using custom ssh-agent
+git() {
+  local class toplevel entry key
+
+  case "$1" in
+    push|fetch|pull)         class=net ;;
+    commit|merge|tag|rebase) class=sign ;;
+    *) command git "$@"; return ;; # any other git subcommand
+  esac
+
+  toplevel=$(command git rev-parse --show-toplevel 2>/dev/null)
+  [[ -z "$toplevel" ]] && { command git "$@"; return; }  # no .git
+
+  local -A ssh_key_map=(
+    ["$HOME|sign"]=github-dotfiles-sign
+    ["$HOME|net"]=github-dotfiles-auth
+    ["$HOME/qemu|sign"]=github-qemu-sign
+    ["$HOME/qemu|net"]=github-qemu-auth
+  )
+
+  key="$toplevel|$class"
+  entry=${ssh_key_map[$key]:-}
+  [[ -z "$entry" ]] && { command git "$@"; return; }
+
+  echo "+ pass close && pass open; eval \$(~/bin/ssh-agent); ssh-add <(pass $entry); git $*" >&2
+  pass close; pass open
+  eval "$(~/bin/ssh-agent)" >/dev/null
+  ssh-add -q <(pass "$entry")
+  command git "$@"
 }
