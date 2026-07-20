@@ -110,38 +110,42 @@ function _cdr_completion() {
 zle -N _cdr_completion
 bindkey '^[r' _cdr_completion
 
-# bind alt left and alt right to cd to previous and next directories
-CURRENT_DIR_INDEX=2
+# bind alt left and alt right to cd to previous and next directories,
+# like browser back/forward. Kept as an explicit stack rather than reusing
+# the chpwd_recent_dirs list, since that list gets reordered on every cd
+# (including the ones these functions issue), which makes an index into it
+# drift from the directory the user actually just left.
+typeset -ga _DIR_HISTORY_BACK
+typeset -ga _DIR_HISTORY_FORWARD
+typeset -g _DIR_HISTORY_NAVIGATING=0
 
-function load_recent_dirs() {
-  RECENT_DIRS=("${(@f)$(<~/.chpwd-recent-dirs)}")
+function _dir_history_chpwd() {
+  (( _DIR_HISTORY_NAVIGATING )) && return
+  [[ -n "$OLDPWD" ]] && _DIR_HISTORY_BACK+=("$OLDPWD")
+  _DIR_HISTORY_FORWARD=()
 }
+add-zsh-hook chpwd _dir_history_chpwd
+
 function _cd_prev_dir() {
-  load_recent_dirs
-  # Skip the current directory by starting at the previous one
-  if (( CURRENT_DIR_INDEX < ${#RECENT_DIRS[@]} - 1 )); then
-    ((CURRENT_DIR_INDEX++))
-    # Check if we are trying to switch to the current directory; if so, go one more
-    if [[ "${RECENT_DIRS[CURRENT_DIR_INDEX]}" == "$PWD" ]]; then
-      ((CURRENT_DIR_INDEX++))
-    fi
-    cd ${(Q)RECENT_DIRS[CURRENT_DIR_INDEX]}
-    zle reset-prompt
-  fi
+  (( ${#_DIR_HISTORY_BACK} == 0 )) && return
+  _DIR_HISTORY_FORWARD+=("$PWD")
+  local target=${_DIR_HISTORY_BACK[-1]}
+  _DIR_HISTORY_BACK[-1]=()
+  _DIR_HISTORY_NAVIGATING=1
+  cd ${(Q)target}
+  _DIR_HISTORY_NAVIGATING=0
+  zle reset-prompt
 }
 
 function _cd_next_dir() {
-  load_recent_dirs
-  # Skip the current directory by starting at the next recent one
-  if (( CURRENT_DIR_INDEX > 0 )); then
-    ((CURRENT_DIR_INDEX--))
-    # Check if we are trying to switch to the current directory; if so, go one more back
-    if [[ "${RECENT_DIRS[CURRENT_DIR_INDEX]}" == "$PWD" ]]; then
-      ((CURRENT_DIR_INDEX--))
-    fi
-    cd ${(Q)RECENT_DIRS[CURRENT_DIR_INDEX]}
-    zle reset-prompt
-  fi
+  (( ${#_DIR_HISTORY_FORWARD} == 0 )) && return
+  _DIR_HISTORY_BACK+=("$PWD")
+  local target=${_DIR_HISTORY_FORWARD[-1]}
+  _DIR_HISTORY_FORWARD[-1]=()
+  _DIR_HISTORY_NAVIGATING=1
+  cd ${(Q)target}
+  _DIR_HISTORY_NAVIGATING=0
+  zle reset-prompt
 }
 
 zle -N _cd_prev_dir
