@@ -122,7 +122,7 @@ zstyle ':fzf-tab:*' fzf-flags --height=100% --no-preview
 # Replace it with a widget that fuzzy-picks from `zle -la` via fzf instead.
 fzf-execute-widget() {
   local widget
-  widget=$(zle -la | fzf --height=40% --reverse --prompt="widget> ") || { zle redisplay; return 1 }
+  widget=$(zle -la | fzf --tmux "$(_fzf_tmux_popup_opt)" --prompt="widget> ") || { zle redisplay; return 1 }
   zle "$widget"
 }
 zle -N fzf-execute-widget
@@ -221,10 +221,10 @@ bindkey '^[[1;5C' emacs-forward-word   # Ctrl + Right Arrow
 bindkey '^Z' undo
 bindkey '^Y' redo
 
-# use alternate buffer for fzf fuzzy search of past commands
-# by default ctrl+r binding provided with fzf shows results in the same buffer
-# prevents bug when results don't get cleared up if called from the top
-_fzf_history_widget_wrapper() {
+# popup fzf in a tmux floating pane near the cursor, rather than inline in
+# the terminal buffer, so results don't get left behind when called from
+# the top of the screen
+_fzf_tmux_popup_opt() {
     local row
     exec {tty}<>/dev/tty
     printf '\e[6n' >&$tty
@@ -232,13 +232,19 @@ _fzf_history_widget_wrapper() {
     exec {tty}<&-
 
     if (( row <= LINES / 3 )); then
-        FZF_CTRL_R_OPTS='--tmux top,60%'
+        echo 'top,60%'
     elif (( row >= LINES * 2 / 3 )); then
-        FZF_CTRL_R_OPTS='--tmux bottom,60%'
+        echo 'bottom,60%'
     else
-        FZF_CTRL_R_OPTS='--tmux center,100%,60%'
+        echo 'center,100%,60%'
     fi
+}
 
+# use alternate buffer for fzf fuzzy search of past commands
+# by default ctrl+r binding provided with fzf shows results in the same buffer
+# prevents bug when results don't get cleared up if called from the top
+_fzf_history_widget_wrapper() {
+    FZF_CTRL_R_OPTS="--tmux $(_fzf_tmux_popup_opt)"
     fzf-history-widget
 }
 zle -N _fzf_history_widget_wrapper
