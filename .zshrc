@@ -103,6 +103,10 @@ zstyle ':chpwd:*' recent-dirs-max 0
 # bind alt r to list recent directories
 function _cdr_completion() {
   local choice=$(cdr -l | fzf)
+  if [[ -z "$choice" ]]; then
+    zle reset-prompt
+    return
+  fi
   local number=$(echo "$choice" | awk '{print $1}')
   BUFFER="cdr $number"
   zle accept-line
