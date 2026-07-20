@@ -141,15 +141,28 @@ bindkey '^[r' _cdr_completion
 # like browser back/forward. Kept as an explicit stack rather than reusing
 # the chpwd_recent_dirs list, since that list gets reordered on every cd
 # (including the ones these functions issue), which makes an index into it
-# drift from the directory the user actually just left.
+# drift from the directory the user actually just left. Persisted to disk
+# (like ~/.chpwd-recent-dirs) so the history survives shell restarts.
+typeset -g _DIR_HISTORY_BACK_FILE="$HOME/.zsh_dir_history_back"
+typeset -g _DIR_HISTORY_FORWARD_FILE="$HOME/.zsh_dir_history_forward"
+
 typeset -ga _DIR_HISTORY_BACK
 typeset -ga _DIR_HISTORY_FORWARD
 typeset -g _DIR_HISTORY_NAVIGATING=0
+
+[[ -s $_DIR_HISTORY_BACK_FILE ]] && _DIR_HISTORY_BACK=("${(@f)$(<$_DIR_HISTORY_BACK_FILE)}")
+[[ -s $_DIR_HISTORY_FORWARD_FILE ]] && _DIR_HISTORY_FORWARD=("${(@f)$(<$_DIR_HISTORY_FORWARD_FILE)}")
+
+function _dir_history_save() {
+  printf '%s\n' "${_DIR_HISTORY_BACK[@]}" > $_DIR_HISTORY_BACK_FILE
+  printf '%s\n' "${_DIR_HISTORY_FORWARD[@]}" > $_DIR_HISTORY_FORWARD_FILE
+}
 
 function _dir_history_chpwd() {
   (( _DIR_HISTORY_NAVIGATING )) && return
   [[ -n "$OLDPWD" ]] && _DIR_HISTORY_BACK+=("$OLDPWD")
   _DIR_HISTORY_FORWARD=()
+  _dir_history_save
 }
 add-zsh-hook chpwd _dir_history_chpwd
 
@@ -161,6 +174,7 @@ function _cd_prev_dir() {
   _DIR_HISTORY_NAVIGATING=1
   cd ${(Q)target}
   _DIR_HISTORY_NAVIGATING=0
+  _dir_history_save
   zle reset-prompt
 }
 
@@ -172,6 +186,7 @@ function _cd_next_dir() {
   _DIR_HISTORY_NAVIGATING=1
   cd ${(Q)target}
   _DIR_HISTORY_NAVIGATING=0
+  _dir_history_save
   zle reset-prompt
 }
 
