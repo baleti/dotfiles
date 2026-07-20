@@ -117,6 +117,17 @@ zstyle ':fzf-tab:complete:cd:*' fzf-preview 'eza -1 --color=always $realpath'
 # --no-preview don't display contents of directories, seems too distracting
 zstyle ':fzf-tab:*' fzf-flags --height=100% --no-preview
 
+# M-x normally runs execute-named-cmd, which prompts for a widget name via
+# plain `read` rather than the completion system, so fzf-tab can't hook it.
+# Replace it with a widget that fuzzy-picks from `zle -la` via fzf instead.
+fzf-execute-widget() {
+  local widget
+  widget=$(zle -la | fzf --height=40% --reverse --prompt="widget> ") || { zle redisplay; return 1 }
+  zle "$widget"
+}
+zle -N fzf-execute-widget
+bindkey '\ex' fzf-execute-widget
+
 autoload -Uz chpwd_recent_dirs cdr add-zsh-hook
 add-zsh-hook chpwd chpwd_recent_dirs
 
