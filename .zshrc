@@ -119,11 +119,24 @@ zstyle ':fzf-tab:*' fzf-flags --height=100% --no-preview
 
 # M-x normally runs execute-named-cmd, which prompts for a widget name via
 # plain `read` rather than the completion system, so fzf-tab can't hook it.
-# Replace it with a widget that fuzzy-picks from `zle -la` via fzf instead.
+# Replace it with a widget that fuzzy-picks from `zle -la` via fzf instead,
+# with most-recently-used widgets listed first (zsh doesn't track this itself).
+typeset -g _FZF_WIDGET_HISTORY_FILE="$HOME/.zsh_widget_history"
+typeset -ga _FZF_WIDGET_HISTORY
+[[ -s $_FZF_WIDGET_HISTORY_FILE ]] && _FZF_WIDGET_HISTORY=("${(@f)$(<$_FZF_WIDGET_HISTORY_FILE)}")
+
 fzf-execute-widget() {
   local widget
-  widget=$(zle -la | fzf --tmux "$(_fzf_tmux_popup_opt)" --prompt="widget> ") || { zle redisplay; return 1 }
+  local -a all_widgets ordered
+  all_widgets=(${(f)"$(zle -la)"})
+  # known-recent widgets first (in recency order), then the rest alphabetically
+  ordered=(${(M)_FZF_WIDGET_HISTORY:*all_widgets} ${all_widgets:|_FZF_WIDGET_HISTORY})
+  widget=$(printf '%s\n' "${ordered[@]}" | fzf --tmux "$(_fzf_tmux_popup_opt)" --prompt="widget> ") || { zle redisplay; return 1 }
   zle "$widget"
+
+  _FZF_WIDGET_HISTORY=($widget ${_FZF_WIDGET_HISTORY:#$widget})
+  (( ${#_FZF_WIDGET_HISTORY} > 50 )) && _FZF_WIDGET_HISTORY=(${_FZF_WIDGET_HISTORY[1,50]})
+  printf '%s\n' "${_FZF_WIDGET_HISTORY[@]}" > $_FZF_WIDGET_HISTORY_FILE
 }
 zle -N fzf-execute-widget
 bindkey '\ex' fzf-execute-widget
