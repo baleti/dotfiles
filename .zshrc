@@ -41,6 +41,7 @@ setopt SHARE_HISTORY
 # inline comments
 setopt interactive_comments
 
+PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.config/emacs/bin:$PATH"
 export EDITOR="emacsclient -t"
 
