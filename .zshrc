@@ -22,6 +22,9 @@ zstyle ':completion:*' menu select
 # Auto complete with case insenstivity
 zstyle ':completion:*' matcher-list '' 'm:{a-zA-Z}={A-Za-z}' 'r:|[._-]=* r:|=*' 'l:|=* r:|=*'
 
+# custom completions (wish there was a proper XDG default)
+fpath=(/home/user/.local/share/zsh/completions $fpath)
+
 zmodload zsh/complist
 compinit
 _comp_options+=(globdots)		# Include hidden files.
