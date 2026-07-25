@@ -230,6 +230,11 @@ the outer terminal, which then sets the local system clipboard."
       :desc "Insert custom timestamp with date"
       "i T" #'insert-custom-timestamp)
 
+;; gitq — query git's object graph.  SPC g q is free in Doom's git prefix.
+(map! :leader
+      :desc "gitq query"
+      "g q" #'gitq)
+
 ;; debugging
 ;; (map! :map backtrace-mode-map :after backtrace :n "d" 'backtrace-toggle-locals)
 ;; (map! :map backtrace-mode-map :after backtrace :n "n" 'edebug-next-mode)
