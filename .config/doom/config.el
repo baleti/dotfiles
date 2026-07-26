@@ -4,6 +4,12 @@
 
 (after! vertico
   (setq vertico-cycle nil)
+  ;; Shrink the minibuffer to the number of candidates actually left, rather
+  ;; than always reserving `vertico-count' lines.  The default is nil (fixed
+  ;; height) because it inherits `resize-mini-windows', which Doom sets to
+  ;; grow-only — so filtering down to three candidates still showed a
+  ;; seventeen-line window.
+  (setq vertico-resize t)
   (map! :map (minibuffer-local-map vertico-map)
       "C-w" evil-window-map)
 )
