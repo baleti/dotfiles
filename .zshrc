@@ -26,7 +26,7 @@ zstyle ':completion:*' matcher-list '' 'm:{a-zA-Z}={A-Za-z}' 'r:|[._-]=* r:|=*' 
 # Sourced, not on fpath — fpath autoloads #compdef files and never sources
 # anything, which is why the old three-file layout sat there inert. Position
 # in this file does not matter; it defers its setup to the first prompt.
-source /home/user/.local/share/gitq/gitq.zsh
+[ -f /home/user/.local/share/gitq/gitq.zsh ] && source /home/user/.local/share/gitq/gitq.zsh
 
 zmodload zsh/complist
 compinit

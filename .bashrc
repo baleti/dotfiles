@@ -20,3 +20,4 @@ alias b="/usr/bin/batcat --wrap never"
 shopt -s histappend
 PROMPT_COMMAND="history -a;$PROMPT_COMMAND"
 source /usr/share/doc/fzf/examples/key-bindings.bash
+[ -f /home/user/.local/share/gitq/gitq.bash ] && source /home/user/.local/share/gitq/gitq.bash
