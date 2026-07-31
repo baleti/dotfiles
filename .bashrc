@@ -45,10 +45,10 @@ git() {
   [[ -z "$toplevel" ]] && { command git "$@"; return; }  # no .git
 
   local -A ssh_key_map=(
-    ["$HOME|sign"]=github-dotfiles-sign
-    ["$HOME|net"]=github-dotfiles-auth
-    ["$HOME/qemu|sign"]=github-qemu-sign
-    ["$HOME/qemu|net"]=github-qemu-auth
+    ["$HOME|sign"]=github-dotfiles-ssh-sign
+    ["$HOME|net"]=github-dotfiles-ssh-auth
+    ["$HOME/qemu|sign"]=github-qemu-ssh-sign
+    ["$HOME/qemu|net"]=github-qemu-ssh-auth
   )
 
   key="$toplevel|$class"
