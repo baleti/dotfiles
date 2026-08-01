@@ -10,6 +10,7 @@ hl.env("AQ_DRM_DEVICES",
     "/home/user1/.config/hypr/Intel-integrated-GPU-DRI-card:" ..
     "/home/user1/.config/hypr/nvidia-DRI-card:" ..
     "/home/user1/.config/hypr/displaylink-DRI-card")
+hl.env("QT_QPA_PLATFORMTHEME", "kde")
 
 
 -------------------
