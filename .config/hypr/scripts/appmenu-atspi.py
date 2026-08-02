@@ -10,6 +10,7 @@
 import json
 import subprocess
 import sys
+import time
 
 import gi
 
@@ -19,6 +20,14 @@ from gi.repository import Atspi
 MENU_CONTAINER_ROLES = {"menu", "menu bar"}
 MENU_LEAF_ROLES = {"menu item", "check menu item", "radio menu item"}
 MAX_DEPTH = 12
+# Gecko (Firefox/LibreWolf) builds each submenu's accessible children lazily,
+# only once that submenu is actually opened -- unlike LibreOffice/GTK, which
+# expose the full tree upfront regardless of visibility. So an empty "menu"
+# container gets force-opened via its own click action and given this long to
+# populate before we read its children. Whatever got opened this way is left
+# on screen until a single trailing Escape closes it, right before the picker
+# shows (see main()).
+POPULATE_WAIT_SECS = 0.08
 
 
 def notify(msg):
@@ -86,7 +95,7 @@ def click_action_index(obj):
     return 0 if n > 0 else None
 
 
-def collect_leaves(obj, breadcrumb, out, depth=0):
+def collect_leaves(obj, breadcrumb, out, state, depth=0):
     if depth > MAX_DEPTH:
         return
     role = obj.get_role_name()
@@ -102,15 +111,24 @@ def collect_leaves(obj, breadcrumb, out, depth=0):
         name = obj.get_name() or "(unnamed)"
         out.append((" › ".join(breadcrumb + [name]), obj, idx))
         return
-    if role in MENU_CONTAINER_ROLES or role == "menu bar":
-        name = obj.get_name()
+    if role in MENU_CONTAINER_ROLES:
+        if role == "menu" and obj.get_child_count() == 0:
+            idx = click_action_index(obj)
+            if idx is not None:
+                Atspi.Action.do_action(obj, idx)
+                state["opened_any"] = True
+                time.sleep(POPULATE_WAIT_SECS)
+        # Skip the menu bar's own name in the breadcrumb -- LibreOffice's is
+        # empty anyway, but Gecko names it "Application", which would prefix
+        # every single item with a meaningless "Application › ...".
+        name = obj.get_name() if role == "menu" else None
         next_breadcrumb = breadcrumb + [name] if name else breadcrumb
         for i in range(obj.get_child_count()):
             try:
                 child = obj.get_child_at_index(i)
             except Exception:
                 continue
-            collect_leaves(child, next_breadcrumb, out, depth + 1)
+            collect_leaves(child, next_breadcrumb, out, state, depth + 1)
 
 
 def main():
@@ -135,7 +153,13 @@ def main():
         return
 
     items = []
-    collect_leaves(menubar, [], items)
+    state = {"opened_any": False}
+    collect_leaves(menubar, [], items, state)
+    if state["opened_any"]:
+        # Close whatever lazy-populated submenu we forced open above (GTK/Gecko
+        # menu bars show one open menu at a time, so this closes the last one
+        # regardless of how many we stepped through).
+        subprocess.run(["wtype", "-k", "Escape"], check=False)
     if not items:
         notify(f"'{title}': menu bar has no actionable items.")
         return

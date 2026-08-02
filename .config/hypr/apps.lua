@@ -11,10 +11,7 @@ return {
     { key = "2", slug = "element",     class = "Element",                      cmd = "element-desktop" },
     { key = "3", slug = "thunderbird", class = "org.mozilla.Thunderbird",      cmd = "thunderbird" },
     { key = "4", slug = "gimp",        class = "gimp",                         cmd = "gimp-3.2" },
-    -- --force-renderer-accessibility forces Electron/Chromium's AT-SPI bridge
-    -- on unconditionally (see keybinds.lua's mod+A / appmenu-atspi.py); passed
-    -- through the flatpak sandbox via `--` since it's just an argv switch.
-    { key = "5", slug = "signal",      class = "org.signal.Signal",            cmd = "flatpak run org.signal.Signal -- --force-renderer-accessibility" },
+    { key = "5", slug = "signal",      class = "org.signal.Signal",            cmd = "flatpak run org.signal.Signal" },
     { key = "6", slug = "inkscape",    class = "org.inkscape.Inkscape",        cmd = "inkscape" },
     { key = "7", slug = "recoll",      class = "recoll",                       cmd = "recoll" },
 }
