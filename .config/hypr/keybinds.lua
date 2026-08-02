@@ -166,6 +166,17 @@ hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = tr
 hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("cliphist list | wofi --dmenu | cliphist decode | wl-copy"))
 hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region --clipboard-only"))
 
+-- Global menu prototype (KDE's mod+a equivalent): flattens the focused
+-- window's AT-SPI accessible menu tree into a wofi picker and activates
+-- the chosen item. AT-SPI rather than com.canonical.AppMenu.Registrar/
+-- dbusmenu because that scheme keys off X11 window IDs, and every client
+-- here runs native Wayland (no XWayland id to register with). Coverage
+-- depends on the app exposing a real accessible menu tree -- confirmed
+-- working against LibreOffice; GTK apps with a classic menu bar should
+-- work too, Electron/Gecko apps are unlikely to unless they force their
+-- a11y bridge on.
+hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("python3 ~/.config/hypr/scripts/appmenu-atspi.py"))
+
 hl.bind(mainMod .. " + Tab", hl.dsp.window.cycle_next())
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"))
 
