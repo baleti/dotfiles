@@ -23,11 +23,14 @@ MAX_DEPTH = 12
 # Gecko (Firefox/LibreWolf) builds each submenu's accessible children lazily,
 # only once that submenu is actually opened -- unlike LibreOffice/GTK, which
 # expose the full tree upfront regardless of visibility. So an empty "menu"
-# container gets force-opened via its own click action and given this long to
-# populate before we read its children. Whatever got opened this way is left
-# on screen until a single trailing Escape closes it, right before the picker
-# shows (see main()).
-POPULATE_WAIT_SECS = 0.08
+# container gets force-opened via its own click action, then polled (rather
+# than given one fixed sleep) until children appear, since most opens
+# populate near-instantly and a flat sleep per node adds up fast across a
+# whole menu tree. Whatever got opened this way is left on screen until a
+# single trailing Escape closes it, right before the picker shows (see
+# main()).
+POPULATE_POLL_INTERVAL_SECS = 0.005
+POPULATE_POLL_TIMEOUT_SECS = 0.15
 
 
 def notify(msg):
@@ -117,7 +120,13 @@ def collect_leaves(obj, breadcrumb, out, state, depth=0):
             if idx is not None:
                 Atspi.Action.do_action(obj, idx)
                 state["opened_any"] = True
-                time.sleep(POPULATE_WAIT_SECS)
+                deadline = time.monotonic() + POPULATE_POLL_TIMEOUT_SECS
+                while obj.get_child_count() == 0 and time.monotonic() < deadline:
+                    time.sleep(POPULATE_POLL_INTERVAL_SECS)
+                # Child count can flip to nonzero a beat before the child
+                # proxies themselves are actually resolvable -- one more
+                # short interval avoids racing that.
+                time.sleep(POPULATE_POLL_INTERVAL_SECS)
         # Skip the menu bar's own name in the breadcrumb -- LibreOffice's is
         # empty anyway, but Gecko names it "Application", which would prefix
         # every single item with a meaningless "Application › ...".
@@ -127,6 +136,8 @@ def collect_leaves(obj, breadcrumb, out, state, depth=0):
             try:
                 child = obj.get_child_at_index(i)
             except Exception:
+                continue
+            if child is None:
                 continue
             collect_leaves(child, next_breadcrumb, out, state, depth + 1)
 
