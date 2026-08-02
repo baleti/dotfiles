@@ -18,17 +18,48 @@ hl.bind(mainMod .. " + right", hl.dsp.focus({ direction = "right" }))
 hl.bind(mainMod .. " + up",    hl.dsp.focus({ direction = "up" }))
 hl.bind(mainMod .. " + down",  hl.dsp.focus({ direction = "down" }))
 
--- Switch workspaces with mainMod + [0-9]
 -- Move active window to a workspace with mainMod + SHIFT + [0-9]
+-- (mainMod + [1-9] is used for pinned app launchers below)
 for i = 1, 10 do
     local key = i % 10 -- 10 maps to key 0
-    hl.bind(mainMod .. " + " .. key,         hl.dsp.focus({ workspace = i }))
     hl.bind(mainMod .. " + SHIFT + " .. key, hl.dsp.window.move({ workspace = i }))
 end
 
--- Special workspace (scratchpad)
-hl.bind(mainMod .. " + S",         hl.dsp.workspace.toggle_special("magic"))
-hl.bind(mainMod .. " + SHIFT + S", hl.dsp.window.move({ workspace = "special:magic" }))
+--------------------------------
+---- PINNED APP LAUNCHERS ----
+--------------------------------
+-- App list (class/slug/cmd) lives in apps.lua, shared with windowrules.lua
+-- (spawn hidden) and hyprland.lua (autostart).
+-- Not running -> launch. Hidden in scratch -> pull to this workspace and
+-- focus. On another normal workspace -> switch to that workspace (don't
+-- pull it here). Focused -> hide on a per-app special workspace.
+local apps = require("apps")
+
+local function toggle_app(class, slug, launch_cmd)
+    return function()
+        local windows = hl.get_windows({ class = class })
+        if #windows == 0 then
+            hl.dispatch(hl.dsp.exec_cmd(launch_cmd))
+            return
+        end
+
+        local win = windows[1]
+
+        if win.active then
+            hl.dispatch(hl.dsp.window.move({ workspace = "special:scratch_" .. slug, window = win, follow = false }))
+        elseif win.workspace and win.workspace.special then
+            local cur_ws = hl.get_active_workspace()
+            hl.dispatch(hl.dsp.window.move({ workspace = cur_ws, window = win, follow = false }))
+            hl.dispatch(hl.dsp.focus({ window = win }))
+        else
+            hl.dispatch(hl.dsp.focus({ window = win }))
+        end
+    end
+end
+
+for _, app in ipairs(apps) do
+    hl.bind(mainMod .. " + " .. app.key, toggle_app(app.class, app.slug, app.cmd))
+end
 
 -- Scroll through existing workspaces with mainMod + scroll
 hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
