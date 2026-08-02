@@ -76,12 +76,13 @@ hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("zenity --text='Choose player'
 hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%-"), { repeating = true })
 hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+"), { repeating = true })
 
--- move windows (swap the active window's tiled position in a direction)
--- confirmed field name from LuaBindingsDispatchers.cpp: direction = "left"|"right"|"up"|"down"
-hl.bind(mainMod .. " + CTRL + h", hl.dsp.window.swap({ direction = "left" }))
-hl.bind(mainMod .. " + CTRL + j", hl.dsp.window.swap({ direction = "down" }))
-hl.bind(mainMod .. " + CTRL + k", hl.dsp.window.swap({ direction = "up" }))
-hl.bind(mainMod .. " + CTRL + l", hl.dsp.window.swap({ direction = "right" }))
+-- move windows (reflow the active window's tiled position in a direction,
+-- without swapping places with whatever was there -- equivalent to the old
+-- .conf's "movewindow" dispatcher; window.swap is the true two-window trade)
+hl.bind(mainMod .. " + CTRL + h", hl.dsp.window.move({ direction = "left" }))
+hl.bind(mainMod .. " + CTRL + j", hl.dsp.window.move({ direction = "down" }))
+hl.bind(mainMod .. " + CTRL + k", hl.dsp.window.move({ direction = "up" }))
+hl.bind(mainMod .. " + CTRL + l", hl.dsp.window.move({ direction = "right" }))
 
 -- resize (old .conf: "resizeactive, -80 0" -- a relative pixel delta)
 -- confirmed field names from LuaBindingsDispatchers.cpp: x, y (numbers), relative (bool, default false)
@@ -103,4 +104,5 @@ hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd("pkill rofi || rofi -show drun"
 -- NOTE: this rebinds mainMod + R, already bound above to launch $menu. Same conflict existed
 -- in the original .conf (last bind wins), so mainMod + R currently cycles the master layout
 -- orientation rather than launching the menu. Preserved as-is -- flag if this wasn't intentional.
-hl.bind(mainMod .. " + R", hl.dsp.layout("orientationcycle"))
+hl.bind(mainMod .. " + R",         hl.dsp.layout("orientationcycle"))
+hl.bind(mainMod .. " + SHIFT + R", hl.dsp.layout("orientationprev"))
