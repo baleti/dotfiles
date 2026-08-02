@@ -66,9 +66,11 @@ hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
 hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }))
 
 -- Step back/forth between workspaces belonging to the *current* monitor only
--- -- monitors are independent, so this never hops to a workspace that lives
--- on another monitor. Forward past this monitor's highest workspace creates
--- a new one (next globally-unused id) instead of grabbing one from elsewhere.
+-- -- monitors are independent, so this never hops to a workspace that's
+-- currently shown on another monitor. Forward past this monitor's highest
+-- workspace first tries to reclaim an orphaned workspace (one that exists,
+-- has windows, but isn't displayed on any monitor right now -- e.g. one you
+-- stepped away from earlier); only if none exists does it create a fresh one.
 local function monitor_workspace_ids(mon)
     local ids = {}
     for _, ws in ipairs(hl.get_workspaces()) do
@@ -76,7 +78,6 @@ local function monitor_workspace_ids(mon)
             table.insert(ids, ws.id)
         end
     end
-    table.sort(ids)
     return ids
 end
 
@@ -88,6 +89,20 @@ local function global_max_workspace_id()
         end
     end
     return max_id
+end
+
+-- Lowest-id workspace that exists, isn't special, isn't already ours, and
+-- isn't currently displayed on any monitor -- i.e. free to be reclaimed.
+local function orphan_workspace_id(mon)
+    local best = nil
+    for _, ws in ipairs(hl.get_workspaces()) do
+        if not ws.special and not ws.visible and ws.monitor and ws.monitor.id ~= mon.id then
+            if best == nil or ws.id < best then
+                best = ws.id
+            end
+        end
+    end
+    return best
 end
 
 hl.bind("CTRL + ALT + h", function()
@@ -102,7 +117,7 @@ hl.bind("CTRL + ALT + h", function()
     if prev_id then
         hl.dispatch(hl.dsp.focus({ workspace = prev_id }))
     end
-end)
+end, { repeating = false })
 
 hl.bind("CTRL + ALT + l", function()
     local mon = hl.get_active_monitor()
@@ -115,8 +130,20 @@ hl.bind("CTRL + ALT + l", function()
             next_id = id
         end
     end
-    hl.dispatch(hl.dsp.focus({ workspace = next_id or (global_max_workspace_id() + 1) }))
-end)
+
+    if next_id then
+        hl.dispatch(hl.dsp.focus({ workspace = next_id }))
+        return
+    end
+
+    local orphan = orphan_workspace_id(mon)
+    if orphan then
+        hl.dispatch(hl.dsp.workspace.move({ workspace = orphan, monitor = mon.name }))
+        hl.dispatch(hl.dsp.focus({ workspace = orphan }))
+    else
+        hl.dispatch(hl.dsp.focus({ workspace = global_max_workspace_id() + 1 }))
+    end
+end, { repeating = false })
 
 -- Move/resize windows with mainMod + LMB/RMB and dragging
 hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(),   { mouse = true })
