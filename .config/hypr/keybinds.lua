@@ -65,9 +65,58 @@ end
 hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
 hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }))
 
--- Step back/forth between existing workspaces
-hl.bind("CTRL + ALT + h", hl.dsp.focus({ workspace = "e-1" }))
-hl.bind("CTRL + ALT + l", hl.dsp.focus({ workspace = "e+1" }))
+-- Step back/forth between workspaces belonging to the *current* monitor only
+-- -- monitors are independent, so this never hops to a workspace that lives
+-- on another monitor. Forward past this monitor's highest workspace creates
+-- a new one (next globally-unused id) instead of grabbing one from elsewhere.
+local function monitor_workspace_ids(mon)
+    local ids = {}
+    for _, ws in ipairs(hl.get_workspaces()) do
+        if not ws.special and ws.monitor and ws.monitor.id == mon.id then
+            table.insert(ids, ws.id)
+        end
+    end
+    table.sort(ids)
+    return ids
+end
+
+local function global_max_workspace_id()
+    local max_id = 0
+    for _, ws in ipairs(hl.get_workspaces()) do
+        if not ws.special and ws.id > max_id then
+            max_id = ws.id
+        end
+    end
+    return max_id
+end
+
+hl.bind("CTRL + ALT + h", function()
+    local mon = hl.get_active_monitor()
+    local cur = hl.get_active_workspace(mon)
+    if not (mon and cur) then return end
+
+    local prev_id = nil
+    for _, id in ipairs(monitor_workspace_ids(mon)) do
+        if id < cur.id then prev_id = id end
+    end
+    if prev_id then
+        hl.dispatch(hl.dsp.focus({ workspace = prev_id }))
+    end
+end)
+
+hl.bind("CTRL + ALT + l", function()
+    local mon = hl.get_active_monitor()
+    local cur = hl.get_active_workspace(mon)
+    if not (mon and cur) then return end
+
+    local next_id = nil
+    for _, id in ipairs(monitor_workspace_ids(mon)) do
+        if id > cur.id and (next_id == nil or id < next_id) then
+            next_id = id
+        end
+    end
+    hl.dispatch(hl.dsp.focus({ workspace = next_id or (global_max_workspace_id() + 1) }))
+end)
 
 -- Move/resize windows with mainMod + LMB/RMB and dragging
 hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(),   { mouse = true })
@@ -94,7 +143,7 @@ hl.bind(mainMod .. " + Tab", hl.dsp.window.cycle_next())
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"))
 
 -- emacs
-hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("emacsclient -e '(evil-buffer-new)' -c"))
+hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("alacritty -e emacsclient --tty"))
 
 -- old .conf used "fullscreen, 1" (maximize); confirmed field names from
 -- src/config/lua/bindings/LuaBindingsDispatchers.cpp: mode = "fullscreen"|"maximized", action defaults to "toggle"
