@@ -17,7 +17,7 @@ import gi
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi
 
-MENU_CONTAINER_ROLES = {"menu", "menu bar"}
+MENU_CONTAINER_ROLES = {"menu", "menu bar", "popup menu"}
 MENU_LEAF_ROLES = {"menu item", "check menu item", "radio menu item"}
 MAX_DEPTH = 12
 # Gecko (Firefox/LibreWolf) builds each submenu's accessible children lazily,
@@ -101,45 +101,66 @@ def click_action_index(obj):
 def collect_leaves(obj, breadcrumb, out, state, depth=0):
     if depth > MAX_DEPTH:
         return
-    role = obj.get_role_name()
-    if role in MENU_LEAF_ROLES:
-        try:
-            if not obj.get_state_set().contains(Atspi.StateType.ENABLED):
-                return
-        except Exception:
-            pass
-        idx = click_action_index(obj)
-        if idx is None:
-            return
-        name = obj.get_name() or "(unnamed)"
-        out.append((" › ".join(breadcrumb + [name]), obj, idx))
+    try:
+        role = obj.get_role_name()
+    except Exception:
         return
-    if role in MENU_CONTAINER_ROLES:
-        if role == "menu" and obj.get_child_count() == 0:
-            idx = click_action_index(obj)
-            if idx is not None:
-                Atspi.Action.do_action(obj, idx)
-                state["opened_any"] = True
-                deadline = time.monotonic() + POPULATE_POLL_TIMEOUT_SECS
-                while obj.get_child_count() == 0 and time.monotonic() < deadline:
-                    time.sleep(POPULATE_POLL_INTERVAL_SECS)
-                # Child count can flip to nonzero a beat before the child
-                # proxies themselves are actually resolvable -- one more
-                # short interval avoids racing that.
+    if role not in MENU_LEAF_ROLES and role not in MENU_CONTAINER_ROLES:
+        return
+
+    try:
+        nc = obj.get_child_count()
+    except Exception:
+        nc = 0
+
+    # Gecko-style lazy submenu: force it open and wait for real children.
+    if role == "menu" and nc == 0:
+        idx = click_action_index(obj)
+        if idx is not None:
+            Atspi.Action.do_action(obj, idx)
+            state["opened_any"] = True
+            deadline = time.monotonic() + POPULATE_POLL_TIMEOUT_SECS
+            while obj.get_child_count() == 0 and time.monotonic() < deadline:
                 time.sleep(POPULATE_POLL_INTERVAL_SECS)
-        # Skip the menu bar's own name in the breadcrumb -- LibreOffice's is
-        # empty anyway, but Gecko names it "Application", which would prefix
-        # every single item with a meaningless "Application › ...".
-        name = obj.get_name() if role == "menu" else None
-        next_breadcrumb = breadcrumb + [name] if name else breadcrumb
-        for i in range(obj.get_child_count()):
+            # Child count can flip to nonzero a beat before the child
+            # proxies themselves are actually resolvable -- one more short
+            # interval avoids racing that.
+            time.sleep(POPULATE_POLL_INTERVAL_SECS)
+            nc = obj.get_child_count()
+
+    if nc == 0:
+        if role in MENU_LEAF_ROLES:
             try:
-                child = obj.get_child_at_index(i)
+                if not obj.get_state_set().contains(Atspi.StateType.ENABLED):
+                    return
             except Exception:
-                continue
-            if child is None:
-                continue
-            collect_leaves(child, next_breadcrumb, out, state, depth + 1)
+                pass
+            idx = click_action_index(obj)
+            if idx is None:
+                return
+            name = obj.get_name() or "(unnamed)"
+            out.append((" › ".join(breadcrumb + [name]), obj, idx))
+        return
+
+    # nc > 0: a container to recurse into. This covers classic "menu"/"menu
+    # bar" roles, Qt's anonymous "popup menu" wrapper, AND the Qt quirk where
+    # a submenu *header* (e.g. the top-level "File") is itself labeled
+    # "menu item" despite having a real submenu underneath -- Dolphin/Okular/
+    # VLC/Wireshark/Scribus/LibreCAD/DB Browser for SQLite all do this. Any
+    # menu-ish node with children is a container; only childless ones are
+    # truly actionable. "menu bar" and "popup menu" are anonymous levels
+    # (Gecko's "Application" menu-bar name is also skipped -- it would
+    # otherwise prefix every single item with a meaningless "Application ›").
+    name = obj.get_name() if role in MENU_LEAF_ROLES or role == "menu" else None
+    next_breadcrumb = breadcrumb + [name] if name else breadcrumb
+    for i in range(nc):
+        try:
+            child = obj.get_child_at_index(i)
+        except Exception:
+            continue
+        if child is None:
+            continue
+        collect_leaves(child, next_breadcrumb, out, state, depth + 1)
 
 
 def main():
