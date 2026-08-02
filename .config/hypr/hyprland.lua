@@ -38,6 +38,7 @@ end)
 hl.on("hyprland.start", function()
     hl.exec_cmd("wl-paste --watch cliphist store")
     hl.exec_cmd("dunst")
+    hl.exec_cmd("waybar")
 
     for _, app in ipairs(apps) do
         hl.exec_cmd(app.cmd)

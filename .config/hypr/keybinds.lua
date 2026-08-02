@@ -170,14 +170,18 @@ hl.bind(mainMod .. " + Tab", hl.dsp.window.cycle_next())
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"))
 
 -- emacs
-hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("alacritty -e emacsclient --tty"))
+hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("alacritty -e tmux new-session emacsclient --tty"))
 
 -- old .conf used "fullscreen, 1" (maximize); confirmed field names from
 -- src/config/lua/bindings/LuaBindingsDispatchers.cpp: mode = "fullscreen"|"maximized", action defaults to "toggle"
 hl.bind(mainMod .. " + f", hl.dsp.window.fullscreen({ mode = "maximized", action = "toggle" }))
 
+-- waybar: SIGUSR1 toggles visibility (waybar(5), "SIGNALS"). The bar is
+-- configured non-exclusive (~/.config/waybar/config.jsonc), so it overlays
+-- windows and toggling it does not reflow the layout.
+hl.bind(mainMod .. " + b", hl.dsp.exec_cmd("killall -SIGUSR1 waybar"))
+
 -- bluetooth
-hl.bind(mainMod .. " + b",        hl.dsp.exec_cmd("bluetoothctl connect 95:05:BB:28:EE:00"))
 hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"))
 
 -- music
