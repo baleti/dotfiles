@@ -142,7 +142,7 @@ def main():
 
     labels = "\n".join(label for label, _, _ in items)
     result = subprocess.run(
-        ["wofi", "--dmenu", "--prompt", "menu"],
+        ["rofi", "-dmenu", "-i", "-p", "menu"],
         input=labels,
         capture_output=True,
         text=True,
