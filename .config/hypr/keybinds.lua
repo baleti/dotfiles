@@ -35,7 +35,12 @@ end
 -- pull it here). Focused -> hide on a per-app special workspace.
 local apps = require("apps")
 
+-- An app is all of its windows, not just the first one get_windows returns:
+-- GIMP's dialogs are separate toplevels sharing the class, so hiding or
+-- summoning only one of them splits the app across workspaces and leaves the
+-- rest stranded (invisibly, if the leftovers are the ones in scratch).
 local function toggle_app(class, slug, launch_cmd)
+    local scratch = "special:scratch_" .. slug
     return function()
         local windows = hl.get_windows({ class = class })
         if #windows == 0 then
@@ -43,16 +48,42 @@ local function toggle_app(class, slug, launch_cmd)
             return
         end
 
-        local win = windows[1]
+        -- Lowest focus_history_id == most recently focused (0 is the active
+        -- window), so this is the window you actually last looked at -- which
+        -- for a multi-window app is often a dialog, not windows[1].
+        local primary = windows[1]
+        local active = false
+        for _, win in ipairs(windows) do
+            active = active or win.active
+            if (win.focus_history_id or math.huge) < (primary.focus_history_id or math.huge) then
+                primary = win
+            end
+        end
 
-        if win.active then
-            hl.dispatch(hl.dsp.window.move({ workspace = "special:scratch_" .. slug, window = win, follow = false }))
-        elseif win.workspace and win.workspace.special then
+        if active then
+            for _, win in ipairs(windows) do
+                hl.dispatch(hl.dsp.window.move({ workspace = scratch, window = win, follow = false }))
+            end
+        elseif primary.workspace and primary.workspace.special then
             local cur_ws = hl.get_active_workspace()
-            hl.dispatch(hl.dsp.window.move({ workspace = cur_ws, window = win, follow = false }))
-            hl.dispatch(hl.dsp.focus({ window = win }))
+            for _, win in ipairs(windows) do
+                if win.workspace and win.workspace.special then
+                    hl.dispatch(hl.dsp.window.move({ workspace = cur_ws, window = win, follow = false }))
+                end
+            end
+            hl.dispatch(hl.dsp.focus({ window = primary }))
         else
-            hl.dispatch(hl.dsp.focus({ window = win }))
+            -- Already on a normal workspace: switch to it rather than pulling
+            -- it here, but first reclaim any window of this app still sitting
+            -- in scratch (a dialog that opened while it was hidden, or a
+            -- leftover from an earlier partial move) so the app is never split
+            -- between a visible workspace and an invisible one.
+            for _, win in ipairs(windows) do
+                if win.workspace and win.workspace.special and primary.workspace then
+                    hl.dispatch(hl.dsp.window.move({ workspace = primary.workspace, window = win, follow = false }))
+                end
+            end
+            hl.dispatch(hl.dsp.focus({ window = primary }))
         end
     end
 end
