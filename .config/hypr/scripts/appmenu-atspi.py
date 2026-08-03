@@ -198,7 +198,17 @@ def main():
 
     labels = "\n".join(label for label, _, _ in items)
     result = subprocess.run(
-        ["rofi", "-dmenu", "-i", "-p", ""],
+        [
+            "rofi",
+            "-dmenu",
+            "-i",
+            # The active theme's inputbar has its own hardcoded
+            # textbox-prompt-colon widget that renders ":" regardless of -p,
+            # so an empty prompt alone still leaves a stray colon -- drop the
+            # prompt/colon widgets from the inputbar entirely.
+            "-theme-str",
+            "inputbar { children: [ entry ]; }",
+        ],
         input=labels,
         capture_output=True,
         text=True,
