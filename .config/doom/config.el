@@ -216,6 +216,13 @@
   (setq org-download-link-format-function #'org-download-link-format-function-default)
   (setq-default org-download-heading-lvl 'nil))
 
+(defun open-terminal-alacritty ()
+  (interactive)
+  (add-to-list 'display-buffer-alist '("*Async Shell Command*" display-buffer-no-window (nil)))
+  (async-shell-command "alacritty -e tmux" nil nil))
+
+(map! :leader "o t" 'open-terminal-alacritty)
+
 (defun insert-custom-timestamp-with-date ()
   "Insert the current date and time in the format: [YYYY-MM-DD Day HH:MM]."
   (interactive)
