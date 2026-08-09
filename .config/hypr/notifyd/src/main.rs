@@ -7,11 +7,18 @@
 //! serving real notifications untouched during development; Phase 10
 //! switches this to the real `org.freedesktop.Notifications` name.
 //!
-//! Phase 2: full Notify argument handling, CloseNotification, and the
-//! NotificationClosed/ActionInvoked signals. Still no popup rendering
-//! (Phase 3) -- closing only happens via explicit CloseNotification calls,
-//! there's no timeout timer yet.
+//! Phase 3 adds popup rendering (popup.rs). The D-Bus method_call closures
+//! registered below must be `Send + Sync` (gio's binding requires it even
+//! though everything actually runs on one thread here -- see the comment
+//! on `DBusInterfaceInfo` further down), but GTK widgets are emphatically
+//! not `Send`. So the D-Bus side only ever touches `state: SharedState`
+//! (`Arc<Mutex<..>>`, plain data) directly, and hands off to the GTK side
+//! by pushing a `UiMsg` through a `glib::MainContext` channel -- the
+//! standard bridge for exactly this situation, since `Receiver::attach`'s
+//! callback has no `Send` bound and can freely capture `Rc<RefCell<..>>`
+//! popup state.
 
+mod popup;
 mod state;
 
 use std::collections::HashMap;
@@ -32,6 +39,15 @@ mod close_reason {
     pub const CLOSE_NOTIFICATION_CALLED: u32 = 3;
     #[allow(dead_code)] // reserved by spec for daemon-defined reasons
     pub const UNDEFINED: u32 = 4;
+}
+
+/// Sent from the (Send + Sync) D-Bus callbacks to the GTK-main-thread
+/// receiver in `main()`. Carries only ids, not full `Notification` data --
+/// the receiver re-reads `state` for the current content, so there's one
+/// source of truth rather than two copies that could disagree.
+enum UiMsg {
+    Show { id: u32, expire_timeout: i32 },
+    Close(u32),
 }
 
 const INTROSPECTION_XML: &str = r#"
@@ -100,7 +116,12 @@ fn emit_action_invoked(connection: &gio::DBusConnection, id: u32, action_key: &s
     }
 }
 
-fn handle_notify(state: &SharedState, sender: &str, parameters: &glib::Variant) -> Option<u32> {
+fn handle_notify(
+    state: &SharedState,
+    ui_tx: &glib::Sender<UiMsg>,
+    sender: &str,
+    parameters: &glib::Variant,
+) -> Option<u32> {
     let (app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout): (
         String,
         u32,
@@ -117,21 +138,24 @@ fn handle_notify(state: &SharedState, sender: &str, parameters: &glib::Variant) 
         .and_then(|v| v.get::<u8>())
         .unwrap_or(1); // NORMAL, per spec default
 
-    let mut state = state.lock().expect("state mutex poisoned");
-    let id = state.allocate_id(replaces_id);
-    state.active.insert(
-        id,
-        Notification {
+    let id = {
+        let mut state = state.lock().expect("state mutex poisoned");
+        let id = state.allocate_id(replaces_id);
+        state.active.insert(
             id,
-            sender: sender.to_string(),
-            app_name: app_name.clone(),
-            summary: summary.clone(),
-            body: body.clone(),
-            icon: app_icon.clone(),
-            actions: actions.clone(),
-            urgency,
-        },
-    );
+            Notification {
+                id,
+                sender: sender.to_string(),
+                app_name: app_name.clone(),
+                summary: summary.clone(),
+                body: body.clone(),
+                icon: app_icon.clone(),
+                actions: actions.clone(),
+                urgency,
+            },
+        );
+        id
+    };
 
     println!(
         "Notify #{id} from {sender}: app={app_name:?} icon={app_icon:?} \
@@ -139,10 +163,16 @@ fn handle_notify(state: &SharedState, sender: &str, parameters: &glib::Variant) 
          urgency={urgency} timeout={expire_timeout}"
     );
 
+    let _ = ui_tx.send(UiMsg::Show { id, expire_timeout });
+
     Some(id)
 }
 
-fn handle_close_notification(state: &SharedState, parameters: &glib::Variant) -> Option<()> {
+fn handle_close_notification(
+    state: &SharedState,
+    ui_tx: &glib::Sender<UiMsg>,
+    parameters: &glib::Variant,
+) -> Option<()> {
     let (id,): (u32,) = parameters.get()?;
 
     let (removed, connection) = {
@@ -155,6 +185,7 @@ fn handle_close_notification(state: &SharedState, parameters: &glib::Variant) ->
         if let Some(connection) = connection {
             emit_notification_closed(&connection, id, close_reason::CLOSE_NOTIFICATION_CALLED);
         }
+        let _ = ui_tx.send(UiMsg::Close(id));
     }
 
     Some(())
@@ -162,6 +193,7 @@ fn handle_close_notification(state: &SharedState, parameters: &glib::Variant) ->
 
 fn handle_method_call(
     state: &SharedState,
+    ui_tx: &glib::Sender<UiMsg>,
     sender: &str,
     method_name: &str,
     parameters: &glib::Variant,
@@ -176,14 +208,14 @@ fn handle_method_call(
             let info = ("notifyd", "hypr", "0.1.0", "1.2");
             invocation.return_value(Some(&info.to_variant()));
         }
-        "Notify" => match handle_notify(state, sender, parameters) {
+        "Notify" => match handle_notify(state, ui_tx, sender, parameters) {
             Some(id) => invocation.return_value(Some(&(id,).to_variant())),
             None => invocation.return_dbus_error(
                 "org.freedesktop.DBus.Error.InvalidArgs",
                 "Notify: unexpected argument shape",
             ),
         },
-        "CloseNotification" => match handle_close_notification(state, parameters) {
+        "CloseNotification" => match handle_close_notification(state, ui_tx, parameters) {
             Some(()) => invocation.return_value(None),
             None => invocation.return_dbus_error(
                 "org.freedesktop.DBus.Error.InvalidArgs",
@@ -200,8 +232,51 @@ fn handle_method_call(
 }
 
 fn main() {
+    if gtk::init().is_err() {
+        eprintln!("notifyd: failed to initialise GTK");
+        std::process::exit(1);
+    }
+
     let main_loop = glib::MainLoop::new(None, false);
     let state: SharedState = std::sync::Arc::new(std::sync::Mutex::new(AppState::new()));
+    let popups = popup::new_manager();
+
+    let (ui_tx, ui_rx) = glib::MainContext::channel::<UiMsg>(glib::Priority::DEFAULT);
+
+    {
+        let state = state.clone();
+        let popups = popups.clone();
+        ui_rx.attach(None, move |msg| {
+            match msg {
+                UiMsg::Show { id, expire_timeout } => {
+                    let notification = state
+                        .lock()
+                        .expect("state mutex poisoned")
+                        .active
+                        .get(&id)
+                        .cloned();
+                    if let Some(notification) = notification {
+                        let state = state.clone();
+                        let popups_for_expiry = popups.clone();
+                        popup::show(&popups, &notification, expire_timeout, move |id| {
+                            let connection = {
+                                let mut state = state.lock().expect("state mutex poisoned");
+                                let connection = state.connection.clone();
+                                state.active.remove(&id);
+                                connection
+                            };
+                            if let Some(connection) = connection {
+                                emit_notification_closed(&connection, id, close_reason::EXPIRED);
+                            }
+                            popup::close(&popups_for_expiry, id);
+                        });
+                    }
+                }
+                UiMsg::Close(id) => popup::close(&popups, id),
+            }
+            glib::ControlFlow::Continue
+        });
+    }
 
     let _owner_id = gio::bus_own_name(
         gio::BusType::Session,
@@ -210,6 +285,7 @@ fn main() {
         move |connection, _name| {
             state.lock().expect("state mutex poisoned").connection = Some(connection.clone());
             let state = state.clone();
+            let ui_tx = ui_tx.clone();
             // DBusInterfaceInfo wraps a raw pointer and isn't Send/Sync, so it
             // can't be captured from outside this (Send + Sync) closure --
             // parse it fresh here instead, which is cheap and only happens
@@ -223,7 +299,7 @@ fn main() {
                 OBJECT_PATH,
                 &interface_info,
                 move |_connection, sender, _object_path, _interface_name, method_name, parameters, invocation| {
-                    handle_method_call(&state, sender, method_name, &parameters, invocation);
+                    handle_method_call(&state, &ui_tx, sender, method_name, &parameters, invocation);
                 },
                 |_, _, _, _, _| false.to_variant(),
                 |_, _, _, _, _, _| false,

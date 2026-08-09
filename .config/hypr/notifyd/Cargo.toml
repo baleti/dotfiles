@@ -6,6 +6,10 @@ edition = "2021"
 [dependencies]
 gio = "0.18"
 glib = "0.18"
+gtk = "0.18"
+gdk = "0.18"
+gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
+serde_json = "1"
 
 [[bin]]
 name = "notifyd"
