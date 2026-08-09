@@ -19,8 +19,12 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug)]
 pub struct Notification {
     pub id: u32,
-    /// Unique D-Bus bus name of whichever app called Notify -- this is what
-    /// makes ActionInvoked routable back to the right app later.
+    /// Unique D-Bus bus name of whichever app called Notify. *Not* needed
+    /// to route ActionInvoked/NotificationClosed back to it -- those are
+    /// broadcast signals with no destination (confirmed both in the spec
+    /// and by eavesdropping on real dunst traffic), and interested clients
+    /// filter by id themselves. Kept for diagnostics/history display
+    /// (Phase 6's `notifyctl list`).
     pub sender: String,
     pub app_name: String,
     pub summary: String,

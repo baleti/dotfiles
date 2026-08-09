@@ -12,9 +12,14 @@
 //! implementation differs.
 //!
 //! This module only knows about GTK/rendering, not D-Bus or `AppState` --
-//! `main.rs` wires the two together (e.g. the `on_expired` callback passed
-//! to `show()` is what actually removes the notification from `AppState`
-//! and emits `NotificationClosed`).
+//! `main.rs` wires the two together via the `on_close`/`on_action`
+//! callbacks passed to `new_manager()`, which is what actually removes a
+//! notification from `AppState` and emits `NotificationClosed`/
+//! `ActionInvoked`. Phase 5 adds the mouse bindings that are the other
+//! trigger for those callbacks, alongside the Phase 3 expiry timer:
+//! dunstrc's `mouse_left_click = do_action`, `mouse_middle_click =
+//! close_current`, `mouse_right_click = close_all` (`open_url` dropped --
+//! nothing in this config's mouse bindings uses it).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -77,15 +82,65 @@ pub struct PopupManager {
     popups: HashMap<u32, Popup>,
     /// Front = newest = closest to the screen edge.
     order: Vec<u32>,
+    /// `(id, reason)` -- called for every close, whatever triggered it
+    /// (expiry timer, mouse_middle_click, mouse_right_click, or a future
+    /// `CloseNotification`/`notifyctl` call routed back through here).
+    on_close: Box<dyn Fn(u32, u32)>,
+    /// `(id, action_key)` -- called on mouse_left_click when there's a
+    /// default action to invoke.
+    on_action: Box<dyn Fn(u32, &str)>,
 }
 
 pub type SharedPopups = Rc<RefCell<PopupManager>>;
 
-pub fn new_manager() -> SharedPopups {
+pub fn new_manager(
+    on_close: impl Fn(u32, u32) + 'static,
+    on_action: impl Fn(u32, &str) + 'static,
+) -> SharedPopups {
     Rc::new(RefCell::new(PopupManager {
         popups: HashMap::new(),
         order: Vec::new(),
+        on_close: Box::new(on_close),
+        on_action: Box::new(on_action),
     }))
+}
+
+/// Runs the manager's `on_close` callback, then actually closes the popup.
+/// Kept as one call so every close path (timer, mouse, D-Bus) stays in
+/// sync -- `close()` alone would leave `AppState` and the original sender
+/// unaware the notification is gone.
+fn fire_close(popups: &SharedPopups, id: u32, reason: u32) {
+    popups.borrow().on_close.as_ref()(id, reason);
+    close(popups, id);
+}
+
+fn fire_action(popups: &SharedPopups, id: u32, action_key: &str) {
+    popups.borrow().on_action.as_ref()(id, action_key);
+}
+
+/// dunstrc: `action_name` (default: "default") -- "the action set as
+/// default action or the only available action will be invoked." There's
+/// no rules engine here to override `action_name`, so this is always the
+/// spec default: the action keyed "default" if present, else the only
+/// action if there's exactly one, else nothing (an ambiguous multi-action
+/// notification needs the action list Phase 8's `notifyctl actions | rofi
+/// -dmenu` provides -- dunst's equivalent here is opening a context menu,
+/// which mouse_left_click alone doesn't have in this config either).
+fn default_action_key(notification: &Notification) -> Option<&str> {
+    let mut only = None;
+    let mut count = 0;
+    for key in notification.action_keys() {
+        count += 1;
+        if key == "default" {
+            return Some(key);
+        }
+        only = Some(key);
+    }
+    if count == 1 {
+        only
+    } else {
+        None
+    }
 }
 
 fn urgency_class(urgency: u8) -> &'static str {
@@ -292,18 +347,7 @@ fn build_window() -> gtk::Window {
 /// Shows a new notification, or updates an already-displayed one in place
 /// if `notification.id` matches (the spec's `replaces_id` mechanism) --
 /// same position, refreshed content and timeout.
-///
-/// `on_expired(id)` is called (from the main loop, not synchronously) when
-/// this card's timeout elapses on its own, i.e. via nothing but the passage
-/// of time -- never for an explicit close. It's the caller's job to remove
-/// the notification from `AppState` and emit `NotificationClosed(id,
-/// EXPIRED)`; this module has no idea `AppState` exists.
-pub fn show(
-    popups: &SharedPopups,
-    notification: &Notification,
-    expire_timeout: i32,
-    on_expired: impl Fn(u32) + 'static,
-) {
+pub fn show(popups: &SharedPopups, notification: &Notification, expire_timeout: i32) {
     {
         let mut manager = popups.borrow_mut();
         if let Some(existing) = manager.popups.get_mut(&notification.id) {
@@ -321,7 +365,11 @@ pub fn show(
             if let Some(src) = existing.timeout_source.take() {
                 src.remove();
             }
-            existing.timeout_source = arm_timeout(popups, notification.id, notification.urgency, expire_timeout, on_expired);
+            drop(manager);
+            let timeout_source = arm_timeout(popups, notification.id, notification.urgency, expire_timeout);
+            if let Some(existing) = popups.borrow_mut().popups.get_mut(&notification.id) {
+                existing.timeout_source = timeout_source;
+            }
             return;
         }
     }
@@ -381,9 +429,32 @@ pub fn show(
         });
     }
 
+    // dunstrc mouse bindings: left = do_action, middle = close_current,
+    // right = close_all. Connected on the window itself rather than an
+    // inner widget -- a plain GtkBox/Label/Image has no GdkWindow of its
+    // own, so button events on them bubble up to the nearest ancestor that
+    // does, which for a bare card like this is the top-level window.
+    {
+        let popups = popups.clone();
+        let action_key = default_action_key(notification).map(str::to_string);
+        window.connect_button_press_event(move |_win, event| {
+            match event.button() {
+                1 => {
+                    if let Some(key) = &action_key {
+                        fire_action(&popups, id, key);
+                    }
+                }
+                2 => fire_close(&popups, id, crate::close_reason::DISMISSED),
+                3 => close_all(&popups),
+                _ => {}
+            }
+            glib::Propagation::Proceed
+        });
+    }
+
     window.show_all();
 
-    let timeout_source = arm_timeout(popups, id, notification.urgency, expire_timeout, on_expired);
+    let timeout_source = arm_timeout(popups, id, notification.urgency, expire_timeout);
 
     {
         let mut manager = popups.borrow_mut();
@@ -403,13 +474,7 @@ pub fn show(
     reflow(popups);
 }
 
-fn arm_timeout(
-    popups: &SharedPopups,
-    id: u32,
-    urgency: u8,
-    expire_timeout: i32,
-    on_expired: impl Fn(u32) + 'static,
-) -> Option<glib::SourceId> {
+fn arm_timeout(popups: &SharedPopups, id: u32, urgency: u8, expire_timeout: i32) -> Option<glib::SourceId> {
     let ms = timeout_ms(urgency, expire_timeout)?;
     let popups = popups.clone();
     Some(glib::timeout_add_local(
@@ -422,15 +487,18 @@ fn arm_timeout(
             if let Some(popup) = popups.borrow_mut().popups.get_mut(&id) {
                 popup.timeout_source = None;
             }
-            on_expired(id);
+            fire_close(&popups, id, crate::close_reason::EXPIRED);
             glib::ControlFlow::Break
         },
     ))
 }
 
-/// Closes and removes a popup (explicit CloseNotification, or a future
-/// mouse-close in Phase 5). A no-op if `id` isn't currently displayed --
-/// callers don't need to check first.
+/// Closes and removes a popup (explicit CloseNotification, an expiry timer,
+/// or a mouse close). A no-op if `id` isn't currently displayed -- callers
+/// don't need to check first. Does *not* run `on_close` -- callers that
+/// need `AppState`/D-Bus updated too should go through `fire_close`
+/// instead; this is also called directly from `main.rs` for the
+/// CloseNotification path, which has already done that itself.
 pub fn close(popups: &SharedPopups, id: u32) {
     {
         let mut manager = popups.borrow_mut();
@@ -443,4 +511,95 @@ pub fn close(popups: &SharedPopups, id: u32) {
         manager.order.retain(|&x| x != id);
     }
     reflow(popups);
+}
+
+/// dunstrc: `mouse_right_click = close_all`. Also reusable by Phase 7's
+/// `notifyctl close-all`.
+pub fn close_all(popups: &SharedPopups) {
+    let ids: Vec<u32> = popups.borrow().order.clone();
+    for id in ids {
+        fire_close(popups, id, crate::close_reason::DISMISSED);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // No synthetic-input tooling is available in this environment (ydotool
+    // needs uinput access this account doesn't have) to click-test
+    // connect_button_press_event end to end, so these cover the pure logic
+    // that actually decides what a click does -- the part most likely to
+    // have a real bug. The GTK wiring itself (button() == 1/2/3 ->
+    // fire_action/fire_close/close_all) is a few lines reviewed by hand;
+    // flag for a manual click-test pass before Phase 10 cutover.
+
+    fn notif(actions: &[&str]) -> Notification {
+        Notification {
+            id: 1,
+            sender: ":1.1".to_string(),
+            app_name: "test".to_string(),
+            summary: "summary".to_string(),
+            body: "body".to_string(),
+            icon: String::new(),
+            actions: actions.iter().map(|s| s.to_string()).collect(),
+            urgency: 1,
+        }
+    }
+
+    #[test]
+    fn default_action_key_prefers_default_key() {
+        let n = notif(&["default", "Default", "open", "Open"]);
+        assert_eq!(default_action_key(&n), Some("default"));
+    }
+
+    #[test]
+    fn default_action_key_falls_back_to_only_action() {
+        let n = notif(&["open", "Open"]);
+        assert_eq!(default_action_key(&n), Some("open"));
+    }
+
+    #[test]
+    fn default_action_key_ambiguous_with_no_default_yields_none() {
+        let n = notif(&["open", "Open", "dismiss", "Dismiss"]);
+        assert_eq!(default_action_key(&n), None);
+    }
+
+    #[test]
+    fn default_action_key_no_actions_yields_none() {
+        let n = notif(&[]);
+        assert_eq!(default_action_key(&n), None);
+    }
+
+    #[test]
+    fn format_markup_escapes_summary_but_not_body() {
+        let mut n = notif(&[]);
+        n.summary = "<script>".to_string();
+        n.body = "<i>already markup</i>".to_string();
+        let out = format_markup(&n);
+        assert_eq!(out, "<b>&lt;script&gt;</b>\n<i>already markup</i>");
+    }
+
+    #[test]
+    fn format_markup_handles_percent_and_unknown_tokens() {
+        let mut n = notif(&[]);
+        n.summary = "s".to_string();
+        n.body = "b".to_string();
+        // FORMAT is fixed at "<b>%s</b>\n%b" so this exercises the token
+        // parser directly rather than through the daemon's hardcoded format.
+        assert_eq!(super::format_markup(&n), "<b>s</b>\nb");
+    }
+
+    #[test]
+    fn set_card_text_falls_back_on_malformed_markup() {
+        if gtk::init().is_err() {
+            return; // no display available in this test environment
+        }
+        let label = gtk::Label::new(None);
+        let mut n = notif(&[]);
+        n.summary = "unterminated".to_string();
+        n.body = "<b>oops".to_string();
+        set_card_text(&label, &n);
+        assert_eq!(label.text(), "unterminated\n<b>oops");
+    }
 }

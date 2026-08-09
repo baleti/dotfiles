@@ -32,9 +32,11 @@ const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
 const INTERFACE_NAME: &str = "org.freedesktop.Notifications";
 
 /// NotificationClosed reason codes, per the freedesktop Notifications spec.
-mod close_reason {
+/// `pub` so popup.rs's mouse handlers (mouse_middle_click/mouse_right_click
+/// = close_current/close_all) can pass the right reason without main.rs
+/// having to mediate every mouse-triggered close individually.
+pub mod close_reason {
     pub const EXPIRED: u32 = 1;
-    #[allow(dead_code)] // used once Phase 5 adds mouse_middle_click=close_current
     pub const DISMISSED: u32 = 2;
     pub const CLOSE_NOTIFICATION_CALLED: u32 = 3;
     #[allow(dead_code)] // reserved by spec for daemon-defined reasons
@@ -100,10 +102,6 @@ fn emit_notification_closed(connection: &gio::DBusConnection, id: u32, reason: u
     }
 }
 
-/// Not called from anywhere yet -- action invocation has no trigger until
-/// Phase 5 (mouse) and Phase 7 (`notifyctl invoke`), but the emission path
-/// needs to exist now so both of those can just call it.
-#[allow(dead_code)]
 fn emit_action_invoked(connection: &gio::DBusConnection, id: u32, action_key: &str) {
     if let Err(err) = connection.emit_signal(
         None,
@@ -239,7 +237,37 @@ fn main() {
 
     let main_loop = glib::MainLoop::new(None, false);
     let state: SharedState = std::sync::Arc::new(std::sync::Mutex::new(AppState::new()));
-    let popups = popup::new_manager();
+
+    // These two are the only things popup.rs's mouse handlers and expiry
+    // timers need from the D-Bus/AppState world: remove the notification
+    // (any close reason) and tell the original sender about it, or forward
+    // an invoked action. Everything else about closing/redrawing stays
+    // inside popup.rs.
+    let popups = popup::new_manager(
+        {
+            let state = state.clone();
+            move |id, reason| {
+                let connection = {
+                    let mut state = state.lock().expect("state mutex poisoned");
+                    let connection = state.connection.clone();
+                    state.active.remove(&id);
+                    connection
+                };
+                if let Some(connection) = connection {
+                    emit_notification_closed(&connection, id, reason);
+                }
+            }
+        },
+        {
+            let state = state.clone();
+            move |id, action_key| {
+                let connection = state.lock().expect("state mutex poisoned").connection.clone();
+                if let Some(connection) = connection {
+                    emit_action_invoked(&connection, id, action_key);
+                }
+            }
+        },
+    );
 
     let (ui_tx, ui_rx) = glib::MainContext::channel::<UiMsg>(glib::Priority::DEFAULT);
 
@@ -256,20 +284,7 @@ fn main() {
                         .get(&id)
                         .cloned();
                     if let Some(notification) = notification {
-                        let state = state.clone();
-                        let popups_for_expiry = popups.clone();
-                        popup::show(&popups, &notification, expire_timeout, move |id| {
-                            let connection = {
-                                let mut state = state.lock().expect("state mutex poisoned");
-                                let connection = state.connection.clone();
-                                state.active.remove(&id);
-                                connection
-                            };
-                            if let Some(connection) = connection {
-                                emit_notification_closed(&connection, id, close_reason::EXPIRED);
-                            }
-                            popup::close(&popups_for_expiry, id);
-                        });
+                        popup::show(&popups, &notification, expire_timeout);
                     }
                 }
                 UiMsg::Close(id) => popup::close(&popups, id),
