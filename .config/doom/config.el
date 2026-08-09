@@ -48,7 +48,6 @@
 (map! :map global-map "M-l" nil)
 
 ;; Remove from evil states
-;; still doesn't work on wsl for some reason
 (map! :map evil-normal-state-map "C-<return>" nil)
 (map! :map evil-insert-state-map "C-<return>" nil)
 (map! :nvi "C-S-<return>" nil)
@@ -217,109 +216,23 @@
   (setq org-download-link-format-function #'org-download-link-format-function-default)
   (setq-default org-download-heading-lvl 'nil))
 
-(defun wsl-org-download-clipboard ()
-  "Save the clipboard image to a file in the configured org-download-image-dir."
+(defun open-terminal-alacritty ()
   (interactive)
-  (let* ((image-dir (or org-download-image-dir
-                        (concat (file-name-sans-extension (file-name-nondirectory buffer-file-name)) "-images")))
-         (file-path (concat image-dir "/"
-                            (format-time-string "%Y%m%d_%H%M%S")
-                            ".png")))
-    (unless (file-exists-p image-dir)
-      (make-directory image-dir t))
-    ;; Use PowerShell to save the clipboard image to file
-    (let ((powershell-script
-           (concat "$image = [System.Windows.Forms.Clipboard]::GetImage(); "
-                   "if ($image -ne $null) { "
-                   "$image.Save('" (expand-file-name file-path) "', [System.Drawing.Imaging.ImageFormat]::Png); "
-                   "} else { Write-Host 'No image in clipboard.' }")))
-      (shell-command-to-string (concat "powershell.exe -Command \"" powershell-script "\"")))
-    ;; Insert the link to the saved file in the buffer
-    (if (file-exists-p file-path)
-        (progn
-          (insert (format "[[file:%s]]" (file-relative-name file-path)))
-          (message "Saved image to %s" file-path))
-      (message "No image found in clipboard."))))
+  (add-to-list 'display-buffer-alist '("*Async Shell Command*" display-buffer-no-window (nil)))
+  (async-shell-command "alacritty -e tmux" nil nil))
 
-(map! :leader
-      :desc "Paste image - org-download-clipboard adapted for wsl"
-      "m a w" #'wsl-org-download-clipboard)
+(map! :leader "o t" 'open-terminal-alacritty)
 
-;; couldn't get it to work
-;; opens windows terminal, but fails if path has spaces
-;; (defun open-wsl-terminal-in-current-directory ()
-;;   "Open a WSL terminal in the current directory."
-;;   (interactive)
-;;   (let* ((wsl-path (shell-command-to-string
-;;                     (concat "wslpath -w " (shell-quote-argument default-directory))))
-;;          (windows-path (string-trim wsl-path)))
-;;     (start-process "wsl-terminal" nil "cmd.exe" "/c"
-;;                    (concat "wt.exe -d " (replace-regexp-in-string "/" "\\\\" windows-path)))))
-
-;; (map! :leader "o t" 'open-wsl-terminal-in-current-directory)
-
-(defun wsl-org-download-clipboard ()
-  "Save an image from the Windows clipboard to a file and insert a link in the current buffer."
+(defun copy-selection-to-clipboard ()
+  "Copy the selected region to the system clipboard via wl-copy."
   (interactive)
-  ;; Ensure the current buffer is associated with a file
-  (if (not buffer-file-name)
-      (error "Buffer is not associated with a file.")
-    (let* (;; Get the base name of the current buffer file (without extension)
-           (base-name (file-name-sans-extension (file-name-nondirectory buffer-file-name)))
-           ;; Create a directory name based on the buffer file name
-           ;; [2024-12-11 Wed 09:22] changed "-images" to ""
-           (dir (concat base-name ""))
-           ;; Ensure the directory exists
-           (_ (unless (file-exists-p dir)
-                (make-directory dir)))
-           ;; Generate the image file name
-           (filename (format "%sscreenshot.png" (format-time-string "_%Y%m%d_%H%M%S")))
-           ;; Full path in WSL
-           (filepath (expand-file-name filename dir))
-           ;; Convert the path to Windows format
-           (win-path (string-trim
-                      (shell-command-to-string
-                       (concat "wslpath -w "
-                               (shell-quote-argument filepath)))))
-           ;; Construct the PowerShell command
-           (ps-command (concat
-                        "Add-Type -AssemblyName System.Windows.Forms;"
-                        "Add-Type -AssemblyName System.Drawing;"
-                        "if ([System.Windows.Forms.Clipboard]::ContainsImage()) {"
-                        "$img = [System.Windows.Forms.Clipboard]::GetImage();"
-                        "$img.Save('" win-path "', [System.Drawing.Imaging.ImageFormat]::Png);"
-                        "} else {"
-                        "Write-Host 'No image found in clipboard.'; exit 1;"
-                        "}")))
-      ;; Run the PowerShell command
-      (let ((exit-code (call-process "powershell.exe" nil "*wsl-org-download-clipboard*" nil
-                                     "-Command" ps-command)))
-        (if (and (eq exit-code 0) (file-exists-p filepath))
-            (progn
-              ;; Insert the #+attr_org line above the link
-              (insert "#+attr_org: :width 600px\n")
-              ;; Insert the link to the image under the cursor
-              (insert (format "[[file:%s]]" (file-relative-name filepath)))
-              ;; Optionally, add a newline after inserting the link
-              ;; (insert "\n")
-              )
-          (error "Failed to save image from clipboard. Check *wsl-org-download-clipboard* buffer for details."))))))
+  (if (use-region-p)
+      (let ((text (buffer-substring-no-properties (region-beginning) (region-end))))
+        (call-process-region text nil "wl-copy" nil nil nil)
+        (message "Copied to clipboard"))
+    (message "No region selected")))
 
-(defun wsl-copy-to-clipboard (start end)
-  "Copy the selected region or the entire buffer to the Windows clipboard using clip.exe."
-  (interactive "r")
-  (let ((text-to-copy (buffer-substring-no-properties start end)))
-    (with-temp-buffer
-      (insert text-to-copy)
-      ;; Call clip.exe directly with the buffer contents
-      (call-process-region (point-min) (point-max) "/mnt/c/Windows/system32/clip.exe"))))
-
-;; in terminal mode it can be used without shift
-(map! "S-C-v" #'wsl-paste-from-clipboard)
-;; couldn't get it to work for some reason
-;; (map! :v "C-S-c" #'wsl-copy-to-clipboard)
-(map! :v "C-c c" 'wsl-copy-to-clipboard)
-
+(map! :v "C-c c" 'copy-selection-to-clipboard)
 
 (defun insert-custom-timestamp-with-date ()
   "Insert the current date and time in the format: [YYYY-MM-DD Day HH:MM]."
@@ -342,8 +255,8 @@
 ;; (map! :map backtrace-mode-map :after backtrace :n "d" 'backtrace-toggle-locals)
 ;; (map! :map backtrace-mode-map :after backtrace :n "n" 'edebug-next-mode)
 
-(defun wsl-open-image-in-nsxiv ()
-  "Open the image file link under the cursor in nsxiv via wsl.exe."
+(defun open-image-in-nsxiv ()
+  "Open the image file link under the cursor in nsxiv."
   (interactive)
   ;; Get the Org element at point
   (let* ((element (org-element-context)))
@@ -353,10 +266,11 @@
         (let* ((path (org-element-property :path element))
                (full-path (expand-file-name path)))
           (if (file-exists-p full-path)
-              ;; Pass the path to nsxiv via wsl.exe
-              (start-process "nsxiv" nil "wsl.exe" "nsxiv" full-path)
+              (start-process "nsxiv" nil "nsxiv" full-path)
             (message "File does not exist: %s" full-path)))
       (message "No valid file link under cursor."))))
+
+(map! :leader :desc "Open image link in nsxiv" "m a n" #'open-image-in-nsxiv)
 
 (use-package! git-branch-off
   :after magit
