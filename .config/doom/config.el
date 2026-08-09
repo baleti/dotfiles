@@ -223,6 +223,17 @@
 
 (map! :leader "o t" 'open-terminal-alacritty)
 
+(defun copy-selection-to-clipboard ()
+  "Copy the selected region to the system clipboard via wl-copy."
+  (interactive)
+  (if (use-region-p)
+      (let ((text (buffer-substring-no-properties (region-beginning) (region-end))))
+        (call-process-region text nil "wl-copy" nil nil nil)
+        (message "Copied to clipboard"))
+    (message "No region selected")))
+
+(map! :v "C-c c" 'copy-selection-to-clipboard)
+
 (defun insert-custom-timestamp-with-date ()
   "Insert the current date and time in the format: [YYYY-MM-DD Day HH:MM]."
   (interactive)
