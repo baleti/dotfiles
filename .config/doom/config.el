@@ -8,6 +8,19 @@
 
 (setq doom-theme 'doom-one)
 
+(defun +tty-unspecify-background-h ()
+  "Stop painting an explicit background so the terminal's own
+background (Alacritty) shows through instead. Covers both the
+normal faces and solaire-mode's swapped-in equivalents (used on
+non-file buffers like scratch/popups/REPLs), since solaire-mode
+runs after this hook otherwise wins."
+  (unless (display-graphic-p)
+    (dolist (face '(default fringe line-number line-number-current-line
+                     solaire-default-face solaire-fringe-face solaire-line-number-face))
+      (when (facep face)
+        (set-face-background face "unspecified-bg")))))
+(add-hook 'doom-load-theme-hook #'+tty-unspecify-background-h 100)
+
 (setq display-line-numbers-type 'absolute)
 ;; reassign SPC t l directly to display-line-numbers-mode
 (map! :leader
