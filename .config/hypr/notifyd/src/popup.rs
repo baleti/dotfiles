@@ -13,10 +13,10 @@
 //!
 //! This module only knows about GTK/rendering, not D-Bus or `AppState` --
 //! `main.rs` wires the two together via the `on_close`/`on_action`
-//! callbacks passed to `new_manager()`, which is what actually removes a
-//! notification from `AppState` and emits `NotificationClosed`/
-//! `ActionInvoked`. Phase 5 adds the mouse bindings that are the other
-//! trigger for those callbacks, alongside the Phase 3 expiry timer:
+//! callbacks passed to `new_manager()`, which tell the original sender a
+//! notification closed or had an action invoked (`state.rs` keeps it around
+//! regardless -- see that module's doc for why). The mouse bindings are
+//! the other trigger for those callbacks, alongside the expiry timer:
 //! dunstrc's `mouse_left_click = do_action`, `mouse_middle_click =
 //! close_current`, `mouse_right_click = close_all` (`open_url` dropped --
 //! nothing in this config's mouse bindings uses it).
@@ -39,6 +39,13 @@ const OFFSET_X: i32 = 10; // dunstrc: offset = (10, 50), origin = top-right
 const OFFSET_Y: i32 = 50;
 const GAP: i32 = 2; // dunstrc: separator_height
 const FALLBACK_HEIGHT: i32 = 60; // stacking estimate before first size-allocate
+// dunstrc: notification_limit -- max popups shown at once (0 = no limit in
+// dunst; this daemon doesn't support unlimited, so 0 isn't handled specially
+// here). Notifications beyond the cap still land in state.rs's history as
+// normal, they just don't get a card -- dunst additionally shows an
+// "N more hidden" indicator (indicate_hidden = yes) for this case, which
+// isn't implemented here; deferred, not claimed as done.
+const NOTIFICATION_LIMIT: usize = 20;
 
 // dunstrc: format = "<b>%s</b>\n%b". %c/%S/%i/%I/%p/%n (category, stack_tag,
 // icon name with/without path, progress) are deferred along with the
@@ -372,6 +379,12 @@ pub fn show(popups: &SharedPopups, notification: &Notification, expire_timeout: 
             }
             return;
         }
+        if manager.order.len() >= NOTIFICATION_LIMIT {
+            // dunstrc: notification_limit. The notification itself isn't
+            // lost -- state.rs already recorded it regardless of whether
+            // it gets a card -- it just doesn't get a popup right now.
+            return;
+        }
     }
 
     let window = build_window();
@@ -544,6 +557,7 @@ mod tests {
             icon: String::new(),
             actions: actions.iter().map(|s| s.to_string()).collect(),
             urgency: 1,
+            timestamp: 0,
         }
     }
 
