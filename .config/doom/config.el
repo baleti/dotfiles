@@ -237,8 +237,8 @@
 ;; (map! :map backtrace-mode-map :after backtrace :n "d" 'backtrace-toggle-locals)
 ;; (map! :map backtrace-mode-map :after backtrace :n "n" 'edebug-next-mode)
 
-(defun wsl-open-image-in-nsxiv ()
-  "Open the image file link under the cursor in nsxiv via wsl.exe."
+(defun open-image-in-nsxiv ()
+  "Open the image file link under the cursor in nsxiv."
   (interactive)
   ;; Get the Org element at point
   (let* ((element (org-element-context)))
@@ -248,10 +248,11 @@
         (let* ((path (org-element-property :path element))
                (full-path (expand-file-name path)))
           (if (file-exists-p full-path)
-              ;; Pass the path to nsxiv via wsl.exe
-              (start-process "nsxiv" nil "wsl.exe" "nsxiv" full-path)
+              (start-process "nsxiv" nil "nsxiv" full-path)
             (message "File does not exist: %s" full-path)))
       (message "No valid file link under cursor."))))
+
+(map! :leader :desc "Open image link in nsxiv" "m a n" #'open-image-in-nsxiv)
 
 (use-package! git-branch-off
   :after magit
