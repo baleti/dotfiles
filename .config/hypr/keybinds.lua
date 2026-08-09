@@ -136,15 +136,44 @@ local function orphan_workspace_id(mon)
     return best
 end
 
+-- Shared with the mainMod+CTRL+SHIFT+h/l window-move binds below, so "next"/
+-- "prev" means the same thing whether you're stepping focus or dragging the
+-- active window along with you.
+local function prev_workspace_id(mon, cur)
+    local prev_id = nil
+    for _, id in ipairs(monitor_workspace_ids(mon)) do
+        if id < cur.id then prev_id = id end
+    end
+    return prev_id
+end
+
+-- Resolves (and, if reclaiming an orphan, relocates) the next workspace id;
+-- does not focus or move anything itself so both focus-step and
+-- window-move binds can share it.
+local function next_workspace_id(mon, cur)
+    local next_id = nil
+    for _, id in ipairs(monitor_workspace_ids(mon)) do
+        if id > cur.id and (next_id == nil or id < next_id) then
+            next_id = id
+        end
+    end
+    if next_id then return next_id end
+
+    local orphan = orphan_workspace_id(mon)
+    if orphan then
+        hl.dispatch(hl.dsp.workspace.move({ workspace = orphan, monitor = mon.name }))
+        return orphan
+    end
+
+    return global_max_workspace_id() + 1
+end
+
 hl.bind("CTRL + ALT + h", function()
     local mon = hl.get_active_monitor()
     local cur = hl.get_active_workspace(mon)
     if not (mon and cur) then return end
 
-    local prev_id = nil
-    for _, id in ipairs(monitor_workspace_ids(mon)) do
-        if id < cur.id then prev_id = id end
-    end
+    local prev_id = prev_workspace_id(mon, cur)
     if prev_id then
         hl.dispatch(hl.dsp.focus({ workspace = prev_id }))
     end
@@ -155,25 +184,29 @@ hl.bind("CTRL + ALT + l", function()
     local cur = hl.get_active_workspace(mon)
     if not (mon and cur) then return end
 
-    local next_id = nil
-    for _, id in ipairs(monitor_workspace_ids(mon)) do
-        if id > cur.id and (next_id == nil or id < next_id) then
-            next_id = id
-        end
-    end
+    hl.dispatch(hl.dsp.focus({ workspace = next_workspace_id(mon, cur) }))
+end, { repeating = false })
 
-    if next_id then
-        hl.dispatch(hl.dsp.focus({ workspace = next_id }))
-        return
-    end
+-- Move the active window along with you to the prev/next workspace, using
+-- the exact same "next" resolution (orphan reclaim, then create) as
+-- CTRL+ALT+h/l above.
+hl.bind(mainMod .. " + CTRL + SHIFT + h", function()
+    local mon = hl.get_active_monitor()
+    local cur = hl.get_active_workspace(mon)
+    if not (mon and cur) then return end
 
-    local orphan = orphan_workspace_id(mon)
-    if orphan then
-        hl.dispatch(hl.dsp.workspace.move({ workspace = orphan, monitor = mon.name }))
-        hl.dispatch(hl.dsp.focus({ workspace = orphan }))
-    else
-        hl.dispatch(hl.dsp.focus({ workspace = global_max_workspace_id() + 1 }))
+    local prev_id = prev_workspace_id(mon, cur)
+    if prev_id then
+        hl.dispatch(hl.dsp.window.move({ workspace = prev_id }))
     end
+end, { repeating = false })
+
+hl.bind(mainMod .. " + CTRL + SHIFT + l", function()
+    local mon = hl.get_active_monitor()
+    local cur = hl.get_active_workspace(mon)
+    if not (mon and cur) then return end
+
+    hl.dispatch(hl.dsp.window.move({ workspace = next_workspace_id(mon, cur) }))
 end, { repeating = false })
 
 -- Move/resize windows with mainMod + LMB/RMB and dragging
@@ -194,11 +227,11 @@ hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl play-pause"), { locked = tr
 hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("playerctl play-pause"), { locked = true })
 hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = true })
 
-hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("cliphist list | wofi --dmenu | cliphist decode | wl-copy"))
+hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/clipboard-picker"))
 hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region --clipboard-only"))
 
 -- Global menu prototype (KDE's mod+a equivalent): flattens the focused
--- window's AT-SPI accessible menu tree into a wofi picker and activates
+-- window's AT-SPI accessible menu tree into a rofi picker and activates
 -- the chosen item. AT-SPI rather than com.canonical.AppMenu.Registrar/
 -- dbusmenu because that scheme keys off X11 window IDs, and every client
 -- here runs native Wayland (no XWayland id to register with). Coverage
@@ -211,6 +244,14 @@ hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("python3 ~/.config/hypr/scripts/appme
 hl.bind(mainMod .. " + Tab", hl.dsp.window.cycle_next())
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"))
 
+-- window groups (tabs): toggle a group, then step through it like tabs.
+-- confirmed field names/signatures from src/config/lua/bindings/LuaBindingsDispatchers.cpp
+-- (hlGroupToggle/hlGroupNext/hlGroupPrev/hlGroupLockActive), all take no required args.
+hl.bind(mainMod .. " + G",         hl.dsp.group.toggle())
+hl.bind(mainMod .. " + bracketleft",  hl.dsp.group.prev())
+hl.bind(mainMod .. " + bracketright", hl.dsp.group.next())
+hl.bind(mainMod .. " + SHIFT + G", hl.dsp.group.lock_active())
+
 -- emacs
 hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("alacritty -e tmux new-session emacsclient --tty"))
 
@@ -222,6 +263,23 @@ hl.bind(mainMod .. " + f", hl.dsp.window.fullscreen({ mode = "maximized", action
 -- configured non-exclusive (~/.config/waybar/config.jsonc), so it overlays
 -- windows and toggling it does not reflow the layout.
 hl.bind(mainMod .. " + b", hl.dsp.exec_cmd("killall -SIGUSR1 waybar"))
+
+-- notifications: invoke the last notification's default action (mirrors
+-- dunstrc's mouse_left_click = do_action) -- works even if it already
+-- closed/timed out, since notifyd (replacing dunst -- see
+-- ~/.claude2/plans/silly-percolating-rose.md) never discards a
+-- notification's actions on close, unlike dunst.
+hl.bind(mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/notifyd/target/release/notifyctl invoke-last"))
+
+-- notifications: open the full action list (e.g. Thunderbird's Activate/
+-- Mark as Read/Delete) instead of just invoking the default one
+hl.bind(mainMod .. " + SHIFT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/notifyd-actions-menu.sh"))
+
+-- notifications: browse/search all retained notification history and
+-- invoke the chosen one's default action -- no redisplay needed, unlike
+-- the old dunst-backed version of this picker. Shares the clipboard-picker's
+-- GTK+layer-shell picker engine (~/.config/hypr/clipboard-picker/src/picker.rs).
+hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/notification-picker"))
 
 -- bluetooth
 hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"))
