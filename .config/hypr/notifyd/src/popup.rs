@@ -22,6 +22,7 @@ use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gdk_pixbuf::Pixbuf;
 use gtk::prelude::*;
 use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
@@ -33,6 +34,26 @@ const OFFSET_X: i32 = 10; // dunstrc: offset = (10, 50), origin = top-right
 const OFFSET_Y: i32 = 50;
 const GAP: i32 = 2; // dunstrc: separator_height
 const FALLBACK_HEIGHT: i32 = 60; // stacking estimate before first size-allocate
+
+// dunstrc: format = "<b>%s</b>\n%b". %c/%S/%i/%I/%p/%n (category, stack_tag,
+// icon name with/without path, progress) are deferred along with the
+// features that would ever populate them (progress bar, stack_tag) -- see
+// the plan's dunstrc disposition table. Left as literal text if they ever
+// appear, which they won't with the hardcoded format above.
+const FORMAT: &str = "<b>%s</b>\n%b";
+
+// dunstrc: icon_theme, icon_path, default_icon (per urgency section).
+const ICON_THEME_NAME: &str = "Adwaita";
+const ICON_SEARCH_PATHS: &[&str] = &[
+    "/usr/share/icons/gnome/16x16/status",
+    "/usr/share/icons/gnome/16x16/devices",
+];
+// dunstrc's min_icon_size/max_icon_size (32/128) describe a clamp -- scale
+// small icons up to 32, large ones down to 128, otherwise leave native size.
+// This just requests a fixed 32px: this user's icon_path points at 16x16
+// theme dirs, so in practice icons almost always hit the "scale up to
+// min_icon_size" branch anyway, and a fixed size keeps card layout simple.
+const ICON_SIZE: i32 = 32;
 
 const CSS: &str = "
 .notifyd-card {
@@ -47,6 +68,7 @@ const CSS: &str = "
 struct Popup {
     window: gtk::Window,
     label: gtk::Label,
+    icon: gtk::Image,
     last_height: i32,
     timeout_source: Option<glib::SourceId>,
 }
@@ -91,12 +113,104 @@ fn timeout_ms(urgency: u8, expire_timeout: i32) -> Option<u32> {
     }
 }
 
+/// Plain-text fallback for when `format_markup`'s output fails to parse as
+/// Pango markup (e.g. a client sent a malformed body-markup tag).
 fn body_text(notification: &Notification) -> String {
     if notification.body.is_empty() {
         notification.summary.clone()
     } else {
         format!("{}\n{}", notification.summary, notification.body)
     }
+}
+
+/// Expands dunstrc's `format = "<b>%s</b>\n%b"` against a notification.
+/// `%s`/`%a` (summary/app name) are escaped since the spec treats them as
+/// plain text; `%b` (body) is passed through unescaped since the spec
+/// allows clients to put markup there directly and we advertise the
+/// `body-markup` capability -- the whole result is validated as one markup
+/// blob by the caller before it's trusted.
+fn format_markup(notification: &Notification) -> String {
+    let mut out = String::new();
+    let mut chars = FORMAT.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('a') => out.push_str(&glib::markup_escape_text(&notification.app_name)),
+            Some('s') => out.push_str(&glib::markup_escape_text(&notification.summary)),
+            Some('b') => out.push_str(&notification.body),
+            Some('%') => out.push('%'),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
+/// Applies `format_markup`'s output as Pango markup, falling back to plain
+/// text (dropping all markup, including our own `<b>` wrapper) if a
+/// client's body-markup didn't parse -- a malformed notification body must
+/// never be allowed to just not render.
+fn set_card_text(label: &gtk::Label, notification: &Notification) {
+    let markup = format_markup(notification);
+    if pango::parse_markup(&markup, '\0').is_ok() {
+        label.set_markup(&markup);
+    } else {
+        label.set_text(&body_text(notification));
+    }
+}
+
+fn default_icon_name(urgency: u8) -> &'static str {
+    if urgency == 2 {
+        "dialog-warning" // dunstrc: [urgency_critical] default_icon
+    } else {
+        "dialog-information" // dunstrc: [urgency_low]/[urgency_normal] default_icon
+    }
+}
+
+thread_local! {
+    // GTK asserts if `set_custom_theme` is called on the shared
+    // `IconTheme::default()` singleton ("is_screen_singleton" in the
+    // GTK-CRITICAL it raises) -- dunstrc's `icon_theme = Adwaita` override
+    // needs a theme we constructed ourselves instead. One instance reused
+    // for the process lifetime rather than rebuilt (and re-searching its
+    // path list) on every icon load.
+    static ICON_THEME: gtk::IconTheme = {
+        let theme = gtk::IconTheme::new();
+        theme.set_custom_theme(Some(ICON_THEME_NAME));
+        for search_path in ICON_SEARCH_PATHS {
+            theme.append_search_path(search_path);
+        }
+        theme
+    };
+}
+
+/// `app_icon`/`image-path` can be a themed icon name or an absolute path
+/// (optionally `file://`-prefixed); falls back to the urgency's
+/// `default_icon` if neither Notify() gave us anything to show.
+fn load_icon(icon: &str, urgency: u8) -> Option<Pixbuf> {
+    let icon = if icon.is_empty() {
+        default_icon_name(urgency)
+    } else {
+        icon
+    };
+
+    let path = icon.strip_prefix("file://").unwrap_or(icon);
+    if path.starts_with('/') {
+        return Pixbuf::from_file_at_scale(path, ICON_SIZE, ICON_SIZE, true).ok();
+    }
+
+    ICON_THEME.with(|theme| {
+        theme
+            .load_icon(icon, ICON_SIZE, gtk::IconLookupFlags::FORCE_SIZE)
+            .ok()
+            .flatten()
+    })
 }
 
 /// Recomputes every popup's top margin from `order`, front-to-back.
@@ -193,7 +307,13 @@ pub fn show(
     {
         let mut manager = popups.borrow_mut();
         if let Some(existing) = manager.popups.get_mut(&notification.id) {
-            existing.label.set_text(&body_text(notification));
+            set_card_text(&existing.label, notification);
+            if let Some(pixbuf) = load_icon(&notification.icon, notification.urgency) {
+                existing.icon.set_from_pixbuf(Some(&pixbuf));
+                existing.icon.show();
+            } else {
+                existing.icon.hide();
+            }
             existing
                 .window
                 .style_context()
@@ -211,7 +331,8 @@ pub fn show(
         .style_context()
         .add_class(urgency_class(notification.urgency));
 
-    let label = gtk::Label::new(Some(&body_text(notification)));
+    let label = gtk::Label::new(None);
+    set_card_text(&label, notification);
     label.set_xalign(0.0);
     label.set_line_wrap(true);
     label.set_max_width_chars(1); // let wrapping kick in rather than growing the window
@@ -221,7 +342,23 @@ pub fn show(
     scroll.set_propagate_natural_height(true);
     scroll.set_max_content_height(MAX_HEIGHT);
     scroll.add(&label);
-    window.add(&scroll);
+
+    // dunstrc: icon_position = left
+    let icon = gtk::Image::new();
+    icon.set_valign(gtk::Align::Start);
+    if let Some(pixbuf) = load_icon(&notification.icon, notification.urgency) {
+        icon.set_from_pixbuf(Some(&pixbuf));
+    } else {
+        icon.hide();
+    }
+
+    // dunstrc: text_icon_padding = 0, but that reads as the icon touching the
+    // text with no breathing room at all -- reusing horizontal_padding's
+    // value (8) instead looks right.
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    hbox.pack_start(&icon, false, false, 0);
+    hbox.pack_start(&scroll, true, true, 0);
+    window.add(&hbox);
 
     let id = notification.id;
     {
@@ -255,6 +392,7 @@ pub fn show(
             Popup {
                 window,
                 label,
+                icon,
                 last_height: 0,
                 timeout_source,
             },
