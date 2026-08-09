@@ -5,7 +5,7 @@
 //! by clipboard-picker/notification-picker in this same dotfiles setup.
 
 use gio::prelude::*;
-use notifyd::dbus_names::{CONTROL_INTERFACE, DEV_BUS_NAME, OBJECT_PATH};
+use notifyd::dbus_names::{BUS_NAME, CONTROL_INTERFACE, OBJECT_PATH};
 
 fn usage() -> ! {
     eprintln!(
@@ -24,7 +24,7 @@ fn connect() -> gio::DBusConnection {
 /// Calls a Control method with no reply payload beyond the empty tuple.
 fn call_unit(connection: &gio::DBusConnection, method: &str, args: Option<&glib::Variant>) {
     if let Err(err) = connection.call_sync(
-        Some(DEV_BUS_NAME),
+        Some(BUS_NAME),
         OBJECT_PATH,
         CONTROL_INTERFACE,
         method,
@@ -42,7 +42,7 @@ fn call_unit(connection: &gio::DBusConnection, method: &str, args: Option<&glib:
 /// Calls a Control method that replies with a single string, and prints it.
 fn call_string(connection: &gio::DBusConnection, method: &str, args: Option<&glib::Variant>) {
     match connection.call_sync(
-        Some(DEV_BUS_NAME),
+        Some(BUS_NAME),
         OBJECT_PATH,
         CONTROL_INTERFACE,
         method,

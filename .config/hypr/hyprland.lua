@@ -52,7 +52,13 @@ end)
 
 hl.on("hyprland.start", function()
     hl.exec_cmd("wl-paste --watch cliphist store")
-    hl.exec_cmd("dunst")
+    -- Replaces dunst (~/.claude2/plans/silly-percolating-rose.md): dunst
+    -- invalidates a notification's actions the instant it closes, even on
+    -- timeout, so mod+n/ctrl+mod+n could never invoke one after it left
+    -- the screen. notifyd never discards that data. Rollback: revert this
+    -- line to hl.exec_cmd("dunst") -- the dunst package is untouched and
+    -- its systemd unit was already masked before this switch.
+    hl.exec_cmd("~/.config/hypr/notifyd/target/release/notifyd")
     hl.exec_cmd("waybar")
 
     for _, app in ipairs(apps) do
