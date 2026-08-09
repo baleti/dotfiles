@@ -118,6 +118,13 @@ impl AppState {
             }
         }
     }
+
+    /// The most recently *added* id (a `replaces_id` update doesn't move
+    /// its position here -- see `order`'s doc). Used for `notifyctl
+    /// invoke-last` and `notifyctl actions` with no id given.
+    pub fn most_recent_id(&self) -> Option<u32> {
+        self.order.back().copied()
+    }
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;

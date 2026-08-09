@@ -133,7 +133,7 @@ fn fire_action(popups: &SharedPopups, id: u32, action_key: &str) {
 /// notification needs the action list Phase 8's `notifyctl actions | rofi
 /// -dmenu` provides -- dunst's equivalent here is opening a context menu,
 /// which mouse_left_click alone doesn't have in this config either).
-fn default_action_key(notification: &Notification) -> Option<&str> {
+pub(crate) fn default_action_key(notification: &Notification) -> Option<&str> {
     let mut only = None;
     let mut count = 0;
     for key in notification.action_keys() {

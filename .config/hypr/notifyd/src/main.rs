@@ -25,11 +25,8 @@ use std::collections::HashMap;
 
 use gio::prelude::*;
 
+use notifyd::dbus_names::{CONTROL_INTERFACE, DEV_BUS_NAME, NOTIFICATIONS_INTERFACE, OBJECT_PATH};
 use state::{AppState, Notification, SharedState};
-
-const DEV_BUS_NAME: &str = "com.notifyd.Dev";
-const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
-const INTERFACE_NAME: &str = "org.freedesktop.Notifications";
 
 /// NotificationClosed reason codes, per the freedesktop Notifications spec.
 /// `pub` so popup.rs's mouse handlers (mouse_middle_click/mouse_right_click
@@ -50,8 +47,12 @@ pub mod close_reason {
 enum UiMsg {
     Show { id: u32, expire_timeout: i32 },
     Close(u32),
+    CloseAll,
 }
 
+/// Both interfaces notifyd registers at `OBJECT_PATH`, in one document --
+/// `DBusNodeInfo::for_xml` happily parses multiple `<interface>` elements
+/// under one `<node>`, and `lookup_interface` then finds either by name.
 const INTROSPECTION_XML: &str = r#"
 <node>
   <interface name="org.freedesktop.Notifications">
@@ -87,6 +88,31 @@ const INTROSPECTION_XML: &str = r#"
       <arg type="s" name="action_key"/>
     </signal>
   </interface>
+  <interface name="org.hypr.notifyd1.Control">
+    <!-- Invokes the resolved default action (dunstrc: action_name's
+         default -- see popup::default_action_key) without needing a
+         popup on screen at all: unlike dunst/mako, closing a notification
+         here never invalidates it (state.rs), so there's no
+         redisplay-then-act dance to do. id = 0 means "the most recently
+         received notification". -->
+    <method name="InvokeLastAction"/>
+    <method name="InvokeAction">
+      <arg type="u" name="id" direction="in"/>
+    </method>
+    <method name="InvokeActionByKey">
+      <arg type="u" name="id" direction="in"/>
+      <arg type="s" name="action_key" direction="in"/>
+    </method>
+    <!-- "key\tlabel\n" per action, id = 0 means most recent. -->
+    <method name="Actions">
+      <arg type="u" name="id" direction="in"/>
+      <arg type="s" name="actions" direction="out"/>
+    </method>
+    <method name="ListHistory">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="CloseAll"/>
+  </interface>
 </node>
 "#;
 
@@ -94,7 +120,7 @@ fn emit_notification_closed(connection: &gio::DBusConnection, id: u32, reason: u
     if let Err(err) = connection.emit_signal(
         None,
         OBJECT_PATH,
-        INTERFACE_NAME,
+        NOTIFICATIONS_INTERFACE,
         "NotificationClosed",
         Some(&(id, reason).to_variant()),
     ) {
@@ -106,7 +132,7 @@ fn emit_action_invoked(connection: &gio::DBusConnection, id: u32, action_key: &s
     if let Err(err) = connection.emit_signal(
         None,
         OBJECT_PATH,
-        INTERFACE_NAME,
+        NOTIFICATIONS_INTERFACE,
         "ActionInvoked",
         Some(&(id, action_key).to_variant()),
     ) {
@@ -193,6 +219,165 @@ fn handle_close_notification(
     }
 
     Some(())
+}
+
+/// `id == 0` means "the most recently received notification" throughout
+/// the control interface, matching the spec's own convention that 0 is
+/// never a real notification id (`replaces_id = 0` means "not applicable").
+fn resolve_target_id(state: &SharedState, id: u32) -> Option<u32> {
+    if id != 0 {
+        Some(id)
+    } else {
+        state.lock().expect("state mutex poisoned").most_recent_id()
+    }
+}
+
+/// Emits ActionInvoked for `id`, resolving to the default action
+/// (`popup::default_action_key`) if `key` is `None`, or that exact key if
+/// it's actually one of the notification's actions. Returns whether
+/// anything was actually emitted -- false for an unknown id, an
+/// unresolvable default (see `default_action_key`'s doc), or a `key` that
+/// doesn't belong to this notification.
+fn invoke_action(state: &SharedState, id: u32, key: Option<&str>) -> bool {
+    let (notification, connection) = {
+        let state = state.lock().expect("state mutex poisoned");
+        (state.notifications.get(&id).cloned(), state.connection.clone())
+    };
+    let Some(notification) = notification else {
+        return false;
+    };
+    let key = match key {
+        Some(k) => notification.action_keys().find(|&k2| k2 == k),
+        None => popup::default_action_key(&notification),
+    };
+    let Some(key) = key else {
+        return false;
+    };
+    if let Some(connection) = connection {
+        emit_action_invoked(&connection, id, key);
+    }
+    true
+}
+
+/// "key\tlabel\n" per action -- same tab-separated convention as
+/// `cliphist list`/`dunstctl history`, easy to pipe into `rofi -dmenu`.
+fn actions_string(state: &SharedState, id: u32) -> String {
+    let notification = state
+        .lock()
+        .expect("state mutex poisoned")
+        .notifications
+        .get(&id)
+        .cloned();
+    let Some(notification) = notification else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for pair in notification.actions.chunks(2) {
+        if let [key, label] = pair {
+            out.push_str(key);
+            out.push('\t');
+            out.push_str(label);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Newest first, matching the order dunst's own `dunstctl history` returns
+/// (confirmed earlier this session).
+fn list_history_json(state: &SharedState) -> String {
+    let state = state.lock().expect("state mutex poisoned");
+    let mut items: Vec<&Notification> = state.notifications.values().collect();
+    items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.id.cmp(&a.id)));
+
+    let json: Vec<serde_json::Value> = items
+        .iter()
+        .map(|n| {
+            let actions: Vec<serde_json::Value> = n
+                .actions
+                .chunks(2)
+                .filter_map(|pair| match pair {
+                    [key, label] => Some(serde_json::json!({"key": key, "label": label})),
+                    _ => None,
+                })
+                .collect();
+            serde_json::json!({
+                "id": n.id,
+                "sender": n.sender,
+                "app_name": n.app_name,
+                "summary": n.summary,
+                "body": n.body,
+                "icon": n.icon,
+                "urgency": n.urgency,
+                "timestamp": n.timestamp,
+                "actions": actions,
+            })
+        })
+        .collect();
+    serde_json::to_string(&json).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn handle_control_call(
+    state: &SharedState,
+    ui_tx: &glib::Sender<UiMsg>,
+    method_name: &str,
+    parameters: &glib::Variant,
+    invocation: gio::DBusMethodInvocation,
+) {
+    match method_name {
+        "InvokeLastAction" => {
+            if let Some(id) = resolve_target_id(state, 0) {
+                invoke_action(state, id, None);
+            }
+            invocation.return_value(None);
+        }
+        "InvokeAction" => {
+            let Some((id,)): Option<(u32,)> = parameters.get() else {
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.InvalidArgs",
+                    "InvokeAction: unexpected argument shape",
+                );
+                return;
+            };
+            invoke_action(state, id, None);
+            invocation.return_value(None);
+        }
+        "InvokeActionByKey" => {
+            let Some((id, key)): Option<(u32, String)> = parameters.get() else {
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.InvalidArgs",
+                    "InvokeActionByKey: unexpected argument shape",
+                );
+                return;
+            };
+            invoke_action(state, id, Some(&key));
+            invocation.return_value(None);
+        }
+        "Actions" => {
+            let Some((id,)): Option<(u32,)> = parameters.get() else {
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.InvalidArgs",
+                    "Actions: unexpected argument shape",
+                );
+                return;
+            };
+            let target = resolve_target_id(state, id).unwrap_or(0);
+            invocation.return_value(Some(&(actions_string(state, target),).to_variant()));
+        }
+        "ListHistory" => {
+            invocation.return_value(Some(&(list_history_json(state),).to_variant()));
+        }
+        "CloseAll" => {
+            let _ = ui_tx.send(UiMsg::CloseAll);
+            invocation.return_value(None);
+        }
+        other => {
+            invocation.return_dbus_error(
+                "org.freedesktop.DBus.Error.UnknownMethod",
+                &format!("notifyd control: method {other} not implemented"),
+            );
+        }
+    }
 }
 
 fn handle_method_call(
@@ -292,6 +477,7 @@ fn main() {
                     }
                 }
                 UiMsg::Close(id) => popup::close(&popups, id),
+                UiMsg::CloseAll => popup::close_all(&popups),
             }
             glib::ControlFlow::Continue
         });
@@ -303,29 +489,54 @@ fn main() {
         gio::BusNameOwnerFlags::NONE,
         move |connection, _name| {
             state.lock().expect("state mutex poisoned").connection = Some(connection.clone());
-            let state = state.clone();
-            let ui_tx = ui_tx.clone();
             // DBusInterfaceInfo wraps a raw pointer and isn't Send/Sync, so it
             // can't be captured from outside this (Send + Sync) closure --
             // parse it fresh here instead, which is cheap and only happens
-            // once per bus-name acquisition.
+            // once per bus-name acquisition. Both interfaces live in the one
+            // document (see INTROSPECTION_XML's doc comment).
             let node_info = gio::DBusNodeInfo::for_xml(INTROSPECTION_XML)
                 .expect("bad introspection xml");
-            let interface_info = node_info
-                .lookup_interface(INTERFACE_NAME)
-                .expect("interface missing from introspection xml");
-            let registration = connection.register_object(
-                OBJECT_PATH,
-                &interface_info,
-                move |_connection, sender, _object_path, _interface_name, method_name, parameters, invocation| {
-                    handle_method_call(&state, &ui_tx, sender, method_name, &parameters, invocation);
-                },
-                |_, _, _, _, _| false.to_variant(),
-                |_, _, _, _, _, _| false,
-            );
+
+            let notifications_info = node_info
+                .lookup_interface(NOTIFICATIONS_INTERFACE)
+                .expect("Notifications interface missing from introspection xml");
+            let registration = {
+                let state = state.clone();
+                let ui_tx = ui_tx.clone();
+                connection.register_object(
+                    OBJECT_PATH,
+                    &notifications_info,
+                    move |_connection, sender, _object_path, _interface_name, method_name, parameters, invocation| {
+                        handle_method_call(&state, &ui_tx, sender, method_name, &parameters, invocation);
+                    },
+                    |_, _, _, _, _| false.to_variant(),
+                    |_, _, _, _, _, _| false,
+                )
+            };
             match registration {
-                Ok(_id) => println!("notifyd: registered {OBJECT_PATH} on {DEV_BUS_NAME}"),
-                Err(err) => eprintln!("notifyd: failed to register object: {err}"),
+                Ok(_id) => println!("notifyd: registered {NOTIFICATIONS_INTERFACE} on {DEV_BUS_NAME}"),
+                Err(err) => eprintln!("notifyd: failed to register {NOTIFICATIONS_INTERFACE}: {err}"),
+            }
+
+            let control_info = node_info
+                .lookup_interface(CONTROL_INTERFACE)
+                .expect("Control interface missing from introspection xml");
+            let control_registration = {
+                let state = state.clone();
+                let ui_tx = ui_tx.clone();
+                connection.register_object(
+                    OBJECT_PATH,
+                    &control_info,
+                    move |_connection, _sender, _object_path, _interface_name, method_name, parameters, invocation| {
+                        handle_control_call(&state, &ui_tx, method_name, &parameters, invocation);
+                    },
+                    |_, _, _, _, _| false.to_variant(),
+                    |_, _, _, _, _, _| false,
+                )
+            };
+            match control_registration {
+                Ok(_id) => println!("notifyd: registered {CONTROL_INTERFACE} on {DEV_BUS_NAME}"),
+                Err(err) => eprintln!("notifyd: failed to register {CONTROL_INTERFACE}: {err}"),
             }
         },
         |_connection, name| println!("notifyd: acquired bus name {name}"),
