@@ -139,19 +139,17 @@ fn handle_notify(
     let id = {
         let mut state = state.lock().expect("state mutex poisoned");
         let id = state.allocate_id(replaces_id);
-        state.active.insert(
+        state.insert(Notification {
             id,
-            Notification {
-                id,
-                sender: sender.to_string(),
-                app_name: app_name.clone(),
-                summary: summary.clone(),
-                body: body.clone(),
-                icon: app_icon.clone(),
-                actions: actions.clone(),
-                urgency,
-            },
-        );
+            sender: sender.to_string(),
+            app_name: app_name.clone(),
+            summary: summary.clone(),
+            body: body.clone(),
+            icon: app_icon.clone(),
+            actions: actions.clone(),
+            urgency,
+            timestamp: state::now_unix(),
+        });
         id
     };
 
@@ -173,12 +171,20 @@ fn handle_close_notification(
 ) -> Option<()> {
     let (id,): (u32,) = parameters.get()?;
 
-    let (removed, connection) = {
-        let mut state = state.lock().expect("state mutex poisoned");
-        (state.active.remove(&id).is_some(), state.connection.clone())
+    // Known-id check only, not removal: Phase 6 keeps every notification in
+    // `state` after it closes (that's the whole point -- see state.rs), so
+    // there's no "remove and see if it was there" signal to key off
+    // anymore. This can't distinguish "currently displayed" from "already
+    // history" (state.rs doesn't track that), so CloseNotification on an
+    // id that's already closed is a harmless no-op re-emission rather than
+    // a true no-op -- popup::close() (via UiMsg::Close below) already
+    // no-ops correctly either way.
+    let (known, connection) = {
+        let state = state.lock().expect("state mutex poisoned");
+        (state.notifications.contains_key(&id), state.connection.clone())
     };
 
-    if removed {
+    if known {
         println!("CloseNotification #{id}");
         if let Some(connection) = connection {
             emit_notification_closed(&connection, id, close_reason::CLOSE_NOTIFICATION_CALLED);
@@ -239,20 +245,18 @@ fn main() {
     let state: SharedState = std::sync::Arc::new(std::sync::Mutex::new(AppState::new()));
 
     // These two are the only things popup.rs's mouse handlers and expiry
-    // timers need from the D-Bus/AppState world: remove the notification
-    // (any close reason) and tell the original sender about it, or forward
-    // an invoked action. Everything else about closing/redrawing stays
-    // inside popup.rs.
+    // timers need from the D-Bus/AppState world: tell the original sender a
+    // notification closed (any reason) or that one of its actions was
+    // invoked. Notably this does *not* remove anything from `state` --
+    // closing just stops the popup being displayed, it doesn't stop the
+    // notification being invokable later (that's the entire point of
+    // Phase 6, see state.rs). Everything about closing/redrawing itself
+    // stays inside popup.rs.
     let popups = popup::new_manager(
         {
             let state = state.clone();
             move |id, reason| {
-                let connection = {
-                    let mut state = state.lock().expect("state mutex poisoned");
-                    let connection = state.connection.clone();
-                    state.active.remove(&id);
-                    connection
-                };
+                let connection = state.lock().expect("state mutex poisoned").connection.clone();
                 if let Some(connection) = connection {
                     emit_notification_closed(&connection, id, reason);
                 }
@@ -280,7 +284,7 @@ fn main() {
                     let notification = state
                         .lock()
                         .expect("state mutex poisoned")
-                        .active
+                        .notifications
                         .get(&id)
                         .cloned();
                     if let Some(notification) = notification {
