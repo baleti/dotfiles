@@ -3,9 +3,10 @@
 //! invalidates a notification's actions the instant it closes, even on
 //! timeout -- confirmed via `man 5 dunst` and live D-Bus testing).
 //!
-//! Currently on a throwaway dev bus name (`DEV_BUS_NAME`) so dunst keeps
-//! serving real notifications untouched during development; Phase 10
-//! switches this to the real `org.freedesktop.Notifications` name.
+//! Owns the real `org.freedesktop.Notifications` bus name (`BUS_NAME`) as
+//! of the Phase 10 cutover -- Phases 1-9 developed against a throwaway
+//! name instead so dunst could keep serving real notifications untouched
+//! until everything up to that point was verified working.
 //!
 //! Phase 3 adds popup rendering (popup.rs). The D-Bus method_call closures
 //! registered below must be `Send + Sync` (gio's binding requires it even
@@ -28,7 +29,7 @@ use std::collections::HashMap;
 
 use gio::prelude::*;
 
-use notifyd::dbus_names::{CONTROL_INTERFACE, DEV_BUS_NAME, NOTIFICATIONS_INTERFACE, OBJECT_PATH};
+use notifyd::dbus_names::{BUS_NAME, CONTROL_INTERFACE, NOTIFICATIONS_INTERFACE, OBJECT_PATH};
 use state::{AppState, Notification, SharedState};
 
 /// NotificationClosed reason codes, per the freedesktop Notifications spec.
@@ -506,7 +507,7 @@ fn main() {
 
     let _owner_id = gio::bus_own_name(
         gio::BusType::Session,
-        DEV_BUS_NAME,
+        BUS_NAME,
         gio::BusNameOwnerFlags::NONE,
         move |connection, _name| {
             state.lock().expect("state mutex poisoned").connection = Some(connection.clone());
@@ -536,7 +537,7 @@ fn main() {
                 )
             };
             match registration {
-                Ok(_id) => println!("notifyd: registered {NOTIFICATIONS_INTERFACE} on {DEV_BUS_NAME}"),
+                Ok(_id) => println!("notifyd: registered {NOTIFICATIONS_INTERFACE} on {BUS_NAME}"),
                 Err(err) => eprintln!("notifyd: failed to register {NOTIFICATIONS_INTERFACE}: {err}"),
             }
 
@@ -557,7 +558,7 @@ fn main() {
                 )
             };
             match control_registration {
-                Ok(_id) => println!("notifyd: registered {CONTROL_INTERFACE} on {DEV_BUS_NAME}"),
+                Ok(_id) => println!("notifyd: registered {CONTROL_INTERFACE} on {BUS_NAME}"),
                 Err(err) => eprintln!("notifyd: failed to register {CONTROL_INTERFACE}: {err}"),
             }
         },
@@ -565,6 +566,6 @@ fn main() {
         |_connection, name| eprintln!("notifyd: lost bus name {name} (already running?)"),
     );
 
-    println!("notifyd: running as {DEV_BUS_NAME}, Ctrl+C to stop");
+    println!("notifyd: running as {BUS_NAME}, Ctrl+C to stop");
     main_loop.run();
 }
