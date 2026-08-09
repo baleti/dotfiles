@@ -13,9 +13,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Maximum notifications retained after they close. dunstrc: history_length.
-pub const HISTORY_LENGTH: usize = 20;
-
 #[derive(Clone, Debug)]
 pub struct Notification {
     pub id: u32,
@@ -52,7 +49,7 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// Every notification the daemon has seen, capped at `HISTORY_LENGTH`. This
+/// Every notification the daemon has seen, capped at `history_length`. This
 /// is the entire point of the project (see
 /// ~/.claude2/plans/silly-percolating-rose.md): a notification is never
 /// removed just because it closed, only evicted once the cap is exceeded,
@@ -70,15 +67,19 @@ pub struct AppState {
     /// a genuinely new id is added -- a `replaces_id` update reuses an
     /// existing entry in place and doesn't move it here.
     order: VecDeque<u32>,
+    /// dunstrc: history_length. Config-driven since Phase 9 (config.rs);
+    /// fixed for the process lifetime, no live-reload.
+    history_length: usize,
     pub connection: Option<gio::DBusConnection>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(history_length: usize) -> Self {
         AppState {
             next_id: 1,
             notifications: HashMap::new(),
             order: VecDeque::new(),
+            history_length,
             connection: None,
         }
     }
@@ -97,12 +98,12 @@ impl AppState {
 
     /// Inserts a new notification or overwrites an existing id in place
     /// (`replaces_id`), then evicts the oldest entry if this grew the
-    /// total past `HISTORY_LENGTH`.
+    /// total past `history_length`.
     ///
     /// Eviction is purely by insertion order, regardless of whether the
     /// oldest entry is still on screen: this state doesn't know "still
     /// displayed" (see the struct doc), so in the rare case of
-    /// `HISTORY_LENGTH`+ notifications arriving while a very old sticky
+    /// `history_length`+ notifications arriving while a very old sticky
     /// one is still up, that old one's action could be evicted while still
     /// visible. Acceptable for a personal tool; not worth cross-module
     /// bookkeeping with popup.rs to close.
@@ -111,7 +112,7 @@ impl AppState {
         let is_new = self.notifications.insert(id, notification).is_none();
         if is_new {
             self.order.push_back(id);
-            if self.order.len() > HISTORY_LENGTH {
+            if self.order.len() > self.history_length {
                 if let Some(evicted) = self.order.pop_front() {
                     self.notifications.remove(&evicted);
                 }

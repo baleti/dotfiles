@@ -18,8 +18,11 @@
 //! callback has no `Send` bound and can freely capture `Rc<RefCell<..>>`
 //! popup state.
 
+mod config;
 mod popup;
 mod state;
+
+use config::Config;
 
 use std::collections::HashMap;
 
@@ -193,9 +196,19 @@ fn handle_notify(
 fn handle_close_notification(
     state: &SharedState,
     ui_tx: &glib::Sender<UiMsg>,
+    config: &Config,
     parameters: &glib::Variant,
 ) -> Option<()> {
     let (id,): (u32,) = parameters.get()?;
+
+    if config.ignore_dbusclose {
+        // dunstrc: ignore_dbusclose -- "Useful to enforce the timeout set
+        // by dunst configuration. Without this parameter, an application
+        // may close the notification sent before the user defined
+        // timeout." Only the daemon's own timeout/mouse closes get
+        // through popup::close/fire_close in that case.
+        return Some(());
+    }
 
     // Known-id check only, not removal: Phase 6 keeps every notification in
     // `state` after it closes (that's the whole point -- see state.rs), so
@@ -383,6 +396,7 @@ fn handle_control_call(
 fn handle_method_call(
     state: &SharedState,
     ui_tx: &glib::Sender<UiMsg>,
+    config: &Config,
     sender: &str,
     method_name: &str,
     parameters: &glib::Variant,
@@ -404,7 +418,7 @@ fn handle_method_call(
                 "Notify: unexpected argument shape",
             ),
         },
-        "CloseNotification" => match handle_close_notification(state, ui_tx, parameters) {
+        "CloseNotification" => match handle_close_notification(state, ui_tx, config, parameters) {
             Some(()) => invocation.return_value(None),
             None => invocation.return_dbus_error(
                 "org.freedesktop.DBus.Error.InvalidArgs",
@@ -427,7 +441,13 @@ fn main() {
     }
 
     let main_loop = glib::MainLoop::new(None, false);
-    let state: SharedState = std::sync::Arc::new(std::sync::Mutex::new(AppState::new()));
+    let config = Config::load();
+    // gio's D-Bus callbacks must be Send + Sync (see the module doc), so the
+    // handful of config fields they need (currently just
+    // ignore_dbusclose) go in via an Arc alongside `state`, separate from
+    // the Rc<Config> popup.rs holds for its own (GTK-thread-only) use.
+    let config_arc = std::sync::Arc::new(config.clone());
+    let state: SharedState = std::sync::Arc::new(std::sync::Mutex::new(AppState::new(config.history_length)));
 
     // These two are the only things popup.rs's mouse handlers and expiry
     // timers need from the D-Bus/AppState world: tell the original sender a
@@ -438,6 +458,7 @@ fn main() {
     // Phase 6, see state.rs). Everything about closing/redrawing itself
     // stays inside popup.rs.
     let popups = popup::new_manager(
+        config,
         {
             let state = state.clone();
             move |id, reason| {
@@ -503,11 +524,12 @@ fn main() {
             let registration = {
                 let state = state.clone();
                 let ui_tx = ui_tx.clone();
+                let config_arc = config_arc.clone();
                 connection.register_object(
                     OBJECT_PATH,
                     &notifications_info,
                     move |_connection, sender, _object_path, _interface_name, method_name, parameters, invocation| {
-                        handle_method_call(&state, &ui_tx, sender, method_name, &parameters, invocation);
+                        handle_method_call(&state, &ui_tx, &config_arc, sender, method_name, &parameters, invocation);
                     },
                     |_, _, _, _, _| false.to_variant(),
                     |_, _, _, _, _, _| false,

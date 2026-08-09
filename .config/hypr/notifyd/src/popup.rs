@@ -1,4 +1,5 @@
-//! GTK3 + gtk-layer-shell popup rendering (Phase 3).
+//! GTK3 + gtk-layer-shell popup rendering (Phase 3), config-driven since
+//! Phase 9 (config.rs).
 //!
 //! Deliberately one independent layer-shell surface per notification,
 //! stacked by adjusting each window's top margin, rather than dunst's
@@ -6,7 +7,7 @@
 //! `gap_size = 0` mode). Visually near-identical -- stacked cards in the
 //! corner -- and much simpler: each card just reuses GTK's normal
 //! size-negotiation instead of one widget managing N notifications' layout
-//! by hand. `GAP` below reuses dunstrc's `separator_height` value as the
+//! by hand. `config.gap` reuses dunstrc's `separator_height` value as the
 //! spacing between cards, and each card's border reuses `frame_width`/
 //! `frame_color`, so the two modes read the same even though the
 //! implementation differs.
@@ -19,7 +20,8 @@
 //! the other trigger for those callbacks, alongside the expiry timer:
 //! dunstrc's `mouse_left_click = do_action`, `mouse_middle_click =
 //! close_current`, `mouse_right_click = close_all` (`open_url` dropped --
-//! nothing in this config's mouse bindings uses it).
+//! nothing in this config's mouse bindings uses it; see config.rs's module
+//! doc for why the mouse bindings themselves aren't config-driven).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,51 +33,10 @@ use gdk_pixbuf::Pixbuf;
 use gtk::prelude::*;
 use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
+use crate::config::{Config, UrgencyConfig};
 use crate::state::Notification;
 
-const WIDTH: i32 = 300; // dunstrc: width
-const MAX_HEIGHT: i32 = 300; // dunstrc: height = (0, 300)
-const OFFSET_X: i32 = 10; // dunstrc: offset = (10, 50), origin = top-right
-const OFFSET_Y: i32 = 50;
-const GAP: i32 = 2; // dunstrc: separator_height
-const FALLBACK_HEIGHT: i32 = 60; // stacking estimate before first size-allocate
-// dunstrc: notification_limit -- max popups shown at once (0 = no limit in
-// dunst; this daemon doesn't support unlimited, so 0 isn't handled specially
-// here). Notifications beyond the cap still land in state.rs's history as
-// normal, they just don't get a card -- dunst additionally shows an
-// "N more hidden" indicator (indicate_hidden = yes) for this case, which
-// isn't implemented here; deferred, not claimed as done.
-const NOTIFICATION_LIMIT: usize = 20;
-
-// dunstrc: format = "<b>%s</b>\n%b". %c/%S/%i/%I/%p/%n (category, stack_tag,
-// icon name with/without path, progress) are deferred along with the
-// features that would ever populate them (progress bar, stack_tag) -- see
-// the plan's dunstrc disposition table. Left as literal text if they ever
-// appear, which they won't with the hardcoded format above.
-const FORMAT: &str = "<b>%s</b>\n%b";
-
-// dunstrc: icon_theme, icon_path, default_icon (per urgency section).
-const ICON_THEME_NAME: &str = "Adwaita";
-const ICON_SEARCH_PATHS: &[&str] = &[
-    "/usr/share/icons/gnome/16x16/status",
-    "/usr/share/icons/gnome/16x16/devices",
-];
-// dunstrc's min_icon_size/max_icon_size (32/128) describe a clamp -- scale
-// small icons up to 32, large ones down to 128, otherwise leave native size.
-// This just requests a fixed 32px: this user's icon_path points at 16x16
-// theme dirs, so in practice icons almost always hit the "scale up to
-// min_icon_size" branch anyway, and a fixed size keeps card layout simple.
-const ICON_SIZE: i32 = 32;
-
-const CSS: &str = "
-.notifyd-card {
-    padding: 8px;
-    border: 3px solid #aaaaaa; /* dunstrc: frame_width, frame_color */
-}
-.notifyd-card.urgency-low { background-color: #222222; color: #888888; }
-.notifyd-card.urgency-normal { background-color: #285577; color: #ffffff; }
-.notifyd-card.urgency-critical { background-color: #900000; color: #ffffff; border-color: #ff0000; }
-";
+const FALLBACK_HEIGHT: i32 = 60; // stacking estimate before first size-allocate, not config-worthy
 
 struct Popup {
     window: gtk::Window,
@@ -89,6 +50,7 @@ pub struct PopupManager {
     popups: HashMap<u32, Popup>,
     /// Front = newest = closest to the screen edge.
     order: Vec<u32>,
+    config: Rc<Config>,
     /// `(id, reason)` -- called for every close, whatever triggered it
     /// (expiry timer, mouse_middle_click, mouse_right_click, or a future
     /// `CloseNotification`/`notifyctl` call routed back through here).
@@ -101,12 +63,14 @@ pub struct PopupManager {
 pub type SharedPopups = Rc<RefCell<PopupManager>>;
 
 pub fn new_manager(
+    config: Config,
     on_close: impl Fn(u32, u32) + 'static,
     on_action: impl Fn(u32, &str) + 'static,
 ) -> SharedPopups {
     Rc::new(RefCell::new(PopupManager {
         popups: HashMap::new(),
         order: Vec::new(),
+        config: Rc::new(config),
         on_close: Box::new(on_close),
         on_action: Box::new(on_action),
     }))
@@ -130,9 +94,9 @@ fn fire_action(popups: &SharedPopups, id: u32, action_key: &str) {
 /// no rules engine here to override `action_name`, so this is always the
 /// spec default: the action keyed "default" if present, else the only
 /// action if there's exactly one, else nothing (an ambiguous multi-action
-/// notification needs the action list Phase 8's `notifyctl actions | rofi
-/// -dmenu` provides -- dunst's equivalent here is opening a context menu,
-/// which mouse_left_click alone doesn't have in this config either).
+/// notification needs the action list `notifyctl actions | rofi -dmenu`
+/// provides -- dunst's equivalent here is opening a context menu, which
+/// mouse_left_click alone doesn't have in this config either).
 pub(crate) fn default_action_key(notification: &Notification) -> Option<&str> {
     let mut only = None;
     let mut count = 0;
@@ -158,20 +122,14 @@ fn urgency_class(urgency: u8) -> &'static str {
     }
 }
 
-/// dunstrc: urgency_low/normal timeout = 10s, urgency_critical timeout = 0
-/// (sticky). `expire_timeout` is the Notify() argument: >0 is an explicit
-/// override in milliseconds, 0 means never expire, -1 means "daemon default".
-fn timeout_ms(urgency: u8, expire_timeout: i32) -> Option<u32> {
+/// dunstrc: per-urgency `timeout`. `expire_timeout` is the Notify()
+/// argument: >0 is an explicit override in milliseconds, 0 means never
+/// expire, -1 means "daemon default" (the urgency's configured timeout).
+fn timeout_ms(urgency: u8, expire_timeout: i32, config: &Config) -> Option<u32> {
     match expire_timeout {
         t if t > 0 => Some(t as u32),
         0 => None,
-        _ => {
-            if urgency == 2 {
-                None
-            } else {
-                Some(10_000)
-            }
-        }
+        _ => config.urgency(urgency).timeout_ms,
     }
 }
 
@@ -185,15 +143,18 @@ fn body_text(notification: &Notification) -> String {
     }
 }
 
-/// Expands dunstrc's `format = "<b>%s</b>\n%b"` against a notification.
-/// `%s`/`%a` (summary/app name) are escaped since the spec treats them as
-/// plain text; `%b` (body) is passed through unescaped since the spec
-/// allows clients to put markup there directly and we advertise the
-/// `body-markup` capability -- the whole result is validated as one markup
-/// blob by the caller before it's trusted.
-fn format_markup(notification: &Notification) -> String {
+/// Expands dunstrc's `format` (default `"<b>%s</b>\n%b"`) against a
+/// notification. `%s`/`%a` (summary/app name) are escaped since the spec
+/// treats them as plain text; `%b` (body) is passed through unescaped since
+/// the spec allows clients to put markup there directly and we advertise
+/// the `body-markup` capability -- the whole result is validated as one
+/// markup blob by the caller before it's trusted. `%c`/`%S`/`%i`/`%I`/`%p`/
+/// `%n` (category, stack_tag, icon name with/without path, progress) are
+/// deferred along with the features that would ever populate them
+/// (progress bar, stack_tag) -- left as literal text if they ever appear.
+fn format_markup(notification: &Notification, config: &Config) -> String {
     let mut out = String::new();
-    let mut chars = FORMAT.chars();
+    let mut chars = config.format.chars();
     while let Some(c) = chars.next() {
         if c != '%' {
             out.push(c);
@@ -215,11 +176,11 @@ fn format_markup(notification: &Notification) -> String {
 }
 
 /// Applies `format_markup`'s output as Pango markup, falling back to plain
-/// text (dropping all markup, including our own `<b>` wrapper) if a
-/// client's body-markup didn't parse -- a malformed notification body must
-/// never be allowed to just not render.
-fn set_card_text(label: &gtk::Label, notification: &Notification) {
-    let markup = format_markup(notification);
+/// text (dropping all markup, including the configured format's own tags)
+/// if a client's body-markup didn't parse -- a malformed notification body
+/// must never be allowed to just not render.
+fn set_card_text(label: &gtk::Label, notification: &Notification, config: &Config) {
+    let markup = format_markup(notification, config);
     if pango::parse_markup(&markup, '\0').is_ok() {
         label.set_markup(&markup);
     } else {
@@ -227,58 +188,94 @@ fn set_card_text(label: &gtk::Label, notification: &Notification) {
     }
 }
 
-fn default_icon_name(urgency: u8) -> &'static str {
-    if urgency == 2 {
-        "dialog-warning" // dunstrc: [urgency_critical] default_icon
-    } else {
-        "dialog-information" // dunstrc: [urgency_low]/[urgency_normal] default_icon
-    }
-}
-
 thread_local! {
     // GTK asserts if `set_custom_theme` is called on the shared
     // `IconTheme::default()` singleton ("is_screen_singleton" in the
-    // GTK-CRITICAL it raises) -- dunstrc's `icon_theme = Adwaita` override
-    // needs a theme we constructed ourselves instead. One instance reused
-    // for the process lifetime rather than rebuilt (and re-searching its
-    // path list) on every icon load.
-    static ICON_THEME: gtk::IconTheme = {
-        let theme = gtk::IconTheme::new();
-        theme.set_custom_theme(Some(ICON_THEME_NAME));
-        for search_path in ICON_SEARCH_PATHS {
-            theme.append_search_path(search_path);
-        }
-        theme
-    };
+    // GTK-CRITICAL it raises) -- dunstrc's `icon_theme` override needs a
+    // theme we constructed ourselves instead. Lazily built from the first
+    // config seen and reused for the process lifetime rather than rebuilt
+    // (and re-searching its path list) on every icon load; safe because
+    // there's no config live-reload, so "the first config" is always "the
+    // only config".
+    static ICON_THEME: RefCell<Option<gtk::IconTheme>> = const { RefCell::new(None) };
 }
 
 /// `app_icon`/`image-path` can be a themed icon name or an absolute path
 /// (optionally `file://`-prefixed); falls back to the urgency's
 /// `default_icon` if neither Notify() gave us anything to show.
-fn load_icon(icon: &str, urgency: u8) -> Option<Pixbuf> {
+fn load_icon(icon: &str, urgency: u8, config: &Config) -> Option<Pixbuf> {
     let icon = if icon.is_empty() {
-        default_icon_name(urgency)
+        config.urgency(urgency).default_icon.as_str()
     } else {
         icon
     };
 
     let path = icon.strip_prefix("file://").unwrap_or(icon);
     if path.starts_with('/') {
-        return Pixbuf::from_file_at_scale(path, ICON_SIZE, ICON_SIZE, true).ok();
+        return Pixbuf::from_file_at_scale(path, config.icon_size, config.icon_size, true).ok();
     }
 
-    ICON_THEME.with(|theme| {
+    ICON_THEME.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let theme = cell.get_or_insert_with(|| {
+            let theme = gtk::IconTheme::new();
+            theme.set_custom_theme(Some(&config.icon_theme));
+            for search_path in &config.icon_search_paths {
+                theme.append_search_path(search_path);
+            }
+            theme
+        });
         theme
-            .load_icon(icon, ICON_SIZE, gtk::IconLookupFlags::FORCE_SIZE)
+            .load_icon(icon, config.icon_size, gtk::IconLookupFlags::FORCE_SIZE)
             .ok()
             .flatten()
     })
 }
 
+fn urgency_css(class: &str, urgency: &UrgencyConfig) -> String {
+    let frame = urgency
+        .frame_color
+        .as_deref()
+        .map(|c| format!(" border-color: {c};"))
+        .unwrap_or_default();
+    format!(
+        ".notifyd-card.{class} {{ background-color: {}; color: {};{} }}\n",
+        urgency.background, urgency.foreground, frame
+    )
+}
+
+/// dunstrc's `font` is a Pango font description ("Monospace 8" = family
+/// "Monospace", size 8pt), not CSS -- split off a trailing numeric size and
+/// emit the GTK-CSS equivalent.
+fn font_css(font: &str) -> String {
+    let mut parts: Vec<&str> = font.split_whitespace().collect();
+    match parts.last().and_then(|s| s.parse::<f64>().ok()) {
+        Some(size) => {
+            parts.pop();
+            format!("font-family: \"{}\"; font-size: {size}pt;", parts.join(" "))
+        }
+        None => format!("font-family: \"{font}\";"),
+    }
+}
+
+fn build_css(config: &Config) -> String {
+    format!(
+        ".notifyd-card {{ padding: {}px; border: {}px solid {}; border-radius: {}px; {} }}\n{}{}{}",
+        config.padding,
+        config.frame_width,
+        config.frame_color,
+        config.corner_radius,
+        font_css(&config.font),
+        urgency_css("urgency-low", &config.urgency_low),
+        urgency_css("urgency-normal", &config.urgency_normal),
+        urgency_css("urgency-critical", &config.urgency_critical),
+    )
+}
+
 /// Recomputes every popup's top margin from `order`, front-to-back.
 fn reflow(popups: &SharedPopups) {
     let manager = popups.borrow();
-    let mut y = OFFSET_Y;
+    let mut y = manager.config.offset_y;
     for id in &manager.order {
         if let Some(popup) = manager.popups.get(id) {
             popup.window.set_layer_shell_margin(Edge::Top, y);
@@ -287,7 +284,7 @@ fn reflow(popups: &SharedPopups) {
             } else {
                 FALLBACK_HEIGHT
             };
-            y += height + GAP;
+            y += height + manager.config.gap;
         }
     }
 }
@@ -296,7 +293,8 @@ fn reflow(popups: &SharedPopups) {
 /// resolves to this too on Wayland (per its own comment: "mouse and
 /// keyboard are equivalent: the compositor picks the output it last saw
 /// interaction on"). Ported from clipboard-picker/src/picker.rs, which
-/// solved the same problem for the picker windows.
+/// solved the same problem for the picker windows. Not config-driven --
+/// see config.rs's module doc.
 fn target_monitor(display: &gdk::Display) -> Option<gdk::Monitor> {
     let focused = (|| {
         let out = Command::new("hyprctl").args(["-j", "monitors"]).output().ok()?;
@@ -323,7 +321,7 @@ fn target_monitor(display: &gdk::Display) -> Option<gdk::Monitor> {
     display.monitor(0)
 }
 
-fn build_window() -> gtk::Window {
+fn build_window(config: &Config) -> gtk::Window {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.init_layer_shell();
     window.set_layer(Layer::Overlay);
@@ -332,9 +330,9 @@ fn build_window() -> gtk::Window {
     window.set_keyboard_mode(KeyboardMode::None);
     window.set_anchor(Edge::Top, true);
     window.set_anchor(Edge::Right, true);
-    window.set_layer_shell_margin(Edge::Right, OFFSET_X);
-    window.set_layer_shell_margin(Edge::Top, OFFSET_Y);
-    window.set_size_request(WIDTH, -1);
+    window.set_layer_shell_margin(Edge::Right, config.offset_x);
+    window.set_layer_shell_margin(Edge::Top, config.offset_y);
+    window.set_size_request(config.width, -1);
     if let Some(display) = gdk::Display::default() {
         if let Some(monitor) = target_monitor(&display) {
             window.set_monitor(&monitor);
@@ -342,7 +340,7 @@ fn build_window() -> gtk::Window {
     }
 
     let provider = gtk::CssProvider::new();
-    let _ = provider.load_from_data(CSS.as_bytes());
+    let _ = provider.load_from_data(build_css(config).as_bytes());
     window
         .style_context()
         .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -355,11 +353,13 @@ fn build_window() -> gtk::Window {
 /// if `notification.id` matches (the spec's `replaces_id` mechanism) --
 /// same position, refreshed content and timeout.
 pub fn show(popups: &SharedPopups, notification: &Notification, expire_timeout: i32) {
+    let config = popups.borrow().config.clone();
+
     {
         let mut manager = popups.borrow_mut();
         if let Some(existing) = manager.popups.get_mut(&notification.id) {
-            set_card_text(&existing.label, notification);
-            if let Some(pixbuf) = load_icon(&notification.icon, notification.urgency) {
+            set_card_text(&existing.label, notification, &config);
+            if let Some(pixbuf) = load_icon(&notification.icon, notification.urgency, &config) {
                 existing.icon.set_from_pixbuf(Some(&pixbuf));
                 existing.icon.show();
             } else {
@@ -379,21 +379,24 @@ pub fn show(popups: &SharedPopups, notification: &Notification, expire_timeout: 
             }
             return;
         }
-        if manager.order.len() >= NOTIFICATION_LIMIT {
+        if manager.order.len() >= config.notification_limit {
             // dunstrc: notification_limit. The notification itself isn't
             // lost -- state.rs already recorded it regardless of whether
             // it gets a card -- it just doesn't get a popup right now.
+            // dunst additionally shows an "N more hidden" indicator
+            // (indicate_hidden = yes) for this case; not implemented here,
+            // deferred rather than claimed done.
             return;
         }
     }
 
-    let window = build_window();
+    let window = build_window(&config);
     window
         .style_context()
         .add_class(urgency_class(notification.urgency));
 
     let label = gtk::Label::new(None);
-    set_card_text(&label, notification);
+    set_card_text(&label, notification, &config);
     label.set_xalign(0.0);
     label.set_line_wrap(true);
     label.set_max_width_chars(1); // let wrapping kick in rather than growing the window
@@ -401,13 +404,14 @@ pub fn show(popups: &SharedPopups, notification: &Notification, expire_timeout: 
     let scroll = gtk::ScrolledWindow::new(gtk::Adjustment::NONE, gtk::Adjustment::NONE);
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_propagate_natural_height(true);
-    scroll.set_max_content_height(MAX_HEIGHT);
+    scroll.set_max_content_height(config.max_height);
     scroll.add(&label);
 
-    // dunstrc: icon_position = left
+    // dunstrc: icon_position = left (the only implemented layout, see
+    // config.rs's module doc)
     let icon = gtk::Image::new();
     icon.set_valign(gtk::Align::Start);
-    if let Some(pixbuf) = load_icon(&notification.icon, notification.urgency) {
+    if let Some(pixbuf) = load_icon(&notification.icon, notification.urgency, &config) {
         icon.set_from_pixbuf(Some(&pixbuf));
     } else {
         icon.hide();
@@ -415,8 +419,8 @@ pub fn show(popups: &SharedPopups, notification: &Notification, expire_timeout: 
 
     // dunstrc: text_icon_padding = 0, but that reads as the icon touching the
     // text with no breathing room at all -- reusing horizontal_padding's
-    // value (8) instead looks right.
-    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    // value (`config.padding`) instead looks right.
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, config.padding);
     hbox.pack_start(&icon, false, false, 0);
     hbox.pack_start(&scroll, true, true, 0);
     window.add(&hbox);
@@ -488,7 +492,8 @@ pub fn show(popups: &SharedPopups, notification: &Notification, expire_timeout: 
 }
 
 fn arm_timeout(popups: &SharedPopups, id: u32, urgency: u8, expire_timeout: i32) -> Option<glib::SourceId> {
-    let ms = timeout_ms(urgency, expire_timeout)?;
+    let config = popups.borrow().config.clone();
+    let ms = timeout_ms(urgency, expire_timeout, &config)?;
     let popups = popups.clone();
     Some(glib::timeout_add_local(
         Duration::from_millis(ms as u64),
@@ -526,7 +531,7 @@ pub fn close(popups: &SharedPopups, id: u32) {
     reflow(popups);
 }
 
-/// dunstrc: `mouse_right_click = close_all`. Also reusable by Phase 7's
+/// dunstrc: `mouse_right_click = close_all`. Also reusable by
 /// `notifyctl close-all`.
 pub fn close_all(popups: &SharedPopups) {
     let ids: Vec<u32> = popups.borrow().order.clone();
@@ -590,7 +595,7 @@ mod tests {
         let mut n = notif(&[]);
         n.summary = "<script>".to_string();
         n.body = "<i>already markup</i>".to_string();
-        let out = format_markup(&n);
+        let out = format_markup(&n, &Config::default());
         assert_eq!(out, "<b>&lt;script&gt;</b>\n<i>already markup</i>");
     }
 
@@ -599,9 +604,7 @@ mod tests {
         let mut n = notif(&[]);
         n.summary = "s".to_string();
         n.body = "b".to_string();
-        // FORMAT is fixed at "<b>%s</b>\n%b" so this exercises the token
-        // parser directly rather than through the daemon's hardcoded format.
-        assert_eq!(super::format_markup(&n), "<b>s</b>\nb");
+        assert_eq!(format_markup(&n, &Config::default()), "<b>s</b>\nb");
     }
 
     #[test]
@@ -613,7 +616,7 @@ mod tests {
         let mut n = notif(&[]);
         n.summary = "unterminated".to_string();
         n.body = "<b>oops".to_string();
-        set_card_text(&label, &n);
+        set_card_text(&label, &n, &Config::default());
         assert_eq!(label.text(), "unterminated\n<b>oops");
     }
 }
