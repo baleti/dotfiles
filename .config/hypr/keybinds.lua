@@ -96,118 +96,17 @@ end
 hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
 hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }))
 
--- Step back/forth between workspaces belonging to the *current* monitor only
--- -- monitors are independent, so this never hops to a workspace that's
--- currently shown on another monitor. Forward past this monitor's highest
--- workspace first tries to reclaim an orphaned workspace (one that exists,
--- has windows, but isn't displayed on any monitor right now -- e.g. one you
--- stepped away from earlier); only if none exists does it create a fresh one.
-local function monitor_workspace_ids(mon)
-    local ids = {}
-    for _, ws in ipairs(hl.get_workspaces()) do
-        if not ws.special and ws.monitor and ws.monitor.id == mon.id then
-            table.insert(ids, ws.id)
-        end
-    end
-    return ids
-end
+-- Step back/forth between workspaces on the *current* monitor, using
+-- Hyprland's built-in monitor-relative workspace selector ("r-1"/"r+1"):
+-- it skips workspaces bound to any other monitor, so this never hops to a
+-- workspace currently shown elsewhere, and creates a new one past the end
+-- with no manual per-monitor bookkeeping needed.
+hl.bind("CTRL + ALT + h", hl.dsp.focus({ workspace = "r-1" }), { repeating = false })
+hl.bind("CTRL + ALT + l", hl.dsp.focus({ workspace = "r+1" }), { repeating = false })
 
-local function global_max_workspace_id()
-    local max_id = 0
-    for _, ws in ipairs(hl.get_workspaces()) do
-        if not ws.special and ws.id > max_id then
-            max_id = ws.id
-        end
-    end
-    return max_id
-end
-
--- Lowest-id workspace that exists, isn't special, isn't already ours, and
--- isn't currently displayed on any monitor -- i.e. free to be reclaimed.
-local function orphan_workspace_id(mon)
-    local best = nil
-    for _, ws in ipairs(hl.get_workspaces()) do
-        if not ws.special and not ws.visible and ws.monitor and ws.monitor.id ~= mon.id then
-            if best == nil or ws.id < best then
-                best = ws.id
-            end
-        end
-    end
-    return best
-end
-
--- Shared with the mainMod+CTRL+SHIFT+h/l window-move binds below, so "next"/
--- "prev" means the same thing whether you're stepping focus or dragging the
--- active window along with you.
-local function prev_workspace_id(mon, cur)
-    local prev_id = nil
-    for _, id in ipairs(monitor_workspace_ids(mon)) do
-        if id < cur.id then prev_id = id end
-    end
-    return prev_id
-end
-
--- Resolves (and, if reclaiming an orphan, relocates) the next workspace id;
--- does not focus or move anything itself so both focus-step and
--- window-move binds can share it.
-local function next_workspace_id(mon, cur)
-    local next_id = nil
-    for _, id in ipairs(monitor_workspace_ids(mon)) do
-        if id > cur.id and (next_id == nil or id < next_id) then
-            next_id = id
-        end
-    end
-    if next_id then return next_id end
-
-    local orphan = orphan_workspace_id(mon)
-    if orphan then
-        hl.dispatch(hl.dsp.workspace.move({ workspace = orphan, monitor = mon.name }))
-        return orphan
-    end
-
-    return global_max_workspace_id() + 1
-end
-
-hl.bind("CTRL + ALT + h", function()
-    local mon = hl.get_active_monitor()
-    local cur = hl.get_active_workspace(mon)
-    if not (mon and cur) then return end
-
-    local prev_id = prev_workspace_id(mon, cur)
-    if prev_id then
-        hl.dispatch(hl.dsp.focus({ workspace = prev_id }))
-    end
-end, { repeating = false })
-
-hl.bind("CTRL + ALT + l", function()
-    local mon = hl.get_active_monitor()
-    local cur = hl.get_active_workspace(mon)
-    if not (mon and cur) then return end
-
-    hl.dispatch(hl.dsp.focus({ workspace = next_workspace_id(mon, cur) }))
-end, { repeating = false })
-
--- Move the active window along with you to the prev/next workspace, using
--- the exact same "next" resolution (orphan reclaim, then create) as
--- CTRL+ALT+h/l above.
-hl.bind(mainMod .. " + CTRL + SHIFT + h", function()
-    local mon = hl.get_active_monitor()
-    local cur = hl.get_active_workspace(mon)
-    if not (mon and cur) then return end
-
-    local prev_id = prev_workspace_id(mon, cur)
-    if prev_id then
-        hl.dispatch(hl.dsp.window.move({ workspace = prev_id }))
-    end
-end, { repeating = false })
-
-hl.bind(mainMod .. " + CTRL + SHIFT + l", function()
-    local mon = hl.get_active_monitor()
-    local cur = hl.get_active_workspace(mon)
-    if not (mon and cur) then return end
-
-    hl.dispatch(hl.dsp.window.move({ workspace = next_workspace_id(mon, cur) }))
-end, { repeating = false })
+-- Move the active window along with you to the prev/next workspace on this monitor.
+hl.bind(mainMod .. " + CTRL + SHIFT + h", hl.dsp.window.move({ workspace = "r-1" }), { repeating = false })
+hl.bind(mainMod .. " + CTRL + SHIFT + l", hl.dsp.window.move({ workspace = "r+1" }), { repeating = false })
 
 -- Move/resize windows with mainMod + LMB/RMB and dragging
 hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(),   { mouse = true })
