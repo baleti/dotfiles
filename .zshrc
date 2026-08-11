@@ -136,6 +136,7 @@ typeset -g _DIR_HISTORY_FILE="$HOME/.zsh_dir_history"
 typeset -g _DIR_HISTORY_SESSION_ID="${TTY:t}-$$"
 typeset -g _DIR_HISTORY_NAVIGATING=0
 typeset -g _DIR_HISTORY_LINES=0
+typeset -g _DIR_HISTORY_MAX_LINES=1000
 
 typeset -ga _DIR_HISTORY_BACK
 typeset -ga _DIR_HISTORY_FORWARD
@@ -145,9 +146,18 @@ if [[ -f $_DIR_HISTORY_FILE ]]; then
   _DIR_HISTORY_BACK=("${(@f)$(cut -f3 $_DIR_HISTORY_FILE)}")
 fi
 
+# records the directory being arrived at (not the one being left), so a dir
+# shows up in history as soon as you cd into it rather than only once you
+# leave; trims the file to the most recent MAX_LINES entries as it grows
 function _dir_history_append() {
   printf '%s\t%s\t%s\n' "$EPOCHSECONDS" "$_DIR_HISTORY_SESSION_ID" "$1" >> $_DIR_HISTORY_FILE
-  (( _DIR_HISTORY_LINES++ ))
+  local total=$(wc -l < $_DIR_HISTORY_FILE)
+  if (( total > _DIR_HISTORY_MAX_LINES )); then
+    local tmp=$(mktemp "${_DIR_HISTORY_FILE}.XXXXXX")
+    tail -n $_DIR_HISTORY_MAX_LINES $_DIR_HISTORY_FILE > $tmp && mv $tmp $_DIR_HISTORY_FILE
+    total=$_DIR_HISTORY_MAX_LINES
+  fi
+  _DIR_HISTORY_LINES=$total
 }
 
 # pull in lines appended by other shells since we last looked
@@ -166,11 +176,9 @@ add-zsh-hook precmd _dir_history_sync
 
 function _dir_history_chpwd() {
   (( _DIR_HISTORY_NAVIGATING )) && return
-  if [[ -n "$OLDPWD" ]]; then
-    _DIR_HISTORY_BACK+=("$OLDPWD")
-    _dir_history_append "$OLDPWD"
-  fi
+  [[ -n "$OLDPWD" ]] && _DIR_HISTORY_BACK+=("$OLDPWD")
   _DIR_HISTORY_FORWARD=()
+  _dir_history_append "$PWD"
 }
 add-zsh-hook chpwd _dir_history_chpwd
 
