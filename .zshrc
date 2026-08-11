@@ -175,24 +175,34 @@ function _dir_history_chpwd() {
 add-zsh-hook chpwd _dir_history_chpwd
 
 function _cd_prev_dir() {
-  (( ${#_DIR_HISTORY_BACK} == 0 )) && return
-  _DIR_HISTORY_FORWARD+=("$PWD")
-  local target=${_DIR_HISTORY_BACK[-1]}
-  _DIR_HISTORY_BACK[-1]=()
-  _DIR_HISTORY_NAVIGATING=1
-  cd $target
-  _DIR_HISTORY_NAVIGATING=0
+  local target
+  while (( ${#_DIR_HISTORY_BACK} )); do
+    target=${_DIR_HISTORY_BACK[-1]}
+    _DIR_HISTORY_BACK[-1]=()
+    # skip entries that are the dir we're already in, or that no longer
+    # exist (history spans deleted temp dirs, unmounted crypt volumes, etc.)
+    [[ $target == $PWD || ! -d $target ]] && continue
+    _DIR_HISTORY_FORWARD+=("$PWD")
+    _DIR_HISTORY_NAVIGATING=1
+    cd $target
+    _DIR_HISTORY_NAVIGATING=0
+    break
+  done
   zle reset-prompt
 }
 
 function _cd_next_dir() {
-  (( ${#_DIR_HISTORY_FORWARD} == 0 )) && return
-  _DIR_HISTORY_BACK+=("$PWD")
-  local target=${_DIR_HISTORY_FORWARD[-1]}
-  _DIR_HISTORY_FORWARD[-1]=()
-  _DIR_HISTORY_NAVIGATING=1
-  cd $target
-  _DIR_HISTORY_NAVIGATING=0
+  local target
+  while (( ${#_DIR_HISTORY_FORWARD} )); do
+    target=${_DIR_HISTORY_FORWARD[-1]}
+    _DIR_HISTORY_FORWARD[-1]=()
+    [[ $target == $PWD || ! -d $target ]] && continue
+    _DIR_HISTORY_BACK+=("$PWD")
+    _DIR_HISTORY_NAVIGATING=1
+    cd $target
+    _DIR_HISTORY_NAVIGATING=0
+    break
+  done
   zle reset-prompt
 }
 
