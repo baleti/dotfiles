@@ -72,6 +72,7 @@ hl.on("hyprland.start", function()
 end)
 
 require("environment")
+require("monitors")
 require("appearance")
 require("input")
 require("keybinds")
