@@ -151,22 +151,29 @@ fi
 # leave; trims the file to the most recent MAX_LINES entries as it grows
 function _dir_history_append() {
   printf '%s\t%s\t%s\n' "$EPOCHSECONDS" "$_DIR_HISTORY_SESSION_ID" "$1" >> $_DIR_HISTORY_FILE
-  local total=$(wc -l < $_DIR_HISTORY_FILE)
+  local -a all_lines
+  all_lines=("${(@f)$(<$_DIR_HISTORY_FILE)}")
+  local total=${#all_lines}
   if (( total > _DIR_HISTORY_MAX_LINES )); then
     local tmp=$(mktemp "${_DIR_HISTORY_FILE}.XXXXXX")
-    tail -n $_DIR_HISTORY_MAX_LINES $_DIR_HISTORY_FILE > $tmp && mv $tmp $_DIR_HISTORY_FILE
+    printf '%s\n' "${all_lines[@]: -$_DIR_HISTORY_MAX_LINES}" > $tmp && mv $tmp $_DIR_HISTORY_FILE
     total=$_DIR_HISTORY_MAX_LINES
   fi
   _DIR_HISTORY_LINES=$total
 }
 
 # pull in lines appended by other shells since we last looked
+# uses zsh's builtin $(<file) read instead of forking tail/wc, since forking
+# an external command from a precmd hook can race a rapid double Ctrl+C and
+# get misreported as "command not found" if SIGINT lands mid-exec
 function _dir_history_sync() {
   [[ -f $_DIR_HISTORY_FILE ]] || return
-  local total=$(wc -l < $_DIR_HISTORY_FILE)
+  local -a all_lines
+  all_lines=("${(@f)$(<$_DIR_HISTORY_FILE)}")
+  local total=${#all_lines}
   (( total <= _DIR_HISTORY_LINES )) && return
   local line path
-  for line in "${(@f)$(tail -n +$((_DIR_HISTORY_LINES + 1)) $_DIR_HISTORY_FILE)}"; do
+  for line in "${all_lines[@]:$_DIR_HISTORY_LINES}"; do
     path="${line##*$'\t'}"
     [[ -n "$path" ]] && _DIR_HISTORY_BACK+=("$path")
   done
