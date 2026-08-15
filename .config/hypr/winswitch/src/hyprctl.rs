@@ -20,6 +20,7 @@ struct RawClient {
     pid: i32,
     #[serde(rename = "focusHistoryID")]
     focus_history_id: i64,
+    size: (i32, i32),
 }
 
 pub struct Window {
@@ -28,6 +29,11 @@ pub struct Window {
     pub title: String,
     pub workspace: String,
     pub pid: i32,
+    /// The window's actual on-screen size, straight from `hyprctl clients`.
+    /// Used to size a cell's thumbnail frame to this window's real aspect
+    /// ratio before any capture has arrived -- see `ui.rs::frame_size`.
+    pub width: i32,
+    pub height: i32,
 }
 
 /// Open windows ordered by recency: index 0 is the currently active window,
@@ -53,6 +59,8 @@ pub fn list_windows() -> Vec<Window> {
             title: c.title,
             workspace: c.workspace.name,
             pid: c.pid,
+            width: c.size.0,
+            height: c.size.1,
         })
         .collect()
 }
