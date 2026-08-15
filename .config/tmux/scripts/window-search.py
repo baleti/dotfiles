@@ -357,13 +357,20 @@ def drive():
     # only sizes the preview pane, list gets the remainder) - so this reacts
     # to each completed search (the `result` event) and hands the list back
     # just enough rows for $FZF_MATCH_COUNT, giving the rest to the preview.
-    # POSIX sh, since this runs through fzf's $SHELL, not necessarily zsh.
+    # $FZF_LINES/$FZF_MATCH_COUNT are exported by fzf to every child process,
+    # including this one - exact row arithmetic instead of coarse percentage
+    # tiers, which always left a few rows of dead space unless the match
+    # count happened to land right at a tier boundary. +2 is the prompt line
+    # plus the match-count info line above the list (--layout=reverse, no
+    # --info=inline); floor/ceiling keep both panes from collapsing to
+    # nothing at either extreme. POSIX sh, since this runs through fzf's
+    # $SHELL, not necessarily zsh.
     resize_on_result = (
-        'c=$FZF_MATCH_COUNT; '
-        'if [ "$c" -le 3 ]; then echo "change-preview-window(down,85%)"; '
-        'elif [ "$c" -le 8 ]; then echo "change-preview-window(down,70%)"; '
-        'elif [ "$c" -le 15 ]; then echo "change-preview-window(down,55%)"; '
-        'else echo "change-preview-window(down,50%)"; fi'
+        'c=$FZF_MATCH_COUNT; list_rows=$((c + 2)); '
+        '[ "$list_rows" -lt 3 ] && list_rows=3; '
+        'max_list=$((FZF_LINES - 4)); '
+        '[ "$list_rows" -gt "$max_list" ] && list_rows=$max_list; '
+        'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
     _dbg("launching fzf")
     try:
