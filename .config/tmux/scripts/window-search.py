@@ -259,7 +259,21 @@ def preview(pane_id, query):
     sys.stdout.write(out)
 
 
-def drive(client):
+def resolve_client():
+    """The client that opened the popup, stashed into tmux's global
+    environment by the bind-key's run-shell step (see .tmux.conf for why
+    it has to be a bridge like this rather than a plain argument)."""
+    r = subprocess.run(["tmux", "show-environment", "-g", "TMUX_WINDOW_SEARCH_CLIENT"],
+                        capture_output=True, text=True)
+    subprocess.run(["tmux", "set-environment", "-gu", "TMUX_WINDOW_SEARCH_CLIENT"],
+                    capture_output=True, text=True)
+    if r.returncode != 0 or "=" not in r.stdout:
+        return None
+    return r.stdout.strip().split("=", 1)[1]
+
+
+def drive():
+    client = resolve_client()
     _dbg(f"drive() start client={client!r}")
     snapshot = build_snapshot()
     _dbg("build_snapshot done")
@@ -303,20 +317,65 @@ def drive(client):
         return
     pane_id = selected.split("\t", 1)[0]
     _dbg(f"selected pane_id={pane_id}")
+    jump(client, pane_id)
+
+
+def jump(client, pane_id):
+    """The actual point of this tool: land the client that opened the popup
+    on the chosen pane. Every step here is verified against real tmux state
+    rather than trusted from a subprocess return code, and any failure is
+    fatal (loud, not silent) - this is the one thing that must not quietly
+    stop working, see git log on this function before touching it."""
     # switch-client with no -c doesn't affect "the client that ran this" - a
     # popup's shell process has no controlling pane of its own (popups aren't
     # real panes, so tmux can't map it back to a client the way it does for
     # a command typed inside a normal pane), so it silently falls back to
     # some other attached client instead. #{client_tty}, captured at bind
-    # time when tmux does know who pressed the key, fixes that.
-    switch_cmd = ["switch-client", "-t", pane_id]
-    if client:
-        switch_cmd = ["switch-client", "-c", client, "-t", pane_id]
-    for cmd in (switch_cmd,
+    # time when tmux does know who pressed the key, fixes that - but only if
+    # it actually arrived, so treat a missing one as fatal rather than
+    # quietly degrading to the ambiguous no -c behavior.
+    if not client:
+        die(f"no client argument received (argv={sys.argv!r}) - "
+            f"check the bind-key still passes '#{{client_tty}}'")
+
+    clients = {c: s for c, s in (
+        line.split("\t") for line in
+        subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
+                        capture_output=True, text=True).stdout.splitlines()
+    )}
+    if client not in clients:
+        die(f"client {client!r} isn't in the current attached-client list "
+            f"{sorted(clients)!r} - can't target a switch-client to it")
+
+    for cmd in (["switch-client", "-c", client, "-t", pane_id],
                 ["select-window", "-t", pane_id],
                 ["select-pane", "-t", pane_id]):
         r = subprocess.run(["tmux", *cmd], capture_output=True, text=True)
         _dbg(f"tmux {' '.join(cmd)} -> rc={r.returncode} stderr={r.stderr!r}")
+        if r.returncode != 0:
+            die(f"tmux {' '.join(cmd)} failed: {r.stderr.strip()}")
+
+    # verify via list-clients, not `display-message -c` - the latter turned
+    # out to be unreliable in testing (returned stale/wrong data regardless
+    # of -c, independent of whether the switch itself had actually worked),
+    # whereas list-clients enumerating every client fresh was consistently
+    # accurate against directly-observed tmux state
+    after = {c: p for c, p in (
+        line.split("\t") for line in
+        subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{pane_id}"],
+                        capture_output=True, text=True).stdout.splitlines()
+    )}
+    actual = after.get(client)
+    _dbg(f"post-jump check: client {client} now on pane {actual!r}, wanted {pane_id!r}")
+    if actual != pane_id:
+        die(f"selected {pane_id} but client {client} ended up on {actual!r} instead - "
+            f"switch-client silently landed on the wrong pane")
+
+
+def die(msg):
+    _dbg(f"FATAL: {msg}")
+    print(f"window-search: {msg}", file=sys.stderr)
+    sys.exit(1)
 
 
 def main():
@@ -325,8 +384,6 @@ def main():
     parser.add_argument("--search", metavar="SNAPSHOT")
     parser.add_argument("--preview", metavar="PANE_ID")
     parser.add_argument("--query", default="")
-    parser.add_argument("client", nargs="?", default=None,
-                         help="invoking client's tty, e.g. #{client_tty} from the bind-key")
     args = parser.parse_args()
 
     if args.preview:
@@ -334,7 +391,7 @@ def main():
     elif args.search:
         search(args.search, args.query)
     else:
-        drive(args.client)
+        drive()
 
 
 if __name__ == "__main__":
