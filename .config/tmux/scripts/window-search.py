@@ -60,7 +60,6 @@ def _dbg(msg):
         f.write(f"[abs={time.time():.3f} rel={time.time() - _T0:.3f} pid={os.getpid()}] {msg}\n")
 TITLE_BOOST = 4  # how many times a title token is repeated into the doc
 K1, B = 1.5, 0.75  # standard Okapi BM25 defaults
-SNIPPET_WIDTH = 90
 RECENCY_CHUNKS = 8  # coarse recency buckets per window instead of per-line -
 # per-line tokenizing was 380ms of a 445ms build on ~50 windows/250k lines,
 # almost all Python-level loop/call overhead rather than regex matching;
@@ -102,7 +101,8 @@ def chunked_tf(lines):
 
 def build_snapshot():
     fields = ["session_name", "window_id", "window_index", "window_name",
-              "pane_id", "pane_active", "window_activity"]
+              "window_flags", "pane_id", "pane_active", "pane_title",
+              "window_activity"]
     fmt = "\t".join(f"#{{{f}}}" for f in fields)
     out = subprocess.run(
         ["tmux", "list-panes", "-a", "-F", fmt],
@@ -111,14 +111,16 @@ def build_snapshot():
 
     panes_by_window = {}
     for line in out.splitlines():
-        session, wid, widx, wname, pane_id, active, activity = line.split("\t")
+        session, wid, widx, wname, wflags, pane_id, active, ptitle, activity = line.split("\t")
         w = panes_by_window.setdefault(wid, {
             "session": session, "window_index": widx, "window_name": wname,
-            "activity": int(activity), "panes": [], "active_pane": None,
+            "window_flags": wflags, "activity": int(activity),
+            "panes": [], "active_pane": None, "pane_title": "",
         })
         w["panes"].append(pane_id)
         if active == "1":
             w["active_pane"] = pane_id
+            w["pane_title"] = ptitle
 
     pane_ids = [pid for w in panes_by_window.values() for pid in w["panes"]]
     with ThreadPoolExecutor(max_workers=min(32, max(1, len(pane_ids)))) as ex:
@@ -158,12 +160,14 @@ def highlight(text, qset):
     return text
 
 
-def best_snippet(window, query_tokens):
+def best_pane(window, query_tokens):
+    """Which pane, of possibly several in this window, actually matched the
+    query - that's the one to jump to and preview, not just window["active_pane"]."""
     qset = set(query_tokens)
-    best = None  # (n_matched, index, pane_id, text)
+    best = None  # (n_matched, index, pane_id)
     for i, (pane_id, text) in enumerate(window["lines"]):
         # cheap substring pre-check (C-level `in`) before paying for a real
-        # tokenize() - most lines don't match, and this alone cut best_snippet
+        # tokenize() - most lines don't match, and this alone cut this loop
         # from 130ms to 35ms across a 17-window result set
         low = text.lower()
         if not any(tok in low for tok in qset):
@@ -173,25 +177,10 @@ def best_snippet(window, query_tokens):
             continue
         key = (len(matched), i)
         if best is None or key > best[0]:
-            best = (key, pane_id, text)
+            best = (key, pane_id)
     if best is None:
-        pane_id = window["active_pane"] or window["panes"][0]
-        return pane_id, ""
-    _, pane_id, text = best
-
-    highlighted = highlight(text, qset)
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", highlighted)
-    if len(plain) > SNIPPET_WIDTH:
-        m = re.search("(?i)" + "|".join(re.escape(t) for t in qset), text)
-        start = max(0, (m.start() if m else 0) - SNIPPET_WIDTH // 3)
-        # re-slice from the *plain* text then re-highlight, simpler than
-        # tracking ansi-code offsets through the truncation
-        window_text = text[start:start + SNIPPET_WIDTH]
-        highlighted = highlight(window_text, qset)
-        prefix = "…" if start > 0 else ""
-        suffix = "…" if start + SNIPPET_WIDTH < len(text) else ""
-        highlighted = prefix + highlighted + suffix
-    return pane_id, highlighted.strip()
+        return window["active_pane"] or window["panes"][0]
+    return best[1]
 
 
 def bm25_score(window, query_tokens, df, n, avgdl):
@@ -219,7 +208,7 @@ def search(snapshot_path, query):
         ranked = sorted(windows.items(), key=lambda kv: -kv[1]["activity"])
         for wid, w in ranked:
             pane_id = w["active_pane"] or w["panes"][0]
-            print(row(pane_id, w, ""))
+            print(row(pane_id, w))
         _dbg("printed (empty query)")
         return
 
@@ -231,16 +220,18 @@ def search(snapshot_path, query):
     scored.sort(key=lambda t: -t[0])
 
     for _, wid, w in scored:
-        pane_id, snippet = best_snippet(w, query_tokens)
-        print(row(pane_id, w, snippet))
+        pane_id = best_pane(w, query_tokens)
+        print(row(pane_id, w))
     _dbg(f"printed ({len(scored)} results)")
 
 
-def row(pane_id, w, snippet):
+def row(pane_id, w):
+    # mirrors tmux's own choose-tree row: "index: name+flags: \"pane title\"" -
+    # the preview pane below already shows content, so this only needs to
+    # identify the window, not summarize what matched inside it
     panes_suffix = f" ({len(w['panes'])}p)" if len(w["panes"]) > 1 else ""
-    label = f"{w['session']}:{w['window_index']} [{w['window_name']}]{panes_suffix}"
-    tail = f" │ {snippet}" if snippet else ""
-    return f"{pane_id}\t{label}{tail}"
+    label = f'{w["session"]}:{w["window_index"]} {w["window_name"]}{w["window_flags"]}: "{w["pane_title"]}"{panes_suffix}'
+    return f"{pane_id}\t{label}"
 
 
 def preview(pane_id, query):
@@ -288,6 +279,18 @@ def drive():
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     self_cmd = f"{py} --search {shlex.quote(snap_path)} --query {{q}}"
     preview_cmd = f"{py} --preview {{1}} --query {{q}}"
+    # fzf has no "size list to fit its rows" primitive for preview-window (it
+    # only sizes the preview pane, list gets the remainder) - so this reacts
+    # to each completed search (the `result` event) and hands the list back
+    # just enough rows for $FZF_MATCH_COUNT, giving the rest to the preview.
+    # POSIX sh, since this runs through fzf's $SHELL, not necessarily zsh.
+    resize_on_result = (
+        'c=$FZF_MATCH_COUNT; '
+        'if [ "$c" -le 3 ]; then echo "change-preview-window(down,85%)"; '
+        'elif [ "$c" -le 8 ]; then echo "change-preview-window(down,70%)"; '
+        'elif [ "$c" -le 15 ]; then echo "change-preview-window(down,55%)"; '
+        'else echo "change-preview-window(down,50%)"; fi'
+    )
     _dbg("launching fzf")
     try:
         result = subprocess.run(
@@ -295,11 +298,11 @@ def drive():
                 "fzf", "--ansi", "--disabled", "--layout=reverse",
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "window search> ",
-                "--header", "type to full-text search all pane scrollback (BM25 + recency) · enter to jump",
                 "--preview", preview_cmd,
                 "--preview-window", "down,50%,border-top",
                 "--bind", f"start:reload:{self_cmd}",
                 "--bind", f"change:reload:{self_cmd}",
+                "--bind", f"result:transform:{resize_on_result}",
                 # fzf has no configurable WORDCHARS like zsh's - this is its
                 # own fixed word-boundary logic, closest available match
                 "--bind", "ctrl-left:backward-kill-word",
