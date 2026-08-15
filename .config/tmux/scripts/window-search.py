@@ -31,11 +31,13 @@ dozen panes and a few thousand lines each, captured once per invocation, so
 a script comfortably keeps up with live typing.
 """
 import argparse
+import atexit
 import json
 import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -79,26 +81,82 @@ def tokenize(text):
     return TOKEN_RE.findall(text.lower())
 
 
+SNAP_PREFIX = "tmux-window-search-"
+
+
+def _rm(path):
+    """Idempotent unlink - both atexit and the finally in drive() call this."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def sweep_stale_snapshots():
+    """Delete snapshots left behind by invocations that are no longer alive.
+
+    The signal handler in drive() covers the common interruption (a second
+    prefix+C-w SIGHUPs the first popup), but it cannot cover every way this
+    process can die - dismissing the popup with Escape leaks one, and a
+    SIGKILL or a crash never runs Python code at all. Since each snapshot is
+    a multi-megabyte copy of every pane's scrollback, an uncovered path is
+    not a small leak: 38 files totalling ~180MB had accumulated in /tmp
+    before this existed. Owning pid is in the filename, so liveness is exact rather
+    than a guess from mtime, and a popup legitimately open for hours is never
+    swept out from under itself."""
+    for name in os.listdir(tempfile.gettempdir()):
+        if not (name.startswith(SNAP_PREFIX) and name.endswith(".json")):
+            continue
+        try:
+            pid = int(name[len(SNAP_PREFIX):].split("-", 1)[0])
+        except ValueError:
+            continue  # pre-pid-tagging file; leave it, it may be in use
+        try:
+            os.kill(pid, 0)
+            continue  # owner still running
+        except ProcessLookupError:
+            pass
+        except OSError:
+            continue  # exists but not ours to judge (EPERM)
+        _rm(os.path.join(tempfile.gettempdir(), name))
+
+
 def capture_pane(pane_id):
-    out = subprocess.run(
+    # a pane can legitimately vanish between list-panes and here (it exited
+    # while the snapshot was being built), so a failure isn't fatal the way
+    # list-panes is - but it must not pass silently either: an ignored
+    # non-zero rc leaves a window in the list that is permanently
+    # unsearchable, with nothing anywhere saying why.
+    r = subprocess.run(
         ["tmux", "capture-pane", "-p", "-J", "-t", pane_id, "-S", f"-{CAPTURE_LINES}"],
         capture_output=True, text=True, errors="replace",
-    ).stdout
-    return pane_id, out.splitlines()
+    )
+    if r.returncode != 0:
+        _dbg(f"capture-pane {pane_id} failed rc={r.returncode} stderr={r.stderr.strip()!r}")
+    return pane_id, r.stdout.splitlines()
 
 
-def chunked_tf(lines):
-    """Recency-weighted term frequency for a window's lines, in RECENCY_CHUNKS
+def chunked_tf(texts, tf=None):
+    """Recency-weighted term frequency for ONE pane's lines, in RECENCY_CHUNKS
     Counter() passes over joined chunks instead of one tokenize() call per
-    line - same ranking behavior, far fewer Python-level calls."""
-    tf = {}
-    n = max(1, len(lines) - 1)
-    chunk_size = max(1, len(lines) // RECENCY_CHUNKS)
+    line - same ranking behavior, far fewer Python-level calls.
+
+    Deliberately per-pane, not per-window: recency is derived from a line's
+    position in the list, so running it over a window's panes concatenated
+    end-to-end would make "recent" mean "belongs to the last pane". In a
+    split window that inverts the intended weighting outright - the freshest
+    line of pane 1 scored below the stalest line of pane 2 (0.606 vs 0.694
+    measured on a 2-pane window), i.e. pane ordering beat actual recency.
+    Callers accumulate into a shared tf across the window's panes."""
+    if tf is None:
+        tf = {}
+    n = max(1, len(texts) - 1)
+    chunk_size = max(1, len(texts) // RECENCY_CHUNKS)
     doclen = 0
-    for c in range(0, len(lines), chunk_size):
-        chunk = lines[c:c + chunk_size]
+    for c in range(0, len(texts), chunk_size):
+        chunk = texts[c:c + chunk_size]
         recency = 0.3 + 0.7 * ((c + len(chunk) // 2) / n)
-        counts = Counter(TOKEN_RE.findall("\n".join(t for _, t in chunk).lower()))
+        counts = Counter(TOKEN_RE.findall("\n".join(chunk).lower()))
         doclen += sum(counts.values())
         for tok, cnt in counts.items():
             tf[tok] = tf.get(tok, 0.0) + cnt * recency
@@ -110,10 +168,20 @@ def build_snapshot():
               "window_flags", "pane_id", "pane_active", "pane_title",
               "window_activity"]
     fmt = "\t".join(f"#{{{f}}}" for f in fields)
-    out = subprocess.run(
+    # checked, not trusted: an ignored failure here yields zero windows, and
+    # the caller's "no windows" path used to return 0 - which display-popup
+    # -EE reads as success and closes the popup instantly, so a broken
+    # list-panes was indistinguishable from a missed keypress. Every exit
+    # that isn't "user cancelled" has to be loud enough to keep the popup up.
+    r = subprocess.run(
         ["tmux", "list-panes", "-a", "-F", fmt],
         capture_output=True, text=True,
-    ).stdout
+    )
+    if r.returncode != 0:
+        die(f"tmux list-panes failed (rc={r.returncode}): {r.stderr.strip()}")
+    out = r.stdout
+    if not out.strip():
+        die("tmux list-panes returned no panes - nothing to search")
 
     panes_by_window = {}
     for line in out.splitlines():
@@ -135,11 +203,15 @@ def build_snapshot():
     windows = {}
     for wid, w in panes_by_window.items():
         lines = []  # [pane_id, text]
+        tf, doclen = {}, 0
         for pid in w["panes"]:
-            for text in captures[pid]:
+            texts = captures[pid]
+            for text in texts:
                 lines.append([pid, text])
-
-        tf, doclen = chunked_tf(lines)
+            # recency is scored within each pane, then summed into the
+            # window's single document (see chunked_tf)
+            _, pane_doclen = chunked_tf(texts, tf)
+            doclen += pane_doclen
         for boost, field in ((WINDOW_NAME_BOOST, w["window_name"]),
                              (PANE_TITLE_BOOST, w["pane_title"])):
             field_tokens = tokenize(field)
@@ -219,8 +291,20 @@ def best_pane(window, qset):
     """Which pane, of possibly several in this window, actually matched the
     query - that's the one to jump to and preview, not just window["active_pane"].
     qset holds the raw typed prefixes (e.g. {"ric"}), matched by startswith
-    against the window's own tokens - same prefix semantics as scoring."""
-    best = None  # (n_matched, index, pane_id)
+    against the window's own tokens - same prefix semantics as scoring.
+
+    Ties break on how recent the match is *within its own pane*, for the same
+    reason chunked_tf chunks per pane: window["lines"] is the panes laid
+    end-to-end, so a raw index would just mean "prefers the last pane"."""
+    pane_span = {}  # pane_id -> [first_index, last_index]
+    for i, (pane_id, _) in enumerate(window["lines"]):
+        span = pane_span.get(pane_id)
+        if span is None:
+            pane_span[pane_id] = [i, i]
+        else:
+            span[1] = i
+
+    best = None  # (n_matched, in_pane_recency, pane_id)
     for i, (pane_id, text) in enumerate(window["lines"]):
         # cheap substring pre-check (C-level `in`) before paying for a real
         # tokenize() - most lines don't match, and this alone cut this loop
@@ -232,7 +316,8 @@ def best_pane(window, qset):
         matched = {t for t in tokenize(text) if any(t.startswith(q) for q in qset)}
         if not matched:
             continue
-        key = (len(matched), i)
+        start, end = pane_span[pane_id]
+        key = (len(matched), (i - start) / max(1, end - start))
         if best is None or key > best[0]:
             best = (key, pane_id)
     if best is None:
@@ -323,10 +408,24 @@ def preview(pane_id, query):
     # highlighted title matches) purely from a hit between line 300 and
     # CAPTURE_LINES back in scrollback while the preview - unable to show
     # what it never captured - looked like nothing had matched at all.
-    out = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{CAPTURE_LINES}"],
+    #
+    # -J for the same reason the depth matches: it's what the index used, so
+    # without it the two disagree about what a token even is. A long path or
+    # URL that wrapped in a narrow pane is one token to the indexer and two
+    # to an unjoined capture, so the window ranks, gets a highlighted title,
+    # and then the preview finds no match to jump to or highlight - the exact
+    # "nothing matched" illusion the depth fix above was meant to remove.
+    # Wrapped rejoined lines can now run past the preview width, so the
+    # preview window is opened with `wrap` (see drive()).
+    r = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-J", "-t", pane_id, "-S", f"-{CAPTURE_LINES}"],
         capture_output=True, text=True, errors="replace",
-    ).stdout
+    )
+    if r.returncode != 0:
+        # loud in the preview pane itself rather than a blank one
+        sys.stdout.write(f"[capture-pane {pane_id} failed: {r.stderr.strip()}]\n")
+        return
+    out = r.stdout
     qset = set(tokenize(query))
     if not qset:
         sys.stdout.write(out)
@@ -355,9 +454,21 @@ def preview(pane_id, query):
 
 
 def resolve_client():
-    """The client that opened the popup, stashed into tmux's global
-    environment by the bind-key's run-shell step (see .tmux.conf for why
-    it has to be a bridge like this rather than a plain argument)."""
+    """Fallback for a tmux server still running the OLD bind-key: the client
+    tty stashed in tmux's *global* environment by a `run-shell
+    set-environment` step.
+
+    Being global is the problem, and why the binding no longer uses it. The
+    variable is not scoped to one invocation, so two clients pressing
+    prefix+C-w within the ~50ms it takes this process to start would race:
+    the second run-shell overwrites the first's tty, client A's popup then
+    reads B's tty and switches *B's* terminal to A's selection, while B's own
+    popup finds the variable already consumed and dies. The current binding
+    interpolates #{client_tty} straight into the popup's command line inside
+    run-shell (which is format-expanded, unlike display-popup's own
+    shell-command), so each invocation carries its own client and nothing is
+    shared. This path only survives so that an already-running server whose
+    .tmux.conf has not been re-sourced keeps working."""
     r = subprocess.run(["tmux", "show-environment", "-g", "TMUX_WINDOW_SEARCH_CLIENT"],
                         capture_output=True, text=True)
     subprocess.run(["tmux", "set-environment", "-gu", "TMUX_WINDOW_SEARCH_CLIENT"],
@@ -367,22 +478,40 @@ def resolve_client():
     return r.stdout.strip().split("=", 1)[1]
 
 
-def drive():
-    client = resolve_client()
+def drive(client=None):
+    # argv is the race-free path (the bind-key bakes this invocation's own
+    # #{client_tty} into the popup command); the global-environment bridge is
+    # only a fallback for a not-yet-re-sourced .tmux.conf - see resolve_client
+    client = client or resolve_client()
     _dbg(f"drive() start client={client!r}")
     snapshot = build_snapshot()
     _dbg("build_snapshot done")
     if not snapshot["windows"]:
-        return
+        die("snapshot contains no windows")
 
-    fd, snap_path = tempfile.mkstemp(prefix="tmux-window-search-", suffix=".json")
+    sweep_stale_snapshots()
+    fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-", suffix=".json")
+    # the `finally` below only covers a normal fzf exit. Pressing prefix+C-w
+    # again runs `display-popup -C`, which SIGHUPs this process mid-fzf and
+    # would otherwise strand a multi-megabyte snapshot of every pane's
+    # scrollback in /tmp, once per interrupted invocation. Turning the signal
+    # into SystemExit lets both atexit and the finally run.
+    atexit.register(lambda: _rm(snap_path))
+    for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: sys.exit(1))
     with os.fdopen(fd, "w") as f:
         json.dump(snapshot, f)
     _dbg("snapshot written to disk")
 
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
-    self_cmd = f"{py} --search {shlex.quote(snap_path)} --query {{q}}"
-    preview_cmd = f"{py} --preview {{1}} --query {{q}}"
+    # --query={q}, not --query {q}: fzf shell-quotes {q} correctly, but argparse
+    # is a second parsing layer that refuses an option value which itself looks
+    # like an option. As two tokens, a query of "-rf" or "--stat" (searching
+    # scrollback for a CLI flag - a natural thing to do here) makes this
+    # subprocess exit 2, and the reload then shows an empty list that reads as
+    # "no matches". Joined with "=" it stays one token and parses fine.
+    self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
+    preview_cmd = f"{py} --preview {{1}} --query={{q}}"
     # fzf has no "size list to fit its rows" primitive for preview-window (it
     # only sizes the preview pane, list gets the remainder) - so this reacts
     # to each completed search (the `result` event) and hands the list back
@@ -411,7 +540,10 @@ def drive():
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "window search> ",
                 "--preview", preview_cmd,
-                "--preview-window", "down,50%,border-top",
+                # wrap: the preview captures with -J to match the index, so
+                # rejoined wrapped lines can be far wider than the preview -
+                # without this the match highlight scrolls off to the right
+                "--preview-window", "down,50%,border-top,wrap",
                 "--bind", f"start:reload:{self_cmd}",
                 "--bind", f"change:reload:{self_cmd}",
                 "--bind", f"result:transform:{resize_on_result}",
@@ -425,7 +557,7 @@ def drive():
             capture_output=True, text=True,
         )
     finally:
-        os.unlink(snap_path)
+        _rm(snap_path)
     _dbg(f"fzf exited rc={result.returncode} stdout_len={len(result.stdout)} stderr={result.stderr!r}")
 
     selected = result.stdout.strip()
@@ -452,13 +584,20 @@ def jump(client, pane_id):
     # it actually arrived, so treat a missing one as fatal rather than
     # quietly degrading to the ambiguous no -c behavior.
     if not client:
-        die(f"no client argument received (argv={sys.argv!r}) - "
-            f"check the bind-key still passes '#{{client_tty}}'")
+        # NB: the tty arrives in tmux's global environment, not argv - the
+        # bind-key's run-shell step stashes it there and resolve_client()
+        # reads and unsets it. Point at that, not at argv: the argument form
+        # this used to name has not existed since the #{client_tty} fix.
+        die("TMUX_WINDOW_SEARCH_CLIENT was empty or unset - the bind-key's "
+            "`run-shell \"tmux set-environment -g ...\"` step did not run, or "
+            "another invocation consumed it first (see .tmux.conf, prefix+C-w)")
 
+    cr = subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
+                        capture_output=True, text=True)
+    if cr.returncode != 0:
+        die(f"tmux list-clients failed (rc={cr.returncode}): {cr.stderr.strip()}")
     clients = {c: s for c, s in (
-        line.split("\t") for line in
-        subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
-                        capture_output=True, text=True).stdout.splitlines()
+        line.split("\t") for line in cr.stdout.splitlines()
     )}
     if client not in clients:
         die(f"client {client!r} isn't in the current attached-client list "
@@ -501,6 +640,9 @@ def main():
     parser.add_argument("--search", metavar="SNAPSHOT")
     parser.add_argument("--preview", metavar="PANE_ID")
     parser.add_argument("--query", default="")
+    parser.add_argument("--client", metavar="TTY",
+                        help="tty of the client that opened the popup; the "
+                             "bind-key interpolates #{client_tty} here")
     args = parser.parse_args()
 
     if args.preview:
@@ -508,7 +650,7 @@ def main():
     elif args.search:
         search(args.search, args.query)
     else:
-        drive()
+        drive(args.client)
 
 
 if __name__ == "__main__":
