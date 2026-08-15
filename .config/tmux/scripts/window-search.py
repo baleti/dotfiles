@@ -292,12 +292,12 @@ def drive():
     try:
         result = subprocess.run(
             [
-                "fzf", "--ansi", "--disabled",
+                "fzf", "--ansi", "--disabled", "--layout=reverse",
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "window search> ",
                 "--header", "type to full-text search all pane scrollback (BM25 + recency) · enter to jump",
                 "--preview", preview_cmd,
-                "--preview-window", "right,55%,border-left",
+                "--preview-window", "down,50%,border-top",
                 "--bind", f"start:reload:{self_cmd}",
                 "--bind", f"change:reload:{self_cmd}",
                 # fzf has no configurable WORDCHARS like zsh's - this is its
