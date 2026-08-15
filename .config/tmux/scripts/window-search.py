@@ -84,6 +84,24 @@ def tokenize(text):
 SNAP_PREFIX = "tmux-window-search-"
 
 
+def snapshot_dir():
+    """Where to put the snapshot, which is a verbatim copy of every pane's
+    last CAPTURE_LINES lines - i.e. potentially every secret that has been
+    echoed, pasted or printed into any pane on this machine.
+
+    $XDG_RUNTIME_DIR is preferred because it is guaranteed to be a 0700
+    per-user directory on a non-persistent filesystem that the system clears
+    when the last session ends. /tmp is only the fallback: it is
+    world-traversable, and on a minimal server it is frequently disk-backed
+    rather than tmpfs, which would commit that scrollback to persistent
+    storage. The file itself is 0600 either way (mkstemp), so this is
+    defence in depth rather than the only thing keeping it private."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg and os.path.isdir(xdg) and os.access(xdg, os.W_OK):
+        return xdg
+    return tempfile.gettempdir()
+
+
 def _rm(path):
     """Idempotent unlink - both atexit and the finally in drive() call this."""
     try:
@@ -103,22 +121,33 @@ def sweep_stale_snapshots():
     not a small leak: 38 files totalling ~180MB had accumulated in /tmp
     before this existed. Owning pid is in the filename, so liveness is exact rather
     than a guess from mtime, and a popup legitimately open for hours is never
-    swept out from under itself."""
-    for name in os.listdir(tempfile.gettempdir()):
-        if not (name.startswith(SNAP_PREFIX) and name.endswith(".json")):
+    swept out from under itself. Both candidate directories are swept, so
+    switching between them (or a server without XDG_RUNTIME_DIR) still
+    cleans up whatever an earlier run left in the other one."""
+    seen = set()
+    for d in (snapshot_dir(), tempfile.gettempdir()):
+        if d in seen:
             continue
+        seen.add(d)
         try:
-            pid = int(name[len(SNAP_PREFIX):].split("-", 1)[0])
-        except ValueError:
-            continue  # pre-pid-tagging file; leave it, it may be in use
-        try:
-            os.kill(pid, 0)
-            continue  # owner still running
-        except ProcessLookupError:
-            pass
+            names = os.listdir(d)
         except OSError:
-            continue  # exists but not ours to judge (EPERM)
-        _rm(os.path.join(tempfile.gettempdir(), name))
+            continue
+        for name in names:
+            if not (name.startswith(SNAP_PREFIX) and name.endswith(".json")):
+                continue
+            try:
+                pid = int(name[len(SNAP_PREFIX):].split("-", 1)[0])
+            except ValueError:
+                continue  # pre-pid-tagging file; leave it, it may be in use
+            try:
+                os.kill(pid, 0)
+                continue  # owner still running
+            except ProcessLookupError:
+                pass
+            except OSError:
+                continue  # exists but not ours to judge (EPERM)
+            _rm(os.path.join(d, name))
 
 
 def capture_pane(pane_id):
@@ -490,7 +519,8 @@ def drive(client=None):
         die("snapshot contains no windows")
 
     sweep_stale_snapshots()
-    fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-", suffix=".json")
+    fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
+                                     suffix=".json", dir=snapshot_dir())
     # the `finally` below only covers a normal fzf exit. Pressing prefix+C-w
     # again runs `display-popup -C`, which SIGHUPs this process mid-fzf and
     # would otherwise strand a multi-megabyte snapshot of every pane's
