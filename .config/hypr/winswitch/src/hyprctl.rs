@@ -57,6 +57,37 @@ pub fn list_windows() -> Vec<Window> {
         .collect()
 }
 
+/// True if either Alt key is currently physically held, per Hyprland's own
+/// real-seat key-state tracking (not whatever our own process's keyboard
+/// focus has or hasn't seen -- that's the whole point, see the quick-tap
+/// comment in `main.rs`).
+pub fn is_alt_down() -> bool {
+    let out = Command::new("hyprctl")
+        .args([
+            "repl",
+            r#"return tostring(hl.is_key_down("Alt_L") or hl.is_key_down("Alt_R"))"#,
+        ])
+        .output();
+    matches!(out, Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "true")
+}
+
+/// The classic single-tap alt-tab: focus the previous (or, for `prev`,
+/// least-recent) window directly, with no grid involved at all. Mirrors
+/// `ui.rs`'s `start_idx` so a tap and a held-then-immediately-released hold
+/// land on the same window either way.
+pub fn quick_switch(cmd: &str) {
+    let windows = list_windows();
+    if windows.is_empty() {
+        return;
+    }
+    let idx = if cmd == "prev" {
+        windows.len() - 1
+    } else {
+        1.min(windows.len() - 1)
+    };
+    focus_window(&windows[idx].address);
+}
+
 /// `hyprctl dispatch focuswindow address:...` doesn't work on this build:
 /// this Hyprland install uses the native Lua config system, under which
 /// `hyprctl dispatch <name> <args>` is routed through string-concatenated

@@ -21,6 +21,22 @@ use crate::hyprctl::{self, Window};
 
 const ICON_SIZE: i32 = 96;
 const CELL_WIDTH: i32 = 180;
+// icon (96) + vbox spacing (6) + a 2-line label (~32) + child margin (16).
+const CELL_HEIGHT: i32 = 166;
+
+/// A near-square column/row split so the grid fills its own bounding box
+/// instead of a handful of icons rattling around inside a window sized as a
+/// fixed fraction of the monitor regardless of how many there are. Cols is
+/// clamped to [2, 6]: below 2, a single window would sit in an oddly narrow
+/// sliver; above 6, more windows mostly grows the grid *taller* rather than
+/// wider than it is tall, since a wide wall of icons reads worse than a
+/// taller rectangle.
+fn grid_dims(n: usize) -> (i32, i32) {
+    let n = n.max(1) as f64;
+    let cols = (n.sqrt().ceil() as i32).clamp(2, 6);
+    let rows = (n / cols as f64).ceil() as i32;
+    (cols, rows)
+}
 
 struct State {
     windows: Vec<Window>,
@@ -182,11 +198,17 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     win.set_layer(gtk_layer_shell::Layer::Overlay);
     win.set_keyboard_mode(gtk_layer_shell::KeyboardMode::Exclusive);
 
+    let (cols, rows) = grid_dims(state.windows.len());
+
     if let Some(display) = gdk::Display::default() {
         if let Some(mon) = target_monitor(&display) {
             win.set_monitor(&mon);
             let g = mon.geometry();
-            win.set_size_request((g.width() as f64 * 0.7) as i32, (g.height() as f64 * 0.6) as i32);
+            let wanted_w = cols * (CELL_WIDTH + 24) + 40;
+            let wanted_h = rows * CELL_HEIGHT + 60;
+            let w = wanted_w.clamp(320, (g.width() as f64 * 0.9) as i32);
+            let h = wanted_h.clamp(220, (g.height() as f64 * 0.85) as i32);
+            win.set_size_request(w, h);
         }
     }
 
@@ -194,8 +216,11 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     flowbox.set_selection_mode(gtk::SelectionMode::Single);
     flowbox.set_homogeneous(true);
     flowbox.set_valign(gtk::Align::Start);
-    flowbox.set_max_children_per_line(8);
-    flowbox.set_min_children_per_line(1);
+    // Forcing min == max locks in the `grid_dims` column count instead of
+    // letting FlowBox reflow based on available width, which is what was
+    // producing a handful of icons bunched in a mostly-empty box.
+    flowbox.set_max_children_per_line(cols as u32);
+    flowbox.set_min_children_per_line(cols as u32);
     flowbox.set_row_spacing(4);
     flowbox.set_column_spacing(4);
 

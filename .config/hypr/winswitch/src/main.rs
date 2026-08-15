@@ -33,6 +33,23 @@ fn main() {
         return;
     }
 
+    // Quick-tap detection: a fast press-release of Alt+Tab with no real
+    // intent to browse the grid shouldn't show it at all. Wait long enough
+    // that a genuine tap has already released Alt, then check whether it
+    // has -- if so, do the classic single quick-switch and exit without
+    // ever touching GTK, instead of the grid appearing and then getting
+    // stuck open. That's the actual bug this works around: a fast enough
+    // tap can complete before the layer-shell surface has mapped and
+    // acquired keyboard focus, so its key-release-event handler never sees
+    // the release, and the grid is left waiting for one that already
+    // happened. Checking real key state via `hl.is_key_down` sidesteps the
+    // race entirely instead of trying to win it.
+    std::thread::sleep(std::time::Duration::from_millis(130));
+    if !hyprctl::is_alt_down() {
+        hyprctl::quick_switch(&cmd);
+        return;
+    }
+
     // Connect failed: either nothing is running, or a stale socket file is
     // left over from a process that didn't exit cleanly. Either way, a fresh
     // bind is the right move -- remove it first since bind() fails on an
