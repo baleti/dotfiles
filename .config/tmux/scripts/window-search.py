@@ -39,10 +39,25 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 CAPTURE_LINES = int(os.environ.get("TMUX_WINDOW_SEARCH_LINES", 5000))
+
+# opt-in latency logging: `touch ~/.cache/tmux-window-search-debug` to enable,
+# rm it to disable. Zero cost when the marker is absent (checked once at
+# import, not per-call) - kept in the script rather than stripped after use
+# since perf regressions here are easy to introduce and hard to notice.
+_DEBUG = os.path.exists(os.path.expanduser("~/.cache/tmux-window-search-debug"))
+_T0 = time.time()
+
+
+def _dbg(msg):
+    if not _DEBUG:
+        return
+    with open(os.path.expanduser("~/.cache/tmux-window-search-timing.log"), "a") as f:
+        f.write(f"[abs={time.time():.3f} rel={time.time() - _T0:.3f} pid={os.getpid()}] {msg}\n")
 TITLE_BOOST = 4  # how many times a title token is repeated into the doc
 K1, B = 1.5, 0.75  # standard Okapi BM25 defaults
 SNIPPET_WIDTH = 90
@@ -193,16 +208,19 @@ def bm25_score(window, query_tokens, df, n, avgdl):
 
 
 def search(snapshot_path, query):
+    _dbg(f"search() start query={query!r}")
     with open(snapshot_path) as f:
         snap = json.load(f)
     windows, df, n, avgdl = snap["windows"], snap["df"], snap["n"], snap["avgdl"]
     query_tokens = tokenize(query)
+    _dbg("snapshot loaded")
 
     if not query_tokens:
         ranked = sorted(windows.items(), key=lambda kv: -kv[1]["activity"])
         for wid, w in ranked:
             pane_id = w["active_pane"] or w["panes"][0]
             print(row(pane_id, w, ""))
+        _dbg("printed (empty query)")
         return
 
     scored = []
@@ -215,6 +233,7 @@ def search(snapshot_path, query):
     for _, wid, w in scored:
         pane_id, snippet = best_snippet(w, query_tokens)
         print(row(pane_id, w, snippet))
+    _dbg(f"printed ({len(scored)} results)")
 
 
 def row(pane_id, w, snippet):
@@ -225,15 +244,19 @@ def row(pane_id, w, snippet):
 
 
 def drive():
+    _dbg("drive() start")
     snapshot = build_snapshot()
+    _dbg("build_snapshot done")
     if not snapshot["windows"]:
         return
 
     fd, snap_path = tempfile.mkstemp(prefix="tmux-window-search-", suffix=".json")
     with os.fdopen(fd, "w") as f:
         json.dump(snapshot, f)
+    _dbg("snapshot written to disk")
 
     self_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))} --search {shlex.quote(snap_path)} --query {{q}}"
+    _dbg("launching fzf")
     try:
         result = subprocess.run(
             [
@@ -250,6 +273,7 @@ def drive():
         )
     finally:
         os.unlink(snap_path)
+    _dbg(f"fzf exited rc={result.returncode} stdout_len={len(result.stdout)} stderr={result.stderr!r}")
 
     selected = result.stdout.strip()
     if not selected:
@@ -261,6 +285,7 @@ def drive():
 
 
 def main():
+    _dbg(f"main() argv={sys.argv[1:]}")
     parser = argparse.ArgumentParser()
     parser.add_argument("--search", metavar="SNAPSHOT")
     parser.add_argument("--query", default="")
