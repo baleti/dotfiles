@@ -308,20 +308,50 @@ def row(pane_id, w, qset=frozenset()):
     return f"{pane_id}\t{label}"
 
 
+PREVIEW_CONTEXT_BEFORE = 5  # lines of leading context kept above a jumped-to match
+
+
 def preview(pane_id, query):
     # no -e here (unlike the old plain capture): highlighting has to insert
     # its own ANSI codes into the text, and re-coloring on top of the pane's
     # *own* existing color codes without clobbering them would mean tracking
     # SGR state across every match - not worth it for a preview pane, so this
-    # trades the pane's original colors for reliable highlighting instead
+    # trades the pane's original colors for reliable highlighting instead.
+    #
+    # depth matches CAPTURE_LINES, the same depth indexing/scoring searched -
+    # this used to be hardcoded to 300, so a window could rank (and get
+    # highlighted title matches) purely from a hit between line 300 and
+    # CAPTURE_LINES back in scrollback while the preview - unable to show
+    # what it never captured - looked like nothing had matched at all.
     out = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-300"],
+        ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{CAPTURE_LINES}"],
         capture_output=True, text=True, errors="replace",
     ).stdout
-    query_tokens = tokenize(query)
-    if query_tokens:
-        out = highlight(out, set(query_tokens))
-    sys.stdout.write(out)
+    qset = set(tokenize(query))
+    if not qset:
+        sys.stdout.write(out)
+        return
+
+    # jump near the match instead of always opening at the top of a
+    # potentially thousands-of-lines capture: scan from the *end* backwards
+    # for the most recent matching line, consistent with the recency
+    # weighting already used in scoring (the match that actually justified
+    # a high recency-weighted score is more likely near the bottom).
+    lines = out.split("\n")
+    match_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        low = lines[i].lower()
+        if not any(q in low for q in qset):
+            continue
+        if any(t.startswith(q) for t in tokenize(lines[i]) for q in qset):
+            match_idx = i
+            break
+    if match_idx is not None and match_idx > PREVIEW_CONTEXT_BEFORE:
+        skipped = match_idx - PREVIEW_CONTEXT_BEFORE
+        lines = [f"… {skipped} earlier lines not shown …"] + lines[skipped:]
+        out = "\n".join(lines)
+
+    sys.stdout.write(highlight(out, qset))
 
 
 def resolve_client():
@@ -360,14 +390,15 @@ def drive():
     # $FZF_LINES/$FZF_MATCH_COUNT are exported by fzf to every child process,
     # including this one - exact row arithmetic instead of coarse percentage
     # tiers, which always left a few rows of dead space unless the match
-    # count happened to land right at a tier boundary. +2 is the prompt line
+    # count happened to land right at a tier boundary. +3 is the prompt line
     # plus the match-count info line above the list (--layout=reverse, no
-    # --info=inline); floor/ceiling keep both panes from collapsing to
-    # nothing at either extreme. POSIX sh, since this runs through fzf's
-    # $SHELL, not necessarily zsh.
+    # --info=inline) plus one extra row - +2 measured one row short in
+    # practice, clipping the last result; floor/ceiling keep both panes from
+    # collapsing to nothing at either extreme. POSIX sh, since this runs
+    # through fzf's $SHELL, not necessarily zsh.
     resize_on_result = (
-        'c=$FZF_MATCH_COUNT; list_rows=$((c + 2)); '
-        '[ "$list_rows" -lt 3 ] && list_rows=3; '
+        'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
+        '[ "$list_rows" -lt 4 ] && list_rows=4; '
         'max_list=$((FZF_LINES - 4)); '
         '[ "$list_rows" -gt "$max_list" ] && list_rows=$max_list; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
