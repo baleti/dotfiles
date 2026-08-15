@@ -58,7 +58,12 @@ def _dbg(msg):
         return
     with open(os.path.expanduser("~/.cache/tmux-window-search-timing.log"), "a") as f:
         f.write(f"[abs={time.time():.3f} rel={time.time() - _T0:.3f} pid={os.getpid()}] {msg}\n")
-TITLE_BOOST = 4  # how many times a title token is repeated into the doc
+WINDOW_NAME_BOOST = 4  # how many times a window-name token is repeated into the doc
+PANE_TITLE_BOOST = 8  # pane_title is a full, deliberate sentence rather than
+# a generic command name (e.g. Claude Code sets it to the actual
+# conversation topic) - a hit there is a much stronger signal than the same
+# word merely appearing somewhere in scrollback, so it's boosted harder
+# than window_name
 K1, B = 1.5, 0.75  # standard Okapi BM25 defaults
 RECENCY_CHUNKS = 8  # coarse recency buckets per window instead of per-line -
 # per-line tokenizing was 380ms of a 445ms build on ~50 windows/250k lines,
@@ -134,10 +139,12 @@ def build_snapshot():
                 lines.append([pid, text])
 
         tf, doclen = chunked_tf(lines)
-        title_tokens = tokenize(w["window_name"])
-        for tok in title_tokens * TITLE_BOOST:
-            tf[tok] = tf.get(tok, 0) + 1.0
-        doclen += TITLE_BOOST * len(title_tokens)
+        for boost, field in ((WINDOW_NAME_BOOST, w["window_name"]),
+                             (PANE_TITLE_BOOST, w["pane_title"])):
+            field_tokens = tokenize(field)
+            for tok in field_tokens * boost:
+                tf[tok] = tf.get(tok, 0) + 1.0
+            doclen += boost * len(field_tokens)
 
         windows[wid] = {
             **w, "lines": lines, "tf": tf, "doclen": doclen,
@@ -303,10 +310,12 @@ def drive():
                 "--bind", f"start:reload:{self_cmd}",
                 "--bind", f"change:reload:{self_cmd}",
                 "--bind", f"result:transform:{resize_on_result}",
-                # fzf has no configurable WORDCHARS like zsh's - this is its
-                # own fixed word-boundary logic, closest available match
-                "--bind", "ctrl-left:backward-kill-word",
-                "--bind", "ctrl-right:kill-word",
+                # move-by-word, matching alt-left/right (fzf's own default
+                # binding for backward-word/forward-word) rather than
+                # deleting - fzf has no configurable WORDCHARS like zsh's,
+                # so word boundaries are fzf's own fixed logic either way
+                "--bind", "ctrl-left:backward-word",
+                "--bind", "ctrl-right:forward-word",
             ],
             capture_output=True, text=True,
         )
