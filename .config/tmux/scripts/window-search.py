@@ -22,6 +22,21 @@ No stopword list, no stemming, no per-user tuning knobs beyond capture
 depth - keeping the scoring textbook-standard is what keeps it from
 overfitting to this one person's shell history.
 
+Query syntax (the subset of recoll's query language that earns its keep
+here - see parse_query/phrase_re):
+
+  foo bar        bare words: prefix-expanded ("ric" finds "ricing"),
+                 ranked, a window need not contain all of them
+  "foo bar"      phrase: those words adjacent and in that order, never
+                 prefix-expanded, and *required* - windows without it are
+                 dropped rather than merely ranked lower
+  "foo"          one-word phrase: the exact whole word, i.e. the way to say
+                 "we" and not also match "web"/"weight"
+
+Bare words rank, quotes constrain. Mixing them is the useful case:
+`error "connection refused"` requires the exact phrase and lets "error"
+push the best of those to the top.
+
 Two modes:
   driver (no args):        snapshot every pane once, drive fzf, jump on select
   --search FILE --query Q: score the snapshot against Q, print ranked lines
@@ -79,6 +94,54 @@ TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 def tokenize(text):
     return TOKEN_RE.findall(text.lower())
+
+
+QUOTED_RE = re.compile(r'"([^"]*)"')
+
+
+def parse_query(query):
+    """Split a query into (bare_tokens, phrases), where a phrase is the token
+    list from one double-quoted group.
+
+    Same split recoll/Xapian make, and for the same reason: bare words are
+    loose, ranked, prefix-expanded evidence, while a quoted group is an exact
+    constraint. Per recoll's manual, "words inside phrases [...] are not
+    stem-expanded" and phrases are "searched verbatim" - so a phrase here is
+    likewise never prefix-expanded, which is what makes "we" a way to ask for
+    the whole word "we" rather than we/web/weight/well.
+
+    An unterminated quote (which is every phrase mid-typing, e.g. `"we ne`)
+    simply doesn't match QUOTED_RE, so its words stay bare and keep ranking
+    loosely until the closing quote is typed. That keeps live-as-you-type
+    useful instead of blanking the list while a phrase is half-entered."""
+    phrases = []
+
+    def take(m):
+        toks = tokenize(m.group(1))
+        if toks:
+            phrases.append(toks)
+        return " "
+
+    rest = QUOTED_RE.sub(take, query)
+    return tokenize(rest), phrases
+
+
+def phrase_re(tokens):
+    """Regex matching these tokens adjacent, in order, in lowercased text.
+
+    Adjacency is defined on the token stream, not on raw characters: the
+    separator is one-or-more non-token characters, so `"we need"` matches
+    "we need", "we  need" (column-aligned output) and "we-need", but not
+    "we really need" (a token in between) nor "weneed" (no separation at
+    all). That is Xapian phrase semantics with the default slack of 0, and
+    it is what keeps whitespace meaningful without making the match hostage
+    to exactly how many spaces a program happened to emit.
+
+    The lookarounds rather than \\b so a single-token phrase is a true
+    whole-word match: `"we"` must not fire inside "web"."""
+    return re.compile(r"(?<![a-z0-9])"
+                      + r"[^a-z0-9]+".join(re.escape(t) for t in tokens)
+                      + r"(?![a-z0-9])")
 
 
 SNAP_PREFIX = "tmux-window-search-"
@@ -269,8 +332,8 @@ def build_snapshot():
 CONNECTOR_RE = re.compile(r"^[^\sA-Za-z0-9]+$")  # punctuation, no whitespace
 
 
-def highlight(text, qset):
-    """Wrap query-token matches in text with bold-yellow ANSI.
+def highlight(text, qset, rxs=()):
+    """Wrap query-token and quoted-phrase matches in text with bold-yellow ANSI.
 
     Matching itself stays word-level (TOKEN_RE strips punctuation, same as
     everywhere else - "alt" still finds "ctrl+alt+h", "case" still finds
@@ -281,10 +344,15 @@ def highlight(text, qset):
     render as three disconnected highlighted letters with plain symbols
     poking through - while "alt" typed alone still only lights up "alt".
     """
-    if not qset:
+    if not qset and not rxs:
         return text
-    matches = list(TOKEN_RE.finditer(text.lower()))
+    low = text.lower()
     spans = []
+    # quoted phrases first - they are whole runs by definition
+    for rx in rxs:
+        for m in rx.finditer(low):
+            spans.append((m.start(), m.end()))
+    matches = list(TOKEN_RE.finditer(low))
     i = 0
     while i < len(matches):
         if not any(matches[i].group().startswith(q) for q in qset):
@@ -299,7 +367,17 @@ def highlight(text, qset):
             j += 1
         spans.append((start, end))
         i = j
-    for start, end in sorted(spans, reverse=True):
+    # phrase and bare-word spans can overlap (the phrase words are usually
+    # also bare matches); merge before inserting or the escape codes nest and
+    # the reversed-offset insertion below corrupts them
+    spans.sort()
+    merged = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    for start, end in reversed(merged):
         text = text[:start] + "\x1b[1;33m" + text[start:end] + "\x1b[0m" + text[end:]
     return text
 
@@ -316,7 +394,7 @@ def expand_prefix(prefix, vocab):
     return vocab[lo:hi]
 
 
-def best_pane(window, qset):
+def best_pane(window, qset, rxs=(), phrase_panes=()):
     """Which pane, of possibly several in this window, actually matched the
     query - that's the one to jump to and preview, not just window["active_pane"].
     qset holds the raw typed prefixes (e.g. {"ric"}), matched by startswith
@@ -324,7 +402,17 @@ def best_pane(window, qset):
 
     Ties break on how recent the match is *within its own pane*, for the same
     reason chunked_tf chunks per pane: window["lines"] is the panes laid
-    end-to-end, so a raw index would just mean "prefers the last pane"."""
+    end-to-end, so a raw index would just mean "prefers the last pane".
+
+    When the query had quoted phrases, only panes actually containing every
+    phrase are eligible: the phrase is the constraint the user expressed, so
+    jumping to a pane that merely has some of the loose words would land them
+    away from the thing they asked for."""
+    eligible = None
+    if rxs and phrase_panes:
+        eligible = set.intersection(*[set(p) for p in phrase_panes])
+        if not eligible:
+            eligible = None
     pane_span = {}  # pane_id -> [first_index, last_index]
     for i, (pane_id, _) in enumerate(window["lines"]):
         span = pane_span.get(pane_id)
@@ -335,21 +423,29 @@ def best_pane(window, qset):
 
     best = None  # (n_matched, in_pane_recency, pane_id)
     for i, (pane_id, text) in enumerate(window["lines"]):
+        if eligible is not None and pane_id not in eligible:
+            continue
+        low = text.lower()
+        # a phrase line counts as a match on its own, so a pure phrase query
+        # (no bare words at all) still finds the right pane
+        n_phrase = sum(1 for rx in rxs if rx.search(low))
         # cheap substring pre-check (C-level `in`) before paying for a real
         # tokenize() - most lines don't match, and this alone cut this loop
         # from 130ms to 35ms across a 17-window result set. Already prefix-
         # aware for free: "ric" in "...ricing..." is a plain substring test.
-        low = text.lower()
-        if not any(q in low for q in qset):
-            continue
-        matched = {t for t in tokenize(text) if any(t.startswith(q) for q in qset)}
-        if not matched:
+        matched = set()
+        if qset and any(q in low for q in qset):
+            matched = {t for t in tokenize(text) if any(t.startswith(q) for q in qset)}
+        if not matched and not n_phrase:
             continue
         start, end = pane_span[pane_id]
-        key = (len(matched), (i - start) / max(1, end - start))
+        # phrases outrank loose words: an exact hit is the stronger signal
+        key = (n_phrase, len(matched), (i - start) / max(1, end - start))
         if best is None or key > best[0]:
             best = (key, pane_id)
     if best is None:
+        if eligible:
+            return sorted(eligible)[0]
         return window["active_pane"] or window["panes"][0]
     return best[1]
 
@@ -370,15 +466,48 @@ def bm25_score(window, terms, df, n, avgdl):
     return score
 
 
+def phrase_counts(window, rxs, phrase_toks):
+    """How many times each phrase occurs in this window, and which panes it
+    occurred in. Counted at query time rather than indexed: a positional
+    index (what Xapian keeps to do this properly) would mean storing a
+    posting list per token per window, which is far more snapshot than the
+    whole corpus is worth here, when the corpus is small enough to rescan."""
+    counts = [0] * len(rxs)
+    panes = [set() for _ in rxs]
+    for pane_id, text in window["lines"]:
+        low = text.lower()
+        for i, (rx, toks) in enumerate(zip(rxs, phrase_toks)):
+            # every word of the phrase must at least appear somewhere in the
+            # line before the regex is worth running - plain `in` is a C-level
+            # scan and rejects the overwhelming majority of lines, the same
+            # trick that took best_pane from 130ms to 35ms
+            if not all(t in low for t in toks):
+                continue
+            hits = len(rx.findall(low))
+            if hits:
+                counts[i] += hits
+                panes[i].add(pane_id)
+    return counts, panes
+
+
+def bm25_term_score(f, n_q, dl, n, avgdl):
+    """One term's BM25 contribution, shared by the vocabulary terms and by
+    the query-time phrase pseudo-terms so both are ranked on one scale."""
+    if f == 0:
+        return 0.0
+    idf = math.log((n - n_q + 0.5) / (n_q + 0.5) + 1)
+    return idf * (f * (K1 + 1)) / (f + K1 * (1 - B + B * dl / avgdl))
+
+
 def search(snapshot_path, query):
     _dbg(f"search() start query={query!r}")
     with open(snapshot_path) as f:
         snap = json.load(f)
     windows, df, n, avgdl = snap["windows"], snap["df"], snap["n"], snap["avgdl"]
-    query_tokens = tokenize(query)
-    _dbg("snapshot loaded")
+    query_tokens, phrases = parse_query(query)
+    _dbg(f"snapshot loaded; {len(query_tokens)} bare tokens, {len(phrases)} phrase(s)")
 
-    if not query_tokens:
+    if not query_tokens and not phrases:
         ranked = sorted(windows.items(), key=lambda kv: -kv[1]["activity"])
         for wid, w in ranked:
             pane_id = w["active_pane"] or w["panes"][0]
@@ -393,21 +522,41 @@ def search(snapshot_path, query):
     terms = [t for tok in query_tokens for t in expand_prefix(tok, vocab)]
     _dbg(f"query tokens {query_tokens} expanded to {len(terms)} terms")
 
-    scored = []
+    rxs = [phrase_re(p) for p in phrases]
+    # A quoted phrase is a *constraint*, not just extra evidence: asking for
+    # "we need" means the windows without that exact run are wrong answers,
+    # not merely lower-ranked ones. So phrases AND-filter the result set,
+    # matching recoll ("all elements in the search entry are normally
+    # combined with an implicit AND"), while bare words keep their existing
+    # OR-ish ranking behaviour so live typing still narrows gradually.
+    hits = {}
     for wid, w in windows.items():
+        counts, panes = phrase_counts(w, rxs, phrases) if rxs else ([], [])
+        if rxs and not all(counts):
+            continue
+        hits[wid] = (counts, panes)
+    # phrase df is over the windows that survived, computed here because a
+    # phrase is not in the indexed vocabulary and so has no precomputed df
+    phrase_df = [sum(1 for c, _ in hits.values() if c[i]) for i in range(len(rxs))]
+
+    scored = []
+    for wid, (counts, _) in hits.items():
+        w = windows[wid]
         s = bm25_score(w, terms, df, n, avgdl)
+        for i, c in enumerate(counts):
+            s += bm25_term_score(c, phrase_df[i], w["doclen"], n, avgdl)
         if s > 0:
             scored.append((s, wid, w))
     scored.sort(key=lambda t: -t[0])
 
     qset = set(query_tokens)
     for _, wid, w in scored:
-        pane_id = best_pane(w, qset)
-        print(row(pane_id, w, qset))
-    _dbg(f"printed ({len(scored)} results)")
+        pane_id = best_pane(w, qset, rxs, hits[wid][1])
+        print(row(pane_id, w, qset, rxs))
+    _dbg(f"printed ({len(scored)} results, {len(rxs)} phrase constraint(s))")
 
 
-def row(pane_id, w, qset=frozenset()):
+def row(pane_id, w, qset=frozenset(), rxs=()):
     # mirrors tmux's own choose-tree row: "index: name+flags: \"pane title\"" -
     # the preview pane below already shows content, so this only needs to
     # identify the window, not summarize what matched inside it. name/title
@@ -415,8 +564,8 @@ def row(pane_id, w, qset=frozenset()):
     # scoring (see PANE_TITLE_BOOST) precisely because they're a strong
     # signal, so the highlight should make that visible too, not just the
     # ranking.
-    name = highlight(w["window_name"], qset)
-    title = highlight(w["pane_title"], qset)
+    name = highlight(w["window_name"], qset, rxs)
+    title = highlight(w["pane_title"], qset, rxs)
     panes_suffix = f" ({len(w['panes'])}p)" if len(w["panes"]) > 1 else ""
     label = f'{w["session"]}:{w["window_index"]} {name}{w["window_flags"]}: "{title}"{panes_suffix}'
     return f"{pane_id}\t{label}"
@@ -455,8 +604,10 @@ def preview(pane_id, query):
         sys.stdout.write(f"[capture-pane {pane_id} failed: {r.stderr.strip()}]\n")
         return
     out = r.stdout
-    qset = set(tokenize(query))
-    if not qset:
+    query_tokens, phrases = parse_query(query)
+    qset = set(query_tokens)
+    rxs = [phrase_re(p) for p in phrases]
+    if not qset and not rxs:
         sys.stdout.write(out)
         return
 
@@ -465,21 +616,34 @@ def preview(pane_id, query):
     # for the most recent matching line, consistent with the recency
     # weighting already used in scoring (the match that actually justified
     # a high recency-weighted score is more likely near the bottom).
+    #
+    # A phrase, when present, is what the user actually asked for, so it wins
+    # the jump: landing on a loose word-match while the exact run sits
+    # offscreen would defeat the point of having quoted it.
     lines = out.split("\n")
-    match_idx = None
-    for i in range(len(lines) - 1, -1, -1):
-        low = lines[i].lower()
-        if not any(q in low for q in qset):
-            continue
-        if any(t.startswith(q) for t in tokenize(lines[i]) for q in qset):
-            match_idx = i
-            break
+    match_idx = find_match_line(lines, qset, rxs)
     if match_idx is not None and match_idx > PREVIEW_CONTEXT_BEFORE:
         skipped = match_idx - PREVIEW_CONTEXT_BEFORE
         lines = [f"… {skipped} earlier lines not shown …"] + lines[skipped:]
         out = "\n".join(lines)
 
-    sys.stdout.write(highlight(out, qset))
+    sys.stdout.write(highlight(out, qset, rxs))
+
+
+def find_match_line(lines, qset, rxs):
+    """Index of the last line worth scrolling to, phrases preferred."""
+    for want_phrase in ((True, False) if rxs else (False,)):
+        for i in range(len(lines) - 1, -1, -1):
+            low = lines[i].lower()
+            if want_phrase:
+                if any(rx.search(low) for rx in rxs):
+                    return i
+                continue
+            if not qset or not any(q in low for q in qset):
+                continue
+            if any(t.startswith(q) for t in tokenize(lines[i]) for q in qset):
+                return i
+    return None
 
 
 def resolve_client():
