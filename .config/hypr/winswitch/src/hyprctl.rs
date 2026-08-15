@@ -59,9 +59,17 @@ pub fn list_windows() -> Vec<Window> {
 
 /// True if either Alt key is currently physically held, per Hyprland's own
 /// real-seat key-state tracking (not whatever our own process's keyboard
-/// focus has or hasn't seen -- that's the whole point, see the quick-tap
-/// comment in `main.rs`).
+/// focus has or hasn't seen -- that's the whole point, see the focus-in
+/// handler in `ui.rs` that calls this).
 pub fn is_alt_down() -> bool {
+    // Lets manual/synthetic testing (wtype can't hold a real key in a way
+    // Hyprland's own key-state tracking sees, so it can't otherwise
+    // exercise the "still held" path at all) force this without editing
+    // source -- inert for every real invocation, since Hyprland's binds
+    // never set this.
+    if std::env::var_os("WINSWITCH_DEBUG_FORCE_HELD").is_some() {
+        return true;
+    }
     let out = Command::new("hyprctl")
         .args([
             "repl",
@@ -69,23 +77,6 @@ pub fn is_alt_down() -> bool {
         ])
         .output();
     matches!(out, Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "true")
-}
-
-/// The classic single-tap alt-tab: focus the previous (or, for `prev`,
-/// least-recent) window directly, with no grid involved at all. Mirrors
-/// `ui.rs`'s `start_idx` so a tap and a held-then-immediately-released hold
-/// land on the same window either way.
-pub fn quick_switch(cmd: &str) {
-    let windows = list_windows();
-    if windows.is_empty() {
-        return;
-    }
-    let idx = if cmd == "prev" {
-        windows.len() - 1
-    } else {
-        1.min(windows.len() - 1)
-    };
-    focus_window(&windows[idx].address);
 }
 
 /// `hyprctl dispatch focuswindow address:...` doesn't work on this build:
