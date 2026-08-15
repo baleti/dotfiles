@@ -23,19 +23,27 @@ depth - keeping the scoring textbook-standard is what keeps it from
 overfitting to this one person's shell history.
 
 Query syntax (the subset of recoll's query language that earns its keep
-here - see parse_query/phrase_re):
+here - see parse_query/phrase_re). Two orthogonal rules: quotes mean exact,
+! means negate.
 
-  foo bar        bare words: prefix-expanded ("ric" finds "ricing"),
-                 ranked, a window need not contain all of them
+  foo bar        bare words: prefix-expanded ("ric" finds "ricing"). All of
+                 them must be present (recoll's implicit AND) - see
+                 MATCH_MODE to get the older any-word-ranks behaviour back
   "foo bar"      phrase: those words adjacent and in that order, never
-                 prefix-expanded, and *required* - windows without it are
-                 dropped rather than merely ranked lower
+                 prefix-expanded
   "foo"          one-word phrase: the exact whole word, i.e. the way to say
                  "we" and not also match "web"/"weight"
+  !foo           drop windows containing foo (prefix-expanded, so !log also
+                 drops logs/login - use !"log" to be exact)
+  !"foo bar"     drop windows containing that exact phrase
 
-Bare words rank, quotes constrain. Mixing them is the useful case:
-`error "connection refused"` requires the exact phrase and lets "error"
-push the best of those to the top.
+Everything present is required; ranking then orders what survived. So
+`error "connection refused" !timeout` keeps only windows with the exact
+phrase and the word error and no timeout, and ranks the rest by relevance.
+
+! rather than recoll's - for negation: a leading dash has to stay available,
+because searching scrollback for `-rf` or `--stat` is a thing you actually
+do in a terminal-history index.
 
 Two modes:
   driver (no args):        snapshot every pane once, drive fzf, jump on select
@@ -58,7 +66,7 @@ import sys
 import tempfile
 import time
 from bisect import bisect_left
-from collections import Counter
+from collections import Counter, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 CAPTURE_LINES = int(os.environ.get("TMUX_WINDOW_SEARCH_LINES", 5000))
@@ -96,34 +104,63 @@ def tokenize(text):
     return TOKEN_RE.findall(text.lower())
 
 
-QUOTED_RE = re.compile(r'"([^"]*)"')
+# one query element: optional leading ! (negation), then either a
+# double-quoted phrase or a run of non-space characters
+QUERY_ELEM_RE = re.compile(r'(!?)(?:"([^"]*)"|(\S+))')
+
+# recoll ANDs all elements together ("all elements in the search entry are
+# normally combined with an implicit AND"). "all" reproduces that: every bare
+# word must be present somewhere in the window. "any" is the original
+# behaviour - a window matching only one word still appears, just ranked
+# lower - kept switchable because which one feels right depends on how you
+# type, and swapping back is a one-word change rather than a revert.
+MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
+
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases")
 
 
 def parse_query(query):
-    """Split a query into (bare_tokens, phrases), where a phrase is the token
-    list from one double-quoted group.
+    """Parse a query into positive/negative bare words and phrases.
 
-    Same split recoll/Xapian make, and for the same reason: bare words are
-    loose, ranked, prefix-expanded evidence, while a quoted group is an exact
-    constraint. Per recoll's manual, "words inside phrases [...] are not
-    stem-expanded" and phrases are "searched verbatim" - so a phrase here is
-    likewise never prefix-expanded, which is what makes "we" a way to ask for
-    the whole word "we" rather than we/web/weight/well.
+    The rule is orthogonal in both directions, which is what makes it
+    memorable: quotes mean exact (never prefix-expanded), and ! means
+    negate. So all four combinations do what they look like -
 
-    An unterminated quote (which is every phrase mid-typing, e.g. `"we ne`)
-    simply doesn't match QUOTED_RE, so its words stay bare and keep ranking
-    loosely until the closing quote is typed. That keeps live-as-you-type
-    useful instead of blanking the list while a phrase is half-entered."""
-    phrases = []
+      foo        bare, prefix-expanded ("ric" finds "ricing"), required
+                 when MATCH_MODE is "all"
+      "foo bar"  those words adjacent and in that order, exact, required
+      !foo       drop windows containing foo (prefix-expanded, so !log
+                 also drops logs/login - use !"log" to be exact)
+      !"foo bar" drop windows containing that exact phrase
 
-    def take(m):
-        toks = tokenize(m.group(1))
-        if toks:
-            phrases.append(toks)
-        return " "
+    Bare words are the split recoll/Xapian make for the same reason: loose
+    ranked evidence versus an exact constraint. Per recoll's manual, "words
+    inside phrases [...] are not stem-expanded" and phrases are "searched
+    verbatim".
 
-    rest = QUOTED_RE.sub(take, query)
-    return tokenize(rest), phrases
+    ! rather than recoll's - because a leading dash is not available here:
+    scrollback is full of CLI flags, and `-rf` or `--stat` is a thing you
+    genuinely want to search *for* in a terminal-history index. ! has no such
+    conflict, since TOKEN_RE never produces it and no flag begins with it.
+
+    An unterminated quote (every phrase mid-typing, e.g. `"we ne`) falls back
+    to bare words, so live-as-you-type keeps narrowing instead of blanking
+    the list while the phrase is half-entered."""
+    terms, phrases, neg_terms, neg_phrases = [], [], [], []
+    for neg, quoted, bare in QUERY_ELEM_RE.findall(query):
+        # exactly one alternative participates; `bare` is non-empty whenever
+        # it is the one that matched, so it doubles as the discriminator.
+        # An unterminated quote lands here (no closing quote for the phrase
+        # branch to match), and tokenize drops the stray " - which is what
+        # degrades a half-typed phrase to bare words rather than to nothing.
+        if bare:
+            for tok in tokenize(bare):
+                (neg_terms if neg else terms).append(tok)
+        else:
+            toks = tokenize(quoted)
+            if toks:
+                (neg_phrases if neg else phrases).append(toks)
+    return Query(terms, phrases, neg_terms, neg_phrases)
 
 
 def phrase_re(tokens):
@@ -504,10 +541,10 @@ def search(snapshot_path, query):
     with open(snapshot_path) as f:
         snap = json.load(f)
     windows, df, n, avgdl = snap["windows"], snap["df"], snap["n"], snap["avgdl"]
-    query_tokens, phrases = parse_query(query)
-    _dbg(f"snapshot loaded; {len(query_tokens)} bare tokens, {len(phrases)} phrase(s)")
+    q = parse_query(query)
+    _dbg(f"snapshot loaded; parsed {q}")
 
-    if not query_tokens and not phrases:
+    if not any(q):
         ranked = sorted(windows.items(), key=lambda kv: -kv[1]["activity"])
         for wid, w in ranked:
             pane_id = w["active_pane"] or w["panes"][0]
@@ -516,23 +553,37 @@ def search(snapshot_path, query):
         return
 
     # expand each typed token to matching vocabulary terms ONCE here (it only
-    # depends on the corpus-wide vocab, not on any particular window), then
-    # score every window against that flat, pre-expanded term list
+    # depends on the corpus-wide vocab, not on any particular window). Kept
+    # grouped by typed word, not flattened, because "all" mode has to ask
+    # "did this window match *this* word" per word - the expansions of one
+    # typed word are alternatives for it, not separate requirements.
     vocab = snap["vocab"]
-    terms = [t for tok in query_tokens for t in expand_prefix(tok, vocab)]
-    _dbg(f"query tokens {query_tokens} expanded to {len(terms)} terms")
+    groups = [expand_prefix(tok, vocab) for tok in q.terms]
+    terms = [t for g in groups for t in g]
+    neg_terms = {t for tok in q.neg_terms for t in expand_prefix(tok, vocab)}
+    _dbg(f"{len(q.terms)} words -> {len(terms)} terms, {len(neg_terms)} negated")
 
-    rxs = [phrase_re(p) for p in phrases]
+    rxs = [phrase_re(p) for p in q.phrases]
+    neg_rxs = [phrase_re(p) for p in q.neg_phrases]
+    # one scan covers positive and negative phrases; splitting them into two
+    # passes would double the per-keystroke line walk for no benefit
+    all_rxs, all_toks = rxs + neg_rxs, q.phrases + q.neg_phrases
     # A quoted phrase is a *constraint*, not just extra evidence: asking for
     # "we need" means the windows without that exact run are wrong answers,
-    # not merely lower-ranked ones. So phrases AND-filter the result set,
-    # matching recoll ("all elements in the search entry are normally
-    # combined with an implicit AND"), while bare words keep their existing
-    # OR-ish ranking behaviour so live typing still narrows gradually.
+    # not merely lower-ranked ones. Same for the bare words under MATCH_MODE
+    # "all", which is recoll's implicit AND.
     hits = {}
     for wid, w in windows.items():
-        counts, panes = phrase_counts(w, rxs, phrases) if rxs else ([], [])
+        if neg_terms and not neg_terms.isdisjoint(w["tf"]):
+            continue
+        counts, panes = phrase_counts(w, all_rxs, all_toks) if all_rxs else ([], [])
+        if any(counts[len(rxs):]):          # a negated phrase is present
+            continue
+        counts, panes = counts[:len(rxs)], panes[:len(rxs)]
         if rxs and not all(counts):
+            continue
+        if MATCH_MODE == "all" and not all(
+                any(w["tf"].get(t) for t in g) for g in groups):
             continue
         hits[wid] = (counts, panes)
     # phrase df is over the windows that survived, computed here because a
@@ -540,20 +591,31 @@ def search(snapshot_path, query):
     phrase_df = [sum(1 for c, _ in hits.values() if c[i]) for i in range(len(rxs))]
 
     scored = []
-    for wid, (counts, _) in hits.items():
-        w = windows[wid]
-        s = bm25_score(w, terms, df, n, avgdl)
-        for i, c in enumerate(counts):
-            s += bm25_term_score(c, phrase_df[i], w["doclen"], n, avgdl)
-        if s > 0:
-            scored.append((s, wid, w))
+    if not terms and not rxs:
+        # purely negative query ("!foo", "everything except..."): there is
+        # nothing to rank *by*, so fall back to the empty-query ordering
+        # (most recent activity) over whatever survived the exclusions.
+        # Without this the BM25 sum is 0 for every window and the `s > 0`
+        # test below would throw away the entire result set - i.e. asking to
+        # exclude one thing would silently hide everything.
+        for wid in hits:
+            scored.append((windows[wid]["activity"], wid, windows[wid]))
+    else:
+        for wid, (counts, _) in hits.items():
+            w = windows[wid]
+            s = bm25_score(w, terms, df, n, avgdl)
+            for i, c in enumerate(counts):
+                s += bm25_term_score(c, phrase_df[i], w["doclen"], n, avgdl)
+            if s > 0:
+                scored.append((s, wid, w))
     scored.sort(key=lambda t: -t[0])
 
-    qset = set(query_tokens)
+    qset = set(q.terms)
     for _, wid, w in scored:
         pane_id = best_pane(w, qset, rxs, hits[wid][1])
         print(row(pane_id, w, qset, rxs))
-    _dbg(f"printed ({len(scored)} results, {len(rxs)} phrase constraint(s))")
+    _dbg(f"printed ({len(scored)} results, mode={MATCH_MODE}, "
+         f"{len(rxs)} phrase constraint(s), {len(neg_rxs)} negated phrase(s))")
 
 
 def row(pane_id, w, qset=frozenset(), rxs=()):
@@ -604,9 +666,11 @@ def preview(pane_id, query):
         sys.stdout.write(f"[capture-pane {pane_id} failed: {r.stderr.strip()}]\n")
         return
     out = r.stdout
-    query_tokens, phrases = parse_query(query)
-    qset = set(query_tokens)
-    rxs = [phrase_re(p) for p in phrases]
+    # only the positive half matters here: the preview highlights and scrolls
+    # to what was asked for, and a negated term is by definition absent
+    q = parse_query(query)
+    qset = set(q.terms)
+    rxs = [phrase_re(p) for p in q.phrases]
     if not qset and not rxs:
         sys.stdout.write(out)
         return
