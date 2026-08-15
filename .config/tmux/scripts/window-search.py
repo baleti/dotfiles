@@ -159,11 +159,39 @@ def build_snapshot():
     return {"windows": windows, "df": df, "n": len(windows), "avgdl": avgdl}
 
 
+CONNECTOR_RE = re.compile(r"^[^\sA-Za-z0-9]+$")  # punctuation, no whitespace
+
+
 def highlight(text, qset):
-    """Wrap query-token matches in text with bold-yellow ANSI, longest tokens
-    first so e.g. "git" doesn't shadow a match of "github" underneath it."""
-    for tok in sorted(qset, key=len, reverse=True):
-        text = re.sub(f"(?i)({re.escape(tok)})", "\x1b[1;33m\\1\x1b[0m", text)
+    """Wrap query-token matches in text with bold-yellow ANSI.
+
+    Matching itself stays word-level (TOKEN_RE strips punctuation, same as
+    everywhere else - "alt" still finds "ctrl+alt+h", "case" still finds
+    "case-insensitive"), but highlighting is span-merged: consecutive
+    matched words joined only by punctuation (no whitespace between them)
+    get highlighted as one run, "+"/"-" included, so "ctrl+alt+h" doesn't
+    render as three disconnected highlighted letters with plain symbols
+    poking through - while "alt" typed alone still only lights up "alt".
+    """
+    if not qset:
+        return text
+    matches = list(TOKEN_RE.finditer(text.lower()))
+    spans = []
+    i = 0
+    while i < len(matches):
+        if matches[i].group() not in qset:
+            i += 1
+            continue
+        start, end = matches[i].start(), matches[i].end()
+        j = i + 1
+        while (j < len(matches) and matches[j].group() in qset
+               and CONNECTOR_RE.match(text[end:matches[j].start()])):
+            end = matches[j].end()
+            j += 1
+        spans.append((start, end))
+        i = j
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + "\x1b[1;33m" + text[start:end] + "\x1b[0m" + text[end:]
     return text
 
 
@@ -241,8 +269,8 @@ def row(pane_id, w, qset=frozenset()):
     # scoring (see PANE_TITLE_BOOST) precisely because they're a strong
     # signal, so the highlight should make that visible too, not just the
     # ranking.
-    name = highlight(w["window_name"], qset) if qset else w["window_name"]
-    title = highlight(w["pane_title"], qset) if qset else w["pane_title"]
+    name = highlight(w["window_name"], qset)
+    title = highlight(w["pane_title"], qset)
     panes_suffix = f" ({len(w['panes'])}p)" if len(w["panes"]) > 1 else ""
     label = f'{w["session"]}:{w["window_index"]} {name}{w["window_flags"]}: "{title}"{panes_suffix}'
     return f"{pane_id}\t{label}"
