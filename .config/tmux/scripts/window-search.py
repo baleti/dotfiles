@@ -243,8 +243,8 @@ def row(pane_id, w, snippet):
     return f"{pane_id}\t{label}{tail}"
 
 
-def drive():
-    _dbg("drive() start")
+def drive(client):
+    _dbg(f"drive() start client={client!r}")
     snapshot = build_snapshot()
     _dbg("build_snapshot done")
     if not snapshot["windows"]:
@@ -277,11 +277,24 @@ def drive():
 
     selected = result.stdout.strip()
     if not selected:
+        _dbg("no selection (cancelled)")
         return
     pane_id = selected.split("\t", 1)[0]
-    subprocess.run(["tmux", "switch-client", "-t", pane_id])
-    subprocess.run(["tmux", "select-window", "-t", pane_id])
-    subprocess.run(["tmux", "select-pane", "-t", pane_id])
+    _dbg(f"selected pane_id={pane_id}")
+    # switch-client with no -c doesn't affect "the client that ran this" - a
+    # popup's shell process has no controlling pane of its own (popups aren't
+    # real panes, so tmux can't map it back to a client the way it does for
+    # a command typed inside a normal pane), so it silently falls back to
+    # some other attached client instead. #{client_tty}, captured at bind
+    # time when tmux does know who pressed the key, fixes that.
+    switch_cmd = ["switch-client", "-t", pane_id]
+    if client:
+        switch_cmd = ["switch-client", "-c", client, "-t", pane_id]
+    for cmd in (switch_cmd,
+                ["select-window", "-t", pane_id],
+                ["select-pane", "-t", pane_id]):
+        r = subprocess.run(["tmux", *cmd], capture_output=True, text=True)
+        _dbg(f"tmux {' '.join(cmd)} -> rc={r.returncode} stderr={r.stderr!r}")
 
 
 def main():
@@ -289,12 +302,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--search", metavar="SNAPSHOT")
     parser.add_argument("--query", default="")
+    parser.add_argument("client", nargs="?", default=None,
+                         help="invoking client's tty, e.g. #{client_tty} from the bind-key")
     args = parser.parse_args()
 
     if args.search:
         search(args.search, args.query)
     else:
-        drive()
+        drive(args.client)
 
 
 if __name__ == "__main__":
