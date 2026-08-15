@@ -143,6 +143,13 @@ hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("python3 ~/.config/hypr/scripts/appme
 hl.bind(mainMod .. " + Tab", hl.dsp.window.cycle_next())
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"))
 
+-- Custom grid alt-tab switcher (~/.config/hypr/winswitch): holding Alt and
+-- tapping Tab/Shift+Tab cycles a thumbnail grid; a second tap while already
+-- open forwards a cycle command over a Unix socket to the running instance
+-- instead of spawning another one (see winswitch/src/main.rs).
+hl.bind("ALT + Tab",         hl.dsp.exec_cmd("~/.config/hypr/winswitch/target/release/winswitch next"))
+hl.bind("ALT + SHIFT + Tab", hl.dsp.exec_cmd("~/.config/hypr/winswitch/target/release/winswitch prev"))
+
 -- window groups (tabs): toggle a group, then step through it like tabs.
 -- confirmed field names/signatures from src/config/lua/bindings/LuaBindingsDispatchers.cpp
 -- (hlGroupToggle/hlGroupNext/hlGroupPrev/hlGroupLockActive), all take no required args.
