@@ -34,3 +34,7 @@ hl.permission({ binary = "/usr/(lib|libexec|lib64)/xdg-desktop-portal-hyprland",
 hl.permission({ binary = "/usr/(bin|local/bin)/hyprpm", type = "plugin", mode = "allow" })
 hl.permission({ binary = "/usr/(bin|local/bin)/wf-recorder", type = "screencopy", mode = "allow" })
 hl.permission({ binary = "/usr/(bin|local/bin)/wtype", type = "keyboard", mode = "allow" })
+
+-- winswitch (~/.config/hypr/winswitch): grid alt-tab switcher, captures live
+-- window thumbnails via hyprland-toplevel-export-v1.
+hl.permission({ binary = "/home/user1/.config/hypr/winswitch/target/release/winswitch", type = "screencopy", mode = "allow" })
