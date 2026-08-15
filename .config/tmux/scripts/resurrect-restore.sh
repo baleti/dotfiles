@@ -25,8 +25,13 @@ set -euo pipefail
 
 client_tty="${1:?client_tty required}"
 
-plugin_dir=~/.config/tmux/plugins/tmux-resurrect
-restore_sh="$plugin_dir/scripts/restore.sh"
+# tmux-resurrect itself publishes this once loaded (resurrect.tmux:
+# set_script_path_options), pointing at wherever its own scripts/restore.sh
+# actually lives - manual checkout here, but this keeps the script working
+# unmodified on a TPM-managed install (~/.tmux/plugins/tmux-resurrect) too.
+restore_sh="$(tmux show-options -gqv @resurrect-restore-script-path 2>/dev/null || true)"
+restore_sh="${restore_sh:-$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh}"
+restore_sh="${restore_sh/#\~/$HOME}"
 picker_sh=~/.config/tmux/scripts/resurrect-restore-picker.sh
 
 resurrect_dir="$(tmux show-options -gqv @resurrect-dir 2>/dev/null || true)"
