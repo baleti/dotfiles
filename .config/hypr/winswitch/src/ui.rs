@@ -19,9 +19,9 @@ use gtk_layer_shell::LayerShell;
 
 use crate::hyprctl::{self, Window};
 
-const MIN_ICON: i32 = 64;
-const MAX_ICON: i32 = 240;
-// A 2-line label plus its spacing under the icon.
+const MIN_FRAME: i32 = 64;
+const MAX_FRAME: i32 = 240;
+// A 2-line label plus its spacing under the frame.
 const LABEL_ALLOWANCE: i32 = 54;
 // Per-cell margin + flowbox row/column spacing, horizontal and vertical.
 const CELL_H_OVERHEAD: i32 = 24;
@@ -31,7 +31,7 @@ const CELL_V_OVERHEAD: i32 = 24;
 /// however many windows there are. Cols is clamped to [2, 6]: below 2, a
 /// single window would sit in an oddly narrow sliver; above 6, more windows
 /// mostly grows the grid *taller* rather than wider than it is tall, since a
-/// wide wall of icons reads worse than a taller rectangle.
+/// wide wall of cells reads worse than a taller rectangle.
 fn grid_dims(n: usize) -> (i32, i32) {
     let n = n.max(1) as f64;
     let cols = (n.sqrt().ceil() as i32).clamp(2, 6);
@@ -40,14 +40,36 @@ fn grid_dims(n: usize) -> (i32, i32) {
 }
 
 /// Given the grid window's (fixed) size and how many columns/rows it needs,
-/// how big each cell -- and therefore its icon/thumbnail -- gets to be.
-/// Windows scale up to fill whatever room a fixed-size grid gives them,
-/// rather than the grid shrinking around a few small icons.
+/// how big each cell's thumbnail budget gets to be. Windows scale up to
+/// fill whatever room a fixed-size grid gives them, rather than the grid
+/// shrinking around a few small cells.
 fn cell_size(win_w: i32, win_h: i32, cols: i32, rows: i32) -> (i32, i32) {
-    let cell_w = (win_w / cols - CELL_H_OVERHEAD).max(MIN_ICON);
-    let cell_h = (win_h / rows - CELL_V_OVERHEAD).max(MIN_ICON + LABEL_ALLOWANCE);
-    let icon = cell_w.min(cell_h - LABEL_ALLOWANCE).clamp(MIN_ICON, MAX_ICON);
-    (cell_w, icon)
+    let cell_w = (win_w / cols - CELL_H_OVERHEAD).max(MIN_FRAME);
+    let cell_h = (win_h / rows - CELL_V_OVERHEAD).max(MIN_FRAME + LABEL_ALLOWANCE);
+    let max_h = (cell_h - LABEL_ALLOWANCE).clamp(MIN_FRAME, MAX_FRAME);
+    (cell_w, max_h)
+}
+
+/// How big a cell's thumbnail frame should be for one specific window,
+/// given its real on-screen size (from `hyprctl clients`) and the cell's
+/// width/height budget: fit *that window's* actual aspect ratio into the
+/// budget box, instead of every cell getting the same generic size. A live
+/// capture's dimensions closely track the window's reported size, so the
+/// empty placeholder frame shown before any capture has arrived is already
+/// close to the real thumbnail's shape -- nothing to visibly resize (or, no
+/// icon to flicker away from) once it lands.
+fn frame_size(win_w: i32, win_h: i32, budget_w: i32, budget_h: i32) -> (i32, i32) {
+    if win_w <= 0 || win_h <= 0 {
+        return (budget_w, budget_h);
+    }
+    let aspect = win_h as f64 / win_w as f64;
+    let h_at_full_width = (budget_w as f64 * aspect).round() as i32;
+    if h_at_full_width <= budget_h {
+        (budget_w, h_at_full_width.max(MIN_FRAME))
+    } else {
+        let w_at_max_h = (budget_h as f64 / aspect).round() as i32;
+        (w_at_max_h.max(MIN_FRAME), budget_h)
+    }
 }
 
 struct State {
@@ -56,54 +78,27 @@ struct State {
     locked: RefCell<bool>,
 }
 
-fn lookup_icon(class: &str, icon_size: i32) -> gdk_pixbuf::Pixbuf {
-    let theme = gtk::IconTheme::default();
-    let candidates = [class.to_string(), class.to_lowercase()];
-    if let Some(theme) = &theme {
-        for name in &candidates {
-            if let Some(pb) = theme
-                .load_icon(name, icon_size, gtk::IconLookupFlags::FORCE_SIZE)
-                .ok()
-                .flatten()
-            {
-                return pb;
-            }
-        }
-        if let Some(pb) = theme
-            .load_icon(
-                "application-x-executable",
-                icon_size,
-                gtk::IconLookupFlags::FORCE_SIZE,
-            )
-            .ok()
-            .flatten()
-        {
-            return pb;
-        }
-    }
-    // Last-resort blank pixbuf so callers never have to handle a missing icon.
-    gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, icon_size, icon_size)
-        .expect("blank pixbuf")
-}
-
 /// Returns the child alongside its thumbnail `Image` so callers can swap in
 /// a live capture later (`wayland_capture::start`'s `on_thumbnail`
 /// callback) without having to dig back through the widget tree.
 ///
-/// The image sits in a `frame_h`-tall frame (background fill via the
-/// "thumb-frame" CSS class set up in `run()`) that's the same size whether
-/// it's holding the small icon placeholder or the eventual live thumbnail --
-/// otherwise a cell visibly resizing (and its row along with it) the moment
-/// a capture lands in place of its icon reads as a flicker.
-fn make_child(win: &Window, cell_w: i32, icon_size: i32, frame_h: i32) -> (gtk::FlowBoxChild, gtk::Image) {
+/// No icon placeholder: the image starts empty in a `frame_size`-sized
+/// frame (outline via the "thumb-frame" CSS class set up in `run()`) that
+/// already approximates the real window's shape, and just stays that way
+/// until (unless) a live capture lands in it -- a small icon swapped out
+/// for a live capture used to read as a flicker even once it stopped
+/// resizing the cell.
+fn make_child(win: &Window, cell_w: i32, max_h: i32) -> (gtk::FlowBoxChild, gtk::Image) {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
     vbox.set_size_request(cell_w, -1);
 
+    let (frame_w, frame_h) = frame_size(win.width, win.height, cell_w, max_h);
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    frame.set_size_request(cell_w, frame_h);
+    frame.set_size_request(frame_w, frame_h);
+    frame.set_halign(gtk::Align::Center);
     frame.style_context().add_class("thumb-frame");
 
-    let image = gtk::Image::from_pixbuf(Some(&lookup_icon(&win.class, icon_size)));
+    let image = gtk::Image::new();
     image.set_halign(gtk::Align::Center);
     image.set_valign(gtk::Align::Center);
     frame.pack_start(&image, true, true, 0);
@@ -296,17 +291,15 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         win_h = (g.height() as f64 * 0.6) as i32;
     }
     win.set_size_request(win_w, win_h);
-    let (cell_w, icon_size) = cell_size(win_w, win_h, cols, rows);
-    // Thumbnails get a taller budget than a square icon (1.25x) since
-    // captures are usually wider-than-tall windows, not app icons; this is
-    // also the fixed frame height every cell's image sits in from the
-    // start (see `make_child`), so a live capture landing later doesn't
-    // resize its cell.
-    let max_h = (icon_size as f64 * 1.25) as i32;
+    let (cell_w, max_h) = cell_size(win_w, win_h, cols, rows);
 
     if let Some(screen) = gdk::Screen::default() {
         let css = gtk::CssProvider::new();
-        let _ = css.load_from_data(b".thumb-frame { background-color: rgba(255,255,255,0.06); border-radius: 6px; }");
+        // An outline, not a filled block: this is a placeholder for a
+        // window frame, not a loading skeleton.
+        let _ = css.load_from_data(
+            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; }",
+        );
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
 
@@ -328,7 +321,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
 
     let mut thumb_images = Vec::with_capacity(state.windows.len());
     for win_entry in &state.windows {
-        let (child, image) = make_child(win_entry, cell_w, icon_size, max_h);
+        let (child, image) = make_child(win_entry, cell_w, max_h);
         flowbox.add(&child);
         thumb_images.push(image);
     }
@@ -582,14 +575,21 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         gtk::main_iteration_do(false);
     }
 
-    // Live captures stream in asynchronously and replace the icon
-    // placeholders as they arrive; a window's cell just keeps its icon if
-    // capture fails for it (closed mid-capture, mapping didn't resolve, ...).
-    let max_h = max_h as f64;
+    // Live captures stream in asynchronously and fill in the empty
+    // placeholder frames as they arrive; a window's cell just stays an
+    // empty frame if capture fails for it (closed mid-capture, mapping
+    // didn't resolve, ...). Scaled to the same per-window `frame_size` its
+    // placeholder frame already used, not a generic budget -- since that
+    // was sized from this window's own real dimensions, a live capture
+    // (whose actual pixel size can differ slightly, e.g. if it resized
+    // between listing and capture) still lands in a frame the right shape
+    // for it rather than getting letterboxed inside a mismatched one.
+    let state_for_thumbs = state.clone();
     crate::wayland_capture::start(&state.windows, move |index, pixbuf| {
-        if let Some(image) = thumb_images.get(index) {
+        if let (Some(image), Some(win)) = (thumb_images.get(index), state_for_thumbs.windows.get(index)) {
+            let (frame_w, frame_h) = frame_size(win.width, win.height, cell_w, max_h);
             let (w, h) = (pixbuf.width(), pixbuf.height());
-            let scale = (cell_w as f64 / w as f64).min(max_h / h as f64).min(1.0);
+            let scale = (frame_w as f64 / w as f64).min(frame_h as f64 / h as f64).min(1.0);
             let (tw, th) = ((w as f64 * scale) as i32, (h as f64 * scale) as i32);
             let scaled = pixbuf
                 .scale_simple(tw.max(1), th.max(1), gdk_pixbuf::InterpType::Bilinear)
