@@ -150,6 +150,14 @@ def build_snapshot():
     return {"windows": windows, "df": df, "n": len(windows), "avgdl": avgdl}
 
 
+def highlight(text, qset):
+    """Wrap query-token matches in text with bold-yellow ANSI, longest tokens
+    first so e.g. "git" doesn't shadow a match of "github" underneath it."""
+    for tok in sorted(qset, key=len, reverse=True):
+        text = re.sub(f"(?i)({re.escape(tok)})", "\x1b[1;33m\\1\x1b[0m", text)
+    return text
+
+
 def best_snippet(window, query_tokens):
     qset = set(query_tokens)
     best = None  # (n_matched, index, pane_id, text)
@@ -171,11 +179,7 @@ def best_snippet(window, query_tokens):
         return pane_id, ""
     _, pane_id, text = best
 
-    highlighted = text
-    for tok in sorted(qset, key=len, reverse=True):
-        highlighted = re.sub(
-            f"(?i)({re.escape(tok)})", "\x1b[1;33m\\1\x1b[0m", highlighted
-        )
+    highlighted = highlight(text, qset)
     plain = re.sub(r"\x1b\[[0-9;]*m", "", highlighted)
     if len(plain) > SNIPPET_WIDTH:
         m = re.search("(?i)" + "|".join(re.escape(t) for t in qset), text)
@@ -183,11 +187,7 @@ def best_snippet(window, query_tokens):
         # re-slice from the *plain* text then re-highlight, simpler than
         # tracking ansi-code offsets through the truncation
         window_text = text[start:start + SNIPPET_WIDTH]
-        highlighted = window_text
-        for tok in sorted(qset, key=len, reverse=True):
-            highlighted = re.sub(
-                f"(?i)({re.escape(tok)})", "\x1b[1;33m\\1\x1b[0m", highlighted
-            )
+        highlighted = highlight(window_text, qset)
         prefix = "…" if start > 0 else ""
         suffix = "…" if start + SNIPPET_WIDTH < len(text) else ""
         highlighted = prefix + highlighted + suffix
@@ -243,6 +243,22 @@ def row(pane_id, w, snippet):
     return f"{pane_id}\t{label}{tail}"
 
 
+def preview(pane_id, query):
+    # no -e here (unlike the old plain capture): highlighting has to insert
+    # its own ANSI codes into the text, and re-coloring on top of the pane's
+    # *own* existing color codes without clobbering them would mean tracking
+    # SGR state across every match - not worth it for a preview pane, so this
+    # trades the pane's original colors for reliable highlighting instead
+    out = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-300"],
+        capture_output=True, text=True, errors="replace",
+    ).stdout
+    query_tokens = tokenize(query)
+    if query_tokens:
+        out = highlight(out, set(query_tokens))
+    sys.stdout.write(out)
+
+
 def drive(client):
     _dbg(f"drive() start client={client!r}")
     snapshot = build_snapshot()
@@ -255,7 +271,9 @@ def drive(client):
         json.dump(snapshot, f)
     _dbg("snapshot written to disk")
 
-    self_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))} --search {shlex.quote(snap_path)} --query {{q}}"
+    py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
+    self_cmd = f"{py} --search {shlex.quote(snap_path)} --query {{q}}"
+    preview_cmd = f"{py} --preview {{1}} --query {{q}}"
     _dbg("launching fzf")
     try:
         result = subprocess.run(
@@ -264,10 +282,14 @@ def drive(client):
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "window search> ",
                 "--header", "type to full-text search all pane scrollback (BM25 + recency) · enter to jump",
-                "--preview", "tmux capture-pane -p -e -t {1} | tail -n 300",
+                "--preview", preview_cmd,
                 "--preview-window", "right,55%,border-left",
                 "--bind", f"start:reload:{self_cmd}",
                 "--bind", f"change:reload:{self_cmd}",
+                # fzf has no configurable WORDCHARS like zsh's - this is its
+                # own fixed word-boundary logic, closest available match
+                "--bind", "ctrl-left:backward-kill-word",
+                "--bind", "ctrl-right:kill-word",
             ],
             capture_output=True, text=True,
         )
@@ -301,12 +323,15 @@ def main():
     _dbg(f"main() argv={sys.argv[1:]}")
     parser = argparse.ArgumentParser()
     parser.add_argument("--search", metavar="SNAPSHOT")
+    parser.add_argument("--preview", metavar="PANE_ID")
     parser.add_argument("--query", default="")
     parser.add_argument("client", nargs="?", default=None,
                          help="invoking client's tty, e.g. #{client_tty} from the bind-key")
     args = parser.parse_args()
 
-    if args.search:
+    if args.preview:
+        preview(args.preview, args.query)
+    elif args.search:
         search(args.search, args.query)
     else:
         drive(args.client)
