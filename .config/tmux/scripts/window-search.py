@@ -226,18 +226,25 @@ def search(snapshot_path, query):
             scored.append((s, wid, w))
     scored.sort(key=lambda t: -t[0])
 
+    qset = set(query_tokens)
     for _, wid, w in scored:
         pane_id = best_pane(w, query_tokens)
-        print(row(pane_id, w))
+        print(row(pane_id, w, qset))
     _dbg(f"printed ({len(scored)} results)")
 
 
-def row(pane_id, w):
+def row(pane_id, w, qset=frozenset()):
     # mirrors tmux's own choose-tree row: "index: name+flags: \"pane title\"" -
     # the preview pane below already shows content, so this only needs to
-    # identify the window, not summarize what matched inside it
+    # identify the window, not summarize what matched inside it. name/title
+    # matches are highlighted same as the preview - they're boosted in
+    # scoring (see PANE_TITLE_BOOST) precisely because they're a strong
+    # signal, so the highlight should make that visible too, not just the
+    # ranking.
+    name = highlight(w["window_name"], qset) if qset else w["window_name"]
+    title = highlight(w["pane_title"], qset) if qset else w["pane_title"]
     panes_suffix = f" ({len(w['panes'])}p)" if len(w["panes"]) > 1 else ""
-    label = f'{w["session"]}:{w["window_index"]} {w["window_name"]}{w["window_flags"]}: "{w["pane_title"]}"{panes_suffix}'
+    label = f'{w["session"]}:{w["window_index"]} {name}{w["window_flags"]}: "{title}"{panes_suffix}'
     return f"{pane_id}\t{label}"
 
 
