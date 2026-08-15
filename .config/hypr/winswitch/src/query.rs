@@ -92,6 +92,8 @@ mod tests {
             title: title.to_string(),
             workspace: workspace.to_string(),
             pid,
+            width: 800,
+            height: 600,
         }
     }
 
