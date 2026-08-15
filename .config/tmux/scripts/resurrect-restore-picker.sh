@@ -40,7 +40,17 @@ list_entries() {
 	done
 }
 
-selection="$(list_entries | fzf --delimiter='\t' --with-nth=2 --prompt='restore snapshot > ' --header='Enter to restore, Esc to cancel')"
+# fzf exits 130 on Esc/Ctrl-C (its own docs: 0 selected, 1 no match, 130
+# interrupted) - under pipefail that's the pipeline's exit status, and
+# without the `|| true` here, `set -e` would abort this script right at
+# this assignment on a plain cancel, before the exit-0 handling below ever
+# runs. That's what actually caused the "Esc behaves weirdly" bug: this
+# script died with an uncaught 130, the nested display-popup (-EE) then sat
+# there waiting for a dismiss keypress since it only auto-closes on a clean
+# exit, and once dismissed resurrect-restore.sh inherited that same 130
+# under its own set -e and run-shell surfaced its generic error overlay -
+# none of which was an actual failure, just an uncancelled cancel.
+selection="$(list_entries | fzf --delimiter='\t' --with-nth=2 --prompt='restore snapshot > ' --header='Enter to restore, Esc to cancel')" || true
 [ -n "$selection" ] || exit 0
 
 printf '%s\n' "$(printf '%s' "$selection" | cut -f1)"
