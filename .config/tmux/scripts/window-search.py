@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from bisect import bisect_left
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -156,7 +157,12 @@ def build_snapshot():
             df[tok] = df.get(tok, 0) + 1
 
     avgdl = sum(w["doclen"] for w in windows.values()) / max(1, len(windows))
-    return {"windows": windows, "df": df, "n": len(windows), "avgdl": avgdl}
+    # sorted once here so prefix queries ("ric" -> "ricing", "rice", ...) can
+    # binary-search a contiguous range at query time instead of scanning -
+    # see expand_prefix()
+    vocab = sorted(df.keys())
+    return {"windows": windows, "df": df, "n": len(windows), "avgdl": avgdl,
+            "vocab": vocab}
 
 
 CONNECTOR_RE = re.compile(r"^[^\sA-Za-z0-9]+$")  # punctuation, no whitespace
@@ -167,7 +173,8 @@ def highlight(text, qset):
 
     Matching itself stays word-level (TOKEN_RE strips punctuation, same as
     everywhere else - "alt" still finds "ctrl+alt+h", "case" still finds
-    "case-insensitive"), but highlighting is span-merged: consecutive
+    "case-insensitive"), and prefix-aware like scoring ("ric" highlights the
+    "ric" inside "ricing"), but highlighting is span-merged: consecutive
     matched words joined only by punctuation (no whitespace between them)
     get highlighted as one run, "+"/"-" included, so "ctrl+alt+h" doesn't
     render as three disconnected highlighted letters with plain symbols
@@ -179,12 +186,13 @@ def highlight(text, qset):
     spans = []
     i = 0
     while i < len(matches):
-        if matches[i].group() not in qset:
+        if not any(matches[i].group().startswith(q) for q in qset):
             i += 1
             continue
         start, end = matches[i].start(), matches[i].end()
         j = i + 1
-        while (j < len(matches) and matches[j].group() in qset
+        while (j < len(matches)
+               and any(matches[j].group().startswith(q) for q in qset)
                and CONNECTOR_RE.match(text[end:matches[j].start()])):
             end = matches[j].end()
             j += 1
@@ -195,19 +203,33 @@ def highlight(text, qset):
     return text
 
 
-def best_pane(window, query_tokens):
+def expand_prefix(prefix, vocab):
+    """All corpus vocabulary terms starting with prefix, via binary search
+    over the sorted term list - same technique recoll/Xapian use for
+    wildcard/prefix queries. Without this, live-as-you-type search is
+    useless: typing "ric" while looking for a window titled "...ricing..."
+    would find nothing until the whole word was typed, since matching was
+    otherwise always exact-token."""
+    lo = bisect_left(vocab, prefix)
+    hi = bisect_left(vocab, prefix + "￿")  # sorts after anything TOKEN_RE produces
+    return vocab[lo:hi]
+
+
+def best_pane(window, qset):
     """Which pane, of possibly several in this window, actually matched the
-    query - that's the one to jump to and preview, not just window["active_pane"]."""
-    qset = set(query_tokens)
+    query - that's the one to jump to and preview, not just window["active_pane"].
+    qset holds the raw typed prefixes (e.g. {"ric"}), matched by startswith
+    against the window's own tokens - same prefix semantics as scoring."""
     best = None  # (n_matched, index, pane_id)
     for i, (pane_id, text) in enumerate(window["lines"]):
         # cheap substring pre-check (C-level `in`) before paying for a real
         # tokenize() - most lines don't match, and this alone cut this loop
-        # from 130ms to 35ms across a 17-window result set
+        # from 130ms to 35ms across a 17-window result set. Already prefix-
+        # aware for free: "ric" in "...ricing..." is a plain substring test.
         low = text.lower()
-        if not any(tok in low for tok in qset):
+        if not any(q in low for q in qset):
             continue
-        matched = qset & set(tokenize(text))
+        matched = {t for t in tokenize(text) if any(t.startswith(q) for q in qset)}
         if not matched:
             continue
         key = (len(matched), i)
@@ -218,14 +240,17 @@ def best_pane(window, query_tokens):
     return best[1]
 
 
-def bm25_score(window, query_tokens, df, n, avgdl):
+def bm25_score(window, terms, df, n, avgdl):
+    """terms are already-expanded vocabulary terms (see expand_prefix), not
+    raw query tokens - each contributes its own idf/tf like an independent
+    OR'd query term, standard treatment for wildcard-expanded queries."""
     score = 0.0
     dl = window["doclen"]
-    for tok in query_tokens:
-        f = window["tf"].get(tok, 0)
+    for term in terms:
+        f = window["tf"].get(term, 0)
         if f == 0:
             continue
-        n_q = df.get(tok, 0)
+        n_q = df.get(term, 0)
         idf = math.log((n - n_q + 0.5) / (n_q + 0.5) + 1)
         score += idf * (f * (K1 + 1)) / (f + K1 * (1 - B + B * dl / avgdl))
     return score
@@ -247,16 +272,23 @@ def search(snapshot_path, query):
         _dbg("printed (empty query)")
         return
 
+    # expand each typed token to matching vocabulary terms ONCE here (it only
+    # depends on the corpus-wide vocab, not on any particular window), then
+    # score every window against that flat, pre-expanded term list
+    vocab = snap["vocab"]
+    terms = [t for tok in query_tokens for t in expand_prefix(tok, vocab)]
+    _dbg(f"query tokens {query_tokens} expanded to {len(terms)} terms")
+
     scored = []
     for wid, w in windows.items():
-        s = bm25_score(w, query_tokens, df, n, avgdl)
+        s = bm25_score(w, terms, df, n, avgdl)
         if s > 0:
             scored.append((s, wid, w))
     scored.sort(key=lambda t: -t[0])
 
     qset = set(query_tokens)
     for _, wid, w in scored:
-        pane_id = best_pane(w, query_tokens)
+        pane_id = best_pane(w, qset)
         print(row(pane_id, w, qset))
     _dbg(f"printed ({len(scored)} results)")
 
