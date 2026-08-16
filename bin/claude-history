@@ -375,20 +375,37 @@ def relative_age(mtime):
 
 STATUS_COLOR = {"busy": "\x1b[1;33m", "waiting": "\x1b[1;33m"}  # default: green
 
-
-def live_badge(live):
-    if not live:
-        return "  "
-    color = STATUS_COLOR.get(live["status"], "\x1b[1;32m")
-    return f"{color}●\x1b[0m"
+LOC_WIDTH = 16  # padding width for the session:window.pane column - most
+# session names here are short (tmux session numbers), so this comfortably
+# covers the common case; a rare long name (e.g. "claude-remote-<ts>")
+# just overflows its column unaligned rather than getting truncated
 
 
-def row(sid, s, live_map, qset=frozenset(), rxs=()):
-    badge = live_badge(live_map.get(sid))
+def location_field(live, targets):
+    """The session:window.pane column: tmux's own status-bar convention
+    (session_name:window_index.pane_index), colored by run status when the
+    session is actually reachable from THIS tmux server, blank otherwise -
+    a session that's live but on a different server, or not in tmux at all,
+    has nothing here to switch to, so there's nothing useful to print. This
+    single column replaces what used to be a separate busy/idle dot: the
+    text itself already says "live" (non-empty) or not, and its color still
+    carries the busy/idle distinction the dot used to."""
+    loc = ""
+    if live and live.get("pane_id"):
+        loc = targets.get(live["pane_id"], "")
+    field = f"{loc:<{LOC_WIDTH}}"
+    if loc:
+        color = STATUS_COLOR.get(live["status"], "\x1b[1;32m")
+        field = f"{color}{field}\x1b[0m"
+    return field
+
+
+def row(sid, s, live_map, targets, qset=frozenset(), rxs=()):
+    loc = location_field(live_map.get(sid), targets)
     age = relative_age(s["mtime"])
     title = s["ai_title"] or (s["turns"][0][1][:80] if s["turns"] else "(empty)")
     title = highlight(title.replace("\n", " ").strip(), qset, rxs)
-    label = f'{badge} {age:>8}  {shorten(s["cwd"]):<40}  {title}  ({s["msg_count"]}m)'
+    label = f'{loc}  {age:>8}  {shorten(s["cwd"]):<40}  {title}  ({s["msg_count"]}m)'
     return f"{sid}\t{label}"
 
 
@@ -402,12 +419,14 @@ def search(snapshot_path, query):
     live_map = get_live_sessions()  # fetched fresh every keystroke - real
     # process state, not the once-per-popup snapshot, so status updates
     # (idle -> busy) show up live while you're still typing your search
+    targets = pane_targets() if in_tmux() else {}  # skip the tmux call
+    # entirely outside tmux, rather than let it fail every keystroke
     q = parse_query(query)
 
     if not any(q):
         ranked = sorted(sessions.items(), key=lambda kv: -kv[1]["mtime"])
         for sid, s in ranked:
-            print(row(sid, s, live_map))
+            print(row(sid, s, live_map, targets))
         return
 
     vocab = snap["vocab"]
@@ -455,7 +474,7 @@ def search(snapshot_path, query):
     qset = set(q.terms)
     show_rxs = rxs + soft_rxs
     for _, sid, s in scored:
-        print(row(sid, s, live_map, qset, show_rxs))
+        print(row(sid, s, live_map, targets, qset, show_rxs))
 
 
 PREVIEW_CONTEXT_TURNS = 2  # turns of leading context kept above a jumped-to match
@@ -481,7 +500,11 @@ def preview(session_id, query, snap_path):
     live = live_map.get(session_id)
     header = f"{shorten(s['cwd'])}  ·  {s['msg_count']} messages  ·  {relative_age(s['mtime'])}"
     if live:
-        where = f"pane {live['pane_id']}" if live["pane_id"] else "not in tmux"
+        loc = None
+        if live["pane_id"] and in_tmux():
+            loc = pane_targets().get(live["pane_id"])
+        where = loc or (f"pane {live['pane_id']} (different tmux server)"
+                        if live["pane_id"] else "not in tmux")
         header += f"\n\x1b[1;32m● running now\x1b[0m (pid {live['pid']}, {live['status']}, {where})"
     print(header)
     print("─" * 60)
@@ -538,10 +561,18 @@ def current_client_tty():
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def pane_exists(pane_id):
-    r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+def pane_targets():
+    """pane_id -> "session_name:window_index.pane_index" (tmux's own
+    status-bar convention) for every pane on the CURRENT tmux server - one
+    list-panes call, reused both for "does this live session's pane exist
+    on this server" (membership test) and for the row() location column, so
+    neither pays for a subprocess per session."""
+    r = subprocess.run(["tmux", "list-panes", "-a", "-F",
+                        "#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}"],
                        capture_output=True, text=True)
-    return r.returncode == 0 and pane_id in r.stdout.split()
+    if r.returncode != 0:
+        return {}
+    return dict(line.split("\t", 1) for line in r.stdout.splitlines() if "\t" in line)
 
 
 def jump_to_pane(client, pane_id):
@@ -612,7 +643,7 @@ def resolve(session_id, cwd):
 
     live = get_live_sessions().get(session_id)  # re-checked fresh: time
     # passed while the user was browsing/searching, status may have changed
-    if live and live["pane_id"] and pane_exists(live["pane_id"]):
+    if live and live["pane_id"] and live["pane_id"] in pane_targets():
         client = current_client_tty()
         if not client:
             die("tmux display-message couldn't resolve #{client_tty} for "
