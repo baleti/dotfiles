@@ -240,9 +240,14 @@ runs after this hook otherwise wins."
   "Copy the selected region to the system clipboard via wl-copy."
   (interactive)
   (if (use-region-p)
-      (let ((text (buffer-substring-no-properties (region-beginning) (region-end))))
-        (call-process-region text nil "wl-copy" nil nil nil)
-        (message "Copied to clipboard"))
+      (let* ((text (buffer-substring-no-properties (region-beginning) (region-end)))
+             (err-buf (generate-new-buffer " *wl-copy-error*"))
+             (status (call-process-region text nil "wl-copy" nil err-buf nil)))
+        (if (eq status 0)
+            (message "Copied to clipboard")
+          (message "wl-copy failed (%s): %s" status
+                   (string-trim (with-current-buffer err-buf (buffer-string)))))
+        (kill-buffer err-buf))
     (message "No region selected")))
 
 (map! :v "C-c c" 'copy-selection-to-clipboard)
