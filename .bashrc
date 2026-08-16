@@ -29,35 +29,3 @@ pass() {
     ( exec -a _PASS_AUTOCLOSE_TIMER_ bash -c 'sleep 300; command pass close' </dev/null >/dev/null 2>&1 & )
   fi
 }
-
-# wraps git network and signing commands push/fetch/pull (auth) and commit/merge/tag/rebase (signing)
-# opens password store and loads the right SSH key for current repo using custom ssh-agent
-git() {
-  local class toplevel entry key
-
-  case "$1" in
-    push|fetch|pull)         class=net ;;
-    commit|merge|tag|rebase) class=sign ;;
-    *) command git "$@"; return ;; # any other git subcommand
-  esac
-
-  toplevel=$(command git rev-parse --show-toplevel 2>/dev/null)
-  [[ -z "$toplevel" ]] && { command git "$@"; return; }  # no .git
-
-  local -A ssh_key_map=(
-    ["$HOME|sign"]=github-dotfiles-ssh-sign
-    ["$HOME|net"]=github-dotfiles-ssh-auth
-    ["$HOME/qemu|sign"]=github-qemu-ssh-sign
-    ["$HOME/qemu|net"]=github-qemu-ssh-auth
-  )
-
-  key="$toplevel|$class"
-  entry=${ssh_key_map[$key]:-}
-  [[ -z "$entry" ]] && { command git "$@"; return; }
-
-  echo "+ pass close && pass open; eval \$(~/bin/ssh-agent); ssh-add <(pass $entry); git $*" >&2
-  pass close; pass open
-  eval "$(~/bin/ssh-agent)" >/dev/null
-  ssh-add -q <(pass "$entry")
-  command git "$@"
-}
