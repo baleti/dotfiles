@@ -283,31 +283,108 @@ def parse_session(path):
     }
 
 
+PARSE_CACHE_PATH = os.path.expanduser("~/.cache/claude-history-parse-cache.json")
+
+
+def index_session(s):
+    """The tf/doclen computation that used to run unconditionally on every
+    build_snapshot() call, for every file, whether or not that file had
+    changed since the last run - pulled out so it can be cached alongside
+    parse_session()'s own output (see build_snapshot), not just skip the
+    file read/JSON-decode and still re-pay the tokenizing cost."""
+    tf, doclen = {}, 0
+    for role, text in s["turns"]:
+        counts = {}
+        for tok in TOKEN_RE.findall(text.lower()):
+            counts[tok] = counts.get(tok, 0) + 1
+        boost = USER_BOOST if role == "user" else 1
+        for tok, c in counts.items():
+            tf[tok] = tf.get(tok, 0.0) + c * boost
+        doclen += sum(counts.values()) * boost
+    if s["ai_title"]:
+        title_tokens = tokenize(s["ai_title"])
+        for tok in title_tokens * TITLE_BOOST:
+            tf[tok] = tf.get(tok, 0) + 1.0
+        doclen += TITLE_BOOST * len(title_tokens)
+    return {**s, "tf": tf, "doclen": doclen}
+
+
+def load_parse_cache():
+    try:
+        with open(PARSE_CACHE_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_parse_cache(cache):
+    # best-effort - the cache is a speed optimization, not a correctness
+    # requirement, so a write failure (disk full, permissions) degrades to
+    # "next run parses from scratch again", not a crash. Same mkstemp+
+    # os.replace pattern as elsewhere in this repo for atomicity - a reader
+    # never sees a half-written cache file.
+    try:
+        d = os.path.dirname(PARSE_CACHE_PATH)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".claude-history-cache-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(cache, f)
+        os.replace(tmp, PARSE_CACHE_PATH)
+    except OSError:
+        pass
+
+
 def build_snapshot():
+    """Parsing and indexing every transcript from scratch on every single
+    invocation used to be the dominant startup cost - one real file in this
+    corpus is 163MB (a runaway conversation with huge tool output; the next
+    largest is 16MB), and Python's GIL means ThreadPoolExecutor barely helps
+    CPU-bound JSON-decoding/tokenizing work like this scale across cores
+    anyway. But between two invocations a few minutes apart, the overwhelming
+    majority of ~170 transcript files haven't changed at all - re-parsing
+    all of them every time was pure waste. Cached by (path, mtime, size):
+    unchanged files are a stat() and a dict lookup, not a re-read; only
+    genuinely new/modified files (typically the one or two sessions actually
+    in progress) pay the real parse+index cost."""
     files = glob.glob(PROJECTS_GLOB)
     if not files:
         die(f"no conversation history found matching {PROJECTS_GLOB}")
 
-    with ThreadPoolExecutor(max_workers=min(16, len(files))) as ex:
-        parsed = [s for s in ex.map(parse_session, files) if s]
+    cache = load_parse_cache()
+    stats = {}
+    to_parse = []
+    for path in files:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        stats[path] = st
+        entry = cache.get(path)
+        if not (entry and entry.get("mtime") == st.st_mtime
+                and entry.get("size") == st.st_size):
+            to_parse.append(path)
 
+    # None is a legitimate result (parse_session found no session id or no
+    # turns - an empty/unparseable file) and has to be cached as such, not
+    # just omitted: without a cache entry, a permanently-empty file would
+    # look identical to "never attempted" on every future run and get
+    # re-parsed forever instead of being remembered as not worth indexing.
+    freshly_indexed = {}
+    if to_parse:
+        with ThreadPoolExecutor(max_workers=min(16, len(to_parse))) as ex:
+            for path, s in zip(to_parse, ex.map(parse_session, to_parse)):
+                freshly_indexed[path] = index_session(s) if s else None
+
+    new_cache = {}
     sessions = {}
-    for s in parsed:
-        tf, doclen = {}, 0
-        for role, text in s["turns"]:
-            counts = {}
-            for tok in TOKEN_RE.findall(text.lower()):
-                counts[tok] = counts.get(tok, 0) + 1
-            boost = USER_BOOST if role == "user" else 1
-            for tok, c in counts.items():
-                tf[tok] = tf.get(tok, 0.0) + c * boost
-            doclen += sum(counts.values()) * boost
-        if s["ai_title"]:
-            title_tokens = tokenize(s["ai_title"])
-            for tok in title_tokens * TITLE_BOOST:
-                tf[tok] = tf.get(tok, 0) + 1.0
-            doclen += TITLE_BOOST * len(title_tokens)
-        sessions[s["session_id"]] = {**s, "tf": tf, "doclen": doclen}
+    for path in files:
+        if path not in stats:
+            continue
+        indexed = freshly_indexed[path] if path in freshly_indexed else cache[path]["indexed"]
+        st = stats[path]
+        new_cache[path] = {"mtime": st.st_mtime, "size": st.st_size, "indexed": indexed}
+        if indexed:
+            sessions[indexed["session_id"]] = indexed
+    save_parse_cache(new_cache)
 
     df = {}
     for s in sessions.values():
