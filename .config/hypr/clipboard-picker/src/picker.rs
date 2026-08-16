@@ -246,19 +246,22 @@ pub fn run(
     win.set_layer(gtk_layer_shell::Layer::Overlay);
     win.set_keyboard_mode(gtk_layer_shell::KeyboardMode::Exclusive);
 
-    let mut max_list_height: Option<i32> = None;
+    // Layer surfaces take their natural size unless anchored to opposing
+    // edges, and in practice that "natural size" comes out tiny (GTK's
+    // height-for-width/scrolled-window natural-size machinery doesn't feed
+    // gtk-layer-shell reliably). So width and height are both driven by
+    // explicit set_size_request calls rather than left to negotiate; height
+    // is recomputed from actual content (see `resize_to_content` below) so
+    // it still shrinks to fit fewer entries and grows for taller rows
+    // (e.g. image thumbnails), capped at `max_list_height`.
+    let mut width_px: i32 = 0;
+    let mut max_list_height: i32 = i32::MAX;
     if let Some(display) = gdk::Display::default() {
         if let Some(mon) = target_monitor(&display) {
             win.set_monitor(&mon);
             let g = mon.geometry();
-            // Layer surfaces take their natural size unless anchored to
-            // opposing edges, so a default size alone leaves a tiny window.
-            // Height is left unset here (-1): it's capped, not fixed, via
-            // the scrolled window's max-content-height below, so the window
-            // shrinks to fit fewer entries instead of always reserving the
-            // full fraction.
-            win.set_size_request((g.width() as f64 * config.width_fraction) as i32, -1);
-            max_list_height = Some((g.height() as f64 * config.height_fraction) as i32);
+            width_px = (g.width() as f64 * config.width_fraction) as i32;
+            max_list_height = (g.height() as f64 * config.height_fraction) as i32;
         }
     }
 
@@ -266,6 +269,23 @@ pub fn run(
     search.set_placeholder_text(Some(config.placeholder.as_str()));
     let listbox = gtk::ListBox::new();
     listbox.set_selection_mode(gtk::SelectionMode::Browse);
+
+    // Recomputes the window height from the search box's and the (filtered,
+    // currently-realized) list's actual preferred heights, capped at
+    // `max_list_height`. Uses real GTK size requests rather than a
+    // rows-times-row-height estimate so it accounts for mixed row heights
+    // (text rows vs. taller image thumbnails) without knowing about them.
+    let resize_to_content: Rc<dyn Fn()> = {
+        let win = win.clone();
+        let search = search.clone();
+        let listbox = listbox.clone();
+        Rc::new(move || {
+            let search_h = search.preferred_height().1.max(1);
+            let list_h = listbox.preferred_height().1;
+            let target = (search_h + list_h).clamp(search_h, max_list_height);
+            win.set_size_request(width_px, target);
+        })
+    };
 
     {
         let state = state.clone();
@@ -287,6 +307,7 @@ pub fn run(
         let state = state.clone();
         let listbox = listbox.clone();
         let type_names = type_names.clone();
+        let resize_to_content = resize_to_content.clone();
         // "changed", not "search-changed": GtkSearchEntry deliberately delays
         // search-changed by 150ms after the last keystroke, which reads as lag.
         // Filtering the whole list measures in single-digit ms.
@@ -303,6 +324,7 @@ pub fn run(
                 }
                 i += 1;
             }
+            resize_to_content();
         });
     }
 
@@ -318,12 +340,6 @@ pub fn run(
 
     let scroll = gtk::ScrolledWindow::new(gtk::Adjustment::NONE, gtk::Adjustment::NONE);
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    // Natural height follows the (filtered) row count, capped so a long list
-    // still scrolls instead of pushing the window past the monitor.
-    scroll.set_propagate_natural_height(true);
-    if let Some(h) = max_list_height {
-        scroll.set_max_content_height(h);
-    }
     scroll.add(&listbox);
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -344,6 +360,7 @@ pub fn run(
     if let Some(first) = listbox.row_at_index(0) {
         listbox.select_row(Some(&first));
     }
+    resize_to_content();
 
     {
         let listbox = listbox.clone();
@@ -429,6 +446,17 @@ pub fn run(
     win.show_all();
     search.grab_focus();
 
+    // Preferred-height queries against unrealized rows come back too small
+    // (GTK hasn't run a size-allocate pass yet), so the accurate resize has
+    // to happen after the window is shown, once.
+    {
+        let resize_to_content = resize_to_content.clone();
+        glib::idle_add_local(move || {
+            resize_to_content();
+            glib::ControlFlow::Break
+        });
+    }
+
     // Stream the rest of the entries, then thumbnails, once we're already up.
     {
         let state = state.clone();
@@ -437,6 +465,7 @@ pub fn run(
         let cursor = cursor.clone();
         let chunk_rows = config.chunk_rows;
         let thumb_height = config.thumb_height;
+        let resize_to_content = resize_to_content.clone();
         glib::idle_add_local(move || {
             let mut c = cursor.borrow_mut();
             let end = (*c + chunk_rows).min(state.entries.len());
@@ -444,6 +473,7 @@ pub fn run(
                 listbox.add(&make_row(&state, i, thumb_height, &pending_rows));
             }
             *c = end;
+            resize_to_content();
             if *c < state.entries.len() {
                 return glib::ControlFlow::Continue;
             }
