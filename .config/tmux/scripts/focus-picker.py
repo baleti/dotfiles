@@ -5,52 +5,44 @@ search): this one lists windows/panes in the order the user last actually
 *visited* them, most-recent first - no scoring, no scrollback content
 involved.
 
-Two independent focus signals feed the ordering, because tmux only ever
-sees one of them:
+Every entry in that order comes from one real-timestamped log
+(~/.cache/tmux-focus-order.log, written by focus-track.sh) fed by five tmux
+hooks registered in .tmux.conf:
 
-  - Within one terminal window: a tmux hook fired for an explicit
-    navigation command (after-select-pane, after-select-window,
-    session-window-changed, client-session-changed - registered in
-    .tmux.conf, logged by focus-track.sh into
-    ~/.cache/tmux-focus-order.log). Those hooks only fire when a bound key
-    or mouse action on an attached client changes the active pane - never
-    when an unfocused pane merely produces output, which is what keeps a
-    Claude Code session churning away in a background window from
-    polluting the order: it never calls select-pane, so it never appends
-    to the log no matter how much it prints.
-  - Across terminal windows: clicking a different Hyprland window (or
-    alt-tabbing to one) runs no tmux command at all, so the hooks above
-    never fire for it - tmux has no visibility into window-manager focus.
-    Hyprland does, though, and keeps it as persistent state rather than a
-    stream you'd need to have been listening to: `hyprctl clients -j`
-    reports every window's `focusHistoryID` (0 = most recently focused),
-    updated internally by Hyprland itself regardless of whether anything
-    is watching - the exact field ~/.config/hypr/winswitch already sorts
-    by for its own alt-tab order (see its hyprctl.rs). So this queries it
-    fresh on each invocation instead of running a listener daemon: no
-    events to miss, nothing to keep alive.
+  - after-select-pane, after-select-window, session-window-changed,
+    client-session-changed: explicit navigation commands *within* one
+    terminal window (arrow keys, prefix+w, mouse, this picker's own jump).
+    These only fire when a bound key or mouse action on an attached client
+    changes the active pane - never when an unfocused pane merely produces
+    output, which is what keeps a Claude Code session churning away in a
+    background window from polluting the order: it never calls
+    select-pane, so it never appends to the log no matter how much it
+    prints.
+  - client-focus-in: *switching to a different terminal window* (click,
+    alt-tab, any window manager) runs no tmux command at all, so the four
+    hooks above never fire for it - tmux has no visibility into
+    window-manager focus by itself. What it does have natively is the
+    terminal's own standard focus-reporting escape sequences (DEC private
+    mode 1004, `focus-events on` in .tmux.conf): Alacritty sends focus-in
+    to whichever pty currently has it the instant real OS focus changes,
+    independent of window manager - no polling, no IPC socket, no daemon.
 
-The two signals are combined by resolving each attached tmux client's pid
-up its /proc ancestry to the Hyprland window hosting it (tmux client -> its
-shell -> the terminal emulator, 2 hops in practice), which gives each
-*session* a Hyprland-recency rank. Panes are then sorted by
-(session's Hyprland rank, pane's own position in the tmux-hook log) - so
-switching terminal windows at the OS level reorders whole sessions, and
-switching panes/windows with tmux's own keys reorders within a session, and
-either one alone still produces a sensible list if the other source has
-nothing to say (no Hyprland running, or a pane never hit by a hook yet).
+All five write through the same script into the same log with real
+Unix timestamps, so - unlike an earlier version of this picker that tried
+to merge tmux's log against a separately-queried Hyprland window-order
+snapshot - there is one honest clock behind the whole list: no signal can
+dominate the other just because it happens to update on a different scale.
+A pane simply not yet hit by any hook sorts last, which is the only case
+this can't say anything about.
 
-Deps: tmux, fzf, python3. hyprctl is optional - its absence (not running
-under Hyprland, e.g. over ssh) just drops back to log-only ordering.
+Deps: tmux, fzf, python3.
 """
 import argparse
-import json
 import os
 import subprocess
 import sys
 
 LOG_PATH = os.path.expanduser("~/.cache/tmux-focus-order.log")
-UNRANKED = 1 << 30
 
 
 def die(msg):
@@ -101,80 +93,6 @@ def current_pane(client):
         capture_output=True, text=True,
     )
     return r.stdout.strip() if r.returncode == 0 else None
-
-
-def hypr_window_focus_order():
-    """pid -> focusHistoryID (0 = most recently focused) for every current
-    Hyprland window. Not fatal if unavailable - not running under Hyprland
-    (e.g. an ssh-in session) just means this contributes nothing and
-    ordering falls back to the tmux-hook log alone."""
-    try:
-        r = subprocess.run(["hyprctl", "clients", "-j"],
-                            capture_output=True, text=True, timeout=2)
-        if r.returncode != 0:
-            return {}
-        clients = json.loads(r.stdout)
-    except (FileNotFoundError, subprocess.TimeoutExpired,
-            json.JSONDecodeError, OSError):
-        return {}
-    return {c["pid"]: c["focusHistoryID"] for c in clients
-            if "pid" in c and "focusHistoryID" in c}
-
-
-def parent_pid(pid):
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            data = f.read()
-        # comm (2nd field) is parenthesized and may itself contain spaces
-        # or parens, so split on the *last* ')' rather than whitespace
-        rest = data[data.rindex(")") + 2:]
-        return int(rest.split()[1])  # state ppid ... -> ppid is index 1
-    except (OSError, ValueError, IndexError):
-        return None
-
-
-def window_pid_for(pid, window_ranks, max_hops=25):
-    """Walk pid's ancestry up to the nearest ancestor that is a known
-    Hyprland window - i.e. the terminal emulator hosting this tmux client.
-    In practice this is tmux client -> shell -> terminal, 2 hops (verified
-    against a live session before wiring this in), but the walk isn't
-    hardcoded to that depth since an intermediate multiplexer/wrapper would
-    add one without changing the underlying relationship."""
-    seen = set()
-    for _ in range(max_hops):
-        if pid in window_ranks:
-            return pid
-        if pid is None or pid <= 1 or pid in seen:
-            return None
-        seen.add(pid)
-        pid = parent_pid(pid)
-    return None
-
-
-def session_hypr_ranks():
-    """session_name -> best (lowest) Hyprland focusHistoryID among its
-    attached clients. Sessions that don't resolve to any live Hyprland
-    window (detached, attached only via a remote/ssh client, or hyprctl
-    unavailable) are simply absent - callers must treat missing as
-    "unranked", not as rank 0, or every unresolved session would appear to
-    tie for most-recently-focused."""
-    window_ranks = hypr_window_focus_order()
-    if not window_ranks:
-        return {}
-    r = subprocess.run(["tmux", "list-clients", "-F", "#{client_pid}\t#{session_name}"],
-                        capture_output=True, text=True)
-    if r.returncode != 0:
-        return {}
-    ranks = {}
-    for line in r.stdout.splitlines():
-        pid_s, session = line.split("\t")
-        wpid = window_pid_for(int(pid_s), window_ranks)
-        if wpid is None:
-            continue
-        rank = window_ranks[wpid]
-        if session not in ranks or rank < ranks[session]:
-            ranks[session] = rank
-    return ranks
 
 
 def row(pane_id, p):
@@ -243,22 +161,14 @@ def drive(client=None):
 
     me = current_pane(client) if client else None
 
-    log_rank = {pid: i for i, (pid, _) in enumerate(read_focus_order())}
-    hypr_rank = session_hypr_ranks()
-
-    def sort_key(pid):
-        # primary: how recently this pane's session was focused at the OS
-        # level (a different terminal window entirely); secondary: how
-        # recently this exact pane was visited within its own terminal via
-        # tmux's own navigation. Panes missing from one or both signals
-        # (never logged yet, or a session with no Hyprland-resolvable
-        # client) just sink to the end of that key instead of erroring -
-        # dict.get's list-panes iteration order is the final tiebreaker,
-        # via Python's sort stability, so nothing is ever hidden.
-        session = live[pid]["session"]
-        return (hypr_rank.get(session, UNRANKED), log_rank.get(pid, UNRANKED))
-
-    ordered_ids = sorted((pid for pid in live if pid != me), key=sort_key)
+    ordered_ids = [pid for pid, _ in read_focus_order() if pid in live and pid != me]
+    # panes that exist but were never logged (created since the last focus
+    # event, or from before focus-track.sh existed) still have to be
+    # reachable - tacked on at the end, in list-panes' own order, rather than
+    # silently hidden from the picker
+    for pid in live:
+        if pid != me and pid not in ordered_ids:
+            ordered_ids.append(pid)
 
     if not ordered_ids:
         die("no other panes to switch to")
