@@ -226,6 +226,14 @@ def drive():
             "--preview", preview_cmd,
             "--preview-window", "down,50%,border-top,wrap",
             "--bind", f"result:transform:{resize_on_result}",
+            # `result` alone only re-runs this on a filtering change - a
+            # terminal resize while sitting on an unchanged query never
+            # fired it, so the list/preview split stayed exactly as
+            # computed at whatever size the window happened to be when you
+            # last typed. `resize` (fzf 0.44+) is the event fzf itself
+            # provides for this, triggered on terminal size change
+            # specifically - same transform, just a second trigger for it.
+            "--bind", f"resize:transform:{resize_on_result}",
         ],
         input=rows, capture_output=True, text=True,
     )
