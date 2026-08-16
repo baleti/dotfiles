@@ -248,15 +248,16 @@ def _rm(path):
 def sweep_stale_snapshots():
     """Delete snapshots left behind by invocations that are no longer alive.
 
-    The signal handler in drive() covers the common interruption (a second
-    prefix+C-w SIGHUPs the first popup), but it cannot cover every way this
-    process can die - dismissing the popup with Escape leaks one, and a
-    SIGKILL or a crash never runs Python code at all. Since each snapshot is
-    a multi-megabyte copy of every pane's scrollback, an uncovered path is
-    not a small leak: 38 files totalling ~180MB had accumulated in /tmp
-    before this existed. Owning pid is in the filename, so liveness is exact rather
-    than a guess from mtime, and a popup legitimately open for hours is never
-    swept out from under itself. Both candidate directories are swept, so
+    The signal handler in drive() covers a window closed out from under a
+    still-running invocation (e.g. `prefix+x`/kill-window), but it cannot
+    cover every way this process can die - dismissing fzf with Escape still
+    runs the normal `finally`, but a SIGKILL or a crash never runs Python
+    code at all. Since each snapshot is a multi-megabyte copy of every
+    pane's scrollback, an uncovered path is not a small leak: 38 files
+    totalling ~180MB had accumulated in /tmp before this existed. Owning
+    pid is in the filename, so liveness is exact rather than a guess from
+    mtime, and a window legitimately open for hours is never swept out from
+    under itself. Both candidate directories are swept, so
     switching between them (or a server without XDG_RUNTIME_DIR) still
     cleans up whatever an earlier run left in the other one."""
     seen = set()
@@ -333,10 +334,11 @@ def build_snapshot():
               "window_activity"]
     fmt = "\t".join(f"#{{{f}}}" for f in fields)
     # checked, not trusted: an ignored failure here yields zero windows, and
-    # the caller's "no windows" path used to return 0 - which display-popup
-    # -EE reads as success and closes the popup instantly, so a broken
-    # list-panes was indistinguishable from a missed keypress. Every exit
-    # that isn't "user cancelled" has to be loud enough to keep the popup up.
+    # the caller's "no windows" path used to return 0 - a broken list-panes
+    # would then be indistinguishable from a missed keypress. die() prints
+    # to stderr and exits non-zero specifically so .tmux.conf's `|| { ...;
+    # read; }` wrapper catches it and keeps the window open to be read,
+    # instead of the pane just vanishing (tmux's default on any exit).
     r = subprocess.run(
         ["tmux", "list-panes", "-a", "-F", fmt],
         capture_output=True, text=True,
@@ -762,36 +764,23 @@ def find_match_line(lines, qset, rxs):
     return None
 
 
-def resolve_client():
-    """Fallback for a tmux server still running the OLD bind-key: the client
-    tty stashed in tmux's *global* environment by a `run-shell
-    set-environment` step.
-
-    Being global is the problem, and why the binding no longer uses it. The
-    variable is not scoped to one invocation, so two clients pressing
-    prefix+C-w within the ~50ms it takes this process to start would race:
-    the second run-shell overwrites the first's tty, client A's popup then
-    reads B's tty and switches *B's* terminal to A's selection, while B's own
-    popup finds the variable already consumed and dies. The current binding
-    interpolates #{client_tty} straight into the popup's command line inside
-    run-shell (which is format-expanded, unlike display-popup's own
-    shell-command), so each invocation carries its own client and nothing is
-    shared. This path only survives so that an already-running server whose
-    .tmux.conf has not been re-sourced keeps working."""
-    r = subprocess.run(["tmux", "show-environment", "-g", "TMUX_WINDOW_SEARCH_CLIENT"],
-                        capture_output=True, text=True)
-    subprocess.run(["tmux", "set-environment", "-gu", "TMUX_WINDOW_SEARCH_CLIENT"],
-                    capture_output=True, text=True)
-    if r.returncode != 0 or "=" not in r.stdout:
-        return None
-    return r.stdout.strip().split("=", 1)[1]
+def current_client_tty():
+    """The tty of the client viewing THIS pane, resolved from directly
+    inside the pane's own process tree. .tmux.conf runs this script via
+    `new-window`, a real pane - not a popup, which has no controlling pane
+    of its own to resolve #{client_tty} *from* (the #{client_tty}-into-
+    run-shell bridging this used before was built specifically to work
+    around that; see git log on this function and .tmux.conf's prefix+C-w
+    for the full saga). A real pane needs none of it: tmux resolves
+    "#{client_tty}" the same as if you'd typed the command at the prompt
+    yourself."""
+    r = subprocess.run(["tmux", "display-message", "-p", "#{client_tty}"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
-def drive(client=None):
-    # argv is the race-free path (the bind-key bakes this invocation's own
-    # #{client_tty} into the popup command); the global-environment bridge is
-    # only a fallback for a not-yet-re-sourced .tmux.conf - see resolve_client
-    client = client or resolve_client()
+def drive():
+    client = current_client_tty()
     _dbg(f"drive() start client={client!r}")
     snapshot = build_snapshot()
     _dbg("build_snapshot done")
@@ -801,11 +790,11 @@ def drive(client=None):
     sweep_stale_snapshots()
     fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
                                      suffix=".json", dir=snapshot_dir())
-    # the `finally` below only covers a normal fzf exit. Pressing prefix+C-w
-    # again runs `display-popup -C`, which SIGHUPs this process mid-fzf and
-    # would otherwise strand a multi-megabyte snapshot of every pane's
-    # scrollback in /tmp, once per interrupted invocation. Turning the signal
-    # into SystemExit lets both atexit and the finally run.
+    # the `finally` below only covers a normal fzf exit. The window this
+    # runs in being closed out from under it (kill-window, `prefix+x`) sends
+    # SIGHUP mid-fzf and would otherwise strand a multi-megabyte snapshot of
+    # every pane's scrollback in /tmp. Turning the signal into SystemExit
+    # lets both atexit and the finally run.
     atexit.register(lambda: _rm(snap_path))
     for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: sys.exit(1))
@@ -834,12 +823,18 @@ def drive(client=None):
     # --info=inline) plus one extra row - +2 measured one row short in
     # practice, clipping the last result; floor/ceiling keep both panes from
     # collapsing to nothing at either extreme. POSIX sh, since this runs
-    # through fzf's $SHELL, not necessarily zsh.
+    # through fzf's $SHELL, not necessarily zsh. The list is also capped at
+    # half of FZF_LINES (not just FZF_LINES-4): a large match count used to
+    # be able to push the list to nearly full height, squeezing the preview
+    # down to a near-fixed few rows regardless of window size - capping at
+    # half guarantees the preview never drops below half, and it still grows
+    # past half on its own whenever there are few enough matches that the
+    # list doesn't need that much (same cap claude-history already used).
     resize_on_result = (
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
-        'max_list=$((FZF_LINES - 4)); '
-        '[ "$list_rows" -gt "$max_list" ] && list_rows=$max_list; '
+        'half=$((FZF_LINES / 2)); '
+        '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
     _dbg("launching fzf")
@@ -857,12 +852,15 @@ def drive(client=None):
                 "--bind", f"start:reload:{self_cmd}",
                 "--bind", f"change:reload:{self_cmd}",
                 "--bind", f"result:transform:{resize_on_result}",
-                # move-by-word, matching alt-left/right (fzf's own default
-                # binding for backward-word/forward-word) rather than
-                # deleting - fzf has no configurable WORDCHARS like zsh's,
-                # so word boundaries are fzf's own fixed logic either way
-                "--bind", "ctrl-left:backward-word",
-                "--bind", "ctrl-right:forward-word",
+                # move-by-word is already fzf's own default binding for
+                # alt-left/alt-right (backward-word/forward-word); this used
+                # to also bind ctrl-left/ctrl-right as an extra alias, but
+                # that key name isn't recognized by every fzf build (some
+                # reject it outright with "unsupported key: ctrl-left",
+                # rc=2 - a non-zero exit, which .tmux.conf's `|| { ...;
+                # read; }` wrapper now catches and pauses on, but used to
+                # just flash and vanish under the old popup's -EE). alt-
+                # left/right alone covers the functionality portably.
             ],
             capture_output=True, text=True,
         )
@@ -880,27 +878,20 @@ def drive(client=None):
 
 
 def jump(client, pane_id):
-    """The actual point of this tool: land the client that opened the popup
-    on the chosen pane. Every step here is verified against real tmux state
-    rather than trusted from a subprocess return code, and any failure is
-    fatal (loud, not silent) - this is the one thing that must not quietly
-    stop working, see git log on this function before touching it."""
-    # switch-client with no -c doesn't affect "the client that ran this" - a
-    # popup's shell process has no controlling pane of its own (popups aren't
-    # real panes, so tmux can't map it back to a client the way it does for
-    # a command typed inside a normal pane), so it silently falls back to
-    # some other attached client instead. #{client_tty}, captured at bind
-    # time when tmux does know who pressed the key, fixes that - but only if
-    # it actually arrived, so treat a missing one as fatal rather than
-    # quietly degrading to the ambiguous no -c behavior.
+    """The actual point of this tool: land the client that opened this
+    window on the chosen pane. Every step here is verified against real
+    tmux state rather than trusted from a subprocess return code, and any
+    failure is fatal (loud, not silent) - this is the one thing that must
+    not quietly stop working, see git log on this function before touching
+    it."""
+    # switch-client with no -c doesn't affect "the client that ran this" by
+    # default - it's ambiguous without an explicit target - so this passes
+    # the resolved client explicitly (see current_client_tty()) rather than
+    # relying on that. A missing client is fatal rather than a silent
+    # degrade to the ambiguous no -c behavior.
     if not client:
-        # NB: the tty arrives in tmux's global environment, not argv - the
-        # bind-key's run-shell step stashes it there and resolve_client()
-        # reads and unsets it. Point at that, not at argv: the argument form
-        # this used to name has not existed since the #{client_tty} fix.
-        die("TMUX_WINDOW_SEARCH_CLIENT was empty or unset - the bind-key's "
-            "`run-shell \"tmux set-environment -g ...\"` step did not run, or "
-            "another invocation consumed it first (see .tmux.conf, prefix+C-w)")
+        die("current_client_tty() couldn't resolve #{client_tty} for this "
+            "pane - can't switch-client without it (see .tmux.conf, prefix+C-w)")
 
     cr = subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
                         capture_output=True, text=True)
@@ -950,9 +941,6 @@ def main():
     parser.add_argument("--search", metavar="SNAPSHOT")
     parser.add_argument("--preview", metavar="PANE_ID")
     parser.add_argument("--query", default="")
-    parser.add_argument("--client", metavar="TTY",
-                        help="tty of the client that opened the popup; the "
-                             "bind-key interpolates #{client_tty} here")
     args = parser.parse_args()
 
     if args.preview:
@@ -960,7 +948,7 @@ def main():
     elif args.search:
         search(args.search, args.query)
     else:
-        drive(args.client)
+        drive()
 
 
 if __name__ == "__main__":
