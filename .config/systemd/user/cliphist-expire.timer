@@ -1,0 +1,12 @@
+[Unit]
+Description=Expire cliphist entries older than 3 hours
+
+[Timer]
+# 3h window needs finer than hourly polling: the watermark scheme only
+# catches entries as stale once a run's cutoff passes their sample, so an
+# hourly timer against a 3h window could let entries live up to 4h.
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

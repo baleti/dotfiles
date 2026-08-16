@@ -1,0 +1,10 @@
+[Unit]
+Description=Expire cliphist entries older than 3 hours
+
+[Service]
+Type=oneshot
+Environment=CLIPHIST_MAX_AGE_HOURS=3
+ExecStart=%h/.config/hypr/scripts/cliphist-expire.sh
+
+[Install]
+WantedBy=default.target
