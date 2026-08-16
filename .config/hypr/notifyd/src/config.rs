@@ -24,10 +24,19 @@ use serde::Deserialize;
 pub struct UrgencyConfig {
     pub background: String,
     pub foreground: String,
-    /// `None` means sticky (never times out on its own). dunstrc's own
-    /// `timeout = 0` means the same thing, so this mirrors that rather
-    /// than using 0 as a magic non-Option sentinel.
-    pub timeout_ms: Option<u32>,
+    /// 0 means sticky (never times out on its own), matching both
+    /// dunstrc's own `timeout = 0` and `Notify()`'s `expire_timeout = 0`.
+    /// Deliberately not `Option<u32>`: serde's container-level
+    /// `#[serde(default)]` fills in a *present-but-partial* TOML table's
+    /// missing fields from `UrgencyConfig::default()` specifically (the
+    /// "normal" tier's values), not from whichever tier's own default
+    /// this field belongs to -- so a `[urgency_critical]` table that
+    /// otherwise overrides colors but leaves `timeout_ms` unset would
+    /// silently get a 10s timeout instead of staying sticky. `Option`
+    /// makes that worse, not better: TOML has no null literal, so there'd
+    /// be no way to *write* sticky explicitly once that happens. A plain
+    /// `0` sidesteps it -- always set this explicitly per tier.
+    pub timeout_ms: u32,
     /// `None` falls back to the card's normal frame color -- only
     /// urgency_critical overrides it in this dunstrc.
     pub frame_color: Option<String>,
@@ -77,7 +86,7 @@ impl Default for UrgencyConfig {
         UrgencyConfig {
             background: "#285577".to_string(),
             foreground: "#ffffff".to_string(),
-            timeout_ms: Some(10_000),
+            timeout_ms: 10_000,
             frame_color: None,
             default_icon: "dialog-information".to_string(),
         }
@@ -89,7 +98,7 @@ impl Config {
         UrgencyConfig {
             background: "#222222".to_string(),
             foreground: "#888888".to_string(),
-            timeout_ms: Some(10_000),
+            timeout_ms: 10_000,
             frame_color: None,
             default_icon: "dialog-information".to_string(),
         }
