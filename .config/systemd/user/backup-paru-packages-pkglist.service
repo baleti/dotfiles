@@ -1,0 +1,6 @@
+[Service]
+Type=oneshot
+ExecStart=%h/.config/systemd/user/backup-paru-packages-pkglist.sh
+
+[Install]
+WantedBy=default.target
