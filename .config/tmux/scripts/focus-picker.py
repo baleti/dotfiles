@@ -106,9 +106,16 @@ def current_pane(client):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+LOC_WIDTH = 10  # "session:index" - session names here are short (tmux's own
+# numeric ids, or short custom ones); see claude-history's row() for what
+# happens when a column like this overflows in practice
+NAME_WIDTH = 16
+
+
 def row(pane_id, p):
-    label = f'{p["session"]}:{p["window_index"]} {p["window_name"]}{p["window_flags"]}: "{p["pane_title"]}"'
-    return f"{pane_id}\t{label}"
+    loc = f'{p["session"]}:{p["window_index"]}'
+    name = p["window_name"] + p["window_flags"]
+    return f'{pane_id}\t{loc:<{LOC_WIDTH}}  {name:<{NAME_WIDTH}}  "{p["pane_title"]}"'
 
 
 def preview(pane_id):
@@ -218,11 +225,17 @@ def drive():
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
+    # aligned to row()'s own LOC_WIDTH/NAME_WIDTH - only approximate once a
+    # row's own columns overflow (see claude-history's row()/header for a
+    # column that actually does in practice, and the same caveat)
+    header = f'{"SESSION:WIN":<{LOC_WIDTH}}  {"NAME":<{NAME_WIDTH}}  TITLE'
+
     result = subprocess.run(
         [
             "fzf", "--ansi", "--layout=reverse",
             "--delimiter", "\t", "--with-nth", "2..",
             "--prompt", "focus history> ",
+            "--header", header,
             "--preview", preview_cmd,
             "--preview-window", "down,50%,border-top,wrap",
             "--bind", f"result:transform:{resize_on_result}",
