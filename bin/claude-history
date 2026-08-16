@@ -405,7 +405,7 @@ def row(sid, s, live_map, targets, qset=frozenset(), rxs=()):
     age = relative_age(s["mtime"])
     title = s["ai_title"] or (s["turns"][0][1][:80] if s["turns"] else "(empty)")
     title = highlight(title.replace("\n", " ").strip(), qset, rxs)
-    label = f'{loc}  {age:>8}  {shorten(s["cwd"]):<40}  {title}  ({s["msg_count"]}m)'
+    label = f'{loc}  {age:>8}  {shorten(s["cwd"]):<40}  {title}  ({s["msg_count"]} msgs)'
     return f"{sid}\t{label}"
 
 
