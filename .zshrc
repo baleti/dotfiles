@@ -41,7 +41,7 @@ setopt SHARE_HISTORY
 # inline comments
 setopt interactive_comments
 
-export PATH="$HOME/.config/emacs/bin:$PATH"
+export PATH="$HOME/.config/emacs/bin:$HOME/.config/claude-history/bin:$PATH"
 export EDITOR="emacsclient -t"
 
 alias b="bat --wrap never"
