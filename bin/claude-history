@@ -13,35 +13,34 @@ nested */subagents/agent-*.jsonl files are forked subagent transcripts, not
 resumable top-level sessions, so the glob below deliberately stays at
 exactly one directory level and never recurses into them).
 
-Two invocation shapes, both driving the same search/fzf UI, differing only
-in what Enter does afterward (resolve() vs resolve_popup()):
+One invocation shape, one path through Enter (resolve()): a live session
+-> switch-client there and close the pane this was invoked from, since it
+was just a scratch launcher for the search, fair game once its job is
+done (see close_origin_pane). Not live -> exec `claude --resume <id>
+--dangerously-skip-permissions` in place of this process, literally
+handing the terminal to claude the way `exec` hands it to anything.
 
-  - plain CLI (`claude-history`, typed directly at a shell prompt, or run
-    with no --client): fzf's own full-screen alt-buffer mode is the whole
-    "popup" here, no tmux needed for the UI itself. A live session ->
-    switch-client there and close the pane this was invoked from - it was
-    just a scratch launcher for the search, fair game once its job is
-    done (see close_origin_pane). Not live -> exec `claude --resume <id>
-    --dangerously-skip-permissions` in place of this process, literally
-    handing the terminal to claude the way `exec` hands it to anything.
-  - prefix+C-c (.tmux.conf, `--client #{client_tty}`, same display-popup
-    shape as prefix+C-w/W): send-keys into the current pane doesn't work
-    here - that pane could be running anything (another Claude Code
-    session reading raw keystrokes, vim, whatever), not necessarily a
-    shell prompt ready to accept a typed command, so injecting text into
-    its stdin is unsafe in general. Running inside its own popup instead
-    means the UI never touches whatever pane was actually focused: a live
-    session -> switch-client (no pane to close - the popup closes itself,
-    see .tmux.conf's -EE); not live -> open a brand-new window and resume
-    there (new_window_resume) rather than exec in place, since exec'ing
-    inside the small popup would trap a real session in a transient
-    floating pane instead of a proper window.
+prefix+C-c (.tmux.conf) runs this in a brand-new window
+(`new-window ... claude-history`), not via send-keys into the current pane
+(a prior version did that, and broke: that pane could be running anything
+- another Claude Code session reading raw keystrokes, vim, whatever - not
+necessarily a shell prompt ready to accept a typed command, so injecting
+text into its stdin landed as garbage input to whatever was actually
+running there) and not via a tmux popup either (tried next: fixed the
+send-keys problem, but broke two other things, confirmed by testing both
+directly - display-popup computes its size once at creation and never
+follows the client being resized afterward, unlike a real pane, which
+resizes live like any other tmux pane; and a popup's environment has
+$TMUX but never $TMUX_PANE, which silently broke the live-session location
+column since in_tmux() requires both). A real new window sidesteps every
+one of those: it's a normal pane (resizes live, sets $TMUX_PANE normally),
+and it never touches whatever pane was actually focused, so the exact
+same close-the-launcher-pane behavior as the plain CLI is correct here
+too - no separate popup-mode path needed at all.
 
 tmux integration itself is opportunistic, detected at runtime from $TMUX/
-$TMUX_PANE (both set by tmux for every process started inside a pane - no
-bind-key plumbing needed to learn "which pane am I", except --client,
-needed only because a popup's own pane can't answer that for itself - see
-resolve_popup()):
+$TMUX_PANE (both set by tmux for every real pane - no bind-key plumbing
+needed to learn "which pane am I"):
   - outside tmux entirely: skip the live/switch dance altogether and just
     exec-resume - there is no meaningful "switch to another pane" without
     tmux, so integrating with it "only if available" means not pretending
@@ -653,11 +652,11 @@ def close_origin_pane(target_pane_id):
 
 
 def resolve(session_id, cwd):
-    """Plain-CLI path: this program is running as a shell's own foreground
-    job, typed directly at a prompt - so a pane, if any, was opened
-    specifically to run this search and is fair game to close once its
-    job is done. See resolve_popup() for the prefix+C-c path, which cannot
-    make that assumption."""
+    """This program is always running as a shell's own foreground job -
+    typed directly at a prompt, or (prefix+C-c, .tmux.conf) started via
+    `new-window`, which is exactly the same thing from this process's own
+    point of view - so a pane, if any, was opened specifically to run this
+    search and is fair game to close once its job is done."""
     if not in_tmux():
         # no tmux to integrate with - skip the live/switch machinery
         # entirely and just resume here, per the tool's own fallback rule
@@ -687,68 +686,6 @@ def resolve(session_id, cwd):
               f"same transcript", file=sys.stderr)
         return
     exec_resume(session_id, cwd)
-
-
-def new_window_resume(client, session_id, cwd):
-    """Resume a non-live session in a brand-new window rather than in
-    place - the popup path's equivalent of exec_resume(). exec() is wrong
-    here: this process is running *inside the popup*, a small transient
-    floating pane (see .tmux.conf's prefix+C-c), and exec'ing claude there
-    would trap a real session inside it instead of a proper window.
-
-    The new window's target session is resolved from `client` explicitly
-    (same list-clients lookup jump_to_pane does) rather than left to
-    `new-window`'s own ambient default - a popup's own process has no
-    controlling pane of its own to imply one from (the exact trap
-    window-search.py's jump() comment warns about), so without -t this
-    could land in an unrelated session. -P -F captures the new pane's id
-    (not the window id - jump_to_pane's own verification compares against
-    #{pane_id}, so this has to match that unit) so the switch below is
-    explicit and verified rather than assumed."""
-    cr = subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
-                        capture_output=True, text=True)
-    if cr.returncode != 0:
-        die(f"tmux list-clients failed (rc={cr.returncode}): {cr.stderr.strip()}")
-    clients = {c: sn for c, sn in (line.split("\t") for line in cr.stdout.splitlines())}
-    session = clients.get(client)
-    if not session:
-        die(f"client {client!r} isn't in the current attached-client list "
-            f"{sorted(clients)!r} - can't target a new-window at its session")
-
-    nr = subprocess.run(
-        ["tmux", "new-window", "-P", "-F", "#{pane_id}", "-t", f"{session}:",
-         "-c", cwd if cwd and os.path.isdir(cwd) else HOME,
-         f"claude --resume {shlex.quote(session_id)} --dangerously-skip-permissions"],
-        capture_output=True, text=True,
-    )
-    if nr.returncode != 0:
-        die(f"tmux new-window failed (rc={nr.returncode}): {nr.stderr.strip()}")
-    jump_to_pane(client, nr.stdout.strip())
-
-
-def resolve_popup(session_id, cwd, client):
-    """prefix+C-c path (.tmux.conf: display-popup, same shape as
-    prefix+C-w/W): `client` is #{client_tty} interpolated at bind-key time,
-    not resolved from TMUX_PANE - a popup's shell has no controlling pane
-    of its own for #{client_tty} to resolve *from*, the exact trap
-    window-search.py's jump() comment warns about, so the tty has to
-    arrive as an argument instead.
-
-    Unlike resolve(), there is no origin pane to ever close here: the pane
-    this ran in is the popup itself, not a real pane the user was using -
-    it closes on its own (.tmux.conf's -EE) the instant this process exits
-    normally, whether that's after a switch or after Escape/no selection."""
-    live = get_live_sessions().get(session_id)
-    if live and live["pane_id"] and live["pane_id"] in pane_targets():
-        jump_to_pane(client, live["pane_id"])
-        return
-    if live:
-        where = (f"pane {live['pane_id']} (a different tmux server)"
-                 if live["pane_id"] else "not attached to any tmux pane")
-        die(f"session is already running elsewhere (pid {live['pid']}, "
-            f"cwd {live['cwd']}, {where}) - not resuming, that would start "
-            f"a second instance against the same transcript")
-    new_window_resume(client, session_id, cwd)
 
 
 SNAP_PREFIX = "claude-history-search-"
@@ -799,7 +736,7 @@ def sweep_stale_snapshots():
             _rm(os.path.join(d, name))
 
 
-def drive(client=None):
+def drive():
     snapshot = build_snapshot()
     sweep_stale_snapshots()
     fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
@@ -826,18 +763,18 @@ def drive(client=None):
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
-    # --border/--margin give the bare-CLI case a visually inset look rather
-    # than filling every last cell (fzf's own full-screen alt-buffer mode is
-    # the whole "popup" there, no tmux display-popup involved). Under
-    # prefix+C-c, tmux's display-popup already insets the content (see
-    # .tmux.conf, -w 98% -h 96%) - adding fzf's own border/margin on top of
-    # that would double-inset into a cramped little box.
-    style_args = [] if client else ["--border=rounded", "--margin=2,4"]
     try:
         result = subprocess.run(
             [
+                # fzf's default full-screen mode already takes over the
+                # terminal via the alternate screen buffer and restores it
+                # on exit - the "popup" here, no tmux display-popup needed
+                # (see module docstring for why prefix+C-c avoids one:
+                # popups don't resize live and don't set $TMUX_PANE).
+                # --border/--margin just gives it a visually inset look
+                # rather than filling every last cell.
                 "fzf", "--ansi", "--disabled", "--layout=reverse",
-                *style_args,
+                "--border=rounded", "--margin=2,4",
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "claude history> ",
                 "--preview", preview_cmd,
@@ -860,10 +797,7 @@ def drive(client=None):
     s = snapshot["sessions"].get(session_id)
     if not s:
         die(f"selected session {session_id} vanished from the snapshot")
-    if client:
-        resolve_popup(session_id, s["cwd"], client)
-    else:
-        resolve(session_id, s["cwd"])
+    resolve(session_id, s["cwd"])
 
 
 def main():
@@ -872,11 +806,6 @@ def main():
     parser.add_argument("--preview", metavar="SESSION_ID")
     parser.add_argument("--query", default="")
     parser.add_argument("--snapshot", metavar="SNAPSHOT")
-    parser.add_argument("--client", metavar="TTY",
-                        help="tty of the client that opened the popup; the "
-                             "prefix+C-c bind-key interpolates #{client_tty} "
-                             "here (see .tmux.conf) - switches to popup mode "
-                             "(resolve_popup) instead of the plain-CLI path")
     args = parser.parse_args()
 
     if args.preview:
@@ -884,7 +813,7 @@ def main():
     elif args.search:
         search(args.search, args.query)
     else:
-        drive(client=args.client)
+        drive()
 
 
 if __name__ == "__main__":
