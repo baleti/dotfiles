@@ -112,7 +112,7 @@ def tokenize(text):
 
 # one query element: optional leading ! (negation), then either a
 # double-quoted phrase or a run of non-space characters
-QUERY_ELEM_RE = re.compile(r'(!?)(?:"([^"]*)"|(\S+))')
+QUERY_ELEM_RE = re.compile(r'(!?)(?:\$([a-zA-Z]+):(\S+)|"([^"]*)"|(\S+))')
 
 # recoll ANDs all elements together ("all elements in the search entry are
 # normally combined with an implicit AND"). "all" reproduces that: every bare
@@ -122,7 +122,40 @@ QUERY_ELEM_RE = re.compile(r'(!?)(?:"([^"]*)"|(\S+))')
 # type, and swapping back is a one-word change rather than a revert.
 MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft")
+# On top of the base language below, a field-scoped DSL: $field:word
+# restricts word to one field instead of the whole document. field is
+# itself fuzzy - any FIELD_NAMES entry *containing* field as a substring
+# (not just a prefix) is searched, unioned - so $sess:foo and $s:foo both
+# reach only "session" (nothing else contains "s"... wait, "session" does
+# twice and nothing else does), while $ti:foo would reach "title" only
+# here (there's no second field containing "ti", unlike claude-history's
+# path/tmux/session/window/pane/title/time/body set). An unresolvable
+# field name degrades to a plain bare-word search over the literal text,
+# same "still usable half-typed" principle as the rest of this language.
+#
+#   session  the tmux session name
+#   window   the window name
+#   title    the active pane's title
+#   body     scrollback content (the plain unscoped search's main field)
+#
+# session is a short structured string - $session:33 is a plain
+# case-insensitive substring test, not tokenized/ranked. window/title/body
+# are real BM25-scored fields, the same prefix-expansion-against-
+# vocabulary treatment an unscoped bare word already gets, just scoped to
+# that field's own vocabulary (see build_snapshot's per-field df/vocab)
+# instead of the combined one.
+FIELD_NAMES = ["session", "window", "title", "body"]
+BM25_FIELDS = {"window", "title", "body"}
+FILTER_FIELDS = {"session"}
+
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms")
+
+
+def resolve_fields(prefix):
+    """Every FIELD_NAMES entry containing prefix as a substring, in
+    FIELD_NAMES' own order."""
+    prefix = prefix.lower()
+    return [f for f in FIELD_NAMES if prefix in f]
 
 
 def parse_query(query):
@@ -153,12 +186,22 @@ def parse_query(query):
     to bare words, so live-as-you-type keeps narrowing instead of blanking
     the list while the phrase is half-entered."""
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
-    for neg, quoted, bare in QUERY_ELEM_RE.findall(query):
+    field_terms, neg_field_terms = [], []
+    for neg, fprefix, fterm, quoted, bare in QUERY_ELEM_RE.findall(query):
         # exactly one alternative participates; `bare` is non-empty whenever
         # it is the one that matched, so it doubles as the discriminator.
         # An unterminated quote lands here (no closing quote for the phrase
         # branch to match), and tokenize drops the stray " - which is what
         # degrades a half-typed phrase to bare words rather than to nothing.
+        if fprefix:
+            fields = resolve_fields(fprefix)
+            if fields:
+                (neg_field_terms if neg else field_terms).append((fields, fterm.lower()))
+                continue
+            # unresolvable field name - fall through to plain bare-word
+            # handling on the whole "$prefix:term" text, same "still usable
+            # half-typed" reasoning as an unterminated quote
+            bare = f"{fprefix}:{fterm}"
         if bare:
             toks = tokenize(bare)
             for tok in toks:
@@ -177,7 +220,7 @@ def parse_query(query):
             # kept as the raw string, not tokens - see phrase_re. A phrase of
             # pure punctuation ("+.") is legal and searchable for that reason.
             (neg_phrases if neg else phrases).append(quoted.strip().lower())
-    return Query(terms, phrases, neg_terms, neg_phrases, soft)
+    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms)
 
 
 def phrase_re(raw, prefix=False):
@@ -369,38 +412,76 @@ def build_snapshot():
     windows = {}
     for wid, w in panes_by_window.items():
         lines = []  # [pane_id, text]
-        tf, doclen = {}, 0
+        tf_body, doclen_body = {}, 0
         for pid in w["panes"]:
             texts = captures[pid]
             for text in texts:
                 lines.append([pid, text])
             # recency is scored within each pane, then summed into the
             # window's single document (see chunked_tf)
-            _, pane_doclen = chunked_tf(texts, tf)
-            doclen += pane_doclen
-        for boost, field in ((WINDOW_NAME_BOOST, w["window_name"]),
-                             (PANE_TITLE_BOOST, w["pane_title"])):
-            field_tokens = tokenize(field)
-            for tok in field_tokens * boost:
-                tf[tok] = tf.get(tok, 0) + 1.0
-            doclen += boost * len(field_tokens)
+            _, pane_doclen = chunked_tf(texts, tf_body)
+            doclen_body += pane_doclen
+
+        # window/title tracked separately (not just merged straight into
+        # the combined tf) so $window:/$title: can search one without the
+        # other - see the field-DSL docs above parse_query(). Natural
+        # (unboosted) counts here; the combined tf below applies
+        # WINDOW_NAME_BOOST/PANE_TITLE_BOOST once, by summing rather than
+        # recomputing, so the combined and scoped searches can never
+        # quietly disagree about what a document contains.
+        tf_window, doclen_window = {}, 0
+        for tok in tokenize(w["window_name"]):
+            tf_window[tok] = tf_window.get(tok, 0) + 1.0
+        doclen_window = len(tokenize(w["window_name"]))
+
+        tf_title, doclen_title = {}, 0
+        for tok in tokenize(w["pane_title"]):
+            tf_title[tok] = tf_title.get(tok, 0) + 1.0
+        doclen_title = len(tokenize(w["pane_title"]))
+
+        tf = dict(tf_body)
+        doclen = doclen_body
+        for boost, field_tf, field_doclen in (
+                (WINDOW_NAME_BOOST, tf_window, doclen_window),
+                (PANE_TITLE_BOOST, tf_title, doclen_title)):
+            for tok, c in field_tf.items():
+                tf[tok] = tf.get(tok, 0) + c * boost
+            doclen += field_doclen * boost
 
         windows[wid] = {
             **w, "lines": lines, "tf": tf, "doclen": doclen,
+            "tf_window": tf_window, "doclen_window": doclen_window,
+            "tf_title": tf_title, "doclen_title": doclen_title,
+            "tf_body": tf_body, "doclen_body": doclen_body,
         }
 
-    df = {}
+    # df/avgdl/vocab per BM25 field - "df"/"avgdl"/"vocab" (no suffix) stay
+    # the combined ones the plain unscoped search has always used
+    df, df_window, df_title, df_body = {}, {}, {}, {}
     for w in windows.values():
         for tok in w["tf"]:
             df[tok] = df.get(tok, 0) + 1
+        for tok in w["tf_window"]:
+            df_window[tok] = df_window.get(tok, 0) + 1
+        for tok in w["tf_title"]:
+            df_title[tok] = df_title.get(tok, 0) + 1
+        for tok in w["tf_body"]:
+            df_body[tok] = df_body.get(tok, 0) + 1
 
-    avgdl = sum(w["doclen"] for w in windows.values()) / max(1, len(windows))
+    n_w = max(1, len(windows))
+    avgdl = sum(w["doclen"] for w in windows.values()) / n_w
+    avgdl_window = sum(w["doclen_window"] for w in windows.values()) / n_w
+    avgdl_title = sum(w["doclen_title"] for w in windows.values()) / n_w
+    avgdl_body = sum(w["doclen_body"] for w in windows.values()) / n_w
     # sorted once here so prefix queries ("ric" -> "ricing", "rice", ...) can
     # binary-search a contiguous range at query time instead of scanning -
     # see expand_prefix()
     vocab = sorted(df.keys())
     return {"windows": windows, "df": df, "n": len(windows), "avgdl": avgdl,
-            "vocab": vocab}
+            "vocab": vocab,
+            "df_window": df_window, "avgdl_window": avgdl_window, "vocab_window": sorted(df_window.keys()),
+            "df_title": df_title, "avgdl_title": avgdl_title, "vocab_title": sorted(df_title.keys()),
+            "df_body": df_body, "avgdl_body": avgdl_body, "vocab_body": sorted(df_body.keys())}
 
 
 CONNECTOR_RE = re.compile(r"^[^\sA-Za-z0-9]+$")  # punctuation, no whitespace
@@ -575,6 +656,40 @@ def bm25_term_score(f, n_q, dl, n, avgdl):
     return idf * (f * (K1 + 1)) / (f + K1 * (1 - B + B * dl / avgdl))
 
 
+def field_term_matches(fields, subtoks, w, filter_text, vocabs):
+    """True if EVERY subtoken of a $field:term is found in AT LEAST ONE of
+    its resolved fields - filter-substring for session, tf-presence-after-
+    prefix-expansion for window/title/body. Mirrors the top-level query's
+    own "groups" logic (each typed word independent, all required, each
+    satisfied by any of its own prefix expansions) at the scale of one
+    field-term instead of the whole query."""
+    for subtok in subtoks:
+        found = any(subtok in filter_text[f] for f in fields if f in FILTER_FIELDS)
+        if not found:
+            for f in fields:
+                if f in BM25_FIELDS and any(
+                        w[f"tf_{f}"].get(t) for t in expand_prefix(subtok, vocabs[f])):
+                    found = True
+                    break
+        if not found:
+            return False
+    return True
+
+
+def field_term_score(fields, subtoks, w, vocabs, dfs, avgdls, n):
+    score = 0.0
+    for f in fields:
+        if f not in BM25_FIELDS:
+            continue
+        dl = w[f"doclen_{f}"]
+        for subtok in subtoks:
+            for t in expand_prefix(subtok, vocabs[f]):
+                tf = w[f"tf_{f}"].get(t, 0)
+                if tf:
+                    score += bm25_term_score(tf, dfs[f].get(t, 0), dl, n, avgdls[f])
+    return score
+
+
 def search(snapshot_path, query):
     _dbg(f"search() start query={query!r}")
     with open(snapshot_path) as f:
@@ -601,6 +716,14 @@ def search(snapshot_path, query):
     terms = [t for g in groups for t in g]
     neg_terms = {t for tok in q.neg_terms for t in expand_prefix(tok, vocab)}
     _dbg(f"{len(q.terms)} words -> {len(terms)} terms, {len(neg_terms)} negated")
+
+    # subtoks computed once per field-term here, not per window below -
+    # tokenizing/lowering doesn't depend on any one window
+    field_terms = [(fields, tokenize(term)) for fields, term in q.field_terms]
+    neg_field_terms = [(fields, tokenize(term)) for fields, term in q.neg_field_terms]
+    vocabs = {"window": snap["vocab_window"], "title": snap["vocab_title"], "body": snap["vocab_body"]}
+    dfs = {"window": snap["df_window"], "title": snap["df_title"], "body": snap["df_body"]}
+    avgdls = {"window": snap["avgdl_window"], "title": snap["avgdl_title"], "body": snap["avgdl_body"]}
 
     rxs = [phrase_re(p) for p in q.phrases]
     neg_rxs = [phrase_re(p) for p in q.neg_phrases]
@@ -629,6 +752,13 @@ def search(snapshot_path, query):
         if MATCH_MODE == "all" and not all(
                 any(w["tf"].get(t) for t in g) for g in groups):
             continue
+        filter_text = {"session": w["session"].lower()}
+        if any(field_term_matches(fields, subtoks, w, filter_text, vocabs)
+               for fields, subtoks in neg_field_terms):
+            continue
+        if not all(field_term_matches(fields, subtoks, w, filter_text, vocabs)
+                   for fields, subtoks in field_terms):
+            continue
         hits[wid] = (counts, panes, soft_counts)
     # phrase df is over the windows that survived, computed here because a
     # phrase is not in the indexed vocabulary and so has no precomputed df
@@ -636,16 +766,22 @@ def search(snapshot_path, query):
     soft_df = [sum(1 for _, _, s in hits.values() if s[i]) for i in range(len(soft_rxs))]
 
     scored = []
-    if not terms and not rxs:
+    if not terms and not rxs and not field_terms:
         # purely negative query ("!foo", "everything except..."): there is
         # nothing to rank *by*, so fall back to the empty-query ordering
         # (most recent activity) over whatever survived the exclusions.
-        # Without this the BM25 sum is 0 for every window and the `s > 0`
-        # test below would throw away the entire result set - i.e. asking to
-        # exclude one thing would silently hide everything.
         for wid in hits:
             scored.append((windows[wid]["activity"], wid, windows[wid]))
     else:
+        # every window reaching this point has already passed every
+        # required filter above - score only decides ranking ORDER among
+        # survivors from here, not whether one survives. A pure `s > 0`
+        # gate used to double as that inclusion check too, which broke the
+        # moment a field-term could legitimately match without ever
+        # contributing score: session is a filter-only field (see
+        # field_term_score, which only scores BM25_FIELDS) - a real
+        # "$session:foo" match would otherwise vanish here even though it
+        # had already survived field_term_matches above.
         for wid, (counts, _, soft_counts) in hits.items():
             w = windows[wid]
             s = bm25_score(w, terms, df, n, avgdl)
@@ -656,19 +792,26 @@ def search(snapshot_path, query):
             # has the word "ctrl" - without excluding the latter
             for i, c in enumerate(soft_counts):
                 s += bm25_term_score(c, soft_df[i], w["doclen"], n, avgdl)
-            if s > 0:
-                scored.append((s, wid, w))
+            for fields, subtoks in field_terms:
+                s += field_term_score(fields, subtoks, w, vocabs, dfs, avgdls, n)
+            scored.append((s, wid, w))
     scored.sort(key=lambda t: -t[0])
 
     # the soft literals highlight and steer the jump too, since they are what
     # the user typed even though they did not filter
     show_rxs = rxs + soft_rxs
-    qset = set(q.terms)
+    qset = set(q.terms) | {tok for _, subtoks in field_terms for tok in subtoks}
     for _, wid, w in scored:
         pane_id = best_pane(w, qset, show_rxs, hits[wid][1])
         print(row(pane_id, w, qset, show_rxs))
     _dbg(f"printed ({len(scored)} results, mode={MATCH_MODE}, "
          f"{len(rxs)} phrase constraint(s), {len(neg_rxs)} negated phrase(s))")
+
+
+LOC_WIDTH = 10  # "session:index" - session names here are short (tmux's own
+# numeric ids, or short custom ones); see claude-history's row() for what
+# happens when a column like this overflows
+NAME_WIDTH = 16
 
 
 def row(pane_id, w, qset=frozenset(), rxs=()):
@@ -679,10 +822,19 @@ def row(pane_id, w, qset=frozenset(), rxs=()):
     # scoring (see PANE_TITLE_BOOST) precisely because they're a strong
     # signal, so the highlight should make that visible too, not just the
     # ranking.
-    name = highlight(w["window_name"], qset, rxs)
+    loc = f'{w["session"]}:{w["window_index"]}'
+    name_plain = w["window_name"] + w["window_flags"]
+    name = highlight(w["window_name"], qset, rxs) + w["window_flags"]
     title = highlight(w["pane_title"], qset, rxs)
     panes_suffix = f" ({len(w['panes'])}p)" if len(w["panes"]) > 1 else ""
-    label = f'{w["session"]}:{w["window_index"]} {name}{w["window_flags"]}: "{title}"{panes_suffix}'
+
+    # name is padded on its PLAIN length, then the highlighted (ANSI-code-
+    # bearing) text substituted in - padding on the highlighted text itself
+    # would count the invisible escape codes toward the width and throw the
+    # alignment off (see claude-history's row() for the same trick, there
+    # applied to a column that actually overflows in practice)
+    pad = " " * max(0, NAME_WIDTH - len(name_plain))
+    label = f'{loc:<{LOC_WIDTH}}  {name}{pad}  "{title}"{panes_suffix}'
     return f"{pane_id}\t{label}"
 
 
@@ -722,7 +874,7 @@ def preview(pane_id, query):
     # only the positive half matters here: the preview highlights and scrolls
     # to what was asked for, and a negated term is by definition absent
     q = parse_query(query)
-    qset = set(q.terms)
+    qset = set(q.terms) | {tok for _, term in q.field_terms for tok in tokenize(term)}
     rxs = ([phrase_re(p) for p in q.phrases]
            + [phrase_re(s, prefix=True) for s in q.soft])
     if not qset and not rxs:
@@ -837,6 +989,11 @@ def drive():
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
+    # aligned to row()'s own LOC_WIDTH/NAME_WIDTH - only approximate once a
+    # row's own columns overflow (rare here - see claude-history's row()
+    # for a column that actually does, and its header for the same caveat)
+    header = f'{"SESSION:WIN":<{LOC_WIDTH}}  {"NAME":<{NAME_WIDTH}}  TITLE'
+
     _dbg("launching fzf")
     try:
         result = subprocess.run(
@@ -844,6 +1001,7 @@ def drive():
                 "fzf", "--ansi", "--disabled", "--layout=reverse",
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "window search> ",
+                "--header", header,
                 "--preview", preview_cmd,
                 # wrap: the preview captures with -J to match the index, so
                 # rejoined wrapped lines can be far wider than the preview -
