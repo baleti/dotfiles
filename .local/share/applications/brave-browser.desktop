@@ -1,0 +1,28 @@
+[Desktop Entry]
+Version=1.0
+Name=Brave
+GenericName=Web Browser
+Comment=Access the Internet
+StartupNotify=true
+StartupWMClass=brave-browser
+TryExec=brave
+# --force-renderer-accessibility: forces Chromium's AT-SPI/ATK bridge on
+# unconditionally, so mod+A (appmenu-atspi.py) can see its accessible tree.
+# Without it Chromium only builds the tree when it detects an AT client,
+# which never happens under normal use. User override of the system
+# brave-browser.desktop -- keep in sync with it if Brave updates that file.
+Exec=brave --force-renderer-accessibility %U
+Terminal=false
+Icon=brave-desktop
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=application/pdf;application/rdf+xml;application/rss+xml;application/xhtml+xml;application/xhtml_xml;application/xml;image/gif;image/jpeg;image/png;image/webp;text/html;text/xml;x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/ipfs;x-scheme-handler/ipns;
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=brave --force-renderer-accessibility
+
+[Desktop Action new-private-window]
+Name=New Incognito Window
+Exec=brave --force-renderer-accessibility --incognito
