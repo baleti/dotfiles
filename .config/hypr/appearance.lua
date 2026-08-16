@@ -53,6 +53,28 @@ hl.config({
     animations = {
         enabled = false,
     },
+
+    -- Window groups (tabs) -- see keybinds.lua for mainMod+G (toggle) and
+    -- mainMod+bracketleft/bracketright (prev/next tab within a group).
+    -- https://wiki.hypr.land/Configuring/Variables/#group
+    group = {
+        col = {
+            border_active   = "rgba(33ccffee)",
+            border_inactive = "rgba(595959aa)",
+        },
+
+        groupbar = {
+            enabled       = true,
+            height        = 14,
+            render_titles = true,
+            font_size     = 8,
+
+            col = {
+                active   = "rgba(33ccffee)",
+                inactive = "rgba(595959aa)",
+            },
+        },
+    },
 })
 
 -- Default curves, see https://wiki.hypr.land/Configuring/Advanced-and-Cool/Animations/#curves
