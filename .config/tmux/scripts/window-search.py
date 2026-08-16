@@ -970,10 +970,14 @@ def drive():
     # $FZF_LINES/$FZF_MATCH_COUNT are exported by fzf to every child process,
     # including this one - exact row arithmetic instead of coarse percentage
     # tiers, which always left a few rows of dead space unless the match
-    # count happened to land right at a tier boundary. +3 is the prompt line
-    # plus the match-count info line above the list (--layout=reverse, no
-    # --info=inline) plus one extra row - +2 measured one row short in
-    # practice, clipping the last result; floor/ceiling keep both panes from
+    # count happened to land right at a tier boundary. +4 is the header row,
+    # the prompt line, and the match-count info line above the list
+    # (--layout=reverse, no --info=inline), plus one extra row - $FZF_LINES
+    # doesn't shrink to account for --header (confirmed directly: identical
+    # value with and without one), so it has to be budgeted for here or it
+    # silently steals a row from the list; this was +3 before the header
+    # existed, and +2 before THAT measured one row short the same way,
+    # clipping the last result; floor/ceiling keep both panes from
     # collapsing to nothing at either extreme. POSIX sh, since this runs
     # through fzf's $SHELL, not necessarily zsh. The list is also capped at
     # half of FZF_LINES (not just FZF_LINES-4): a large match count used to
@@ -983,7 +987,7 @@ def drive():
     # past half on its own whenever there are few enough matches that the
     # list doesn't need that much (same cap claude-history already used).
     resize_on_result = (
-        'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
+        'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
         'half=$((FZF_LINES / 2)); '
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
