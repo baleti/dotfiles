@@ -172,6 +172,8 @@ pub struct PickerConfig {
     pub type_names: Vec<String>,
     pub placeholder: String,
     pub width_fraction: f64,
+    /// Maximum height as a fraction of the monitor height; the window shrinks
+    /// below this to fit fewer entries but never grows past it.
     pub height_fraction: f64,
     /// Row height for thumbnail entries; ignored if no entry has `thumb: true`.
     pub thumb_height: i32,
@@ -244,16 +246,19 @@ pub fn run(
     win.set_layer(gtk_layer_shell::Layer::Overlay);
     win.set_keyboard_mode(gtk_layer_shell::KeyboardMode::Exclusive);
 
+    let mut max_list_height: Option<i32> = None;
     if let Some(display) = gdk::Display::default() {
         if let Some(mon) = target_monitor(&display) {
             win.set_monitor(&mon);
             let g = mon.geometry();
             // Layer surfaces take their natural size unless anchored to
             // opposing edges, so a default size alone leaves a tiny window.
-            win.set_size_request(
-                (g.width() as f64 * config.width_fraction) as i32,
-                (g.height() as f64 * config.height_fraction) as i32,
-            );
+            // Height is left unset here (-1): it's capped, not fixed, via
+            // the scrolled window's max-content-height below, so the window
+            // shrinks to fit fewer entries instead of always reserving the
+            // full fraction.
+            win.set_size_request((g.width() as f64 * config.width_fraction) as i32, -1);
+            max_list_height = Some((g.height() as f64 * config.height_fraction) as i32);
         }
     }
 
@@ -313,6 +318,12 @@ pub fn run(
 
     let scroll = gtk::ScrolledWindow::new(gtk::Adjustment::NONE, gtk::Adjustment::NONE);
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    // Natural height follows the (filtered) row count, capped so a long list
+    // still scrolls instead of pushing the window past the monitor.
+    scroll.set_propagate_natural_height(true);
+    if let Some(h) = max_list_height {
+        scroll.set_max_content_height(h);
+    }
     scroll.add(&listbox);
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -336,6 +347,7 @@ pub fn run(
 
     {
         let listbox = listbox.clone();
+        let search = search.clone();
         win.connect_key_press_event(move |_, ev| {
             use gdk::keys::constants as key;
             let k = ev.keyval();
@@ -346,6 +358,23 @@ pub fn run(
             if k == key::Return || k == key::KP_Enter {
                 if let Some(row) = listbox.selected_row() {
                     row.activate();
+                }
+                return glib::Propagation::Stop;
+            }
+            if k == key::Tab || k == key::ISO_Left_Tab {
+                // Toggle instead of GTK's default focus-chain Tab, which
+                // would walk into the list and then between individual rows.
+                if search.is_focus() {
+                    if listbox.selected_row().is_none() {
+                        if let Some(row) = listbox.row_at_index(0) {
+                            listbox.select_row(Some(&row));
+                        }
+                    }
+                    if let Some(row) = listbox.selected_row() {
+                        row.grab_focus();
+                    }
+                } else {
+                    search.grab_focus();
                 }
                 return glib::Propagation::Stop;
             }
