@@ -588,6 +588,28 @@ def exec_resume(session_id, cwd):
                          "--dangerously-skip-permissions"])
 
 
+def window_id_of(target):
+    r = subprocess.run(["tmux", "display-message", "-p", "-t", target, "#{window_id}"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def close_origin_window(target_pane_id):
+    """Close the window claude-history was invoked from, now that the
+    client has been switched away from it - only called right after a
+    successful jump_to_pane. Skipped when the target pane turns out to
+    share a window with the origin pane (a split): kill-window would then
+    also take out the very pane the client was just switched to, which is
+    the opposite of what "close the window this was invoked from" means."""
+    origin_pane = os.environ.get("TMUX_PANE")
+    origin_window = origin_pane and window_id_of(origin_pane)
+    if not origin_window:
+        return
+    if window_id_of(target_pane_id) == origin_window:
+        return
+    subprocess.run(["tmux", "kill-window", "-t", origin_window])
+
+
 def resolve(session_id, cwd):
     if not in_tmux():
         # no tmux to integrate with - skip the live/switch machinery
@@ -605,6 +627,9 @@ def resolve(session_id, cwd):
         jump_to_pane(client, live["pane_id"])
         print(f"claude-history: switched to the already-running session "
               f"(pid {live['pid']}, {live['status']})", file=sys.stderr)
+        # only on the switch path - never when falling back to exec_resume,
+        # per the tool's own rule (see module docstring)
+        close_origin_window(live["pane_id"])
         return
     if live:
         where = (f"pane {live['pane_id']} (a different tmux server)"
