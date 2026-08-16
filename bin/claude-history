@@ -17,7 +17,13 @@ Enter on a result does one of two things:
   - if that session has a live, verified-alive Claude Code process attached
     to a tmux pane on the CURRENT tmux server right now: switch-client
     there, rather than starting a second instance against the same
-    transcript.
+    transcript. By default the pane this was invoked from is then closed,
+    on the assumption it was only a scratch pane opened to run the search
+    (see close_origin_pane) - --keep-origin skips that, for prefix+C-c
+    (.tmux.conf), which runs this via send-keys in whatever real pane you
+    were already working in rather than a fresh scratch one, so closing it
+    would destroy actual ongoing work. Either way the plain CLI default
+    (no flag) is unchanged from before --keep-origin existed.
   - otherwise: exec `claude --resume <id> --dangerously-skip-permissions`
     in place of this process - i.e. the current shell picks up the resume,
     literally (no new pane, no send-keys, just a normal Unix exec since
@@ -623,7 +629,8 @@ def close_origin_pane(target_pane_id):
     """Close the PANE claude-history was invoked from (not its window - a
     prior version killed the whole window here, which took out whatever
     else was split into it too), now that the client has been switched
-    away from it. Only called right after a successful jump_to_pane.
+    away from it. Only called right after a successful jump_to_pane, and
+    only when the caller wants that (see --keep-origin on resolve()).
     Skipped if the target somehow turns out to be this same pane (should
     be impossible - the live session detected is always a different
     process - but kill-pane on the pane you were just switched to would be
@@ -634,7 +641,16 @@ def close_origin_pane(target_pane_id):
     subprocess.run(["tmux", "kill-pane", "-t", origin_pane])
 
 
-def resolve(session_id, cwd):
+def resolve(session_id, cwd, keep_origin=False):
+    """keep_origin=False (the default, plain CLI invocation) assumes this
+    pane was opened just to run the search - closing it after a switch
+    tidies up the now-pointless scratch pane, which is the old/original
+    behaviour, unchanged. keep_origin=True is for prefix+C-c: that runs
+    claude-history in whatever real pane you were already working in (via
+    send-keys, not a fresh scratch pane - see .tmux.conf), so closing it
+    would destroy a pane with actual ongoing work; the switch-client jump
+    still happens, the origin pane just survives, sitting back at its
+    prompt exactly as if the command had simply finished."""
     if not in_tmux():
         # no tmux to integrate with - skip the live/switch machinery
         # entirely and just resume here, per the tool's own fallback rule
@@ -653,7 +669,8 @@ def resolve(session_id, cwd):
               f"(pid {live['pid']}, {live['status']})", file=sys.stderr)
         # only on the switch path - never when falling back to exec_resume,
         # per the tool's own rule (see module docstring)
-        close_origin_pane(live["pane_id"])
+        if not keep_origin:
+            close_origin_pane(live["pane_id"])
         return
     if live:
         where = (f"pane {live['pane_id']} (a different tmux server)"
@@ -714,7 +731,7 @@ def sweep_stale_snapshots():
             _rm(os.path.join(d, name))
 
 
-def drive():
+def drive(keep_origin=False):
     snapshot = build_snapshot()
     sweep_stale_snapshots()
     fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
@@ -773,7 +790,7 @@ def drive():
     s = snapshot["sessions"].get(session_id)
     if not s:
         die(f"selected session {session_id} vanished from the snapshot")
-    resolve(session_id, s["cwd"])
+    resolve(session_id, s["cwd"], keep_origin=keep_origin)
 
 
 def main():
@@ -782,6 +799,11 @@ def main():
     parser.add_argument("--preview", metavar="SESSION_ID")
     parser.add_argument("--query", default="")
     parser.add_argument("--snapshot", metavar="SNAPSHOT")
+    parser.add_argument("--keep-origin", action="store_true",
+                        help="don't close the pane this was invoked from "
+                             "after switching to a live session - for "
+                             "prefix+C-c, which runs this in a real "
+                             "in-use pane rather than a scratch one")
     args = parser.parse_args()
 
     if args.preview:
@@ -789,7 +811,7 @@ def main():
     elif args.search:
         search(args.search, args.query)
     else:
-        drive()
+        drive(keep_origin=args.keep_origin)
 
 
 if __name__ == "__main__":
