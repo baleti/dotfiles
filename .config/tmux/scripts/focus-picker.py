@@ -127,31 +127,29 @@ def preview(pane_id):
     sys.stdout.write(r.stdout)
 
 
-def resolve_client():
-    """Fallback bridge for a tmux server still running an old bind-key - see
-    window-search.py's resolve_client(), same reasoning, kept in sync with it
-    rather than shared because it's five lines and not worth a shared module
-    for one script pair."""
-    r = subprocess.run(["tmux", "show-environment", "-g", "TMUX_FOCUS_PICKER_CLIENT"],
-                        capture_output=True, text=True)
-    subprocess.run(["tmux", "set-environment", "-gu", "TMUX_FOCUS_PICKER_CLIENT"],
-                    capture_output=True, text=True)
-    if r.returncode != 0 or "=" not in r.stdout:
-        return None
-    return r.stdout.strip().split("=", 1)[1]
+def current_client_tty():
+    """The tty of the client viewing THIS pane, resolved from directly
+    inside the pane's own process tree. .tmux.conf runs this script via
+    `new-window`, a real pane - not a popup, which has no controlling pane
+    of its own to resolve #{client_tty} *from* (see window-search.py's
+    current_client_tty() and its .tmux.conf entry for the full saga this
+    sidesteps). A real pane needs none of it: tmux resolves "#{client_tty}"
+    the same as if you'd typed the command at the prompt yourself."""
+    r = subprocess.run(["tmux", "display-message", "-p", "#{client_tty}"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
 def jump(client, pane_id):
-    """Land the client that opened the popup on the chosen pane. Mirrors
+    """Land the client that opened this window on the chosen pane. Mirrors
     window-search.py's jump() exactly (see its comments for why each step is
-    there - the #{client_tty} bridging, the three-command fallback chain,
-    and verifying against list-clients rather than display-message -c) -
-    that function was hard-won against a real switch-client bug, so this
-    reuses the same verified sequence rather than a fresh guess."""
+    there - the three-command fallback chain, and verifying against
+    list-clients rather than display-message -c) - that function was
+    hard-won against a real switch-client bug, so this reuses the same
+    verified sequence rather than a fresh guess."""
     if not client:
-        die("TMUX_FOCUS_PICKER_CLIENT was empty or unset - the bind-key's "
-            "`run-shell \"tmux set-environment -g ...\"` step did not run, or "
-            "another invocation consumed it first (see .tmux.conf, prefix+W)")
+        die("current_client_tty() couldn't resolve #{client_tty} for this "
+            "pane - can't switch-client without it (see .tmux.conf, prefix+W)")
 
     cr = subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
                         capture_output=True, text=True)
@@ -180,8 +178,8 @@ def jump(client, pane_id):
             f"switch-client silently landed on the wrong pane")
 
 
-def drive(client=None):
-    client = client or resolve_client()
+def drive():
+    client = current_client_tty()
     live = list_live_panes()
     if not live:
         die("tmux list-panes returned no panes - nothing to switch to")
@@ -207,15 +205,17 @@ def drive(client=None):
     # same list/preview split as window-search.py and claude-history: react
     # to each match-set change (fzf's own built-in filtering here, not a
     # reload - this list is static, piped in once) and give the list just
-    # enough rows for $FZF_MATCH_COUNT, preview gets the rest. +3 is the
-    # prompt line plus the match-count info line plus one more (measured
-    # short at +2 in window-search.py; kept identical here rather than
-    # re-deriving it).
+    # enough rows for $FZF_MATCH_COUNT, preview gets the rest - EXCEPT the
+    # list is also capped at half of FZF_LINES, so the preview never drops
+    # below half regardless of match count, and grows past half on its own
+    # the fewer results there are to list (same cap claude-history uses;
+    # +3 is the prompt line plus the match-count info line plus one more,
+    # measured short at +2 in window-search.py's original version).
     resize_on_result = (
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
-        'max_list=$((FZF_LINES - 4)); '
-        '[ "$list_rows" -gt "$max_list" ] && list_rows=$max_list; '
+        'half=$((FZF_LINES / 2)); '
+        '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
     result = subprocess.run(
@@ -238,15 +238,12 @@ def drive(client=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--client", metavar="TTY",
-                        help="tty of the client that opened the popup; the "
-                             "bind-key interpolates #{client_tty} here")
     parser.add_argument("--preview", metavar="PANE_ID")
     args = parser.parse_args()
     if args.preview:
         preview(args.preview)
     else:
-        drive(args.client)
+        drive()
 
 
 if __name__ == "__main__":
