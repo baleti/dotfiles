@@ -588,26 +588,19 @@ def exec_resume(session_id, cwd):
                          "--dangerously-skip-permissions"])
 
 
-def window_id_of(target):
-    r = subprocess.run(["tmux", "display-message", "-p", "-t", target, "#{window_id}"],
-                       capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else None
-
-
-def close_origin_window(target_pane_id):
-    """Close the window claude-history was invoked from, now that the
-    client has been switched away from it - only called right after a
-    successful jump_to_pane. Skipped when the target pane turns out to
-    share a window with the origin pane (a split): kill-window would then
-    also take out the very pane the client was just switched to, which is
-    the opposite of what "close the window this was invoked from" means."""
+def close_origin_pane(target_pane_id):
+    """Close the PANE claude-history was invoked from (not its window - a
+    prior version killed the whole window here, which took out whatever
+    else was split into it too), now that the client has been switched
+    away from it. Only called right after a successful jump_to_pane.
+    Skipped if the target somehow turns out to be this same pane (should
+    be impossible - the live session detected is always a different
+    process - but kill-pane on the pane you were just switched to would be
+    exactly backwards, so this stays defensive rather than assumed)."""
     origin_pane = os.environ.get("TMUX_PANE")
-    origin_window = origin_pane and window_id_of(origin_pane)
-    if not origin_window:
+    if not origin_pane or origin_pane == target_pane_id:
         return
-    if window_id_of(target_pane_id) == origin_window:
-        return
-    subprocess.run(["tmux", "kill-window", "-t", origin_window])
+    subprocess.run(["tmux", "kill-pane", "-t", origin_pane])
 
 
 def resolve(session_id, cwd):
@@ -629,7 +622,7 @@ def resolve(session_id, cwd):
               f"(pid {live['pid']}, {live['status']})", file=sys.stderr)
         # only on the switch path - never when falling back to exec_resume,
         # per the tool's own rule (see module docstring)
-        close_origin_window(live["pane_id"])
+        close_origin_pane(live["pane_id"])
         return
     if live:
         where = (f"pane {live['pane_id']} (a different tmux server)"
