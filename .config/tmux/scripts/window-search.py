@@ -29,8 +29,14 @@ here - see parse_query/phrase_re). Two orthogonal rules: quotes mean exact,
   foo bar        bare words: prefix-expanded ("ric" finds "ricing"). All of
                  them must be present (recoll's implicit AND) - see
                  MATCH_MODE to get the older any-word-ranks behaviour back
-  "foo bar"      phrase: those words adjacent and in that order, never
-                 prefix-expanded
+  ctrl+.         bare word carrying punctuation: still searches the word
+                 ("ctrl"), but windows containing the literal "ctrl+." are
+                 ranked above those that merely have "ctrl". Nothing is
+                 excluded, so it stays useful while half-typed
+  "foo bar"      phrase: that text literally, whitespace runs excepted.
+                 Never prefix-expanded, and required
+  "ctrl+."       punctuation included - the only way to demand an exact
+                 keybinding, flag or path rather than just its words
   "foo"          one-word phrase: the exact whole word, i.e. the way to say
                  "we" and not also match "web"/"weight"
   !foo           drop windows containing foo (prefix-expanded, so !log also
@@ -116,7 +122,7 @@ QUERY_ELEM_RE = re.compile(r'(!?)(?:"([^"]*)"|(\S+))')
 # type, and swapping back is a one-word change rather than a revert.
 MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases")
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft")
 
 
 def parse_query(query):
@@ -146,7 +152,7 @@ def parse_query(query):
     An unterminated quote (every phrase mid-typing, e.g. `"we ne`) falls back
     to bare words, so live-as-you-type keeps narrowing instead of blanking
     the list while the phrase is half-entered."""
-    terms, phrases, neg_terms, neg_phrases = [], [], [], []
+    terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     for neg, quoted, bare in QUERY_ELEM_RE.findall(query):
         # exactly one alternative participates; `bare` is non-empty whenever
         # it is the one that matched, so it doubles as the discriminator.
@@ -154,31 +160,60 @@ def parse_query(query):
         # branch to match), and tokenize drops the stray " - which is what
         # degrades a half-typed phrase to bare words rather than to nothing.
         if bare:
-            for tok in tokenize(bare):
+            toks = tokenize(bare)
+            for tok in toks:
                 (neg_terms if neg else terms).append(tok)
-        else:
-            toks = tokenize(quoted)
-            if toks:
-                (neg_phrases if neg else phrases).append(toks)
-    return Query(terms, phrases, neg_terms, neg_phrases)
+            # A bare word carrying punctuation - ctrl+., --stat, ~/.config -
+            # loses that punctuation to TOKEN_RE, so `ctrl+.` searches for
+            # nothing more than `ctrl`. Rather than make bare words literal
+            # (which would break prefix expansion, and with it typing), the
+            # raw text is kept as a *soft* literal: it adds score where it
+            # actually occurs but filters nothing, so the window holding the
+            # real "ctrl+." rises to the top while every "ctrl" window still
+            # shows up. prefix=True keeps the bonus live mid-word.
+            if not neg and toks and any(not c.isalnum() for c in bare):
+                soft.append(bare.lower())
+        elif quoted.strip():
+            # kept as the raw string, not tokens - see phrase_re. A phrase of
+            # pure punctuation ("+.") is legal and searchable for that reason.
+            (neg_phrases if neg else phrases).append(quoted.strip().lower())
+    return Query(terms, phrases, neg_terms, neg_phrases, soft)
 
 
-def phrase_re(tokens):
-    """Regex matching these tokens adjacent, in order, in lowercased text.
+def phrase_re(raw, prefix=False):
+    """Regex matching the quoted text literally in lowercased text, with
+    runs of whitespace allowed to differ in length.
 
-    Adjacency is defined on the token stream, not on raw characters: the
-    separator is one-or-more non-token characters, so `"we need"` matches
-    "we need", "we  need" (column-aligned output) and "we-need", but not
-    "we really need" (a token in between) nor "weneed" (no separation at
-    all). That is Xapian phrase semantics with the default slack of 0, and
-    it is what keeps whitespace meaningful without making the match hostage
-    to exactly how many spaces a program happened to emit.
+    With prefix=True the closing word boundary is dropped, so the pattern
+    still matches while the user is only part-way through typing it. That is
+    what the soft literal bonus on bare words needs (see parse_query).
 
-    The lookarounds rather than \\b so a single-token phrase is a true
-    whole-word match: `"we"` must not fire inside "web"."""
-    return re.compile(r"(?<![a-z0-9])"
-                      + r"[^a-z0-9]+".join(re.escape(t) for t in tokens)
-                      + r"(?![a-z0-9])")
+    Built from the raw quoted string rather than from its tokens, because
+    tokens cannot represent punctuation at all: TOKEN_RE is [a-z0-9]+, so
+    tokenizing "ctrl+." yields just ["ctrl"] and every trace of the "+."
+    is gone before the query is even assembled. Matching on tokens therefore
+    made `"ctrl+."`, `"ctrl"` and a bare `ctrl` the same query, and made
+    punctuation-bearing strings - which in a terminal-history index is most
+    of the interesting ones: keybindings, flags, paths, operators -
+    impossible to search for exactly.
+
+    Whitespace stays flexible (\\s+) so a phrase still matches across the
+    column-aligned or re-wrapped spacing programs emit, but every other
+    character is literal: `"we-need"` now requires the hyphen, where the
+    older token-adjacency version would also have accepted "we need".
+    That is the tighter and more predictable reading of "exact", and it is
+    what makes quoting able to express something bare words cannot.
+
+    The lookarounds are applied only at ends that are alphanumeric, so
+    `"we"` is a whole word and does not fire inside "web", while a phrase
+    ending in punctuation like `"ctrl+."` is not asked to justify a word
+    boundary it does not have."""
+    raw = raw.strip().lower()
+    parts = [p for p in re.split(r"(\s+)", raw) if p]
+    pattern = "".join(r"\s+" if p.isspace() else re.escape(p) for p in parts)
+    pre = r"(?<![a-z0-9])" if raw[:1].isalnum() else ""
+    post = "" if prefix else (r"(?![a-z0-9])" if raw[-1:].isalnum() else "")
+    return re.compile(pre + pattern + post)
 
 
 SNAP_PREFIX = "tmux-window-search-"
@@ -517,8 +552,10 @@ def phrase_counts(window, rxs, phrase_toks):
             # every word of the phrase must at least appear somewhere in the
             # line before the regex is worth running - plain `in` is a C-level
             # scan and rejects the overwhelming majority of lines, the same
-            # trick that took best_pane from 130ms to 35ms
-            if not all(t in low for t in toks):
+            # trick that took best_pane from 130ms to 35ms. A phrase with no
+            # word characters at all ("+.") has nothing to pre-check, so it
+            # falls through to the regex, which is correct if slower.
+            if toks and not all(t in low for t in toks):
                 continue
             hits = len(rx.findall(low))
             if hits:
@@ -567,7 +604,10 @@ def search(snapshot_path, query):
     neg_rxs = [phrase_re(p) for p in q.neg_phrases]
     # one scan covers positive and negative phrases; splitting them into two
     # passes would double the per-keystroke line walk for no benefit
-    all_rxs, all_toks = rxs + neg_rxs, q.phrases + q.neg_phrases
+    soft_rxs = [phrase_re(s, prefix=True) for s in q.soft]
+    all_rxs = rxs + neg_rxs + soft_rxs
+    all_toks = [tokenize(p) for p in q.phrases + q.neg_phrases + q.soft]
+    n_pos, n_neg = len(rxs), len(neg_rxs)
     # A quoted phrase is a *constraint*, not just extra evidence: asking for
     # "we need" means the windows without that exact run are wrong answers,
     # not merely lower-ranked ones. Same for the bare words under MATCH_MODE
@@ -577,18 +617,21 @@ def search(snapshot_path, query):
         if neg_terms and not neg_terms.isdisjoint(w["tf"]):
             continue
         counts, panes = phrase_counts(w, all_rxs, all_toks) if all_rxs else ([], [])
-        if any(counts[len(rxs):]):          # a negated phrase is present
+        if any(counts[n_pos:n_pos + n_neg]):   # a negated phrase is present
             continue
-        counts, panes = counts[:len(rxs)], panes[:len(rxs)]
+        # soft counts ride along in the same scan but never filter
+        soft_counts = counts[n_pos + n_neg:]
+        counts, panes = counts[:n_pos], panes[:n_pos]
         if rxs and not all(counts):
             continue
         if MATCH_MODE == "all" and not all(
                 any(w["tf"].get(t) for t in g) for g in groups):
             continue
-        hits[wid] = (counts, panes)
+        hits[wid] = (counts, panes, soft_counts)
     # phrase df is over the windows that survived, computed here because a
     # phrase is not in the indexed vocabulary and so has no precomputed df
-    phrase_df = [sum(1 for c, _ in hits.values() if c[i]) for i in range(len(rxs))]
+    phrase_df = [sum(1 for c, _, _ in hits.values() if c[i]) for i in range(n_pos)]
+    soft_df = [sum(1 for _, _, s in hits.values() if s[i]) for i in range(len(soft_rxs))]
 
     scored = []
     if not terms and not rxs:
@@ -601,19 +644,27 @@ def search(snapshot_path, query):
         for wid in hits:
             scored.append((windows[wid]["activity"], wid, windows[wid]))
     else:
-        for wid, (counts, _) in hits.items():
+        for wid, (counts, _, soft_counts) in hits.items():
             w = windows[wid]
             s = bm25_score(w, terms, df, n, avgdl)
             for i, c in enumerate(counts):
                 s += bm25_term_score(c, phrase_df[i], w["doclen"], n, avgdl)
+            # the soft literal is scored on the same scale as everything else,
+            # so a window that really contains "ctrl+." outranks one that only
+            # has the word "ctrl" - without excluding the latter
+            for i, c in enumerate(soft_counts):
+                s += bm25_term_score(c, soft_df[i], w["doclen"], n, avgdl)
             if s > 0:
                 scored.append((s, wid, w))
     scored.sort(key=lambda t: -t[0])
 
+    # the soft literals highlight and steer the jump too, since they are what
+    # the user typed even though they did not filter
+    show_rxs = rxs + soft_rxs
     qset = set(q.terms)
     for _, wid, w in scored:
-        pane_id = best_pane(w, qset, rxs, hits[wid][1])
-        print(row(pane_id, w, qset, rxs))
+        pane_id = best_pane(w, qset, show_rxs, hits[wid][1])
+        print(row(pane_id, w, qset, show_rxs))
     _dbg(f"printed ({len(scored)} results, mode={MATCH_MODE}, "
          f"{len(rxs)} phrase constraint(s), {len(neg_rxs)} negated phrase(s))")
 
@@ -670,7 +721,8 @@ def preview(pane_id, query):
     # to what was asked for, and a negated term is by definition absent
     q = parse_query(query)
     qset = set(q.terms)
-    rxs = [phrase_re(p) for p in q.phrases]
+    rxs = ([phrase_re(p) for p in q.phrases]
+           + [phrase_re(s, prefix=True) for s in q.soft])
     if not qset and not rxs:
         sys.stdout.write(out)
         return
