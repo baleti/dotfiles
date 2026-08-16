@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""MRU pane switcher for tmux (prefix+W), distinct from both prefix+w
+(tmux's own choose-tree) and prefix+C-w (window-search.py's full-text
+search): this one lists windows/panes in the order the user last actually
+*visited* them, most-recent first - no scoring, no scrollback content
+involved.
+
+"Visited" means a tmux hook fired for an explicit navigation command
+(after-select-pane, after-select-window, after-last-window,
+client-session-changed - registered in .tmux.conf, logged by
+focus-track.sh into ~/.cache/tmux-focus-order.log). Those hooks only fire
+when a bound key or mouse action on an attached client changes the active
+pane - never when an unfocused pane merely produces output. That's what
+keeps a Claude Code session churning away in a background window from
+polluting the order: it never calls select-pane, so it never appends to the
+log, no matter how much it prints.
+
+Deps: tmux, fzf, python3.
+"""
+import argparse
+import os
+import subprocess
+import sys
+
+LOG_PATH = os.path.expanduser("~/.cache/tmux-focus-order.log")
+
+
+def die(msg):
+    print(f"focus-picker: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_focus_order():
+    """pane_id -> most recent visit timestamp (int), in file order (which is
+    already newest-first, see focus-track.sh) - order is what matters here,
+    the timestamp is only used for the display label."""
+    order = []
+    seen = set()
+    try:
+        with open(LOG_PATH) as f:
+            for line in f:
+                ts, _, pane_id = line.rstrip("\n").partition("\t")
+                if not pane_id or pane_id in seen:
+                    continue
+                seen.add(pane_id)
+                order.append((pane_id, ts))
+    except FileNotFoundError:
+        pass
+    return order
+
+
+def list_live_panes():
+    fields = ["pane_id", "session_name", "window_index", "window_name",
+              "window_flags", "pane_active", "pane_title"]
+    fmt = "\t".join(f"#{{{f}}}" for f in fields)
+    r = subprocess.run(["tmux", "list-panes", "-a", "-F", fmt],
+                        capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"tmux list-panes failed (rc={r.returncode}): {r.stderr.strip()}")
+    panes = {}
+    for line in r.stdout.splitlines():
+        pane_id, session, widx, wname, wflags, active, ptitle = line.split("\t")
+        panes[pane_id] = {
+            "session": session, "window_index": widx, "window_name": wname,
+            "window_flags": wflags, "active": active == "1", "pane_title": ptitle,
+        }
+    return panes
+
+
+def current_pane(client):
+    r = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", client, "#{pane_id}"],
+        capture_output=True, text=True,
+    )
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def row(pane_id, p):
+    label = f'{p["session"]}:{p["window_index"]} {p["window_name"]}{p["window_flags"]}: "{p["pane_title"]}"'
+    return f"{pane_id}\t{label}"
+
+
+def resolve_client():
+    """Fallback bridge for a tmux server still running an old bind-key - see
+    window-search.py's resolve_client(), same reasoning, kept in sync with it
+    rather than shared because it's five lines and not worth a shared module
+    for one script pair."""
+    r = subprocess.run(["tmux", "show-environment", "-g", "TMUX_FOCUS_PICKER_CLIENT"],
+                        capture_output=True, text=True)
+    subprocess.run(["tmux", "set-environment", "-gu", "TMUX_FOCUS_PICKER_CLIENT"],
+                    capture_output=True, text=True)
+    if r.returncode != 0 or "=" not in r.stdout:
+        return None
+    return r.stdout.strip().split("=", 1)[1]
+
+
+def jump(client, pane_id):
+    """Land the client that opened the popup on the chosen pane. Mirrors
+    window-search.py's jump() exactly (see its comments for why each step is
+    there - the #{client_tty} bridging, the three-command fallback chain,
+    and verifying against list-clients rather than display-message -c) -
+    that function was hard-won against a real switch-client bug, so this
+    reuses the same verified sequence rather than a fresh guess."""
+    if not client:
+        die("TMUX_FOCUS_PICKER_CLIENT was empty or unset - the bind-key's "
+            "`run-shell \"tmux set-environment -g ...\"` step did not run, or "
+            "another invocation consumed it first (see .tmux.conf, prefix+W)")
+
+    cr = subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
+                        capture_output=True, text=True)
+    if cr.returncode != 0:
+        die(f"tmux list-clients failed (rc={cr.returncode}): {cr.stderr.strip()}")
+    clients = {c: s for c, s in (line.split("\t") for line in cr.stdout.splitlines())}
+    if client not in clients:
+        die(f"client {client!r} isn't in the current attached-client list "
+            f"{sorted(clients)!r} - can't target a switch-client to it")
+
+    for cmd in (["switch-client", "-c", client, "-t", pane_id],
+                ["select-window", "-t", pane_id],
+                ["select-pane", "-t", pane_id]):
+        r = subprocess.run(["tmux", *cmd], capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"tmux {' '.join(cmd)} failed: {r.stderr.strip()}")
+
+    after = {c: p for c, p in (
+        line.split("\t") for line in
+        subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{pane_id}"],
+                        capture_output=True, text=True).stdout.splitlines()
+    )}
+    actual = after.get(client)
+    if actual != pane_id:
+        die(f"selected {pane_id} but client {client} ended up on {actual!r} instead - "
+            f"switch-client silently landed on the wrong pane")
+
+
+def drive(client=None):
+    client = client or resolve_client()
+    live = list_live_panes()
+    if not live:
+        die("tmux list-panes returned no panes - nothing to switch to")
+
+    me = current_pane(client) if client else None
+
+    ordered_ids = [pid for pid, _ in read_focus_order() if pid in live and pid != me]
+    # panes that exist but were never logged (created since the last focus
+    # switch, or from before focus-track.sh existed) still have to be
+    # reachable - tacked on at the end, in list-panes' own order, rather than
+    # silently hidden from the picker
+    for pid in live:
+        if pid != me and pid not in ordered_ids:
+            ordered_ids.append(pid)
+
+    if not ordered_ids:
+        die("no other panes to switch to")
+
+    rows = "\n".join(row(pid, live[pid]) for pid in ordered_ids)
+
+    result = subprocess.run(
+        [
+            "fzf", "--ansi", "--layout=reverse",
+            "--delimiter", "\t", "--with-nth", "2..",
+            "--prompt", "focus history> ",
+        ],
+        input=rows, capture_output=True, text=True,
+    )
+    selected = result.stdout.strip()
+    if not selected:
+        return
+    pane_id = selected.split("\t", 1)[0]
+    jump(client, pane_id)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--client", metavar="TTY",
+                        help="tty of the client that opened the popup; the "
+                             "bind-key interpolates #{client_tty} here")
+    args = parser.parse_args()
+    drive(args.client)
+
+
+if __name__ == "__main__":
+    main()
