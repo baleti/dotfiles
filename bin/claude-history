@@ -680,10 +680,16 @@ def drive():
     self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
     preview_cmd = f"{py} --preview {{1}} --query={{q}} --snapshot={shlex.quote(snap_path)}"
     resize_on_result = (
+        # list gets just enough rows for its matches (+3: prompt line, the
+        # match-count info line, one extra - see the +2-measured-one-short
+        # note this was ported from), preview gets the rest - EXCEPT the
+        # list is also capped at half of FZF_LINES, so the preview never
+        # drops below half regardless of match count, and grows past half
+        # on its own the fewer results there are to list
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
-        'max_list=$((FZF_LINES - 4)); '
-        '[ "$list_rows" -gt "$max_list" ] && list_rows=$max_list; '
+        'half=$((FZF_LINES / 2)); '
+        '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
     try:
