@@ -154,7 +154,8 @@ def tokenize(text):
 #   window   just the window index piece
 #   pane     just the pane index piece
 #   title    the AI-generated title
-#   time     when the session was active (searches the raw ISO timestamps)
+#   time     the displayed relative age ("14d ago", "45m ago") - what's
+#            actually shown in the TIME column, not a raw timestamp
 #   body     the actual message content (title excluded - that's `title`)
 #
 # path/tmux/session/window/pane/time are short structured strings, not
@@ -341,12 +342,16 @@ PARSE_CACHE_PATH = os.path.expanduser("~/.cache/claude-history-parse-cache.json"
 # (MAX_MSG_CHARS, USER_BOOST/TITLE_BOOST, extract_text's block filtering,
 # etc.) so old entries can't silently outlive the code that produced them;
 # a mismatch just means "start over", not corruption.
-CACHE_VERSION = 3  # 2: tf_title/tf_body/time_text added (the $field: DSL).
+CACHE_VERSION = 4  # 2: tf_title/tf_body/time_text added (the $field: DSL).
 # 3: the body field was originally named "text" during development, then
 # renamed - the cached dict's own keys changed shape (tf_text ->
 # tf_body etc.) under what was still version 2, which is exactly the class
 # of bug CACHE_VERSION exists to prevent; caught by a KeyError against a
 # cache written moments earlier by the pre-rename code, not shipped.
+# 4: time_text (the raw ISO timestamp) dropped from what's cached -
+# $time: turned out to need the *displayed* relative age ("14d ago"), not
+# the raw timestamp, and that has to be computed fresh at query time (it's
+# relative to now) rather than ever cached at all - see session_filter_text.
 
 
 def index_session(s):
@@ -385,15 +390,9 @@ def index_session(s):
         tf[tok] = tf.get(tok, 0) + c * TITLE_BOOST
     doclen = doclen_body + doclen_title * TITLE_BOOST
 
-    # raw ISO timestamps, not a reformatted/relative string - "$time:2026-08"
-    # or "$time:14:" (an hour) work directly against what Claude Code itself
-    # already wrote, no extra parsing needed either here or at query time
-    time_text = f"{s.get('first_ts') or ''} {s.get('last_ts') or ''}".lower()
-
     return {**s, "tf": tf, "doclen": doclen,
             "tf_title": tf_title, "doclen_title": doclen_title,
-            "tf_body": tf_body, "doclen_body": doclen_body,
-            "time_text": time_text}
+            "tf_body": tf_body, "doclen_body": doclen_body}
 
 
 def load_parse_cache():
@@ -652,14 +651,22 @@ def session_filter_text(sid, s, live_map, targets):
     """FILTER_FIELDS text (lowercased) for one session, computed once per
     session per search() call rather than per field-term - $session:/
     $window:/$pane: are the individual pieces $tmux: is built from (see
-    pane_targets()), not re-split out of the combined string."""
+    pane_targets()), not re-split out of the combined string.
+
+    "time" is relative_age(s["mtime"]) - the exact string the TIME column
+    displays ("14d ago", "45m ago") - not the raw timestamp: a first
+    version searched the raw ISO string instead, which technically worked
+    but not for what anyone actually typing $time:14 while looking at a
+    "14d ago" row expects it to mean. Computed fresh here rather than
+    cached in the snapshot, same reason row() computes it fresh too - it's
+    relative to *now*, not a fixed fact about the session."""
     live = live_map.get(sid)
     entry = None
     if live and live.get("pane_id"):
         entry = targets.get(live["pane_id"])
     return {
         "path": (s["cwd"] or "").lower(),
-        "time": s["time_text"],
+        "time": relative_age(s["mtime"]).lower(),
         "tmux": entry["loc"].lower() if entry else "",
         "session": entry["session"].lower() if entry else "",
         "window": entry["window"].lower() if entry else "",
@@ -1071,13 +1078,18 @@ def drive():
     self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
     preview_cmd = f"{py} --preview {{1}} --query={{q}} --snapshot={shlex.quote(snap_path)}"
     resize_on_result = (
-        # list gets just enough rows for its matches (+3: prompt line, the
-        # match-count info line, one extra - see the +2-measured-one-short
-        # note this was ported from), preview gets the rest - EXCEPT the
-        # list is also capped at half of FZF_LINES, so the preview never
-        # drops below half regardless of match count, and grows past half
-        # on its own the fewer results there are to list
-        'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
+        # list gets just enough rows for its matches (+4: the header row,
+        # the prompt line, the match-count info line, one extra - $FZF_LINES
+        # doesn't shrink to account for --header, confirmed directly: it
+        # reported the exact same value with and without one, so the header
+        # has to be budgeted for here or it silently steals a row from the
+        # list, clipping the last result - this was +3 before the header
+        # existed, and +2 before THAT was found one row short the same way),
+        # preview gets the rest - EXCEPT the list is also capped at half of
+        # FZF_LINES, so the preview never drops below half regardless of
+        # match count, and grows past half on its own the fewer results
+        # there are to list
+        'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
         'half=$((FZF_LINES / 2)); '
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
