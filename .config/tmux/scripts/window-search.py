@@ -857,12 +857,15 @@ def drive(client=None):
                 "--bind", f"start:reload:{self_cmd}",
                 "--bind", f"change:reload:{self_cmd}",
                 "--bind", f"result:transform:{resize_on_result}",
-                # move-by-word, matching alt-left/right (fzf's own default
-                # binding for backward-word/forward-word) rather than
-                # deleting - fzf has no configurable WORDCHARS like zsh's,
-                # so word boundaries are fzf's own fixed logic either way
-                "--bind", "ctrl-left:backward-word",
-                "--bind", "ctrl-right:forward-word",
+                # move-by-word is already fzf's own default binding for
+                # alt-left/alt-right (backward-word/forward-word); this used
+                # to also bind ctrl-left/ctrl-right as an extra alias, but
+                # that key name isn't recognized by every fzf build (some
+                # reject it outright with "unsupported key: ctrl-left",
+                # rc=2 - fzf exits immediately, and since that's a clean
+                # exit the wrapping -EE popup closes right along with it,
+                # looking like the popup flashed and died). alt-left/right
+                # alone covers the functionality portably.
             ],
             capture_output=True, text=True,
         )
