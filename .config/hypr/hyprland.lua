@@ -51,7 +51,13 @@ hl.on("window.open", function(win)
 end)
 
 hl.on("hyprland.start", function()
-    hl.exec_cmd("wl-paste --watch cliphist store")
+    -- wl-paste tags copies flagged x-kde-passwordManagerHint=secret (app
+    -- passwords, generated passwords, TOTP codes, etc.) with
+    -- CLIPBOARD_STATE=sensitive, and cliphist silently skips storing those.
+    -- We deliberately override that here so everything lands in history --
+    -- retention is bounded instead by ~/.config/hypr/scripts/cliphist-expire.sh
+    -- (see cliphist-expire.timer).
+    hl.exec_cmd([[wl-paste --watch sh -c 'unset CLIPBOARD_STATE; exec cliphist store']])
     -- Replaces dunst (~/.claude2/plans/silly-percolating-rose.md): dunst
     -- invalidates a notification's actions the instant it closes, even on
     -- timeout, so mod+n/ctrl+mod+n could never invoke one after it left
