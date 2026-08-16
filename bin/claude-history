@@ -127,22 +127,73 @@ def tokenize(text):
     return TOKEN_RE.findall(text.lower())
 
 
-# --- query language: identical to window-search.py's (see there for the
-# full reasoning) - bare words are prefix-expanded and ANDed, "phrases" are
-# exact and required, !negated drops, and a bare word carrying punctuation
-# ("--stat", "ctrl+.") gets a soft literal bonus without filtering anything.
-# Duplicated rather than imported: these two tools evolve independently and
-# the query engine is the only thing they share (same reasoning
-# focus-picker.py gives for not sharing jump() as a module).
-QUERY_ELEM_RE = re.compile(r'(!?)(?:"([^"]*)"|(\S+))')
+# --- query language: identical to window-search.py's base language (see
+# there for the full reasoning) - bare words are prefix-expanded and ANDed,
+# "phrases" are exact and required, !negated drops, and a bare word
+# carrying punctuation ("--stat", "ctrl+.") gets a soft literal bonus
+# without filtering anything. Duplicated rather than imported: these two
+# tools evolve independently and the query engine is the only thing they
+# share (same reasoning focus-picker.py gives for not sharing jump() as a
+# module).
+#
+# On top of that base language, this tool adds a field-scoped DSL:
+# $field:word restricts word to one field instead of the whole document.
+# field is itself fuzzy - any FIELD_NAMES entry whose name *contains*
+# field as a substring (not just a prefix: $x: has to reach "tmux" by its
+# last letter, not its first) is searched, unioned. So $tit:foo searches
+# only title (nothing else contains "tit"), $ti:foo searches both time and
+# title (both contain "ti"), and $x:foo searches only tmux. An unresolvable
+# field name ($qqq:foo, or still being typed) degrades to a plain bare-word
+# search over the literal text instead of erroring or matching nothing, the
+# same "still usable half-typed" principle the rest of this query language
+# already follows.
+#
+#   path     session's working directory
+#   tmux     session:window.pane, if currently live and reachable here
+#   session  just the session name piece of that
+#   window   just the window index piece
+#   pane     just the pane index piece
+#   title    the AI-generated title
+#   time     when the session was active (searches the raw ISO timestamps)
+#   body     the actual message content (title excluded - that's `title`)
+#
+# path/tmux/session/window/pane/time are short structured strings, not
+# prose - $path:conf is a plain case-insensitive substring test against the
+# whole field, not tokenized/ranked. title/body are real BM25-scored
+# fields, same prefix-expansion-against-vocabulary treatment as an unscoped
+# bare word gets, just scoped to that field's own vocabulary instead of the
+# combined one.
+FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "body"]
+BM25_FIELDS = {"title", "body"}
+FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
+
+QUERY_ELEM_RE = re.compile(r'(!?)(?:\$([a-zA-Z]+):(\S+)|"([^"]*)"|(\S+))')
 MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft")
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms")
+
+
+def resolve_fields(prefix):
+    """Every FIELD_NAMES entry containing prefix as a substring, in
+    FIELD_NAMES' own order (so highlight/display order stays predictable
+    rather than depending on match position)."""
+    prefix = prefix.lower()
+    return [f for f in FIELD_NAMES if prefix in f]
 
 
 def parse_query(query):
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
-    for neg, quoted, bare in QUERY_ELEM_RE.findall(query):
+    field_terms, neg_field_terms = [], []
+    for neg, fprefix, fterm, quoted, bare in QUERY_ELEM_RE.findall(query):
+        if fprefix:
+            fields = resolve_fields(fprefix)
+            if fields:
+                (neg_field_terms if neg else field_terms).append((fields, fterm.lower()))
+                continue
+            # unresolvable field name - fall through to plain bare-word
+            # handling on the whole "$prefix:term" text rather than
+            # dropping it, same reasoning as an unterminated quote
+            bare = f"{fprefix}:{fterm}"
         if bare:
             toks = tokenize(bare)
             for tok in toks:
@@ -151,7 +202,7 @@ def parse_query(query):
                 soft.append(bare.lower())
         elif quoted.strip():
             (neg_phrases if neg else phrases).append(quoted.strip().lower())
-    return Query(terms, phrases, neg_terms, neg_phrases, soft)
+    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms)
 
 
 def phrase_re(raw, prefix=False):
@@ -290,7 +341,12 @@ PARSE_CACHE_PATH = os.path.expanduser("~/.cache/claude-history-parse-cache.json"
 # (MAX_MSG_CHARS, USER_BOOST/TITLE_BOOST, extract_text's block filtering,
 # etc.) so old entries can't silently outlive the code that produced them;
 # a mismatch just means "start over", not corruption.
-CACHE_VERSION = 1
+CACHE_VERSION = 3  # 2: tf_title/tf_body/time_text added (the $field: DSL).
+# 3: the body field was originally named "text" during development, then
+# renamed - the cached dict's own keys changed shape (tf_text ->
+# tf_body etc.) under what was still version 2, which is exactly the class
+# of bug CACHE_VERSION exists to prevent; caught by a KeyError against a
+# cache written moments earlier by the pre-rename code, not shipped.
 
 
 def index_session(s):
@@ -298,22 +354,46 @@ def index_session(s):
     build_snapshot() call, for every file, whether or not that file had
     changed since the last run - pulled out so it can be cached alongside
     parse_session()'s own output (see build_snapshot), not just skip the
-    file read/JSON-decode and still re-pay the tokenizing cost."""
-    tf, doclen = {}, 0
+    file read/JSON-decode and still re-pay the tokenizing cost.
+
+    tf_title/tf_body are tracked separately (not just the combined tf) so
+    $title:/$body: can search one without the other - see the field-DSL
+    docs above parse_query(). The combined tf/doclen (the plain unscoped
+    search, unchanged from before the DSL existed) is then built BY SUMMING
+    these two rather than recomputed independently, so the combined search
+    and the two scoped ones can never quietly disagree about what a
+    document contains."""
+    tf_body, doclen_body = {}, 0
     for role, text in s["turns"]:
         counts = {}
         for tok in TOKEN_RE.findall(text.lower()):
             counts[tok] = counts.get(tok, 0) + 1
         boost = USER_BOOST if role == "user" else 1
         for tok, c in counts.items():
-            tf[tok] = tf.get(tok, 0.0) + c * boost
-        doclen += sum(counts.values()) * boost
+            tf_body[tok] = tf_body.get(tok, 0.0) + c * boost
+        doclen_body += sum(counts.values()) * boost
+
+    tf_title, doclen_title = {}, 0
     if s["ai_title"]:
         title_tokens = tokenize(s["ai_title"])
-        for tok in title_tokens * TITLE_BOOST:
-            tf[tok] = tf.get(tok, 0) + 1.0
-        doclen += TITLE_BOOST * len(title_tokens)
-    return {**s, "tf": tf, "doclen": doclen}
+        for tok in title_tokens:
+            tf_title[tok] = tf_title.get(tok, 0) + 1.0
+        doclen_title = len(title_tokens)
+
+    tf = dict(tf_body)
+    for tok, c in tf_title.items():
+        tf[tok] = tf.get(tok, 0) + c * TITLE_BOOST
+    doclen = doclen_body + doclen_title * TITLE_BOOST
+
+    # raw ISO timestamps, not a reformatted/relative string - "$time:2026-08"
+    # or "$time:14:" (an hour) work directly against what Claude Code itself
+    # already wrote, no extra parsing needed either here or at query time
+    time_text = f"{s.get('first_ts') or ''} {s.get('last_ts') or ''}".lower()
+
+    return {**s, "tf": tf, "doclen": doclen,
+            "tf_title": tf_title, "doclen_title": doclen_title,
+            "tf_body": tf_body, "doclen_body": doclen_body,
+            "time_text": time_text}
 
 
 def load_parse_cache():
@@ -413,15 +493,27 @@ def build_snapshot():
             sessions[indexed["session_id"]] = indexed
     save_parse_cache(new_cache)
 
-    df = {}
+    # df/avgdl/vocab per BM25 field - "df"/"avgdl"/"vocab" (no suffix) stay
+    # the combined ones the plain unscoped search has always used; _title/
+    # _body are the same aggregation over each field's own tf, for $title:/
+    # $body: to score and prefix-expand against
+    df, df_title, df_body = {}, {}, {}
     for s in sessions.values():
         for tok in s["tf"]:
             df[tok] = df.get(tok, 0) + 1
+        for tok in s["tf_title"]:
+            df_title[tok] = df_title.get(tok, 0) + 1
+        for tok in s["tf_body"]:
+            df_body[tok] = df_body.get(tok, 0) + 1
 
-    avgdl = sum(s["doclen"] for s in sessions.values()) / max(1, len(sessions))
-    vocab = sorted(df.keys())
-    return {"sessions": sessions, "df": df, "n": len(sessions), "avgdl": avgdl,
-            "vocab": vocab}
+    n = max(1, len(sessions))
+    avgdl = sum(s["doclen"] for s in sessions.values()) / n
+    avgdl_title = sum(s["doclen_title"] for s in sessions.values()) / n
+    avgdl_body = sum(s["doclen_body"] for s in sessions.values()) / n
+    return {"sessions": sessions, "n": len(sessions),
+            "df": df, "avgdl": avgdl, "vocab": sorted(df.keys()),
+            "df_title": df_title, "avgdl_title": avgdl_title, "vocab_title": sorted(df_title.keys()),
+            "df_body": df_body, "avgdl_body": avgdl_body, "vocab_body": sorted(df_body.keys())}
 
 
 # --- live-session detection -------------------------------------------------
@@ -518,7 +610,8 @@ def location_field(live, targets):
     pieces the caller needs to do that itself."""
     loc = ""
     if live and live.get("pane_id"):
-        loc = targets.get(live["pane_id"], "")
+        entry = targets.get(live["pane_id"])
+        loc = entry["loc"] if entry else ""
     color = STATUS_COLOR.get(live["status"], "\x1b[1;32m") if loc else None
     return loc, color
 
@@ -555,6 +648,59 @@ def row(sid, s, live_map, targets, qset=frozenset(), rxs=()):
 # --- search / preview subcommands (invoked by fzf's reload on every keystroke,
 # same shape as window-search.py's --search/--preview) --------------------
 
+def session_filter_text(sid, s, live_map, targets):
+    """FILTER_FIELDS text (lowercased) for one session, computed once per
+    session per search() call rather than per field-term - $session:/
+    $window:/$pane: are the individual pieces $tmux: is built from (see
+    pane_targets()), not re-split out of the combined string."""
+    live = live_map.get(sid)
+    entry = None
+    if live and live.get("pane_id"):
+        entry = targets.get(live["pane_id"])
+    return {
+        "path": (s["cwd"] or "").lower(),
+        "time": s["time_text"],
+        "tmux": entry["loc"].lower() if entry else "",
+        "session": entry["session"].lower() if entry else "",
+        "window": entry["window"].lower() if entry else "",
+        "pane": entry["pane"].lower() if entry else "",
+    }
+
+
+def field_term_matches(fields, subtoks, s, filter_text, vocabs):
+    """True if EVERY subtoken of a $field:term is found in AT LEAST ONE of
+    its resolved fields - filter-substring for path/tmux/session/window/
+    pane/time, tf-presence-after-prefix-expansion for title/text. Mirrors
+    the top-level query's own "groups" logic (each typed word independent,
+    all required, each one satisfied by any of its own prefix expansions)
+    at the scale of one field-term instead of the whole query."""
+    for subtok in subtoks:
+        found = any(subtok in filter_text[f] for f in fields if f in FILTER_FIELDS)
+        if not found:
+            for f in fields:
+                if f in BM25_FIELDS and any(
+                        s[f"tf_{f}"].get(t) for t in expand_prefix(subtok, vocabs[f])):
+                    found = True
+                    break
+        if not found:
+            return False
+    return True
+
+
+def field_term_score(fields, subtoks, s, vocabs, dfs, avgdls, n):
+    score = 0.0
+    for f in fields:
+        if f not in BM25_FIELDS:
+            continue
+        dl = s[f"doclen_{f}"]
+        for subtok in subtoks:
+            for t in expand_prefix(subtok, vocabs[f]):
+                tf = s[f"tf_{f}"].get(t, 0)
+                if tf:
+                    score += bm25_term_score(tf, dfs[f].get(t, 0), dl, n, avgdls[f])
+    return score
+
+
 def search(snapshot_path, query):
     with open(snapshot_path) as f:
         snap = json.load(f)
@@ -581,6 +727,14 @@ def search(snapshot_path, query):
     neg_rxs = [phrase_re(p) for p in q.neg_phrases]
     soft_rxs = [phrase_re(s, prefix=True) for s in q.soft]
 
+    # subtoks computed once per field-term here, not per session below -
+    # tokenizing/lowering doesn't depend on any one session
+    field_terms = [(fields, tokenize(term)) for fields, term in q.field_terms]
+    neg_field_terms = [(fields, tokenize(term)) for fields, term in q.neg_field_terms]
+    vocabs = {"title": snap["vocab_title"], "body": snap["vocab_body"]}
+    dfs = {"title": snap["df_title"], "body": snap["df_body"]}
+    avgdls = {"title": snap["avgdl_title"], "body": snap["avgdl_body"]}
+
     scored = []
     for sid, s in sessions.items():
         if neg_terms and not neg_terms.isdisjoint(s["tf"]):
@@ -592,6 +746,14 @@ def search(snapshot_path, query):
             continue
         if MATCH_MODE == "all" and not all(
                 any(s["tf"].get(t) for t in g) for g in groups):
+            continue
+
+        filter_text = session_filter_text(sid, s, live_map, targets)
+        if any(field_term_matches(fields, subtoks, s, filter_text, vocabs)
+               for fields, subtoks in neg_field_terms):
+            continue
+        if not all(field_term_matches(fields, subtoks, s, filter_text, vocabs)
+                   for fields, subtoks in field_terms):
             continue
 
         score = 0.0
@@ -610,11 +772,24 @@ def search(snapshot_path, query):
             hits = len(rx.findall(text))
             if hits:
                 score += bm25_term_score(hits, 1, dl, n, avgdl)
-        if score > 0 or (not terms and not rxs):
-            scored.append((score if (terms or rxs) else s["mtime"], sid, s))
+        for fields, subtoks in field_terms:
+            score += field_term_score(fields, subtoks, s, vocabs, dfs, avgdls, n)
+
+        # every session reaching this point has already passed every
+        # required filter above (neg_terms/neg_rxs/rxs/groups/field_terms/
+        # neg_field_terms) - score only decides ranking ORDER among
+        # survivors from here, not whether one survives. A pure
+        # score>0 gate used to double as that inclusion check too, which
+        # broke the moment a field-term could legitimately match without
+        # ever contributing score: path/tmux/session/window/pane/time are
+        # filter-only fields (see field_term_score, which only scores
+        # BM25_FIELDS) - a real "$path:home" match was silently vanishing
+        # here even though it had already survived field_term_matches above.
+        has_positive = bool(terms or rxs or field_terms)
+        scored.append((score, sid, s) if has_positive else (s["mtime"], sid, s))
 
     scored.sort(key=lambda t: -t[0])
-    qset = set(q.terms)
+    qset = set(q.terms) | {tok for _, subtoks in field_terms for tok in subtoks}
     show_rxs = rxs + soft_rxs
     for _, sid, s in scored:
         print(row(sid, s, live_map, targets, qset, show_rxs))
@@ -635,7 +810,7 @@ def preview(session_id, query, snap_path):
         return
 
     q = parse_query(query)
-    qset = set(q.terms)
+    qset = set(q.terms) | {tok for _, term in q.field_terms for tok in tokenize(term)}
     rxs = ([phrase_re(p) for p in q.phrases]
            + [phrase_re(soft, prefix=True) for soft in q.soft])
 
@@ -645,7 +820,8 @@ def preview(session_id, query, snap_path):
     if live:
         loc = None
         if live["pane_id"] and in_tmux():
-            loc = pane_targets().get(live["pane_id"])
+            entry = pane_targets().get(live["pane_id"])
+            loc = entry["loc"] if entry else None
         where = loc or (f"pane {live['pane_id']} (different tmux server)"
                         if live["pane_id"] else "not in tmux")
         header += f"\n\x1b[1;32m● running now\x1b[0m (pid {live['pid']}, {live['status']}, {where})"
@@ -705,17 +881,27 @@ def current_client_tty():
 
 
 def pane_targets():
-    """pane_id -> "session_name:window_index.pane_index" (tmux's own
-    status-bar convention) for every pane on the CURRENT tmux server - one
-    list-panes call, reused both for "does this live session's pane exist
-    on this server" (membership test) and for the row() location column, so
-    neither pays for a subprocess per session."""
+    """pane_id -> {"session", "window", "pane", "loc"} for every pane on the
+    CURRENT tmux server - one list-panes call, reused for "does this live
+    session's pane exist on this server" (membership test), the row()
+    location column ("loc", tmux's own session:window.pane convention), and
+    the $session:/$window:/$pane:/$tmux: DSL fields (the individual pieces
+    "loc" is built from - see search()), so nothing pays for a second
+    subprocess call or has to re-split "loc" back apart."""
     r = subprocess.run(["tmux", "list-panes", "-a", "-F",
-                        "#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}"],
+                        "#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_index}"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return {}
-    return dict(line.split("\t", 1) for line in r.stdout.splitlines() if "\t" in line)
+    targets = {}
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        pane_id, session, window, pane = parts
+        targets[pane_id] = {"session": session, "window": window, "pane": pane,
+                            "loc": f"{session}:{window}.{pane}"}
+    return targets
 
 
 def jump_to_pane(client, pane_id):
@@ -875,6 +1061,12 @@ def drive():
     with os.fdopen(fd, "w") as f:
         json.dump(snapshot, f)
 
+    # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH -
+    # only approximate once a row's loc overflows and borrows cwd's slack
+    # (see row()), which is expected: the header marks the normal case,
+    # individual rows are still free to shift when they actually need to
+    header = f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  TITLE'
+
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
     preview_cmd = f"{py} --preview {{1}} --query={{q}} --snapshot={shlex.quote(snap_path)}"
@@ -905,6 +1097,7 @@ def drive():
                 "--border=rounded", "--margin=2,4",
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "claude history> ",
+                "--header", header,
                 "--preview", preview_cmd,
                 "--preview-window", "down,50%,border-top,wrap",
                 "--bind", f"start:reload:{self_cmd}",
