@@ -1,50 +1,65 @@
 #!/usr/bin/env python3
-"""Full-text search over Claude Code conversation history (prefix+C-c).
+"""Standalone full-text search over Claude Code conversation history.
 
-Sibling to window-search.py (prefix+C-w, scrollback) and focus-picker.py
-(prefix+W, MRU panes) - same fzf-popup shape, same BM25-ish ranking idea,
-same #{client_tty}-bridging and verified switch-client sequence. What's
-different is the corpus: not live pane scrollback but every past
-conversation Claude Code has ever saved, in ~/.claude/projects/*/*.jsonl
-(one file per session; nested */subagents/agent-*.jsonl files are forked
-subagent transcripts, not resumable top-level sessions, so the glob below
-deliberately stays at exactly one directory level and never recurses into
-them).
+Same query language and BM25-ish ranking idea as this dotfiles repo's tmux
+window-search.py (prefix+C-w over live scrollback), but this tool is not a
+tmux script: it's a plain CLI, run directly (`claude-history`) in any
+terminal. fzf's own default full-screen mode already takes over the
+terminal via the alternate screen buffer and restores it on exit - the same
+"popup" feel window-search.py got from tmux's display-popup, but for free
+and without a tmux dependency. The corpus is every past conversation Claude
+Code has ever saved, in ~/.claude/projects/*/*.jsonl (one file per session;
+nested */subagents/agent-*.jsonl files are forked subagent transcripts, not
+resumable top-level sessions, so the glob below deliberately stays at
+exactly one directory level and never recurses into them).
 
 Enter on a result does one of two things:
   - if that session has a live, verified-alive Claude Code process attached
-    to a tmux pane right now: switch-client there (same jump() sequence as
-    window-search.py) rather than starting a second instance against the
-    same transcript.
-  - otherwise: send `claude --resume <id> --dangerously-skip-permissions`
-    into the ORIGIN pane (the one that opened the picker), i.e. the current
-    shell picks up the resume - not a new popup, not a new window (unless
-    the origin pane turns out not to be at a shell prompt - see
-    resume_in_pane).
+    to a tmux pane on the CURRENT tmux server right now: switch-client
+    there, rather than starting a second instance against the same
+    transcript.
+  - otherwise: exec `claude --resume <id> --dangerously-skip-permissions`
+    in place of this process - i.e. the current shell picks up the resume,
+    literally (no new pane, no send-keys, just a normal Unix exec since
+    this program IS already running as that shell's foreground job).
 
-"Live right now" is answered by Claude Code's own bookkeeping rather than
-guessed: every running interactive session maintains
-~/.claude*/sessions/<pid>.json (one per CLAUDE_CONFIG_DIR - .claude,
-.claude2, .claude3 here all happen to share the same underlying
-~/.claude/projects via symlink, but each keeps its own independent
-sessions/ directory of currently-running pids) containing sessionId, pid,
-procStart (the process's /proc/<pid>/stat start-time, in clock ticks - the
-same disambiguator the kernel itself uses to tell a live pid from a reused
-one), and, when launched inside tmux, a "tmux" field of the form
-"session_name:@window_id.%pane_id" - a pane_id is a stable, globally unique
-tmux target on its own, no window/session lookup needed. This was found by
-inspecting that directory directly (see the window-search-debugging-session
-memory for the same "verify against real state" approach) rather than
-inferring liveness from process argv or scanning /proc/*/fd for an open
-transcript file - the latter looked appealing but Claude Code opens,
-appends, and closes the jsonl per write rather than holding it open, so an
-fd-scan mostly observes "not open" for a session that is very much running.
-procStart is re-checked against /proc/<pid>/stat at both list-time and
-jump-time - a sessions/*.json file left behind by a killed/crashed process
-is a stale claim, not a live one, and pid reuse by the OS would otherwise
-make a stale entry look alive again.
+tmux integration is opportunistic, detected at runtime from $TMUX/
+$TMUX_PANE (both set by tmux for every process started inside a pane - no
+bind-key plumbing needed to learn "which pane am I"):
+  - outside tmux entirely: skip the live/switch dance altogether and just
+    exec-resume - there is no meaningful "switch to another pane" without
+    tmux, so integrating with it "only if available" means not pretending
+    to when it isn't.
+  - inside tmux: "live right now" is answered by Claude Code's own
+    bookkeeping rather than guessed. Every running interactive session
+    maintains ~/.claude*/sessions/<pid>.json (one per CLAUDE_CONFIG_DIR -
+    .claude, .claude2, .claude3 here all happen to share the same
+    underlying ~/.claude/projects via symlink, but each keeps its own
+    independent sessions/ directory of currently-running pids) containing
+    sessionId, pid, procStart (the process's /proc/<pid>/stat start-time,
+    in clock ticks - the same disambiguator the kernel itself uses to tell
+    a live pid from a reused one), and, when launched inside tmux, a "tmux"
+    field of the form "session_name:@window_id.%pane_id" - a pane_id is a
+    stable, globally unique tmux target on its own, no window/session
+    lookup needed. This was found by inspecting that directory directly
+    (see the window-search-debugging-session memory for the same "verify
+    against real state" approach) rather than inferring liveness from
+    process argv or scanning /proc/*/fd for an open transcript file - the
+    latter looked appealing but Claude Code opens, appends, and closes the
+    jsonl per write rather than holding it open, so an fd-scan mostly
+    observes "not open" for a session that is very much running. procStart
+    is re-checked against /proc/<pid>/stat at both list-time and jump-time,
+    and the claimed pane_id is checked against this tmux server's own
+    `list-panes -a` before ever attempting a switch - a sessions/*.json
+    file left behind by a killed/crashed process is a stale claim not a
+    live one, pid reuse by the OS would otherwise make a stale entry look
+    alive again, and the live session might belong to a different tmux
+    server (a different -L socket) than the one this process is inside.
+    Live-but-unreachable-from-here still refuses to resume (to avoid a
+    second writer on the same transcript) even though it can't switch to
+    it either.
 
-Deps: tmux, fzf, python3.
+Deps: fzf, python3. tmux is optional - only needed for the live/switch path.
 """
 import argparse
 import atexit
@@ -81,7 +96,6 @@ USER_BOOST = 2  # what you typed is what you'll later search for; the
 K1, B = 1.5, 0.75  # standard Okapi BM25 defaults, see window-search.py
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
-SHELLS = {"bash", "zsh", "sh", "fish", "dash"}
 
 _DEBUG = os.path.exists(os.path.expanduser("~/.cache/claude-history-search-debug"))
 _T0 = time.time()
@@ -498,16 +512,43 @@ def preview(session_id, query, snap_path):
 
 def die(msg):
     _dbg(f"FATAL: {msg}")
-    print(f"claude-history-search: {msg}", file=sys.stderr)
+    print(f"claude-history: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
+def in_tmux():
+    # $TMUX_PANE is set by tmux for every process started inside a pane
+    # (no bind-key plumbing needed to learn "which pane am I", unlike the
+    # tmux-popup version of this tool which had to have #{pane_id}
+    # interpolated in by the key binding) - both are unset outside tmux, so
+    # this is also the "is tmux even available" check the module docstring
+    # describes: no separate probe for a running tmux server needed.
+    return bool(os.environ.get("TMUX")) and bool(os.environ.get("TMUX_PANE"))
+
+
+def current_client_tty():
+    """The tty of the client viewing THIS pane, resolved from directly
+    inside the pane's own process tree - not via a bind-key's run-shell (see
+    window-search.py's saga on why that ambient form is unreliable there).
+    Run as a plain child of the pane's shell, tmux resolves "#{client_tty}"
+    the same as if you'd typed the command at the prompt yourself, so this
+    is reliable without any bridging."""
+    r = subprocess.run(["tmux", "display-message", "-p", "#{client_tty}"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def pane_exists(pane_id):
+    r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+                       capture_output=True, text=True)
+    return r.returncode == 0 and pane_id in r.stdout.split()
+
+
 def jump_to_pane(client, pane_id):
-    """Land the client on an already-running session's pane. Verbatim copy
-    of window-search.py's jump() sequence (switch-client -c, then
-    select-window/select-pane, then re-verified against a fresh
-    list-clients rather than trusting the return code) - that sequence was
-    hard-won against a real switch-client bug there, see its comments."""
+    """Land the client on an already-running session's pane. Same verified
+    sequence as this repo's window-search.py jump() (switch-client -c, then
+    select-window/select-pane, then re-checked against a fresh list-clients
+    rather than trusting the return code) - hard-won there, reused here."""
     cr = subprocess.run(["tmux", "list-clients", "-F", "#{client_tty}\t#{session_name}"],
                         capture_output=True, text=True)
     if cr.returncode != 0:
@@ -535,66 +576,45 @@ def jump_to_pane(client, pane_id):
             f"on the wrong pane")
 
 
-def display(client, msg):
-    """tmux display-message with an explicit -c <client>: display-message
-    with no target resolves ambiently, and with several attached clients
-    (routine here - see the sessions/*.json dump above) there is no telling
-    which one that lands on. Same lesson as switch-client throughout this
-    file and resurrect-restore.sh's comment on the same pitfall."""
-    subprocess.run(["tmux", "display-message", "-c", client, msg])
+def exec_resume(session_id, cwd):
+    """Replace this process with `claude --resume ...` - this program was
+    launched directly as a shell's foreground job (a plain CLI, not
+    something spawned via tmux run-shell/popup), so exec is the literal
+    "resume in the current shell" the whole tool exists to do: no pane
+    targeting, no send-keys, no new window - just hand the terminal
+    straight to claude the way `exec` hands it to anything else."""
+    os.chdir(cwd if cwd and os.path.isdir(cwd) else HOME)
+    os.execvp("claude", ["claude", "--resume", session_id,
+                         "--dangerously-skip-permissions"])
 
 
-def resume_in_pane(client, origin_pane, session_id, cwd):
-    """Run `claude --resume <id> --dangerously-skip-permissions` in the pane
-    that opened the picker - the literal "current shell" the user asked for.
-    Only injects keystrokes if that pane is actually sitting at a plain
-    shell prompt right now (checked fresh, not from bind-time state): typing
-    an arbitrary command into whatever else might be running there - vim,
-    another claude session, anything with its own keymap - would be
-    confusing at best. When it isn't a shell, a fresh window is opened in
-    the right directory instead, so the resume still happens without
-    guessing at what the origin pane was doing."""
-    r = subprocess.run(["tmux", "display-message", "-p", "-t", origin_pane,
-                        "#{pane_current_command}"], capture_output=True, text=True)
-    current_cmd = r.stdout.strip() if r.returncode == 0 else None
-    target = origin_pane
-    if current_cmd not in SHELLS:
-        # -t origin_pane: new-window with no target also resolves ambiently
-        # (the attached client's current session) - anchoring it to the
-        # origin pane's own session/window is well-defined regardless of
-        # which client happens to be "current" from run-shell's point of view
-        nr = subprocess.run(["tmux", "new-window", "-P", "-F", "#{pane_id}",
-                             "-t", origin_pane, "-c", cwd or HOME],
-                            capture_output=True, text=True)
-        if nr.returncode != 0:
-            die(f"origin pane {origin_pane} isn't at a shell prompt "
-                f"({current_cmd!r}) and opening a new window failed: "
-                f"{nr.stderr.strip()}")
-        target = nr.stdout.strip()
-        display(client, f"claude-history: origin pane was running "
-                f"{current_cmd!r}, resuming in a new window instead")
+def resolve(session_id, cwd):
+    if not in_tmux():
+        # no tmux to integrate with - skip the live/switch machinery
+        # entirely and just resume here, per the tool's own fallback rule
+        exec_resume(session_id, cwd)
+        return
 
-    resume_cmd = f"cd {shlex.quote(cwd or HOME)} 2>/dev/null; " \
-                 f"claude --resume {shlex.quote(session_id)} --dangerously-skip-permissions"
-    subprocess.run(["tmux", "send-keys", "-t", target, "-l", "--", resume_cmd], check=True)
-    subprocess.run(["tmux", "send-keys", "-t", target, "Enter"], check=True)
-
-
-def resolve(session_id, cwd, client, origin_pane):
     live = get_live_sessions().get(session_id)  # re-checked fresh: time
     # passed while the user was browsing/searching, status may have changed
-    if live and live["pane_id"]:
+    if live and live["pane_id"] and pane_exists(live["pane_id"]):
+        client = current_client_tty()
+        if not client:
+            die("tmux display-message couldn't resolve #{client_tty} for "
+                "this pane - can't switch-client without it")
         jump_to_pane(client, live["pane_id"])
-        display(client, f"claude-history: switched to the already-running "
-                f"session (pid {live['pid']}, {live['status']})")
+        print(f"claude-history: switched to the already-running session "
+              f"(pid {live['pid']}, {live['status']})", file=sys.stderr)
         return
     if live:
-        display(client, f"claude-history: session is already running "
-                f"elsewhere (pid {live['pid']}, cwd {live['cwd']}, not "
-                f"attached to any tmux pane) - not resuming, that would "
-                f"start a second instance against the same transcript")
+        where = (f"pane {live['pane_id']} (a different tmux server)"
+                 if live["pane_id"] else "not attached to any tmux pane")
+        print(f"claude-history: session is already running elsewhere "
+              f"(pid {live['pid']}, cwd {live['cwd']}, {where}) - not "
+              f"resuming, that would start a second instance against the "
+              f"same transcript", file=sys.stderr)
         return
-    resume_in_pane(client, origin_pane, session_id, cwd)
+    exec_resume(session_id, cwd)
 
 
 SNAP_PREFIX = "claude-history-search-"
@@ -645,14 +665,7 @@ def sweep_stale_snapshots():
             _rm(os.path.join(d, name))
 
 
-def drive(client, origin_pane):
-    if not client:
-        die("--client was empty - the bind-key's run-shell did not interpolate "
-            "#{client_tty} (see .tmux.conf, prefix+C-c)")
-    if not origin_pane:
-        die("--origin-pane was empty - the bind-key's run-shell did not "
-            "interpolate #{pane_id} (see .tmux.conf, prefix+C-c)")
-
+def drive():
     snapshot = build_snapshot()
     sweep_stale_snapshots()
     fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
@@ -676,7 +689,13 @@ def drive(client, origin_pane):
     try:
         result = subprocess.run(
             [
+                # fzf's default full-screen mode already takes over the
+                # terminal via the alternate screen buffer and restores it
+                # on exit - the "popup" here, no tmux display-popup needed.
+                # --border/--margin just gives it a visually inset look
+                # rather than filling every last cell.
                 "fzf", "--ansi", "--disabled", "--layout=reverse",
+                "--border=rounded", "--margin=2,4",
                 "--delimiter", "\t", "--with-nth", "2..",
                 "--prompt", "claude history> ",
                 "--preview", preview_cmd,
@@ -699,7 +718,7 @@ def drive(client, origin_pane):
     s = snapshot["sessions"].get(session_id)
     if not s:
         die(f"selected session {session_id} vanished from the snapshot")
-    resolve(session_id, s["cwd"], client, origin_pane)
+    resolve(session_id, s["cwd"])
 
 
 def main():
@@ -708,8 +727,6 @@ def main():
     parser.add_argument("--preview", metavar="SESSION_ID")
     parser.add_argument("--query", default="")
     parser.add_argument("--snapshot", metavar="SNAPSHOT")
-    parser.add_argument("--client", metavar="TTY")
-    parser.add_argument("--origin-pane", metavar="PANE_ID")
     args = parser.parse_args()
 
     if args.preview:
@@ -717,7 +734,7 @@ def main():
     elif args.search:
         search(args.search, args.query)
     else:
-        drive(args.client, args.origin_pane)
+        drive()
 
 
 if __name__ == "__main__":
