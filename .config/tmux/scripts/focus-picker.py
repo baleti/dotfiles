@@ -216,10 +216,13 @@ def drive():
     # list is also capped at half of FZF_LINES, so the preview never drops
     # below half regardless of match count, and grows past half on its own
     # the fewer results there are to list (same cap claude-history uses;
-    # +3 is the prompt line plus the match-count info line plus one more,
-    # measured short at +2 in window-search.py's original version).
+    # +4 is the header row, the prompt line, and the match-count info line,
+    # plus one more - $FZF_LINES doesn't shrink for --header, confirmed
+    # directly, so it has to be budgeted for here; was +3 before the header
+    # existed, and +2 before THAT measured one row short the same way in
+    # window-search.py's original version).
     resize_on_result = (
-        'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
+        'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
         'half=$((FZF_LINES / 2)); '
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
