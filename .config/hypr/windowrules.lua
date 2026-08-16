@@ -13,6 +13,18 @@ hl.window_rule({
     suppress_event = "maximize",
 })
 
+-- notifyd's popup cards (~/.config/hypr/notifyd) set this namespace
+-- specifically so this rule can find them -- layer-shell surfaces don't get
+-- appearance.lua's decoration.blur automatically the way normal windows do.
+-- Needs the card background to actually be translucent (notifyd.toml) or
+-- there's nothing for the blur to show through.
+hl.layer_rule({
+    name  = "blur-notifyd",
+    match = { namespace = "^notifyd$" },
+
+    blur = true,
+})
+
 hl.window_rule({
     -- Fix some dragging issues with XWayland
     name  = "fix-xwayland-drags",

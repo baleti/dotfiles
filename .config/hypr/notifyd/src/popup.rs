@@ -325,6 +325,11 @@ fn build_window(config: &Config) -> gtk::Window {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.init_layer_shell();
     window.set_layer(Layer::Overlay);
+    // Lets a Hyprland layerrule (windowrules.lua) target notification cards
+    // specifically -- e.g. for blur, since that's opt-in per namespace for
+    // layer-shell surfaces (unlike normal windows, which get it from
+    // appearance.lua's decoration.blur automatically).
+    window.set_namespace("notifyd");
     // Notifications must never steal keyboard focus from whatever the user
     // is doing.
     window.set_keyboard_mode(KeyboardMode::None);
