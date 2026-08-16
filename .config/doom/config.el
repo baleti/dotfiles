@@ -241,13 +241,25 @@ runs after this hook otherwise wins."
   (interactive)
   (if (use-region-p)
       (let* ((text (buffer-substring-no-properties (region-beginning) (region-end)))
-             (err-buf (generate-new-buffer " *wl-copy-error*"))
-             (status (call-process-region text nil "wl-copy" nil err-buf nil)))
+             ;; wl-copy daemonizes to keep serving the clipboard, and its
+             ;; background child inherits (and never closes) whatever fd its
+             ;; stderr points at. Capturing stderr into a live Emacs buffer
+             ;; means Emacs opens a pipe and blocks reading it until EOF --
+             ;; which the backgrounded process never sends, freezing Emacs
+             ;; until something else overwrites the clipboard. Redirecting to
+             ;; a real file sidesteps that: nothing reads it until after the
+             ;; (non-blocking, /dev/null-backed) call returns.
+             (err-file (make-temp-file "wl-copy-err"))
+             (status (call-process-region
+                      text nil "sh" nil nil nil
+                      "-c" (format "wl-copy 2>%s" (shell-quote-argument err-file)))))
         (if (eq status 0)
             (message "Copied to clipboard")
           (message "wl-copy failed (%s): %s" status
-                   (string-trim (with-current-buffer err-buf (buffer-string)))))
-        (kill-buffer err-buf))
+                   (string-trim (with-temp-buffer
+                                  (insert-file-contents err-file)
+                                  (buffer-string)))))
+        (delete-file err-file))
     (message "No region selected")))
 
 (map! :v "C-c c" 'copy-selection-to-clipboard)
