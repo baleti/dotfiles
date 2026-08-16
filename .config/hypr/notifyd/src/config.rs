@@ -108,7 +108,7 @@ impl Config {
         UrgencyConfig {
             background: "#900000".to_string(),
             foreground: "#ffffff".to_string(),
-            timeout_ms: None, // dunstrc: timeout = 0, sticky
+            timeout_ms: 0, // dunstrc: timeout = 0, sticky
             frame_color: Some("#ff0000".to_string()),
             default_icon: "dialog-warning".to_string(),
         }
