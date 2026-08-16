@@ -35,14 +35,25 @@ dominate the other just because it happens to update on a different scale.
 A pane simply not yet hit by any hook sorts last, which is the only case
 this can't say anything about.
 
+The list is paired with a live preview of the highlighted pane's recent
+scrollback (see preview()) and the same dynamic list/preview resize
+window-search.py and claude-history already use - the list only takes as
+many rows as it has matches, the preview gets the rest, both reacting to
+fzf's own built-in filtering as you type (this list is static, handed to
+fzf once, not reloaded).
+
 Deps: tmux, fzf, python3.
 """
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 
 LOG_PATH = os.path.expanduser("~/.cache/tmux-focus-order.log")
+PREVIEW_LINES = 500  # recent scrollback only - this isn't a search tool
+# (that's prefix+C-w), so there's no match to jump to or highlight; just
+# enough tail to answer "what was I doing here"
 
 
 def die(msg):
@@ -98,6 +109,22 @@ def current_pane(client):
 def row(pane_id, p):
     label = f'{p["session"]}:{p["window_index"]} {p["window_name"]}{p["window_flags"]}: "{p["pane_title"]}"'
     return f"{pane_id}\t{label}"
+
+
+def preview(pane_id):
+    # -e (unlike window-search.py's preview): nothing here inserts its own
+    # highlight ANSI codes on top, so the pane's real colors can just be
+    # kept instead of stripped - there's no query to match/highlight, this
+    # is a plain "what was I doing here" glance, not a search result
+    r = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-e", "-J", "-t", pane_id,
+         "-S", f"-{PREVIEW_LINES}"],
+        capture_output=True, text=True, errors="replace",
+    )
+    if r.returncode != 0:
+        sys.stdout.write(f"[capture-pane {pane_id} failed: {r.stderr.strip()}]\n")
+        return
+    sys.stdout.write(r.stdout)
 
 
 def resolve_client():
@@ -175,11 +202,30 @@ def drive(client=None):
 
     rows = "\n".join(row(pid, live[pid]) for pid in ordered_ids)
 
+    py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
+    preview_cmd = f"{py} --preview {{1}}"
+    # same list/preview split as window-search.py and claude-history: react
+    # to each match-set change (fzf's own built-in filtering here, not a
+    # reload - this list is static, piped in once) and give the list just
+    # enough rows for $FZF_MATCH_COUNT, preview gets the rest. +3 is the
+    # prompt line plus the match-count info line plus one more (measured
+    # short at +2 in window-search.py; kept identical here rather than
+    # re-deriving it).
+    resize_on_result = (
+        'c=$FZF_MATCH_COUNT; list_rows=$((c + 3)); '
+        '[ "$list_rows" -lt 4 ] && list_rows=4; '
+        'max_list=$((FZF_LINES - 4)); '
+        '[ "$list_rows" -gt "$max_list" ] && list_rows=$max_list; '
+        'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
+    )
     result = subprocess.run(
         [
             "fzf", "--ansi", "--layout=reverse",
             "--delimiter", "\t", "--with-nth", "2..",
             "--prompt", "focus history> ",
+            "--preview", preview_cmd,
+            "--preview-window", "down,50%,border-top,wrap",
+            "--bind", f"result:transform:{resize_on_result}",
         ],
         input=rows, capture_output=True, text=True,
     )
@@ -195,8 +241,12 @@ def main():
     parser.add_argument("--client", metavar="TTY",
                         help="tty of the client that opened the popup; the "
                              "bind-key interpolates #{client_tty} here")
+    parser.add_argument("--preview", metavar="PANE_ID")
     args = parser.parse_args()
-    drive(args.client)
+    if args.preview:
+        preview(args.preview)
+    else:
+        drive(args.client)
 
 
 if __name__ == "__main__":
