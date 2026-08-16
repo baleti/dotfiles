@@ -127,7 +127,7 @@ hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("playerctl play-pause"), { locked = tr
 hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = true })
 
 hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/clipboard-picker"))
-hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region --clipboard-only"))
+hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region -r | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit"))
 
 -- Global menu prototype (KDE's mod+a equivalent): flattens the focused
 -- window's AT-SPI accessible menu tree into a rofi picker and activates
