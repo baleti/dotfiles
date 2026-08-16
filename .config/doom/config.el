@@ -324,12 +324,12 @@
 (defun insert-custom-timestamp-with-date ()
   "Insert the current date and time in the format: [YYYY-MM-DD Day HH:MM]."
   (interactive)
-  (insert (format-time-string "[%Y-%m-%d %a %H:%M]")))
+  (insert (format-time-string " [%Y-%m-%d %a %H:%M]")))
 
 (defun insert-custom-timestamp ()
   "Insert the current date and time in the format: =HH:MM=]."
   (interactive)
-  (insert (format-time-string "=%H:%M=")))
+  (insert (format-time-string " =%H:%M=")))
 
 (map! :leader
       :desc "Insert custom timestamp with date"
