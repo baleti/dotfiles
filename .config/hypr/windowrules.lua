@@ -48,3 +48,15 @@ hl.window_rule({
     move  = "20 monitor_h-120",
     float = true,
 })
+
+-- Background job-search automation (Playwright/Chromium, launched via
+-- ~/.local/share/architect-job-search/lib/browser.js with --class=ArchitectJobAutomation).
+-- These pop up headed (Cloudflare blocks headless on Dezeen) on whatever workspace is
+-- active, possibly while the user is doing something else there - don't let them steal
+-- keyboard/mouse focus.
+hl.window_rule({
+    name  = "architect-job-automation-no-focus",
+    match = { class = "ArchitectJobAutomation" },
+
+    no_focus = true,
+})
