@@ -129,7 +129,10 @@ fn timeout_ms(urgency: u8, expire_timeout: i32, config: &Config) -> Option<u32> 
     match expire_timeout {
         t if t > 0 => Some(t as u32),
         0 => None,
-        _ => config.urgency(urgency).timeout_ms,
+        _ => match config.urgency(urgency).timeout_ms {
+            0 => None,
+            t => Some(t),
+        },
     }
 }
 
