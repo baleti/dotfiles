@@ -588,6 +588,7 @@ STATUS_COLOR = {"busy": "\x1b[1;33m", "waiting": "\x1b[1;33m"}  # default: green
 LOC_WIDTH = 16  # nominal width for the session:window.pane column - most
 AGE_WIDTH = 8
 CWD_WIDTH = 40
+MSGS_WIDTH = 5
 # session names here are short (tmux session numbers), so LOC_WIDTH
 # comfortably covers the common case; a rare long name (e.g.
 # "claude-remote-<ts>") overflows it - see row() for what happens then
@@ -622,16 +623,18 @@ def row(sid, s, live_map, targets, qset=frozenset(), rxs=()):
     title = s["ai_title"] or (s["turns"][0][1][:80] if s["turns"] else "(empty)")
     title = highlight(title.replace("\n", " ").strip(), qset, rxs)
 
-    # loc/age/cwd share one padding budget instead of each column padding
-    # independently to its own fixed width. A rare long loc (a remote
-    # session's timestamp-suffixed name, wider than LOC_WIDTH) used to push
-    # every following column right by its own overflow regardless of
-    # whether a later column - cwd is usually "~", far under CWD_WIDTH -
-    # had slack to spare; padding the three as one block lets a short cwd
-    # absorb a long loc's overflow instead, so title only actually moves
-    # once the combined content can't fit the combined budget at all.
-    plain = f"{loc:<{LOC_WIDTH}}  {age:>{AGE_WIDTH}}  {cwd}"
-    padded = f"{plain:<{LOC_WIDTH + 2 + AGE_WIDTH + 2 + CWD_WIDTH}}"
+    msgs = str(s["msg_count"])
+
+    # loc/age/cwd/msgs share one padding budget instead of each column
+    # padding independently to its own fixed width. A rare long loc (a
+    # remote session's timestamp-suffixed name, wider than LOC_WIDTH) used
+    # to push every following column right by its own overflow regardless
+    # of whether a later column - cwd is usually "~", far under CWD_WIDTH -
+    # had slack to spare; padding the block as one lets a short cwd absorb
+    # a long loc's overflow instead, so title only actually moves once the
+    # combined content can't fit the combined budget at all.
+    plain = f"{loc:<{LOC_WIDTH}}  {age:>{AGE_WIDTH}}  {cwd:<{CWD_WIDTH}}  {msgs:>{MSGS_WIDTH}}"
+    padded = f"{plain:<{LOC_WIDTH + 2 + AGE_WIDTH + 2 + CWD_WIDTH + 2 + MSGS_WIDTH}}"
     if color:
         # loc is the first len(loc) characters of `padded` by construction
         # (nothing before it in `plain`) - wrap just that slice, so the
@@ -640,7 +643,7 @@ def row(sid, s, live_map, targets, qset=frozenset(), rxs=()):
         # towards the padding width themselves and throw it off)
         padded = f"{color}{loc}\x1b[0m{padded[len(loc):]}"
 
-    label = f'{padded}  {title}  ({s["msg_count"]} msgs)'
+    label = f'{padded}  {title}'
     return f"{sid}\t{label}"
 
 
@@ -1068,11 +1071,13 @@ def drive():
     with os.fdopen(fd, "w") as f:
         json.dump(snapshot, f)
 
-    # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH -
-    # only approximate once a row's loc overflows and borrows cwd's slack
-    # (see row()), which is expected: the header marks the normal case,
-    # individual rows are still free to shift when they actually need to
-    header = f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  TITLE'
+    # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
+    # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
+    # cwd's slack (see row()), which is expected: the header marks the
+    # normal case, individual rows are still free to shift when they
+    # actually need to
+    header = (f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  '
+              f'{"MSGS":>{MSGS_WIDTH}}  TITLE')
 
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
