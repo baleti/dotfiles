@@ -1,0 +1,118 @@
+// -*- mode: jsonc -*-
+// Waybar for Hyprland. See waybar(5) and waybar-<module>(5) man pages.
+//
+// Docked bar: it requests an exclusive zone, so it owns a 30px row at the top of
+// each output and windows tile beneath it. Toggling with mainMod+B (keybinds.lua)
+// releases that zone, so the layout reflows to fill the gap and reflows back.
+//
+// mainMod+B sends SIGUSR1, which waybar treats as "toggle visibility" by default
+// (configurable via on-sigusr1). SIGUSR2 reloads the config.
+//
+// The bar itself is transparent and each island below is a separate rounded pill
+// (see style.css). Related widgets share a pill via "group/..." modules; note
+// that the group "orientation" default is "orthogonal", which stacks vertically
+// on a top bar, so each group sets "horizontal" explicitly.
+{
+    "layer": "top",
+    "position": "top",
+    "exclusive": true,
+    "height": 38,
+    // Gaps between islands come from CSS margins, not from module spacing --
+    // spacing would also push apart the widgets *inside* a group pill.
+    "spacing": 0,
+
+    "modules-left": ["hyprland/workspaces", "hyprland/submap"],
+    "modules-center": ["hyprland/window"],
+    "modules-right": [
+        "tray",
+        "group/controls",
+        "network",
+        "group/hardware",
+        "clock"
+    ],
+
+    "group/controls": {
+        "orientation": "horizontal",
+        "modules": ["pulseaudio", "backlight"]
+    },
+
+    "group/hardware": {
+        "orientation": "horizontal",
+        "modules": ["cpu", "memory", "battery"]
+    },
+
+    "hyprland/workspaces": {
+        "format": "{name}",
+        "on-click": "activate"
+    },
+
+    "hyprland/submap": {
+        "format": "<span style=\"italic\">{}</span>",
+        "tooltip": false
+    },
+
+    "hyprland/window": {
+        "format": "{title}",
+        "max-length": 60,
+        "separate-outputs": true
+    },
+
+    "tray": {
+        "spacing": 10
+    },
+
+    // Module icons are Nerd Font / Font Awesome glyphs, taken from
+    // /etc/xdg/waybar/config.jsonc. They render via the MesloLGS Nerd Font
+    // fallback declared in style.css.
+    "pulseaudio": {
+        "format": "{volume}% {icon}",
+        "format-muted": "",
+        "format-icons": {
+            "headphone": "",
+            "headset": "",
+            "default": ["", "", ""]
+        },
+        "on-click": "pavucontrol"
+    },
+
+    "backlight": {
+        "device": "intel_backlight",
+        "format": "{percent}% {icon}",
+        "format-icons": ["", "", "", "", "", "", "", "", ""]
+    },
+
+    "network": {
+        "format-wifi": "{essid} ({signalStrength}%) ",
+        "format-ethernet": "{ipaddr}/{cidr} ",
+        "format-linked": "{ifname} (no IP) ",
+        "format-disconnected": "disconnected ⚠",
+        "tooltip-format": "{ifname} via {gwaddr}"
+    },
+
+    "cpu": {
+        "format": "{usage}% ",
+        "tooltip": false
+    },
+
+    "memory": {
+        "format": "{}% "
+    },
+
+    "battery": {
+        "states": {
+            "warning": 30,
+            "critical": 15
+        },
+        "format": "{capacity}% {icon}",
+        "format-charging": "{capacity}% ",
+        "format-plugged": "{capacity}% ",
+        "format-alt": "{time} {icon}",
+        "format-icons": ["", "", "", "", ""]
+    },
+
+    "clock": {
+        "format": "{:%a %d %b  %H:%M}",
+        "format-alt": "{:%Y-%m-%d %H:%M:%S}",
+        "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>"
+    }
+}
