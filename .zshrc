@@ -44,6 +44,8 @@ setopt interactive_comments
 export PATH="$HOME/.config/emacs/bin:$PATH"
 export EDITOR="emacsclient -t"
 
+export PATH="$PATH:/home/user1/.local/bin"
+
 alias b="bat --wrap never"
 alias ll='eza -lah'
 alias fd="fd -H -I"
