@@ -1,0 +1,145 @@
+/* Waybar style, tuned to match hyprland's appearance.lua:
+ * rounding = 10, and the 33ccff -> 00ff99 active border gradient.
+ *
+ * "Islands" layout: the bar window is transparent and each widget (or group of
+ * widgets, see the "group/..." modules in config.jsonc) is its own rounded pill
+ * floating in the reserved top row. */
+
+* {
+    border: none;
+    border-radius: 0;
+    /* JetBrains Mono matches alacritty.toml, but it has no Nerd Font glyphs --
+     * MesloLGS Nerd Font is the per-glyph fallback for the module icons. */
+    font-family: "JetBrains Mono", "MesloLGS Nerd Font", "Noto Sans", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+}
+
+/* Transparent bar: the desktop shows through the gaps between islands. The bar
+ * still claims an exclusive 30px zone, so windows tile below it and reflow when
+ * it is toggled -- only the painting is different. */
+window#waybar {
+    background: transparent;
+    color: #d8dee9;
+}
+
+window#waybar > box {
+    padding: 0 6px;
+}
+
+/* --- the islands ---------------------------------------------------------
+ * One rule for every top-level widget. Group pills (#controls, #hardware) are
+ * named after their "group/<name>" module; the widgets inside them get padding
+ * only, further down, so they read as one shape. */
+#workspaces,
+#submap,
+#window,
+#tray,
+#controls,
+#network,
+#hardware,
+#clock {
+    background: rgba(26, 26, 26, 0.9);
+    border: 1px solid rgba(89, 89, 89, 0.55);
+    border-radius: 10px;
+    margin: 5px 3px;
+    padding: 0 4px;
+}
+
+/* Widgets inside a group pill: no background of their own, just spacing. */
+#controls #pulseaudio,
+#controls #backlight,
+#hardware #cpu,
+#hardware #memory,
+#hardware #battery {
+    background: transparent;
+    border: none;
+    margin: 0;
+    padding: 0 7px;
+}
+
+#network,
+#clock,
+#tray {
+    padding: 0 11px;
+}
+
+#window,
+#submap {
+    padding: 0 12px;
+}
+
+/* An unfocused output has no window title -- drop the empty pill rather than
+ * leaving a stray rounded stub floating in the middle of the bar. */
+window#waybar.empty #window {
+    background: transparent;
+    border-color: transparent;
+    padding: 0;
+    margin: 0;
+}
+
+/* --- workspaces ---------------------------------------------------------- */
+#workspaces {
+    padding: 0 3px;
+}
+
+#workspaces button {
+    padding: 0 8px;
+    margin: 3px 1px;
+    color: #888888;
+    background: transparent;
+    border-radius: 7px;
+}
+
+#workspaces button:hover {
+    background: rgba(51, 204, 255, 0.15);
+    color: #d8dee9;
+}
+
+#workspaces button.active {
+    color: #1a1a1a;
+    background: #33ccff;
+}
+
+#workspaces button.urgent {
+    color: #1a1a1a;
+    background: #ff5555;
+}
+
+/* --- per-module accents --------------------------------------------------- */
+#window {
+    color: #a0a8b0;
+}
+
+#submap {
+    color: #00ff99;
+}
+
+#clock {
+    color: #33ccff;
+    font-weight: bold;
+}
+
+#battery.warning:not(.charging) {
+    color: #f5a70a;
+}
+
+#battery.critical:not(.charging) {
+    color: #ff5555;
+}
+
+#network.disconnected {
+    color: #ff5555;
+}
+
+#pulseaudio.muted {
+    color: #888888;
+}
+
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+}
