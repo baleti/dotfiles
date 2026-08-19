@@ -49,6 +49,17 @@ hl.window_rule({
     float = true,
 })
 
+-- xdg-desktop-portal-kde's "Choose Application" dialog (org.freedesktop.impl.portal.desktop.kde).
+-- This is what actually pops up when Dolphin/xdg-open try to open a file with its default
+-- app on this non-KDE (Hyprland) session -- without this rule it gets tiled into a small
+-- sliver instead of floating, so it's easy to miss and looks like "pressing Enter does nothing".
+hl.window_rule({
+    name  = "float-portal-chooser",
+    match = { class = "^org%.freedesktop%.impl%.portal%.desktop%.kde$" },
+
+    float = true,
+})
+
 -- Background job-search automation (Playwright/Chromium, launched via
 -- ~/.local/share/architect-job-search/lib/browser.js with --class=ArchitectJobAutomation).
 -- These pop up headed (Cloudflare blocks headless on Dezeen) on whatever workspace is
