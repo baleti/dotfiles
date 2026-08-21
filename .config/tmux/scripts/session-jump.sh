@@ -22,10 +22,15 @@ fi
 
 # pane_id -> session_name, live panes only - a log entry for a pane/session
 # that no longer exists is worthless as a jump target.
+#
+# -F must get a REAL tab, not the two characters \t: tmux's format engine
+# does not expand \t into a tab itself (confirmed directly - a single-quoted
+# '...\t...' comes back with literal backslash-t in the output), so this
+# has to be bash's own $'...' expansion, not a plain single-quoted string.
 declare -A pane_session
 while IFS=$'\t' read -r pid sess; do
   pane_session[$pid]=$sess
-done < <(tmux list-panes -a -F '#{pane_id}\t#{session_name}')
+done < <(tmux list-panes -a -F $'#{pane_id}\t#{session_name}')
 
 target=""
 declare -A seen
