@@ -9,44 +9,21 @@
 # tmux's native "can't find last session" error on a fresh client. The
 # shared log has no such per-client blind spot: it already has entries from
 # whichever session (any client) was actually visited most recently.
+#
+# The lookup itself lives in session-mru-target.sh, shared with
+# session-kill-return.sh (prefix+x) so both never drift apart.
 set -euo pipefail
 
 client_tty=$1
 current_session=$2
-log=~/.cache/tmux-focus-order.log
 
-if [ ! -f "$log" ]; then
-  tmux display-message "session-jump: no focus history yet"
-  exit 0
+if target=$(~/.config/tmux/scripts/session-mru-target.sh "$current_session"); then
+  tmux switch-client -c "$client_tty" -t "$target"
+else
+  status=$?
+  if [ "$status" -eq 2 ]; then
+    tmux display-message "session-jump: no focus history yet"
+  else
+    tmux display-message "session-jump: no other session in focus history"
+  fi
 fi
-
-# pane_id -> session_name, live panes only - a log entry for a pane/session
-# that no longer exists is worthless as a jump target.
-#
-# -F must get a REAL tab, not the two characters \t: tmux's format engine
-# does not expand \t into a tab itself (confirmed directly - a single-quoted
-# '...\t...' comes back with literal backslash-t in the output), so this
-# has to be bash's own $'...' expansion, not a plain single-quoted string.
-declare -A pane_session
-while IFS=$'\t' read -r pid sess; do
-  pane_session[$pid]=$sess
-done < <(tmux list-panes -a -F $'#{pane_id}\t#{session_name}')
-
-target=""
-declare -A seen
-while IFS=$'\t' read -r _ pid; do
-  sess=${pane_session[$pid]:-}
-  [ -z "$sess" ] && continue
-  [ "$sess" = "$current_session" ] && continue
-  [ -n "${seen[$sess]:-}" ] && continue
-  seen[$sess]=1
-  target=$sess
-  break
-done < "$log"
-
-if [ -z "$target" ]; then
-  tmux display-message "session-jump: no other session in focus history"
-  exit 0
-fi
-
-tmux switch-client -c "$client_tty" -t "$target"
