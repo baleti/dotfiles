@@ -18,6 +18,9 @@ hl.env("QT_QPA_PLATFORMTHEME", "kde")
 -- with (LANG=en_US.UTF-8 -> Month/day/year dates in the Modified column).
 hl.env("LC_TIME", "en_GB.UTF-8")
 
+-- Only needed for Dolphin (and other KIO apps) to resolve default applications
+-- correctly -- without it, opening a file falls through to an empty/broken
+-- xdg-desktop-portal-kde chooser instead of launching the assigned app.
 -- Plasma 6 renamed the KDE menu file applications.menu -> plasma-applications.menu
 -- (/etc/xdg/menus/plasma-applications.menu, from plasma-workspace). A real Plasma
 -- session exports XDG_MENU_PREFIX=plasma- itself so kbuildsycoca6 can find it;
