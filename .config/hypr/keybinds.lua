@@ -187,12 +187,23 @@ hl.bind(mainMod .. " + SHIFT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/notif
 -- GTK+layer-shell picker engine (~/.config/hypr/clipboard-picker/src/picker.rs).
 hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/notification-picker"))
 
+-- system monitor popups (~/.config/hypr/sysmon): small graph overlay for the
+-- last 5 minutes of network/cpu/temperature, replacing the KDE alt+n network
+-- widget. sysmond (autostarted in hyprland.lua) samples continuously so the
+-- graph has history the instant the popup opens; a second press of the same
+-- keybind closes it (same pidfile+SIGTERM toggle as clipboard-picker).
+hl.bind("ALT + " .. mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph net"))
+hl.bind("ALT + " .. mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph cpu"))
+hl.bind("ALT + " .. mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph temp"))
+
 -- bluetooth
 hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"))
 
 -- music
 hl.bind("ALT + CTRL + m", hl.dsp.exec_cmd("alacritty -e ncmpcpp"))
 hl.bind(mainMod .. " + CTRL + SHIFT + p", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) play-pause"), { repeating = true })
+hl.bind(mainMod .. " + CTRL + x", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) next"), { repeating = true })
+hl.bind(mainMod .. " + CTRL + z", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) previous"), { repeating = true })
 hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("zenity --text='Choose player' --column='' --list $(playerctl --list-all) > ~/.config/playerctl-current"), { repeating = true })
 hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%-"), { repeating = true })
 hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+"), { repeating = true })
