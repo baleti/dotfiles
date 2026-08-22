@@ -203,6 +203,15 @@
   "C-<return>" #'org-insert-heading
   "C-S-<return>" #'+org/insert-item-above))
 
+;; evil-org-mode normally rebinds C-<return>/C-S-<return> in normal state to
+;; variants that end with (evil-insert nil), dropping into insert state. This
+;; overrides those normal-state bindings so the keys above stay in normal
+;; state instead.
+(after! evil-org
+  (map! :map evil-org-mode-map
+        :n "C-<return>" #'org-insert-heading
+        :n "C-S-<return>" #'+org/insert-item-above))
+
 ;; https://baty.net/2022/configuring-the-org-download-save-directory
 ;; https://github.com/abo-abo/org-download/issues/46
 ;; https://github.com/abo-abo/org-download/issues/151#issuecomment-1425096926
