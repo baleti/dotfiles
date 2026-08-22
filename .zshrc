@@ -46,6 +46,12 @@ export EDITOR="emacsclient -t"
 
 export PATH="$PATH:/home/user1/.local/bin"
 
+# xfreerdp hardcodes /dev/dri/renderD128 (our Nvidia dGPU, no VAAPI driver
+# installed) for hardware H264 decode; renderD129 is the Intel iGPU, which
+# has intel-media-driver and is the right pick for this anyway (dedicated
+# decode block, no need to wake the dGPU just to decode an RDP stream)
+export FREERDP_VAAPI_DEVICE=/dev/dri/renderD129
+
 alias b="bat --wrap never"
 alias ll='eza -lah'
 alias fd="fd -H -I"
