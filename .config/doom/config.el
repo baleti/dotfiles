@@ -205,6 +205,16 @@
   "C-<return>" #'org-insert-heading
   "C-S-<return>" #'+org/insert-item-above))
 
+;; +org/insert-item-above itself unconditionally calls (evil-insert 1) at the
+;; end (see +org--insert-item in modules/lang/org/autoload/org.el), so
+;; rebinding the key alone doesn't stop it entering insert state. Suppress
+;; that by letting evil-local-mode appear off for the duration of the call.
+(defun +org/insert-item-above-normal (count)
+  "Like `+org/insert-item-above' but stays in normal state."
+  (interactive "p")
+  (let ((evil-local-mode nil))
+    (+org/insert-item-above count)))
+
 ;; evil-org-mode normally rebinds C-<return>/C-S-<return> in normal state to
 ;; variants that end with (evil-insert nil), dropping into insert state. This
 ;; overrides those normal-state bindings so the keys above stay in normal
@@ -212,7 +222,7 @@
 (after! evil-org
   (map! :map evil-org-mode-map
         :n "C-<return>" #'org-insert-heading
-        :n "C-S-<return>" #'+org/insert-item-above))
+        :n "C-S-<return>" #'+org/insert-item-above-normal))
 
 (defun osc52-copy-region-to-clipboard (beg end)
   "Send the selected region to the host clipboard via OSC 52.
