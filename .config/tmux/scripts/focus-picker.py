@@ -49,6 +49,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 LOG_PATH = os.path.expanduser("~/.cache/tmux-focus-order.log")
 PREVIEW_LINES = 500  # recent scrollback only - this isn't a search tool
@@ -110,12 +111,32 @@ LOC_WIDTH = 10  # "session:index" - session names here are short (tmux's own
 # numeric ids, or short custom ones); see claude-history's row() for what
 # happens when a column like this overflows in practice
 NAME_WIDTH = 16
+TIME_WIDTH = 4  # "99d" etc - a pane not yet hit by any hook (see drive())
+# has no log entry at all, shown as "-" rather than left blank so the
+# column stays aligned
 
 
-def row(pane_id, p):
+def humanize_ago(ts):
+    """ts is a real Unix timestamp from focus-track.sh's `date +%s`, not a
+    synthetic value - None just means this pane was never logged."""
+    if ts is None:
+        return "-"
+    delta = int(time.time()) - int(ts)
+    if delta < 60:
+        return f"{delta}s"
+    if delta < 3600:
+        return f"{delta // 60}m"
+    if delta < 86400:
+        return f"{delta // 3600}h"
+    return f"{delta // 86400}d"
+
+
+def row(pane_id, p, ts):
     loc = f'{p["session"]}:{p["window_index"]}'
     name = p["window_name"] + p["window_flags"]
-    return f'{pane_id}\t{loc:<{LOC_WIDTH}}  {name:<{NAME_WIDTH}}  "{p["pane_title"]}"'
+    when = humanize_ago(ts)
+    return (f'{pane_id}\t{when:>{TIME_WIDTH}}  {loc:<{LOC_WIDTH}}  '
+            f'{name:<{NAME_WIDTH}}  "{p["pane_title"]}"')
 
 
 def preview(pane_id):
@@ -193,7 +214,9 @@ def drive():
 
     me = current_pane(client) if client else None
 
-    ordered_ids = [pid for pid, _ in read_focus_order() if pid in live and pid != me]
+    focus_order = read_focus_order()
+    ts_map = dict(focus_order)
+    ordered_ids = [pid for pid, _ in focus_order if pid in live and pid != me]
     # panes that exist but were never logged (created since the last focus
     # event, or from before focus-track.sh existed) still have to be
     # reachable - tacked on at the end, in list-panes' own order, rather than
@@ -205,7 +228,7 @@ def drive():
     if not ordered_ids:
         die("no other panes to switch to")
 
-    rows = "\n".join(row(pid, live[pid]) for pid in ordered_ids)
+    rows = "\n".join(row(pid, live[pid], ts_map.get(pid)) for pid in ordered_ids)
 
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     preview_cmd = f"{py} --preview {{1}}"
@@ -231,7 +254,8 @@ def drive():
     # aligned to row()'s own LOC_WIDTH/NAME_WIDTH - only approximate once a
     # row's own columns overflow (see claude-history's row()/header for a
     # column that actually does in practice, and the same caveat)
-    header = f'{"SESSION:WIN":<{LOC_WIDTH}}  {"NAME":<{NAME_WIDTH}}  TITLE'
+    header = (f'{"TIME":>{TIME_WIDTH}}  {"SESSION:WIN":<{LOC_WIDTH}}  '
+              f'{"NAME":<{NAME_WIDTH}}  TITLE')
 
     result = subprocess.run(
         [
