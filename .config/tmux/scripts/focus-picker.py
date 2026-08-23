@@ -311,12 +311,15 @@ def ssh_info(pane_pid):
 FILTER_FIELDS = ["session", "window", "title"]
 FIELD_KEY = {"session": "session", "window": "window_name", "title": "pane_title"}
 
-# tried in this order at each position: "+$group[.sub]" and "$field:word"
-# both have to be checked before the generic bare-word fallback, or the
-# fallback (being unanchored) would just swallow their whole span itself -
-# same left-to-right-alternative trick window-search.py's QUERY_ELEM_RE uses.
+# tried in this order at each position: a quoted phrase first (so `"+$"`
+# reaches the DSL literally, never the +$/$ branches below - the escape
+# hatch a literal search for that text needs), then "+$group[.sub]" and
+# "$field:word", both of which have to be checked before the generic
+# bare-word fallback, or the fallback (being unanchored) would just swallow
+# their whole span itself - same left-to-right-alternative trick
+# window-search.py's QUERY_ELEM_RE uses.
 QUERY_ELEM_RE = re.compile(
-    r'\+\$([a-zA-Z]+)(?:\.([a-zA-Z]+))?|\$([a-zA-Z]+):(\S+)|(\S+)'
+    r'"([^"]*)"|\+\$([a-zA-Z]+)(?:\.([a-zA-Z]*))?|\$([a-zA-Z]+):(\S+)|(\S+)'
 )
 
 
@@ -339,17 +342,28 @@ def parse_query(query):
     active_cols: ordered, de-duplicated [(group, sub), ...] to append to the
       display - never affects which panes match, only what's shown.
 
-    An unresolvable "$field:" or "+$group" degrades to a literal bare-word
-    search on its own text rather than being dropped or erroring - half-typed
-    DSL stays usable mid-keystroke instead of the list going blank."""
+    "+$..." is a display directive, never a search term: whether it resolves
+    (a known group/sub) or not (a typo, or - the common case while typing -
+    no letters after the $ yet), it contributes nothing to bare_terms.
+    Falling back to a literal-text search here (the way an unresolvable
+    "$field:" below does) would otherwise empty the whole list for the
+    single keystroke where the query is just "+$", every time - the exact
+    bug this guards against. A literal "+$" search is still possible, just
+    has to be quoted (see QUERY_ELEM_RE) - '"+$"' finds it exactly, since
+    the quoted branch is matched before this one ever sees it.
+
+    An unresolvable "$field:" (the filter form, unlike "+$") still degrades
+    to a literal bare-word search on its own text rather than being dropped
+    - that one really is text someone typed to search for, just with a
+    misspelled/unknown field prefix in front of it."""
     bare_terms, field_terms, active_cols = [], [], []
     seen_cols = set()
-    for group_pfx, sub_pfx, field_pfx, field_term, bare in QUERY_ELEM_RE.findall(query):
+    for phrase, group_pfx, sub_pfx, field_pfx, field_term, bare in QUERY_ELEM_RE.findall(query):
+        if phrase:
+            bare_terms.append(phrase.lower())
+            continue
         if group_pfx:
             groups = resolve_by_substring(group_pfx, COLUMN_GROUPS)
-            if not groups:
-                bare_terms.append(f"+${group_pfx}" + (f".{sub_pfx}" if sub_pfx else "").lower())
-                continue
             for g in groups:
                 subs = COLUMN_GROUPS[g]
                 if sub_pfx:
@@ -368,8 +382,62 @@ def parse_query(query):
                 bare_terms.append(f"{field_pfx}:{field_term}".lower())
             continue
         if bare:
+            # same inertness as "+$..." above, for the filter form while
+            # it's still being typed: "$ti" (no colon yet) or "$title:"
+            # (colon typed, term not yet - notably also where tab-completion
+            # itself lands, see suggest_completion) would otherwise be a
+            # literal-text search for that exact fragment until a real term
+            # follows the colon - the identical "list empties out
+            # mid-keystroke" bug, just on this DSL form instead of "+$".
+            if bare.startswith("+$") or re.fullmatch(r'\$[a-zA-Z]*:?', bare):
+                continue
             bare_terms.append(bare.lower())
     return bare_terms, field_terms, active_cols
+
+
+def suggest_completion(query):
+    """If the query's trailing token is a partial "+$group[.sub]" or "$field"
+    directive, -> (completed_query, hint) - hint is just the token it would
+    expand to, completed_query is the full query with that token replaced by
+    it; (None, None) if there's nothing to complete (already complete,
+    unresolvable, or the trailing token isn't DSL at all).
+
+    Only ever looks at the trailing token - the same "editing happens at the
+    end of what you're typing" assumption any live-filter query box already
+    makes (there's no way to learn fzf's actual cursor position mid-query
+    from here, and every other part of this DSL already assumes left-to-right
+    typing, e.g. QUERY_ELEM_RE's own left-to-right scan)."""
+    m = re.search(r'(\+\$[a-zA-Z]*(?:\.[a-zA-Z]*)?|\$[a-zA-Z]*)$', query)
+    if not m:
+        return None, None
+    token = m.group(1)
+    prefix = query[:m.start()]
+
+    if token.startswith("+$"):
+        group_pfx, _, sub_pfx = token[2:].partition(".")
+        groups = resolve_by_substring(group_pfx, COLUMN_GROUPS) if group_pfx else []
+        if not groups:
+            return None, None
+        g = groups[0]
+        if "." in token:
+            subs = resolve_by_substring(sub_pfx, COLUMN_GROUPS[g]) if sub_pfx else COLUMN_GROUPS[g]
+            if not subs:
+                return None, None
+            completed = f"+${g}.{subs[0]}"
+        else:
+            completed = f"+${g}"
+    else:
+        field_pfx = token[1:]
+        if not field_pfx:
+            return None, None
+        fields = resolve_by_substring(field_pfx, FILTER_FIELDS)
+        if not fields:
+            return None, None
+        completed = f"${fields[0]}:"
+
+    if completed == token:
+        return None, None  # already fully typed - nothing left to complete
+    return prefix + completed, completed
 
 
 def row(p, active_cols):
@@ -387,12 +455,33 @@ def row(p, active_cols):
     return f'{p["pane_id"]}\t' + "  ".join(parts)
 
 
-def header_line(active_cols):
+def header_line(active_cols, hint=None):
     parts = [f'{"TIME":>{TIME_WIDTH}}', f'{"SESSION:WIN":<{LOC_WIDTH}}', f'{"NAME":<{NAME_WIDTH}}']
     for col in active_cols:
         parts.append(f'{COLUMN_LABELS[col]:<{COLUMN_WIDTHS[col]}}')
     parts.append("TITLE")
-    return "  ".join(parts)
+    line = "  ".join(parts)
+    if hint:
+        # the closest approximation of inline "ghost text" autocompletion
+        # fzf's own query box supports: it has no primitive for suggestion
+        # text at the cursor, but the header is redrawn live off the same
+        # query anyway (see drive()'s transform-header bind), so showing
+        # what tab would produce here is visible in the same glance as
+        # typing, and tab actually applying it (suggest_completion, wired
+        # to tab:transform-query in drive()) makes it more than a label.
+        line += f"   [tab → {hint}]"
+    return line
+
+
+def header(query):
+    _, _, active_cols = parse_query(query)
+    _, hint = suggest_completion(query)
+    sys.stdout.write(header_line(active_cols, hint))
+
+
+def complete(query):
+    completed, _ = suggest_completion(query)
+    sys.stdout.write(completed if completed is not None else query)
 
 
 def preview(pane_id):
@@ -554,16 +643,18 @@ def search(snapshot_path, query):
     snapshot-build time (build_snapshot/drive), so this does no subprocess
     calls of its own and stays fast regardless of typing speed.
 
-    Prints the header as its own first line (fzf's --header-lines=1 pulls it
-    back out as a sticky header rather than a candidate) so the column set
-    active_cols produces is always in sync with what was actually typed,
-    without a second live subprocess per keystroke to keep a separate
-    --header in sync."""
+    The header (which columns active_cols produces are visible) is kept in
+    sync separately, via drive()'s own transform-header bind calling
+    header() - not baked in here. --header-lines was tried first and
+    dropped: it only slices a header out of fzf's very first synchronous
+    input, never out of a later reload, so with --disabled (candidates start
+    empty until the first reload) there was nothing to slice - confirmed
+    directly, the header area just stayed permanently blank."""
     with open(snapshot_path) as f:
         panes = json.load(f)
     bare_terms, field_terms, active_cols = parse_query(query)
 
-    lines = [header_line(active_cols)]
+    lines = []
     for p in panes:
         haystack_parts = [p["session"], p["window_name"], p["pane_title"]]
         if p["ssh"]:
@@ -600,6 +691,8 @@ def drive():
     # like an option - joined with "=" it stays one token and parses fine even
     # when the query looks like a flag (see window-search.py's self_cmd).
     self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
+    header_cmd = f"{py} --header --query={{q}}"
+    complete_cmd = f"{py} --complete --query={{q}}"
     preview_cmd = f"{py} --preview {{1}}"
     # same list/preview split as window-search.py and claude-history: react
     # to each match-set change (a reload here, not fzf's own filtering - the
@@ -624,12 +717,36 @@ def drive():
             [
                 "fzf", "--ansi", "--disabled", "--layout=reverse",
                 "--delimiter", "\t", "--with-nth", "2..",
-                "--header-lines", "1",
+                "--header", header_line([]),  # transform-header below takes
+                # over from the first start/change event; this static value
+                # only covers the brief instant before that first event's
+                # async command has actually returned.
                 "--prompt", "focus history> ",
                 "--preview", preview_cmd,
                 "--preview-window", "down,50%,border-top,wrap",
-                "--bind", f"start:reload:{self_cmd}",
-                "--bind", f"change:reload:{self_cmd}",
+                # reload+transform-header chained with "+" into ONE bind per
+                # event, not two separate --bind flags for the same event
+                # (tried first, and broken: confirmed directly - fzf does
+                # NOT combine multiple --bind entries for the same event,
+                # the second one silently replaces the first, so reload
+                # never ran at all and fzf fell back to its own default
+                # filesystem-walk candidate source instead. The paren form
+                # is safe with the {q} placeholder inside it despite also
+                # using parens for chaining: fzf substitutes {q} - already
+                # shell-quoted - only when the command actually runs, after
+                # the action list itself has been parsed from the static
+                # template text, so a paren typed into the live query can't
+                # break the chain).
+                "--bind", f"start:reload({self_cmd})+transform-header({header_cmd})",
+                "--bind", f"change:reload({self_cmd})+transform-header({header_cmd})",
+                # tab completes the query's trailing "+$group[.sub]"/"$field"
+                # token to what it's about to resolve to (see
+                # suggest_completion) - the header already shows that same
+                # target as a live hint (header()), so this is "tab accepts
+                # the hint you can already see", not a blind guess. Not bound
+                # to anything by default in single-select mode (no --multi
+                # here), so this doesn't shadow existing behaviour.
+                "--bind", f"tab:transform-query:{complete_cmd}",
                 "--bind", f"result:transform:{resize_on_result}",
                 # `result` alone only re-runs this on a filtering change - a
                 # terminal resize while sitting on an unchanged query never
@@ -656,12 +773,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--search", metavar="SNAPSHOT")
     parser.add_argument("--preview", metavar="PANE_ID")
+    parser.add_argument("--header", action="store_true")
+    parser.add_argument("--complete", action="store_true")
     parser.add_argument("--query", default="")
     args = parser.parse_args()
     if args.preview:
         preview(args.preview)
     elif args.search:
         search(args.search, args.query)
+    elif args.header:
+        header(args.query)
+    elif args.complete:
+        complete(args.query)
     else:
         drive()
 
