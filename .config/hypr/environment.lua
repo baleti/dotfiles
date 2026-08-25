@@ -30,6 +30,21 @@ hl.env("LC_TIME", "en_GB.UTF-8")
 -- returns null even though mimeapps.list is correct. That's why Dolphin falls through
 -- to the empty xdg-desktop-portal-kde "Choose Application" chooser instead of just
 -- launching the configured default app.
+--
+-- Confirmed by direct testing (2026-08): a KSycoca cache rebuilt with the correct
+-- prefix is NOT enough on its own -- the var must be present in the *querying*
+-- process's own environment at lookup time (Dolphin's, and xdg-desktop-portal-kde's,
+-- which does its own independent KApplicationTrader lookup for the chooser UI).
+-- Killing/restarting xdg-desktop-portal-kde was tested too and is irrelevant here --
+-- it's D-Bus-activated by unrelated Flatpak apps (Signal, Flatseal) regardless, and
+-- was never itself the root cause, just the visible symptom.
+--
+-- Also: this fix does NOT prevent every "nothing happens" file-open bug going
+-- forward. ~/.config/mimeapps.list had accumulated many stale/nonexistent
+-- .desktop references of its own (audited and fixed 2026-08-25) which cause the
+-- exact same silent-failure symptom independently of this var. If a *new* file
+-- type silently fails, check `xdg-mime query default <mimetype>` and whether
+-- that .desktop file actually exists before assuming this fix regressed.
 hl.env("XDG_MENU_PREFIX", "plasma-")
 
 
