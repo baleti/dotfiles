@@ -35,6 +35,7 @@ window#waybar > box {
 #submap,
 #window,
 #tray,
+#custom-mpris,
 #controls,
 #network,
 #hardware,
@@ -60,7 +61,8 @@ window#waybar > box {
 
 #network,
 #clock,
-#tray {
+#tray,
+#custom-mpris {
     padding: 0 11px;
 }
 
@@ -133,6 +135,10 @@ window#waybar.empty #window {
 }
 
 #pulseaudio.muted {
+    color: #888888;
+}
+
+#custom-mpris.paused {
     color: #888888;
 }
 
