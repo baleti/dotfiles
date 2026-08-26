@@ -25,6 +25,7 @@
     "modules-center": ["hyprland/window"],
     "modules-right": [
         "tray",
+        "custom/mpris",
         "group/controls",
         "network",
         "group/hardware",
@@ -59,6 +60,25 @@
 
     "tray": {
         "spacing": 10
+    },
+
+    // Shows/controls whichever player playerctl-picker.sh set as "current"
+    // (~/.config/playerctl-current) -- same target as the mod+ctrl+p/x/z
+    // keybinds. Native waybar "mpris" module can't do this: its "player" is
+    // fixed at config-load, not re-read per tick, so it can't follow the
+    // picker's live selection.
+    //
+    // No "max-length" here: on this waybar build (0.15.0) it hides the
+    // whole custom module instead of truncating it, even with short text.
+    // The script truncates itself instead.
+    "custom/mpris": {
+        "exec": "~/.config/hypr/scripts/waybar-mpris.sh",
+        "return-type": "json",
+        "interval": 2,
+        "on-click": "playerctl --player=$(cat ~/.config/playerctl-current) play-pause",
+        "on-click-middle": "~/.config/hypr/scripts/playerctl-picker.sh",
+        "on-scroll-up": "playerctl --player=$(cat ~/.config/playerctl-current) next",
+        "on-scroll-down": "playerctl --player=$(cat ~/.config/playerctl-current) previous"
     },
 
     // Module icons are Nerd Font / Font Awesome glyphs, taken from
