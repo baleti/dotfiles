@@ -120,9 +120,9 @@ esac
 
 if [ "$status" = "Playing" ]; then
     pos_sec=$(awk -v b="$base_pos" -v t0="$base_epoch" -v t1="$now" -v r="$rate" \
-        'BEGIN { p = b + (t1 - t0) * r; if (p < 0) p = 0; printf "%d", p }')
+        'BEGIN { p = b + (t1 - t0) * r; if (p < 0) p = 0; printf "%d", p + 0.5 }')
 else
-    pos_sec=$(awk -v b="$base_pos" 'BEGIN { printf "%d", b }')
+    pos_sec=$(awk -v b="$base_pos" 'BEGIN { printf "%d", b + 0.5 }')
 fi
 if [ "$len_sec" -gt 0 ] && [ "$pos_sec" -gt "$len_sec" ]; then
     pos_sec=$len_sec
