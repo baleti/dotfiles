@@ -208,9 +208,10 @@ hl.bind(mainMod .. " + CTRL + SHIFT + p", hl.dsp.exec_cmd("playerctl --player=$(
 hl.bind(mainMod .. " + CTRL + x", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) next"), { repeating = true })
 hl.bind(mainMod .. " + CTRL + z", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) previous"), { repeating = true })
 -- restored from the old KDE setup (net.local.playerctl-2/5.desktop, kglobalshortcutsrc: Meta+Ctrl+Shift+Z/X).
--- The pause+play after seeking was in the original Exec= too - kept as-is, presumably a kick some player needed to refresh after a seek.
-hl.bind(mainMod .. " + CTRL + SHIFT + z", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) position 5- && playerctl --player=$(cat ~/.config/playerctl-current) pause && playerctl --player=$(cat ~/.config/playerctl-current) play"), { repeating = true })
-hl.bind(mainMod .. " + CTRL + SHIFT + x", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) position 5+ && playerctl --player=$(cat ~/.config/playerctl-current) pause && playerctl --player=$(cat ~/.config/playerctl-current) play"), { repeating = true })
+-- ~/.config/hypr/scripts/playerctl-seek.sh keeps the original Exec='s pause+play "kick" after
+-- seeking, but only resumes play if the player was actually playing before the seek.
+hl.bind(mainMod .. " + CTRL + SHIFT + z", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek.sh -"), { repeating = true })
+hl.bind(mainMod .. " + CTRL + SHIFT + x", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek.sh +"), { repeating = true })
 hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-picker.sh"), { repeating = true })
 hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%-"), { repeating = true })
 hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+"), { repeating = true })
