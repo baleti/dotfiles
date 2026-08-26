@@ -82,6 +82,7 @@ class Pixel6Player(dbus.service.Object):
     def __init__(self, bus):
         super().__init__(bus, OBJECT_PATH)
         self._status = None  # last-fetched status dict, or None if unreachable
+        self._status_mono = None  # time.monotonic() at that fetch, for Position interpolation
 
     # ------------------------------------------------------------------
     # org.freedesktop.DBus.Properties
@@ -156,16 +157,29 @@ class Pixel6Player(dbus.service.Object):
                 "buffering": "Playing",
             }.get(s.get("state"), "Playing" if reachable else "Stopped")
 
+        # Interpolate Position between polls (POLL_INTERVAL_S) instead of showing
+        # the same stale number for up to 4s: local arithmetic, no extra phone
+        # traffic/battery. Doesn't account for on-device playback speed (e.g.
+        # NewPipe's speed control) since statusJson() doesn't report it - only
+        # assumes 1x, so it can drift a little between polls and then snap
+        # back to the real value at the next one.
+        position_ms = max(0, int(s.get("position", 0))) if active else 0
+        if active and playback_status == "Playing" and self._status_mono is not None:
+            position_ms += (time.monotonic() - self._status_mono) * 1000
+            length_ms = max(0, int(s.get("duration", 0)))
+            if length_ms:
+                position_ms = min(position_ms, length_ms)
+
         return {
             "PlaybackStatus": playback_status,
             "Metadata": dbus.Dictionary(metadata, signature="sv"),
             "Volume": 1.0,
-            "Position": dbus.Int64(max(0, int(s.get("position", 0))) * 1000 if active else 0),
+            "Position": dbus.Int64(int(position_ms) * 1000),
             "CanGoNext": reachable,
             "CanGoPrevious": reachable,
             "CanPlay": reachable,
             "CanPause": reachable,
-            "CanSeek": False,
+            "CanSeek": reachable,
             "CanControl": reachable,
         }
 
@@ -203,7 +217,14 @@ class Pixel6Player(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE, in_signature="x")
     def Seek(self, offset):
-        pass
+        # peer-agent actions take no caller-supplied arguments by design
+        # (one named action per value) - media-seek-fwd/back on the phone
+        # are hardcoded to a 5s step (BridgeForegroundService.SEEK_STEP_MS),
+        # matching the Hyprland XF86AudioRewind/Forward keybinds that are
+        # the only callers of this today (always playerctl position 5+/5-).
+        # Sign is honored; magnitude isn't.
+        call_action("media-seek-fwd" if offset > 0 else "media-seek-back")
+        self.refresh(force=True)
 
     @dbus.service.method(PLAYER_IFACE, in_signature="ox")
     def SetPosition(self, track_id, position):
@@ -219,11 +240,12 @@ class Pixel6Player(dbus.service.Object):
 
     def refresh(self, force=False):
         new_status = fetch_status()
-        if new_status == self._status and not force:
-            return
+        changed = new_status != self._status
         self._status = new_status
-        self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
-        return True
+        self._status_mono = time.monotonic()
+        if changed or force:
+            self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
+        return changed
 
     def poll_tick(self):
         self.refresh()
