@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Emacs (Terminal)
+GenericName=Text Editor
+Comment=Edit text in emacsclient inside Alacritty
+Exec=alacritty -e tmux new-session emacsclient --tty %F
+Icon=emacs
+Terminal=false
+Categories=Development;TextEditor;
+MimeType=text/plain;text/x-python;application/xml;text/xml;text/html;application/xhtml+xml;text/rust;text/x-go;application/x-php;application/sql;text/x-lua;application/x-perl;application/x-ruby;application/toml;text/css;text/javascript;text/x-dockerfile;
