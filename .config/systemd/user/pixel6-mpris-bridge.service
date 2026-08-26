@@ -1,0 +1,13 @@
+[Unit]
+Description=MPRIS bridge for pixel6 (proxies playerctl to PeerAgent Companion over WireGuard)
+After=network-online.target peer-agent.service
+
+[Service]
+Type=simple
+Environment=PATH=/home/user1/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/user1/.config/hypr/scripts/pixel6-mpris-bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

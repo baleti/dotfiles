@@ -204,7 +204,7 @@ hl.bind("ALT + CTRL + m", hl.dsp.exec_cmd("alacritty -e ncmpcpp"))
 hl.bind(mainMod .. " + CTRL + SHIFT + p", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) play-pause"), { repeating = true })
 hl.bind(mainMod .. " + CTRL + x", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) next"), { repeating = true })
 hl.bind(mainMod .. " + CTRL + z", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.config/playerctl-current) previous"), { repeating = true })
-hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("zenity --text='Choose player' --column='' --list $(playerctl --list-all) > ~/.config/playerctl-current"), { repeating = true })
+hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-picker.sh"), { repeating = true })
 hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%-"), { repeating = true })
 hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+"), { repeating = true })
 
