@@ -159,13 +159,14 @@ class Pixel6Player(dbus.service.Object):
 
         # Interpolate Position between polls (POLL_INTERVAL_S) instead of showing
         # the same stale number for up to 4s: local arithmetic, no extra phone
-        # traffic/battery. Doesn't account for on-device playback speed (e.g.
-        # NewPipe's speed control) since statusJson() doesn't report it - only
-        # assumes 1x, so it can drift a little between polls and then snap
-        # back to the real value at the next one.
+        # traffic/battery. Scaled by the on-device playback speed (statusJson's
+        # "speed", e.g. NewPipe's speed control at 1.73x) - without this it
+        # under-advances between polls then jumps to catch up at the next real
+        # one, which is what "choppy" looked like in practice.
+        rate = float(s.get("speed", 1.0)) if active else 1.0
         position_ms = max(0, int(s.get("position", 0))) if active else 0
         if active and playback_status == "Playing" and self._status_mono is not None:
-            position_ms += (time.monotonic() - self._status_mono) * 1000
+            position_ms += (time.monotonic() - self._status_mono) * 1000 * rate
             length_ms = max(0, int(s.get("duration", 0)))
             if length_ms:
                 position_ms = min(position_ms, length_ms)
@@ -174,6 +175,7 @@ class Pixel6Player(dbus.service.Object):
             "PlaybackStatus": playback_status,
             "Metadata": dbus.Dictionary(metadata, signature="sv"),
             "Volume": 1.0,
+            "Rate": dbus.Double(rate),
             "Position": dbus.Int64(int(position_ms) * 1000),
             "CanGoNext": reachable,
             "CanGoPrevious": reachable,
