@@ -125,6 +125,9 @@ hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("playerctl next"),       { locked = tr
 hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl play-pause"), { locked = true })
 hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("playerctl play-pause"), { locked = true })
 hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = true })
+-- KDE's [mediacontrol] kglobalshortcuts had these bound to the same keys at 5s seek (~/.config/kglobalshortcutsrc)
+hl.bind("XF86AudioRewind",  hl.dsp.exec_cmd("playerctl position 5-"), { locked = true, repeating = true })
+hl.bind("XF86AudioForward", hl.dsp.exec_cmd("playerctl position 5+"), { locked = true, repeating = true })
 
 hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/clipboard-picker"))
 hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region -r | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit"))

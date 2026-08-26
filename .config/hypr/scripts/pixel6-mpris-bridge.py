@@ -31,6 +31,27 @@ PEER_AGENT_BASE = "http://10.10.0.5:8787/run"
 POLL_INTERVAL_S = 4
 HTTP_TIMEOUT_S = 3
 
+# Android package -> friendly name, for the Identity property (shown by the
+# waybar widget). BridgeForegroundService.kt already reports the source
+# app's package name in media-status's "package" field; unmapped packages
+# fall back to their last dot-segment.
+KNOWN_APPS = {
+    "InfinityLoop1309.NewPipeEnhanced": "NewPipe",
+    "org.videolan.vlc": "VLC",
+    "com.google.android.youtube": "YouTube",
+    "com.google.android.apps.youtube.music": "YT Music",
+    "com.spotify.music": "Spotify",
+    "com.google.android.apps.podcasts": "Podcasts",
+}
+
+
+def friendly_app_name(pkg):
+    if not pkg:
+        return "pixel6"
+    if pkg in KNOWN_APPS:
+        return KNOWN_APPS[pkg]
+    return pkg.rsplit(".", 1)[-1]
+
 
 def call_action(name):
     """POST to a peer-agent action, return its parsed JSON body or None."""
@@ -79,11 +100,13 @@ class Pixel6Player(dbus.service.Object):
     @dbus.service.method(dbus.PROPERTIES_IFACE, in_signature="s", out_signature="a{sv}")
     def GetAll(self, interface):
         if interface == ROOT_IFACE:
+            s = self._status
+            identity = friendly_app_name(s.get("package")) if s and s.get("active") else "pixel6"
             return {
                 "CanQuit": False,
                 "CanRaise": False,
                 "HasTrackList": False,
-                "Identity": "pixel6",
+                "Identity": identity,
                 "SupportedUriSchemes": dbus.Array([], signature="s"),
                 "SupportedMimeTypes": dbus.Array([], signature="s"),
             }
