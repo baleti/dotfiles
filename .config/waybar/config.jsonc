@@ -74,7 +74,7 @@
     "custom/mpris": {
         "exec": "~/.config/hypr/scripts/waybar-mpris.sh",
         "return-type": "json",
-        "interval": 2,
+        "restart-interval": 5,
         "on-click": "playerctl --player=$(cat ~/.config/playerctl-current) play-pause",
         "on-click-middle": "~/.config/hypr/scripts/playerctl-picker.sh",
         "on-scroll-up": "playerctl --player=$(cat ~/.config/playerctl-current) next",
