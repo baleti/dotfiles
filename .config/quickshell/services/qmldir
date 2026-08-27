@@ -1,3 +1,4 @@
 singleton Players 1.0 Players.qml
 singleton BatterySvc 1.0 BatterySvc.qml
 singleton SysmonSvc 1.0 SysmonSvc.qml
+TieredSocket 1.0 TieredSocket.qml

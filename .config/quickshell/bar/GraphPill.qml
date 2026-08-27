@@ -36,6 +36,14 @@ Rectangle {
     // process temperature attribution (the kernel has no such thing).
     property string topLabel: qsTr("Top processes")
 
+    // Time-range toggle row, shown only when tierCodes is non-empty --
+    // Bar.qml wires this up for the 5 sysmond-backed metrics (net/cpu/mem/
+    // disk/temp); media/calendar leave it empty and get no row.
+    property var tierCodes: []
+    property var tierLabels: ({})
+    property string tier: "30m"
+    signal tierRequested(string code)
+
     property bool expanded: false
     // Set by a click on the pill (or Bar.qml's IpcHandler, for the alt+t
     // style keybind toggles) -- while pinned, hovering off no longer closes
@@ -201,9 +209,48 @@ Rectangle {
                 color1: root.color1
             }
 
+            Row {
+                width: parent.width
+                spacing: 6
+                layoutDirection: Qt.RightToLeft
+                visible: root.tierCodes.length > 0
+
+                Repeater {
+                    model: root.tierCodes
+
+                    Rectangle {
+                        id: tierBtn
+                        required property string modelData
+                        readonly property bool active: modelData === root.tier
+
+                        width: tierLabel.implicitWidth + 10
+                        height: tierLabel.implicitHeight + 4
+                        radius: Theme.rounding - 4
+                        color: active ? Theme.cyan : "transparent"
+                        border.color: Theme.border
+                        border.width: active ? 0 : 1
+
+                        Text {
+                            id: tierLabel
+                            anchors.centerIn: parent
+                            text: tierBtn.modelData
+                            color: tierBtn.active ? Theme.bg : Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: root.tierRequested(tierBtn.modelData)
+                        }
+                    }
+                }
+            }
+
             Text {
                 width: parent.width
-                text: qsTr("last 10 minutes")
+                text: root.tierLabels[root.tier] ?? ""
+                visible: text.length > 0
                 color: Theme.textDim
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 2

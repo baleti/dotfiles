@@ -11,26 +11,125 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sysmon::{socket_path, DiskHistory, IfaceHistory, Metric, ProcEntry, Snapshot, HISTORY_LEN, SAMPLE_INTERVAL_MS};
+use serde::{Deserialize, Serialize};
+use sysmon::{socket_path, DiskHistory, IfaceHistory, Metric, ProcEntry, Request, Snapshot, Tier, ALL_TIERS, SAMPLE_INTERVAL_MS, TIER_CAPACITY};
 
-/// Two parallel rate histories -- rx/tx for a network interface, or
+/// One of the five fixed granularities' worth of a single raw metric --
+/// raw 1s samples get averaged together (accum_sum/accum_n) until enough
+/// have arrived for this tier's own resolution, then one point is pushed
+/// into `buf` (capped at TIER_CAPACITY, oldest dropped). See `Tier` in
+/// lib.rs for why the averaging window differs per tier.
+struct TierBuf {
+    interval: u64,
+    buf: VecDeque<f64>,
+    accum_sum: f64,
+    accum_n: u64,
+}
+
+impl TierBuf {
+    fn new(tier: Tier) -> Self {
+        TierBuf {
+            interval: tier.raw_samples_per_point(),
+            buf: VecDeque::with_capacity(TIER_CAPACITY),
+            accum_sum: 0.0,
+            accum_n: 0,
+        }
+    }
+
+    fn push_raw(&mut self, v: f64) {
+        self.accum_sum += v;
+        self.accum_n += 1;
+        if self.accum_n >= self.interval {
+            let avg = self.accum_sum / self.accum_n as f64;
+            if self.buf.len() == TIER_CAPACITY {
+                self.buf.pop_front();
+            }
+            self.buf.push_back(avg);
+            self.accum_sum = 0.0;
+            self.accum_n = 0;
+        }
+    }
+}
+
+/// Persisted form of one TierBuf -- just the finalized points. The partial
+/// accum_sum/accum_n (at most one tier-interval's worth of raw samples,
+/// i.e. seconds to hours depending on the tier) is deliberately not
+/// persisted; losing at most one in-progress bucket on restart isn't worth
+/// the complexity.
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedSeries {
+    tiers: Vec<Vec<f64>>, // index matches ALL_TIERS order
+}
+
+/// One raw metric's history across all five tiers at once. Every push_raw
+/// call fans out to all five simultaneously -- that's the whole "tiered"
+/// design: no separate rollup pass, each tier just has its own averaging
+/// window over the same incoming raw stream.
+struct TieredSeries {
+    tiers: [TierBuf; 5], // index matches ALL_TIERS order
+}
+
+impl TieredSeries {
+    fn new() -> Self {
+        TieredSeries { tiers: ALL_TIERS.map(TierBuf::new) }
+    }
+
+    fn push_raw(&mut self, v: f64) {
+        for t in &mut self.tiers {
+            t.push_raw(v);
+        }
+    }
+
+    fn get(&self, tier: Tier) -> Vec<f64> {
+        let idx = ALL_TIERS.iter().position(|&t| t == tier).unwrap();
+        self.tiers[idx].buf.iter().copied().collect()
+    }
+
+    fn to_persisted(&self) -> PersistedSeries {
+        PersistedSeries { tiers: self.tiers.iter().map(|t| t.buf.iter().copied().collect()).collect() }
+    }
+
+    fn load_persisted(&mut self, p: &PersistedSeries) {
+        for (tier_buf, points) in self.tiers.iter_mut().zip(p.tiers.iter()) {
+            tier_buf.buf = points.iter().copied().collect();
+        }
+    }
+}
+
+/// Two parallel tiered series -- rx/tx for a network interface, or
 /// read/write for a disk. Field names are generic on purpose.
 struct TwoSeriesBuf {
-    a: VecDeque<f64>,
-    b: VecDeque<f64>,
+    a: TieredSeries,
+    b: TieredSeries,
 }
 
 impl TwoSeriesBuf {
     fn new() -> Self {
-        TwoSeriesBuf {
-            a: VecDeque::with_capacity(HISTORY_LEN),
-            b: VecDeque::with_capacity(HISTORY_LEN),
-        }
+        TwoSeriesBuf { a: TieredSeries::new(), b: TieredSeries::new() }
     }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedHistory {
+    cpu_total: PersistedSeries,
+    cpu_cores: Vec<PersistedSeries>,
+    temp_c: PersistedSeries,
+    mem_used_pct: PersistedSeries,
+    mem_cached_pct: PersistedSeries,
+    net: HashMap<String, (PersistedSeries, PersistedSeries)>,
+    disk: HashMap<String, (PersistedSeries, PersistedSeries)>,
+}
+
+fn persist_path() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"));
+    base.join("sysmond/history.json")
 }
 
 struct History {
@@ -41,13 +140,13 @@ struct History {
     // Every whole-disk block device seen since startup (partitions
     // excluded), keyed by name -- same overlay treatment as net.
     disk: HashMap<String, TwoSeriesBuf>,
-    cpu_total: VecDeque<f64>,
-    // One ring buffer per logical CPU, index = core number, for the bar's
-    // stacked per-core view.
-    cpu_cores: Vec<VecDeque<f64>>,
-    temp_c: VecDeque<f64>,
-    mem_used_pct: VecDeque<f64>,
-    mem_cached_pct: VecDeque<f64>,
+    cpu_total: TieredSeries,
+    // One tiered series per logical CPU, index = core number, for the
+    // bar's overlay per-core view.
+    cpu_cores: Vec<TieredSeries>,
+    temp_c: TieredSeries,
+    mem_used_pct: TieredSeries,
+    mem_cached_pct: TieredSeries,
     top_cpu: Vec<ProcEntry>,
     top_mem: Vec<ProcEntry>,
     // Per-process network attribution needs packet capture (nethogs, via
@@ -61,17 +160,69 @@ struct History {
 
 impl History {
     fn new(n_cores: usize) -> Self {
-        History {
+        let mut h = History {
             net: HashMap::new(),
             disk: HashMap::new(),
-            cpu_total: VecDeque::with_capacity(HISTORY_LEN),
-            cpu_cores: (0..n_cores).map(|_| VecDeque::with_capacity(HISTORY_LEN)).collect(),
-            temp_c: VecDeque::with_capacity(HISTORY_LEN),
-            mem_used_pct: VecDeque::with_capacity(HISTORY_LEN),
-            mem_cached_pct: VecDeque::with_capacity(HISTORY_LEN),
+            cpu_total: TieredSeries::new(),
+            cpu_cores: (0..n_cores).map(|_| TieredSeries::new()).collect(),
+            temp_c: TieredSeries::new(),
+            mem_used_pct: TieredSeries::new(),
+            mem_cached_pct: TieredSeries::new(),
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
             top_net: Vec::new(),
+        };
+        h.load_from_disk();
+        h
+    }
+
+    /// Best-effort: a missing/corrupt/shape-mismatched file just leaves
+    /// history empty (fresh start), same as sysmond's very first ever run.
+    fn load_from_disk(&mut self) {
+        let Ok(text) = fs::read_to_string(persist_path()) else { return };
+        let Ok(p) = serde_json::from_str::<PersistedHistory>(&text) else { return };
+        self.cpu_total.load_persisted(&p.cpu_total);
+        self.temp_c.load_persisted(&p.temp_c);
+        self.mem_used_pct.load_persisted(&p.mem_used_pct);
+        self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
+        for (core, saved) in self.cpu_cores.iter_mut().zip(p.cpu_cores.iter()) {
+            core.load_persisted(saved);
+        }
+        for (name, (a, b)) in p.net {
+            let buf = self.net.entry(name).or_insert_with(TwoSeriesBuf::new);
+            buf.a.load_persisted(&a);
+            buf.b.load_persisted(&b);
+        }
+        for (name, (a, b)) in p.disk {
+            let buf = self.disk.entry(name).or_insert_with(TwoSeriesBuf::new);
+            buf.a.load_persisted(&a);
+            buf.b.load_persisted(&b);
+        }
+        eprintln!("sysmond: loaded persisted history from {}", persist_path().display());
+    }
+
+    fn save_to_disk(&self) {
+        let p = PersistedHistory {
+            cpu_total: self.cpu_total.to_persisted(),
+            cpu_cores: self.cpu_cores.iter().map(TieredSeries::to_persisted).collect(),
+            temp_c: self.temp_c.to_persisted(),
+            mem_used_pct: self.mem_used_pct.to_persisted(),
+            mem_cached_pct: self.mem_cached_pct.to_persisted(),
+            net: self.net.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
+            disk: self.disk.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
+        };
+        let Ok(text) = serde_json::to_string(&p) else { return };
+        let path = persist_path();
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        // Write to a temp file and rename over the real one -- avoids a
+        // half-written file if sysmond is killed mid-save (this file can
+        // get into the hundreds of KB with several interfaces/disks/cores
+        // all at 5 tiers x 600 points each).
+        let tmp = path.with_extension("json.tmp");
+        if fs::write(&tmp, text).is_ok() {
+            let _ = fs::rename(&tmp, &path);
         }
     }
 }
@@ -102,13 +253,6 @@ fn read_mem_pcts() -> (f64, f64) {
     let used_pct = 100.0 * (1.0 - avail / total);
     let cached_pct = 100.0 * (buffers + cached) / total;
     (used_pct, cached_pct)
-}
-
-fn push_capped(buf: &mut VecDeque<f64>, v: f64) {
-    if buf.len() == HISTORY_LEN {
-        buf.pop_front();
-    }
-    buf.push_back(v);
 }
 
 /// Parses one `/proc/stat` cpu line (aggregate `cpu ` or per-core `cpuN `):
@@ -430,37 +574,50 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
         let top_mem = top_n(top_mem_entries, 10);
 
         let mut h = history.lock().unwrap();
-        push_capped(&mut h.cpu_total, cpu_total);
-        push_capped(&mut h.temp_c, temp_c);
-        push_capped(&mut h.mem_used_pct, mem_used_pct);
-        push_capped(&mut h.mem_cached_pct, mem_cached_pct);
+        h.cpu_total.push_raw(cpu_total);
+        h.temp_c.push_raw(temp_c);
+        h.mem_used_pct.push_raw(mem_used_pct);
+        h.mem_cached_pct.push_raw(mem_cached_pct);
         for (i, pct) in core_pcts.into_iter().enumerate() {
-            if let Some(buf) = h.cpu_cores.get_mut(i) {
-                push_capped(buf, pct);
+            if let Some(series) = h.cpu_cores.get_mut(i) {
+                series.push_raw(pct);
             }
         }
         for (name, rx_bps, tx_bps) in rates {
             let buf = h.net.entry(name).or_insert_with(TwoSeriesBuf::new);
-            push_capped(&mut buf.a, rx_bps);
-            push_capped(&mut buf.b, tx_bps);
+            buf.a.push_raw(rx_bps);
+            buf.b.push_raw(tx_bps);
         }
         for (name, rd_bps, wr_bps) in disk_rates {
             let buf = h.disk.entry(name).or_insert_with(TwoSeriesBuf::new);
-            push_capped(&mut buf.a, rd_bps);
-            push_capped(&mut buf.b, wr_bps);
+            buf.a.push_raw(rd_bps);
+            buf.b.push_raw(wr_bps);
         }
         h.top_cpu = top_cpu;
         h.top_mem = top_mem;
     }
 }
 
+/// Saves the full tiered history to disk periodically so the coarser tiers
+/// (7d/7w/7mo) survive a sysmond restart instead of restarting empty --
+/// those spans are exactly the ones that take the longest to refill
+/// otherwise. Runs on its own thread/interval, independent of the 1s
+/// sampling loop; every 60s is frequent enough given the coarsest tier's
+/// own resolution is measured in hours.
+fn persist_loop(history: Arc<Mutex<History>>) {
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+        history.lock().unwrap().save_to_disk();
+    }
+}
+
 fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone unix stream"));
-    let mut request = String::new();
-    if reader.read_line(&mut request).unwrap_or(0) == 0 {
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
         return;
     }
-    let Some(metric) = Metric::parse(&request) else { return };
+    let Some(Request { metric, tier }) = Request::parse(&request_line) else { return };
 
     let mut writer = stream;
     loop {
@@ -473,8 +630,8 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                         .iter()
                         .map(|(name, buf)| IfaceHistory {
                             name: name.clone(),
-                            rx_bps: buf.a.iter().copied().collect(),
-                            tx_bps: buf.b.iter().copied().collect(),
+                            rx_bps: buf.a.get(tier),
+                            tx_bps: buf.b.get(tier),
                         })
                         .collect(),
                 },
@@ -484,21 +641,21 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                         .iter()
                         .map(|(name, buf)| DiskHistory {
                             name: name.clone(),
-                            read_bps: buf.a.iter().copied().collect(),
-                            write_bps: buf.b.iter().copied().collect(),
+                            read_bps: buf.a.get(tier),
+                            write_bps: buf.b.get(tier),
                         })
                         .collect(),
                 },
                 Metric::Cpu => Snapshot::Cpu {
-                    total: h.cpu_total.iter().copied().collect(),
-                    cores: h.cpu_cores.iter().map(|c| c.iter().copied().collect()).collect(),
+                    total: h.cpu_total.get(tier),
+                    cores: h.cpu_cores.iter().map(|c| c.get(tier)).collect(),
                 },
                 Metric::Temp => Snapshot::Temp {
-                    celsius: h.temp_c.iter().copied().collect(),
+                    celsius: h.temp_c.get(tier),
                 },
                 Metric::Mem => Snapshot::Mem {
-                    used_pct: h.mem_used_pct.iter().copied().collect(),
-                    cached_pct: h.mem_cached_pct.iter().copied().collect(),
+                    used_pct: h.mem_used_pct.get(tier),
+                    cached_pct: h.mem_cached_pct.get(tier),
                 },
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
@@ -528,6 +685,16 @@ fn main() {
     {
         let history = history.clone();
         std::thread::spawn(move || nethogs_loop(history));
+    }
+    {
+        // Periodic save only, deliberately no SIGTERM/SIGINT handler --
+        // taking the History mutex and doing file I/O from a raw signal
+        // handler risks a self-deadlock if the signal lands while
+        // sample_loop already holds that same lock (signal handlers aren't
+        // async-signal-safe for mutex locks or allocation). At most 60s of
+        // the finest tiers is ever at risk on an unclean stop.
+        let history = history.clone();
+        std::thread::spawn(move || persist_loop(history));
     }
 
     let path = socket_path();
