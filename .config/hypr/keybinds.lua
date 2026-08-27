@@ -191,13 +191,27 @@ hl.bind(mainMod .. " + SHIFT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/notif
 hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/notification-picker"))
 
 -- system monitor popups (~/.config/hypr/sysmon): small graph overlay for the
--- last 5 minutes of network/cpu/temperature, replacing the KDE alt+n network
--- widget. sysmond (autostarted in hyprland.lua) samples continuously so the
--- graph has history the instant the popup opens; a second press of the same
--- keybind closes it (same pidfile+SIGTERM toggle as clipboard-picker).
+-- last 10 minutes of network/cpu/temperature/memory, replacing the KDE
+-- alt+n network widget. sysmond (autostarted in hyprland.lua) samples
+-- continuously so the graph has history the instant the popup opens; a
+-- second press of the same keybind closes it (same pidfile+SIGTERM toggle
+-- as clipboard-picker). "m" for memory added 2026-08-27 alongside the
+-- quickshell bar's own hover graphs, which share this same daemon.
 hl.bind("ALT + " .. mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph net"))
 hl.bind("ALT + " .. mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph cpu"))
 hl.bind("ALT + " .. mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph temp"))
+hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph mem"))
+
+-- Bare alt+n/p/m/t/d (no mainMod, unlike the standalone popups above):
+-- toggle the *quickshell bar's own* hover-graph panels open/closed on
+-- whichever monitor is focused, via ~/.config/hypr/scripts/bar-toggle.sh.
+-- Same sysmond data source, different UI (in-bar vs standalone GTK popup).
+hl.bind("ALT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleNet"))
+hl.bind("ALT + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"))
+hl.bind("ALT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"))
+hl.bind("ALT + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleTemp"))
+hl.bind("ALT + d", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleDisk"))
+hl.bind("CTRL + ALT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
 
 -- bluetooth
 hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"))

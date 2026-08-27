@@ -65,7 +65,11 @@ hl.on("hyprland.start", function()
     -- line to hl.exec_cmd("dunst") -- the dunst package is untouched and
     -- its systemd unit was already masked before this switch.
     hl.exec_cmd("~/.config/hypr/notifyd/target/release/notifyd")
-    hl.exec_cmd("waybar")
+    -- 2026-08-27: replaced by a custom quickshell bar (~/.config/quickshell/),
+    -- built from scratch after trying and reverting caelestia-shell. Revert:
+    -- uncomment this line, and kill/disable `qs -n -d` if it's running.
+    -- hl.exec_cmd("waybar")
+    hl.exec_cmd("qs -n -d")
 
     for _, app in ipairs(apps) do
         pending_hide[app.class] = app.slug
