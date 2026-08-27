@@ -31,6 +31,7 @@ pub enum Metric {
     Disk,
     TopCpu,
     TopMem,
+    TopNet,
 }
 
 impl Metric {
@@ -43,6 +44,7 @@ impl Metric {
             "disk" => Some(Metric::Disk),
             "topcpu" => Some(Metric::TopCpu),
             "topmem" => Some(Metric::TopMem),
+            "topnet" => Some(Metric::TopNet),
             _ => None,
         }
     }
@@ -70,6 +72,7 @@ pub struct ProcEntry {
     pub pid: i32,
     pub name: String,
     /// CPU: percent of one core (0-100*n_cores). Mem: resident set in MB.
+    /// Net: combined sent+received KB over the last ~1s (nethogs trace mode).
     pub value: f64,
 }
 

@@ -116,6 +116,7 @@ fn finish_handshake(mut stream: UnixStream, metric: Metric) -> Option<UnixStream
         Metric::Mem => "mem\n",
         Metric::TopCpu => "topcpu\n",
         Metric::TopMem => "topmem\n",
+        Metric::TopNet => "topnet\n",
         Metric::Disk => "disk\n",
     };
     stream.write_all(word.as_bytes()).ok()?;
@@ -224,6 +225,7 @@ fn main() {
         Metric::Mem => ("Memory", (0.78, 0.48, 1.0)),
         Metric::TopCpu => ("Top CPU", (0.37, 0.63, 1.0)),
         Metric::TopMem => ("Top Memory", (0.78, 0.48, 1.0)),
+        Metric::TopNet => ("Top Network", (0.31, 0.84, 0.48)),
         Metric::Disk => ("Disk", (0.31, 0.84, 0.48)),
     };
     // One color per interface (not per rx/tx) for the multi-interface

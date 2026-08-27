@@ -11,6 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -49,6 +50,13 @@ struct History {
     mem_cached_pct: VecDeque<f64>,
     top_cpu: Vec<ProcEntry>,
     top_mem: Vec<ProcEntry>,
+    // Per-process network attribution needs packet capture (nethogs, via
+    // its own cap_net_raw/cap_net_admin/cap_dac_read_search/cap_sys_ptrace
+    // file capabilities -- already set on this system's /usr/bin/nethogs,
+    // confirmed 2026-08-27, so sysmond itself stays fully unprivileged and
+    // never needs root). Empty if nethogs isn't installed or isn't
+    // capable-enabled -- see nethogs_loop's graceful skip.
+    top_net: Vec<ProcEntry>,
 }
 
 impl History {
@@ -63,6 +71,7 @@ impl History {
             mem_cached_pct: VecDeque::with_capacity(HISTORY_LEN),
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
+            top_net: Vec::new(),
         }
     }
 }
@@ -249,6 +258,61 @@ fn top_n(mut entries: Vec<ProcEntry>, n: usize) -> Vec<ProcEntry> {
     entries.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
     entries.truncate(n);
     entries
+}
+
+/// One line of `nethogs -t` output: `<name>/<pid>/<uid>\t<sent_kb>\t<recv_kb>`
+/// for an attributed process, but also unattributed lines this skips --
+/// `unknown TCP/0/0\t..\t..` (packet seen, no matching /proc socket owner
+/// yet) and raw `ip:port-ip:port/0/0\t..\t..` connection identifiers (same
+/// cause). `<name>` is nethogs' own resolved program path/name and can
+/// itself contain `/`, so split from the right, not the left.
+fn parse_nethogs_line(line: &str) -> Option<ProcEntry> {
+    let fields: Vec<&str> = line.split('\t').collect();
+    if fields.len() < 3 {
+        return None;
+    }
+    let sent: f64 = fields[1].parse().ok()?;
+    let recv: f64 = fields[2].parse().ok()?;
+    let mut segs = fields[0].rsplitn(3, '/');
+    let _uid = segs.next()?;
+    let pid: i32 = segs.next()?.parse().ok()?;
+    let path = segs.next()?;
+    if pid <= 0 {
+        return None; // "unknown TCP/0/0" and raw ip:port/0/0 connection lines
+    }
+    let name = path.rsplit('/').next().unwrap_or(path).to_string();
+    Some(ProcEntry { pid, name, value: sent + recv })
+}
+
+/// Runs `nethogs -t` (trace mode: plain text, one block per ~1s refresh
+/// rather than the interactive ncurses UI) as a subprocess for the life of
+/// sysmond, and keeps `history.top_net` updated with each block's top-10.
+/// A no-op forever (not a crash) if nethogs isn't installed -- this metric
+/// just stays empty, same as any other missing sensor here.
+fn nethogs_loop(history: Arc<Mutex<History>>) {
+    let Ok(child) = Command::new("nethogs")
+        .args(["-t", "-d", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        eprintln!("sysmond: nethogs not available, top-network-processes will stay empty");
+        return;
+    };
+    let Some(stdout) = child.stdout else { return };
+    let reader = BufReader::new(stdout);
+
+    let mut current: HashMap<i32, ProcEntry> = HashMap::new();
+    for line in reader.lines().map_while(Result::ok) {
+        if line.starts_with("Refreshing:") {
+            let entries: Vec<ProcEntry> = current.drain().map(|(_, v)| v).collect();
+            history.lock().unwrap().top_net = top_n(entries, 10);
+            continue;
+        }
+        if let Some(entry) = parse_nethogs_line(&line) {
+            current.insert(entry.pid, entry);
+        }
+    }
 }
 
 fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
@@ -438,6 +502,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                 },
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
+                Metric::TopNet => Snapshot::TopProcs { procs: h.top_net.clone() },
             }
         };
         let Ok(line) = serde_json::to_string(&snapshot) else { return };
@@ -459,6 +524,10 @@ fn main() {
     {
         let history = history.clone();
         std::thread::spawn(move || sample_loop(history, clk_tck));
+    }
+    {
+        let history = history.clone();
+        std::thread::spawn(move || nethogs_loop(history));
     }
 
     let path = socket_path();

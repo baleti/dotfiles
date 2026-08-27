@@ -28,6 +28,9 @@ QtObject {
     // [{pid, name, value}], value = %CPU of one core, or MB resident.
     property var topCpu: []
     property var topMem: []
+    // value = combined sent+received KB over the last ~1s (nethogs trace
+    // mode, sysmond's own subprocess -- see sysmond.rs's nethogs_loop).
+    property var topNet: []
 
     // Whole-disk block devices, same shape as netInterfaces.
     property var diskDevices: []
@@ -111,6 +114,16 @@ QtObject {
         parser: SplitParser {
             splitMarker: "\n"
             onRead: data => { root.topMem = JSON.parse(data).procs; }
+        }
+    }
+
+    readonly property Socket topNetSocket: Socket {
+        path: root.socketPath()
+        connected: true
+        onConnectedChanged: if (connected) write("topnet\n")
+        parser: SplitParser {
+            splitMarker: "\n"
+            onRead: data => { root.topNet = JSON.parse(data).procs; }
         }
     }
 }
