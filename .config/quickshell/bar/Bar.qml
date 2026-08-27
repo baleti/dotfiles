@@ -293,6 +293,8 @@ Item {
             seriesList: root.netSeriesList
             maxValue: root.netMax
             legendItems: root.netLegend
+            topProcs: SysmonSvc.topNet
+            topUnit: " KB/s"
             groupX: rightRow.x
             targetRight: root.stackRight("net")
         }
