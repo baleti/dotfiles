@@ -19,11 +19,10 @@ Rectangle {
     property string title: ""
     property string valueLabel: ""
 
-    // "single" (series/color1), "overlay" (seriesList), "stacked" (stackedList)
+    // "single" (series/color1) or "overlay" (seriesList)
     property string mode: "single"
     property list<real> series: []
     property var seriesList: []
-    property var stackedList: []
     property real maxValue: 100
     property color color1: Theme.cyan
 
@@ -32,25 +31,67 @@ Rectangle {
     // [{name, value}] -- top-10 list shown when non-empty.
     property var topProcs: []
     property string topUnit: ""
+    // Overrides the "Top processes" heading -- used by temperature, where
+    // this is really "top CPU users" as a heat proxy, not a real per-
+    // process temperature attribution (the kernel has no such thing).
+    property string topLabel: qsTr("Top processes")
 
     property bool expanded: false
+    // Set by a click on the pill (or Bar.qml's IpcHandler, for the alt+t
+    // style keybind toggles) -- while pinned, hovering off no longer closes
+    // the panel; only clicking again (or the keybind again) does.
+    property bool pinned: false
     readonly property bool hovered: hoverArea.containsMouse || expandPanel.hovered
     // Bar.qml reads this to size the window; 0 when collapsed.
     readonly property real overflowHeight: expandPanel.height
+    // Bar.qml reads this to lay out multiple simultaneously-open panels
+    // side by side instead of each self-positioning under its own pill
+    // (which overlaps once more than one is expanded at once).
+    readonly property real panelWidth: expandPanel.width
+    // Set by Bar.qml when coordinating a multi-panel layout, so several
+    // open panels stack side by side instead of overlapping. Both in
+    // Bar.qml's own root coordinate space, since this pill lives inside
+    // rightRow and doesn't know its own absolute position otherwise.
+    // targetRight NaN falls back to this pill's own default (directly
+    // below itself, right-aligned to its own right edge).
+    property real groupX: 0
+    property real targetRight: NaN
 
     onHoveredChanged: {
         if (hovered) {
             hideTimer.stop();
             expanded = true;
-        } else {
+        } else if (!pinned) {
             hideTimer.restart();
         }
     }
 
+    // 0, not a real debounce delay -- a bare `expanded = false` on hover-out
+    // still works, but going through requestAnimationFrame-ish next-tick
+    // timing here avoids a same-frame close+reopen flicker if the pointer
+    // is exactly on the pill/panel boundary for an instant. Closes on the
+    // very next event loop tick either way, i.e. instantly from a human
+    // perspective -- the previous 250ms was what let sweeping the mouse
+    // across several pills leave multiple panels open at once.
     Timer {
         id: hideTimer
-        interval: 250
+        interval: 0
         onTriggered: root.expanded = false
+    }
+
+    // Click-to-pin: same persistence a keybind toggle already had (alt+t
+    // etc, via Bar.qml's IpcHandler calling this too) -- stays open past
+    // hover-out until clicked/toggled again, instead of closing the instant
+    // the mouse leaves.
+    function togglePin(): void {
+        pinned = !pinned;
+        if (pinned) {
+            hideTimer.stop();
+            expanded = true;
+        } else if (!hovered) {
+            hideTimer.stop();
+            expanded = false;
+        }
     }
 
     implicitWidth: compactRow.implicitWidth + Theme.pillPadH * 2
@@ -89,6 +130,7 @@ Rectangle {
         id: hoverArea
         anchors.fill: parent
         hoverEnabled: true
+        onClicked: root.togglePin()
     }
 
     // Overlay child, not in-flow: extends below root's own bounds without
@@ -100,9 +142,8 @@ Rectangle {
 
         readonly property bool hovered: expandMouseArea.containsMouse
 
-        anchors.top: root.bottom
-        anchors.right: root.right
-        anchors.topMargin: 6
+        y: root.height + 6
+        x: isNaN(root.targetRight) ? (root.width - width) : (root.targetRight - width - root.groupX - root.x)
         width: 480
         height: root.expanded ? content.implicitHeight + 24 : 0
         visible: height > 0
@@ -156,7 +197,6 @@ Rectangle {
                 height: 300
                 series: root.mode === "single" ? root.series : []
                 seriesList: root.mode === "overlay" ? root.seriesList : []
-                stackedList: root.mode === "stacked" ? root.stackedList : []
                 maxValue: root.maxValue
                 color1: root.color1
             }
@@ -213,7 +253,7 @@ Rectangle {
                 }
 
                 Text {
-                    text: qsTr("Top processes")
+                    text: root.topLabel
                     color: Theme.textDim
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 2
