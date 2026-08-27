@@ -72,6 +72,17 @@ Item {
     // it never moves from its natural spot.
     readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "calendar"]
 
+    // Which of SysmonSvc's 5 fixed tiers (30m/6h/7d/7w/7mo) each panel is
+    // currently viewing -- kept here (not just read off SysmonSvc directly)
+    // so each GraphPill's active-tier button highlight has somewhere to
+    // bind to; setting one also tells SysmonSvc to reconnect that metric's
+    // socket at the new tier (process-wide, see SysmonSvc.qml).
+    property string netTier: "30m"
+    property string cpuTier: "30m"
+    property string memTier: "30m"
+    property string diskTier: "30m"
+    property string tempTier: "30m"
+
     function panelExpandedFor(name: string): bool {
         switch (name) {
         case "calendar": return calendarExpanded.expanded;
@@ -295,6 +306,10 @@ Item {
             legendItems: root.netLegend
             topProcs: SysmonSvc.topNet
             topUnit: " KB/s"
+            tierCodes: SysmonSvc.tierCodes
+            tierLabels: SysmonSvc.tierLabels
+            tier: root.netTier
+            onTierRequested: code => { root.netTier = code; SysmonSvc.setNetTier(code); }
             groupX: rightRow.x
             targetRight: root.stackRight("net")
         }
@@ -311,6 +326,10 @@ Item {
             legendItems: root.cpuLegend
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
+            tierCodes: SysmonSvc.tierCodes
+            tierLabels: SysmonSvc.tierLabels
+            tier: root.cpuTier
+            onTierRequested: code => { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
             groupX: rightRow.x
             targetRight: root.stackRight("cpu")
         }
@@ -327,6 +346,10 @@ Item {
             legendItems: root.memLegend
             topProcs: SysmonSvc.topMem
             topUnit: " MB"
+            tierCodes: SysmonSvc.tierCodes
+            tierLabels: SysmonSvc.tierLabels
+            tier: root.memTier
+            onTierRequested: code => { root.memTier = code; SysmonSvc.setMemTier(code); }
             groupX: rightRow.x
             targetRight: root.stackRight("mem")
         }
@@ -342,6 +365,10 @@ Item {
             seriesList: root.diskSeriesList
             maxValue: root.diskMax
             legendItems: root.diskLegend
+            tierCodes: SysmonSvc.tierCodes
+            tierLabels: SysmonSvc.tierLabels
+            tier: root.diskTier
+            onTierRequested: code => { root.diskTier = code; SysmonSvc.setDiskTier(code); }
             groupX: rightRow.x
             targetRight: root.stackRight("disk")
         }
@@ -359,6 +386,10 @@ Item {
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             topLabel: qsTr("Top CPU (heat proxy)")
+            tierCodes: SysmonSvc.tierCodes
+            tierLabels: SysmonSvc.tierLabels
+            tier: root.tempTier
+            onTierRequested: code => { root.tempTier = code; SysmonSvc.setTempTier(code); }
             groupX: rightRow.x
             targetRight: root.stackRight("temp")
         }

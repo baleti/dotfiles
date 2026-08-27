@@ -8,9 +8,70 @@ use std::path::PathBuf;
 /// One sample per tick, so callers can convert to a duration however they like.
 pub const SAMPLE_INTERVAL_MS: u64 = 1000;
 
-/// 10 minutes of history at one sample/sec (bumped from the original 5 for
-/// the quickshell bar's hover-graphs, 2026-08-27).
-pub const HISTORY_LEN: usize = 600;
+/// Every tiered series (see `Tier`) stores at most this many points,
+/// regardless of the tier's span -- older points within a tier are
+/// averaged together more coarsely instead of the buffer just growing, so
+/// the 7-month tier costs the same memory/wire size as the 30-minute one.
+pub const TIER_CAPACITY: usize = 600;
+
+/// The five fixed granularities a history series is kept at simultaneously
+/// (2026-08-27, replacing the original single flat 10-minute buffer): every
+/// raw 1s sample is folded into all five at once (see sysmond.rs's
+/// `TierBuf::push_raw`), each capped at `TIER_CAPACITY` stored points by
+/// averaging progressively more raw samples per point as the tier's span
+/// grows -- e.g. the 30m tier averages every ~3 raw seconds into one point,
+/// the 7-month tier averages every ~8.4 hours into one point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Tier {
+    Min30,
+    Hour6,
+    Day7,
+    Week7,
+    Month7,
+}
+
+pub const ALL_TIERS: [Tier; 5] = [Tier::Min30, Tier::Hour6, Tier::Day7, Tier::Week7, Tier::Month7];
+
+impl Tier {
+    pub fn code(self) -> &'static str {
+        match self {
+            Tier::Min30 => "30m",
+            Tier::Hour6 => "6h",
+            Tier::Day7 => "7d",
+            Tier::Week7 => "7w",
+            Tier::Month7 => "7mo",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "30m" => Some(Tier::Min30),
+            "6h" => Some(Tier::Hour6),
+            "7d" => Some(Tier::Day7),
+            "7w" => Some(Tier::Week7),
+            "7mo" => Some(Tier::Month7),
+            _ => None,
+        }
+    }
+
+    /// Total span this tier covers, in seconds. Months are approximated as
+    /// 30 days -- this only sets the rollup granularity, not a calendar.
+    fn span_secs(self) -> u64 {
+        match self {
+            Tier::Min30 => 30 * 60,
+            Tier::Hour6 => 6 * 60 * 60,
+            Tier::Day7 => 7 * 24 * 60 * 60,
+            Tier::Week7 => 7 * 7 * 24 * 60 * 60,
+            Tier::Month7 => 7 * 30 * 24 * 60 * 60,
+        }
+    }
+
+    /// How many raw 1-second samples get averaged into one stored point in
+    /// this tier.
+    pub fn raw_samples_per_point(self) -> u64 {
+        (self.span_secs() / TIER_CAPACITY as u64).max(1)
+    }
+}
 
 pub fn socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
@@ -19,9 +80,13 @@ pub fn socket_path() -> PathBuf {
     base.join("sysmond.sock")
 }
 
-/// A client connects, writes one `Metric` variant's lowercase name (e.g.
-/// `"net\n"`) as the request, then reads one JSON `Snapshot` line per second
-/// until it disconnects.
+/// A client connects, writes one request line -- `<metric>` or
+/// `<metric>:<tier>` (bare metric defaults to the 30-minute tier; `Top*`
+/// metrics ignore the tier entirely, they're point-in-time, not history) --
+/// then reads one JSON `Snapshot` line per second until it disconnects.
+/// Switching tiers means disconnecting and reconnecting with a new request,
+/// not a second request on the same stream (see quickshell's
+/// TieredSocket.qml).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
     Net,
@@ -36,7 +101,7 @@ pub enum Metric {
 
 impl Metric {
     pub fn parse(s: &str) -> Option<Self> {
-        match s.trim() {
+        match s {
             "net" => Some(Metric::Net),
             "cpu" => Some(Metric::Cpu),
             "temp" => Some(Metric::Temp),
@@ -50,7 +115,22 @@ impl Metric {
     }
 }
 
-/// One interface's history, oldest-first, `HISTORY_LEN` long.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Request {
+    pub metric: Metric,
+    pub tier: Tier,
+}
+
+impl Request {
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        let (metric_str, tier_str) = s.split_once(':').unwrap_or((s, "30m"));
+        Some(Request { metric: Metric::parse(metric_str)?, tier: Tier::parse(tier_str)? })
+    }
+}
+
+/// One interface's history at one tier, oldest-first, up to `TIER_CAPACITY`
+/// long.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IfaceHistory {
     pub name: String,
@@ -58,7 +138,8 @@ pub struct IfaceHistory {
     pub tx_bps: Vec<f64>,
 }
 
-/// One block device's history, oldest-first, `HISTORY_LEN` long.
+/// One block device's history at one tier, oldest-first, up to
+/// `TIER_CAPACITY` long.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskHistory {
     pub name: String,
@@ -76,8 +157,9 @@ pub struct ProcEntry {
     pub value: f64,
 }
 
-/// Oldest-first ring-buffer snapshots, `HISTORY_LEN` long (fewer while the
-/// daemon is still filling its initial buffer just after startup).
+/// Oldest-first ring-buffer snapshots for whichever tier was requested, up
+/// to `TIER_CAPACITY` long (fewer while that tier is still filling its
+/// initial buffer just after startup).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "metric", rename_all = "lowercase")]
 pub enum Snapshot {
