@@ -1,19 +1,53 @@
 pragma Singleton
 import QtQuick
+import Quickshell
+import Quickshell.Io
 
-// Palette matches ~/.config/hypr/appearance.lua (cyan->green active-border
-// gradient, dark islands) and the old waybar style.css.
+// Base palette (rounding/fonts/etc, and fallback colors) still matches
+// ~/.config/hypr/appearance.lua's cyan->green gradient. The actual color
+// values are overridden reactively from the Material You scheme generated
+// by ~/.config/hypr/scripts/gen-theme.py (seeded from that same cyan/green
+// pair, not from wallpaper-2.png -- that image is monochrome). Falls back
+// to the hardcoded values below if the generated file is missing, so the
+// bar still looks right before that script has ever been run.
 QtObject {
+    id: root
+
+    readonly property FileView schemeFile: FileView {
+        path: `${Quickshell.env("HOME")}/.local/state/quickshell/scheme.json`
+        watchChanges: true
+        onFileChanged: reload()
+    }
+
+    readonly property var scheme: {
+        try {
+            const text = schemeFile.text();
+            if (text)
+                return JSON.parse(text);
+        } catch (e) {
+            // Falls through to defaults below (missing/invalid file).
+        }
+        return null;
+    }
+
     readonly property color bg: "#1a1a1a"
     readonly property color bgAlpha: Qt.rgba(0.102, 0.102, 0.102, 0.9)
-    readonly property color border: Qt.rgba(0.349, 0.349, 0.349, 0.55)
-    readonly property color text: "#d8dee9"
-    readonly property color textDim: "#a0a8b0"
+    readonly property color border: scheme ? scheme.outlineVariant : Qt.rgba(0.349, 0.349, 0.349, 0.55)
+    readonly property color text: scheme ? scheme.onSurface : "#d8dee9"
+    readonly property color textDim: scheme ? scheme.onSurfaceVariant : "#a0a8b0"
     readonly property color muted: "#888888"
-    readonly property color cyan: "#33ccff"
-    readonly property color green: "#00ff99"
-    readonly property color red: "#ff5555"
+    readonly property color cyan: scheme ? scheme.primary : "#33ccff"
+    readonly property color green: scheme ? scheme.secondary : "#00ff99"
+    readonly property color red: scheme ? scheme.error : "#ff5555"
     readonly property color orange: "#f5a70a"
+
+    // Distinguishable series colors (CPU cores, network interfaces, disk
+    // devices) -- 8 hues spread from the theme's own primary hue, so they
+    // read as "this theme's palette", not an arbitrary rainbow.
+    readonly property var seriesPalette: scheme ? scheme.seriesPalette : [
+        "#33ccff", "#00ff99", "#f5a70a", "#c87aff",
+        "#ff73a6", "#f2d94e", "#ff6b6b", "#8ca6ff"
+    ]
 
     readonly property int rounding: 10
     readonly property int barHeight: 38

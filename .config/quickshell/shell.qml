@@ -1,8 +1,12 @@
 import QtQuick
 import Quickshell
+import Quickshell.Wayland
 import "bar"
+import "background"
 
 ShellRoot {
+    Background {}
+
     Variants {
         model: Quickshell.screens
 
@@ -35,6 +39,16 @@ ShellRoot {
                 width: panel.width
                 height: bar.totalHeight
             }
+
+            // mod+m opens the media panel with real keyboard control (arrow
+            // keys seek, space toggles play/pause -- see Bar.qml's Keys
+            // handling). OnDemand, not Exclusive: the compositor hands this
+            // surface focus while it's the newest focusable thing shown,
+            // without permanently grabbing all keyboard input the way a
+            // picker's Exclusive mode does (that risk is why pickers are
+            // never self-launched for testing -- this reverts to None the
+            // instant the panel closes, so there's no lingering grab).
+            WlrLayershell.keyboardFocus: bar.mediaPanel.expanded ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
             Bar {
                 id: bar

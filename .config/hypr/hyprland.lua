@@ -65,6 +65,15 @@ hl.on("hyprland.start", function()
     -- line to hl.exec_cmd("dunst") -- the dunst package is untouched and
     -- its systemd unit was already masked before this switch.
     hl.exec_cmd("~/.config/hypr/notifyd/target/release/notifyd")
+    -- Background sampler for the bar's hover-graphs and the alt+mod+n/p/t/m
+    -- standalone popups (~/.config/hypr/sysmon). keybinds.lua's comments
+    -- already claimed this was autostarted here -- it wasn't; this was
+    -- only ever running because a dev-session build of it was left up.
+    hl.exec_cmd("~/.config/hypr/sysmon/target/release/sysmond")
+    -- Regenerates the Material You theme (gen-theme.py) the instant the
+    -- wallpaper file actually changes on disk -- see wallpaper-watch.sh and
+    -- scripts/set-wallpaper.sh, the sole sanctioned way to change it.
+    hl.exec_cmd("~/.config/hypr/scripts/wallpaper-watch.sh")
     -- 2026-08-27: replaced by a custom quickshell bar (~/.config/quickshell/),
     -- built from scratch after trying and reverting caelestia-shell. Revert:
     -- uncomment this line, and kill/disable `qs -n -d` if it's running.

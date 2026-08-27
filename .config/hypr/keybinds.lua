@@ -210,8 +210,9 @@ hl.bind("ALT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleN
 hl.bind("ALT + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"))
 hl.bind("ALT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"))
 hl.bind("ALT + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleTemp"))
-hl.bind("ALT + d", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleDisk"))
-hl.bind("CTRL + ALT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
+hl.bind("ALT + s", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleDisk"))
+hl.bind(mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
+hl.bind("CTRL + ALT + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))
 
 -- bluetooth
 hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"))
