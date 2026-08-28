@@ -26,6 +26,12 @@ Rectangle {
     property real maxValue: 100
     property color color1: Theme.cyan
 
+    // Formats a raw value (0..maxValue) for the y-axis label column --
+    // Bar.qml overrides per-widget (percent for cpu/mem, a byte-rate
+    // string for net/disk, "N°C" for temperature).
+    property var yAxisFormatter: v => Math.round(v)
+    readonly property var gridFractions: [0, 0.25, 0.5, 0.75, 1.0]
+
     // [{name, color}] -- shown under the graph when non-empty.
     property var legendItems: []
     // [{name, value}] -- top-10 list shown when non-empty.
@@ -200,13 +206,44 @@ Rectangle {
                 }
             }
 
-            Graph {
+            Row {
                 width: parent.width
                 height: 300
-                series: root.mode === "single" ? root.series : []
-                seriesList: root.mode === "overlay" ? root.seriesList : []
-                maxValue: root.maxValue
-                color1: root.color1
+                spacing: 6
+
+                // Y-axis: labels the same gridFractions the Graph draws
+                // faint horizontal lines at, so "what height corresponds
+                // to what value" is readable directly off the graph
+                // instead of only knowing the single top-of-scale number.
+                Item {
+                    id: yAxis
+                    width: 38
+                    height: parent.height
+
+                    Repeater {
+                        model: root.gridFractions
+
+                        Text {
+                            required property real modelData
+                            y: (1 - modelData) * (yAxis.height - implicitHeight)
+                            anchors.right: yAxis.right
+                            text: root.yAxisFormatter(modelData * root.maxValue)
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                        }
+                    }
+                }
+
+                Graph {
+                    width: parent.width - yAxis.width - parent.spacing
+                    height: parent.height
+                    series: root.mode === "single" ? root.series : []
+                    seriesList: root.mode === "overlay" ? root.seriesList : []
+                    maxValue: root.maxValue
+                    color1: root.color1
+                    gridFractions: root.gridFractions
+                }
             }
 
             Row {

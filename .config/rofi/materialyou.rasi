@@ -3,23 +3,23 @@
  * system themes may or may not define) so this always takes effect
  * regardless of which base theme config.rasi imports. */
 * {
-    background-color: #201b17;
-    text-color: #ece0da;
+    background-color: #1b1b1f;
+    text-color: #e3e2e6;
 }
 window {
-    background-color: #201b17;
-    border-color: #ffb77c;
+    background-color: #1b1b1f;
+    border-color: #adc6ff;
 }
 inputbar {
-    background-color: #51443b;
-    text-color: #ece0da;
+    background-color: #44474f;
+    text-color: #e3e2e6;
 }
 element {
-    text-color: #ece0da;
+    text-color: #e3e2e6;
 }
 element selected {
-    background-color: #ffb77c;
-    text-color: #4d2700;
+    background-color: #adc6ff;
+    text-color: #002e69;
 }
 element-text, element-icon {
     background-color: transparent;
