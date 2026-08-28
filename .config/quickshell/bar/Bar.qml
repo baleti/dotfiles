@@ -306,6 +306,7 @@ Item {
             legendItems: root.netLegend
             topProcs: SysmonSvc.topNet
             topUnit: " KB/s"
+            yAxisFormatter: v => root.fmtRate(v)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.netTier
@@ -326,6 +327,7 @@ Item {
             legendItems: root.cpuLegend
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
+            yAxisFormatter: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.cpuTier
@@ -346,6 +348,7 @@ Item {
             legendItems: root.memLegend
             topProcs: SysmonSvc.topMem
             topUnit: " MB"
+            yAxisFormatter: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.memTier
@@ -365,6 +368,7 @@ Item {
             seriesList: root.diskSeriesList
             maxValue: root.diskMax
             legendItems: root.diskLegend
+            yAxisFormatter: v => root.fmtRate(v)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.diskTier
@@ -386,6 +390,7 @@ Item {
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             topLabel: qsTr("Top CPU (heat proxy)")
+            yAxisFormatter: v => Math.round(v) + "°C"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.tempTier

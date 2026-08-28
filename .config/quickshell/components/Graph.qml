@@ -127,9 +127,27 @@ Canvas {
         ctx.setLineDash([]);
     }
 
+    // Fractions of maxValue (0=bottom, 1=top) to draw a faint horizontal
+    // line at -- GraphPill's y-axis label column lines its own labels up
+    // against these same fractions, so the two have to stay in sync.
+    property var gridFractions: [0, 0.25, 0.5, 0.75, 1.0]
+
+    function drawGrid(ctx) {
+        ctx.beginPath();
+        for (const f of gridFractions) {
+            const y = height - f * height;
+            ctx.moveTo(0, y);
+            ctx.lineTo(width, y);
+        }
+        ctx.strokeStyle = Qt.rgba(Theme.textDim.r, Theme.textDim.g, Theme.textDim.b, 0.15);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+    }
+
     onPaint: {
         const ctx = getContext("2d");
         ctx.reset();
+        drawGrid(ctx);
         if (seriesList.length > 0) {
             // Many overlapping filled areas (e.g. 12 CPU cores) just muddy
             // each other and cost more to draw -- stroke-only once there

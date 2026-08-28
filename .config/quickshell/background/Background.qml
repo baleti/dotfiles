@@ -34,6 +34,19 @@ Item {
         onFileChanged: root.generation++
     }
 
+    // FileView's own watchChanges reacted to set-wallpaper.sh's write with
+    // a 20-40s delay in practice (reported 2026-08-28) -- far slower than
+    // wallpaper-watch.sh's unrelated 2s mtime-poll loop that drives the
+    // *theme* regen, which is why colors updated fast while the actual
+    // background image lagged badly behind them. set-wallpaper.sh now
+    // calls this directly (`qs ipc call background reload`) as the primary
+    // trigger, same IPC pattern bar-toggle.sh already uses for panels; the
+    // FileView watcher above stays as a slower fallback, not the only path.
+    IpcHandler {
+        target: "background"
+        function reload(): void { root.generation++; }
+    }
+
     Variants {
         model: Quickshell.screens
 

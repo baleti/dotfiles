@@ -26,4 +26,8 @@ cp -- "$src" "$dest"
 # filename, a copy) so wallpaper-cycle.sh can find "current" in the
 # ~/pictures list for next/prev.
 realpath -- "$src" > "$HOME/.local/state/quickshell/wallpaper-source"
+# Tells Background.qml to reload right now -- its own FileView watchChanges
+# fallback measured a 20-40s real-world delay reacting to this same write,
+# vs effectively instant over IPC (same pattern bar-toggle.sh uses).
+qs ipc call background reload 2>/dev/null || true
 echo "wallpaper set to $src (theme will regenerate within ~2s)"
