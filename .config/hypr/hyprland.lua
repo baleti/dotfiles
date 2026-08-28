@@ -74,6 +74,11 @@ hl.on("hyprland.start", function()
     -- wallpaper file actually changes on disk -- see wallpaper-watch.sh and
     -- scripts/set-wallpaper.sh, the sole sanctioned way to change it.
     hl.exec_cmd("~/.config/hypr/scripts/wallpaper-watch.sh")
+    -- Rotates through ~/pictures every 15 minutes via set-wallpaper.sh --
+    -- a "for now" testing cadence (2026-08-28) to exercise the automatic
+    -- re-theming above, not a considered final value. Remove this line to
+    -- go back to a single static wallpaper.
+    hl.exec_cmd("~/.config/hypr/scripts/wallpaper-rotate.sh")
     -- 2026-08-27: replaced by a custom quickshell bar (~/.config/quickshell/),
     -- built from scratch after trying and reverting caelestia-shell. Revert:
     -- uncomment this line, and kill/disable `qs -n -d` if it's running.

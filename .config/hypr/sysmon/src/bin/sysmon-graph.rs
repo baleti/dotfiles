@@ -18,6 +18,43 @@ use std::time::Duration;
 use gtk::prelude::*;
 use gtk_layer_shell::{KeyboardMode, Layer, LayerShell};
 
+/// The bar's own palette (see ~/.config/hypr/scripts/gen-theme.py and
+/// quickshell/theme/Theme.qml, which reads the same file) -- so this
+/// standalone popup's colors actually match the bar's panels instead of
+/// each keeping its own separate hardcoded RGB tuples.
+struct Theme {
+    primary: (f64, f64, f64),
+    secondary: (f64, f64, f64),
+    series: [(f64, f64, f64); 8],
+}
+
+fn hex_to_rgb(hex: &str) -> Option<(f64, f64, f64)> {
+    let h = hex.trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()? as f64 / 255.0;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()? as f64 / 255.0;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()? as f64 / 255.0;
+    Some((r, g, b))
+}
+
+fn load_theme() -> Option<Theme> {
+    let home = std::env::var("HOME").ok()?;
+    let text = fs::read_to_string(format!("{home}/.local/state/quickshell/scheme.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let primary = hex_to_rgb(v.get("primary")?.as_str()?)?;
+    let secondary = hex_to_rgb(v.get("secondary")?.as_str()?)?;
+    let series_json = v.get("seriesPalette")?.as_array()?;
+    let mut series = [primary; 8];
+    for (slot, item) in series.iter_mut().zip(series_json.iter()) {
+        if let Some(c) = item.as_str().and_then(hex_to_rgb) {
+            *slot = c;
+        }
+    }
+    Some(Theme { primary, secondary, series })
+}
+
 use sysmon::{socket_path, Metric, Snapshot};
 
 fn pidfile(program_name: &str) -> PathBuf {
@@ -218,7 +255,15 @@ fn main() {
         });
     }
 
-    let (title, accent): (&str, (f64, f64, f64)) = match metric {
+    // Same palette source as the quickshell bar's panels (Theme.qml reads
+    // this same file) -- previously this whole file had its own separate
+    // hardcoded RGB tuples that never matched the bar, reported 2026-08-28.
+    // Falls back to the original hardcoded values if the file's missing/
+    // unparseable so this popup still works standalone (e.g. before
+    // gen-theme.py has ever run).
+    let theme = load_theme();
+
+    let (title, default_accent): (&str, (f64, f64, f64)) = match metric {
         Metric::Net => ("Network", (0.31, 0.84, 0.48)),  // rx color; tx uses a second fixed color below
         Metric::Cpu => ("CPU", (0.37, 0.63, 1.0)),
         Metric::Temp => ("Temperature", (1.0, 0.55, 0.25)),
@@ -228,10 +273,15 @@ fn main() {
         Metric::TopNet => ("Top Network", (0.31, 0.84, 0.48)),
         Metric::Disk => ("Disk", (0.31, 0.84, 0.48)),
     };
+    let accent = match (&theme, metric) {
+        (Some(t), Metric::Temp) => t.secondary,
+        (Some(t), _) => t.primary,
+        (None, _) => default_accent,
+    };
     // One color per interface (not per rx/tx) for the multi-interface
     // network graph -- rx is drawn solid, tx dashed, same color, so
     // e.g. wlan0 and wg-wsl read as clearly distinct overlaid series.
-    const IFACE_PALETTE: [(f64, f64, f64); 8] = [
+    const DEFAULT_IFACE_PALETTE: [(f64, f64, f64); 8] = [
         (0.20, 0.80, 1.00), // cyan
         (0.00, 1.00, 0.60), // green
         (1.00, 0.71, 0.33), // orange
@@ -241,11 +291,12 @@ fn main() {
         (1.00, 0.42, 0.42), // red
         (0.55, 0.65, 1.00), // blue
     ];
+    let iface_palette = theme.as_ref().map(|t| t.series).unwrap_or(DEFAULT_IFACE_PALETTE);
 
-    fn iface_color(name: &str) -> (f64, f64, f64) {
+    let iface_color = move |name: &str| -> (f64, f64, f64) {
         let hash = name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-        IFACE_PALETTE[(hash as usize) % IFACE_PALETTE.len()]
-    }
+        iface_palette[(hash as usize) % iface_palette.len()]
+    };
 
     let win = gtk::Window::new(gtk::WindowType::Toplevel);
     win.init_layer_shell();
