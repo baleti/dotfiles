@@ -4,27 +4,27 @@ ColorScheme=MaterialYou
 
 [Colors:Window]
 BackgroundNormal=30,27,22
-ForegroundNormal=232,225,217
+ForegroundNormal=232,226,217
 
 [Colors:View]
 BackgroundNormal=30,27,22
-ForegroundNormal=232,225,217
+ForegroundNormal=232,226,217
 
 [Colors:Button]
 BackgroundNormal=76,70,57
 BackgroundAlternate=76,70,57
-ForegroundNormal=232,225,217
+ForegroundNormal=232,226,217
 
 [Colors:Selection]
-BackgroundNormal=237,193,72
-BackgroundAlternate=89,68,0
-ForegroundNormal=62,46,0
+BackgroundNormal=232,195,73
+BackgroundAlternate=86,69,0
+ForegroundNormal=60,47,0
 
 [Colors:Tooltip]
 BackgroundNormal=76,70,57
-ForegroundNormal=232,225,217
+ForegroundNormal=232,226,217
 
 [Colors:Complementary]
-DecorationFocus=237,193,72
-DecorationHover=224,198,76
+DecorationFocus=232,195,73
+DecorationHover=232,195,73
 

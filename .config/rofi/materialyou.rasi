@@ -4,22 +4,22 @@
  * regardless of which base theme config.rasi imports. */
 * {
     background-color: #1e1b16;
-    text-color: #e8e1d9;
+    text-color: #e8e2d9;
 }
 window {
     background-color: #1e1b16;
-    border-color: #edc148;
+    border-color: #e8c349;
 }
 inputbar {
     background-color: #4c4639;
-    text-color: #e8e1d9;
+    text-color: #e8e2d9;
 }
 element {
-    text-color: #e8e1d9;
+    text-color: #e8e2d9;
 }
 element selected {
-    background-color: #edc148;
-    text-color: #3e2e00;
+    background-color: #e8c349;
+    text-color: #3c2f00;
 }
 element-text, element-icon {
     background-color: transparent;

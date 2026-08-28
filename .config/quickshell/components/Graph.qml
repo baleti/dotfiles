@@ -46,15 +46,39 @@ Canvas {
     // 2026-08-28. At <=600 raw points into a few-hundred-px-wide canvas,
     // plotting every point directly (no merging at all) is trivially
     // cheap, so there's no accuracy/performance reason to bucket any more.
+    // Small moving-average low-pass, radius in samples either side --
+    // spiky raw metrics (network/disk bursts, per-core CPU) plotted
+    // point-to-point with no smoothing at all read as a harsh, jagged
+    // "picket fence" rather than a legible trend (reported 2026-08-28).
+    // This softens that into rounded humps without reducing the actual
+    // point count/time resolution -- it's a filter, not a downsample.
+    function smooth(data, radius) {
+        const n = data.length;
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) {
+            let sum = 0, count = 0;
+            for (let k = -radius; k <= radius; k++) {
+                const j = i + k;
+                if (j >= 0 && j < n) {
+                    sum += data[j];
+                    count++;
+                }
+            }
+            out[i] = sum / count;
+        }
+        return out;
+    }
+
     function downsample(data) {
         const n = data.length;
         if (n === 0)
             return [];
+        const smoothed = root.smooth(data, 2);
         const pxPerSample = width / root.historyLen;
         const points = new Array(n);
         for (let i = 0; i < n; i++) {
             const slotFromRight = n - 1 - i;
-            points[i] = { x: width - slotFromRight * pxPerSample, v: data[i] };
+            points[i] = { x: width - slotFromRight * pxPerSample, v: smoothed[i] };
         }
         return points;
     }
@@ -86,8 +110,8 @@ Canvas {
         ctx.moveTo(points[0].x, yOf(points[0].v));
         for (let i = 1; i < points.length; i++)
             ctx.lineTo(points[i].x, yOf(points[i].v));
-        ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, 0.95);
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, 0.9);
+        ctx.lineWidth = 1.25;
         ctx.stroke();
         ctx.setLineDash([]);
     }
