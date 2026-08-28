@@ -168,21 +168,51 @@ def soft_accent_hex(hex_color: str, hue_offset: float = 0, chroma: float = 35, t
     return argb_to_hex(Hct.from_hct(hue, chroma, tone).to_int())
 
 
-def seeds_from_image(path: Path) -> tuple[int, int]:
-    """Top two ranked dominant colors, primary + secondary seed."""
+def seeds_from_image(path: Path) -> tuple[int, int, int]:
+    """primary (-> background/UI) and secondary are Score.score's usual
+    population-ranked dominant colors. accent is found completely
+    differently: the highest-HCT-chroma color cluster with at least a
+    handful of pixels behind it (filtering single-pixel/antialiasing
+    noise), NOT ranked by population at all.
+
+    Verified directly why this distinction matters (2026-08-28 x7):
+    ~/wallpapers/jp17.png is ~90% black background + a large tan/beige
+    stone structure, with one small, deliberately-graded red architectural
+    feature as the actual accent. Any population-based ranking -- Score.
+    score's desired=3 included, tried first -- is dominated by the vastly
+    larger black/tan areas and returns three near-duplicate beige tones,
+    missing the red entirely (confirmed: primary/secondary/"accent" all
+    landed within a few percent of #c2a693). Directly scanning
+    QuantizeCelebi's own {argb: pixel_count} clusters for max HCT chroma
+    picked the red immediately (chroma ~49 vs ~12-23 for the beiges) --
+    this finds exactly the color a wallpaper was graded to draw the eye
+    to, regardless of how little area it covers."""
     from PIL import Image
 
     img = Image.open(path).convert("RGBA")
     img.thumbnail((128, 128))  # quantizing the full-res image is needless work
     pixels = list(img.getdata())  # [(r, g, b, a), ...] -- QuantizeCelebi wants per-pixel sequences, not flat ARGB ints
-    quantized = QuantizeCelebi(pixels, 128)
+    quantized = QuantizeCelebi(pixels, 128)  # {argb: pixel_count}, up to 128 clusters
+
     ranked = Score.score(quantized, ScoreOptions(desired=2))
     primary = ranked[0]
     secondary = ranked[1] if len(ranked) > 1 else primary
-    return primary, secondary
+
+    min_cluster_count = 3
+    accent = primary
+    best_chroma = -1.0
+    for argb, count in quantized.items():
+        if count < min_cluster_count:
+            continue
+        chroma = Hct.from_int(argb).chroma
+        if chroma > best_chroma:
+            best_chroma = chroma
+            accent = argb
+
+    return primary, secondary, accent
 
 
-def build_scheme(primary_argb: int, secondary_argb: int) -> dict:
+def build_scheme(primary_argb: int, secondary_argb: int, accent_argb: int | None = None) -> dict:
     theme = theme_from_source_color(
         primary_argb,
         custom_colors=[CustomColor(secondary_argb, "accentSecondary", blend=True)],
@@ -216,6 +246,12 @@ def build_scheme(primary_argb: int, secondary_argb: int) -> dict:
         "onSecondary": argb_to_hex(secondary_group.on_color),
         "error": argb_to_hex(scheme.error),
         "seriesPalette": series_palette,
+        # RAW extracted accent (not harmonized/blended toward primary like
+        # `secondary` above) -- the Hyprland border uses this directly.
+        # Falls back to `secondary` when there's no image (the hardcoded
+        # cyan/green seed case) since there's no real third color to draw
+        # from then.
+        "accent": argb_to_hex(accent_argb) if accent_argb is not None else argb_to_hex(secondary_group.color),
     }
 
 
@@ -458,19 +494,23 @@ def theme_hyprland_borders(out: dict) -> None:
     what was originally asked for before this final "just remove it"
     request superseded that).
 
-    Color is vivid_hex(primary) -- the theme's own hue, pushed to its true
-    maximum achievable saturation (see max_chroma_hex). Complementary/
-    inverted hues were tried first for contrast and explicitly rejected in
-    favor of this ("instead of inverting colors, use the main color but
-    make it almost fully saturated"). border_size is also re-set here (not
-    just color) so this whole call is idempotent with appearance.lua's own
-    static border_size=3 rather than silently depending on it."""
-    primary = vivid_hex(out["primary"]).lstrip("#")
+    Color is vivid_hex(accent), not primary -- ~/wallpapers (switched from
+    ~/pictures, 2026-08-28 x7) is deliberately graded with a real,
+    distinct accent color already designed to contrast against the
+    primary/background, which is a strictly better contrast source than
+    any hue-math derived from primary itself (complement/rotation attempts
+    were tried first and abandoned: "the primary color we are extracting
+    from the image still ends up blending in"). Still run through
+    vivid_hex for guaranteed saturation, same as before. border_size is
+    also re-set here (not just color) so this whole call is idempotent
+    with appearance.lua's own static border_size=3 rather than silently
+    depending on it."""
+    accent = vivid_hex(out["accent"]).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
     lua = (
         'hl.config({general={'
         'border_size=3,col={'
-        f'active_border="rgba({primary}f2)",'
+        f'active_border="rgba({accent}f2)",'
         f'inactive_border="rgba({outline}aa)"'
         '}}})'
     )
@@ -636,14 +676,15 @@ def main() -> None:
     parser.add_argument("--image", type=Path, help="extract seed colors from this image instead of the hardcoded accent")
     args = parser.parse_args()
 
+    accent_argb = None
     if args.image:
-        primary_argb, secondary_argb = seeds_from_image(args.image)
-        print(f"seeded from {args.image}: primary={argb_to_hex(primary_argb)} secondary={argb_to_hex(secondary_argb)}")
+        primary_argb, secondary_argb, accent_argb = seeds_from_image(args.image)
+        print(f"seeded from {args.image}: primary={argb_to_hex(primary_argb)} secondary={argb_to_hex(secondary_argb)} accent={argb_to_hex(accent_argb)}")
     else:
         primary_argb = hex_to_argb(PRIMARY_SEED)
         secondary_argb = hex_to_argb(SECONDARY_SEED)
 
-    out = build_scheme(primary_argb, secondary_argb)
+    out = build_scheme(primary_argb, secondary_argb, accent_argb)
     write_scheme_json(out)
     theme_gtk(out)
     theme_kde(out)
