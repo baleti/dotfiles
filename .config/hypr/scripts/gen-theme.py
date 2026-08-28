@@ -153,15 +153,6 @@ def vivid_hex(hex_color: str, hue_offset: float = 0) -> str:
     return max_chroma_hex(hue)
 
 
-def lerp_hex(a: str, b: str, t: float) -> str:
-    ra, ga, ba = argb_to_rgb_tuple(hex_to_argb(a))
-    rb, gb, bb = argb_to_rgb_tuple(hex_to_argb(b))
-    r = round(ra + (rb - ra) * t)
-    g = round(ga + (gb - ga) * t)
-    b_ = round(ba + (bb - ba) * t)
-    return f"#{r:02x}{g:02x}{b_:02x}"
-
-
 def seeds_from_image(path: Path) -> tuple[int, int]:
     """Top two ranked dominant colors, primary + secondary seed."""
     from PIL import Image
@@ -445,33 +436,26 @@ def theme_hyprland_borders(out: dict) -> None:
     hl.config() live via `hyprctl eval` is the equivalent that actually
     works with this setup.
 
-    4 color stops (not 2) -- Hyprland distributes a gradient's colors
-    evenly around the whole border loop, so 2 stops reads as a hard
-    diagonal split between two flat halves, while 4 (with 2 of them
-    interpolated between primary/secondary) reads as an actual gradient
-    that varies corner to corner, matching what the user recalled seeing
-    originally. alpha e0 (was ee) -- the first attempt at "subtle" (b8,
-    ~72%) visibly read as a thinner border even though border_size itself
-    never changed (confirmed via `hyprctl getoption`), just fainter.
+    Single flat color, not a gradient (gradient explicitly removed on
+    request, 2026-08-28 x5 -- multi-stop attempts along the way, kept here
+    for context: 2 stops read as a hard diagonal split; 4 stops, 2 of them
+    interpolated, read as an actual varying-per-corner gradient, which is
+    what was originally asked for before this final "just remove it"
+    request superseded that).
 
-    Colors are vivid_hex(primary/secondary) -- the theme's own hue, pushed
-    to its true maximum achievable saturation (see max_chroma_hex).
-    Complementary/inverted hues were tried first for contrast and
-    explicitly rejected in favor of this ("instead of inverting colors,
-    use the main color but make it almost fully saturated", 2026-08-28
-    x4). border_size is also re-set here (not just color) so this whole
-    call is idempotent with appearance.lua's own static border_size=3
-    rather than silently depending on it."""
+    Color is vivid_hex(primary) -- the theme's own hue, pushed to its true
+    maximum achievable saturation (see max_chroma_hex). Complementary/
+    inverted hues were tried first for contrast and explicitly rejected in
+    favor of this ("instead of inverting colors, use the main color but
+    make it almost fully saturated"). border_size is also re-set here (not
+    just color) so this whole call is idempotent with appearance.lua's own
+    static border_size=3 rather than silently depending on it."""
     primary = vivid_hex(out["primary"]).lstrip("#")
-    secondary = vivid_hex(out["secondary"]).lstrip("#")
-    mid1 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.33).lstrip("#")
-    mid2 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.66).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
-    stops = ",".join(f'"rgba({c}f2)"' for c in (primary, mid1, secondary, mid2))
     lua = (
         'hl.config({general={'
         'border_size=3,col={'
-        f'active_border={{colors={{{stops}}},angle=45}},'
+        f'active_border="rgba({primary}f2)",'
         f'inactive_border="rgba({outline}aa)"'
         '}}})'
     )
