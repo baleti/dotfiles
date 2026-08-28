@@ -100,6 +100,19 @@ def argb_to_rgb_tuple(argb: int) -> tuple[int, int, int]:
     return ((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)
 
 
+def vivid_hex(hex_color: str, chroma: float = 90, tone: float = 78) -> str:
+    """Same hue, forced to a high, fixed chroma/tone -- the extracted
+    primary/secondary can be quite muted (a hazy/moody source photo yields
+    a muted HCT primary by design, since that's what reads as harmonious
+    for body text/backgrounds), which made the border read as "barely
+    visible against desktop colors" (2026-08-28). Border accents want to
+    stand out, not blend in, so they get their own vividness pass -- same
+    fixed-chroma technique series_palette already uses for CPU/network/disk
+    line colors, just a higher chroma."""
+    hue = Hct.from_int(hex_to_argb(hex_color)).hue
+    return argb_to_hex(Hct.from_hct(hue, chroma, tone).to_int())
+
+
 def lerp_hex(a: str, b: str, t: float) -> str:
     ra, ga, ba = argb_to_rgb_tuple(hex_to_argb(a))
     rb, gb, bb = argb_to_rgb_tuple(hex_to_argb(b))
@@ -401,15 +414,24 @@ def theme_hyprland_borders(out: dict) -> None:
     that varies corner to corner, matching what the user recalled seeing
     originally. alpha e0 (was ee) -- the first attempt at "subtle" (b8,
     ~72%) visibly read as a thinner border even though border_size itself
-    never changed (confirmed via `hyprctl getoption`), just fainter."""
-    primary = out["primary"].lstrip("#")
-    secondary = out["secondary"].lstrip("#")
-    mid1 = lerp_hex(out["primary"], out["secondary"], 0.33).lstrip("#")
-    mid2 = lerp_hex(out["primary"], out["secondary"], 0.66).lstrip("#")
+    never changed (confirmed via `hyprctl getoption`), just fainter.
+
+    Colors are vivid_hex(primary/secondary), not the raw out['primary']/
+    out['secondary'] -- those are Material You's own harmonious (often
+    fairly muted) UI tones, which read as "barely visible against desktop
+    colors" once actually on a window border (2026-08-28); border_size is
+    also re-set here (not just color) so this whole call is idempotent
+    with appearance.lua's own static border_size=3 rather than silently
+    depending on it."""
+    primary = vivid_hex(out["primary"]).lstrip("#")
+    secondary = vivid_hex(out["secondary"]).lstrip("#")
+    mid1 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.33).lstrip("#")
+    mid2 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.66).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
     stops = ",".join(f'"rgba({c}e0)"' for c in (primary, mid1, secondary, mid2))
     lua = (
-        'hl.config({general={col={'
+        'hl.config({general={'
+        'border_size=3,col={'
         f'active_border={{colors={{{stops}}},angle=45}},'
         f'inactive_border="rgba({outline}aa)"'
         '}}})'

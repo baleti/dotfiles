@@ -394,6 +394,8 @@ Item {
             targetRight: root.stackRight("temp")
         }
 
+        BatteryPill {}
+
         Loader {
             id: clockLoader
             active: true
