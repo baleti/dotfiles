@@ -83,7 +83,7 @@ Canvas {
         return points;
     }
 
-    function drawSeries(ctx, rawData, rgb, fill, dashed) {
+    function drawSeries(ctx, rawData, rgb, fill, dashed, lineWidth, alpha) {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
@@ -110,8 +110,8 @@ Canvas {
         ctx.moveTo(points[0].x, yOf(points[0].v));
         for (let i = 1; i < points.length; i++)
             ctx.lineTo(points[i].x, yOf(points[i].v));
-        ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, 0.9);
-        ctx.lineWidth = 1.25;
+        ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, alpha);
+        ctx.lineWidth = lineWidth;
         ctx.stroke();
         ctx.setLineDash([]);
     }
@@ -122,12 +122,19 @@ Canvas {
         if (seriesList.length > 0) {
             // Many overlapping filled areas (e.g. 12 CPU cores) just muddy
             // each other and cost more to draw -- stroke-only once there
-            // are more than a couple of series.
+            // are more than a couple of series. That same overlap is also
+            // why "many" needs a bolder, more opaque line than a lone
+            // series: a dozen thin (1.25px, alpha 0.9) semi-transparent
+            // lines sharing the same few low-activity pixel rows optically
+            // blend into a dark, undifferentiated mud (reported as "CPU is
+            // all black", 2026-08-28) rather than reading as 12 distinct
+            // colors -- near-opaque + slightly thicker keeps each core's
+            // hue legible even where several overlap.
             const many = seriesList.length > 2;
             for (const s of seriesList)
-                drawSeries(ctx, s.data, s.color, many ? false : !s.dashed, !!s.dashed);
+                drawSeries(ctx, s.data, s.color, many ? false : !s.dashed, !!s.dashed, many ? 1.5 : 1.25, many ? 1.0 : 0.9);
         } else {
-            drawSeries(ctx, series, color1, true, false);
+            drawSeries(ctx, series, color1, true, false, 1.25, 0.9);
         }
     }
 }

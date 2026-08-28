@@ -336,7 +336,16 @@ def patch_kdeglobals_inline(out: dict) -> None:
     """Fallback for anything that reads kdeglobals's own [Colors:*]
     sections directly instead of following [KDE] ColorScheme=. Every other
     section (fonts, icons, KDE internals, the ColorScheme pointer itself)
-    is preserved untouched."""
+    is preserved untouched.
+
+    Also sets [General] AccentColor -- Plasma 6's newer accent-color
+    feature takes priority over a named scheme's own Colors:Selection for
+    widget accents (confirmed: this system's /etc/xdg/kdeglobals ships a
+    distro-default AccentColor=146,110,228, and since the user's own
+    kdeglobals never had that key at all, `kreadconfig6` was falling
+    through to that system default -- which is why Dolphin kept showing
+    "old" purple-ish selection/accent colors no matter what
+    MaterialYou.colors said, 2026-08-28)."""
     cp = configparser.ConfigParser(strict=False, interpolation=None)
     cp.optionxform = str
     if KDEGLOBALS.exists():
@@ -346,6 +355,9 @@ def patch_kdeglobals_inline(out: dict) -> None:
             cp.add_section(section)
         for k, v in keys.items():
             cp.set(section, k, v)
+    if not cp.has_section("General"):
+        cp.add_section("General")
+    cp.set("General", "AccentColor", rgb(out["primary"]))
     with open(KDEGLOBALS, "w") as f:
         cp.write(f, space_around_delimiters=False)
 
@@ -387,13 +399,15 @@ def theme_hyprland_borders(out: dict) -> None:
     diagonal split between two flat halves, while 4 (with 2 of them
     interpolated between primary/secondary) reads as an actual gradient
     that varies corner to corner, matching what the user recalled seeing
-    originally. Lower alpha (b8, not the old ee) per "subtle"."""
+    originally. alpha e0 (was ee) -- the first attempt at "subtle" (b8,
+    ~72%) visibly read as a thinner border even though border_size itself
+    never changed (confirmed via `hyprctl getoption`), just fainter."""
     primary = out["primary"].lstrip("#")
     secondary = out["secondary"].lstrip("#")
     mid1 = lerp_hex(out["primary"], out["secondary"], 0.33).lstrip("#")
     mid2 = lerp_hex(out["primary"], out["secondary"], 0.66).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
-    stops = ",".join(f'"rgba({c}b8)"' for c in (primary, mid1, secondary, mid2))
+    stops = ",".join(f'"rgba({c}e0)"' for c in (primary, mid1, secondary, mid2))
     lua = (
         'hl.config({general={col={'
         f'active_border={{colors={{{stops}}},angle=45}},'
