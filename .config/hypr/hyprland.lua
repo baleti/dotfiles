@@ -74,6 +74,10 @@ hl.on("hyprland.start", function()
     -- wallpaper file actually changes on disk -- see wallpaper-watch.sh and
     -- scripts/set-wallpaper.sh, the sole sanctioned way to change it.
     hl.exec_cmd("~/.config/hypr/scripts/wallpaper-watch.sh")
+    -- Load the theme's nsxiv colors (Nsxiv.* X resources) into the XWayland
+    -- server now -- gen-theme.py also does this on every regen, but the
+    -- wallpaper (hence that script) may not have changed yet this session.
+    hl.exec_cmd("[ -f ~/.config/nsxiv/xresources ] && xrdb -merge ~/.config/nsxiv/xresources")
     -- Rotates through ~/pictures every 15 minutes via set-wallpaper.sh --
     -- a "for now" testing cadence (2026-08-28) to exercise the automatic
     -- re-theming above, not a considered final value. Remove this line to
