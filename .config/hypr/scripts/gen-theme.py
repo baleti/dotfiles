@@ -100,17 +100,30 @@ def argb_to_rgb_tuple(argb: int) -> tuple[int, int, int]:
     return ((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)
 
 
-def vivid_hex(hex_color: str, chroma: float = 90, tone: float = 78) -> str:
-    """Same hue, forced to a high, fixed chroma/tone -- the extracted
-    primary/secondary can be quite muted (a hazy/moody source photo yields
-    a muted HCT primary by design, since that's what reads as harmonious
-    for body text/backgrounds), which made the border read as "barely
-    visible against desktop colors" (2026-08-28). Border accents want to
-    stand out, not blend in, so they get their own vividness pass -- same
-    fixed-chroma technique series_palette already uses for CPU/network/disk
-    line colors, just a higher chroma."""
-    hue = Hct.from_int(hex_to_argb(hex_color)).hue
+def vivid_hex(hex_color: str, chroma: float = 90, tone: float = 78, hue_offset: float = 0) -> str:
+    """Same hue (or +hue_offset degrees around the wheel), forced to a
+    high, fixed chroma/tone -- the extracted primary/secondary can be
+    quite muted (a hazy/moody source photo yields a muted HCT primary by
+    design, since that's what reads as harmonious for body text/
+    backgrounds). Vividness alone still wasn't enough for borders
+    (2026-08-28 x2): a color's own hue, however saturated, sits in the same
+    neighborhood as the wallpaper it was extracted FROM, so it can still
+    camouflage against large areas of it. See complement_hex below, which
+    is what borders actually use."""
+    hue = (Hct.from_int(hex_to_argb(hex_color)).hue + hue_offset) % 360
     return argb_to_hex(Hct.from_hct(hue, chroma, tone).to_int())
+
+
+def complement_hex(hex_color: str, chroma: float = 90, tone: float = 78) -> str:
+    """vivid_hex, rotated 180 degrees around the hue wheel first -- basic
+    color theory (complementary colors) rather than just "the theme's own
+    color, but louder": the complement is, by construction, as far as
+    possible on the color wheel from whatever hue dominates the source
+    wallpaper, which is the actual property a border needs to reliably
+    stand out against it. Still derived from the theme's own primary/
+    secondary hue (not an arbitrary fixed accent), so it changes together
+    with the rest of the palette rather than clashing with it."""
+    return vivid_hex(hex_color, chroma, tone, hue_offset=180)
 
 
 def lerp_hex(a: str, b: str, t: float) -> str:
@@ -416,17 +429,21 @@ def theme_hyprland_borders(out: dict) -> None:
     ~72%) visibly read as a thinner border even though border_size itself
     never changed (confirmed via `hyprctl getoption`), just fainter.
 
-    Colors are vivid_hex(primary/secondary), not the raw out['primary']/
-    out['secondary'] -- those are Material You's own harmonious (often
-    fairly muted) UI tones, which read as "barely visible against desktop
-    colors" once actually on a window border (2026-08-28); border_size is
-    also re-set here (not just color) so this whole call is idempotent
-    with appearance.lua's own static border_size=3 rather than silently
-    depending on it."""
-    primary = vivid_hex(out["primary"]).lstrip("#")
-    secondary = vivid_hex(out["secondary"]).lstrip("#")
-    mid1 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.33).lstrip("#")
-    mid2 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.66).lstrip("#")
+    Colors are complement_hex(primary/secondary) -- the theme's own hue,
+    rotated 180 degrees, forced vivid. Plain vivid_hex (same hue, just
+    louder) still "didn't contrast enough" (2026-08-28 x2): a color's own
+    hue, at any chroma, sits in the same neighborhood as the wallpaper it
+    was extracted FROM, so it can still blend into large areas of it.
+    Complementary is basic color-theory contrast, not just volume; still
+    derived from the theme's own primary/secondary hue (changes together
+    with the rest of the palette) rather than an arbitrary fixed accent.
+    border_size is also re-set here (not just color) so this whole call is
+    idempotent with appearance.lua's own static border_size=3 rather than
+    silently depending on it."""
+    primary = complement_hex(out["primary"]).lstrip("#")
+    secondary = complement_hex(out["secondary"]).lstrip("#")
+    mid1 = lerp_hex(complement_hex(out["primary"]), complement_hex(out["secondary"]), 0.33).lstrip("#")
+    mid2 = lerp_hex(complement_hex(out["primary"]), complement_hex(out["secondary"]), 0.66).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
     stops = ",".join(f'"rgba({c}e0)"' for c in (primary, mid1, secondary, mid2))
     lua = (
