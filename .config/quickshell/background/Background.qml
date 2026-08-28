@@ -56,12 +56,63 @@ Item {
             // to whatever's actually on the desktop underneath.
             mask: Region {}
 
-            Image {
+            // Two-layer crossfade, not a single Image bound straight to
+            // root.generation -- swapping `source` on one Image discards
+            // the old pixmap the instant it's set, so the PanelWindow's own
+            // black shows through for the ~1 frame (or longer, on a slow
+            // decode) until the new one finishes loading async. Reported as
+            // a visible black flash on every wallpaper switch, 2026-08-28.
+            // Whichever layer is currently in back loads the new image;
+            // once it actually reaches Image.Ready (not just "source set"),
+            // Behavior-animated opacity crossfades it to front while the
+            // old front fades out simultaneously -- old pixels stay on
+            // screen the whole time, nothing is ever fully transparent.
+            Item {
+                id: crossfade
                 anchors.fill: parent
-                source: `file://${root.wallpaperPath}?g=${root.generation}`
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-                cache: true
+
+                property bool frontIsA: true
+                property string pendingUrl: `file://${root.wallpaperPath}?g=${root.generation}`
+
+                // Imperative assignment into whichever layer is currently
+                // in back, not a QML binding on either Image's `source` --
+                // a binding would keep tracking pendingUrl on BOTH layers
+                // regardless of front/back, defeating the whole point.
+                Component.onCompleted: imgA.source = pendingUrl
+                onPendingUrlChanged: {
+                    if (frontIsA)
+                        imgB.source = pendingUrl;
+                    else
+                        imgA.source = pendingUrl;
+                }
+
+                Image {
+                    id: imgA
+                    anchors.fill: parent
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: true
+                    opacity: crossfade.frontIsA ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 700; easing.type: Easing.InOutQuad } }
+                    onStatusChanged: {
+                        if (status === Image.Ready && source === crossfade.pendingUrl && !crossfade.frontIsA)
+                            crossfade.frontIsA = true;
+                    }
+                }
+
+                Image {
+                    id: imgB
+                    anchors.fill: parent
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: true
+                    opacity: crossfade.frontIsA ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: 700; easing.type: Easing.InOutQuad } }
+                    onStatusChanged: {
+                        if (status === Image.Ready && source === crossfade.pendingUrl && crossfade.frontIsA)
+                            crossfade.frontIsA = false;
+                    }
+                }
             }
         }
     }
