@@ -21,7 +21,17 @@ fi
 
 dest="$HOME/.local/state/quickshell/wallpaper.png"
 mkdir -p "$(dirname "$dest")"
-cp -- "$src" "$dest"
+# Copy to a temp file then rename, not a direct `cp` onto dest -- a plain
+# cp isn't atomic, so wallpaper-watch.sh (polling this same path's mtime)
+# could catch dest mid-write and hand gen-theme.py a truncated PNG.
+# Confirmed happening live (2026-08-28 x8): that crashed gen-theme.py,
+# which -- since wallpaper-watch.sh used to run under `set -e` -- killed
+# the whole watcher loop, silently freezing theme regeneration on every
+# subsequent wallpaper switch. rename() on the same filesystem is atomic,
+# so a reader only ever sees the fully-old or fully-new file.
+tmp="$dest.tmp"
+cp -- "$src" "$tmp"
+mv -f -- "$tmp" "$dest"
 # Remembers the real source path (dest above is always the same fixed
 # filename, a copy) so wallpaper-cycle.sh can find "current" in the
 # ~/pictures list for next/prev.
