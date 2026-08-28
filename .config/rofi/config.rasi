@@ -6,3 +6,4 @@ configuration {
 }
 @import "/usr/share/rofi/themes/Pop-Dark.rasi"
 @theme "/usr/share/rofi/themes/glue_pro_blue.rasi"
+@import "/home/user1/.config/rofi/materialyou.rasi"
