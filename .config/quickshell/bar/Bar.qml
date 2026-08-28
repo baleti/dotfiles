@@ -438,14 +438,17 @@ Item {
         y: root.panelY
     }
 
-    // Same pattern for the clock's calendar hover-panel.
+    // Same pattern for the clock's calendar hover-panel. Click-to-pin
+    // mirrors GraphPill.togglePin() (net/cpu/mem/disk/temp): stays open
+    // past hover-out until clicked again.
     property bool clockAreaHovered: clockHoverArea.containsMouse || calendarExpanded.hovered
+    property bool clockPinned: false
 
     onClockAreaHoveredChanged: {
         if (clockAreaHovered) {
             clockHoverOutTimer.stop();
             calendarExpanded.expanded = true;
-        } else {
+        } else if (!clockPinned) {
             clockHoverOutTimer.restart();
         }
     }
@@ -456,6 +459,17 @@ Item {
         onTriggered: calendarExpanded.expanded = false
     }
 
+    function toggleClockPin(): void {
+        clockPinned = !clockPinned;
+        if (clockPinned) {
+            clockHoverOutTimer.stop();
+            calendarExpanded.expanded = true;
+        } else if (!clockAreaHovered) {
+            clockHoverOutTimer.stop();
+            calendarExpanded.expanded = false;
+        }
+    }
+
     MouseArea {
         id: clockHoverArea
         hoverEnabled: true
@@ -463,6 +477,7 @@ Item {
         y: rightRow.y + clockLoader.y
         width: clockLoader.width
         height: clockLoader.height
+        onClicked: root.toggleClockPin()
     }
 
     CalendarExpanded {
@@ -488,6 +503,6 @@ Item {
         function toggleTemp(): void { tempPill.togglePin(); }
         function toggleDisk(): void { diskPill.togglePin(); }
         function toggleMedia(): void { mediaExpanded.expanded = !mediaExpanded.expanded; }
-        function toggleCalendar(): void { calendarExpanded.expanded = !calendarExpanded.expanded; }
+        function toggleCalendar(): void { root.toggleClockPin(); }
     }
 }
