@@ -23,9 +23,16 @@ Item {
     // wallpaper-path state and the per-monitor Variants below into one.
     readonly property string wallpaperPath: `${Quickshell.env("HOME")}/.local/state/quickshell/wallpaper.png`
     // Image doesn't reload from disk on its own when the bytes at an
-    // unchanged `source` path change (cache: true so it doesn't needlessly
-    // re-decode every frame otherwise) -- watch the file's mtime and bump a
-    // cache-busting query string to force a real reload.
+    // unchanged `source` path change -- bump a query string to give each
+    // switch a distinct URL. Both Images below also run cache: false: Qt's
+    // pixmap cache for file:// URLs was observed keying on just the path,
+    // ignoring the query string entirely, so cache: true silently kept
+    // serving the very first decoded wallpaper forever regardless of a
+    // "new" ?g=N url (reported 2026-08-28: colors updated every switch,
+    // the displayed image never did after the very first one). No real
+    // cost to disabling it here -- the two-layer crossfade already only
+    // ever (re)decodes when a genuinely new wallpaper is picked, not on
+    // every repaint.
     property int generation: 0
 
     readonly property FileView watcher: FileView {
@@ -69,63 +76,30 @@ Item {
             // to whatever's actually on the desktop underneath.
             mask: Region {}
 
-            // Two-layer crossfade, not a single Image bound straight to
-            // root.generation -- swapping `source` on one Image discards
-            // the old pixmap the instant it's set, so the PanelWindow's own
-            // black shows through for the ~1 frame (or longer, on a slow
-            // decode) until the new one finishes loading async. Reported as
-            // a visible black flash on every wallpaper switch, 2026-08-28.
-            // Whichever layer is currently in back loads the new image;
-            // once it actually reaches Image.Ready (not just "source set"),
-            // Behavior-animated opacity crossfades it to front while the
-            // old front fades out simultaneously -- old pixels stay on
-            // screen the whole time, nothing is ever fully transparent.
-            Item {
-                id: crossfade
+            // A two-layer manual crossfade (alternating which Image loads
+            // the next source, swapping opacity once Image.Ready) was
+            // tried here first and had a real bug: it could get stuck
+            // showing a stale wallpaper indefinitely if a second switch's
+            // pendingUrl overwrote the in-flight back layer's `source`
+            // before that first load ever reached Ready, since the
+            // Ready-swap handler only fired for an exact pendingUrl match
+            // (reported 2026-08-28: file on disk and the theme both
+            // updated correctly on every switch, confirmed via md5sum, but
+            // the rendered image itself stopped updating at all after the
+            // very first successful switch). Replaced with something far
+            // simpler: asynchronous: false. A single Image bound straight
+            // to the current source, decoded synchronously -- for a
+            // desktop-sized local PNG/JPG that's a few tens of ms, cheap
+            // enough that Qt still presents the *old* frame right up until
+            // the new pixmap is ready in the same paint, with no
+            // async-loading gap for the PanelWindow's black to show
+            // through and no hand-rolled state machine to get stuck.
+            Image {
                 anchors.fill: parent
-
-                property bool frontIsA: true
-                property string pendingUrl: `file://${root.wallpaperPath}?g=${root.generation}`
-
-                // Imperative assignment into whichever layer is currently
-                // in back, not a QML binding on either Image's `source` --
-                // a binding would keep tracking pendingUrl on BOTH layers
-                // regardless of front/back, defeating the whole point.
-                Component.onCompleted: imgA.source = pendingUrl
-                onPendingUrlChanged: {
-                    if (frontIsA)
-                        imgB.source = pendingUrl;
-                    else
-                        imgA.source = pendingUrl;
-                }
-
-                Image {
-                    id: imgA
-                    anchors.fill: parent
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
-                    cache: true
-                    opacity: crossfade.frontIsA ? 1 : 0
-                    Behavior on opacity { NumberAnimation { duration: 700; easing.type: Easing.InOutQuad } }
-                    onStatusChanged: {
-                        if (status === Image.Ready && source === crossfade.pendingUrl && !crossfade.frontIsA)
-                            crossfade.frontIsA = true;
-                    }
-                }
-
-                Image {
-                    id: imgB
-                    anchors.fill: parent
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
-                    cache: true
-                    opacity: crossfade.frontIsA ? 0 : 1
-                    Behavior on opacity { NumberAnimation { duration: 700; easing.type: Easing.InOutQuad } }
-                    onStatusChanged: {
-                        if (status === Image.Ready && source === crossfade.pendingUrl && crossfade.frontIsA)
-                            crossfade.frontIsA = false;
-                    }
-                }
+                source: `file://${root.wallpaperPath}?g=${root.generation}`
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: false
+                cache: false
             }
         }
     }

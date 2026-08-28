@@ -8,10 +8,10 @@
  * Infinity-GTK's own static colors. */
 @import "colors.css";
 
-@define-color accent_color #adc6ff;
-@define-color accent_bg_color #adc6ff;
-@define-color accent_fg_color #002e69;
-@define-color window_bg_color #1b1b1f;
-@define-color window_fg_color #e3e2e6;
-@define-color view_bg_color #1b1b1f;
-@define-color view_fg_color #e3e2e6;
+@define-color accent_color #cccc57;
+@define-color accent_bg_color #cccc57;
+@define-color accent_fg_color #323200;
+@define-color window_bg_color #1c1c17;
+@define-color window_fg_color #e6e2da;
+@define-color view_bg_color #1c1c17;
+@define-color view_fg_color #e6e2da;
