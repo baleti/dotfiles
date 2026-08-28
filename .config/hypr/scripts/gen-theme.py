@@ -100,33 +100,38 @@ def argb_to_rgb_tuple(argb: int) -> tuple[int, int, int]:
     return ((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)
 
 
-def vivid_hex(hex_color: str, chroma: float = 90, tone: float = 55, hue_offset: float = 0) -> str:
-    """Same hue (or +hue_offset degrees around the wheel), forced to a
-    high, fixed chroma/tone -- the extracted primary/secondary can be
-    quite muted (a hazy/moody source photo yields a muted HCT primary by
-    design, since that's what reads as harmonious for body text/
-    backgrounds). tone=55 (was 78, still not visible enough 2026-08-28 x3):
-    sRGB's gamut clamps how much chroma is actually achievable as tone
-    rises toward white, so a *light* tone desaturates toward pastel no
-    matter how high chroma is requested -- verified directly (same hue,
-    chroma 90/120/150 all clamped to the identical color at tone 78, a
-    washed-out #8dc6ff; tone 55 at chroma 90 alone reached a properly
-    saturated #0089d9). Mid-tones are where max chroma actually lives.
-    See complement_hex below, which is what borders actually use."""
+def max_chroma_hex(hue: float) -> str:
+    """Searches tones for whichever actually maximizes achieved chroma at
+    this hue. A single fixed tone was never going to work for every hue
+    (2026-08-28 x3, x4): HCT/CAM16's max-chroma tone varies a lot by hue --
+    verified directly by sweeping tone 20-88 at a deliberately out-of-
+    gamut chroma request (200) and reading back Hct's actual *clamped*
+    chroma: vivid magenta (hue 0) peaks near tone 54 (chroma ~101), vivid
+    yellow-orange (hue 60) peaks near tone 70 (chroma ~64), vivid green
+    (hue 120) near tone 88 (chroma ~77). A fixed tone=55 undershot green/
+    yellow badly (muddy olive) while only coincidentally working for
+    magenta/blue -- this is why "just raise chroma" alone never helped
+    (chroma 90/120/150/200 all clamp to the identical color at a given
+    tone; tone is the only real lever once you're past the gamut edge)."""
+    best_chroma = -1.0
+    best_hex = "#000000"
+    for tone in range(20, 90, 2):
+        h = Hct.from_hct(hue, 200, tone)
+        if h.chroma > best_chroma:
+            best_chroma = h.chroma
+            best_hex = argb_to_hex(h.to_int())
+    return best_hex
+
+
+def vivid_hex(hex_color: str, hue_offset: float = 0) -> str:
+    """The color's own hue (or +hue_offset degrees around the wheel, for a
+    complementary variant), pushed to its own true maximum saturation via
+    max_chroma_hex. Borders use hue_offset=0 -- the theme's actual color,
+    maximally saturated, per explicit request (a complementary/inverted
+    hue was tried first and rejected: "instead of inverting colors, use
+    the main color")."""
     hue = (Hct.from_int(hex_to_argb(hex_color)).hue + hue_offset) % 360
-    return argb_to_hex(Hct.from_hct(hue, chroma, tone).to_int())
-
-
-def complement_hex(hex_color: str, chroma: float = 90, tone: float = 55) -> str:
-    """vivid_hex, rotated 180 degrees around the hue wheel first -- basic
-    color theory (complementary colors) rather than just "the theme's own
-    color, but louder": the complement is, by construction, as far as
-    possible on the color wheel from whatever hue dominates the source
-    wallpaper, which is the actual property a border needs to reliably
-    stand out against it. Still derived from the theme's own primary/
-    secondary hue (not an arbitrary fixed accent), so it changes together
-    with the rest of the palette rather than clashing with it."""
-    return vivid_hex(hex_color, chroma, tone, hue_offset=180)
+    return max_chroma_hex(hue)
 
 
 def lerp_hex(a: str, b: str, t: float) -> str:
@@ -432,21 +437,18 @@ def theme_hyprland_borders(out: dict) -> None:
     ~72%) visibly read as a thinner border even though border_size itself
     never changed (confirmed via `hyprctl getoption`), just fainter.
 
-    Colors are complement_hex(primary/secondary) -- the theme's own hue,
-    rotated 180 degrees, forced vivid. Plain vivid_hex (same hue, just
-    louder) still "didn't contrast enough" (2026-08-28 x2): a color's own
-    hue, at any chroma, sits in the same neighborhood as the wallpaper it
-    was extracted FROM, so it can still blend into large areas of it.
-    Complementary is basic color-theory contrast, not just volume; still
-    derived from the theme's own primary/secondary hue (changes together
-    with the rest of the palette) rather than an arbitrary fixed accent.
-    border_size is also re-set here (not just color) so this whole call is
-    idempotent with appearance.lua's own static border_size=3 rather than
-    silently depending on it."""
-    primary = complement_hex(out["primary"]).lstrip("#")
-    secondary = complement_hex(out["secondary"]).lstrip("#")
-    mid1 = lerp_hex(complement_hex(out["primary"]), complement_hex(out["secondary"]), 0.33).lstrip("#")
-    mid2 = lerp_hex(complement_hex(out["primary"]), complement_hex(out["secondary"]), 0.66).lstrip("#")
+    Colors are vivid_hex(primary/secondary) -- the theme's own hue, pushed
+    to its true maximum achievable saturation (see max_chroma_hex).
+    Complementary/inverted hues were tried first for contrast and
+    explicitly rejected in favor of this ("instead of inverting colors,
+    use the main color but make it almost fully saturated", 2026-08-28
+    x4). border_size is also re-set here (not just color) so this whole
+    call is idempotent with appearance.lua's own static border_size=3
+    rather than silently depending on it."""
+    primary = vivid_hex(out["primary"]).lstrip("#")
+    secondary = vivid_hex(out["secondary"]).lstrip("#")
+    mid1 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.33).lstrip("#")
+    mid2 = lerp_hex(vivid_hex(out["primary"]), vivid_hex(out["secondary"]), 0.66).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
     stops = ",".join(f'"rgba({c}f2)"' for c in (primary, mid1, secondary, mid2))
     lua = (
