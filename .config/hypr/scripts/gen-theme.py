@@ -100,21 +100,24 @@ def argb_to_rgb_tuple(argb: int) -> tuple[int, int, int]:
     return ((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)
 
 
-def vivid_hex(hex_color: str, chroma: float = 90, tone: float = 78, hue_offset: float = 0) -> str:
+def vivid_hex(hex_color: str, chroma: float = 90, tone: float = 55, hue_offset: float = 0) -> str:
     """Same hue (or +hue_offset degrees around the wheel), forced to a
     high, fixed chroma/tone -- the extracted primary/secondary can be
     quite muted (a hazy/moody source photo yields a muted HCT primary by
     design, since that's what reads as harmonious for body text/
-    backgrounds). Vividness alone still wasn't enough for borders
-    (2026-08-28 x2): a color's own hue, however saturated, sits in the same
-    neighborhood as the wallpaper it was extracted FROM, so it can still
-    camouflage against large areas of it. See complement_hex below, which
-    is what borders actually use."""
+    backgrounds). tone=55 (was 78, still not visible enough 2026-08-28 x3):
+    sRGB's gamut clamps how much chroma is actually achievable as tone
+    rises toward white, so a *light* tone desaturates toward pastel no
+    matter how high chroma is requested -- verified directly (same hue,
+    chroma 90/120/150 all clamped to the identical color at tone 78, a
+    washed-out #8dc6ff; tone 55 at chroma 90 alone reached a properly
+    saturated #0089d9). Mid-tones are where max chroma actually lives.
+    See complement_hex below, which is what borders actually use."""
     hue = (Hct.from_int(hex_to_argb(hex_color)).hue + hue_offset) % 360
     return argb_to_hex(Hct.from_hct(hue, chroma, tone).to_int())
 
 
-def complement_hex(hex_color: str, chroma: float = 90, tone: float = 78) -> str:
+def complement_hex(hex_color: str, chroma: float = 90, tone: float = 55) -> str:
     """vivid_hex, rotated 180 degrees around the hue wheel first -- basic
     color theory (complementary colors) rather than just "the theme's own
     color, but louder": the complement is, by construction, as far as
@@ -445,7 +448,7 @@ def theme_hyprland_borders(out: dict) -> None:
     mid1 = lerp_hex(complement_hex(out["primary"]), complement_hex(out["secondary"]), 0.33).lstrip("#")
     mid2 = lerp_hex(complement_hex(out["primary"]), complement_hex(out["secondary"]), 0.66).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
-    stops = ",".join(f'"rgba({c}e0)"' for c in (primary, mid1, secondary, mid2))
+    stops = ",".join(f'"rgba({c}f2)"' for c in (primary, mid1, secondary, mid2))
     lua = (
         'hl.config({general={'
         'border_size=3,col={'
