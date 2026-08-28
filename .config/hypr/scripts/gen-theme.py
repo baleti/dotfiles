@@ -11,26 +11,26 @@ Usage:
   gen-theme.py --image PATH       # extract primary+secondary from an image
 
 Writes/applies (2026-08-28, expanded past just GTK/KDE -- see conversation
-2026-08-28 for the GTK3 root-cause writeup):
+2026-08-28 for the GTK root-cause writeup):
   - ~/.local/state/quickshell/scheme.json      -- read by Theme.qml (FileView)
-  - ~/.config/gtk-3.0/colors.css, gtk-4.0/colors.css
-    -- the *_breeze named colors Infinity-GTK's own CSS actually consumes
-       (confirmed via grep: the theme never references the libadwaita-style
-       names like window_bg_color at all). gtk.css just `@import`s this --
-       overwriting gtk.css directly with unrelated variable names (the old
-       approach) silently deleted KDE's own `colors.css` import line that
-       kde-gtk-config had put there, which is what broke Infinity-GTK to a
-       plain white/Adwaita fallback (reproduced: an EMPTY gtk.css also broke
-       it, proving it was the missing import, not any variable collision).
-  - ~/.config/gtk-3.0/gtk.css, gtk-4.0/gtk.css -- `@import "colors.css"` plus
-    a small libadwaita-style override block, for any GTK4/libadwaita app
-    that does read those names (Infinity-GTK doesn't, but this is harmless).
+  - ~/.config/gtk-3.0/gtk.css, gtk-4.0/gtk.css -- a full libadwaita-style
+    `@define-color` block (accent_color, window_bg_color, headerbar_bg_color,
+    card_bg_color, ...). The active GTK theme is `adw-gtk3-dark` (installed
+    via extra/adw-gtk-theme), which -- like libadwaita itself -- reads these
+    named colors straight out of gtk.css for BOTH GTK3 and GTK4, so this one
+    block themes every GTK app. No `@import`, no colors.css: the previous
+    `*_breeze` + Infinity-GTK approach only worked while Infinity-GTK was the
+    active theme, and it wasn't -- gsettings/dconf `org.gnome.desktop.interface
+    gtk-theme` (the value GTK actually honours on Wayland, above settings.ini
+    and xsettingsd) pointed at a NON-INSTALLED `adw-gtk3-dark`, so every GTK
+    app fell back to bare Adwaita = white (2026-08-28). This script now also
+    enforces that gsettings key each run so it can't drift again.
   - ~/.local/share/color-schemes/MaterialYou.colors, applied live via
     `plasma-apply-colorscheme` -- Dolphin/KDE apps resolve their palette
-    from kdeglobals's [KDE] ColorScheme=<name>, NOT from kdeglobals's own
+    from kdeglobals's [General] ColorScheme=<name>, NOT from kdeglobals's own
     inline [Colors:*] sections (those are only a fallback for apps with no
     named scheme configured) -- confirmed via kdeglobals having
-    `[KDE] ColorScheme=Breeze`, which is why patching [Colors:*] alone
+    `ColorScheme=Breeze`, which is why patching [Colors:*] alone
     never visibly changed Dolphin.
   - kdeglobals [Colors:*] sections directly too, as a fallback for anything
     that does read them inline.
@@ -43,6 +43,9 @@ Writes/applies (2026-08-28, expanded past just GTK/KDE -- see conversation
     tables, in place (regex-scoped to just those tables; alacritty.yml is
     untouched dead weight -- alacritty 0.17 only reads the .toml).
   - ~/.config/rofi/materialyou.rasi, auto-@import-ed from config.rasi.
+  - ~/.config/nsxiv/xresources -- the `Nsxiv.*` X resources, `xrdb -merge`d
+    into the running XWayland server (nsxiv is an X11 app); also merged once
+    at login by hyprland.lua.
 """
 import argparse
 import configparser
@@ -86,6 +89,7 @@ ROFI_DIR = Path.home() / ".config/rofi"
 ROFI_THEME = ROFI_DIR / "materialyou.rasi"
 ROFI_CONFIG = ROFI_DIR / "config.rasi"
 TMUX_THEME = Path.home() / ".config/tmux/theme.conf"
+NSXIV_XRESOURCES = Path.home() / ".config/nsxiv/xresources"
 
 
 def atomic_write(path: Path, content: str) -> None:
@@ -262,105 +266,101 @@ def write_scheme_json(out: dict) -> None:
 
 # --- GTK -----------------------------------------------------------------
 
-def classify_breeze_key(key: str) -> str | None:
-    """Which part of our palette a `*_breeze`-suffixed GTK variable (as used
-    throughout Infinity-GTK's own gtk.css, and normally kept in sync with
-    Plasma's active color scheme by kde-gtk-config's colors.css) should draw
-    from. None means "leave this one's existing value alone" -- semantic
-    (error/warning/success) and disabled-state colors aren't part of an
-    accent palette and shouldn't get recolored."""
-    k = key.lower()
-    if any(s in k for s in ("insensitive", "error_color", "warning_color", "success_color")):
-        return None
-    if "selected_fg" in k:
-        return "accent_fg"
-    if any(s in k for s in ("decoration", "selected_bg", "hovering_selected", "link_color")):
-        return "accent"
-    if "tooltip_background" in k or "button_background" in k:
-        return "surface_container"
-    if "tooltip_border" in k or "border" in k:
-        return "outline"
-    if any(s in k for s in ("bg_color", "base_color", "content_view_bg", "background")):
-        return "bg"
-    if any(s in k for s in ("fg_color", "text_color", "foreground")):
-        return "fg"
-    return None
+GTK_THEME_NAME = "adw-gtk3-dark"
 
 
-def patch_breeze_colors_css(path: Path, out: dict) -> None:
-    """In-place value substitution, keyed by variable name -- every other
-    line (semantic/disabled-state colors this desktop's theme also defines
-    here) passes through untouched. Starts from a minimal skeleton if the
-    file doesn't exist yet (fresh machine, kde-gtk-config never ran)."""
-    color_for = {
-        "accent": out["primary"],
-        "accent_fg": out["onPrimary"],
-        "surface_container": out["surfaceContainer"],
-        "outline": out["outline"],
-        "bg": out["background"],
-        "fg": out["onBackground"],
-    }
-    line_re = re.compile(r'^@define-color\s+(\S+)\s+([^;]+);\s*$')
-
-    if path.exists():
-        lines = path.read_text().splitlines()
-    else:
-        # Minimal skeleton covering what Infinity-GTK actually uses -- see
-        # the _breeze names grepped out of ~/.themes/Infinity-GTK/gtk-3.0/gtk.css.
-        base_keys = [
-            "theme_bg_color_breeze", "theme_fg_color_breeze", "theme_base_color_breeze",
-            "theme_text_color_breeze", "theme_selected_bg_color_breeze", "theme_selected_fg_color_breeze",
-            "theme_button_background_normal_breeze", "theme_button_foreground_normal_breeze",
-            "borders_breeze", "unfocused_borders_breeze",
-            "theme_view_hover_decoration_color_breeze", "theme_view_active_decoration_color_breeze",
-            "content_view_bg_breeze",
-        ]
-        lines = [f"@define-color {k} #000000;" for k in base_keys]
-
-    out_lines = []
-    for line in lines:
-        m = line_re.match(line)
-        if not m:
-            out_lines.append(line)
-            continue
-        key, _old_value = m.group(1), m.group(2)
-        category = classify_breeze_key(key)
-        if category is None:
-            out_lines.append(line)
-        else:
-            out_lines.append(f"@define-color {key} {color_for[category]};")
-
-    atomic_write(path, "\n".join(out_lines) + "\n")
-
-
-def write_gtk_css(gtk_dir: Path, out: dict) -> None:
-    gtk_css = f"""/* Generated by ~/.config/hypr/scripts/gen-theme.py. DO NOT remove the
- * @import line below -- that's what actually feeds colors.css's *_breeze
- * variables (the ones Infinity-GTK's own CSS consumes) into the cascade;
- * without it every GTK3 app on this system renders in a plain white
- * fallback instead of the theme (reproduced 2026-08-28). The block below
- * is a secondary libadwaita-style override for GTK4/other-theme apps that
- * *do* read these names -- delete this whole file to fully revert to
- * Infinity-GTK's own static colors. */
+GTK_CSS_STATIC = """/* Generated by ~/.config/hypr/scripts/gen-theme.py -- do not edit.
+ * Static shim: the actual colors live in colors.css, imported here. That
+ * indirection is deliberate -- `colorreload-gtk-module` (loaded by every
+ * GTK3 app via gtk-modules in settings.ini) puts a GFileMonitor on
+ * ~/.config/gtk-3.0/colors.css specifically and live-reloads it into every
+ * running GTK3 app the instant its mtime changes. Rewriting gtk.css itself
+ * would not trigger that. */
 @import "colors.css";
+"""
 
+
+def gtk_colors_css(out: dict) -> str:
+    """The libadwaita-style `@define-color` block -- the whole GTK recolor.
+    adw-gtk3(-dark), the active theme, reads these names for both GTK3 and
+    GTK4, and libadwaita reads them directly for GTK4 apps that ignore the
+    theme. Lives in colors.css (not gtk.css) so colorreload-gtk-module's
+    file monitor picks up every change live -- see GTK_CSS_STATIC.
+
+    `shade`/`backdrop` colors are left as literal rgba() -- they're
+    semi-transparent black overlays in every libadwaita palette regardless
+    of hue, nothing to recolor."""
+    destructive_fg = contrasting_text_hex(out["error"])
+    return f"""/* Generated by ~/.config/hypr/scripts/gen-theme.py -- do not edit.
+ * libadwaita-style named colors, consumed by adw-gtk3-dark (from
+ * extra/adw-gtk-theme) for GTK3 AND GTK4, and by libadwaita directly.
+ * Imported by gtk.css; watched live by colorreload-gtk-module for GTK3. */
 @define-color accent_color {out['primary']};
 @define-color accent_bg_color {out['primary']};
 @define-color accent_fg_color {out['onPrimary']};
+@define-color destructive_color {out['error']};
+@define-color destructive_bg_color {out['error']};
+@define-color destructive_fg_color {destructive_fg};
+@define-color error_color {out['error']};
+@define-color error_bg_color {out['error']};
+@define-color error_fg_color {destructive_fg};
+
 @define-color window_bg_color {out['background']};
 @define-color window_fg_color {out['onBackground']};
 @define-color view_bg_color {out['surface']};
 @define-color view_fg_color {out['onSurface']};
+
+@define-color headerbar_bg_color {out['surfaceContainer']};
+@define-color headerbar_fg_color {out['onSurface']};
+@define-color headerbar_border_color {out['onSurface']};
+@define-color headerbar_backdrop_color {out['background']};
+@define-color headerbar_shade_color rgba(0, 0, 0, 0.36);
+
+@define-color card_bg_color {out['surfaceContainer']};
+@define-color card_fg_color {out['onSurface']};
+@define-color card_shade_color rgba(0, 0, 0, 0.36);
+
+@define-color dialog_bg_color {out['surfaceContainer']};
+@define-color dialog_fg_color {out['onSurface']};
+@define-color popover_bg_color {out['surfaceContainer']};
+@define-color popover_fg_color {out['onSurface']};
+
+@define-color sidebar_bg_color {out['background']};
+@define-color sidebar_fg_color {out['onBackground']};
+@define-color sidebar_backdrop_color {out['background']};
+@define-color sidebar_shade_color rgba(0, 0, 0, 0.36);
 """
-    atomic_write(gtk_dir / "gtk.css", gtk_css)
+
+
+def enforce_gtk_settings() -> None:
+    """gsettings/dconf `org.gnome.desktop.interface gtk-theme` is the value
+    GTK honours on Wayland (above settings.ini and xsettingsd). It had
+    drifted to a non-installed `adw-gtk3-dark` once already, whitening every
+    GTK app -- pin it (and the dark preference) here every run. Best-effort:
+    silently skipped if gsettings/the schema isn't present."""
+    for key, val in (
+        ("gtk-theme", GTK_THEME_NAME),
+        ("color-scheme", "prefer-dark"),
+    ):
+        try:
+            subprocess.run(
+                ["gsettings", "set", "org.gnome.desktop.interface", key, val],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (subprocess.SubprocessError, OSError):
+            pass
 
 
 def theme_gtk(out: dict) -> None:
-    patch_breeze_colors_css(GTK3_DIR / "colors.css", out)
-    patch_breeze_colors_css(GTK4_DIR / "colors.css", out)
-    write_gtk_css(GTK3_DIR, out)
-    write_gtk_css(GTK4_DIR, out)
-    print(f"wrote {GTK3_DIR}/{{colors.css,gtk.css}} and {GTK4_DIR}/{{colors.css,gtk.css}}")
+    colors_css = gtk_colors_css(out)
+    for d in (GTK3_DIR, GTK4_DIR):
+        atomic_write(d / "gtk.css", GTK_CSS_STATIC)
+        # colors.css last: for GTK3 this write is the event colorreload-gtk-
+        # module's file monitor fires on, so gtk.css's @import must already
+        # be in place when it re-reads.
+        atomic_write(d / "colors.css", colors_css)
+    enforce_gtk_settings()
+    print(f"wrote {GTK3_DIR} and {GTK4_DIR} {{gtk,colors}}.css, pinned gtk-theme={GTK_THEME_NAME}")
 
 
 # --- KDE / Dolphin ---------------------------------------------------------
@@ -458,11 +458,10 @@ def patch_kdeglobals_inline(out: dict) -> None:
 def theme_kde(out: dict) -> None:
     write_color_scheme_file(out)
     patch_kdeglobals_inline(out)
-    # Best-effort: sets kdeglobals's [KDE] ColorScheme=MaterialYou and (when
-    # a KDE session/DBus is actually reachable) notifies running apps to
-    # reload live. Under plain Hyprland (no plasmashell/kded6) the DBus
-    # notify step just silently has no one to notify -- the file changes
-    # still land, apps pick them up on next launch.
+    # Best-effort: sets kdeglobals's [General] ColorScheme=MaterialYou and
+    # (when kded6/DBus is reachable) notifies running Qt/KDE apps to reload
+    # live. Under plain Hyprland the notify step may have no one to hear it
+    # -- the file changes still land, apps pick them up on next launch.
     result = subprocess.run(
         ["plasma-apply-colorscheme", COLOR_SCHEME_NAME],
         capture_output=True, text=True,
@@ -671,6 +670,38 @@ set -g window-status-current-style "bg={active_bg},fg={contrasting_text_hex(acti
     print(f"wrote {TMUX_THEME}")
 
 
+# --- nsxiv -----------------------------------------------------------------
+
+def theme_nsxiv(out: dict) -> None:
+    """nsxiv reads its colors from X resources under the `Nsxiv` class (it's
+    an XWayland app here). Written to a standalone file this script then
+    `xrdb -merge`s into the running XWayland server's RESOURCE_MANAGER;
+    hyprland.lua also merges it once at login, in case the wallpaper -- and
+    so this script -- hasn't changed yet this session. Only nsxiv's own
+    resources are in the file, so the merge can't disturb anything else.
+
+    window.* is the alacritty background/foreground pair (per request:
+    "same colors as alacritty background"). The statusbar borrows
+    primary/onPrimary so it reads like the tmux status line."""
+    xres = (
+        "! Generated by ~/.config/hypr/scripts/gen-theme.py -- do not edit.\n"
+        f"Nsxiv.window.background: {out['background']}\n"
+        f"Nsxiv.window.foreground: {out['onBackground']}\n"
+        f"Nsxiv.bar.background: {out['primary']}\n"
+        f"Nsxiv.bar.foreground: {out['onPrimary']}\n"
+        f"Nsxiv.mark.foreground: {out['primary']}\n"
+    )
+    atomic_write(NSXIV_XRESOURCES, xres)
+    try:
+        subprocess.run(
+            ["xrdb", "-merge", str(NSXIV_XRESOURCES)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        pass
+    print(f"wrote {NSXIV_XRESOURCES}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=Path, help="extract seed colors from this image instead of the hardcoded accent")
@@ -692,6 +723,7 @@ def main() -> None:
     theme_alacritty(out)
     theme_rofi(out)
     theme_tmux(out)
+    theme_nsxiv(out)
 
 
 if __name__ == "__main__":
