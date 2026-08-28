@@ -83,12 +83,23 @@ Canvas {
         return points;
     }
 
-    function drawSeries(ctx, rawData, rgb, fill, dashed, lineWidth, alpha) {
+    function drawSeries(ctx, rawData, rawColor, fill, dashed, lineWidth, alpha) {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
         if (points.length < 2)
             return;
+        // seriesList's per-entry `color` field comes from Theme.seriesPalette,
+        // an untyped `property var` array of plain hex STRINGS (not QML
+        // `color` objects -- only a top-level `property color` gets that
+        // string->QColor auto-coercion, a nested object-literal field like
+        // seriesList[i].color never does). rgb.r/.g/.b on a bare string is
+        // undefined, so every overlay graph (net/cpu/mem/disk) has been
+        // drawing Qt.rgba(undefined, undefined, undefined, alpha) -- i.e.
+        // black -- since overlay mode was introduced; only the single-series
+        // path (color1, a real `property color`) ever worked. Reported as
+        // "CPU is all black" / "graphs don't use theme colors" 2026-08-28.
+        const rgb = Qt.color(rawColor);
         const h = height;
         const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
 

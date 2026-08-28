@@ -22,4 +22,8 @@ fi
 dest="$HOME/.local/state/quickshell/wallpaper.png"
 mkdir -p "$(dirname "$dest")"
 cp -- "$src" "$dest"
+# Remembers the real source path (dest above is always the same fixed
+# filename, a copy) so wallpaper-cycle.sh can find "current" in the
+# ~/pictures list for next/prev.
+realpath -- "$src" > "$HOME/.local/state/quickshell/wallpaper-source"
 echo "wallpaper set to $src (theme will regenerate within ~2s)"
