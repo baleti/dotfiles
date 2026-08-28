@@ -24,53 +24,53 @@ IntensityAmount=
 IntensityEffect=
 
 [Colors:Button]
-BackgroundAlternate=68,71,79
-BackgroundNormal=68,71,79
+BackgroundAlternate=72,71,58
+BackgroundNormal=72,71,58
 DecorationFocus=146,110,228
 DecorationHover=146,110,228
 ForegroundActive=146,110,228
 ForegroundLink=209,199,242
-ForegroundNormal=227,226,230
+ForegroundNormal=230,226,218
 
 [Colors:Complementary]
-DecorationFocus=173,198,255
-DecorationHover=173,198,255
+DecorationFocus=204,204,87
+DecorationHover=94,212,252
 ForegroundActive=146,110,228
 ForegroundLink=146,110,228
 
 [Colors:Selection]
-BackgroundAlternate=0,68,148
-BackgroundNormal=173,198,255
+BackgroundAlternate=73,73,0
+BackgroundNormal=204,204,87
 DecorationFocus=146,110,228
 DecorationHover=146,110,228
 ForegroundActive=146,110,228
 ForegroundInactive=255,255,255
 ForegroundLink=118,54,221
-ForegroundNormal=0,46,105
+ForegroundNormal=50,50,0
 
 [Colors:Tooltip]
-BackgroundNormal=68,71,79
+BackgroundNormal=72,71,58
 DecorationFocus=146,110,228
 DecorationHover=146,110,228
 ForegroundActive=146,110,228
 ForegroundLink=209,199,242
-ForegroundNormal=227,226,230
+ForegroundNormal=230,226,218
 
 [Colors:View]
-BackgroundNormal=27,27,31
+BackgroundNormal=28,28,23
 DecorationFocus=146,110,228
 DecorationHover=146,110,228
 ForegroundActive=146,110,228
 ForegroundLink=209,199,242
-ForegroundNormal=227,226,230
+ForegroundNormal=230,226,218
 
 [Colors:Window]
-BackgroundNormal=27,27,31
+BackgroundNormal=28,28,23
 DecorationFocus=146,110,228
 DecorationHover=146,110,228
 ForegroundActive=146,110,228
 ForegroundLink=209,199,242
-ForegroundNormal=227,226,230
+ForegroundNormal=230,226,218
 
 [General]
 AllowKDEAppsToRememberWindowPositions=false
@@ -82,7 +82,7 @@ Name[en_GB]=Breeze Dark
 TerminalApplication=alacritty
 shadeSortColumn=true
 widgetStyle=Breeze
-AccentColor=173,198,255
+AccentColor=204,204,87
 
 [Icons]
 Theme=Tela-blue-dark
