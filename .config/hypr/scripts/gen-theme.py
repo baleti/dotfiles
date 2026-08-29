@@ -456,7 +456,18 @@ def patch_kdeglobals_inline(out: dict) -> None:
     kdeglobals never had that key at all, `kreadconfig6` was falling
     through to that system default -- which is why Dolphin kept showing
     "old" purple-ish selection/accent colors no matter what
-    MaterialYou.colors said, 2026-08-28)."""
+    MaterialYou.colors said, 2026-08-28).
+
+    Pins widgetStyle=Breeze too. The Qt widget style used to be
+    `kvantum-dark` (the `darknord-kvantum` Kvantum theme, kept in the repo
+    under ~/.config/Kvantum/darknord-kvantum/). Kvantum themes hardcode
+    their whole palette -- `[GeneralColors]` in the .kvconfig plus colours
+    baked into the theme SVG -- and override the KDE colour scheme
+    wholesale, so plasma-apply-colorscheme had no visible effect on Dolphin
+    or any other Qt/KDE app. Breeze reads the colour scheme natively and
+    picks up plasma-apply-colorscheme live. To go back to Kvantum:
+    `kwriteconfig6 --file kdeglobals --group KDE --key widgetStyle kvantum-dark`
+    (and drop this pin), 2026-08-29."""
     cp = configparser.ConfigParser(strict=False, interpolation=None)
     cp.optionxform = str
     if KDEGLOBALS.exists():
@@ -469,6 +480,10 @@ def patch_kdeglobals_inline(out: dict) -> None:
     if not cp.has_section("General"):
         cp.add_section("General")
     cp.set("General", "AccentColor", rgb(out["primary"]))
+    for section in ("KDE", "General"):
+        if not cp.has_section(section):
+            cp.add_section(section)
+        cp.set(section, "widgetStyle", "Breeze")
     buf = io.StringIO()
     cp.write(buf, space_around_delimiters=False)
     atomic_write(KDEGLOBALS, buf.getvalue())
