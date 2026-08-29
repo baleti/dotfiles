@@ -234,6 +234,25 @@ def build_scheme(primary_argb: int, secondary_argb: int, accent_argb: int | None
         for i in range(8)
     ]
 
+    # Intensity / "temperature" ramp: 5 stops from calm (a low metric value)
+    # to hot (a pegged one). Chroma rises monotonically and the hue rotates
+    # from the theme's own primary toward amber then red-orange, so a
+    # maxed-out CPU/temp/net reads as "hot" regardless of the base palette
+    # hue. Consumed by the quickshell bar (Theme.rampColor) to colour metric
+    # values and single-series graphs by magnitude.
+    def _lerp_hue(a: float, b: float, t: float) -> float:
+        d = ((b - a + 180) % 360) - 180
+        return (a + d * t) % 360
+
+    warm, hot = 50.0, 25.0
+    intensity_ramp = [
+        argb_to_hex(Hct.from_hct(primary_hue, 12, 75).to_int()),
+        argb_to_hex(Hct.from_hct(_lerp_hue(primary_hue, warm, 0.30), 34, 74).to_int()),
+        argb_to_hex(Hct.from_hct(_lerp_hue(primary_hue, warm, 0.60), 55, 72).to_int()),
+        argb_to_hex(Hct.from_hct(_lerp_hue(primary_hue, hot, 0.85), 74, 66).to_int()),
+        argb_to_hex(Hct.from_hct(hot, 92, 60).to_int()),
+    ]
+
     return {
         "background": argb_to_hex(scheme.background),
         "surface": argb_to_hex(scheme.surface),
@@ -250,6 +269,7 @@ def build_scheme(primary_argb: int, secondary_argb: int, accent_argb: int | None
         "onSecondary": argb_to_hex(secondary_group.on_color),
         "error": argb_to_hex(scheme.error),
         "seriesPalette": series_palette,
+        "intensityRamp": intensity_ramp,
         # RAW extracted accent (not harmonized/blended toward primary like
         # `secondary` above) -- the Hyprland border uses this directly.
         # Falls back to `secondary` when there's no image (the hardcoded

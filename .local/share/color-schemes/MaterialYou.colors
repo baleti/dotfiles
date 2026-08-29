@@ -3,28 +3,28 @@ Name=MaterialYou
 ColorScheme=MaterialYou
 
 [Colors:Window]
-BackgroundNormal=31,27,22
-ForegroundNormal=235,225,217
+BackgroundNormal=32,27,22
+ForegroundNormal=235,224,217
 
 [Colors:View]
-BackgroundNormal=31,27,22
-ForegroundNormal=235,225,217
+BackgroundNormal=32,27,22
+ForegroundNormal=235,224,217
 
 [Colors:Button]
-BackgroundNormal=80,69,57
-BackgroundAlternate=80,69,57
-ForegroundNormal=235,225,217
+BackgroundNormal=81,69,58
+BackgroundAlternate=81,69,58
+ForegroundNormal=235,224,217
 
 [Colors:Selection]
-BackgroundNormal=255,185,91
-BackgroundAlternate=100,63,0
-ForegroundNormal=70,42,0
+BackgroundNormal=255,184,113
+BackgroundAlternate=106,60,0
+ForegroundNormal=74,40,0
 
 [Colors:Tooltip]
-BackgroundNormal=80,69,57
-ForegroundNormal=235,225,217
+BackgroundNormal=81,69,58
+ForegroundNormal=235,224,217
 
 [Colors:Complementary]
-DecorationFocus=255,185,91
-DecorationHover=192,193,255
+DecorationFocus=255,184,113
+DecorationHover=198,206,91
 

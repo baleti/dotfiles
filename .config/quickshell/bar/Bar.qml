@@ -303,6 +303,7 @@ Item {
             mode: "overlay"
             seriesList: root.netSeriesList
             maxValue: root.netMax
+            valueFraction: Theme.norm(root.netTotalNow, 0, 6 * 1024 * 1024)
             legendItems: root.netLegend
             topProcs: SysmonSvc.topNet
             topUnit: " KB/s"
@@ -324,6 +325,7 @@ Item {
             mode: "overlay"
             seriesList: root.cpuOverlayList
             maxValue: 100
+            valueFraction: root.last(SysmonSvc.cpuTotal) / 100
             legendItems: root.cpuLegend
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
@@ -345,6 +347,7 @@ Item {
             mode: "overlay"
             seriesList: root.memSeriesList
             maxValue: 100
+            valueFraction: root.last(SysmonSvc.memUsedPct) / 100
             legendItems: root.memLegend
             topProcs: SysmonSvc.topMem
             topUnit: " MB"
@@ -367,6 +370,7 @@ Item {
             mode: "overlay"
             seriesList: root.diskSeriesList
             maxValue: root.diskMax
+            valueFraction: Theme.norm(root.diskTotalNow, 0, 300 * 1024 * 1024)
             legendItems: root.diskLegend
             yAxisFormatter: v => root.fmtRate(v)
             tierCodes: SysmonSvc.tierCodes
@@ -386,7 +390,7 @@ Item {
             mode: "single"
             series: SysmonSvc.tempC
             maxValue: Math.max(60, ...SysmonSvc.tempC) + 10
-            color1: Theme.orange
+            valueFraction: Theme.norm(root.last(SysmonSvc.tempC), 45, 90)
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             topLabel: qsTr("Top CPU (heat proxy)")

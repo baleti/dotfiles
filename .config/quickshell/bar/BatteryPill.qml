@@ -21,13 +21,12 @@ Rectangle {
     border.width: 1
     radius: Theme.rounding
 
-    readonly property color batColor: {
-        if (BatterySvc.percent <= 15)
-            return Theme.red;
-        if (BatterySvc.percent <= 30)
-            return Theme.orange;
-        return Theme.text;
-    }
+    // Calm text at a healthy charge; slides up the calm->hot intensity ramp
+    // as it drains, only starting to warm below ~50% and going fully hot near
+    // empty. (Inverse of the other metrics -- here "low" is the alarming end.)
+    readonly property color batColor: BatterySvc.percent >= 50
+        ? Theme.text
+        : Theme.rampColor(Theme.norm(50 - BatterySvc.percent, 0, 42))
 
     Row {
         id: row

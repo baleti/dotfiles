@@ -24,7 +24,15 @@ Rectangle {
     property list<real> series: []
     property var seriesList: []
     property real maxValue: 100
-    property color color1: Theme.cyan
+
+    // 0..1 (or NaN to opt out): how "high" this metric currently is. Drives
+    // the compact value/icon colour along Theme's calm->hot intensity ramp,
+    // and -- in single mode -- the graph line/fill colour too.
+    property real valueFraction: NaN
+    readonly property bool graded: !isNaN(valueFraction)
+    readonly property color gradedColor: graded ? Theme.rampColor(valueFraction) : Theme.text
+
+    property color color1: graded ? gradedColor : Theme.cyan
 
     // Formats a raw value (0..maxValue) for the y-axis label column --
     // Bar.qml overrides per-widget (percent for cpu/mem, a byte-rate
@@ -127,7 +135,7 @@ Rectangle {
             text: root.compactText
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize
-            color: Theme.text
+            color: root.gradedColor
             width: root.compactTextWidth > 0 ? root.compactTextWidth : implicitWidth
             horizontalAlignment: Text.AlignRight
         }
@@ -136,7 +144,7 @@ Rectangle {
             text: root.icon
             font.family: Theme.iconFontFamily
             font.pixelSize: Theme.fontSize
-            color: Theme.text
+            color: root.gradedColor
         }
     }
 
