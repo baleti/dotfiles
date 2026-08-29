@@ -271,7 +271,15 @@ hl.bind(mainMod .. " + CTRL + m", function()
     hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
     hl.dispatch(hl.dsp.submap("media_seek"))
 end)
-hl.bind("CTRL + ALT + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))
+-- Moved from CTRL+ALT+c to mod+CTRL+c. No Hyprland submap needed here
+-- (unlike media_seek/graph_*): once open, CalendarExpanded.qml gets real
+-- WlrKeyboardFocus.OnDemand focus (shell.qml) the same way the media panel
+-- already does for its own arrow-seek/space/escape keys, so bare
+-- Tab/arrows/Enter/Escape just reach the QML panel directly - no global
+-- digit-style interception required. See CalendarExpanded.qml's
+-- handleKey() for the year-picker (Tab enters it; arrows navigate/zoom;
+-- Enter drills in or confirms; Escape exits).
+hl.bind(mainMod .. " + CTRL + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))
 
 -- bluetooth
 hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"))

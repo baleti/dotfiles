@@ -15,31 +15,36 @@ Item {
     required property ShellScreen screen
 
     // Exposed so shell.qml can drive the PanelWindow's WlrLayershell
-    // keyboard-focus mode from mediaExpanded's own open/closed state.
+    // keyboard-focus mode from each panel's own open/closed state.
     readonly property alias mediaPanel: mediaExpanded
+    readonly property alias calendarPanel: calendarExpanded
 
-    focus: mediaExpanded.expanded
+    focus: mediaExpanded.expanded || calendarExpanded.expanded
 
-    // Only live while the media panel is actually open (see shell.qml's
-    // OnDemand/None keyboardFocus binding) -- arrow keys seek, space
-    // toggles play/pause, escape closes. mod+m (the same key that opened
-    // it) also closes it, handled in hyprland/keybinds.lua as a toggle.
+    // Only live while a panel that wants real keyboard control is open (see
+    // shell.qml's OnDemand/None keyboardFocus binding). Media: arrow keys
+    // seek, space toggles play/pause, escape closes; mod+CTRL+m (the same
+    // combo that opened it) also closes it, handled in hyprland/keybinds.lua
+    // as a toggle. Calendar: delegated to CalendarExpanded.handleKey() -
+    // Tab/arrows/enter/escape drive its month nav + year-picker.
     Keys.onPressed: event => {
-        if (!mediaExpanded.expanded || !Players.active)
-            return;
-        const player = Players.active;
-        if (event.key === Qt.Key_Left && player.canSeek) {
-            player.seek(-5);
-            event.accepted = true;
-        } else if (event.key === Qt.Key_Right && player.canSeek) {
-            player.seek(5);
-            event.accepted = true;
-        } else if (event.key === Qt.Key_Space && player.canTogglePlaying) {
-            player.togglePlaying();
-            event.accepted = true;
-        } else if (event.key === Qt.Key_Escape) {
-            mediaExpanded.expanded = false;
-            event.accepted = true;
+        if (mediaExpanded.expanded && Players.active) {
+            const player = Players.active;
+            if (event.key === Qt.Key_Left && player.canSeek) {
+                player.seek(-5);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Right && player.canSeek) {
+                player.seek(5);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Space && player.canTogglePlaying) {
+                player.togglePlaying();
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Escape) {
+                mediaExpanded.expanded = false;
+                event.accepted = true;
+            }
+        } else if (calendarExpanded.expanded) {
+            calendarExpanded.handleKey(event);
         }
     }
 
