@@ -68,6 +68,35 @@ Rectangle {
     property string tier: "10m"
     signal tierRequested(string code)
 
+    // x-axis (time) ticks for the current tier -- span/step mirror
+    // ~/.config/hypr/sysmon/src/lib.rs's Tier::span_secs exactly (the graph's
+    // fixed width represents exactly one tier's span, oldest sample at the
+    // left edge and "now" at the right -- see Graph.qml's downsample()), so
+    // these have to be kept in sync with that table the same way
+    // SysmonSvc.qml's tierCodes/tierLabels already duplicate it rather than
+    // importing it. step divides span evenly for every tier below.
+    readonly property var xAxisTickInfo: ({
+        "10m": { span: 600,       step: 120,     div: 60,      unit: "m" },
+        "30m": { span: 1800,      step: 300,     div: 60,      unit: "m" },
+        "6h":  { span: 21600,     step: 3600,    div: 3600,    unit: "h" },
+        "7d":  { span: 604800,    step: 86400,   div: 86400,   unit: "d" },
+        "7w":  { span: 4233600,   step: 604800,  div: 604800,  unit: "w" },
+        "7mo": { span: 18144000,  step: 2592000, div: 2592000, unit: "mo" },
+    })
+    readonly property var xAxisTicks: {
+        const info = root.xAxisTickInfo[root.tier];
+        if (!info)
+            return [];
+        const ticks = [];
+        for (let ago = 0; ago <= info.span; ago += info.step) {
+            ticks.push({
+                fraction: 1 - ago / info.span,
+                label: ago === 0 ? qsTr("now") : ((ago / info.div) + info.unit),
+            });
+        }
+        return ticks;
+    }
+
     property bool expanded: false
     // Set by a click on the pill (or Bar.qml's IpcHandler, for the alt+t
     // style keybind toggles) -- while pinned, hovering off no longer closes
@@ -111,15 +140,19 @@ Rectangle {
         onTriggered: root.expanded = false
     }
 
-    // Click / keybind toggle (Bar.qml's IpcHandler calls this too). It's
-    // authoritative over the current visible state: toggling a panel closed
-    // closes it NOW even if the pointer is sitting on the pill or the panel
-    // (the old `else if (!hovered)` guard made the keypress do nothing until
-    // the mouse moved away -- reported 2026-08-29). Moving the pointer off
-    // and back on can still reopen it via hover; that's a separate path.
+    // Click / keybind toggle (Bar.qml's IpcHandler calls this too). Branches
+    // on `pinned`, not `expanded` -- hovering the pill already sets
+    // `expanded = true` on its own, so a click while hovering would
+    // otherwise always land on the "close" branch and the panel could never
+    // be pinned open (reported 2026-08-29). It's still authoritative over
+    // the current visible state: toggling a panel closed closes it NOW even
+    // if the pointer is sitting on the pill or the panel (the old
+    // `else if (!hovered)` guard made the keypress do nothing until the
+    // mouse moved away -- reported 2026-08-29). Moving the pointer off and
+    // back on can still reopen it via hover; that's a separate path.
     function togglePin(): void {
         hideTimer.stop();
-        if (expanded) {
+        if (pinned) {
             pinned = false;
             expanded = false;
         } else {
@@ -251,6 +284,7 @@ Rectangle {
             }
 
             Row {
+                id: graphRow
                 width: parent.width
                 height: 300
                 spacing: 6
@@ -280,6 +314,7 @@ Rectangle {
                 }
 
                 Graph {
+                    id: graph
                     width: parent.width - yAxis.width - parent.spacing
                     height: parent.height
                     series: root.mode === "single" ? root.series : []
@@ -287,6 +322,37 @@ Rectangle {
                     maxValue: root.maxValue
                     color1: root.color1
                     gridFractions: root.gridFractions
+                    xGridFractions: root.xAxisTicks.map(t => t.fraction)
+                }
+            }
+
+            // X-axis: time-ago labels under the graph area only (offset past
+            // yAxis, same width as Graph itself), at the same fractions the
+            // Graph draws its faint vertical lines at. x interpolates each
+            // label from left-aligned at fraction 0 (oldest sample) to
+            // right-aligned at fraction 1 ("now") so nothing overhangs
+            // either edge of the panel.
+            Item {
+                width: parent.width
+                height: Theme.fontSize
+
+                Item {
+                    x: yAxis.width + graphRow.spacing
+                    width: graph.width
+                    height: parent.height
+
+                    Repeater {
+                        model: root.xAxisTicks
+
+                        Text {
+                            required property var modelData
+                            x: modelData.fraction * (parent.width - implicitWidth)
+                            text: modelData.label
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                        }
+                    }
                 }
             }
 
