@@ -220,11 +220,13 @@ Item {
 
     readonly property var memLegend: [
         { name: qsTr("Used"), color: Theme.green },
-        { name: qsTr("Cached"), color: Theme.cyan }
+        { name: qsTr("Cached"), color: Theme.cyan },
+        { name: qsTr("Swap"), color: Theme.orange }
     ]
     readonly property var memSeriesList: memPill.expanded ? [
         { data: SysmonSvc.memUsedPct, color: Theme.green, dashed: false },
-        { data: SysmonSvc.memCachedPct, color: Theme.cyan, dashed: true }
+        { data: SysmonSvc.memCachedPct, color: Theme.cyan, dashed: true },
+        { data: SysmonSvc.swapUsedPct, color: Theme.orange, dashed: false }
     ] : []
 
     readonly property var diskLegend: diskPill.expanded ? SysmonSvc.diskDevices.map(d => ({ name: d.name, color: root.colorFor(d.name) })) : []

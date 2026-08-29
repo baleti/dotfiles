@@ -101,6 +101,27 @@ impl TieredSeries {
     }
 }
 
+/// Percent of swap space in use (SwapTotal - SwapFree over SwapTotal),
+/// 0.0 when the system has no swap configured at all.
+fn read_swap_pct() -> f64 {
+    let Ok(meminfo) = fs::read_to_string("/proc/meminfo") else { return 0.0 };
+    let mut total = 0.0_f64;
+    let mut free = 0.0_f64;
+    for line in meminfo.lines() {
+        let Some((key, rest)) = line.split_once(':') else { continue };
+        let kb: f64 = rest.trim().trim_end_matches(" kB").parse().unwrap_or(0.0);
+        match key {
+            "SwapTotal" => total = kb,
+            "SwapFree" => free = kb,
+            _ => {}
+        }
+    }
+    if total <= 0.0 {
+        return 0.0;
+    }
+    100.0 * (1.0 - free / total)
+}
+
 /// Two parallel tiered series -- rx/tx for a network interface, or
 /// read/write for a disk. Field names are generic on purpose.
 struct TwoSeriesBuf {
@@ -121,6 +142,12 @@ struct PersistedHistory {
     temp_c: PersistedSeries,
     mem_used_pct: PersistedSeries,
     mem_cached_pct: PersistedSeries,
+    // `#[serde(default)]` so a history.json saved before swap tracking
+    // existed still loads -- without it, a missing key fails the whole
+    // parse and every other series (cpu/mem/net/disk) would restart empty
+    // too, not just swap.
+    #[serde(default)]
+    swap_used_pct: PersistedSeries,
     net: HashMap<String, (PersistedSeries, PersistedSeries)>,
     disk: HashMap<String, (PersistedSeries, PersistedSeries)>,
 }
@@ -147,6 +174,7 @@ struct History {
     temp_c: TieredSeries,
     mem_used_pct: TieredSeries,
     mem_cached_pct: TieredSeries,
+    swap_used_pct: TieredSeries,
     top_cpu: Vec<ProcEntry>,
     top_mem: Vec<ProcEntry>,
     // Per-process network attribution needs packet capture (nethogs, via
@@ -168,6 +196,7 @@ impl History {
             temp_c: TieredSeries::new(),
             mem_used_pct: TieredSeries::new(),
             mem_cached_pct: TieredSeries::new(),
+            swap_used_pct: TieredSeries::new(),
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
             top_net: Vec::new(),
@@ -185,6 +214,7 @@ impl History {
         self.temp_c.load_persisted(&p.temp_c);
         self.mem_used_pct.load_persisted(&p.mem_used_pct);
         self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
+        self.swap_used_pct.load_persisted(&p.swap_used_pct);
         for (core, saved) in self.cpu_cores.iter_mut().zip(p.cpu_cores.iter()) {
             core.load_persisted(saved);
         }
@@ -208,6 +238,7 @@ impl History {
             temp_c: self.temp_c.to_persisted(),
             mem_used_pct: self.mem_used_pct.to_persisted(),
             mem_cached_pct: self.mem_cached_pct.to_persisted(),
+            swap_used_pct: self.swap_used_pct.to_persisted(),
             net: self.net.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
             disk: self.disk.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
         };
@@ -605,6 +636,7 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
         prev_disk = cur_disk.into_iter().map(|(name, (rd, wr))| (name, (rd, wr, now))).collect();
 
         let (mem_used_pct, mem_cached_pct) = read_mem_pcts();
+        let swap_used_pct = read_swap_pct();
 
         // Top-10 by CPU: needs a tick-over-tick delta per pid, same idea as
         // the aggregate/per-core calc above, just keyed by pid instead of
@@ -647,6 +679,7 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
         h.temp_c.push_raw(temp_c);
         h.mem_used_pct.push_raw(mem_used_pct);
         h.mem_cached_pct.push_raw(mem_cached_pct);
+        h.swap_used_pct.push_raw(swap_used_pct);
         for (i, pct) in core_pcts.into_iter().enumerate() {
             if let Some(series) = h.cpu_cores.get_mut(i) {
                 series.push_raw(pct);
@@ -725,6 +758,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                 Metric::Mem => Snapshot::Mem {
                     used_pct: h.mem_used_pct.get(tier),
                     cached_pct: h.mem_cached_pct.get(tier),
+                    swap_used_pct: h.swap_used_pct.get(tier),
                 },
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
