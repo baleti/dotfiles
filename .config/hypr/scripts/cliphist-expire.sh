@@ -5,11 +5,22 @@
 # else - so entry age can't be read from the database. But ids increase
 # monotonically, so we can record a watermark ("at time T the highest id was N")
 # on every run and later treat "id <= the watermark from MAX_AGE ago" as "older
-# than MAX_AGE".
+# than MAX_AGE". This is still what drives the actual expiry decision below,
+# unchanged.
 #
 # Consequence worth knowing: entries that already existed when this was first
 # installed have unknown age, so they're treated as first seen at install time
 # and survive one full MAX_AGE window before expiring.
+#
+# A second, more precise log now exists alongside this one:
+# cliphist-store-logged.sh (wired into hyprland.lua's wl-paste --watch)
+# appends an exact copy-time per entry as it's stored, which is what
+# clipboard-picker's $date: field actually reads - real timestamps rather
+# than this script's ~15min-bucketed watermark interpolation. This script
+# doesn't consume that log for its own expiry math (no need to - the
+# watermark approach already works and changing a script that deletes
+# clipboard history is not something to do incidentally), it only prunes
+# it below, in step with whatever this run just expired.
 
 set -uo pipefail
 
@@ -24,12 +35,13 @@ CLIPHIST=(cliphist)
 [[ -n "${CLIPHIST_DB:-}" ]] && CLIPHIST=(cliphist -db-path "$CLIPHIST_DB")
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cliphist-expire"
 WATERMARKS="$STATE_DIR/watermarks"
+TIMESTAMPS="$STATE_DIR/timestamps"
 # Keep a bit more history than we need, so the file stays small but we never
 # lose the sample we're about to look for.
 KEEP_HOURS=$(( MAX_AGE_HOURS * 5 + 1 ))
 
 mkdir -p "$STATE_DIR"
-touch "$WATERMARKS"
+touch "$WATERMARKS" "$TIMESTAMPS"
 
 now=$(date +%s)
 max_id=$("${CLIPHIST[@]}" list 2>/dev/null | head -1 | cut -f1)
@@ -59,3 +71,10 @@ fi
 # Drop watermark samples we'll never consult again.
 prune_before=$(( now - KEEP_HOURS * 3600 ))
 awk -v p="$prune_before" '$1 >= p' "$WATERMARKS" > "$WATERMARKS.tmp" && mv "$WATERMARKS.tmp" "$WATERMARKS"
+
+# Prune the exact-timestamp log to match: anything copied before $cutoff was
+# just (or previously) expired above, so its logged time is now for an id
+# cliphist itself no longer has - $cutoff, not $prune_before, since this one
+# has no interpolation to protect (each line already is an exact copy time,
+# not a sample to interpolate between).
+awk -v c="$cutoff" '$1 >= c' "$TIMESTAMPS" > "$TIMESTAMPS.tmp" && mv "$TIMESTAMPS.tmp" "$TIMESTAMPS"

@@ -25,10 +25,14 @@ Fires once per Hyprland session start (not on every config reload — that
 distinction matters for the pinned-app hide logic, see the file's own
 comments). Starts, in order:
 
-1. `wl-paste --watch ... cliphist store` — clipboard history, with
-   `CLIPBOARD_STATE=sensitive` deliberately overridden so password-manager
-   copies are still retained (retention is bounded by `cliphist-expire`
-   instead, see below).
+1. `wl-paste --watch scripts/cliphist-store-logged.sh` — clipboard history,
+   with `CLIPBOARD_STATE=sensitive` deliberately overridden (inside the
+   wrapper script now, not inline here) so password-manager copies are
+   still retained (retention is bounded by `cliphist-expire` instead, see
+   below). Wraps a plain `cliphist store` call to also log an exact
+   copy-time per entry, since cliphist itself keeps none — see
+   [rust-tools.md](rust-tools.md)'s clipboard-picker entry for what reads
+   that log (`$date:` in the picker's own query DSL).
 2. `notifyd/target/release/notifyd` — see [rust-tools.md](rust-tools.md).
 3. `sysmon/target/release/sysmond` — see [rust-tools.md](rust-tools.md).
 4. `scripts/wallpaper-watch.sh` — see [theming.md](theming.md).
