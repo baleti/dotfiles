@@ -180,7 +180,7 @@ hl.bind(mainMod .. " + b", hl.dsp.exec_cmd("killall -SIGUSR1 waybar"))
 -- closed/timed out, since notifyd (replacing dunst -- see
 -- ~/.claude2/plans/silly-percolating-rose.md) never discards a
 -- notification's actions on close, unlike dunst.
-hl.bind(mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/notifyd/target/release/notifyctl invoke-last"))
+hl.bind("ALT + n", hl.dsp.exec_cmd("~/.config/hypr/notifyd/target/release/notifyctl invoke-last"))
 
 -- notifications: open the full action list (e.g. Thunderbird's Activate/
 -- Mark as Read/Delete) instead of just invoking the default one
@@ -206,46 +206,109 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 
 -- Toggle the *quickshell bar's own* hover-graph panels open/closed on
 -- whichever monitor is focused (~/.config/hypr/scripts/bar-toggle.sh), AND
--- enter a "graph_<widget>" submap: while active, 1-6 (no modifier) jumps
--- that panel's history tier straight to 10m/30m/6h/7d/7w/7mo, via the new
--- bar-set-tier.sh -> Bar.qml's setXxxTier() IpcHandler functions (same
--- tier-setting path GraphPill's own tier buttons use). Escape or the entry
--- key again exits back to the normal keymap.
+-- enter a shared "graph_nav" submap: while active, 1-6 (no modifier) jumps
+-- the last-toggled-on panel's history tier straight to 10m/30m/6h/7d/7w/
+-- 7mo, and left/right step it one tier at a time, via bar-set-tier.sh ->
+-- Bar.qml's setXxxTier() IpcHandler functions (same tier-setting path
+-- GraphPill's own tier buttons use).
+--
+-- Originally each widget got its OWN private submap (entered on its entry
+-- key, holding only that widget's own tier/Escape/entry-key binds). That
+-- meant entering e.g. graph_temp's submap left mod+d totally unbound --
+-- Hyprland submaps replace the *entire* active keymap -- so a second panel
+-- could never be opened without first Escaping back to the normal keymap
+-- (reported 2026-08-29, broke the "show several panels at once" flow).
+-- Fixed by folding every widget's entry key into one shared submap: any
+-- entry key works from inside it, each toggling its own panel and
+-- becoming the tier-key target, so panels layer up freely (Bar.qml's
+-- stackRight() lays out however many are open).
 --
 -- temp, disk, mem, and cpu moved from ALT+t/s/m/p to mod+t/d/m/p (disk later
 -- moved off mod+s to mod+d). mod+m
 -- collided with the media widget's own mod+m (below) - resolved by moving
 -- media to mod+CTRL+m. mod+p collided with window.pseudo() (dwindle) -
 -- resolved by dropping that binding entirely (told to, not guessed). See
--- feedback_hyprland_chord_via_submap memory. net stays on ALT+n: mod+n is
--- notifyctl invoke-last, pre-existing, nothing asked to give it up yet -
--- it still gained the same tier-submap capability, just under ALT.
+-- feedback_hyprland_chord_via_submap memory. net was left on ALT+n because
+-- mod+n was notifyctl invoke-last (above) - swapped 2026-08-29 so net
+-- matches the other widgets on plain mod+n, and invoke-last moved to ALT+n.
 local GRAPH_TIERS = { "10m", "30m", "6h", "7d", "7w", "7mo" }
 
-local function graph_tier_widget(submap_name, entry_key, toggle_func, ipc_setter)
-    hl.define_submap(submap_name, function()
-        for i, code in ipairs(GRAPH_TIERS) do
-            hl.bind(tostring(i), hl.dsp.exec_cmd(
-                "~/.config/hypr/scripts/bar-set-tier.sh " .. ipc_setter .. " " .. code))
-        end
-        hl.bind("Escape", function() hl.dispatch(hl.dsp.submap("reset")) end)
-        hl.bind(entry_key, function()
-            hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. toggle_func))
-            hl.dispatch(hl.dsp.submap("reset"))
-        end)
-    end)
+local GRAPH_WIDGETS = {
+    temp = { key = mainMod .. " + t", toggle = "toggleTemp", tier = "setTempTier" },
+    disk = { key = mainMod .. " + d", toggle = "toggleDisk", tier = "setDiskTier" },
+    net  = { key = mainMod .. " + n", toggle = "toggleNet",  tier = "setNetTier" },
+    cpu  = { key = mainMod .. " + p", toggle = "toggleCpu",  tier = "setCpuTier" },
+    mem  = { key = mainMod .. " + m", toggle = "toggleMem",  tier = "setMemTier" },
+}
 
-    hl.bind(entry_key, function()
-        hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. toggle_func))
-        hl.dispatch(hl.dsp.submap(submap_name))
-    end)
+-- active_widget: whichever panel 1-6/left/right currently act on -- the
+-- most recently *opened* one, not just most recently pressed (closing a
+-- panel falls back to another still-open one, if any). widget_open mirrors
+-- GraphPill's pinned state from the keybind side only -- toggling a panel
+-- by clicking its pill directly can desync this, same limitation the old
+-- per-widget submaps already had.
+local widget_open = {}
+for name in pairs(GRAPH_WIDGETS) do widget_open[name] = false end
+local active_widget = nil
+local tier_index = {}
+for name in pairs(GRAPH_WIDGETS) do tier_index[name] = 1 end
+
+local function set_tier(name, index)
+    index = math.max(1, math.min(#GRAPH_TIERS, index))
+    tier_index[name] = index
+    hl.dispatch(hl.dsp.exec_cmd(
+        "~/.config/hypr/scripts/bar-set-tier.sh " .. GRAPH_WIDGETS[name].tier .. " " .. GRAPH_TIERS[index]))
 end
 
-graph_tier_widget("graph_temp", mainMod .. " + t", "toggleTemp", "setTempTier")
-graph_tier_widget("graph_disk", mainMod .. " + d", "toggleDisk", "setDiskTier")
-graph_tier_widget("graph_net",  "ALT + n",          "toggleNet",  "setNetTier")
-graph_tier_widget("graph_cpu",  mainMod .. " + p",  "toggleCpu",  "setCpuTier")
-graph_tier_widget("graph_mem",  mainMod .. " + m",  "toggleMem",  "setMemTier")
+local function toggle_widget(name)
+    hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. GRAPH_WIDGETS[name].toggle))
+    widget_open[name] = not widget_open[name]
+
+    if widget_open[name] then
+        active_widget = name
+    elseif active_widget == name then
+        active_widget = nil
+        for n, open in pairs(widget_open) do
+            if open then
+                active_widget = n
+                break
+            end
+        end
+    end
+
+    -- Nothing left open -> drop back to the normal keymap automatically
+    -- (mirrors the old "entry key again exits" feel); otherwise stay in
+    -- nav mode so the remaining open panel(s) keep their tier keys live.
+    local any_open = false
+    for _, open in pairs(widget_open) do
+        any_open = any_open or open
+    end
+    hl.dispatch(hl.dsp.submap(any_open and "graph_nav" or "reset"))
+end
+
+hl.define_submap("graph_nav", function()
+    for name, w in pairs(GRAPH_WIDGETS) do
+        hl.bind(w.key, function() toggle_widget(name) end)
+    end
+
+    for i, code in ipairs(GRAPH_TIERS) do
+        hl.bind(tostring(i), function()
+            if active_widget then set_tier(active_widget, i) end
+        end)
+    end
+    hl.bind("left", function()
+        if active_widget then set_tier(active_widget, tier_index[active_widget] + 1) end
+    end)
+    hl.bind("right", function()
+        if active_widget then set_tier(active_widget, tier_index[active_widget] - 1) end
+    end)
+
+    hl.bind("Escape", function() hl.dispatch(hl.dsp.submap("reset")) end)
+end)
+
+for name, w in pairs(GRAPH_WIDGETS) do
+    hl.bind(w.key, function() toggle_widget(name) end)
+end
 -- mod+CTRL+m opens the media widget AND enters the "media_seek" submap:
 -- while active, bare 0-9 (no modifier -- Hyprland binds match one
 -- non-modifier key at a time, so a real simultaneous "mod+ctrl+m+2"

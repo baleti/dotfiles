@@ -31,6 +31,7 @@ Canvas {
     onSeriesChanged: requestPaint()
     onSeriesListChanged: requestPaint()
     onMaxValueChanged: requestPaint()
+    onXGridFractionsChanged: requestPaint()
 
     // Plots every raw sample at its exact (sub-pixel, unrounded) x position,
     // anchored to a FIXED width/historyLen scale (not width/rawData.length)
@@ -168,12 +169,23 @@ Canvas {
     // against these same fractions, so the two have to stay in sync.
     property var gridFractions: [0, 0.25, 0.5, 0.75, 1.0]
 
+    // Fractions of width (0=oldest/left, 1=now/right) to draw a faint
+    // vertical line at -- GraphPill's x-axis label row lines its own
+    // time labels up against these same fractions, same idea as
+    // gridFractions/the y-axis labels above.
+    property var xGridFractions: []
+
     function drawGrid(ctx) {
         ctx.beginPath();
         for (const f of gridFractions) {
             const y = height - f * height;
             ctx.moveTo(0, y);
             ctx.lineTo(width, y);
+        }
+        for (const f of xGridFractions) {
+            const x = f * width;
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, height);
         }
         ctx.strokeStyle = Qt.rgba(Theme.textDim.r, Theme.textDim.g, Theme.textDim.b, 0.15);
         ctx.lineWidth = 1;
