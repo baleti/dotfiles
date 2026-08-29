@@ -14,12 +14,15 @@
 //! is just `notifyctl invoke <id>`, no redisplay dance needed.
 
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
 use clipboard_picker::picker::{self, Entry, PickerConfig};
 
 const NOTIFYCTL: &str = "/home/user1/.config/hypr/notifyd/target/release/notifyctl";
+/// `$field:value`-selectable fields, offered by the autocomplete popup.
+const FIELD_NAMES: [&str; 2] = ["app", "date"];
 
 fn get_str(obj: &Value, key: &str) -> String {
     obj.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
@@ -27,16 +30,16 @@ fn get_str(obj: &Value, key: &str) -> String {
 
 /// `notifyctl list` returns newest-first already (see main.rs's
 /// list_history_json), so entries are kept in the order notifyd gives them.
-fn history_entries() -> (Vec<Entry>, Vec<String>) {
+fn history_entries() -> Vec<Entry> {
     let out = match Command::new(NOTIFYCTL).arg("list").output() {
         Ok(o) => o.stdout,
-        Err(_) => return (Vec::new(), Vec::new()),
+        Err(_) => return Vec::new(),
     };
     let Ok(list) = serde_json::from_slice::<Vec<Value>>(&out) else {
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     };
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
-    let mut type_names: Vec<String> = Vec::new();
     let mut entries = Vec::new();
     for n in &list {
         let Some(id) = n.get("id").and_then(|v| v.as_u64()) else {
@@ -47,13 +50,6 @@ fn history_entries() -> (Vec<Entry>, Vec<String>) {
         let body = get_str(n, "body");
 
         let app_label = if app_name.is_empty() { "(unnamed)" } else { app_name.as_str() };
-        let kind = match type_names.iter().position(|t| t == app_label) {
-            Some(i) => i,
-            None => {
-                type_names.push(app_label.to_string());
-                type_names.len() - 1
-            }
-        };
 
         let text = if !body.is_empty() && body != summary {
             format!("{summary} — {body}")
@@ -63,15 +59,23 @@ fn history_entries() -> (Vec<Entry>, Vec<String>) {
         let preview = if app_name.is_empty() { text } else { format!("[{app_name}] {text}") };
         let haystack = format!("{app_name} {summary} {body}").to_lowercase();
 
+        // Unlike clipboard-picker's $date (which needed a whole side-log,
+        // see cliphist-store-logged.sh), notifyd already tracks a real
+        // per-notification `timestamp` -- nothing extra to build here.
+        let mut fields = vec![("app", app_label.to_string())];
+        if let Some(ts) = n.get("timestamp").and_then(|v| v.as_u64()) {
+            fields.push(("date", picker::humanize_ago(ts, now)));
+        }
+
         entries.push(Entry {
             id: id.to_string(),
             preview,
             haystack,
-            kind,
+            fields,
             thumb: false,
         });
     }
-    (entries, type_names)
+    entries
 }
 
 fn activate(entry: &Entry) {
@@ -79,12 +83,12 @@ fn activate(entry: &Entry) {
 }
 
 fn main() {
-    let (entries, type_names) = history_entries();
+    let entries = history_entries();
 
     let config = PickerConfig {
         program_name: "notification-picker",
-        type_names,
-        placeholder: "search notifications   ·   $appname".to_string(),
+        field_names: FIELD_NAMES.to_vec(),
+        placeholder: "search notifications   ·   $app:  $date:".to_string(),
         width_fraction: 0.5,
         height_fraction: 0.8,
         thumb_height: 0,

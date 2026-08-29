@@ -13,16 +13,42 @@ take" confusion here.
 two binaries sharing it:
 
 - **`src/picker.rs`** — the shared engine: a search box over a `GtkListBox`
-  with `$type` selectors, keyboard nav, and an activate callback. Extracted
-  from the original clipboard picker so other pickers can reuse the same
-  window/search/filter machinery.
+  with a `$field:value` selector DSL (autocompleted, see below), keyboard
+  nav, and an activate callback. Extracted from the original clipboard
+  picker so other pickers can reuse the same window/search/filter
+  machinery. `Entry::fields` is where a caller's named data lives (e.g.
+  clipboard-picker's `type`/`date`, notification-picker's `app`/`date`);
+  `PickerConfig::field_names` is what `$`-autocomplete offers. The DSL
+  itself is a by-hand port of winswitch's `query.rs` (quote-aware
+  tokenizing, subsequence field/value matching, the same
+  `trailing_field_fragment`/`trailing_value_fragment`/`*_suggestions`
+  shape) — see [query-dsl.md](query-dsl.md) for the full spec and for the
+  one place this diverges from winswitch: bare (non-`$`) free words here
+  join into a single literal phrase rather than ANDing independently, the
+  original clipboard-picker behaviour, left as-is. Selection also follows
+  a shared convention now: the list opens with nothing selected, the first
+  arrow/Tab lands on the top visible entry, and `Enter` with nothing
+  explicitly selected still activates it (see query-dsl.md's Design
+  principles).
 - **`src/bin/clipboard-picker.rs`** (bound to `mainMod+V`) — cliphist picker
   on top of the engine; a Rust port of the older `scripts/clipboard-picker.py`
   that skips ~140ms of Python/GObject-introspection interpreter startup.
+  Its `$type:image`/`$type:text` field is derived from cliphist's preview
+  text (cliphist itself only distinguishes images, see `looks_like_image`).
+  Its `$date:` field reads `~/.local/state/cliphist-expire/timestamps`, a
+  log `cliphist-store-logged.sh` (wired into hyprland.lua's
+  `wl-paste --watch`, replacing a direct `cliphist store` call) appends an
+  exact copy-time to on every store — cliphist itself keeps none, see that
+  script's own comment for how it correlates a log line to the id cliphist
+  just assigned. `cliphist-expire.sh` prunes this log in step with
+  whatever entries it expires.
 - **`src/bin/notification-picker.rs`** (bound to `mainMod+CTRL+n`) — browses
   notifyd's retained notification history (`notifyctl list`) and invokes a
   chosen entry's action. Doesn't need dunst's old "redisplay before invoke"
   workaround since notifyd never discards a notification's actions on close.
+  Its `$app:` field replaces what used to be a bare `$appname` selector;
+  `$date:` needed no new plumbing since `notifyctl list` already reports a
+  real per-notification `timestamp`.
 
 Second press of the launching keybind closes the open picker (pidfile +
 SIGTERM convention, shared with sysmon-graph below).

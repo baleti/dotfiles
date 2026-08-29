@@ -3,10 +3,13 @@
 //! ~140ms the Python version spent on interpreter startup and
 //! GObject-introspection typelib loading before it could draw anything.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gdk_pixbuf::prelude::*;
 use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
@@ -16,25 +19,8 @@ use clipboard_picker::picker::{self, Entry, PickerConfig};
 const PROGRAM_NAME: &str = "clipboard-picker";
 const THUMB_HEIGHT: i32 = 160;
 const THUMB_MAX_WIDTH: i32 = 480;
-
-/// Entry kinds selectable from the search box with `$name`.
-///
-/// cliphist itself only ever distinguishes images: it emits
-/// "[[ binary data 50 KiB png 600x509 ]]" when the bytes decode as an image and
-/// falls back to a text preview for everything else, discarding the MIME type
-/// wl-paste saw. So kinds are derived here from the preview, and adding one is
-/// a matter of extending this table plus `classify`.
-const TYPE_NAMES: [&str; 2] = ["image", "text"];
-const KIND_IMAGE: usize = 0;
-const KIND_TEXT: usize = 1;
-
-fn classify(preview: &str) -> usize {
-    if looks_like_image(preview) {
-        KIND_IMAGE
-    } else {
-        KIND_TEXT
-    }
-}
+/// `$field:value`-selectable fields, offered by the autocomplete popup.
+const FIELD_NAMES: [&str; 2] = ["type", "date"];
 
 /// cliphist renders non-text entries as "[[ binary data 50 KiB png 600x509 ]]".
 fn looks_like_image(preview: &str) -> bool {
@@ -49,11 +35,44 @@ fn looks_like_image(preview: &str) -> bool {
             .any(|ext| lower.contains(ext))
 }
 
+/// `cliphist-expire.sh`'s own state directory -- shared with
+/// `cliphist-store-logged.sh` (wired into hyprland.lua's wl-paste --watch),
+/// which is what actually writes the id-to-timestamp log this reads from.
+/// Kept alongside that script's own watermarks rather than a new directory,
+/// since both are "cliphist-adjacent state cliphist itself doesn't keep."
+fn cliphist_state_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"));
+    base.join("cliphist-expire")
+}
+
+/// id -> exact copy-time (Unix seconds), from `cliphist-store-logged.sh`'s
+/// log. An id with no line here was copied before that wrapper existed (or
+/// its log line has since been pruned by cliphist-expire.sh once the entry
+/// itself expired) -- such entries just have no `date` field at all (see
+/// `cliphist_list`), same "absent, not empty" contract `Entry::fields` uses
+/// throughout.
+fn read_timestamps() -> HashMap<String, u64> {
+    let path = cliphist_state_dir().join("timestamps");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let (ts, id) = line.split_once('\t')?;
+            Some((id.to_string(), ts.parse().ok()?))
+        })
+        .collect()
+}
+
 fn cliphist_list() -> Vec<Entry> {
     let out = match Command::new("cliphist").arg("list").output() {
         Ok(o) => o.stdout,
         Err(_) => return Vec::new(),
     };
+    let timestamps = read_timestamps();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     String::from_utf8_lossy(&out)
         .lines()
         .filter(|l| !l.is_empty())
@@ -62,11 +81,15 @@ fn cliphist_list() -> Vec<Entry> {
                 Some((a, b)) => (a.to_string(), b.to_string()),
                 None => (line.to_string(), String::new()),
             };
-            let kind = classify(&preview);
+            let is_image = looks_like_image(&preview);
+            let mut fields = vec![("type", (if is_image { "image" } else { "text" }).to_string())];
+            if let Some(&ts) = timestamps.get(&id) {
+                fields.push(("date", picker::humanize_ago(ts, now)));
+            }
             Entry {
                 haystack: preview.to_lowercase(),
-                thumb: kind == KIND_IMAGE,
-                kind,
+                thumb: is_image,
+                fields,
                 id,
                 preview,
             }
@@ -141,8 +164,8 @@ fn main() {
 
     let config = PickerConfig {
         program_name: PROGRAM_NAME,
-        type_names: TYPE_NAMES.iter().map(|s| s.to_string()).collect(),
-        placeholder: "search   ·   $image  $text".to_string(),
+        field_names: FIELD_NAMES.to_vec(),
+        placeholder: "search   ·   $type:  $date:".to_string(),
         width_fraction: 0.5,
         height_fraction: 0.8,
         thumb_height: THUMB_HEIGHT,
