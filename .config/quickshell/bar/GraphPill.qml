@@ -101,18 +101,20 @@ Rectangle {
         onTriggered: root.expanded = false
     }
 
-    // Click-to-pin: same persistence a keybind toggle already had (alt+t
-    // etc, via Bar.qml's IpcHandler calling this too) -- stays open past
-    // hover-out until clicked/toggled again, instead of closing the instant
-    // the mouse leaves.
+    // Click / keybind toggle (Bar.qml's IpcHandler calls this too). It's
+    // authoritative over the current visible state: toggling a panel closed
+    // closes it NOW even if the pointer is sitting on the pill or the panel
+    // (the old `else if (!hovered)` guard made the keypress do nothing until
+    // the mouse moved away -- reported 2026-08-29). Moving the pointer off
+    // and back on can still reopen it via hover; that's a separate path.
     function togglePin(): void {
-        pinned = !pinned;
-        if (pinned) {
-            hideTimer.stop();
-            expanded = true;
-        } else if (!hovered) {
-            hideTimer.stop();
+        hideTimer.stop();
+        if (expanded) {
+            pinned = false;
             expanded = false;
+        } else {
+            pinned = true;
+            expanded = true;
         }
     }
 

@@ -468,14 +468,17 @@ Item {
         onTriggered: calendarExpanded.expanded = false
     }
 
+    // Authoritative over the visible state -- see GraphPill.togglePin(). The
+    // old `else if (!clockAreaHovered)` guard let a toggle-off keypress do
+    // nothing while the pointer was on the clock or calendar (2026-08-29).
     function toggleClockPin(): void {
-        clockPinned = !clockPinned;
-        if (clockPinned) {
-            clockHoverOutTimer.stop();
-            calendarExpanded.expanded = true;
-        } else if (!clockAreaHovered) {
-            clockHoverOutTimer.stop();
+        clockHoverOutTimer.stop();
+        if (calendarExpanded.expanded) {
+            clockPinned = false;
             calendarExpanded.expanded = false;
+        } else {
+            clockPinned = true;
+            calendarExpanded.expanded = true;
         }
     }
 
