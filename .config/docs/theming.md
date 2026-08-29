@@ -70,10 +70,22 @@ app. Kvantum has no stylesheet-overlay mechanism, so it can't be recoloured
 live either. `gen-theme.py` now pins `kdeglobals` `widgetStyle=Breeze` each
 run.
 
-| Breeze + MaterialYou (current) | Kvantum / darknord (former) |
+The screenshot on the left is the **intended post-migration look** for
+Dolphin: flat list (no zebra striping — `[Colors:View] BackgroundAlternate`
+== `BackgroundNormal`, see below), a slightly lighter breadcrumb/toolbar
+band for chrome-vs-content separation, warm hover/selection tint, and the
+whole palette tracking the wallpaper.
+
+| Breeze + MaterialYou (current, intended) | Kvantum / darknord (former) |
 |---|---|
 | ![Breeze + MaterialYou](images/dolphin-breeze-materialyou.png) | ![Kvantum darknord](images/dolphin-kvantum-darknord.png) |
-| layered depth (toolbar/header lighter than the list), follows the wallpaper hue | flat near-black Nord `#14161B`, fixed cool palette, blue folder icons |
+| flat list, subtle toolbar elevation, follows the wallpaper hue | flat near-black Nord `#14161B`, fixed cool palette, blue folder icons, filled ▶ tree expanders (from the Kvantum SVG — Breeze draws a thin chevron and has no knob for it) |
+
+`color_sections()` in `gen-theme.py` sets `view_alt = view_bg` so list
+views don't stripe (the Breeze default read as too strong on warm
+wallpapers; darknord had it off entirely). Chrome elevation
+(View → Window → Button) is still interpolated `background` →
+`surfaceContainer`.
 
 `gen-theme.py` writes the **complete** Breeze key set into `kdeglobals`
 `[Colors:*]` (every section + all `Foreground*`/`Decoration*` keys, plus
