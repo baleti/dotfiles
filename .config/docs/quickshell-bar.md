@@ -20,6 +20,7 @@ quickshell/
 │   ├── Workspaces.qml, Submap.qml, Tray.qml
 │   ├── Clock.qml, Media.qml, MediaExpanded.qml
 │   ├── BatteryPill.qml, GraphPill.qml, CalendarExpanded.qml
+├── osd/VolumeOsd.qml       side volume popup (mainMod+F11/F12)
 ├── components/             BarIcon, BarText, Graph, Pill (generic building blocks)
 ├── services/                BatterySvc, Players, SysmonSvc, TieredSocket
 └── theme/                   Theme, Icons
@@ -34,9 +35,11 @@ is fixed rather than reactively resized (resizing the real layer-shell
 surface caused visible flicker on collapse); a `mask` region tracks
 `bar.totalHeight` instead so clicks still pass through the empty area to
 windows underneath. The media panel's `WlrLayershell.keyboardFocus` flips
-`OnDemand`↔`None` with `mediaPanel.expanded`, so `mainMod+m` gets real
+`OnDemand`↔`None` with `mediaPanel.expanded`, so `mainMod+CTRL+m` gets real
 keyboard control (arrow-seek, space play/pause) without ever permanently
-grabbing input — it reverts to `None` the instant the panel closes.
+grabbing input — it reverts to `None` the instant the panel closes. (Not
+plain `mainMod+m` — that opens the memory graph panel instead; see
+`hyprland.md`'s keybind list for why.)
 
 ## Background
 
@@ -56,11 +59,14 @@ into a `Graph` (`components/Graph.qml`) on hover, backed by `sysmond`'s
 rolling history via `services/SysmonSvc.qml`. Visually matches the
 standalone `ALT+mainMod+n/p/t/m` `sysmon-graph` popups
 ([rust-tools.md](rust-tools.md)) since both read the same daemon.
-`bar-toggle.sh` (`ALT+n/p/m/t/s`, `mainMod+m`, `CTRL+ALT+c`) toggles these
+`bar-toggle.sh` (`ALT+n/p`, `mainMod+t/s/m`, `CTRL+ALT+c`) toggles these
 panels open/closed per-monitor by talking to each `Bar` instance's own
 `IpcHandler` target `bar-<screen name>` — one shared target would collide
 across multi-monitor instances, so the toggle script resolves the focused
-monitor's name first.
+monitor's name first. The same entry keys also drop into a per-widget
+`graph_<name>` Hyprland submap (`keybinds.lua`) where bare `1`-`6` jumps
+straight to a tier via the new `bar-set-tier.sh` → `setXxxTier()` functions
+on that same `IpcHandler` — see `hyprland.md` for the full submap writeup.
 
 `services/TieredSocket.qml` — reconnects with a fresh `"<metric>:<tier>\n"`
 request whenever `tier` changes, since `sysmond`'s protocol is
@@ -105,7 +111,29 @@ wash, not per-series fills.
 ## Related keybinds
 
 See [hyprland.md](hyprland.md#keybinds-keybindslua) for the full bind list;
-the bar-specific ones are `ALT+n/p/m/t/s` (per-metric panel toggle),
-`mainMod+m` (media panel), `CTRL+ALT+c` (calendar panel), and the calendar/
-graph pills' own click-to-pin behavior (matching each other, added
-2026-08-28/29).
+the bar-specific ones are `ALT+n/p` and `mainMod+t/s/m` (per-metric panel
+toggle + `graph_<name>` tier submap), `mainMod+CTRL+m` (media panel +
+`media_seek` submap), `CTRL+ALT+c` (calendar panel), `mainMod+F11/F12`
+(volume, see below), and the calendar/graph pills' own click-to-pin
+behavior (matching each other, added 2026-08-28/29).
+
+## Volume OSD
+
+`osd/VolumeOsd.qml` — one click-through `PanelWindow` per monitor (own
+`IpcHandler` target `volume-osd-<screen name>`, same per-monitor pattern as
+`Bar`'s), showing an icon/bar/percent card near the right edge that
+auto-hides after 1.2s. `scripts/playerctl-volume.sh` (`mainMod+F11/F12`)
+adjusts volume — pixel6's MPRIS `Volume` property when it's the current
+player (`playerctl-current`), the local sink otherwise — then calls
+`display(percent, muted)` on whichever monitor the *active window* is on
+(`hyprctl activewindow`'s monitor, not `hyprctl monitors`' "focused" field,
+which tracks the mouse under this compositor's `follow_mouse=1`).
+
+**Known issue (2026-08-29, unresolved):** the OSD's layer-shell surface
+only reliably maps on one monitor here (DP-1) — confirmed via `hyprctl
+layers` independent of anchoring style, layer level (`Top` vs `Overlay`),
+`Variants` vs a single hardcoded instance, and a full `qs` process restart.
+Looks like a Hyprland/wlroots-side per-output state issue, not a bug in
+this file; testing further needs a full Hyprland restart (kills every
+window on the machine), not done unilaterally. See the
+`quickshell_panelwindow_ipc_gotchas` memory for the full investigation.

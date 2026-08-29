@@ -159,10 +159,35 @@ docs:
   binaries; see [rust-tools.md](rust-tools.md)).
 - `mainMod+n` / `mainMod+SHIFT+n` — invoke last notification's default
   action / open its full action list.
-- `ALT+mainMod+n/p/t/m` — standalone `sysmon-graph` popups; bare `ALT+n/p/m/t/s`
-  and `mainMod+m`/`CTRL+ALT+c` — toggle the quickshell bar's own in-bar
-  hover panels via `scripts/bar-toggle.sh` (same `sysmond` data, different
-  UI surface).
+- `ALT+mainMod+n/p/t/m` — standalone `sysmon-graph` popups.
+- Bare `ALT+n/p` and `mainMod+t/s/m` — toggle the quickshell bar's own
+  in-bar hover panels (net/cpu on `ALT`, temp/disk/mem on `mainMod`; same
+  `sysmond` data as the popups above, different UI surface) via
+  `scripts/bar-toggle.sh`, **and** enter a per-widget `graph_<name>` submap
+  (`keybinds.lua`): while active, bare `1`-`6` (no modifier) jumps straight
+  to that panel's `10m/30m/6h/7d/7w/7mo` history tier via the new
+  `scripts/bar-set-tier.sh` → `Bar.qml`'s `setXxxTier()` IpcHandler
+  functions. `Escape` or the entry key again exits. net/cpu couldn't move
+  to `mainMod` (`mainMod+n` is notify-invoke-last, `mainMod+p` is
+  `window.pseudo()`, both pre-existing) so those two stayed on `ALT` but
+  still gained the tier submap.
+- `CTRL+ALT+c` — toggle the calendar panel (no tier concept, unaffected).
+- `mainMod+CTRL+m` — media widget + a `media_seek` submap: bare `0`-`9`
+  jumps to that decile of the current track (`playerctl-seek-percent.sh`,
+  against whichever player `~/.config/playerctl-current` names). Not plain
+  `mainMod+m` — that's the mem graph panel above; a real simultaneous
+  multi-key chord isn't expressible in Hyprland binds, so a submap (press
+  the entry combo once, then tap keys freely) is the general pattern used
+  for all of these instead.
+- `mainMod+F11/F12` — volume down/up. Routes to pixel6's MPRIS `Volume`
+  property (`scripts/pixel6-mpris-bridge.py`) instead of the local sink
+  when `playerctl-current` names it, and flashes a side OSD
+  (`quickshell/osd/VolumeOsd.qml`) on the *active window's* monitor (not
+  `hyprctl`'s own "focused" monitor — this compositor runs
+  `follow_mouse=1`, so those can differ). The OSD currently only reliably
+  renders on one monitor (DP-1 here) — a `hyprctl layers` per-output
+  layer-shell issue that survived a full `qs` restart, not a bug in the
+  QML; see `quickshell-bar.md`.
 - `ALT+Tab` / `ALT+SHIFT+Tab` — winswitch grid alt-tab.
 - `mainMod+b` — `killall -SIGUSR1 waybar` (legacy — see
   [desktop-apps.md](desktop-apps.md#waybar-legacy)).
