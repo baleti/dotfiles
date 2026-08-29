@@ -113,7 +113,9 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
 - **`src/query.rs`** — the `$column:value` filter DSL: whitespace-split
   tokens, `$col:val` fuzzy-matches column name and value independently
   (subsequence match), bare words substring-match title+class, multiple
-  tokens AND together.
+  tokens AND together. See [query-dsl.md](query-dsl.md) for how this
+  relates to the same DSL's other implementations (tmux's pickers,
+  `claude-history`).
 - **`src/ui.rs`** — the layer-shell `GtkFlowBox` grid. Two-phase key state
   machine: unlocked = Tab/Shift+Tab cycles selection, releasing Alt
   confirms; any other printable key locks into search mode
