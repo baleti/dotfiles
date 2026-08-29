@@ -40,7 +40,7 @@ window-search.py and claude-history already use - the list only takes as
 many rows as it has matches, the preview gets the rest.
 
 Query DSL (parse_query): the base list is always MRU-ordered - typing never
-re-ranks it, only narrows it and/or adds columns.
+re-ranks it, only narrows it and/or adds/removes columns.
 
   foo bar         every bare word must appear (case-insensitive substring)
                   somewhere in the pane's searchable text - session, window
@@ -57,6 +57,11 @@ re-ranks it, only narrows it and/or adds columns.
                   matches nothing, just changes what's shown).
   +$group.sub     add only that one column. sub is fuzzy the same way
                   field is above (+$ssh.h and +$ssh.host both add SSH.HOST).
+  -$group         remove every column in group from the display - the
+                  mirror of +$group, same fuzzy group resolution. A column
+                  removed this way can be re-added by a later +$ in the same
+                  query; removing one that was never added is a no-op.
+  -$group.sub     remove only that one column, fuzzy the same way +$ is.
 
 This exists because tracking more per-pane data (ssh connection info today,
 maybe others later) shouldn't mean permanent new columns everyone sees
@@ -64,7 +69,7 @@ whether they use them or not - the data rides along in every snapshot
 (cheap: computed once per invocation, not per keystroke - see build_snapshot
 and ssh_info's docstring for why ssh info specifically is only computed for
 panes tmux already reports as running ssh) and stays searchable via bare
-words either way; +$group just makes it visible.
+words either way; +$group/-$group just changes what's visible.
 
 Deps: tmux, fzf, python3. ssh columns additionally use ps, lsof.
 """
@@ -312,14 +317,18 @@ FILTER_FIELDS = ["session", "window", "title"]
 FIELD_KEY = {"session": "session", "window": "window_name", "title": "pane_title"}
 
 # tried in this order at each position: a quoted phrase first (so `"+$"`
-# reaches the DSL literally, never the +$/$ branches below - the escape
-# hatch a literal search for that text needs), then "+$group[.sub]" and
-# "$field:word", both of which have to be checked before the generic
-# bare-word fallback, or the fallback (being unanchored) would just swallow
-# their whole span itself - same left-to-right-alternative trick
-# window-search.py's QUERY_ELEM_RE uses.
+# reaches the DSL literally, never the +$/-$/$ branches below - the escape
+# hatch a literal search for that text needs), then "+$group[.sub]",
+# "-$group[.sub]" and "$field:word", all of which have to be checked before
+# the generic bare-word fallback, or the fallback (being unanchored) would
+# just swallow their whole span itself - same left-to-right-alternative
+# trick window-search.py's QUERY_ELEM_RE uses.
 QUERY_ELEM_RE = re.compile(
-    r'"([^"]*)"|\+\$([a-zA-Z]+)(?:\.([a-zA-Z]*))?|\$([a-zA-Z]+):(\S+)|(\S+)'
+    r'"(?P<phrase>[^"]*)"'
+    r'|\+\$(?P<add_group>[a-zA-Z]+)(?:\.(?P<add_sub>[a-zA-Z]*))?'
+    r'|-\$(?P<del_group>[a-zA-Z]+)(?:\.(?P<del_sub>[a-zA-Z]*))?'
+    r'|\$(?P<field>[a-zA-Z]+):(?P<field_term>\S+)'
+    r'|(?P<bare>\S+)'
 )
 
 
@@ -342,78 +351,103 @@ def parse_query(query):
     active_cols: ordered, de-duplicated [(group, sub), ...] to append to the
       display - never affects which panes match, only what's shown.
 
-    "+$..." is a display directive, never a search term: whether it resolves
-    (a known group/sub) or not (a typo, or - the common case while typing -
-    no letters after the $ yet), it contributes nothing to bare_terms.
-    Falling back to a literal-text search here (the way an unresolvable
-    "$field:" below does) would otherwise empty the whole list for the
-    single keystroke where the query is just "+$", every time - the exact
-    bug this guards against. A literal "+$" search is still possible, just
-    has to be quoted (see QUERY_ELEM_RE) - '"+$"' finds it exactly, since
-    the quoted branch is matched before this one ever sees it.
+    "+$..." adds column(s), "-$..." removes them - both display directives,
+    never search terms: whether either resolves (a known group/sub) or not
+    (a typo, or - the common case while typing - no letters after the $
+    yet), it contributes nothing to bare_terms. Falling back to a
+    literal-text search here (the way an unresolvable "$field:" below does)
+    would otherwise empty the whole list for the single keystroke where the
+    query is just "+$" or "-$", every time - the exact bug this guards
+    against. A literal "+$"/"-$" search is still possible, just has to be
+    quoted (see QUERY_ELEM_RE) - '"+$"' finds it exactly, since the quoted
+    branch is matched before either ever sees it.
 
-    An unresolvable "$field:" (the filter form, unlike "+$") still degrades
-    to a literal bare-word search on its own text rather than being dropped
-    - that one really is text someone typed to search for, just with a
-    misspelled/unknown field prefix in front of it."""
+    "-$" is processed left-to-right against whatever "+$" has added so far
+    in the same query (and un-marks it in seen_cols), so a later "+$" for
+    the same column can re-add it - "+$ssh -$ssh.host +$ssh.host" ends with
+    the column back. Removing a column that was never added, or whose group
+    doesn't resolve, is a silent no-op - same "still usable half-typed"
+    principle as everything else in this DSL, not an error.
+
+    An unresolvable "$field:" (the filter form, unlike "+$"/"-$") still
+    degrades to a literal bare-word search on its own text rather than being
+    dropped - that one really is text someone typed to search for, just
+    with a misspelled/unknown field prefix in front of it."""
     bare_terms, field_terms, active_cols = [], [], []
     seen_cols = set()
-    for phrase, group_pfx, sub_pfx, field_pfx, field_term, bare in QUERY_ELEM_RE.findall(query):
-        if phrase:
-            bare_terms.append(phrase.lower())
+    for m in QUERY_ELEM_RE.finditer(query):
+        gd = m.groupdict()
+        if gd["phrase"] is not None:
+            bare_terms.append(gd["phrase"].lower())
             continue
-        if group_pfx:
-            groups = resolve_by_substring(group_pfx, COLUMN_GROUPS)
+        if gd["add_group"]:
+            groups = resolve_by_substring(gd["add_group"], COLUMN_GROUPS)
             for g in groups:
                 subs = COLUMN_GROUPS[g]
-                if sub_pfx:
-                    subs = resolve_by_substring(sub_pfx, subs)
+                if gd["add_sub"]:
+                    subs = resolve_by_substring(gd["add_sub"], subs)
                 for s in subs:
                     col = (g, s)
                     if col not in seen_cols:
                         seen_cols.add(col)
                         active_cols.append(col)
             continue
-        if field_pfx:
-            fields = resolve_by_substring(field_pfx, FILTER_FIELDS)
-            if fields:
-                field_terms.append((fields, field_term.lower()))
-            else:
-                bare_terms.append(f"{field_pfx}:{field_term}".lower())
+        if gd["del_group"]:
+            groups = resolve_by_substring(gd["del_group"], COLUMN_GROUPS)
+            for g in groups:
+                subs = COLUMN_GROUPS[g]
+                if gd["del_sub"]:
+                    subs = resolve_by_substring(gd["del_sub"], subs)
+                for s in subs:
+                    col = (g, s)
+                    if col in seen_cols:
+                        seen_cols.discard(col)
+                        active_cols.remove(col)
             continue
+        if gd["field"]:
+            fields = resolve_by_substring(gd["field"], FILTER_FIELDS)
+            if fields:
+                field_terms.append((fields, gd["field_term"].lower()))
+            else:
+                bare_terms.append(f"{gd['field']}:{gd['field_term']}".lower())
+            continue
+        bare = gd["bare"]
         if bare:
-            # same inertness as "+$..." above, for the filter form while
-            # it's still being typed: "$ti" (no colon yet) or "$title:"
-            # (colon typed, term not yet - notably also where tab-completion
-            # itself lands, see suggest_completion) would otherwise be a
-            # literal-text search for that exact fragment until a real term
-            # follows the colon - the identical "list empties out
-            # mid-keystroke" bug, just on this DSL form instead of "+$".
-            if bare.startswith("+$") or re.fullmatch(r'\$[a-zA-Z]*:?', bare):
+            # same inertness as "+$..."/"-$..." above, for the filter form
+            # while it's still being typed: "$ti" (no colon yet) or
+            # "$title:" (colon typed, term not yet - notably also where
+            # tab-completion itself lands, see suggest_completion) would
+            # otherwise be a literal-text search for that exact fragment
+            # until a real term follows the colon - the identical "list
+            # empties out mid-keystroke" bug, just on this DSL form instead
+            # of "+$"/"-$".
+            if bare.startswith("+$") or bare.startswith("-$") or re.fullmatch(r'\$[a-zA-Z]*:?', bare):
                 continue
             bare_terms.append(bare.lower())
     return bare_terms, field_terms, active_cols
 
 
 def suggest_completion(query):
-    """If the query's trailing token is a partial "+$group[.sub]" or "$field"
-    directive, -> (completed_query, hint) - hint is just the token it would
-    expand to, completed_query is the full query with that token replaced by
-    it; (None, None) if there's nothing to complete (already complete,
-    unresolvable, or the trailing token isn't DSL at all).
+    """If the query's trailing token is a partial "+$group[.sub]",
+    "-$group[.sub]" or "$field" directive, -> (completed_query, hint) - hint
+    is just the token it would expand to, completed_query is the full query
+    with that token replaced by it; (None, None) if there's nothing to
+    complete (already complete, unresolvable, or the trailing token isn't
+    DSL at all).
 
     Only ever looks at the trailing token - the same "editing happens at the
     end of what you're typing" assumption any live-filter query box already
     makes (there's no way to learn fzf's actual cursor position mid-query
     from here, and every other part of this DSL already assumes left-to-right
     typing, e.g. QUERY_ELEM_RE's own left-to-right scan)."""
-    m = re.search(r'(\+\$[a-zA-Z]*(?:\.[a-zA-Z]*)?|\$[a-zA-Z]*)$', query)
+    m = re.search(r'([+-]\$[a-zA-Z]*(?:\.[a-zA-Z]*)?|\$[a-zA-Z]*)$', query)
     if not m:
         return None, None
     token = m.group(1)
     prefix = query[:m.start()]
 
-    if token.startswith("+$"):
+    if token.startswith("+$") or token.startswith("-$"):
+        sign = token[:2]
         group_pfx, _, sub_pfx = token[2:].partition(".")
         groups = resolve_by_substring(group_pfx, COLUMN_GROUPS) if group_pfx else []
         if not groups:
@@ -423,9 +457,9 @@ def suggest_completion(query):
             subs = resolve_by_substring(sub_pfx, COLUMN_GROUPS[g]) if sub_pfx else COLUMN_GROUPS[g]
             if not subs:
                 return None, None
-            completed = f"+${g}.{subs[0]}"
+            completed = f"{sign}{g}.{subs[0]}"
         else:
-            completed = f"+${g}"
+            completed = f"{sign}{g}"
     else:
         field_pfx = token[1:]
         if not field_pfx:
