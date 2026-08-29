@@ -23,11 +23,15 @@ SETUP=0
 
 name="$(git config user.name  || echo 'docs deploy')"
 email="$(git config user.email || echo 'docs@localhost')"
+# The dotfiles repo pins a specific deploy key via core.sshCommand; the
+# throwaway repo below won't inherit it, so carry it over explicitly.
+ssh_cmd="$(git config core.sshCommand || true)"
 
 (
   cd site
   rm -rf .git
   git init -q
+  [[ -n "$ssh_cmd" ]] && git config core.sshCommand "$ssh_cmd"
   git checkout -q -b "$BRANCH"
   git add -A
   git -c user.name="$name" -c user.email="$email" \
