@@ -228,8 +228,11 @@ hl.bind(mainMod .. " + CTRL + z", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.c
 hl.bind(mainMod .. " + CTRL + SHIFT + z", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek.sh -"), { repeating = true })
 hl.bind(mainMod .. " + CTRL + SHIFT + x", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek.sh +"), { repeating = true })
 hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-picker.sh"), { repeating = true })
-hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%-"), { repeating = true })
-hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+"), { repeating = true })
+-- ~/.config/hypr/scripts/playerctl-volume.sh: local sink, unless
+-- playerctl-current is pixel6, in which case its MPRIS Volume (-> phone
+-- STREAM_MUSIC) instead. See pixel6-mpris-bridge.py for the MPRIS side.
+hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-volume.sh -"), { repeating = true })
+hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-volume.sh +"), { repeating = true })
 
 -- move windows (reflow the active window's tiled position in a direction,
 -- without swapping places with whatever was there -- equivalent to the old
