@@ -213,7 +213,6 @@ Item {
         return rx + tx;
     }
 
-    readonly property var cpuLegend: cpuPill.expanded ? SysmonSvc.cpuCores.map((c, i) => ({ name: qsTr("Core %1").arg(i), color: root.palette[i % root.palette.length] })) : []
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
     // confusing; separate overlaid lines show each core's own load clearly.
@@ -326,7 +325,6 @@ Item {
             seriesList: root.cpuOverlayList
             maxValue: 100
             valueFraction: root.last(SysmonSvc.cpuTotal) / 100
-            legendItems: root.cpuLegend
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             yAxisFormatter: v => Math.round(v) + "%"
