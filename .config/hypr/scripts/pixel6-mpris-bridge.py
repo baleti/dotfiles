@@ -98,9 +98,8 @@ class Pixel6Player(dbus.service.Object):
 
     @dbus.service.method(dbus.PROPERTIES_IFACE, in_signature="ssv")
     def Set(self, interface, prop, value):
-        # Only Volume is technically settable per the spec, and we don't
-        # proxy volume - nothing here actually needs to accept a Set.
-        pass
+        if interface == PLAYER_IFACE and prop == "Volume":
+            self._set_volume(float(value))
 
     @dbus.service.method(dbus.PROPERTIES_IFACE, in_signature="s", out_signature="a{sv}")
     def GetAll(self, interface):
@@ -178,7 +177,7 @@ class Pixel6Player(dbus.service.Object):
         return {
             "PlaybackStatus": playback_status,
             "Metadata": dbus.Dictionary(metadata, signature="sv"),
-            "Volume": 1.0,
+            "Volume": dbus.Double(float(s.get("volume", 1.0)) if reachable else 1.0),
             "Rate": dbus.Double(rate),
             "Position": dbus.Int64(int(position_ms) * 1000),
             "CanGoNext": reachable,
@@ -241,6 +240,34 @@ class Pixel6Player(dbus.service.Object):
         # (<= POLL_INTERVAL_S later), by which point it has settled.
         if self._status is not None:
             self._status = dict(self._status, position=target_ms)
+            self._status_mono = time.monotonic()
+            self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
+
+    def _set_volume(self, target):
+        # Android's STREAM_MUSIC is stepped (getStreamMaxVolume(), commonly
+        # ~15-25 steps depending on device/output), not a continuous 0.0-1.0
+        # knob, so there's no meaningful "set to this exact float" action -
+        # peer-agent only exposes the same up/down nudge the hardware
+        # buttons send (media-volume-up/-down, one adjustStreamVolume() step
+        # each). Move one step towards whatever playerctl/the quickshell
+        # widget asked for; if it wanted a bigger jump, the next scroll/press
+        # will take another step from the corrected real level.
+        target = max(0.0, min(1.0, target))
+        current = float((self._status or {}).get("volume", 1.0))
+        if target > current:
+            call_action("media-volume-up")
+        elif target < current:
+            call_action("media-volume-down")
+        else:
+            return
+        # Unlike _seek_to_ms, an immediate /status re-fetch here already
+        # reflects the new level (confirmed live - adjustStreamVolume()
+        # isn't buffered/async the way a network player's seekTo() is), but
+        # patch the cache optimistically anyway rather than force-refetch:
+        # one fewer HTTP round trip, and it can't reintroduce the seek-bar's
+        # snap-back bug here if a slower link ever does race.
+        if self._status is not None:
+            self._status = dict(self._status, volume=target)
             self._status_mono = time.monotonic()
             self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
 
