@@ -595,7 +595,7 @@ pub fn run(
         let _ = css.load_from_data(
             b".suggestions { border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; } \
               .suggestions row { padding: 2px 6px; } \
-              .suggestions row:selected { background-color: rgba(255,255,255,0.18); }",
+              .suggestions row:selected { background-color: rgba(255,255,255,0.18); border-radius: 2px; }",
         );
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
