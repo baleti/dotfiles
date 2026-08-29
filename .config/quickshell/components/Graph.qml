@@ -114,6 +114,35 @@ Canvas {
         ctx.fill();
     }
 
+    // One translucent fill under the UPPER ENVELOPE (max at each x) of a
+    // group of series -- used for the CPU overlay: 12 per-core fills stacked
+    // into mud however their alpha was tuned, so instead there's a single
+    // faint wash under the bundle and the individual per-core lines carry
+    // all the detail on top.
+    function fillEnvelope(ctx, seriesArr, envColor, fillAlpha) {
+        const cols = seriesArr.map(s => root.downsample(s.data)).filter(p => p.length >= 2);
+        if (cols.length === 0)
+            return;
+        const n = Math.min(...cols.map(c => c.length));
+        if (n < 2)
+            return;
+        const rgb = Qt.color(envColor);
+        const h = height;
+        const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
+        ctx.beginPath();
+        ctx.moveTo(cols[0][0].x, h);
+        for (let i = 0; i < n; i++) {
+            let v = 0;
+            for (const c of cols)
+                v = Math.max(v, c[i].v);
+            ctx.lineTo(cols[0][i].x, yOf(v));
+        }
+        ctx.lineTo(cols[0][n - 1].x, h);
+        ctx.closePath();
+        ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha);
+        ctx.fill();
+    }
+
     function strokeSeries(ctx, rawData, rawColor, lineWidth, strokeAlpha) {
         if (rawData.length < 2)
             return;
@@ -161,23 +190,25 @@ Canvas {
             const primary = seriesList.filter(s => !s.dashed);
             const secondary = seriesList.filter(s => !!s.dashed);
 
-            // Two passes so the lines always sit on top of every fill.
-            // Translucent overlaid fills all blended into one indistinct
-            // mass ("all mashed together", 2026-08-29); these are near-
-            // opaque instead and painted last-series-first, so the first
-            // series' hue is a stable solid "floor" and a core that's
-            // spiking shows as its own coloured strip standing above that
-            // floor. Every core's line still reads, crisp, on top.
-            const fillAlpha = many ? 0.92 : 0.32;
-            for (let i = primary.length - 1; i >= 0; i--)
-                fillSeries(ctx, primary[i].data, primary[i].color, fillAlpha);
+            // Lines on top of fills, always (two passes). Fill strategy
+            // depends on how many series there are -- per-core translucent
+            // fills stacked into mud at every alpha they were tried at
+            // ("a mess" / "all mashed together", 2026-08-29), so with many
+            // series there's instead ONE faint wash under their combined
+            // envelope and the per-core lines carry the detail. With just
+            // a couple (mem used/cached) the individual fills are fine.
+            if (many)
+                fillEnvelope(ctx, primary, color1, 0.14);
+            else
+                for (const s of primary)
+                    fillSeries(ctx, s.data, s.color, 0.22);
 
             for (const s of secondary)
                 strokeSeries(ctx, s.data, s.color, many ? 1.0 : 1.25, 0.45);
             for (const s of primary)
-                strokeSeries(ctx, s.data, s.color, many ? 1.0 : 1.25, many ? 0.95 : 0.9);
+                strokeSeries(ctx, s.data, s.color, many ? 1.0 : 1.25, 0.9);
         } else {
-            fillSeries(ctx, series, color1, 0.3);
+            fillSeries(ctx, series, color1, 0.24);
             strokeSeries(ctx, series, color1, 1.25, 0.9);
         }
     }
