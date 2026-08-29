@@ -72,16 +72,16 @@ Item {
     // it never moves from its natural spot.
     readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "calendar"]
 
-    // Which of SysmonSvc's 5 fixed tiers (30m/6h/7d/7w/7mo) each panel is
+    // Which of SysmonSvc's 6 fixed tiers (10m/30m/6h/7d/7w/7mo) each panel is
     // currently viewing -- kept here (not just read off SysmonSvc directly)
     // so each GraphPill's active-tier button highlight has somewhere to
     // bind to; setting one also tells SysmonSvc to reconnect that metric's
     // socket at the new tier (process-wide, see SysmonSvc.qml).
-    property string netTier: "30m"
-    property string cpuTier: "30m"
-    property string memTier: "30m"
-    property string diskTier: "30m"
-    property string tempTier: "30m"
+    property string netTier: "10m"
+    property string cpuTier: "10m"
+    property string memTier: "10m"
+    property string diskTier: "10m"
+    property string tempTier: "10m"
 
     function panelExpandedFor(name: string): bool {
         switch (name) {

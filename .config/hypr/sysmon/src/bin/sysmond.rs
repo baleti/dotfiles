@@ -71,7 +71,7 @@ struct PersistedSeries {
 /// design: no separate rollup pass, each tier just has its own averaging
 /// window over the same incoming raw stream.
 struct TieredSeries {
-    tiers: [TierBuf; 5], // index matches ALL_TIERS order
+    tiers: [TierBuf; ALL_TIERS.len()], // index matches ALL_TIERS order
 }
 
 impl TieredSeries {
@@ -373,6 +373,71 @@ fn proc_name(pid: i32) -> String {
         .unwrap_or_else(|_| format!("pid {pid}"))
 }
 
+fn truncate_ellipsis(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn tilde(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
+            format!("~{}", &path[home.len()..])
+        }
+        _ => path.to_string(),
+    }
+}
+
+/// A short "which one is this" string for a process whose comm is
+/// ambiguous on its own (many `claude` / `node` / `python`): the
+/// command-line tail (everything after argv[0]) and the ~-relative cwd,
+/// whichever are available, joined by "  ·  ". The cwd is what tells two
+/// `claude --dangerously-skip-permissions` apart. Only ever called for the
+/// final top-10 of each metric, so the extra syscalls are negligible.
+fn proc_detail(pid: i32) -> String {
+    const MAX: usize = 80;
+    let mut bits: Vec<String> = Vec::new();
+
+    if let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) {
+        let parts: Vec<String> = raw
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect();
+        if parts.len() > 1 {
+            let tail = parts[1..].join(" ");
+            let tail = tail.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !tail.is_empty() {
+                bits.push(tail);
+            }
+        }
+    }
+
+    if let Ok(target) = fs::read_link(format!("/proc/{pid}/cwd")) {
+        let cwd = tilde(&target.to_string_lossy());
+        if cwd != "~" {
+            bits.push(cwd);
+        }
+    }
+
+    // Always end with the pid -- the last-resort unique handle when several
+    // processes share a comm AND an identical cmdline/cwd (e.g. several
+    // `claude --dangerously-skip-permissions` all launched from $HOME).
+    bits.push(format!("pid {pid}"));
+
+    truncate_ellipsis(&bits.join("  \u{b7}  "), MAX)
+}
+
+/// Fills in `ProcEntry::detail` for an already-truncated top-N list.
+fn enrich_details(entries: &mut [ProcEntry]) {
+    for e in entries.iter_mut() {
+        e.detail = proc_detail(e.pid);
+    }
+}
+
 /// `/proc/[pid]/stat`'s utime+stime (fields 14, 15 -- but field 2 is the
 /// comm in parens and can itself contain spaces/parens, so field indices
 /// are counted from the *last* ')' rather than split_whitespace() alone).
@@ -425,7 +490,7 @@ fn parse_nethogs_line(line: &str) -> Option<ProcEntry> {
         return None; // "unknown TCP/0/0" and raw ip:port/0/0 connection lines
     }
     let name = path.rsplit('/').next().unwrap_or(path).to_string();
-    Some(ProcEntry { pid, name, value: sent + recv })
+    Some(ProcEntry { pid, name, value: sent + recv, detail: String::new() })
 }
 
 /// Runs `nethogs -t` (trace mode: plain text, one block per ~1s refresh
@@ -450,7 +515,9 @@ fn nethogs_loop(history: Arc<Mutex<History>>) {
     for line in reader.lines().map_while(Result::ok) {
         if line.starts_with("Refreshing:") {
             let entries: Vec<ProcEntry> = current.drain().map(|(_, v)| v).collect();
-            history.lock().unwrap().top_net = top_n(entries, 10);
+            let mut top_net = top_n(entries, 10);
+            enrich_details(&mut top_net);
+            history.lock().unwrap().top_net = top_net;
             continue;
         }
         if let Some(entry) = parse_nethogs_line(&line) {
@@ -555,23 +622,25 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
                 let d_ticks = ticks.saturating_sub(*prev_ticks);
                 let pct = 100.0 * (d_ticks as f64 / clk_tck) / elapsed_s;
                 if pct > 0.05 {
-                    top_cpu_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: pct });
+                    top_cpu_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: pct, detail: String::new() });
                 }
             }
         }
         prev_proc_ticks = cur_proc_ticks;
-        let top_cpu = top_n(top_cpu_entries, 10);
+        let mut top_cpu = top_n(top_cpu_entries, 10);
+        enrich_details(&mut top_cpu);
 
         // Top-10 by memory: instantaneous, no delta needed.
         let mut top_mem_entries = Vec::with_capacity(pids.len());
         for pid in &pids {
             if let Some(mb) = proc_rss_mb(*pid) {
                 if mb > 0.0 {
-                    top_mem_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: mb });
+                    top_mem_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: mb, detail: String::new() });
                 }
             }
         }
-        let top_mem = top_n(top_mem_entries, 10);
+        let mut top_mem = top_n(top_mem_entries, 10);
+        enrich_details(&mut top_mem);
 
         let mut h = history.lock().unwrap();
         h.cpu_total.push_raw(cpu_total);

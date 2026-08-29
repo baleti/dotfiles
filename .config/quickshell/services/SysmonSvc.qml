@@ -10,15 +10,16 @@ import Quickshell.Io
 // JSON snapshot line per second for as long as the socket stays open (see
 // sysmon/src/lib.rs's Request/Tier). The five history metrics (net/cpu/
 // mem/disk/temp) go through TieredSocket so callers can switch which of the
-// 5 fixed granularities (30m/6h/7d/7w/7mo) they're viewing; this is process-
+// 6 fixed granularities (10m/30m/6h/7d/7w/7mo) they're viewing; this is process-
 // wide (one singleton, shared by every monitor's Bar.qml instance), so
 // switching tier on one monitor's panel switches it everywhere -- a
 // deliberate simplification rather than 5x-ing the live socket count.
 QtObject {
     id: root
 
-    readonly property var tierCodes: ["30m", "6h", "7d", "7w", "7mo"]
+    readonly property var tierCodes: ["10m", "30m", "6h", "7d", "7w", "7mo"]
     readonly property var tierLabels: ({
+        "10m": qsTr("last 10 minutes"),
         "30m": qsTr("last 30 minutes"),
         "6h": qsTr("last 6 hours"),
         "7d": qsTr("last 7 days"),
@@ -93,6 +94,20 @@ QtObject {
         parser: SplitParser {
             splitMarker: "\n"
             onRead: data => { root.topNet = JSON.parse(data).procs; }
+        }
+    }
+
+    // Re-assert each socket if sysmond drops (dev restarts, package
+    // upgrades) -- `connected: true` is a constant binding and won't
+    // re-fire on its own. Same fix as TieredSocket.qml's timer.
+    readonly property Timer reconnectTimer: Timer {
+        interval: 2000
+        repeat: true
+        running: !root.topCpuSocket.connected || !root.topMemSocket.connected || !root.topNetSocket.connected
+        onTriggered: {
+            root.topCpuSocket.connected = true;
+            root.topMemSocket.connected = true;
+            root.topNetSocket.connected = true;
         }
     }
 }
