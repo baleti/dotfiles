@@ -3,9 +3,19 @@ import Quickshell
 import Quickshell.Wayland
 import "bar"
 import "background"
+import "osd"
 
 ShellRoot {
     Background {}
+
+    Variants {
+        model: Quickshell.screens
+
+        VolumeOsd {
+            required property var modelData
+            screen: modelData
+        }
+    }
 
     Variants {
         model: Quickshell.screens
