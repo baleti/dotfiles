@@ -25,15 +25,17 @@ Writes/applies (2026-08-28, expanded past just GTK/KDE -- see conversation
     and xsettingsd) pointed at a NON-INSTALLED `adw-gtk3-dark`, so every GTK
     app fell back to bare Adwaita = white (2026-08-28). This script now also
     enforces that gsettings key each run so it can't drift again.
-  - ~/.local/share/color-schemes/MaterialYou.colors, applied live via
-    `plasma-apply-colorscheme` -- Dolphin/KDE apps resolve their palette
-    from kdeglobals's [General] ColorScheme=<name>, NOT from kdeglobals's own
-    inline [Colors:*] sections (those are only a fallback for apps with no
-    named scheme configured) -- confirmed via kdeglobals having
-    `ColorScheme=Breeze`, which is why patching [Colors:*] alone
-    never visibly changed Dolphin.
-  - kdeglobals [Colors:*] sections directly too, as a fallback for anything
-    that does read them inline.
+  - kdeglobals [Colors:*] -- the COMPLETE Breeze key set (every section,
+    every Foreground*/Decoration* key), plus [WM] and [ColorEffects:*].
+    This is what KColorScheme actually reads at runtime. Missing keys fall
+    back to compiled-in Breeze defaults, so a partial scheme renders as an
+    incoherent mix (learned the hard way once Kvantum stopped masking it,
+    2026-08-29). A KGlobalSettings D-Bus signal forces running apps to
+    re-read it.
+  - ~/.local/share/color-schemes/MaterialYou.colors -- the same palette as
+    a named scheme file, for the System Settings KCM and plasma-apply-
+    colorscheme's initial switch (which no-ops once MaterialYou is already
+    the current scheme -- it will NOT re-copy changed colours).
   - Hyprland window border colors, live via `hyprctl keyword` (NOT written
     into appearance.lua -- reverts to that file's static default on the
     next full Hyprland restart until wallpaper-watch.sh's next theme regen
@@ -389,34 +391,118 @@ def rgb(hexcolor: str) -> str:
     return f"{r},{g},{b}"
 
 
+def _mix(hex_a: str, hex_b: str, t: float) -> str:
+    a = argb_to_rgb_tuple(hex_to_argb(hex_a))
+    b = argb_to_rgb_tuple(hex_to_argb(hex_b))
+    return "#" + "".join(f"{round(a[i] + (b[i] - a[i]) * t):02x}" for i in range(3))
+
+
 def color_sections(out: dict) -> dict:
+    """A COMPLETE Breeze-compatible [Colors:*] set -- every section
+    (View/Window/Button/Selection/Tooltip/Complementary/Header +
+    Header][Inactive) and every key Breeze reads (Background{Normal,
+    Alternate}, Foreground{Normal,Inactive,Active,Link,Visited,Negative,
+    Neutral,Positive}, Decoration{Focus,Hover}).
+
+    This has to be exhaustive: once Kvantum was dropped (2026-08-29) Breeze
+    actually *reads* the scheme, and KColorScheme fills any missing key from
+    its compiled-in Breeze defaults -- a sparse scheme (what this used to
+    emit) came out as an incoherent mix of Material You greys and stock
+    Breeze blue/purple ("colors dont look coherent at all"). The operative
+    copy is kdeglobals's own [Colors:*] (written by patch_kdeglobals_inline);
+    the named .colors file is only for the System Settings KCM and for
+    plasma-apply-colorscheme's initial switch.
+
+    Elevation (View darkest -> Button lightest) is interpolated between the
+    scheme background and surfaceContainer; semantic fg colours are fixed
+    HCT hues so negative/neutral/positive always read as red/amber/green
+    regardless of the wallpaper's own hue."""
+    bg = out["background"]
+    sc = out["surfaceContainer"]
+    view_bg = bg
+    view_alt = _mix(bg, sc, 0.10)
+    window_bg = _mix(bg, sc, 0.20)
+    window_alt = _mix(bg, sc, 0.34)
+    button_bg = _mix(bg, sc, 0.30)
+    button_alt = _mix(bg, sc, 0.46)
+    tooltip_bg = _mix(bg, sc, 0.26)
+
+    fg = out["onSurface"]
+    fg_dim = _mix(out["onSurfaceVariant"], bg, 0.30)
+    neutral = argb_to_hex(Hct.from_hct(75, 70, 72).to_int())   # amber
+    positive = argb_to_hex(Hct.from_hct(145, 45, 74).to_int())  # green
+
+    common_fg = {
+        "ForegroundNormal": rgb(fg),
+        "ForegroundInactive": rgb(fg_dim),
+        "ForegroundActive": rgb(out["primary"]),
+        "ForegroundLink": rgb(out["primary"]),
+        "ForegroundVisited": rgb(out["secondary"]),
+        "ForegroundNegative": rgb(out["error"]),
+        "ForegroundNeutral": rgb(neutral),
+        "ForegroundPositive": rgb(positive),
+        "DecorationFocus": rgb(out["primary"]),
+        "DecorationHover": rgb(out["primary"]),
+    }
+
+    def sec(bgn: str, bga: str) -> dict:
+        return {"BackgroundNormal": rgb(bgn), "BackgroundAlternate": rgb(bga), **common_fg}
+
+    on_primary = out["onPrimary"]
+    selection = {
+        "BackgroundNormal": rgb(out["primary"]),
+        "BackgroundAlternate": rgb(out["primaryContainer"]),
+        "ForegroundNormal": rgb(on_primary),
+        "ForegroundInactive": rgb(_mix(on_primary, out["primary"], 0.35)),
+        "ForegroundActive": rgb(on_primary),
+        "ForegroundLink": rgb(on_primary),
+        "ForegroundVisited": rgb(on_primary),
+        "ForegroundNegative": rgb(on_primary),
+        "ForegroundNeutral": rgb(on_primary),
+        "ForegroundPositive": rgb(on_primary),
+        "DecorationFocus": rgb(out["primary"]),
+        "DecorationHover": rgb(out["primary"]),
+    }
+
     return {
-        "Colors:Window": {
-            "BackgroundNormal": rgb(out["background"]),
-            "ForegroundNormal": rgb(out["onBackground"]),
-        },
-        "Colors:View": {
-            "BackgroundNormal": rgb(out["surface"]),
-            "ForegroundNormal": rgb(out["onSurface"]),
-        },
-        "Colors:Button": {
-            "BackgroundNormal": rgb(out["surfaceContainer"]),
-            "BackgroundAlternate": rgb(out["surfaceContainer"]),
-            "ForegroundNormal": rgb(out["onSurface"]),
-        },
-        "Colors:Selection": {
-            "BackgroundNormal": rgb(out["primary"]),
-            "BackgroundAlternate": rgb(out["primaryContainer"]),
-            "ForegroundNormal": rgb(out["onPrimary"]),
-        },
-        "Colors:Tooltip": {
-            "BackgroundNormal": rgb(out["surfaceContainer"]),
-            "ForegroundNormal": rgb(out["onSurface"]),
-        },
-        "Colors:Complementary": {
-            "DecorationFocus": rgb(out["primary"]),
-            "DecorationHover": rgb(out["secondary"]),
-        },
+        "Colors:View": sec(view_bg, view_alt),
+        "Colors:Window": sec(window_bg, window_alt),
+        "Colors:Button": sec(button_bg, button_alt),
+        "Colors:Tooltip": sec(tooltip_bg, window_alt),
+        "Colors:Complementary": sec(window_bg, window_alt),
+        "Colors:Header": sec(window_bg, view_bg),
+        "Colors:Header][Inactive": sec(view_bg, window_bg),
+        "Colors:Selection": selection,
+    }
+
+
+# Effect params (not hues) -- lifted verbatim from Breeze Dark; the
+# disabled/inactive dimming maths is hue-independent.
+COLOR_EFFECTS = {
+    "ColorEffects:Disabled": {
+        "Color": "56,56,56", "ColorAmount": "0", "ColorEffect": "0",
+        "ContrastAmount": "0.65", "ContrastEffect": "1",
+        "IntensityAmount": "0.1", "IntensityEffect": "2",
+    },
+    "ColorEffects:Inactive": {
+        "ChangeSelectionColor": "true", "Color": "112,111,110",
+        "ColorAmount": "0.025", "ColorEffect": "2", "ContrastAmount": "0.1",
+        "ContrastEffect": "2", "Enable": "false", "IntensityAmount": "0",
+        "IntensityEffect": "0",
+    },
+}
+
+
+def wm_section(out: dict) -> dict:
+    bg = out["background"]
+    sc = out["surfaceContainer"]
+    return {
+        "activeBackground": rgb(_mix(bg, sc, 0.20)),
+        "activeBlend": rgb(out["onSurface"]),
+        "activeForeground": rgb(out["onSurface"]),
+        "inactiveBackground": rgb(bg),
+        "inactiveBlend": rgb(_mix(out["onSurfaceVariant"], bg, 0.30)),
+        "inactiveForeground": rgb(_mix(out["onSurfaceVariant"], bg, 0.30)),
     }
 
 
@@ -434,7 +520,15 @@ def write_color_scheme_file(out: dict) -> None:
     cp.add_section("General")
     cp.set("General", "Name", COLOR_SCHEME_NAME)
     cp.set("General", "ColorScheme", COLOR_SCHEME_NAME)
-    for section, keys in color_sections(out).items():
+    cp.set("General", "shadeSortColumn", "true")
+    cp.add_section("KDE")
+    cp.set("KDE", "contrast", "4")
+    all_sections = {
+        **color_sections(out),
+        "WM": wm_section(out),
+        **COLOR_EFFECTS,
+    }
+    for section, keys in all_sections.items():
         cp.add_section(section)
         for k, v in keys.items():
             cp.set(section, k, v)
@@ -471,7 +565,8 @@ def patch_kdeglobals_inline(out: dict) -> None:
     cp.optionxform = str
     if KDEGLOBALS.exists():
         cp.read(KDEGLOBALS)
-    for section, keys in color_sections(out).items():
+    inline = {**color_sections(out), "WM": wm_section(out), **COLOR_EFFECTS}
+    for section, keys in inline.items():
         if not cp.has_section(section):
             cp.add_section(section)
         for k, v in keys.items():
@@ -479,6 +574,7 @@ def patch_kdeglobals_inline(out: dict) -> None:
     if not cp.has_section("General"):
         cp.add_section("General")
     cp.set("General", "AccentColor", rgb(out["primary"]))
+    cp.set("General", "ColorScheme", COLOR_SCHEME_NAME)
     for section in ("KDE", "General"):
         if not cp.has_section(section):
             cp.add_section(section)
@@ -491,16 +587,30 @@ def patch_kdeglobals_inline(out: dict) -> None:
 def theme_kde(out: dict) -> None:
     write_color_scheme_file(out)
     patch_kdeglobals_inline(out)
-    # Best-effort: sets kdeglobals's [General] ColorScheme=MaterialYou and
-    # (when kded6/DBus is reachable) notifies running Qt/KDE apps to reload
-    # live. Under plain Hyprland the notify step may have no one to hear it
-    # -- the file changes still land, apps pick them up on next launch.
+    # plasma-apply-colorscheme only re-copies the scheme into kdeglobals
+    # when the *name* changes -- with MaterialYou already current it
+    # short-circuits ("already set") and our regenerated colours never
+    # reach running apps (verified 2026-08-29). patch_kdeglobals_inline
+    # above already wrote the full palette straight into kdeglobals (the
+    # copy KColorScheme actually reads); this call still matters on a fresh
+    # login / real scheme switch, so keep it, non-fatal.
     result = subprocess.run(
         ["plasma-apply-colorscheme", COLOR_SCHEME_NAME],
         capture_output=True, text=True,
     )
-    if result.returncode != 0:
+    if result.returncode != 0 and "already" not in (result.stdout + result.stderr).lower():
         print(f"plasma-apply-colorscheme failed (non-fatal): {result.stderr.strip()}", file=sys.stderr)
+    # Force running KDE/Qt apps to re-read the kdeglobals palette regardless
+    # -- this is the KGlobalSettings signal plasma-apply-colorscheme emits
+    # internally after a real switch (ChangeType 0 = PaletteChanged).
+    try:
+        subprocess.run(
+            ["dbus-send", "--session", "--type=signal", "/KGlobalSettings",
+             "org.kde.KGlobalSettings.notifyChange", "int32:0", "int32:0"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        pass
     print(f"wrote {COLOR_SCHEME_FILE}, patched {KDEGLOBALS}")
 
 
@@ -535,13 +645,13 @@ def theme_hyprland_borders(out: dict) -> None:
     from the image still ends up blending in"). Still run through
     vivid_hex for guaranteed saturation, same as before. border_size is
     also re-set here (not just color) so this whole call is idempotent
-    with appearance.lua's own static border_size=3 rather than silently
+    with appearance.lua's own static border_size=2 rather than silently
     depending on it."""
     accent = vivid_hex(out["accent"]).lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
     lua = (
         'hl.config({general={'
-        'border_size=3,col={'
+        'border_size=2,col={'
         f'active_border="rgba({accent}f2)",'
         f'inactive_border="rgba({outline}aa)"'
         '}}})'
