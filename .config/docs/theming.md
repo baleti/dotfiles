@@ -118,3 +118,26 @@ kdeglobals --group KDE --key widgetStyle kvantum-dark`, and drop the
 See [[gtk_theme_white_root_cause]] memory for a real incident this pipeline
 caused (dconf pointing at an uninstalled `adw-gtk3-dark` → white GTK apps)
 and its fix.
+
+## Rejected: extra vibrancy on the focused window (2026-08-29)
+
+Idea: make the currently-focused window's colours punchier / more
+contrasting than the wallpaper-derived base, on top of the Hyprland border
+accent. Abandoned — no clean way to do it:
+
+- **App colours are global config.** GTK's `colors.css` and KDE's
+  `kdeglobals` are single files reloaded into *every* app at once; no
+  toolkit exposes a per-window runtime colour override. The one exception
+  is **alacritty** (`alacritty msg config -w …`) — a focus-tracking daemon
+  prototype worked but was terminal-only and spawned a process per focus
+  event, so it was dropped.
+- **A compositor-side saturation shader on the active window** needs a
+  Hyprland plugin that function-hooks the renderer (`hypr-darkwindow` is a
+  working template). There is **no stable plugin API** — plugins compile
+  against an exact Hyprland commit and the renderer internals change a few
+  times a year, so it's periodic maintenance. Hyprland's only stable shader
+  hook, `decoration:screen_shader`, is whole-screen with no per-window
+  info.
+- **`decoration:dim_inactive`** is the only stable, config-level "focused
+  window stands out" lever — and it works by dimming the *others*, not by
+  boosting the focused one. Not currently enabled.
