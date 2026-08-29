@@ -183,43 +183,57 @@ Item {
     readonly property var openGraphPanels: root.graphPanelOrder.filter(n => root.panelExpandedFor(n))
     readonly property int openGraphCount: root.openGraphPanels.length
 
-    readonly property real panelAreaWidth: root.screen.width - 20
+    // Every row is flush to the same right edge: the rightmost-open panel's
+    // own natural pill position, NOT the screen's right edge -- that pill
+    // usually isn't at the true edge (temp's own natural spot still has
+    // battery+clock to its right), so sizing off the full screen width
+    // overstated how much room a row actually has and ran the leftmost
+    // panel(s) off the left edge once several were open (reported
+    // 2026-08-29). This is the real, single source of truth for it.
+    readonly property real graphRowRightAnchor: root.openGraphCount > 0
+        ? root.naturalRightFor(root.openGraphPanels[root.openGraphCount - 1])
+        : root.screen.width - 20
+    readonly property real panelAreaWidth: Math.max(root.minGraphPanelWidth, root.graphRowRightAnchor - 10)
     readonly property real minGraphPanelWidth: 300
     readonly property real maxGraphPanelWidth: 560
     readonly property real panelGap: 6
 
     // Most columns a row could ever hold, at the narrowest usable width --
-    // an upper bound used to decide how many rows are needed at all.
+    // an upper bound used only to decide how many rows are needed at all.
     readonly property int graphColumns: root.openGraphCount === 0 ? 1 :
         Math.min(root.openGraphCount, Math.max(1, Math.floor((root.panelAreaWidth + root.panelGap) / (root.minGraphPanelWidth + root.panelGap))))
     readonly property int graphRows: root.openGraphCount === 0 ? 0 : Math.ceil(root.openGraphCount / root.graphColumns)
     // Actual per-row count, evened out across however many rows that took
-    // (e.g. 5 open over 2 rows -> 3 then 2, not 4 then 1), and the width
-    // that lets that many share the screen -- clamped so it never gets
-    // uncomfortably narrow on one end or comically wide alone on the other
-    // (the single-widget default).
+    // (e.g. 5 open over 2 rows -> 3 then 2, not 4 then 1) -- graphLayoutFor
+    // below MUST bucket rows using this same number, not graphColumns'
+    // upper bound, or a row can end up holding more panels than its width
+    // was sized for (e.g. 4 open, graphColumns=3 -> rows of [3,1] by index
+    // while the width below assumes 2-per-row -- confirmed as the actual
+    // cause of the reported overflow/unevenness, not just the anchor bug).
+    readonly property int graphPerRow: root.graphRows === 0 ? 0 : Math.ceil(root.openGraphCount / root.graphRows)
+    // Width that lets graphPerRow panels share the row -- clamped so it
+    // never gets uncomfortably narrow on one end or comically wide alone on
+    // the other (the single-widget default).
     readonly property real graphPanelWidth: {
         if (root.openGraphCount === 0)
             return root.maxGraphPanelWidth;
-        const perRow = Math.ceil(root.openGraphCount / root.graphRows);
-        const even = (root.panelAreaWidth - (perRow - 1) * root.panelGap) / perRow;
+        const even = (root.panelAreaWidth - (root.graphPerRow - 1) * root.panelGap) / root.graphPerRow;
         return Math.max(root.minGraphPanelWidth, Math.min(root.maxGraphPanelWidth, even));
     }
 
-    // {row, right} for one open graph panel -- every row is flush to the
-    // same right edge (the rightmost-open panel's own natural pill
-    // position), columns fill right-to-left within a row (matching the
-    // pills' own left-to-right order in the bar), and rows stack downward.
+    // {row, right} for one open graph panel -- columns fill right-to-left
+    // within a row (matching the pills' own left-to-right order in the
+    // bar), rows stack downward, bucketed by graphPerRow (see its comment
+    // above for why not graphColumns).
     function graphLayoutFor(name: string): var {
         const idx = root.openGraphPanels.indexOf(name);
         if (idx < 0)
             return { row: 0, right: 0 };
         const total = root.openGraphPanels.length;
         const posFromRight = total - 1 - idx;
-        const row = Math.floor(posFromRight / root.graphColumns);
-        const colFromRight = posFromRight % root.graphColumns;
-        const rightAnchor = root.naturalRightFor(root.openGraphPanels[total - 1]);
-        const right = rightAnchor - colFromRight * (root.graphPanelWidth + root.panelGap);
+        const row = Math.floor(posFromRight / root.graphPerRow);
+        const colFromRight = posFromRight % root.graphPerRow;
+        const right = root.graphRowRightAnchor - colFromRight * (root.graphPanelWidth + root.panelGap);
         return { row, right };
     }
 
@@ -641,6 +655,23 @@ Item {
         function toggleDisk(): void { diskPill.togglePin(); }
         function toggleMedia(): void { mediaExpanded.expanded = !mediaExpanded.expanded; }
         function toggleCalendar(): void { root.toggleClockPin(); }
+
+        // keybinds.lua calls this once on every Hyprland config reload (a
+        // reload re-executes that file's top-level Lua state, resetting its
+        // "which panels are open" tracking to all-closed, but does NOT
+        // restart quickshell -- so without this, a panel left open across a
+        // reload would desync from that fresh assumption: the next entry-key
+        // press would read as "opening" an already-open panel and actually
+        // close it, and the open-count bookkeeping could wrongly drop out of
+        // the graph_nav submap too. Reported 2026-08-29. Forcing every panel
+        // closed here keeps both sides starting from the same state.
+        function closeAllGraphs(): void {
+            netPill.pinned = false; netPill.expanded = false;
+            cpuPill.pinned = false; cpuPill.expanded = false;
+            memPill.pinned = false; memPill.expanded = false;
+            diskPill.pinned = false; diskPill.expanded = false;
+            tempPill.pinned = false; tempPill.expanded = false;
+        }
 
         // mod+t/mod+s/ALT+n/ALT+p/ALT+m's "graph_*" submaps (keybinds.lua):
         // 1-6 sets that panel's history tier while the submap is active, via
