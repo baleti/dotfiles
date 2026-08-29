@@ -39,8 +39,11 @@ comments). Starts, in order:
 5. `xrdb -merge ~/.config/nsxiv/xresources` (if present) — loads nsxiv's X
    resources into XWayland immediately, since wallpaper-watch.sh might not
    fire again this session.
-6. `scripts/wallpaper-rotate.sh` — rotates `~/wallpapers` every 15 min. A
-   "for now" testing cadence (2026-08-28), not a considered final value.
+6. `scripts/wallpaper-rotate.sh` — rotates `~/wallpapers` every 6h (moved
+   2026-08-29 from a 15-min "for now" testing cadence). Plain
+   `hl.exec_cmd`/`sleep`-loop, not a systemd unit — see
+   [theming.md](theming.md) for why, and what to reconsider if it's ever
+   seen crashing.
 7. `qs -n -d` — the quickshell bar. **waybar's autostart line is commented
    out here** (2026-08-27) in favor of this; see
    [desktop-apps.md](desktop-apps.md#waybar-legacy) for its current status
