@@ -86,41 +86,43 @@ Canvas {
         return points;
     }
 
-    function drawSeries(ctx, rawData, rawColor, fill, lineWidth, strokeAlpha, fillAlpha) {
+    // seriesList's per-entry `color` field comes from Theme.seriesPalette,
+    // an untyped `property var` array of plain hex STRINGS (not QML `color`
+    // objects -- only a top-level `property color` gets that string->QColor
+    // auto-coercion, a nested object-literal field like seriesList[i].color
+    // never does). rgb.r/.g/.b on a bare string is undefined, so every
+    // overlay graph (net/cpu/mem/disk) drew Qt.rgba(undefined... ) -- i.e.
+    // black -- until overlay mode was fixed to Qt.color() it first (reported
+    // "CPU is all black" / "graphs don't use theme colors", 2026-08-28).
+
+    function fillSeries(ctx, rawData, rawColor, fillAlpha) {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
         if (points.length < 2)
             return;
-        // seriesList's per-entry `color` field comes from Theme.seriesPalette,
-        // an untyped `property var` array of plain hex STRINGS (not QML
-        // `color` objects -- only a top-level `property color` gets that
-        // string->QColor auto-coercion, a nested object-literal field like
-        // seriesList[i].color never does). rgb.r/.g/.b on a bare string is
-        // undefined, so every overlay graph (net/cpu/mem/disk) has been
-        // drawing Qt.rgba(undefined, undefined, undefined, alpha) -- i.e.
-        // black -- since overlay mode was introduced; only the single-series
-        // path (color1, a real `property color`) ever worked. Reported as
-        // "CPU is all black" / "graphs don't use theme colors" 2026-08-28.
         const rgb = Qt.color(rawColor);
         const h = height;
         const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, h);
+        for (const p of points)
+            ctx.lineTo(p.x, yOf(p.v));
+        ctx.lineTo(points[points.length - 1].x, h);
+        ctx.closePath();
+        ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha);
+        ctx.fill();
+    }
 
-        if (fill) {
-            ctx.beginPath();
-            ctx.moveTo(points[0].x, h);
-            for (const p of points)
-                ctx.lineTo(p.x, yOf(p.v));
-            ctx.lineTo(points[points.length - 1].x, h);
-            ctx.closePath();
-            // Flat fill (a gradient fade was tried and rejected as "not
-            // practical", 2026-08-29). Overlap between many core fills is
-            // accepted -- fillAlpha is kept modest in onPaint so a 2-3x
-            // stack darkens but doesn't turn to mud.
-            ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha);
-            ctx.fill();
-        }
-
+    function strokeSeries(ctx, rawData, rawColor, lineWidth, strokeAlpha) {
+        if (rawData.length < 2)
+            return;
+        const points = root.downsample(rawData);
+        if (points.length < 2)
+            return;
+        const rgb = Qt.color(rawColor);
+        const h = height;
+        const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
         ctx.beginPath();
         ctx.lineJoin = "round";
         ctx.lineCap = "round";
@@ -153,24 +155,30 @@ Canvas {
         const ctx = getContext("2d");
         ctx.reset();
         drawGrid(ctx);
+
         if (seriesList.length > 0) {
-            // Every non-secondary series gets a faint fill under it (same
-            // recipe as the single-series graph), even with many overlaid
-            // -- CPU cores mostly idle low, so the fills stack only in a
-            // thin band at the bottom and each spike still reads on its
-            // own. Thin 1px lines at near-full alpha keep each hue legible
-            // where several overlap (the earlier 1.5px "mud" fix, 2026-08-
-            // 28, over-corrected -- "cpu lines too thick", 2026-08-29).
             const many = seriesList.length > 2;
-            for (const s of seriesList) {
-                const secondary = !!s.dashed;
-                drawSeries(ctx, s.data, s.color, !secondary,
-                           many ? 1.0 : 1.25,
-                           secondary ? 0.45 : (many ? 0.92 : 0.9),
-                           many ? 0.28 : 0.3);
-            }
+            const primary = seriesList.filter(s => !s.dashed);
+            const secondary = seriesList.filter(s => !!s.dashed);
+
+            // Two passes so the lines always sit on top of every fill.
+            // Translucent overlaid fills all blended into one indistinct
+            // mass ("all mashed together", 2026-08-29); these are near-
+            // opaque instead and painted last-series-first, so the first
+            // series' hue is a stable solid "floor" and a core that's
+            // spiking shows as its own coloured strip standing above that
+            // floor. Every core's line still reads, crisp, on top.
+            const fillAlpha = many ? 0.92 : 0.32;
+            for (let i = primary.length - 1; i >= 0; i--)
+                fillSeries(ctx, primary[i].data, primary[i].color, fillAlpha);
+
+            for (const s of secondary)
+                strokeSeries(ctx, s.data, s.color, many ? 1.0 : 1.25, 0.45);
+            for (const s of primary)
+                strokeSeries(ctx, s.data, s.color, many ? 1.0 : 1.25, many ? 0.95 : 0.9);
         } else {
-            drawSeries(ctx, series, color1, true, 1.25, 0.9, 0.3);
+            fillSeries(ctx, series, color1, 0.3);
+            strokeSeries(ctx, series, color1, 1.25, 0.9);
         }
     }
 }
