@@ -1,5 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
+import Quickshell.Io
 import "../theme"
 
 // Hover-down expansion of the clock: a month calendar grid, today
@@ -12,10 +14,16 @@ import "../theme"
 // own arrow-seek), so bare keys reach handleKey() below directly - no
 // Hyprland submap needed. Two modes: plain month view (Left/Right =
 // prev/next month, Up/Down = prev/next year, Tab = enter the year-picker,
-// Escape = close the panel) and the year-picker (Tab opened it; Left/Right
-// move the highlight within a 10-cell grid, Up/Down zoom out/in a level
-// among 10/20/50/100-year spans, Enter drills into a coarse cell or
-// confirms a single year, Escape/Tab cancel back to month view unchanged).
+// click a day = open its task list, Escape = clear that selection then
+// close the panel) and the year-picker (Tab opened it; all four arrows
+// move the highlight within the 2-column 10-cell grid - Left/Right by one,
+// Up/Down by a row - Backspace zooms out a level among the 10/20/50/100-
+// year spans, Enter drills into a coarse cell or confirms a single year,
+// Escape/Tab cancel back to month view unchanged).
+//
+// Day cells carry accent dots when ~/notes/orgzly/todo.org has anything
+// scheduled that day (accent-coloured = something still open, grey = all
+// done); clicking a day opens a list of that day's entries below the grid.
 Rectangle {
     id: root
 
@@ -25,10 +33,51 @@ Rectangle {
     readonly property date today: new Date()
     property int viewYear: today.getFullYear()
     property int viewMonth: today.getMonth() // 0-11
-    // Clicked day, purely a visual marker (ring, not fill - today's own
-    // fill takes priority when they're the same day). Nothing downstream
-    // reads this yet; it's just mouse feedback that the click landed.
+    // Clicked day: drawn as a ring (not a fill - today's own fill wins when
+    // they're the same day) and drives the task list at the bottom of the
+    // panel. Cleared on close and by the first Escape press.
     property var selectedDate: null
+
+    // ------------------------------------------------------------------
+    // Org agenda: ~/notes/orgzly/todo.org parsed by
+    // scripts/org-agenda.py into { "YYYY-MM-DD": [ {text,done,time,kind} ] }.
+    // Re-run each time the panel opens (and every 5 min while it stays
+    // open) so edits synced down from orgzly show up without a restart.
+    // ------------------------------------------------------------------
+    property var agendaDays: ({})
+
+    function dateKey(d: date): string {
+        const m = d.getMonth() + 1;
+        const day = d.getDate();
+        return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
+    }
+    function tasksFor(d): var {
+        return (d && root.agendaDays[root.dateKey(d)]) || [];
+    }
+
+    Process {
+        id: agendaProc
+        command: ["python3", Quickshell.env("HOME") + "/.config/quickshell/scripts/org-agenda.py"]
+        stdout: StdioCollector {
+            id: agendaOut
+            onStreamFinished: {
+                try {
+                    const parsed = JSON.parse(agendaOut.text);
+                    root.agendaDays = parsed.days || {};
+                } catch (e) {
+                    // Keep whatever we had; a transient parse/read failure
+                    // just means the accents don't refresh this cycle.
+                }
+            }
+        }
+    }
+
+    Timer {
+        interval: 5 * 60 * 1000
+        repeat: true
+        running: root.expanded
+        onTriggered: agendaProc.running = true
+    }
 
     function prevMonth(): void {
         if (viewMonth === 0) { viewMonth = 11; viewYear -= 1; } else { viewMonth -= 1; }
@@ -46,7 +95,9 @@ Rectangle {
     // current month/year, not last time's - including out of the
     // year-picker if it was left open.
     onExpandedChanged: {
-        if (!expanded) {
+        if (expanded) {
+            agendaProc.running = true;
+        } else {
             root.goToday();
             root.exitYearPicker();
             root.selectedDate = null;
@@ -144,10 +195,13 @@ Rectangle {
                 root.yearPickerMove(1);
                 event.accepted = true;
             } else if (event.key === Qt.Key_Up) {
-                root.yearPickerZoomOut();
+                root.yearPickerMove(-2);
                 event.accepted = true;
             } else if (event.key === Qt.Key_Down) {
-                root.yearPickerZoomIn();
+                root.yearPickerMove(2);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Backspace) {
+                root.yearPickerZoomOut();
                 event.accepted = true;
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                 root.yearPickerConfirm();
@@ -173,7 +227,11 @@ Rectangle {
                 root.enterYearPicker();
                 event.accepted = true;
             } else if (event.key === Qt.Key_Escape) {
-                root.expanded = false;
+                // First Escape drops an open day list, second closes.
+                if (root.selectedDate)
+                    root.selectedDate = null;
+                else
+                    root.expanded = false;
                 event.accepted = true;
             }
         }
@@ -308,6 +366,9 @@ Rectangle {
                     readonly property bool isSelected: !isToday && root.selectedDate
                         && modelData.toDateString() === root.selectedDate.toDateString()
 
+                    readonly property var dayTasks: root.tasksFor(modelData)
+                    readonly property bool hasOpenTask: dayTasks.some(t => !t.done)
+
                     Layout.fillWidth: true
                     Layout.preferredHeight: 28
                     radius: Theme.rounding - 4
@@ -326,6 +387,32 @@ Rectangle {
                             if (!cell.inMonth)
                                 return Theme.muted;
                             return cell.isWeekend ? Theme.textDim : Theme.text;
+                        }
+                    }
+
+                    // Accent dots: one per task that day, capped at 3. The
+                    // theme's secondary accent while anything's still open,
+                    // muted grey once the day is all-done. On today's
+                    // filled cell they switch to the dark ink colour so
+                    // they stay visible against the fill.
+                    Row {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 2
+                        spacing: 2
+                        visible: cell.dayTasks.length > 0
+
+                        Repeater {
+                            model: Math.min(3, cell.dayTasks.length)
+
+                            Rectangle {
+                                width: 3
+                                height: 3
+                                radius: 1.5
+                                color: cell.isToday
+                                    ? "#1a1a1a"
+                                    : (cell.hasOpenTask ? Theme.green : Theme.muted)
+                            }
                         }
                     }
 
@@ -403,8 +490,97 @@ Rectangle {
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize - 3
             text: root.yearPickerActive
-                ? qsTr("←→ move · ↑↓ zoom · Enter/click select · Esc/Tab cancel")
-                : qsTr("←→ month · ↑↓ year · Tab pick year · click a date")
+                ? qsTr("↑↓←→ move · Enter select · ⌫ zoom out · Esc cancel")
+                : qsTr("←→ month · ↑↓ year · Tab year · click a day")
+        }
+
+        // Day task list: opens under the grid when a day is clicked,
+        // showing that day's org entries (or "Nothing scheduled"). Grows
+        // the panel downward - Bar.qml's overflow math keys off
+        // calendarExpanded.height, so nothing else needs to know.
+        Rectangle {
+            id: dayList
+            width: parent.width
+            visible: root.selectedDate !== null && !root.yearPickerActive
+            implicitHeight: visible ? dayListCol.implicitHeight + 16 : 0
+            height: implicitHeight
+            clip: true
+            radius: Theme.rounding - 4
+            color: Theme.bg
+            border.color: Theme.border
+            border.width: 1
+
+            readonly property var tasks: root.selectedDate ? root.tasksFor(root.selectedDate) : []
+
+            Column {
+                id: dayListCol
+                x: 8
+                y: 8
+                width: parent.width - 16
+                spacing: 5
+
+                Text {
+                    width: parent.width
+                    elide: Text.ElideRight
+                    text: root.selectedDate
+                        ? Qt.formatDate(root.selectedDate, "ddd d MMM yyyy")
+                        : ""
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 1
+                    font.bold: true
+                }
+
+                Text {
+                    width: parent.width
+                    visible: dayList.tasks.length === 0
+                    text: qsTr("Nothing scheduled")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 2
+                }
+
+                // Scrolls internally once a day has more entries than fit;
+                // capped so a very full day can't push the panel off-screen.
+                ListView {
+                    width: parent.width
+                    height: Math.min(contentHeight, 176)
+                    visible: dayList.tasks.length > 0
+                    clip: true
+                    interactive: contentHeight > height
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: dayList.tasks
+                    spacing: 4
+
+                    delegate: Row {
+                        required property var modelData
+                        width: ListView.view.width
+                        spacing: 6
+
+                        Text {
+                            width: 34
+                            horizontalAlignment: Text.AlignRight
+                            text: modelData.time
+                                ? modelData.time
+                                : (modelData.kind === "deadline" ? "due" : "·")
+                            color: modelData.kind === "deadline" ? Theme.red : Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
+
+                        Text {
+                            width: parent.width - 40
+                            wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
+                            text: modelData.text
+                            color: modelData.done ? Theme.muted : Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            font.strikeout: modelData.done
+                        }
+                    }
+                }
+            }
         }
     }
 }
