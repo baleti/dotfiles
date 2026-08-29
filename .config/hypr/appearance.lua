@@ -9,7 +9,7 @@ hl.config({
         gaps_in  = 3,
         gaps_out = 5,
 
-        border_size = 3,
+        border_size = 2,
 
         -- https://wiki.hypr.land/Configuring/Basics/Variables/#variable-types for info about colors
         col = {
