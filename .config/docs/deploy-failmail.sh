@@ -33,6 +33,6 @@ ${log}
 Retry after fixing:  systemctl --user start dotfiles-docs-deploy.service
 "
 
-exec "$mail" send --account baleti --to "$to" \
+exec "$mail" --account baleti send --to "$to" \
   --subject "[dotfiles-docs] deploy FAILED on ${host}" \
   --body "$body"
