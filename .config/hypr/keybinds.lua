@@ -202,36 +202,71 @@ hl.bind("ALT + " .. mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 hl.bind("ALT + " .. mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph temp"))
 hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph mem"))
 
--- Bare alt+n/p/m/t/d (no mainMod, unlike the standalone popups above):
--- toggle the *quickshell bar's own* hover-graph panels open/closed on
--- whichever monitor is focused, via ~/.config/hypr/scripts/bar-toggle.sh.
--- Same sysmond data source, different UI (in-bar vs standalone GTK popup).
-hl.bind("ALT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleNet"))
-hl.bind("ALT + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"))
-hl.bind("ALT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"))
-hl.bind("ALT + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleTemp"))
-hl.bind("ALT + s", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleDisk"))
--- mod+m opens the media widget AND enters the "media_seek" submap: while
--- active, bare 0-9 (no modifier -- Hyprland binds match one non-modifier
--- key at a time, so a real simultaneous "mod+m+2" three-key chord isn't
--- expressible; a submap is the idiomatic equivalent -- press mod+m once to
--- enter, then tap digits freely) jump to that decile of the current track
--- (2 -> 20%, 9 -> 90%, ...), via playerctl-seek-percent.sh against
--- whichever player ~/.config/playerctl-current names. Escape or mod+m
--- again exits back to the normal keymap (and mod+m also re-closes the
--- widget, mirroring its toggle behavior outside the submap).
+-- Toggle the *quickshell bar's own* hover-graph panels open/closed on
+-- whichever monitor is focused (~/.config/hypr/scripts/bar-toggle.sh), AND
+-- enter a "graph_<widget>" submap: while active, 1-6 (no modifier) jumps
+-- that panel's history tier straight to 10m/30m/6h/7d/7w/7mo, via the new
+-- bar-set-tier.sh -> Bar.qml's setXxxTier() IpcHandler functions (same
+-- tier-setting path GraphPill's own tier buttons use). Escape or the entry
+-- key again exits back to the normal keymap.
+--
+-- temp, disk, and mem moved from ALT+t/ALT+s/ALT+m to mod+t/mod+s/mod+m.
+-- mod+m colliding with the media widget's own mod+m (below) was caught
+-- live and resolved by moving media to mod+CTRL+m instead - see
+-- feedback_hyprland_chord_via_submap memory. net/cpu stay on ALT+n/p:
+-- mod+n is notifyctl invoke-last, mod+p is window.pseudo() (dwindle), both
+-- pre-existing, so those two couldn't move without breaking something else
+-- or being told which to give up. They still gained the same tier-submap
+-- capability, just under their original key.
+local GRAPH_TIERS = { "10m", "30m", "6h", "7d", "7w", "7mo" }
+
+local function graph_tier_widget(submap_name, entry_key, toggle_func, ipc_setter)
+    hl.define_submap(submap_name, function()
+        for i, code in ipairs(GRAPH_TIERS) do
+            hl.bind(tostring(i), hl.dsp.exec_cmd(
+                "~/.config/hypr/scripts/bar-set-tier.sh " .. ipc_setter .. " " .. code))
+        end
+        hl.bind("Escape", function() hl.dispatch(hl.dsp.submap("reset")) end)
+        hl.bind(entry_key, function()
+            hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. toggle_func))
+            hl.dispatch(hl.dsp.submap("reset"))
+        end)
+    end)
+
+    hl.bind(entry_key, function()
+        hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. toggle_func))
+        hl.dispatch(hl.dsp.submap(submap_name))
+    end)
+end
+
+graph_tier_widget("graph_temp", mainMod .. " + t", "toggleTemp", "setTempTier")
+graph_tier_widget("graph_disk", mainMod .. " + s", "toggleDisk", "setDiskTier")
+graph_tier_widget("graph_net",  "ALT + n",          "toggleNet",  "setNetTier")
+graph_tier_widget("graph_cpu",  "ALT + p",          "toggleCpu",  "setCpuTier")
+graph_tier_widget("graph_mem",  mainMod .. " + m",  "toggleMem",  "setMemTier")
+-- mod+CTRL+m opens the media widget AND enters the "media_seek" submap:
+-- while active, bare 0-9 (no modifier -- Hyprland binds match one
+-- non-modifier key at a time, so a real simultaneous "mod+ctrl+m+2"
+-- four-key chord isn't expressible; a submap is the idiomatic equivalent --
+-- press mod+CTRL+m once to enter, then tap digits freely) jump to that
+-- decile of the current track (2 -> 20%, 9 -> 90%, ...), via
+-- playerctl-seek-percent.sh against whichever player
+-- ~/.config/playerctl-current names. Escape or mod+CTRL+m again exits back
+-- to the normal keymap (and mod+CTRL+m also re-closes the widget, mirroring
+-- its toggle behavior outside the submap). Not plain mod+m: that's the
+-- memory graph widget above (caught live before this ever shipped wrong).
 hl.define_submap("media_seek", function()
     for i = 0, 9 do
         hl.bind(tostring(i), hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek-percent.sh " .. i))
     end
     hl.bind("Escape", function() hl.dispatch(hl.dsp.submap("reset")) end)
-    hl.bind(mainMod .. " + m", function()
+    hl.bind(mainMod .. " + CTRL + m", function()
         hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
         hl.dispatch(hl.dsp.submap("reset"))
     end)
 end)
 
-hl.bind(mainMod .. " + m", function()
+hl.bind(mainMod .. " + CTRL + m", function()
     hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
     hl.dispatch(hl.dsp.submap("media_seek"))
 end)

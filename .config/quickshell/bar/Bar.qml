@@ -514,5 +514,15 @@ Item {
         function toggleDisk(): void { diskPill.togglePin(); }
         function toggleMedia(): void { mediaExpanded.expanded = !mediaExpanded.expanded; }
         function toggleCalendar(): void { root.toggleClockPin(); }
+
+        // mod+t/mod+s/ALT+n/ALT+p/ALT+m's "graph_*" submaps (keybinds.lua):
+        // 1-6 sets that panel's history tier while the submap is active, via
+        // ~/.config/hypr/scripts/bar-set-tier.sh. Same tier-setting path
+        // GraphPill's own tier buttons already use (onTierRequested).
+        function setNetTier(code: string): void { root.netTier = code; SysmonSvc.setNetTier(code); }
+        function setCpuTier(code: string): void { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
+        function setMemTier(code: string): void { root.memTier = code; SysmonSvc.setMemTier(code); }
+        function setTempTier(code: string): void { root.tempTier = code; SysmonSvc.setTempTier(code); }
+        function setDiskTier(code: string): void { root.diskTier = code; SysmonSvc.setDiskTier(code); }
     }
 }
