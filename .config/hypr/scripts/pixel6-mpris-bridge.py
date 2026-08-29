@@ -14,6 +14,7 @@ No new dependency: dbus-python + PyGObject/GLib are both already installed.
 """
 import json
 import time
+import urllib.parse
 import urllib.request
 from urllib.error import URLError
 
@@ -53,10 +54,13 @@ def friendly_app_name(pkg):
     return pkg.rsplit(".", 1)[-1]
 
 
-def call_action(name):
+def call_action(name, params=None):
     """POST to a peer-agent action, return its parsed JSON body or None."""
+    url = f"{PEER_AGENT_BASE}/{name}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(
-        f"{PEER_AGENT_BASE}/{name}",
+        url,
         method="POST",
         headers={"X-Peer-Agent": "1"},
     )
@@ -217,20 +221,32 @@ class Pixel6Player(dbus.service.Object):
         call_action("media-pause")
         self.refresh(force=True)
 
+    def _seek_to_ms(self, target_ms):
+        props = self._player_props()
+        length_us = props["Metadata"].get("mpris:length")
+        length_ms = int(length_us) // 1000 if length_us else 0
+        target_ms = max(0, int(target_ms))
+        if length_ms:
+            target_ms = min(target_ms, length_ms)
+        call_action("media-seek-to", {"ms": target_ms})
+        self.refresh(force=True)
+
     @dbus.service.method(PLAYER_IFACE, in_signature="x")
     def Seek(self, offset):
-        # peer-agent actions take no caller-supplied arguments by design
-        # (one named action per value) - media-seek-fwd/back on the phone
-        # are hardcoded to a 5s step (BridgeForegroundService.SEEK_STEP_MS),
-        # matching the Hyprland XF86AudioRewind/Forward keybinds that are
-        # the only callers of this today (always playerctl position 5+/5-).
-        # Sign is honored; magnitude isn't.
-        call_action("media-seek-fwd" if offset > 0 else "media-seek-back")
-        self.refresh(force=True)
+        # media-seek-to (BridgeHttpServer's /command/seek-to, via
+        # BridgeForegroundService.seekTo) carries an absolute ms position -
+        # peer-agent's forward_query passes just that one whitelisted,
+        # digits-only param through. Compute the absolute target from the
+        # last-known interpolated Position plus this relative offset (both
+        # microseconds) so an arbitrary-magnitude Seek (e.g. the quickshell
+        # bar's scrub-bar drag) actually lands where it was dropped, instead
+        # of the old flat 5s media-seek-fwd/back nudge.
+        current_us = int(self._player_props()["Position"])
+        self._seek_to_ms((current_us + int(offset)) // 1000)
 
     @dbus.service.method(PLAYER_IFACE, in_signature="ox")
     def SetPosition(self, track_id, position):
-        pass
+        self._seek_to_ms(int(position) // 1000)
 
     @dbus.service.method(PLAYER_IFACE, in_signature="s")
     def OpenUri(self, uri):
