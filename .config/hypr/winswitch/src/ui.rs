@@ -104,26 +104,26 @@ fn make_child(win: &Window, cell_w: i32, max_h: i32) -> (gtk::FlowBoxChild, gtk:
     frame.pack_start(&image, true, true, 0);
     vbox.pack_start(&frame, false, false, 0);
 
-    // A small muted line above the title identifying which workspace the
-    // window lives on -- the one piece of metadata that isn't otherwise
-    // visible anywhere in the grid (unlike the app name, which the title
-    // line below already falls back to when the window sets no title). Kept
-    // to its own line/style rather than folded into the title text so it
-    // doesn't eat into that label's 2-line budget or get ellipsized away
-    // together with a long title.
-    let ws_label = gtk::Label::new(Some(&format!("#{}", win.workspace)));
-    ws_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    ws_label.set_max_width_chars(1);
-    ws_label.set_justify(gtk::Justification::Center);
-    ws_label.style_context().add_class("ws-label");
-    vbox.pack_start(&ws_label, false, false, 0);
-
-    let label_text = if win.title.is_empty() {
+    // The workspace number rides on the *same* line as the title (a muted
+    // "#N" prefix) rather than a dedicated line above it, so it costs
+    // nothing when the title is short and simply falls out of view under
+    // the label's own ellipsize/2-line budget when it isn't -- "if there's
+    // space" is exactly what set_ellipsize already guarantees per line, no
+    // separate layout logic needed. Built with set_markup rather than
+    // plain text so the "#N" prefix can be styled distinctly; both pieces
+    // are escaped since title/class/workspace all come from whatever the
+    // window (or the user's Hyprland workspace naming) put there.
+    let base_text = if win.title.is_empty() {
         win.class.clone()
     } else {
         win.title.clone()
     };
-    let label = gtk::Label::new(Some(&label_text));
+    let label = gtk::Label::new(None);
+    label.set_markup(&format!(
+        "<span size=\"smaller\" alpha=\"55%\">#{}</span> {}",
+        glib::markup_escape_text(&win.workspace),
+        glib::markup_escape_text(&base_text),
+    ));
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     label.set_max_width_chars(1); // let ellipsize kick in early, as in picker.rs
     label.set_lines(2);
@@ -312,8 +312,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         // An outline, not a filled block: this is a placeholder for a
         // window frame, not a loading skeleton.
         let _ = css.load_from_data(
-            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; } \
-              .ws-label { font-size: smaller; opacity: 0.55; }",
+            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; }",
         );
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }

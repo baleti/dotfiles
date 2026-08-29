@@ -26,6 +26,7 @@ version-controlled here and is out of scope for this doc set.
 | [zsh-and-terminal.md](zsh-and-terminal.md) | zsh (`motions.zsh`, `.zshrc`/`.zshenv`), Doom Emacs, Alacritty |
 | [desktop-apps.md](desktop-apps.md) | rofi, mpv, GTK, nsxiv, fsearch, GnuPG, `.desktop` overrides, and waybar's legacy status |
 | [claude-history.md](claude-history.md) | `bin/claude-history`, the standalone CLI search over Claude Code conversation history |
+| [query-dsl.md](query-dsl.md) | The shared (copy-pasted, not imported) query language behind `window-search.py`, `focus-picker.py`, `claude-history`, and winswitch's grid search — grammar, fuzzy-matching rules, and the design principles behind them |
 
 ## Architecture at a glance
 

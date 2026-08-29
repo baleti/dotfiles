@@ -20,7 +20,11 @@ on a pane merely producing output, so a churning background Claude Code
 session never bumps itself up the MRU list.
 
 - **`prefix+w`** → `focus-picker.py` — lists windows/panes in actual visit
-  order, most-recent first. No scoring, no content search.
+  order, most-recent first. No scoring, no content search. Its
+  `+$group[.sub]`/`-$group[.sub]` column-visibility DSL and `$field:value`
+  filter syntax are documented generally in [query-dsl.md](query-dsl.md),
+  shared (by convention, not by import) with `window-search.py` and
+  `claude-history` below.
 - **`prefix+Tab`** → `session-jump.sh` — jumps straight to the single
   most-recently-visited *other* session (reads the same log rather than
   tmux's own single-slot per-client "last session" pointer, via the shared
