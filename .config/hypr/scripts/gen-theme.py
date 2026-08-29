@@ -420,7 +420,11 @@ def color_sections(out: dict) -> dict:
     bg = out["background"]
     sc = out["surfaceContainer"]
     view_bg = bg
-    view_alt = _mix(bg, sc, 0.10)
+    # No zebra striping in list views (Dolphin etc.) -- BackgroundAlternate
+    # == BackgroundNormal. Matches the old Kvantum/darknord look; the Breeze
+    # default stripe read as too strong on warm wallpapers where background
+    # and surfaceContainer are further apart (2026-08-29).
+    view_alt = view_bg
     window_bg = _mix(bg, sc, 0.20)
     window_alt = _mix(bg, sc, 0.34)
     button_bg = _mix(bg, sc, 0.30)
