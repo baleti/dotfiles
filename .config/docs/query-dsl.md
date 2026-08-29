@@ -21,7 +21,7 @@ Implementations, so this doc has a name for each:
 | window-search | `~/.config/tmux/scripts/window-search.py` | live tmux pane scrollback, BM25-ranked |
 | claude-history | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
 | focus-picker | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
-| winswitch | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout |
+| winswitch | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout — plus tmux/Claude Code metadata cross-referenced onto them, see below |
 | clipboard-picker | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
 | notification-picker | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
 
@@ -90,6 +90,72 @@ arbitrarily-chosen first match.
   logged timestamp for it yet) never matches any `$date:` query, whereas an
   entry that does have the field always matches `$date:` with nothing after
   the colon (an empty needle is a no-op for subsequence).
+
+### Dotted groups (`$group.sub:value`) and group existence (`$group`) — winswitch only
+
+winswitch is the one implementation whose fields aren't all properties of
+the thing being listed (a Hyprland window) — `tmux` and `claude` are
+**groups**, each with its own subfields, cross-referencing an open
+terminal window against the live tmux server and any live Claude Code
+session running in it (see `~/.config/hypr/winswitch/src/enrich.rs`):
+
+| Group | Subfields | Bare default (`$group:value`, no dot) |
+|---|---|---|
+| `tmux` | `session`, `window`, `title` | `title` |
+| `claude` | `title`, `path`, `session`, `contents` | `title` |
+
+- `$tmux.title:foo` / `$claude.contents:foo` — explicit `group.sub`, fuzzy
+  (subsequence) on both the group name and the sub name, same two-level
+  resolution `+$group.sub` (below) already uses for column visibility, just
+  applied to filtering instead.
+- `$tmux:foo` / `$claude:foo` — bare group, **defaults to `.title`**, not
+  "every sub." Deliberate: a group's `title` is its one field expected to
+  carry a human-meaningful summary (a tmux pane's title, a claude
+  conversation's AI-generated name), so it's what a plain, undecorated
+  `$group:` search should mean.
+- `$group.*:value` — literal reserved suffix meaning "matches if *any*
+  subfield of this group matches." **Not regex** — Haskell-style pattern
+  matching isn't a precedent worth reaching for here either, since it
+  matches value *shape* (constructors, literals, wildcards), not strings.
+  `.*` is one hand-parsed special-case token, consistent with this DSL's
+  standing rule that nothing in it uses a real regex engine (see "Design
+  principles" below) — a further pattern like `$group.*[0-9]` would need
+  actual regex and is out of scope for the same reason. **Any field group a
+  future implementation adds subtypes to should follow this same `$group.*`
+  convention** for "search every subtype," rather than inventing a new one.
+- `$group` — bare group name, **no colon at all** (`$claude`, `$clau`): an
+  *existence* filter, not a text search — "does this window have any data
+  in this group at all." This is what makes typing just `$clau` immediately
+  narrow the grid down to claude-hosting windows before a colon or value is
+  ever typed. Existence isn't a meaningful question for an ordinary column
+  (every window always has *some* title), so this form only ever applies to
+  groups; an unresolved or still-dotted-but-colonless fragment (`$zzz`,
+  `$tmux.se`) falls back to the older plain bare-word behaviour unchanged.
+
+Group data is gathered **asynchronously**, well after the grid is already
+shown — the first implementation in this whole DSL where a field's data
+isn't fully present the instant the picker opens. Alt+Tab has to stay
+instant to open even if tmux is slow to answer or a Claude Code transcript
+is large, so `enrich.rs` runs entirely in a background thread (spawned
+right after the grid's first paint) and streams results in as they land,
+re-running the current filter each time. Concretely: `$claude.contents:`
+(and, briefly, every other `$tmux.*`/`$claude.*` field) may simply not
+match *yet* on a freshly-opened grid, filling in live over the next moment
+as enrichment completes — not an error, the same "absence, not a fallback"
+rule an unresolvable field already had, just arriving on a delay instead of
+never. `$claude.contents` specifically is read last and per-window (one
+thread each), since it's the one genuinely expensive field (reading a whole
+conversation transcript) and must never delay every other window's cheap
+fields landing first.
+
+One more cross-referencing wrinkle specific to tmux: because a terminal
+window can be split into several panes, "is claude running in this window"
+is checked across **every pane currently visible in that window**, not
+just the focused one — if a claude conversation is visible in a side pane
+while some other pane has keyboard focus, `$claude`/`$claude.*` still
+matches, since the point is what's actually on screen, not narrowly what's
+focused. `tmux.title`/`tmux.window` stay tied to the *focused* pane
+specifically, since those two describe what's focused, not merely visible.
 
 ### `+$group[.sub]` / `-$group[.sub]` — column visibility (focus-picker only)
 
@@ -385,6 +451,14 @@ and that any new implementation of this DSL should keep:
   additive rather than a wall a casual user has to learn before the picker
   is useful at all: `$field:value` narrows or targets, but nothing here is
   ever *required* to get a plausible result.
+- **No real regex anywhere in this DSL — every fuzzy match is one of
+  substring-containment, subsequence, or prefix-expansion.** Even the one
+  form that reads most like a wildcard, winswitch's `$group.*` ("match any
+  subfield of this group" — see above), is a single hand-parsed reserved
+  token, not a regex engine: a further pattern like `$group.*[0-9]` would
+  need one and is deliberately not supported. Any future field group with
+  subtypes should follow `$group.*` for "search every subtype" rather than
+  reaching for real regex.
 - **Column-visibility directives never filter.** `+$`/`-$` change what's
   *shown*, never what *matches* — keeping "which rows survive" and "what
   columns those rows show" as two orthogonal concerns is what let `-$` get
