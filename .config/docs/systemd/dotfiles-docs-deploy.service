@@ -1,0 +1,17 @@
+[Unit]
+Description=Rebuild & publish the dotfiles documentation site
+Documentation=https://baleti.github.io/dotfiles/
+# Only fires the failmail on a real build/push error; --if-changed exits 0
+# when offline or when nothing changed.
+OnFailure=dotfiles-docs-deploy-failmail.service
+
+[Service]
+Type=oneshot
+# systemd user services start from an almost-empty environment.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Set DOCS_FAIL_EMAIL here to override the failure-notification recipient
+# (defaults to the repo's git author address).
+#Environment=DOCS_FAIL_EMAIL=you@example.com
+ExecStart=%h/.config/docs/deploy.sh --if-changed
+TimeoutStartSec=600
+Nice=10

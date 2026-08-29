@@ -31,7 +31,10 @@ import socketserver
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
+
+BUILD_STAMP = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 ROOT = Path(__file__).resolve().parent
 SITE = ROOT / "site"
@@ -322,6 +325,7 @@ def page_html(title: str, subtitle: str, content: str, toc: str,
 <header class="topbar">
   <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
   <a class="brand" href="{root}index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built {BUILD_STAMP}.">AI-generated<span class="ai-stamp"> &middot; {BUILD_STAMP}</span></span>
   <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
          spellcheck="false" aria-label="Search the documentation">
 </header>
@@ -487,6 +491,28 @@ def build() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def fingerprint() -> None:
+    """Print a hash of everything that affects the built output (every branch's
+    doc sources + the site chrome). deploy.sh --if-changed compares this to a
+    cached value to skip no-op rebuilds."""
+    import hashlib
+    repo = Path(git(ROOT, "rev-parse", "--show-toplevel").stdout.strip())
+    tmp = Path(tempfile.mkdtemp(prefix="dotfiles-docs-fp-"))
+    trees = {}
+    try:
+        trees = add_worktrees(repo, tmp)
+        h = hashlib.sha1()
+        for out, p in sorted(discover(trees).items()):
+            h.update(out.encode())
+            h.update(p["md"].encode())
+        for extra in (ASSETS / "style.css", ASSETS / "site.js", Path(__file__)):
+            h.update(extra.read_bytes())
+        print(h.hexdigest())
+    finally:
+        remove_worktrees(repo, trees)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def serve() -> None:
     os.chdir(SITE)
     with socketserver.TCPServer(("127.0.0.1", 8000),
@@ -503,7 +529,13 @@ if __name__ == "__main__":
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--serve", action="store_true",
                     help="serve ./site/ on localhost:8000 after building")
+    ap.add_argument("--fingerprint", action="store_true",
+                    help="print a hash of all doc sources + chrome, then exit "
+                         "(used by deploy.sh --if-changed)")
     args = ap.parse_args()
-    build()
-    if args.serve:
-        serve()
+    if args.fingerprint:
+        fingerprint()
+    else:
+        build()
+        if args.serve:
+            serve()

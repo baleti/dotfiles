@@ -1,36 +1,57 @@
 #!/usr/bin/env bash
-# Build the docs site (build.py) and publish it to the `gh-pages` branch of
-# the dotfiles repo, which GitHub Pages serves at:
-#
-#     https://baleti.github.io/dotfiles/
+# Build the multi-branch docs site and publish it to the orphan `gh-pages`
+# branch of the dotfiles repo, served at https://baleti.github.io/dotfiles/ .
 #
 # build.py reads every machine branch's .config/docs/ from throwaway
-# `git worktree`s (see BRANCHES in build.py), so it needs current
-# origin/<branch> refs - this fetches them first.
+# `git worktree`s, so this fetches current origin/<branch> refs first. The
+# gh-pages branch is force-pushed from a throwaway git repo inside ./site/ -
+# it is NEVER checked out in the live $HOME worktree.
 #
-# The gh-pages branch is an orphan holding ONLY the generated site. This
-# script never checks it out in the live $HOME worktree - it builds a
-# throwaway git repo inside ./site/ and force-pushes that. Safe to run from
-# anywhere; touches neither the working tree nor the current branch.
-#
-#   ./deploy.sh            fetch + build + push
-#   ./deploy.sh --setup    also (re)enable GitHub Pages on the gh-pages branch
+#   ./deploy.sh                fetch + build + push
+#   ./deploy.sh --if-changed   skip entirely if no doc source changed since
+#                              the last deploy (used by the systemd timer);
+#                              also treats "offline" as a no-op, not a failure
+#   ./deploy.sh --setup        also (re)point GitHub Pages at the gh-pages branch
 set -euo pipefail
 cd "$(dirname "$0")"
 
 REMOTE="${DOCS_REMOTE:-git@github.com:baleti/dotfiles.git}"
 BRANCH="gh-pages"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles-docs-deploy.fingerprint"
 SETUP=0
-[[ "${1:-}" == "--setup" ]] && SETUP=1
+IF_CHANGED=0
+for arg in "$@"; do
+  case "$arg" in
+    --setup)      SETUP=1 ;;
+    --if-changed) IF_CHANGED=1 ;;
+    *) echo "deploy.sh: unknown arg $arg" >&2; exit 2 ;;
+  esac
+done
 
-git fetch -q origin
+if ! git fetch -q origin 2>/dev/null; then
+  if [[ "$IF_CHANGED" == 1 ]]; then
+    echo "deploy.sh: git fetch failed (offline?) - nothing to do"
+    exit 0
+  fi
+  echo "deploy.sh: git fetch failed" >&2
+  exit 1
+fi
+
+FP="$(./build.py --fingerprint)"
+if [[ "$IF_CHANGED" == 1 && -f "$STATE" && "$(cat "$STATE")" == "$FP" ]]; then
+  echo "deploy.sh: no doc changes since last deploy - nothing to do"
+  exit 0
+fi
+
 ./build.py
 
 name="$(git config user.name  || echo 'docs deploy')"
 email="$(git config user.email || echo 'docs@localhost')"
-# The dotfiles repo pins a specific deploy key via core.sshCommand; the
-# throwaway repo below won't inherit it, so carry it over explicitly.
+# The dotfiles repo pins a deploy key via a repo-local core.sshCommand; the
+# throwaway repo below won't inherit it, so carry it over (expand a leading ~).
 ssh_cmd="$(git config core.sshCommand || true)"
+ssh_cmd="${ssh_cmd/#\~\//$HOME/}"
+ssh_cmd="${ssh_cmd//-i \~\//-i $HOME/}"
 
 (
   cd site
@@ -45,6 +66,8 @@ ssh_cmd="$(git config core.sshCommand || true)"
   rm -rf .git
 )
 
+mkdir -p "$(dirname "$STATE")"
+printf '%s\n' "$FP" > "$STATE"
 echo "deploy.sh: pushed $BRANCH -> $REMOTE"
 
 if [[ "$SETUP" == 1 ]]; then

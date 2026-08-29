@@ -57,6 +57,19 @@ a:hover { text-decoration: underline; }
 .brand:hover { text-decoration: none; }
 .brand span { color: var(--accent); margin-left: .35ch; }
 
+.ai-badge {
+  font-family: var(--mono);
+  font-size: .68rem;
+  letter-spacing: .02em;
+  color: var(--accent-warm);
+  border: 1px solid rgba(217, 160, 102, .35);
+  background: rgba(217, 160, 102, .08);
+  padding: .18rem .5rem;
+  border-radius: 5px;
+  white-space: nowrap;
+  cursor: help;
+}
+
 #search {
   margin-left: auto;
   width: min(22rem, 42vw);
@@ -331,5 +344,6 @@ code span.do { color: #6a7280; font-style: italic; }
     transform: translateX(-100%); transition: transform .18s ease;
   }
   .sidebar.open { transform: none; }
-  #search { width: min(14rem, 50vw); }
+  #search { width: min(12rem, 42vw); }
+  .ai-stamp { display: none; }
 }
