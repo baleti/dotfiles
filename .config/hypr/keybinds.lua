@@ -212,7 +212,8 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 -- tier-setting path GraphPill's own tier buttons use). Escape or the entry
 -- key again exits back to the normal keymap.
 --
--- temp, disk, mem, and cpu moved from ALT+t/s/m/p to mod+t/s/m/p. mod+m
+-- temp, disk, mem, and cpu moved from ALT+t/s/m/p to mod+t/d/m/p (disk later
+-- moved off mod+s to mod+d). mod+m
 -- collided with the media widget's own mod+m (below) - resolved by moving
 -- media to mod+CTRL+m. mod+p collided with window.pseudo() (dwindle) -
 -- resolved by dropping that binding entirely (told to, not guessed). See
@@ -241,7 +242,7 @@ local function graph_tier_widget(submap_name, entry_key, toggle_func, ipc_setter
 end
 
 graph_tier_widget("graph_temp", mainMod .. " + t", "toggleTemp", "setTempTier")
-graph_tier_widget("graph_disk", mainMod .. " + s", "toggleDisk", "setDiskTier")
+graph_tier_widget("graph_disk", mainMod .. " + d", "toggleDisk", "setDiskTier")
 graph_tier_widget("graph_net",  "ALT + n",          "toggleNet",  "setNetTier")
 graph_tier_widget("graph_cpu",  mainMod .. " + p",  "toggleCpu",  "setCpuTier")
 graph_tier_widget("graph_mem",  mainMod .. " + m",  "toggleMem",  "setMemTier")
