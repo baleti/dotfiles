@@ -192,6 +192,15 @@ fn parse_query(input: &str, field_names: &[&'static str]) -> Query {
 /// Ported from winswitch's `query.rs::trailing_field_fragment` -- see its
 /// doc for the "editing happens at the end" assumption this relies on.
 fn trailing_field_fragment(query: &str) -> Option<(usize, String)> {
+    // A trailing separator (the space `accept_suggestion` always appends
+    // after a value) means the last token is already complete and no
+    // longer being typed -- without this, tokenize_with_spans drops that
+    // trailing space silently and the just-accepted token still reads as
+    // an in-progress fragment, so its own suggestion reappears immediately
+    // after Tab.
+    if query.ends_with(char::is_whitespace) {
+        return None;
+    }
     let (start, last) = tokenize_with_spans(query).into_iter().last()?;
     let frag = last.strip_prefix('$')?;
     if frag.contains(':') {
@@ -216,6 +225,10 @@ fn field_suggestions(field_names: &[&'static str], fragment: &str) -> Vec<&'stat
 /// more fields): there's no single value set to suggest from then, mirrors
 /// winswitch's `query.rs::trailing_value_fragment`.
 fn trailing_value_fragment(query: &str, field_names: &[&'static str]) -> Option<(usize, &'static str, String)> {
+    // Same trailing-separator guard as `trailing_field_fragment` above.
+    if query.ends_with(char::is_whitespace) {
+        return None;
+    }
     let (start, last) = tokenize_with_spans(query).into_iter().last()?;
     let (f, val_frag) = last.strip_prefix('$')?.split_once(':')?;
     let mut resolved = field_names.iter().copied().filter(|c| subsequence(f, c));
@@ -375,6 +388,7 @@ fn make_row(
     idx: usize,
     thumb_height: i32,
     pending: &Rc<RefCell<Vec<(gtk::Image, String)>>>,
+    listbox: &gtk::ListBox,
 ) -> gtk::ListBoxRow {
     let entry = &state.entries[idx];
     let row = gtk::ListBoxRow::new();
@@ -394,6 +408,18 @@ fn make_row(
         row.add(&label);
     }
     row.show_all(); // rows added after the window is mapped need this
+    // Mouse hover moves the actual selection (not just a separate CSS
+    // `:hover` look) so there's exactly one highlighted row, wherever the
+    // keyboard or the pointer last left it -- previously the theme's own
+    // hover prelight and our keyboard-driven `:selected` row could show two
+    // highlights at once when they landed on different rows.
+    {
+        let listbox = listbox.clone();
+        row.connect_enter_notify_event(move |r, _| {
+            listbox.select_row(Some(r));
+            glib::Propagation::Proceed
+        });
+    }
     row
 }
 
@@ -595,7 +621,10 @@ pub fn run(
         let _ = css.load_from_data(
             b".suggestions { border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; } \
               .suggestions row { padding: 2px 6px; } \
-              .suggestions row:selected { background-color: rgba(255,255,255,0.18); border-radius: 2px; }",
+              .suggestions row:selected, .suggestions row:hover, \
+              .results row:selected, .results row:hover { \
+                  background-color: rgba(255,255,255,0.18); background-image: none; \
+                  box-shadow: none; border-radius: 0; }",
         );
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
@@ -604,6 +633,7 @@ pub fn run(
     search.set_placeholder_text(Some(config.placeholder.as_str()));
     let listbox = gtk::ListBox::new();
     listbox.set_selection_mode(gtk::SelectionMode::Browse);
+    listbox.style_context().add_class("results");
 
     // Column-name/value autocomplete popup: an in-layout ListBox directly
     // under the search entry, shown/hidden via `update_suggestions` as
@@ -711,7 +741,7 @@ pub fn run(
         let mut c = cursor.borrow_mut();
         let end = config.initial_rows.min(state.entries.len());
         for i in *c..end {
-            listbox.add(&make_row(&state, i, config.thumb_height, &pending));
+            listbox.add(&make_row(&state, i, config.thumb_height, &pending, &listbox));
         }
         *c = end;
     }
@@ -792,9 +822,13 @@ pub fn run(
                 }
                 return glib::Propagation::Stop;
             }
-            let step: i32 = if k == key::Up {
+            // Ctrl+j/k are vim-style Down/Up here too, not just inside the
+            // autocomplete popup (which already claims them above and
+            // returns early, so this arm only ever runs once that popup
+            // isn't showing).
+            let step: i32 = if k == key::Up || (ctrl && k == key::k) {
                 -1
-            } else if k == key::Down {
+            } else if k == key::Down || (ctrl && k == key::j) {
                 1
             } else if k == key::Page_Up {
                 -10
@@ -872,7 +906,7 @@ pub fn run(
             let mut c = cursor.borrow_mut();
             let end = (*c + chunk_rows).min(state.entries.len());
             for i in *c..end {
-                listbox.add(&make_row(&state, i, thumb_height, &pending_rows));
+                listbox.add(&make_row(&state, i, thumb_height, &pending_rows, &listbox));
             }
             *c = end;
             resize_to_content();
