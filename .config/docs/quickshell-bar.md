@@ -59,12 +59,12 @@ into a `Graph` (`components/Graph.qml`) on hover, backed by `sysmond`'s
 rolling history via `services/SysmonSvc.qml`. Visually matches the
 standalone `ALT+mainMod+n/p/t/m` `sysmon-graph` popups
 ([rust-tools.md](rust-tools.md)) since both read the same daemon.
-`bar-toggle.sh` (`ALT+n/p`, `mainMod+t/s/m`, `CTRL+ALT+c`) toggles these
+`bar-toggle.sh` (`ALT+n`, `mainMod+t/s/m/p`, `mainMod+CTRL+c`) toggles these
 panels open/closed per-monitor by talking to each `Bar` instance's own
 `IpcHandler` target `bar-<screen name>` — one shared target would collide
 across multi-monitor instances, so the toggle script resolves the focused
-monitor's name first. The same entry keys also drop into a per-widget
-`graph_<name>` Hyprland submap (`keybinds.lua`) where bare `1`-`6` jumps
+monitor's name first. The graph-widget entry keys also drop into a
+per-widget `graph_<name>` Hyprland submap (`keybinds.lua`) where bare `1`-`6` jumps
 straight to a tier via the new `bar-set-tier.sh` → `setXxxTier()` functions
 on that same `IpcHandler` — see `hyprland.md` for the full submap writeup.
 
@@ -111,11 +111,12 @@ wash, not per-series fills.
 ## Related keybinds
 
 See [hyprland.md](hyprland.md#keybinds-keybindslua) for the full bind list;
-the bar-specific ones are `ALT+n/p` and `mainMod+t/s/m` (per-metric panel
+the bar-specific ones are `ALT+n` and `mainMod+t/s/m/p` (per-metric panel
 toggle + `graph_<name>` tier submap), `mainMod+CTRL+m` (media panel +
-`media_seek` submap), `CTRL+ALT+c` (calendar panel), `mainMod+F11/F12`
-(volume, see below), and the calendar/graph pills' own click-to-pin
-behavior (matching each other, added 2026-08-28/29).
+`media_seek` submap), `mainMod+CTRL+c` (calendar panel + keyboard month/
+year nav and year-picker, no submap needed), `mainMod+F11/F12` (volume, see
+below), and the calendar/graph pills' own click-to-pin behavior (matching
+each other, added 2026-08-28/29).
 
 ## Volume OSD
 

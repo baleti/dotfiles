@@ -160,25 +160,34 @@ docs:
 - `mainMod+n` / `mainMod+SHIFT+n` — invoke last notification's default
   action / open its full action list.
 - `ALT+mainMod+n/p/t/m` — standalone `sysmon-graph` popups.
-- Bare `ALT+n/p` and `mainMod+t/s/m` — toggle the quickshell bar's own
-  in-bar hover panels (net/cpu on `ALT`, temp/disk/mem on `mainMod`; same
-  `sysmond` data as the popups above, different UI surface) via
+- Bare `ALT+n` and `mainMod+t/s/m/p` — toggle the quickshell bar's own
+  in-bar hover panels (net stayed on `ALT`; temp/disk/mem/cpu on `mainMod`;
+  same `sysmond` data as the popups above, different UI surface) via
   `scripts/bar-toggle.sh`, **and** enter a per-widget `graph_<name>` submap
   (`keybinds.lua`): while active, bare `1`-`6` (no modifier) jumps straight
-  to that panel's `10m/30m/6h/7d/7w/7mo` history tier via the new
+  to that panel's `10m/30m/6h/7d/7w/7mo` history tier via
   `scripts/bar-set-tier.sh` → `Bar.qml`'s `setXxxTier()` IpcHandler
-  functions. `Escape` or the entry key again exits. net/cpu couldn't move
-  to `mainMod` (`mainMod+n` is notify-invoke-last, `mainMod+p` is
-  `window.pseudo()`, both pre-existing) so those two stayed on `ALT` but
-  still gained the tier submap.
-- `CTRL+ALT+c` — toggle the calendar panel (no tier concept, unaffected).
+  functions. `Escape` or the entry key again exits. `mainMod+p` used to be
+  dwindle `window.pseudo()` — dropped entirely (told to) so CPU could move
+  there. `mainMod+n` is still notify-invoke-last (pre-existing, not given
+  up), so net stayed on `ALT+n` but still gained the tier submap.
+- `mainMod+CTRL+c` — toggle the calendar panel (moved from `CTRL+ALT+c`).
+  No submap — it gets real keyboard focus instead (same mechanism as the
+  media panel below), so bare keys reach it directly:
+  `Left/Right` = prev/next month, `Up/Down` = prev/next year, `Tab` enters
+  a year-picker (a 10-cell grid at one of four spans — 10/20/50/100 years
+  total, so 1/2/5/10 years per cell — `Left/Right` move the highlight,
+  `Up/Down` zoom out/in a level re-centered on it, `Enter` drills into a
+  coarse cell or confirms a single year, `Escape`/`Tab` cancel back
+  unchanged), `Escape` closes the panel. See `CalendarExpanded.qml`.
 - `mainMod+CTRL+m` — media widget + a `media_seek` submap: bare `0`-`9`
   jumps to that decile of the current track (`playerctl-seek-percent.sh`,
   against whichever player `~/.config/playerctl-current` names). Not plain
   `mainMod+m` — that's the mem graph panel above; a real simultaneous
   multi-key chord isn't expressible in Hyprland binds, so a submap (press
   the entry combo once, then tap keys freely) is the general pattern used
-  for all of these instead.
+  for the tier/seek widgets above instead. Calendar doesn't need one since
+  it gets real keyboard focus (see above).
 - `mainMod+F11/F12` — volume down/up. Routes to pixel6's MPRIS `Volume`
   property (`scripts/pixel6-mpris-bridge.py`) instead of the local sink
   when `playerctl-current` names it, and flashes a side OSD
