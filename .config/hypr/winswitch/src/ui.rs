@@ -104,6 +104,20 @@ fn make_child(win: &Window, cell_w: i32, max_h: i32) -> (gtk::FlowBoxChild, gtk:
     frame.pack_start(&image, true, true, 0);
     vbox.pack_start(&frame, false, false, 0);
 
+    // A small muted line above the title identifying which workspace the
+    // window lives on -- the one piece of metadata that isn't otherwise
+    // visible anywhere in the grid (unlike the app name, which the title
+    // line below already falls back to when the window sets no title). Kept
+    // to its own line/style rather than folded into the title text so it
+    // doesn't eat into that label's 2-line budget or get ellipsized away
+    // together with a long title.
+    let ws_label = gtk::Label::new(Some(&format!("#{}", win.workspace)));
+    ws_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    ws_label.set_max_width_chars(1);
+    ws_label.set_justify(gtk::Justification::Center);
+    ws_label.style_context().add_class("ws-label");
+    vbox.pack_start(&ws_label, false, false, 0);
+
     let label_text = if win.title.is_empty() {
         win.class.clone()
     } else {
@@ -298,7 +312,8 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         // An outline, not a filled block: this is a placeholder for a
         // window frame, not a loading skeleton.
         let _ = css.load_from_data(
-            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; }",
+            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; } \
+              .ws-label { font-size: smaller; opacity: 0.55; }",
         );
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
