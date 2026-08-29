@@ -459,15 +459,14 @@ def patch_kdeglobals_inline(out: dict) -> None:
     MaterialYou.colors said, 2026-08-28).
 
     Pins widgetStyle=Breeze too. The Qt widget style used to be
-    `kvantum-dark` (the `darknord-kvantum` Kvantum theme, kept in the repo
-    under ~/.config/Kvantum/darknord-kvantum/). Kvantum themes hardcode
-    their whole palette -- `[GeneralColors]` in the .kvconfig plus colours
-    baked into the theme SVG -- and override the KDE colour scheme
+    `kvantum-dark` (the `darknord-kvantum` Kvantum theme). Kvantum themes
+    hardcode their whole palette -- `[GeneralColors]` in the .kvconfig plus
+    colours baked into the theme SVG -- and override the KDE colour scheme
     wholesale, so plasma-apply-colorscheme had no visible effect on Dolphin
     or any other Qt/KDE app. Breeze reads the colour scheme natively and
-    picks up plasma-apply-colorscheme live. To go back to Kvantum:
-    `kwriteconfig6 --file kdeglobals --group KDE --key widgetStyle kvantum-dark`
-    (and drop this pin), 2026-08-29."""
+    picks up plasma-apply-colorscheme live. Kvantum was uninstalled
+    2026-08-29; the darknord theme files are preserved in git history at
+    commit 02abf2c (`git show 02abf2c -- .config/Kvantum/`) if ever needed."""
     cp = configparser.ConfigParser(strict=False, interpolation=None)
     cp.optionxform = str
     if KDEGLOBALS.exists():
