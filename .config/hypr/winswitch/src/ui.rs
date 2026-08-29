@@ -17,6 +17,7 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk_layer_shell::LayerShell;
 
+use crate::enrich::TmuxClaudeMeta;
 use crate::hyprctl::{self, Window};
 
 const MIN_FRAME: i32 = 64;
@@ -78,19 +79,30 @@ fn frame_size(win_w: i32, win_h: i32, budget_w: i32, budget_h: i32) -> (i32, i32
 /// (query.rs's `trailing_field_fragment`/`trailing_value_fragment` can never
 /// both match the same query), so this only ever needs to remember which
 /// one is live, not both at once.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum SuggestionKind {
-    /// Popup lists `COLUMNS` entries; accepting inserts `$<column>:`.
+    /// Popup lists column/group entries; accepting inserts `$<name>:` (or
+    /// `$<name>` again with the dot still open, for a group -- see
+    /// `update_suggestions`).
     Field,
-    /// Popup lists this column's live values across `state.windows`;
-    /// accepting inserts `$<column>:<value> ` (trailing space -- a value is
-    /// always a *complete* term once chosen, unlike a field name, which
-    /// still needs its value typed next).
-    Value(&'static str),
+    /// Popup lists this field's live values across `state.windows`;
+    /// accepting inserts `$<field.key()>:<value> ` (trailing space -- a
+    /// value is always a *complete* term once chosen, unlike a field name,
+    /// which still needs its value typed next). Stored as the already-
+    /// formatted key text (`"title"`, `"tmux.session"`) rather than
+    /// `ResolvedField` itself, since that's exactly what gets spliced back
+    /// into the query.
+    Value(String),
 }
 
 struct State {
     windows: Vec<Window>,
+    /// Parallel to `windows` (same index) -- tmux/claude metadata, filled in
+    /// asynchronously by `enrich::start` well after the grid is already
+    /// shown. All-default until then; see query.rs's `$tmux.*`/`$claude.*`
+    /// handling for why an unfilled field just doesn't match yet rather
+    /// than needing special-casing here.
+    tmux_claude: Vec<RefCell<TmuxClaudeMeta>>,
     selected: RefCell<usize>,
     locked: RefCell<bool>,
     /// Autocomplete popup state, live only while `trailing_field_fragment`
@@ -273,8 +285,9 @@ fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
         list.remove(&child);
     }
 
-    if let Some((start, col, frag)) = crate::query::trailing_value_fragment(query) {
-        let vals = crate::query::value_suggestions(&state.windows, col, &frag);
+    if let Some((start, field, frag)) = crate::query::trailing_value_fragment(query) {
+        let metas = snapshot_metas(state);
+        let vals = crate::query::value_suggestions(&state.windows, &metas, field, &frag);
         if vals.is_empty() {
             hide_suggestions(list, state);
             return;
@@ -282,7 +295,7 @@ fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
         populate_suggestions(list, &vals);
         *state.suggestions.borrow_mut() = vals;
         *state.suggestion_start.borrow_mut() = start;
-        *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Value(col));
+        *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Value(field.key()));
         select_suggestion(list, state, 0);
         return;
     }
@@ -296,12 +309,19 @@ fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
         hide_suggestions(list, state);
         return;
     }
-    let cols: Vec<String> = cols.into_iter().map(str::to_string).collect();
     populate_suggestions(list, &cols);
     *state.suggestions.borrow_mut() = cols;
     *state.suggestion_start.borrow_mut() = start;
     *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Field);
     select_suggestion(list, state, 0);
+}
+
+/// Owned copy of every window's current metadata, for call sites that need
+/// to hand `&[TmuxClaudeMeta]` to query.rs -- cheap (a handful of small
+/// `Option<String>` fields, at most a couple dozen windows) and sidesteps
+/// holding a `Ref` across a call that also wants `&state` more broadly.
+fn snapshot_metas(state: &State) -> Vec<TmuxClaudeMeta> {
+    state.tmux_claude.iter().map(|m| m.borrow().clone()).collect()
 }
 
 /// Replaces the trailing fragment the suggestions were built from with the
@@ -321,7 +341,7 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
     let Some(chosen) = state.suggestions.borrow().get(idx).cloned() else {
         return;
     };
-    let Some(kind) = *state.suggestion_kind.borrow() else {
+    let Some(kind) = state.suggestion_kind.borrow().clone() else {
         return;
     };
     let start = *state.suggestion_start.borrow();
@@ -446,8 +466,10 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         return;
     }
 
+    let tmux_claude = windows.iter().map(|_| RefCell::new(TmuxClaudeMeta::default())).collect();
     let state = Rc::new(State {
         windows,
+        tmux_claude,
         selected: RefCell::new(0),
         locked: RefCell::new(false),
         suggestions: RefCell::new(Vec::new()),
@@ -542,11 +564,10 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
                 return true;
             }
             let q = search.text();
-            state
-                .windows
-                .get(child.index() as usize)
-                .map(|w| crate::query::matches_str(w, &q))
-                .unwrap_or(false)
+            let idx = child.index() as usize;
+            let Some(w) = state.windows.get(idx) else { return false };
+            let meta = state.tmux_claude.get(idx).map(|m| m.borrow().clone()).unwrap_or_default();
+            crate::query::matches_str(w, &meta, &q)
         }
     })));
 
@@ -560,7 +581,11 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
             // Move `selected` (what Enter confirms) to the first match, but
             // without `select()`'s grab_focus() -- that would yank keyboard
             // focus back out of the search entry mid-type.
-            if let Some(idx) = state.windows.iter().position(|w| crate::query::matches_str(w, &q)) {
+            let first_match = state.windows.iter().enumerate().position(|(i, w)| {
+                let meta = state.tmux_claude.get(i).map(|m| m.borrow().clone()).unwrap_or_default();
+                crate::query::matches_str(w, &meta, &q)
+            });
+            if let Some(idx) = first_match {
                 *state.selected.borrow_mut() = idx;
                 if let Some(child) = flowbox.child_at_index(idx as i32) {
                     flowbox.select_child(&child);
@@ -818,6 +843,22 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
                 .scale_simple(tw.max(1), th.max(1), gdk_pixbuf::InterpType::Bilinear)
                 .unwrap_or(pixbuf);
             image.set_from_pixbuf(Some(&scaled));
+        }
+    });
+
+    // Same fire-and-forget shape as wayland_capture::start just above:
+    // tmux/claude metadata streams in well after the grid is already up and
+    // interactive, merged into `state.tmux_claude` as it lands so a
+    // `$tmux.*`/`$claude.*` query already typed keeps matching live -- see
+    // enrich.rs's module doc for why this has to stay off the critical path
+    // (a slow tmux server or a large transcript read must never delay the
+    // grid's first paint, which by this point has already happened).
+    let state_for_enrich = state.clone();
+    let flowbox_for_enrich = flowbox.clone();
+    crate::enrich::start(&state.windows, move |index, meta| {
+        if let Some(cell) = state_for_enrich.tmux_claude.get(index) {
+            cell.borrow_mut().merge(meta);
+            flowbox_for_enrich.invalidate_filter();
         }
     });
 

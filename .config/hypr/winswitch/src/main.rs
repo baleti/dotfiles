@@ -6,6 +6,7 @@
 //! both the IPC channel and the "is an instance already running" check --
 //! connect() succeeding means someone is listening.
 
+mod enrich;
 mod hyprctl;
 mod protocol;
 mod query;
