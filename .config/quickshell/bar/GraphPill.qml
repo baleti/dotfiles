@@ -117,6 +117,16 @@ Rectangle {
     // below itself, right-aligned to its own right edge).
     property real groupX: 0
     property real targetRight: NaN
+    // Same idea, vertically -- Bar.qml's graph widgets use this to stack
+    // into multiple rows once too many are open to fit one row's width.
+    // targetY NaN falls back to this pill's own default (directly below
+    // itself).
+    property real groupY: 0
+    property real targetY: NaN
+    // Bar.qml's graph widgets shrink this as more of them are open (and
+    // widen it when only one/few are) instead of a fixed width, so the
+    // panel(s) actually fit the screen they're on.
+    property real expandWidth: 480
 
     onHoveredChanged: {
         if (hovered) {
@@ -233,9 +243,9 @@ Rectangle {
 
         readonly property bool hovered: expandMouseArea.containsMouse
 
-        y: root.height + 6
+        y: isNaN(root.targetY) ? (root.height + 6) : (root.targetY - root.groupY - root.y)
         x: isNaN(root.targetRight) ? (root.width - width) : (root.targetRight - width - root.groupX - root.x)
-        width: 480
+        width: root.expandWidth
         height: root.expanded ? content.implicitHeight + 24 : 0
         visible: height > 0
         clip: true

@@ -65,9 +65,10 @@ Item {
     // Bar itself stays a fixed height (exclusiveZone in shell.qml is pinned
     // to Theme.barHeight); this is the *window's* total height, letting the
     // media/graph hover-panels grow the window downward without reserving
-    // that extra space from tiling. Only one panel is ever open at a time
-    // in practice, but this takes the max defensively.
-    readonly property real overflow: Math.max(mediaExpanded.height, netPill.overflowHeight, cpuPill.overflowHeight, memPill.overflowHeight, tempPill.overflowHeight, diskPill.overflowHeight, calendarExpanded.height)
+    // that extra space from tiling. graphGridHeight (below) already sums
+    // every open graph widget's row, so this just maxes that block against
+    // whichever of media/calendar's own single-row panels is open.
+    readonly property real overflow: Math.max(root.graphGridHeight, mediaExpanded.height, calendarExpanded.height)
     readonly property real totalHeight: Theme.barHeight + (overflow > 0 ? 6 + overflow : 0)
 
     // Multiple panels can be open at once (e.g. alt+m then ctrl+alt+c).
@@ -164,6 +165,102 @@ Item {
     // Shared Y for every panel -- all their trigger pills sit in the same
     // row at the same height, so there's only ever one sensible value.
     readonly property real panelY: rightRow.y + (Theme.barHeight - 10) + 6
+
+    // --- Sysmon graph widgets (net/cpu/mem/disk/temp): dynamic width +
+    // multi-row wrapping -----------------------------------------------
+    // Separate from the generic panelOrder/stackRight sweep above (which
+    // only ever produces a single row) because all 5 of these can be open
+    // at once and, at a fixed width, that ran wider than the screen and
+    // pushed the leftmost ones off its left edge -- stackRight only ever
+    // defended the right edge (reported 2026-08-29). Width shrinks as more
+    // open (so they keep sharing one row where possible) down to a
+    // legibility floor, past which the rest wrap to a new row instead of
+    // shrinking further. screen.width is THIS monitor's own (Bar.qml runs
+    // once per screen, via shell.qml's Variants), so this scales with
+    // whatever resolution/monitor it's actually running on, not a
+    // hardcoded pixel target.
+    readonly property var graphPanelOrder: ["net", "cpu", "mem", "disk", "temp"]
+    readonly property var openGraphPanels: root.graphPanelOrder.filter(n => root.panelExpandedFor(n))
+    readonly property int openGraphCount: root.openGraphPanels.length
+
+    readonly property real panelAreaWidth: root.screen.width - 20
+    readonly property real minGraphPanelWidth: 300
+    readonly property real maxGraphPanelWidth: 560
+    readonly property real panelGap: 6
+
+    // Most columns a row could ever hold, at the narrowest usable width --
+    // an upper bound used to decide how many rows are needed at all.
+    readonly property int graphColumns: root.openGraphCount === 0 ? 1 :
+        Math.min(root.openGraphCount, Math.max(1, Math.floor((root.panelAreaWidth + root.panelGap) / (root.minGraphPanelWidth + root.panelGap))))
+    readonly property int graphRows: root.openGraphCount === 0 ? 0 : Math.ceil(root.openGraphCount / root.graphColumns)
+    // Actual per-row count, evened out across however many rows that took
+    // (e.g. 5 open over 2 rows -> 3 then 2, not 4 then 1), and the width
+    // that lets that many share the screen -- clamped so it never gets
+    // uncomfortably narrow on one end or comically wide alone on the other
+    // (the single-widget default).
+    readonly property real graphPanelWidth: {
+        if (root.openGraphCount === 0)
+            return root.maxGraphPanelWidth;
+        const perRow = Math.ceil(root.openGraphCount / root.graphRows);
+        const even = (root.panelAreaWidth - (perRow - 1) * root.panelGap) / perRow;
+        return Math.max(root.minGraphPanelWidth, Math.min(root.maxGraphPanelWidth, even));
+    }
+
+    // {row, right} for one open graph panel -- every row is flush to the
+    // same right edge (the rightmost-open panel's own natural pill
+    // position), columns fill right-to-left within a row (matching the
+    // pills' own left-to-right order in the bar), and rows stack downward.
+    function graphLayoutFor(name: string): var {
+        const idx = root.openGraphPanels.indexOf(name);
+        if (idx < 0)
+            return { row: 0, right: 0 };
+        const total = root.openGraphPanels.length;
+        const posFromRight = total - 1 - idx;
+        const row = Math.floor(posFromRight / root.graphColumns);
+        const colFromRight = posFromRight % root.graphColumns;
+        const rightAnchor = root.naturalRightFor(root.openGraphPanels[total - 1]);
+        const right = rightAnchor - colFromRight * (root.graphPanelWidth + root.panelGap);
+        return { row, right };
+    }
+
+    function panelOverflowHeightFor(name: string): real {
+        switch (name) {
+        case "net": return netPill.overflowHeight;
+        case "cpu": return cpuPill.overflowHeight;
+        case "mem": return memPill.overflowHeight;
+        case "disk": return diskPill.overflowHeight;
+        case "temp": return tempPill.overflowHeight;
+        default: return 0;
+        }
+    }
+
+    function graphRowHeight(row: int): real {
+        let h = 0;
+        for (const n of root.openGraphPanels)
+            if (root.graphLayoutFor(n).row === row)
+                h = Math.max(h, root.panelOverflowHeightFor(n));
+        return h;
+    }
+
+    function graphPanelYFor(name: string): real {
+        const row = root.graphLayoutFor(name).row;
+        let y = root.panelY;
+        for (let r = 0; r < row; r++)
+            y += root.graphRowHeight(r) + root.panelGap;
+        return y;
+    }
+
+    // Total height of the graph grid block (every open row, summed) -- used
+    // by `overflow` above instead of a plain max across the 5 pills, since
+    // wrapped rows stack rather than overlap.
+    readonly property real graphGridHeight: {
+        if (root.openGraphCount === 0)
+            return 0;
+        let h = 0;
+        for (let r = 0; r < root.graphRows; r++)
+            h += root.graphRowHeight(r) + (r > 0 ? root.panelGap : 0);
+        return h;
+    }
 
     function last(arr: var): real {
         return arr.length > 0 ? arr[arr.length - 1] : 0;
@@ -319,7 +416,10 @@ Item {
             tier: root.netTier
             onTierRequested: code => { root.netTier = code; SysmonSvc.setNetTier(code); }
             groupX: rightRow.x
-            targetRight: root.stackRight("net")
+            groupY: rightRow.y
+            targetRight: root.graphLayoutFor("net").right
+            targetY: root.graphPanelYFor("net")
+            expandWidth: root.graphPanelWidth
         }
 
         GraphPill {
@@ -340,7 +440,10 @@ Item {
             tier: root.cpuTier
             onTierRequested: code => { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
             groupX: rightRow.x
-            targetRight: root.stackRight("cpu")
+            groupY: rightRow.y
+            targetRight: root.graphLayoutFor("cpu").right
+            targetY: root.graphPanelYFor("cpu")
+            expandWidth: root.graphPanelWidth
         }
 
         GraphPill {
@@ -368,7 +471,10 @@ Item {
             tier: root.memTier
             onTierRequested: code => { root.memTier = code; SysmonSvc.setMemTier(code); }
             groupX: rightRow.x
-            targetRight: root.stackRight("mem")
+            groupY: rightRow.y
+            targetRight: root.graphLayoutFor("mem").right
+            targetY: root.graphPanelYFor("mem")
+            expandWidth: root.graphPanelWidth
         }
 
         GraphPill {
@@ -383,13 +489,18 @@ Item {
             maxValue: root.diskMax
             valueFraction: Theme.norm(root.diskTotalNow, 0, 300 * 1024 * 1024)
             legendItems: root.diskLegend
+            topProcs: SysmonSvc.topDisk
+            topUnit: " KB/s"
             yAxisFormatter: v => root.fmtRate(v)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.diskTier
             onTierRequested: code => { root.diskTier = code; SysmonSvc.setDiskTier(code); }
             groupX: rightRow.x
-            targetRight: root.stackRight("disk")
+            groupY: rightRow.y
+            targetRight: root.graphLayoutFor("disk").right
+            targetY: root.graphPanelYFor("disk")
+            expandWidth: root.graphPanelWidth
         }
 
         GraphPill {
@@ -411,7 +522,10 @@ Item {
             tier: root.tempTier
             onTierRequested: code => { root.tempTier = code; SysmonSvc.setTempTier(code); }
             groupX: rightRow.x
-            targetRight: root.stackRight("temp")
+            groupY: rightRow.y
+            targetRight: root.graphLayoutFor("temp").right
+            targetY: root.graphPanelYFor("temp")
+            expandWidth: root.graphPanelWidth
         }
 
         BatteryPill {}

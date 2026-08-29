@@ -184,6 +184,15 @@ struct History {
     // never needs root). Empty if nethogs isn't installed or isn't
     // capable-enabled -- see nethogs_loop's graceful skip.
     top_net: Vec<ProcEntry>,
+    // Per-process disk I/O, from /proc/[pid]/io's read_bytes/write_bytes --
+    // readable for the daemon's own user's processes UNLESS a given one has
+    // marked itself non-dumpable (prctl PR_SET_DUMPABLE 0, e.g. systemd
+    // --user itself, pam sessions), which /proc/[pid]/io gates even for its
+    // owning user as an anti-side-channel measure; those just silently drop
+    // out of proc_io_bytes's None rather than the whole feature failing.
+    // No capability/setcap needed (unlike nethogs) since this never reads
+    // another user's processes on this single-user machine.
+    top_disk: Vec<ProcEntry>,
 }
 
 impl History {
@@ -200,6 +209,7 @@ impl History {
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
             top_net: Vec::new(),
+            top_disk: Vec::new(),
         };
         h.load_from_disk();
         h
@@ -494,6 +504,26 @@ fn proc_rss_mb(pid: i32) -> Option<f64> {
     None
 }
 
+/// `/proc/[pid]/io`'s read_bytes/write_bytes -- actual block I/O (not
+/// rchar/wchar, which also count cache-served reads/writes with no disk
+/// activity behind them), matching what the per-device read_bps/write_bps
+/// history already measures. None for a process this user can't read
+/// (someone else's, or one that's marked itself non-dumpable) -- callers
+/// just skip it, same as any other pid that vanished mid-scan.
+fn proc_io_bytes(pid: i32) -> Option<(u64, u64)> {
+    let io = fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    let mut read_bytes = None;
+    let mut write_bytes = None;
+    for line in io.lines() {
+        if let Some(rest) = line.strip_prefix("read_bytes:") {
+            read_bytes = rest.trim().parse::<u64>().ok();
+        } else if let Some(rest) = line.strip_prefix("write_bytes:") {
+            write_bytes = rest.trim().parse::<u64>().ok();
+        }
+    }
+    Some((read_bytes?, write_bytes?))
+}
+
 fn top_n(mut entries: Vec<ProcEntry>, n: usize) -> Vec<ProcEntry> {
     entries.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
     entries.truncate(n);
@@ -564,6 +594,7 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
     let mut prev_net: HashMap<String, (u64, u64, Instant)> = HashMap::new();
     let mut prev_disk: HashMap<String, (u64, u64, Instant)> = HashMap::new();
     let mut prev_proc_ticks: HashMap<i32, u64> = HashMap::new();
+    let mut prev_proc_io: HashMap<i32, (u64, u64)> = HashMap::new();
 
     loop {
         std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
@@ -674,6 +705,27 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
         let mut top_mem = top_n(top_mem_entries, 10);
         enrich_details(&mut top_mem);
 
+        // Top-10 by disk I/O: tick-over-tick delta like CPU, keyed by pid,
+        // combined read+write KB/s. Silently excludes any pid proc_io_bytes
+        // can't read (see its own comment) rather than failing the feature.
+        let mut cur_proc_io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
+        let mut top_disk_entries = Vec::with_capacity(pids.len());
+        for pid in &pids {
+            let Some(io) = proc_io_bytes(*pid) else { continue };
+            cur_proc_io.insert(*pid, io);
+            if let Some(prev_io) = prev_proc_io.get(pid) {
+                let d_read = io.0.saturating_sub(prev_io.0) as f64;
+                let d_write = io.1.saturating_sub(prev_io.1) as f64;
+                let kb_per_s = (d_read + d_write) / 1024.0 / elapsed_s;
+                if kb_per_s > 1.0 {
+                    top_disk_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: kb_per_s, detail: String::new() });
+                }
+            }
+        }
+        prev_proc_io = cur_proc_io;
+        let mut top_disk = top_n(top_disk_entries, 10);
+        enrich_details(&mut top_disk);
+
         let mut h = history.lock().unwrap();
         h.cpu_total.push_raw(cpu_total);
         h.temp_c.push_raw(temp_c);
@@ -697,6 +749,7 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
         }
         h.top_cpu = top_cpu;
         h.top_mem = top_mem;
+        h.top_disk = top_disk;
     }
 }
 
@@ -763,6 +816,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
                 Metric::TopNet => Snapshot::TopProcs { procs: h.top_net.clone() },
+                Metric::TopDisk => Snapshot::TopProcs { procs: h.top_disk.clone() },
             }
         };
         let Ok(line) = serde_json::to_string(&snapshot) else { return };
