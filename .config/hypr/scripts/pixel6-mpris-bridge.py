@@ -229,7 +229,20 @@ class Pixel6Player(dbus.service.Object):
         if length_ms:
             target_ms = min(target_ms, length_ms)
         call_action("media-seek-to", {"ms": target_ms})
-        self.refresh(force=True)
+        # Don't refresh(force=True) here: an immediate /status re-fetch
+        # racingly reads the phone's PRE-seek position (confirmed live -
+        # transportControls.seekTo() returns to the HTTP caller before the
+        # underlying MediaSession's position actually catches up, worse over
+        # a network-backed player like Spotify buffering to the new spot).
+        # Broadcasting that stale value is what made the quickshell bar's
+        # scrub-bar visibly snap back to the old position right after a
+        # click. Patch the cached status optimistically instead - poll_tick
+        # reconciles with the real device state on the next regular poll
+        # (<= POLL_INTERVAL_S later), by which point it has settled.
+        if self._status is not None:
+            self._status = dict(self._status, position=target_ms)
+            self._status_mono = time.monotonic()
+            self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
 
     @dbus.service.method(PLAYER_IFACE, in_signature="x")
     def Seek(self, offset):
