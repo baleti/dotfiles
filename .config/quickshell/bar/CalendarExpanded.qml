@@ -25,6 +25,10 @@ Rectangle {
     readonly property date today: new Date()
     property int viewYear: today.getFullYear()
     property int viewMonth: today.getMonth() // 0-11
+    // Clicked day, purely a visual marker (ring, not fill - today's own
+    // fill takes priority when they're the same day). Nothing downstream
+    // reads this yet; it's just mouse feedback that the click landed.
+    property var selectedDate: null
 
     function prevMonth(): void {
         if (viewMonth === 0) { viewMonth = 11; viewYear -= 1; } else { viewMonth -= 1; }
@@ -35,6 +39,18 @@ Rectangle {
     function goToday(): void {
         viewYear = today.getFullYear();
         viewMonth = today.getMonth();
+    }
+
+    // Closing (mod+CTRL+c again, or Escape) resets state rather than
+    // leaving it wherever it was, so reopening always starts back at the
+    // current month/year, not last time's - including out of the
+    // year-picker if it was left open.
+    onExpandedChanged: {
+        if (!expanded) {
+            root.goToday();
+            root.exitYearPicker();
+            root.selectedDate = null;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -71,8 +87,20 @@ Rectangle {
     function exitYearPicker(): void {
         root.yearPickerActive = false;
     }
+    // delta is always ±1 (single arrow press). Past either edge of the
+    // 10-cell grid, this pages the whole grid to the previous/next period
+    // rather than clamping - landing on the opposite edge, so holding
+    // Left/Right keeps paging continuously through periods.
     function yearPickerMove(delta: int): void {
-        root.yearPickerHighlight = Math.max(0, Math.min(9, root.yearPickerHighlight + delta));
+        let idx = root.yearPickerHighlight + delta;
+        if (idx < 0) {
+            root.yearPickerGridStart -= root.yearPickerSpan;
+            idx += 10;
+        } else if (idx > 9) {
+            root.yearPickerGridStart += root.yearPickerSpan;
+            idx -= 10;
+        }
+        root.yearPickerHighlight = idx;
     }
     // Re-centers the grid on whatever's currently highlighted before
     // changing span, so zooming in/out stays anchored to where you were
@@ -277,11 +305,15 @@ Rectangle {
                     readonly property bool isToday: modelData.toDateString() === root.today.toDateString()
                     readonly property bool inMonth: modelData.getMonth() === root.viewMonth
                     readonly property bool isWeekend: [0, 6].includes(modelData.getDay())
+                    readonly property bool isSelected: !isToday && root.selectedDate
+                        && modelData.toDateString() === root.selectedDate.toDateString()
 
                     Layout.fillWidth: true
                     Layout.preferredHeight: 28
                     radius: Theme.rounding - 4
                     color: isToday ? Theme.cyan : "transparent"
+                    border.color: isSelected ? Theme.cyan : "transparent"
+                    border.width: isSelected ? 1 : 0
 
                     Text {
                         anchors.centerIn: parent
@@ -296,15 +328,35 @@ Rectangle {
                             return cell.isWeekend ? Theme.textDim : Theme.text;
                         }
                     }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            // Clicking a leading/trailing day from the
+                            // adjacent month navigates the view to it, same
+                            // as prev/nextMonth would - every visible cell
+                            // ends up clickable to *some* date.
+                            if (!cell.inMonth) {
+                                root.viewMonth = cell.modelData.getMonth();
+                                root.viewYear = cell.modelData.getFullYear();
+                            }
+                            root.selectedDate = cell.modelData;
+                        }
+                    }
                 }
             }
         }
 
         GridLayout {
             width: parent.width
-            columns: 5
-            rowSpacing: 8
-            columnSpacing: 6
+            // 2 columns (5 rows), not 5 columns (2 rows): a "2020-2029"
+            // label needs real width - 5-across packed them too tight to
+            // read (confirmed, labels overlapping).
+            columns: 2
+            rowSpacing: 6
+            columnSpacing: 8
             visible: root.yearPickerActive
 
             Repeater {
@@ -316,9 +368,9 @@ Rectangle {
                     readonly property bool isHighlighted: index === root.yearPickerHighlight
 
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 32
+                    Layout.preferredHeight: 34
                     radius: Theme.rounding - 4
-                    color: isHighlighted ? Theme.cyan : "transparent"
+                    color: isHighlighted ? Theme.cyan : (cellMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.06) : "transparent")
                     border.color: isHighlighted ? "transparent" : Theme.border
                     border.width: isHighlighted ? 0 : 1
 
@@ -326,8 +378,19 @@ Rectangle {
                         anchors.centerIn: parent
                         text: root.yearPickerCellLabel(periodCell.index)
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 2
+                        font.pixelSize: Theme.fontSize - 1
                         color: periodCell.isHighlighted ? "#1a1a1a" : Theme.text
+                    }
+
+                    MouseArea {
+                        id: cellMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.yearPickerHighlight = periodCell.index;
+                            root.yearPickerConfirm();
+                        }
                     }
                 }
             }
@@ -340,8 +403,8 @@ Rectangle {
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize - 3
             text: root.yearPickerActive
-                ? qsTr("←→ move · ↑↓ zoom · Enter select · Esc/Tab cancel")
-                : qsTr("←→ month · ↑↓ year · Tab pick year")
+                ? qsTr("←→ move · ↑↓ zoom · Enter/click select · Esc/Tab cancel")
+                : qsTr("←→ month · ↑↓ year · Tab pick year · click a date")
         }
     }
 }
