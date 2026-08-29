@@ -76,6 +76,13 @@ struct State {
     windows: Vec<Window>,
     selected: RefCell<usize>,
     locked: RefCell<bool>,
+    /// Column-name autocomplete state, live only while `trailing_field_fragment`
+    /// matches the current query (see `update_suggestions`). `suggestions`
+    /// empty means the popup is hidden; `suggestion_start` is the byte
+    /// offset in the query text that a chosen suggestion replaces.
+    suggestions: RefCell<Vec<&'static str>>,
+    suggestion_idx: RefCell<usize>,
+    suggestion_start: RefCell<usize>,
 }
 
 /// Returns the child alongside its thumbnail `Image` so callers can swap in
@@ -181,6 +188,75 @@ fn select(flowbox: &gtk::FlowBox, state: &Rc<State>, idx: usize) {
         flowbox.select_child(&child);
         child.grab_focus();
     }
+}
+
+/// Highlights `idx` in the suggestions list (clamped, not wrapped -- Ctrl+j
+/// past the last entry just stays on the last one, same as most completion
+/// UIs) and records it in `state` so `accept_suggestion` knows what Tab
+/// should insert.
+fn select_suggestion(list: &gtk::ListBox, state: &Rc<State>, idx: usize) {
+    let n = state.suggestions.borrow().len();
+    if n == 0 {
+        return;
+    }
+    let idx = idx.min(n - 1);
+    *state.suggestion_idx.borrow_mut() = idx;
+    if let Some(row) = list.row_at_index(idx as i32) {
+        list.select_row(Some(&row));
+    }
+}
+
+fn hide_suggestions(list: &gtk::ListBox, state: &Rc<State>) {
+    list.hide();
+    state.suggestions.borrow_mut().clear();
+}
+
+/// Re-derives the column-name suggestion list from the query text on every
+/// keystroke (see `query::trailing_field_fragment`/`column_suggestions`) --
+/// cheap, since there are at most a handful of columns to filter, so no
+/// need to diff against the previous state.
+fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
+    for child in list.children() {
+        list.remove(&child);
+    }
+    let Some((start, frag)) = crate::query::trailing_field_fragment(query) else {
+        hide_suggestions(list, state);
+        return;
+    };
+    let cols = crate::query::column_suggestions(&frag);
+    if cols.is_empty() {
+        hide_suggestions(list, state);
+        return;
+    }
+    for col in &cols {
+        let row = gtk::ListBoxRow::new();
+        let label = gtk::Label::new(Some(col));
+        label.set_halign(gtk::Align::Start);
+        row.add(&label);
+        list.add(&row);
+    }
+    list.show_all();
+    *state.suggestions.borrow_mut() = cols;
+    *state.suggestion_start.borrow_mut() = start;
+    select_suggestion(list, state, 0);
+}
+
+/// Replaces the trailing `$fragment` the suggestions were built from with
+/// `$<chosen column>:`, ready for the value to be typed next -- mirrors
+/// focus-picker.py's `tab:transform-query` completion (same "tab accepts
+/// what the popup already shows highlighted" contract), just via direct
+/// GtkEntry text splicing instead of fzf's own transform-query bind.
+fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<State>) {
+    let idx = *state.suggestion_idx.borrow();
+    let Some(&col) = state.suggestions.borrow().get(idx) else {
+        return;
+    };
+    let start = *state.suggestion_start.borrow();
+    let query = search.text();
+    let new_query = format!("{}${}:", &query[..start], col);
+    hide_suggestions(list, state);
+    search.set_text(&new_query);
+    search.set_position(-1);
 }
 
 /// Hides the surface first and defers the actual `focuswindow` dispatch to
@@ -291,6 +367,9 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         windows,
         selected: RefCell::new(0),
         locked: RefCell::new(false),
+        suggestions: RefCell::new(Vec::new()),
+        suggestion_idx: RefCell::new(0),
+        suggestion_start: RefCell::new(0),
     });
 
     let (cols, rows) = grid_dims(state.windows.len());
@@ -312,7 +391,10 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         // An outline, not a filled block: this is a placeholder for a
         // window frame, not a loading skeleton.
         let _ = css.load_from_data(
-            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; }",
+            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; } \
+              .suggestions { border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; } \
+              .suggestions row { padding: 2px 6px; } \
+              .suggestions row:selected { background-color: rgba(255,255,255,0.18); }",
         );
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
@@ -349,8 +431,22 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     let search = gtk::SearchEntry::new();
     search.set_no_show_all(true);
 
+    // Column-name autocomplete popup: an in-layout ListBox directly under
+    // the search entry (not a GtkPopover) -- gtk-layer-shell's layer
+    // surface has no xdg_popup positioner to anchor a real popover to, so
+    // this just reserves its own row in the same vbox and is shown/hidden
+    // as query text comes and goes. `COLUMNS` (query.rs) is small (4
+    // entries today) and fully enumerable, so a fixed unscrolled list is
+    // enough -- see ~/.config/docs/query-dsl.md's autocompletion section.
+    let suggestions_list = gtk::ListBox::new();
+    suggestions_list.set_selection_mode(gtk::SelectionMode::Browse);
+    suggestions_list.set_no_show_all(true);
+    suggestions_list.style_context().add_class("suggestions");
+    suggestions_list.hide();
+
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 4);
     vbox.pack_start(&search, false, false, 0);
+    vbox.pack_start(&suggestions_list, false, false, 0);
     vbox.pack_start(&scroll, true, true, 0);
     win.add(&vbox);
 
@@ -372,6 +468,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
 
     {
         let flowbox = flowbox.clone();
+        let suggestions_list = suggestions_list.clone();
         let state = state.clone();
         search.connect_search_changed(move |entry| {
             let q = entry.text();
@@ -385,6 +482,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
                     flowbox.select_child(&child);
                 }
             }
+            update_suggestions(&q, &suggestions_list, &state);
         });
     }
 
@@ -407,11 +505,40 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         let flowbox = flowbox.clone();
         let win_for_confirm = win.clone();
         let search = search.clone();
+        let suggestions_list = suggestions_list.clone();
         let state = state.clone();
         win.connect_key_press_event(move |_, ev| {
             use gdk::keys::constants as key;
             let k = ev.keyval();
             let shift = ev.state().contains(gdk::ModifierType::SHIFT_MASK);
+            let ctrl = ev.state().contains(gdk::ModifierType::CONTROL_MASK);
+            let locked = *state.locked.borrow();
+
+            // Column-name autocomplete popup takes over Ctrl+j/k, Tab, and
+            // Escape while it's showing -- checked before any of those
+            // keys' normal meaning below, and before the generic
+            // Escape-quits-the-grid handling right after this block, since
+            // the popup's own Escape only dismisses itself.
+            if locked && !state.suggestions.borrow().is_empty() {
+                if ctrl && k == key::j {
+                    let idx = *state.suggestion_idx.borrow();
+                    select_suggestion(&suggestions_list, &state, idx + 1);
+                    return glib::Propagation::Stop;
+                }
+                if ctrl && k == key::k {
+                    let idx = *state.suggestion_idx.borrow();
+                    select_suggestion(&suggestions_list, &state, idx.saturating_sub(1));
+                    return glib::Propagation::Stop;
+                }
+                if k == key::Tab {
+                    accept_suggestion(&search, &suggestions_list, &state);
+                    return glib::Propagation::Stop;
+                }
+                if k == key::Escape {
+                    hide_suggestions(&suggestions_list, &state);
+                    return glib::Propagation::Stop;
+                }
+            }
 
             if k == key::Escape {
                 gtk::main_quit();
@@ -421,8 +548,6 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
                 confirm(&win_for_confirm, &state);
                 return glib::Propagation::Stop;
             }
-
-            let locked = *state.locked.borrow();
 
             // Locking in doesn't mean Alt got released -- holding Alt,
             // tapping Tab a few times, then typing while *still* holding

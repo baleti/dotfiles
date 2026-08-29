@@ -4,6 +4,22 @@
 //! "title" and any window whose title subsequence-matches "crit"), bare
 //! words substring-match a combined title+class haystack, and multiple
 //! tokens in one query are ANDed together.
+//!
+//! `"..."` quoting lets a column name or value contain whitespace without
+//! it splitting into separate (and separately required) tokens -- e.g.
+//! `$title:"imperial rome"` or, for a hypothetical multi-word column name,
+//! `$"col nam":x`. This is *not* the exact-literal-text quoting
+//! `window-search.py`/`focus-picker.py`/`claude-history` use (see
+//! ~/.config/docs/query-dsl.md): subsequence() already matches a needle
+//! containing a literal space against a haystack with a real space in the
+//! right place (`subsequence("imp rom", "imperial rome")` walks i-m-p,
+//! then the space itself, then r-o-m, all in order), so no new matching
+//! algorithm is needed here -- quoting only has to stop the tokenizer from
+//! splitting the run apart before subsequence() ever sees it. A bare
+//! (unquoted) Free word keeps the older literal-substring behaviour
+//! unchanged; only a token that contains whitespace -- which, since
+//! whitespace splits tokens, can only happen if it came from a quoted
+//! run -- gets the subsequence treatment. See `tokenize`/`token_matches`.
 
 use crate::hyprctl::Window;
 
@@ -37,9 +53,83 @@ enum Token {
     Free(String),
 }
 
+/// Split `query` on whitespace like `str::split_whitespace`, except a
+/// `"..."`-quoted run is kept as one token with its interior whitespace
+/// intact (quote characters themselves are dropped, wherever in the token
+/// they fall -- `$"col nam":x` and `$col:"multi word"` both come out with
+/// the space simply folded into the token text, since either position
+/// leaves the resulting `$col:val` split at the first `:` unambiguous).
+/// Also returns each token's starting byte offset in `query`, for callers
+/// that need to splice a replacement in (`trailing_field_fragment`).
+///
+/// An unterminated quote (mid-typing) still closes its token at the end of
+/// the string rather than being dropped -- same "still usable half-typed"
+/// principle the rest of this DSL follows.
+fn tokenize_with_spans(query: &str) -> Vec<(usize, String)> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut start: Option<usize> = None;
+    let mut in_quotes = false;
+    for (i, c) in query.char_indices() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+            start.get_or_insert(i);
+            continue;
+        }
+        if c.is_whitespace() && !in_quotes {
+            if let Some(s) = start.take() {
+                tokens.push((s, std::mem::take(&mut cur)));
+            }
+            continue;
+        }
+        start.get_or_insert(i);
+        cur.push(c);
+    }
+    if let Some(s) = start {
+        tokens.push((s, cur));
+    }
+    tokens
+}
+
+fn tokenize(query: &str) -> Vec<String> {
+    tokenize_with_spans(query).into_iter().map(|(_, t)| t).collect()
+}
+
+/// If `query` currently ends mid-typing a `$field` fragment -- bare or
+/// still quote-open, no `:` yet -- -> the byte offset in `query` where that
+/// trailing token starts (so a caller can replace `query[start..]`
+/// wholesale with a chosen completion) and the fragment text after `$` to
+/// match column names against. `None` once a `:` has been typed (that's a
+/// value in progress, not a field name -- not this function's business) or
+/// if the query isn't trailing a `$...` token at all.
+///
+/// Only ever looks at the *last* token, on the same "editing happens at the
+/// end of what's typed" assumption the rest of this DSL's completion logic
+/// (see focus-picker.py's `suggest_completion`) already makes.
+pub fn trailing_field_fragment(query: &str) -> Option<(usize, String)> {
+    let (start, last) = tokenize_with_spans(query).into_iter().last()?;
+    let frag = last.strip_prefix('$')?;
+    if frag.contains(':') {
+        return None;
+    }
+    Some((start, frag.to_string()))
+}
+
+/// Every column name, in `COLUMNS`' own display order, that
+/// subsequence-fuzzy-matches `fragment` -- the "what could `$<fragment>`
+/// resolve to" list an autocomplete popup narrows as the user types. An
+/// empty fragment matches (and so lists) every column, which is what makes
+/// typing a bare `$` immediately show the full set -- see
+/// ~/.config/docs/query-dsl.md's autocompletion section for why this only
+/// works at all because the field list is small and fully enumerable,
+/// unlike a value would be.
+pub fn column_suggestions(fragment: &str) -> Vec<&'static str> {
+    COLUMNS.iter().copied().filter(|c| subsequence(fragment, c)).collect()
+}
+
 fn parse(query: &str) -> Vec<Token> {
-    query
-        .split_whitespace()
+    tokenize(query)
+        .into_iter()
         .map(|word| {
             if let Some(rest) = word.strip_prefix('$') {
                 if let Some((col, val)) = rest.split_once(':') {
@@ -49,7 +139,7 @@ fn parse(query: &str) -> Vec<Token> {
                     };
                 }
             }
-            Token::Free(word.to_string())
+            Token::Free(word)
         })
         .collect()
 }
@@ -57,8 +147,18 @@ fn parse(query: &str) -> Vec<Token> {
 fn token_matches(win: &Window, token: &Token) -> bool {
     match token {
         Token::Free(word) => {
-            let haystack = format!("{} {}", win.title, win.class).to_lowercase();
-            haystack.contains(&word.to_lowercase())
+            // A Free token can only contain whitespace if it came from a
+            // quoted run (unquoted whitespace always splits tokens apart
+            // before this point) -- that's the signal to switch from plain
+            // substring to order-preserving subsequence matching, the same
+            // upgrade $column:value quoting gets below.
+            if word.contains(char::is_whitespace) {
+                let haystack = format!("{} {}", win.title, win.class);
+                subsequence(word, &haystack)
+            } else {
+                let haystack = format!("{} {}", win.title, win.class).to_lowercase();
+                haystack.contains(&word.to_lowercase())
+            }
         }
         Token::Column { column_query, value } => COLUMNS
             .iter()
@@ -153,5 +253,59 @@ mod tests {
         let w = win("t", "c", "1", 12345);
         assert!(matches_str(&w, "$pid:234"));
         assert!(!matches_str(&w, "$pid:999"));
+    }
+
+    #[test]
+    fn quoted_value_survives_as_one_token_and_matches_by_subsequence() {
+        let w = win("Imperial Rome", "Alacritty", "1", 100);
+        assert!(matches_str(&w, r#"$title:"imp rom""#));
+        assert!(matches_str(&w, r#"$title:"imperial rome""#));
+        assert!(!matches_str(&w, r#"$title:"rom imp""#)); // wrong order
+    }
+
+    #[test]
+    fn quoted_column_name_survives_as_one_token() {
+        // No real multi-word column exists today, but the tokenizer must
+        // not choke on (or split apart) one if it ever does.
+        let w = win("Imperial Rome", "Alacritty", "1", 100);
+        assert!(matches_str(&w, r#"$"tit":imperial"#));
+    }
+
+    #[test]
+    fn quoted_free_word_matches_by_subsequence_across_the_space() {
+        let w = win("Imperial Rome", "Alacritty", "1", 100);
+        assert!(matches_str(&w, r#""imp rom""#));
+        assert!(!matches_str(&w, r#""rom imp""#)); // wrong order
+        // unquoted "imp rom" still ANDs two independent substrings, order
+        // notwithstanding, unaffected by any of this
+        assert!(matches_str(&w, "rom imp"));
+    }
+
+    #[test]
+    fn unterminated_quote_does_not_panic_or_drop_the_token() {
+        let w = win("Imperial Rome", "Alacritty", "1", 100);
+        assert!(matches_str(&w, r#"$title:"imp"#));
+    }
+
+    #[test]
+    fn trailing_field_fragment_detects_mid_typed_dollar_token() {
+        assert_eq!(trailing_field_fragment("$"), Some((0, "".to_string())));
+        assert_eq!(trailing_field_fragment("$tit"), Some((0, "tit".to_string())));
+        assert_eq!(
+            trailing_field_fragment("$title:foo $wor"),
+            Some((11, "wor".to_string()))
+        );
+        assert_eq!(trailing_field_fragment("$title:foo"), None); // already has a value
+        assert_eq!(trailing_field_fragment("$title:foo "), None); // trailing space, no new token yet
+        assert_eq!(trailing_field_fragment("plain text"), None);
+        assert_eq!(trailing_field_fragment(""), None);
+    }
+
+    #[test]
+    fn column_suggestions_narrow_fuzzily_and_empty_fragment_lists_all() {
+        assert_eq!(column_suggestions(""), vec!["title", "class", "workspace", "pid"]);
+        assert_eq!(column_suggestions("ti"), vec!["title"]);
+        assert_eq!(column_suggestions("ss"), vec!["class"]); // "workspace" has only one 's'
+        assert!(column_suggestions("zzz").is_empty());
     }
 }

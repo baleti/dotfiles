@@ -110,17 +110,26 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
   socket **is** the "already running" check.
 - **`src/hyprctl.rs`** — thin `hyprctl` wrappers: the window list the grid
   is built from, and the one dispatch call that changes focus.
-- **`src/query.rs`** — the `$column:value` filter DSL: whitespace-split
-  tokens, `$col:val` fuzzy-matches column name and value independently
-  (subsequence match), bare words substring-match title+class, multiple
-  tokens AND together. See [query-dsl.md](query-dsl.md) for how this
-  relates to the same DSL's other implementations (tmux's pickers,
-  `claude-history`).
+- **`src/query.rs`** — the `$column:value` filter DSL: quote-aware
+  whitespace-split tokens (a `"..."` run stays one token, letting a column
+  name or value contain spaces), `$col:val` fuzzy-matches column name and
+  value independently (subsequence match both ways), bare words
+  substring-match title+class (subsequence instead, spanning whitespace, if
+  quoted), multiple tokens AND together. Also exposes
+  `trailing_field_fragment`/`column_suggestions`, the autocomplete
+  narrowing `ui.rs`'s suggestions popup is built on. See
+  [query-dsl.md](query-dsl.md) for how this relates to the same DSL's other
+  implementations (tmux's pickers, `claude-history`).
 - **`src/ui.rs`** — the layer-shell `GtkFlowBox` grid. Two-phase key state
   machine: unlocked = Tab/Shift+Tab cycles selection, releasing Alt
   confirms; any other printable key locks into search mode
   (`GtkSearchEntry` + the `query.rs` DSL), Alt no longer confirms once
-  locked, Enter/Escape confirm/cancel either way.
+  locked, Enter/Escape confirm/cancel either way. While locked, typing a
+  trailing `$fragment` opens a column-name autocomplete popup (a plain
+  `GtkListBox` under the search entry, not a `GtkPopover` — gtk-layer-shell
+  has no xdg_popup positioner to anchor one to): `Ctrl+j`/`Ctrl+k` move the
+  highlight, `Tab` accepts it, `Escape` dismisses just the popup. See
+  [query-dsl.md](query-dsl.md#autocompletion).
 - **`src/wayland_capture.rs`** — live thumbnails via
   `hyprland-toplevel-export-v1`, on a wholly separate low-level
   `wayland-client` connection (GDK doesn't expose these extension
