@@ -6,30 +6,10 @@ duration = 0
 
 [colors]
 draw_bold_text_with_bright_colors = true
-
-[colors.bright]
-black = "#d5c3b5"
-blue = "#4bc776"
-cyan = "#ffb871"
-green = "#fd9916"
-magenta = "#51b9ff"
-red = "#ada7ff"
-white = "#ebe0d9"
-yellow = "#f38cea"
-
-[colors.normal]
-black = "#201b16"
-blue = "#4bc776"
-cyan = "#ffb871"
-green = "#fd9916"
-magenta = "#51b9ff"
-red = "#ada7ff"
-white = "#d5c3b5"
-yellow = "#f38cea"
-
-[colors.primary]
-background = "#201b16"
-foreground = "#ebe0d9"
+# The [colors.primary/normal/bright] tables live in colors.toml, imported
+# via [general] below. That file is regenerated from the wallpaper by
+# ~/.config/hypr/scripts/gen-theme.py and is deliberately NOT tracked in
+# git, so the recolour never churns this file.
 
 [cursor]
 # blinking = "Off"
@@ -1025,3 +1005,4 @@ y = 0
 live_config_reload = true
 # winpty_backend = false
 working_directory = "None"
+import = ["~/.config/alacritty/colors.toml"]
