@@ -54,10 +54,17 @@ hl.on("hyprland.start", function()
     -- wl-paste tags copies flagged x-kde-passwordManagerHint=secret (app
     -- passwords, generated passwords, TOTP codes, etc.) with
     -- CLIPBOARD_STATE=sensitive, and cliphist silently skips storing those.
-    -- We deliberately override that here so everything lands in history --
-    -- retention is bounded instead by ~/.config/hypr/scripts/cliphist-expire.sh
-    -- (see cliphist-expire.timer).
-    hl.exec_cmd([[wl-paste --watch sh -c 'unset CLIPBOARD_STATE; exec cliphist store']])
+    -- The wrapper below deliberately overrides that too, so everything
+    -- still lands in history -- retention is bounded instead by
+    -- ~/.config/hypr/scripts/cliphist-expire.sh (see cliphist-expire.timer).
+    --
+    -- Routed through cliphist-store-logged.sh rather than `cliphist store`
+    -- directly (as this used to be, via `exec` so wl-paste's stdin passed
+    -- straight through) because cliphist itself keeps no per-entry
+    -- timestamp - the wrapper also appends one to a small log, which is
+    -- what clipboard-picker's $date: field reads from. See that script's
+    -- own comment for how it correlates a log line to the right id.
+    hl.exec_cmd([[wl-paste --watch ~/.config/hypr/scripts/cliphist-store-logged.sh]])
     -- Replaces dunst (~/.claude2/plans/silly-percolating-rose.md): dunst
     -- invalidates a notification's actions the instant it closes, even on
     -- timeout, so mod+n/ctrl+mod+n could never invoke one after it left
@@ -106,3 +113,4 @@ require("input")
 require("keybinds")
 require("windowrules")
 require("rdp-guard")
+require("dolphin-vim")
