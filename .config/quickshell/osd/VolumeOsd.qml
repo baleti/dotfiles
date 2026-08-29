@@ -11,6 +11,18 @@ import "../theme"
 // display: no mouse/keyboard focus, fully click-through, so it never steals
 // input from whatever's underneath.
 //
+// KNOWN ISSUE (2026-08-29, unresolved): only reliably shows on DP-1 here.
+// `hyprctl layers` shows its layer-shell surface never gets mapped on
+// eDP-2/HDMI-A-1 - confirmed independent of Variants (reproduces with a
+// single hardcoded non-Variants instance), independent of anchoring style
+// (full-screen and right-edge-only both fail identically), and independent
+// of layer level (Top and Overlay both fail identically). Survives a full
+// `qs` process restart unchanged. Looks like a Hyprland/compositor-side
+// per-output layer-surface state issue, not a bug in this file - see
+// [[quickshell_panelwindow_ipc_gotchas]]. Next step if revisiting: a full
+// Hyprland restart (not just qs) would test that theory, but that kills
+// every window on the machine, so it wasn't done unilaterally.
+//
 // The IpcHandler function is named `display`, not `show`: `qs ipc call
 // <target> show ...` collides with the CLI's own `qs ipc show` subcommand
 // at the argument-parsing level (confirmed live - it accepted a bare `qs
@@ -32,12 +44,21 @@ PanelWindow {
         hideTimer.restart();
     }
 
+    // Full-screen anchors (like Background.qml), not just `right: true` -
+    // the card below still only occupies its own small area near the right
+    // edge (positioned by its own anchors), everything else stays
+    // click-through. Chosen over a narrower window because it's the
+    // pattern already proven to map its layer-shell surface reliably; see
+    // [[quickshell_panelwindow_ipc_gotchas]] for the still-unresolved
+    // per-output issue this doesn't fix (works on DP-1, not on eDP-2/HDMI-A-1
+    // here, independent of anchoring or layer level - a Hyprland/compositor
+    // question, not a bug in this file).
     anchors {
         top: true
         bottom: true
+        left: true
         right: true
     }
-    implicitWidth: 74
     color: "transparent"
 
     WlrLayershell.layer: WlrLayer.Overlay

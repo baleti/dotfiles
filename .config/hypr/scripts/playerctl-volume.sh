@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # mod+F11/F12: volume up/down, then flashes the side OSD
-# (~/.config/quickshell/osd/VolumeOsd.qml) on whichever monitor is currently
-# focused (same resolution as bar-toggle.sh -- each monitor runs its own
-# instance, IpcHandler target "volume-osd-<screen name>").
+# (~/.config/quickshell/osd/VolumeOsd.qml) on whichever monitor the active
+# window is on (each monitor runs its own instance, IpcHandler target
+# "volume-osd-<screen name>").
+#
+# Deliberately the active *window's* monitor, not hyprctl monitors' own
+# "focused" field like bar-toggle.sh uses: this Hyprland has follow_mouse=1
+# (see ydotool_focus_follows_mouse_risk memory), so "focused" tracks
+# whichever monitor the cursor is currently hovering, which can differ from
+# where the active/keyboard-focused window actually is - showing the OSD on
+# the wrong screen if the mouse happened to have drifted elsewhere.
 #
 # Routes to the "current" player's MPRIS Volume property
 # (~/.config/playerctl-current) when it's pixel6 - the one MPRIS player here
@@ -34,6 +41,17 @@ fi
 [ -z "${frac:-}" ] && exit 0
 percent=$(awk -v f="$frac" 'BEGIN { printf "%d", f * 100 + 0.5 }')
 
-mon=$(hyprctl -j monitors | python3 -c "import json,sys; d=json.load(sys.stdin); print(next((m['name'] for m in d if m.get('focused')), ''))")
+mon=$(python3 -c "
+import json, subprocess
+aw = json.loads(subprocess.check_output(['hyprctl', '-j', 'activewindow']) or b'{}')
+mons = json.loads(subprocess.check_output(['hyprctl', '-j', 'monitors']))
+mid = aw.get('monitor')
+name = next((m['name'] for m in mons if m.get('id') == mid), '')
+if not name:
+    # No active window (empty workspace) - fall back to hyprctl's own
+    # notion of the focused monitor, same as bar-toggle.sh.
+    name = next((m['name'] for m in mons if m.get('focused')), '')
+print(name)
+")
 [ -n "$mon" ] || exit 0
 qs ipc call "volume-osd-$mon" display "$percent" "$muted"
