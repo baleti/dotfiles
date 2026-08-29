@@ -191,22 +191,31 @@ class Pixel6Player(dbus.service.Object):
     @dbus.service.method(PLAYER_IFACE)
     def Next(self):
         call_action("media-next")
-        self.refresh(force=True)
+        # No refresh(force=True) here (or below): that was a second,
+        # sequential WireGuard round trip after the action's own, blocking
+        # this method that much longer for no real benefit - playerctl
+        # doesn't wait on Next/Previous/Play/Pause/Stop's reply anyway (measured
+        # live: these already return in ~50-130ms, under one single HTTP round
+        # trip, so it's firing without waiting). Leave the cache as-is - the
+        # next periodic poll_tick (<= POLL_INTERVAL_S) picks up the real new
+        # track. Deliberately NOT clearing self._status here: that would make
+        # _player_props() report "Stopped"/no-track in the meantime, a worse
+        # flicker than just showing the stale track a little longer.
+        pass
 
     @dbus.service.method(PLAYER_IFACE)
     def Previous(self):
         call_action("media-prev")
-        self.refresh(force=True)
 
     @dbus.service.method(PLAYER_IFACE)
     def Pause(self):
         call_action("media-pause")
-        self.refresh(force=True)
+        self._optimistic_state("paused")
 
     @dbus.service.method(PLAYER_IFACE)
     def Play(self):
         call_action("media-play")
-        self.refresh(force=True)
+        self._optimistic_state("playing")
 
     @dbus.service.method(PLAYER_IFACE)
     def PlayPause(self):
@@ -218,7 +227,17 @@ class Pixel6Player(dbus.service.Object):
     @dbus.service.method(PLAYER_IFACE)
     def Stop(self):
         call_action("media-pause")
-        self.refresh(force=True)
+        self._optimistic_state("paused")
+
+    def _optimistic_state(self, state):
+        # Cheap, no extra network call: flip the cached playback state so a
+        # rapid double-tap of play/pause (or the widget reading Position
+        # right after) sees the right thing immediately, same spirit as
+        # _seek_to_ms/_set_volume. poll_tick corrects it for real shortly.
+        if self._status is not None:
+            self._status = dict(self._status, state=state)
+            self._status_mono = time.monotonic()
+            self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
 
     def _seek_to_ms(self, target_ms):
         props = self._player_props()
