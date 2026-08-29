@@ -289,14 +289,25 @@ Rectangle {
                 height: 300
                 spacing: 6
 
-                // Y-axis: labels the same gridFractions the Graph draws
-                // faint horizontal lines at, so "what height corresponds
-                // to what value" is readable directly off the graph
-                // instead of only knowing the single top-of-scale number.
+                // Y-axis: labels at the same fractions of maxValue Graph's
+                // height maps 0..1 to, so "what height corresponds to what
+                // value" is readable directly off the graph instead of only
+                // knowing the single top-of-scale number. Width sized off
+                // the widest label (maxValue's, formatted) rather than a
+                // fixed guess -- disk/net's byte-rate strings ("12.3 MB/s")
+                // ran past a fixed 38px and got clipped by expandPanel's
+                // clip:true (reported 2026-08-29).
                 Item {
                     id: yAxis
-                    width: 38
+                    width: Math.max(30, yAxisMetrics.width + 6)
                     height: parent.height
+
+                    TextMetrics {
+                        id: yAxisMetrics
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 4
+                        text: root.yAxisFormatter(root.maxValue)
+                    }
 
                     Repeater {
                         model: root.gridFractions
@@ -321,15 +332,12 @@ Rectangle {
                     seriesList: root.mode === "overlay" ? root.seriesList : []
                     maxValue: root.maxValue
                     color1: root.color1
-                    gridFractions: root.gridFractions
-                    xGridFractions: root.xAxisTicks.map(t => t.fraction)
                 }
             }
 
             // X-axis: time-ago labels under the graph area only (offset past
-            // yAxis, same width as Graph itself), at the same fractions the
-            // Graph draws its faint vertical lines at. x interpolates each
-            // label from left-aligned at fraction 0 (oldest sample) to
+            // yAxis, same width as Graph itself). x interpolates each label
+            // from left-aligned at fraction 0 (oldest sample) to
             // right-aligned at fraction 1 ("now") so nothing overhangs
             // either edge of the panel.
             Item {
