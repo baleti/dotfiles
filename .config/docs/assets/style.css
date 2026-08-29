@@ -91,8 +91,60 @@ a:hover { text-decoration: underline; }
   padding: 1.4rem .85rem 2rem;
   border-right: 1px solid var(--border-soft);
 }
+/* machine switcher at the top of the sidebar */
+.machines {
+  display: flex; flex-wrap: wrap; gap: .3rem;
+  margin: 0 0 1.1rem; padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+.machines a {
+  font-family: var(--mono); font-size: .74rem;
+  padding: .2rem .5rem; border-radius: 5px;
+  color: var(--fg-dim); background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+}
+.machines a:hover { color: var(--fg); text-decoration: none; border-color: var(--border); }
+.machines a.on {
+  color: var(--accent); border-color: var(--accent-soft);
+  background: rgba(92,207,230,.08);
+}
+
+.navgroup { margin-bottom: 1.3rem; }
+.navgroup-title {
+  margin: 0 0 .35rem; padding: 0 .7rem;
+  font-family: var(--mono);
+  text-transform: uppercase; letter-spacing: .08em;
+  font-size: .66rem; color: var(--fg-faint);
+}
+
 .navlist { list-style: none; margin: 0; padding: 0; }
 .navlist li { margin: 0; }
+.navlist.plain { max-width: 26rem; }
+.navlist.plain a { padding-left: 0; }
+
+.crumb {
+  margin: 0 0 1.2rem;
+  font-family: var(--mono); font-size: .74rem;
+  text-transform: uppercase; letter-spacing: .1em;
+  color: var(--fg-faint);
+}
+
+/* machine cards on the root landing page */
+.machine-grid {
+  display: grid; gap: .8rem; margin: 1.2rem 0 2rem;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+}
+.machine-card {
+  display: block; padding: 1rem 1.1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.machine-card:hover { border-color: var(--accent-soft); text-decoration: none; }
+.machine-card .mc-name {
+  display: block; font-family: var(--mono); font-weight: 600;
+  color: var(--accent); font-size: 1rem; margin-bottom: .35rem;
+}
+.machine-card .mc-list { display: block; color: var(--fg-dim); font-size: .82rem; line-height: 1.5; }
 .navlist a {
   display: block;
   padding: .38rem .7rem;

@@ -4,12 +4,16 @@
 #
 #     https://baleti.github.io/dotfiles/
 #
+# build.py reads every machine branch's .config/docs/ from throwaway
+# `git worktree`s (see BRANCHES in build.py), so it needs current
+# origin/<branch> refs - this fetches them first.
+#
 # The gh-pages branch is an orphan holding ONLY the generated site. This
 # script never checks it out in the live $HOME worktree - it builds a
 # throwaway git repo inside ./site/ and force-pushes that. Safe to run from
 # anywhere; touches neither the working tree nor the current branch.
 #
-#   ./deploy.sh            build + push
+#   ./deploy.sh            fetch + build + push
 #   ./deploy.sh --setup    also (re)enable GitHub Pages on the gh-pages branch
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -19,6 +23,7 @@ BRANCH="gh-pages"
 SETUP=0
 [[ "${1:-}" == "--setup" ]] && SETUP=1
 
+git fetch -q origin
 ./build.py
 
 name="$(git config user.name  || echo 'docs deploy')"

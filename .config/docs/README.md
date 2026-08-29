@@ -53,22 +53,33 @@ where practical, or as a prompt follow-up otherwise.
 
 ## Website
 
-This doc set is also published at
-<https://baleti.github.io/dotfiles/>. The site is built from these exact
-`.md` files:
+This doc set is published at <https://baleti.github.io/dotfiles/>. The repo
+keeps one long-lived branch per machine, and the site is built from **all**
+of them:
 
-- `./build.py` — converts every page (order/labels in `PAGES`) to a
-  self-contained static site under `./site/` using `pandoc`. Rewrites
-  inter-doc `*.md` links to `*.html`, builds the sidebar + per-page
-  contents rail, and emits a client-side search index. `./build.py --serve`
-  previews it on `localhost:8000`.
-- `./deploy.sh` — runs `build.py` and force-pushes `./site/` to the
-  repo's orphan `gh-pages` branch (GitHub Pages serves that at the URL
-  above). It builds a throwaway git repo inside `site/` rather than
-  checking `gh-pages` out in `$HOME`, so it never touches the working
-  tree. `./deploy.sh --setup` also (re)points the Pages config at the
-  branch via `gh`.
-- `assets/` (`style.css`, `site.js`) is the hand-written theme. `site/` is
-  generated output — git-ignored via `.git/info/exclude`, never committed.
+| URL | Source |
+|---|---|
+| `/` | shared docs (`SHARED_PAGES` in `build.py`) + a machine index |
+| `/host3/` | `host3` branch's machine-specific pages |
+| `/host6/` | `host6` branch |
+| `/wsl/` | `main` branch |
+| `/qemu/` | `qemu-claude` branch |
 
-Requires `pandoc`. Run `./deploy.sh` after editing any doc to republish.
+- `./build.py` — reads each branch's `.config/docs/*.md` from a throwaway
+  `git worktree` (**never** a checkout in the live `$HOME` tree), renders
+  with `pandoc` into `./site/`. Pages in `SHARED_PAGES` publish once at the
+  root; every other page a branch ships becomes that machine's own.
+  Rewrites inter-doc links across the tree, builds the sidebar + contents
+  rail + a client-side search index. `./build.py --serve` previews on
+  `localhost:8000`. Branch→slug map and the shared/host split are the
+  `BRANCHES` / `SHARED_PAGES` / `CANONICAL_BRANCH` constants at the top.
+- `./deploy.sh [--setup]` — `git fetch`, `build.py`, then force-pushes
+  `./site/` to the repo's orphan `gh-pages` branch via a throwaway git repo
+  inside `site/` (never checks `gh-pages` out in `$HOME`). `--setup` also
+  points the Pages config at the branch via `gh`.
+- `assets/` (`style.css`, `site.js`) is the hand-written theme, taken from
+  whichever branch you run `build.py` on. `site/` is generated output —
+  git-ignored via `.git/info/exclude`, never committed.
+
+Requires `pandoc` + `git`. Run `./deploy.sh` after editing any doc (on any
+branch) to republish.

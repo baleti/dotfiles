@@ -110,9 +110,9 @@
     hits.forEach(function (x) {
       var e = x.e;
       var a = bestAnchor(e, terms);
-      var url = e.url + (a ? "#" + a.id : "");
+      var url = (window.SITE_ROOT || "") + e.url + (a ? "#" + a.id : "");
       html += '<a class="sr-hit" href="' + url + '">' +
-        '<span class="sr-page">' + escHtml(e.title) + '</span>' +
+        '<span class="sr-page">' + escHtml(e.scope && e.scope !== "shared" ? e.scope + "  ·  " : "") + escHtml(e.title) + '</span>' +
         '<span class="sr-head">' + escHtml(a ? a.text : e.title) + '</span>' +
         '<span class="sr-ctx">' + snippet(e.text, terms) + '</span>' +
         '</a>';
