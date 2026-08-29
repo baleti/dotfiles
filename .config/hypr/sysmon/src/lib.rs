@@ -23,6 +23,7 @@ pub const TIER_CAPACITY: usize = 600;
 /// the 7-month tier averages every ~8.4 hours into one point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tier {
+    Min10,
     Min30,
     Hour6,
     Day7,
@@ -30,11 +31,23 @@ pub enum Tier {
     Month7,
 }
 
-pub const ALL_TIERS: [Tier; 5] = [Tier::Min30, Tier::Hour6, Tier::Day7, Tier::Week7, Tier::Month7];
+/// NOTE: order here is the on-disk/persist index order, NOT display order --
+/// `Min10` was appended last (2026-08-29) so an existing history.json
+/// (5 entries, Min30..Month7) still loads into the right slots by position.
+/// Display/UI order lives in the quickshell bar's `tierCodes`.
+pub const ALL_TIERS: [Tier; 6] = [
+    Tier::Min30,
+    Tier::Hour6,
+    Tier::Day7,
+    Tier::Week7,
+    Tier::Month7,
+    Tier::Min10,
+];
 
 impl Tier {
     pub fn code(self) -> &'static str {
         match self {
+            Tier::Min10 => "10m",
             Tier::Min30 => "30m",
             Tier::Hour6 => "6h",
             Tier::Day7 => "7d",
@@ -45,6 +58,7 @@ impl Tier {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "10m" => Some(Tier::Min10),
             "30m" => Some(Tier::Min30),
             "6h" => Some(Tier::Hour6),
             "7d" => Some(Tier::Day7),
@@ -58,6 +72,7 @@ impl Tier {
     /// 30 days -- this only sets the rollup granularity, not a calendar.
     fn span_secs(self) -> u64 {
         match self {
+            Tier::Min10 => 10 * 60,
             Tier::Min30 => 30 * 60,
             Tier::Hour6 => 6 * 60 * 60,
             Tier::Day7 => 7 * 24 * 60 * 60,
@@ -81,7 +96,7 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// A client connects, writes one request line -- `<metric>` or
-/// `<metric>:<tier>` (bare metric defaults to the 30-minute tier; `Top*`
+/// `<metric>:<tier>` (bare metric defaults to the 10-minute tier; `Top*`
 /// metrics ignore the tier entirely, they're point-in-time, not history) --
 /// then reads one JSON `Snapshot` line per second until it disconnects.
 /// Switching tiers means disconnecting and reconnecting with a new request,
@@ -124,7 +139,7 @@ pub struct Request {
 impl Request {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
-        let (metric_str, tier_str) = s.split_once(':').unwrap_or((s, "30m"));
+        let (metric_str, tier_str) = s.split_once(':').unwrap_or((s, "10m"));
         Some(Request { metric: Metric::parse(metric_str)?, tier: Tier::parse(tier_str)? })
     }
 }
@@ -155,6 +170,12 @@ pub struct ProcEntry {
     /// CPU: percent of one core (0-100*n_cores). Mem: resident set in MB.
     /// Net: combined sent+received KB over the last ~1s (nethogs trace mode).
     pub value: f64,
+    /// A short distinguishing hint the bare `name` (comm) doesn't give --
+    /// the command-line tail (`--resume <uuid>` for one of many `claude`s)
+    /// or, failing that, the ~-relative working directory. `#[serde(default)]`
+    /// so a client/daemon version mismatch just sees an empty string.
+    #[serde(default)]
+    pub detail: String,
 }
 
 /// Oldest-first ring-buffer snapshots for whichever tier was requested, up

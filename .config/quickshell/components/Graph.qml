@@ -203,10 +203,15 @@ Canvas {
                 for (const s of primary)
                     fillSeries(ctx, s.data, s.color, 0.22);
 
+            // All overlay lines are 1px regardless of series count -- a
+            // 2-series net graph at 1.25px next to a 12-series cpu graph at
+            // 1px read as "one's thinner". Secondary (tx/write/cached) at
+            // 0.62 alpha, not much below primary's 0.9: lower still and it
+            // looked like a thinner line rather than a quieter one.
             for (const s of secondary)
-                strokeSeries(ctx, s.data, s.color, many ? 1.0 : 1.25, 0.45);
+                strokeSeries(ctx, s.data, s.color, 1.0, 0.62);
             for (const s of primary)
-                strokeSeries(ctx, s.data, s.color, many ? 1.0 : 1.25, 0.9);
+                strokeSeries(ctx, s.data, s.color, 1.0, 0.9);
         } else {
             fillSeries(ctx, series, color1, 0.24);
             strokeSeries(ctx, series, color1, 1.25, 0.9);

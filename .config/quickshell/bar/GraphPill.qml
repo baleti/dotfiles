@@ -55,7 +55,7 @@ Rectangle {
     // disk/temp); media/calendar leave it empty and get no row.
     property var tierCodes: []
     property var tierLabels: ({})
-    property string tier: "30m"
+    property string tier: "10m"
     signal tierRequested(string code)
 
     property bool expanded: false
@@ -363,11 +363,28 @@ Rectangle {
                         Text {
                             id: procName
                             anchors.left: parent.left
-                            width: parent.width - procValue.width - 8
+                            anchors.baseline: procValue.baseline
                             text: parent.modelData.name
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
+                        }
+
+                        // sysmond's per-process hint (cmdline tail + cwd) --
+                        // "claude" alone is useless when 8 of the top 10 are
+                        // claude. Fills the gap between name and value, elided.
+                        Text {
+                            id: procDetail
+                            anchors.left: procName.right
+                            anchors.leftMargin: 7
+                            anchors.right: procValue.left
+                            anchors.rightMargin: 8
+                            anchors.baseline: procValue.baseline
+                            text: parent.modelData.detail ?? ""
+                            visible: text.length > 0
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
                             elide: Text.ElideRight
                         }
 
