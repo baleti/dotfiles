@@ -234,8 +234,21 @@ fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
         label.set_halign(gtk::Align::Start);
         row.add(&label);
         list.add(&row);
+        // `no-show-all` on `list` (set at construction, so the one-time
+        // `win.show_all()` in `run()` doesn't prematurely reveal an empty
+        // popup) means `list.show_all()` below would *skip* list itself --
+        // "no-show-all: gtk_widget_show_all() will not affect this widget"
+        // applies to the widget it's set on too, not just its ancestors'
+        // recursive calls. So each row/label is shown explicitly here
+        // instead of relying on a later show_all() to reach them, and
+        // `list.show()` (a direct call, unlike show_all(), always works
+        // regardless of no-show-all) is what actually reveals the list --
+        // same "set_no_show_all(false)-or-explicit-show()" pattern `search`
+        // already uses a few lines up.
+        row.show();
+        label.show();
     }
-    list.show_all();
+    list.show();
     *state.suggestions.borrow_mut() = cols;
     *state.suggestion_start.borrow_mut() = start;
     select_suggestion(list, state, 0);
