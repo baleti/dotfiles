@@ -73,13 +73,38 @@ of them:
   rail + a client-side search index. `./build.py --serve` previews on
   `localhost:8000`. Branch→slug map and the shared/host split are the
   `BRANCHES` / `SHARED_PAGES` / `CANONICAL_BRANCH` constants at the top.
-- `./deploy.sh [--setup]` — `git fetch`, `build.py`, then force-pushes
-  `./site/` to the repo's orphan `gh-pages` branch via a throwaway git repo
-  inside `site/` (never checks `gh-pages` out in `$HOME`). `--setup` also
-  points the Pages config at the branch via `gh`.
+- `./deploy.sh [--if-changed] [--setup]` — `git fetch`, `build.py`, then
+  force-pushes `./site/` to the repo's orphan `gh-pages` branch via a
+  throwaway git repo inside `site/` (never checks `gh-pages` out in
+  `$HOME`). `--if-changed` skips the whole run when no doc source changed
+  since last time (fingerprint in `~/.local/state/`) and treats "offline"
+  as a no-op; `--setup` also points the Pages config at the branch via
+  `gh`.
 - `assets/` (`style.css`, `site.js`) is the hand-written theme, taken from
   whichever branch you run `build.py` on. `site/` is generated output —
-  git-ignored via `.git/info/exclude`, never committed.
+  git-ignored via `.git/info/exclude`, never committed. Every page carries
+  an "AI-generated · &lt;build time&gt;" badge — these docs are written by
+  an AI (Claude) from the repo, not hand-maintained.
 
-Requires `pandoc` + `git`. Run `./deploy.sh` after editing any doc (on any
-branch) to republish.
+Requires `pandoc` + `git` (+ `gh` to push). Run `./deploy.sh` after editing
+any doc, or let the timer below do it.
+
+### Scheduled rebuilds (`systemd/`)
+
+`systemd/` holds a user timer that runs `deploy.sh --if-changed` hourly, so
+committed `.md` edits (on any branch) reach the live site within the hour
+without a manual deploy. On a real build/push error it emails the repo's
+git-author address (`OnFailure=` → `deploy-failmail.sh`, via the `baleti`
+account in `~/.config/claude-email/`); offline runs are silent no-ops.
+
+Install (once, on whichever machine should do the publishing — `host3`):
+
+```sh
+systemctl --user link  ~/.config/docs/systemd/dotfiles-docs-deploy.service \
+                       ~/.config/docs/systemd/dotfiles-docs-deploy-failmail.service \
+                       ~/.config/docs/systemd/dotfiles-docs-deploy.timer
+systemctl --user enable --now dotfiles-docs-deploy.timer
+```
+
+`systemctl --user start dotfiles-docs-deploy.service` runs one now;
+`journalctl --user -u dotfiles-docs-deploy.service` shows the last run.
