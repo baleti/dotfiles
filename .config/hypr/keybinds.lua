@@ -211,7 +211,30 @@ hl.bind("ALT + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleC
 hl.bind("ALT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"))
 hl.bind("ALT + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleTemp"))
 hl.bind("ALT + s", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleDisk"))
-hl.bind(mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
+-- mod+m opens the media widget AND enters the "media_seek" submap: while
+-- active, bare 0-9 (no modifier -- Hyprland binds match one non-modifier
+-- key at a time, so a real simultaneous "mod+m+2" three-key chord isn't
+-- expressible; a submap is the idiomatic equivalent -- press mod+m once to
+-- enter, then tap digits freely) jump to that decile of the current track
+-- (2 -> 20%, 9 -> 90%, ...), via playerctl-seek-percent.sh against
+-- whichever player ~/.config/playerctl-current names. Escape or mod+m
+-- again exits back to the normal keymap (and mod+m also re-closes the
+-- widget, mirroring its toggle behavior outside the submap).
+hl.define_submap("media_seek", function()
+    for i = 0, 9 do
+        hl.bind(tostring(i), hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek-percent.sh " .. i))
+    end
+    hl.bind("Escape", function() hl.dispatch(hl.dsp.submap("reset")) end)
+    hl.bind(mainMod .. " + m", function()
+        hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
+        hl.dispatch(hl.dsp.submap("reset"))
+    end)
+end)
+
+hl.bind(mainMod .. " + m", function()
+    hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
+    hl.dispatch(hl.dsp.submap("media_seek"))
+end)
 hl.bind("CTRL + ALT + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))
 
 -- bluetooth
@@ -264,3 +287,7 @@ hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd("pkill rofi || rofi -show drun"
 -- orientation rather than launching the menu. Preserved as-is -- flag if this wasn't intentional.
 hl.bind(mainMod .. " + R",         hl.dsp.layout("orientationcycle"))
 hl.bind(mainMod .. " + SHIFT + R", hl.dsp.layout("orientationprev"))
+
+-- promote the focused window to master (swaps it with whatever is currently
+-- master, per master layout's "swap" default mode)
+hl.bind(mainMod .. " + Return", hl.dsp.layout("swapwithmaster"))
