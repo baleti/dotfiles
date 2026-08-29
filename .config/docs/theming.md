@@ -37,7 +37,7 @@ image — used for the quickshell bar's fallback theme values.
 |---|---|
 | `~/.local/state/quickshell/scheme.json` | quickshell bar (`Theme.qml`, live `FileView`). Includes `seriesPalette` (8 hues, per-core/iface lines) and `intensityRamp` (5 calm→hot stops) — see [quickshell-bar.md](quickshell-bar.md) |
 | `~/.config/gtk-{3,4}.0/colors.css` | libadwaita `@define-color` block; `gtk.css` is a static `@import "colors.css"` shim. GTK3 live-reloads via `colorreload-gtk-module` (GFileMonitor on mtime — no restart, no flash). GTK4/libadwaita has no live-reload equivalent. |
-| `~/.local/share/color-schemes/MaterialYou.colors` + `kdeglobals` | via `plasma-apply-colorscheme`; fires the `KGlobalSettings` D-Bus notify (no plasmashell needed) — Qt/KDE apps (Dolphin) live-reload |
+| `~/.local/share/color-schemes/MaterialYou.colors` + `kdeglobals` `[Colors:*]`/`[WM]`/`[ColorEffects:*]` | Breeze widget style reads the scheme. `gen-theme.py` writes the **complete** key set straight into `kdeglobals` (see [Qt widget style](#qt-widget-style-breeze-not-kvantum)) and fires the `KGlobalSettings` `notifyChange` D-Bus signal — `plasma-apply-colorscheme` short-circuits once `MaterialYou` is current and won't re-copy changed colours |
 | Hyprland border colors | via `hyprctl eval` (Lua binding — `keyword` is refused under the non-legacy parser). **Not** written to `appearance.lua` |
 | `~/.config/alacritty/colors.toml` | `[colors.primary/normal/bright]`, written whole; `alacritty.toml` imports it (`[general] import = [...]`), `live_config_reload` re-reads imports too |
 | `~/.config/rofi/materialyou.rasi` | auto-`@import`ed from `config.rasi` |
@@ -58,12 +58,43 @@ excluded. Still tracked: the importers/shims that reference them
 itself. On a fresh checkout these regenerate within ~2s of
 `wallpaper.png` existing.
 
+## Qt widget style: Breeze, not Kvantum
+
+Qt/KDE apps (Dolphin, Gwenview, Okular, Ark, …) render with the **Breeze**
+widget style so they follow the generated `MaterialYou` scheme. This was
+**Kvantum** (`darknord-kvantum`) until 2026-08-29 — dropped because Kvantum
+themes hardcode their whole palette (`[GeneralColors]` in the `.kvconfig` +
+colours baked into the theme SVG) and override the KDE colour scheme
+wholesale, so `plasma-apply-colorscheme` had no visible effect on any Qt
+app. Kvantum has no stylesheet-overlay mechanism, so it can't be recoloured
+live either. `gen-theme.py` now pins `kdeglobals` `widgetStyle=Breeze` each
+run.
+
+| Breeze + MaterialYou (current) | Kvantum / darknord (former) |
+|---|---|
+| ![Breeze + MaterialYou](images/dolphin-breeze-materialyou.png) | ![Kvantum darknord](images/dolphin-kvantum-darknord.png) |
+| layered depth (toolbar/header lighter than the list), follows the wallpaper hue | flat near-black Nord `#14161B`, fixed cool palette, blue folder icons |
+
+`gen-theme.py` writes the **complete** Breeze key set into `kdeglobals`
+`[Colors:*]` (every section + all `Foreground*`/`Decoration*` keys, plus
+`[WM]` and `[ColorEffects:*]`) — a partial scheme fills its gaps from
+compiled-in Breeze defaults and renders as an incoherent mix. It writes
+`kdeglobals` directly (not via `plasma-apply-colorscheme`, which
+short-circuits when the scheme name is unchanged) and fires the
+`KGlobalSettings` `notifyChange` signal to refresh running apps.
+
+The `darknord-kvantum` theme files are preserved in git history at commit
+`02abf2c` (`git show 02abf2c -- .config/Kvantum/`). To restore: reinstall
+`kvantum` + `kvantum-qt5`, check the files out, `kwriteconfig6 --file
+kdeglobals --group KDE --key widgetStyle kvantum-dark`, and drop the
+`widgetStyle` pin in `gen-theme.py`'s `patch_kdeglobals_inline()`.
+
 ## Live-reload support per toolkit
 
 | Toolkit | Live? | Notes |
 |---|---|---|
 | GTK3 | Yes | `colorreload-gtk-module` |
-| Qt/KDE (Dolphin) | Yes | `plasma-apply-colorscheme` D-Bus notify |
+| Qt/KDE (Dolphin) | Yes | Breeze widget style + `KGlobalSettings notifyChange` after a direct `kdeglobals` write — see [Qt widget style](#qt-widget-style-breeze-not-kvantum) |
 | GTK4/libadwaita | No | needs restart or a gsettings theme-name bounce |
 | GIMP 3 | Only if `gimprc` has `(theme "System")` | set 2026-08-28; `gimprc` is **not** in this repo |
 | Inkscape | Yes | follows system GTK theme by default |
