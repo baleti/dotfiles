@@ -72,17 +72,37 @@ fn frame_size(win_w: i32, win_h: i32, budget_w: i32, budget_h: i32) -> (i32, i32
     }
 }
 
+/// Which of the two things the autocomplete popup is currently offering --
+/// determines what `accept_suggestion` splices into the query text. Field
+/// and value completion are mutually exclusive per `update_suggestions`
+/// (query.rs's `trailing_field_fragment`/`trailing_value_fragment` can never
+/// both match the same query), so this only ever needs to remember which
+/// one is live, not both at once.
+#[derive(Clone, Copy)]
+enum SuggestionKind {
+    /// Popup lists `COLUMNS` entries; accepting inserts `$<column>:`.
+    Field,
+    /// Popup lists this column's live values across `state.windows`;
+    /// accepting inserts `$<column>:<value> ` (trailing space -- a value is
+    /// always a *complete* term once chosen, unlike a field name, which
+    /// still needs its value typed next).
+    Value(&'static str),
+}
+
 struct State {
     windows: Vec<Window>,
     selected: RefCell<usize>,
     locked: RefCell<bool>,
-    /// Column-name autocomplete state, live only while `trailing_field_fragment`
-    /// matches the current query (see `update_suggestions`). `suggestions`
-    /// empty means the popup is hidden; `suggestion_start` is the byte
-    /// offset in the query text that a chosen suggestion replaces.
-    suggestions: RefCell<Vec<&'static str>>,
+    /// Autocomplete popup state, live only while `trailing_field_fragment`
+    /// or `trailing_value_fragment` matches the current query (see
+    /// `update_suggestions`). `suggestions` empty means the popup is
+    /// hidden; `suggestion_start` is the byte offset in the query text
+    /// that a chosen suggestion replaces; `suggestion_kind` is `None`
+    /// exactly when `suggestions` is empty.
+    suggestions: RefCell<Vec<String>>,
     suggestion_idx: RefCell<usize>,
     suggestion_start: RefCell<usize>,
+    suggestion_kind: RefCell<Option<SuggestionKind>>,
 }
 
 /// Returns the child alongside its thumbnail `Image` so callers can swap in
@@ -209,16 +229,64 @@ fn select_suggestion(list: &gtk::ListBox, state: &Rc<State>, idx: usize) {
 fn hide_suggestions(list: &gtk::ListBox, state: &Rc<State>) {
     list.hide();
     state.suggestions.borrow_mut().clear();
+    *state.suggestion_kind.borrow_mut() = None;
 }
 
-/// Re-derives the column-name suggestion list from the query text on every
-/// keystroke (see `query::trailing_field_fragment`/`column_suggestions`) --
-/// cheap, since there are at most a handful of columns to filter, so no
-/// need to diff against the previous state.
+/// Populates `list` with one row per entry in `items` and reveals it -- the
+/// shared tail end of both `update_suggestions` branches below (field-name
+/// and value completion differ only in *where the candidate strings come
+/// from*, not in how they're rendered).
+fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
+    for item in items {
+        let row = gtk::ListBoxRow::new();
+        let label = gtk::Label::new(Some(item));
+        label.set_halign(gtk::Align::Start);
+        row.add(&label);
+        list.add(&row);
+        // `no-show-all` on `list` (set at construction, so the one-time
+        // `win.show_all()` in `run()` doesn't prematurely reveal an empty
+        // popup) means `list.show_all()` would *skip* list itself --
+        // "no-show-all: gtk_widget_show_all() will not affect this widget"
+        // applies to the widget it's set on too, not just its ancestors'
+        // recursive calls. So each row/label is shown explicitly here
+        // instead of relying on a later show_all() to reach them, and
+        // `list.show()` below (a direct call, unlike show_all(), always
+        // works regardless of no-show-all) is what actually reveals the
+        // list -- same "set_no_show_all(false)-or-explicit-show()" pattern
+        // `search` already uses a few lines up in `run()`.
+        row.show();
+        label.show();
+    }
+    list.show();
+}
+
+/// Re-derives the autocomplete popup from the query text on every keystroke
+/// -- cheap (at most a handful of columns, or a couple dozen windows' worth
+/// of one column's values, to filter), so no need to diff against the
+/// previous state. Field-name completion (`trailing_field_fragment`, no `:`
+/// yet) and value completion (`trailing_value_fragment`, `:` typed and the
+/// column before it unambiguous) are mutually exclusive, so value
+/// completion is tried first and field-name completion is the fallback --
+/// see query.rs's doc comments on both for why they can't both match.
 fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
     for child in list.children() {
         list.remove(&child);
     }
+
+    if let Some((start, col, frag)) = crate::query::trailing_value_fragment(query) {
+        let vals = crate::query::value_suggestions(&state.windows, col, &frag);
+        if vals.is_empty() {
+            hide_suggestions(list, state);
+            return;
+        }
+        populate_suggestions(list, &vals);
+        *state.suggestions.borrow_mut() = vals;
+        *state.suggestion_start.borrow_mut() = start;
+        *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Value(col));
+        select_suggestion(list, state, 0);
+        return;
+    }
+
     let Some((start, frag)) = crate::query::trailing_field_fragment(query) else {
         hide_suggestions(list, state);
         return;
@@ -228,45 +296,47 @@ fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
         hide_suggestions(list, state);
         return;
     }
-    for col in &cols {
-        let row = gtk::ListBoxRow::new();
-        let label = gtk::Label::new(Some(col));
-        label.set_halign(gtk::Align::Start);
-        row.add(&label);
-        list.add(&row);
-        // `no-show-all` on `list` (set at construction, so the one-time
-        // `win.show_all()` in `run()` doesn't prematurely reveal an empty
-        // popup) means `list.show_all()` below would *skip* list itself --
-        // "no-show-all: gtk_widget_show_all() will not affect this widget"
-        // applies to the widget it's set on too, not just its ancestors'
-        // recursive calls. So each row/label is shown explicitly here
-        // instead of relying on a later show_all() to reach them, and
-        // `list.show()` (a direct call, unlike show_all(), always works
-        // regardless of no-show-all) is what actually reveals the list --
-        // same "set_no_show_all(false)-or-explicit-show()" pattern `search`
-        // already uses a few lines up.
-        row.show();
-        label.show();
-    }
-    list.show();
+    let cols: Vec<String> = cols.into_iter().map(str::to_string).collect();
+    populate_suggestions(list, &cols);
     *state.suggestions.borrow_mut() = cols;
     *state.suggestion_start.borrow_mut() = start;
+    *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Field);
     select_suggestion(list, state, 0);
 }
 
-/// Replaces the trailing `$fragment` the suggestions were built from with
-/// `$<chosen column>:`, ready for the value to be typed next -- mirrors
-/// focus-picker.py's `tab:transform-query` completion (same "tab accepts
-/// what the popup already shows highlighted" contract), just via direct
-/// GtkEntry text splicing instead of fzf's own transform-query bind.
+/// Replaces the trailing fragment the suggestions were built from with the
+/// chosen completion -- `$<column>:` for a field name (ready for the value
+/// to be typed next) or `$<column>:<value> ` for a value (a trailing space,
+/// since a value is always a *complete* AND term once chosen, unlike a
+/// field name). Mirrors focus-picker.py's `tab:transform-query` completion
+/// (same "tab accepts what the popup already shows highlighted" contract),
+/// just via direct GtkEntry text splicing instead of fzf's own
+/// transform-query bind. A value containing whitespace is re-quoted on the
+/// way back in -- otherwise splicing it in unquoted would immediately
+/// re-split into two tokens the moment this fires, undoing the very
+/// quote-aware tokenizing that made it matchable in the first place (see
+/// query.rs's module doc).
 fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<State>) {
     let idx = *state.suggestion_idx.borrow();
-    let Some(&col) = state.suggestions.borrow().get(idx) else {
+    let Some(chosen) = state.suggestions.borrow().get(idx).cloned() else {
+        return;
+    };
+    let Some(kind) = *state.suggestion_kind.borrow() else {
         return;
     };
     let start = *state.suggestion_start.borrow();
     let query = search.text();
-    let new_query = format!("{}${}:", &query[..start], col);
+    let new_query = match kind {
+        SuggestionKind::Field => format!("{}${}:", &query[..start], chosen),
+        SuggestionKind::Value(col) => {
+            let value = if chosen.contains(char::is_whitespace) {
+                format!("\"{chosen}\"")
+            } else {
+                chosen
+            };
+            format!("{}${}:{} ", &query[..start], col, value)
+        }
+    };
     hide_suggestions(list, state);
     search.set_text(&new_query);
     search.set_position(-1);
@@ -383,6 +453,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         suggestions: RefCell::new(Vec::new()),
         suggestion_idx: RefCell::new(0),
         suggestion_start: RefCell::new(0),
+        suggestion_kind: RefCell::new(None),
     });
 
     let (cols, rows) = grid_dims(state.windows.len());

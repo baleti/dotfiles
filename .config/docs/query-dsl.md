@@ -180,9 +180,14 @@ Typing `$` alone should be enough to discover what fields exist — an empty
 field name is otherwise indistinguishable from "not typed yet," so without
 some form of visible completion, `$title`/`$class`/`$workspace`/`$pid`
 (winswitch's actual set, easy to under- or over-guess from memory) has to
-be memorized or re-derived from source. winswitch is the first
-implementation to grow a real completion popup for this — GTK-native, not
-fzf-driven the way the tmux pickers' tab-completion already is (see below):
+be memorized or re-derived from source. The same problem repeats one level
+down: once past `$workspace:`, what *values* actually exist right now (`1`?
+`2`? a named workspace?) is just as undiscoverable without looking. winswitch
+is the first implementation to grow a real completion popup, covering both:
+GTK-native, not fzf-driven the way the tmux pickers' tab-completion already
+is (see below).
+
+**Field-name completion** (`$fragment`, no `:` yet):
 
 - **Trigger**: the query's trailing token, considered on the same
   "editing happens at the end of what's typed" assumption
@@ -195,29 +200,62 @@ fzf-driven the way the tmux pickers' tab-completion already is (see below):
 - **Candidates**: `query::column_suggestions(fragment)` — every `COLUMNS`
   entry that `subsequence()`-fuzzy-matches `fragment`, in `COLUMNS`' own
   order; an empty fragment (bare `$`) matches everything, which is what
-  makes the full set visible on the very first keystroke. This only works
-  as a *complete, browsable* list because winswitch's field set is small
-  and fully enumerable (4 entries today) — the same approach would not
-  make sense for something open-ended like search *values* (window
-  titles), which is why this is field-name-only, not a general
-  value-completion system.
-- **UI**: a plain in-layout `GtkListBox` under the search entry (`ui.rs`),
-  shown/hidden as the trigger condition comes and goes — not a
+  makes the full set visible on the very first keystroke. Works as a
+  *complete, browsable* list because winswitch's field set is small and
+  fully enumerable (4 entries today).
+- Accepting inserts `$<column>:`, cursor landing right after the colon,
+  ready to type a value — which is where field completion hands off to:
+
+**Value completion** (`$field:fragment`, `:` already typed):
+
+- **Trigger**: `query::trailing_value_fragment` — the trailing token starts
+  `$col:`, and `col` resolves, via the same fuzzy rule field-name
+  completion uses, to *exactly one* column. An ambiguous `col` (ties
+  between two or more columns) has no single value set to offer, so this
+  simply doesn't trigger then — same "narrow to nothing rather than guess"
+  choice winswitch already makes for an ambiguous filter match (see
+  `$field:value` above).
+- **Candidates**: `query::value_suggestions(windows, column, fragment)` —
+  every *distinct, non-empty* value that column actually has across the
+  currently open windows right now, subsequence-fuzzy-narrowed by
+  `fragment`, deduplicated and sorted for a stable order. This is what
+  answers `$workspace:` with the workspaces that actually exist this
+  instant, not a hardcoded guess — and works for any column the same way
+  (`$class:` lists the open app classes, `$title:` the open titles), not
+  just workspace. Unlike field-name completion's fixed 4-entry list, this
+  one's size tracks how many distinct values are live, which is why it's
+  scoped to winswitch's small corpus (a couple dozen open windows at most)
+  rather than attempted anywhere with a larger one.
+- Accepting inserts `$<column>:<value> ` — quoted (`"..."`) if the value
+  itself contains whitespace, since splicing a multi-word title back in
+  unquoted would immediately re-split it into two tokens, undoing the
+  quote-aware tokenizing that made it matchable in the first place (see
+  "Quoted phrases" above) — with a **trailing space**, unlike field
+  completion's trailing colon: a value is always a complete term the
+  instant it's chosen, so the query is left ready for the *next* AND term
+  rather than mid-typing this one.
+
+**Shared UI**, for both:
+
+- A plain in-layout `GtkListBox` under the search entry (`ui.rs`),
+  shown/hidden as either trigger condition comes and goes — not a
   `GtkPopover`, because gtk-layer-shell's layer surface has no xdg_popup
   positioner to anchor one to. Narrows on every keystroke the same
-  `search-changed` signal already drives the grid filter from.
-- **Keys, only while the popup is showing**: `Tab` accepts the highlighted
-  suggestion — replaces the trailing fragment with `$<column>:`, cursor
-  landing right after the colon, ready to type a value; `Ctrl+j`/`Ctrl+k`
-  move the highlight down/up (clamped, not wrapped); `Escape` dismisses
-  just the popup, without also closing the grid (the grid's own `Escape`
-  is unconditional the rest of the time). These three keys' normal
-  meaning elsewhere — Tab cycling the grid selection, Escape closing the
-  grid — is unaffected once the popup is gone; the popup-specific handling
-  in `ui.rs`'s key-press handler runs first and only while
-  `state.suggestions` is non-empty.
+  `search-changed` signal already drives the grid filter from. Which of
+  the two modes is live is tracked as `ui.rs`'s `SuggestionKind` enum
+  (`Field` vs. `Value(column)`), since it decides what `Tab` inserts but
+  the popup itself renders identically either way.
+- `Tab` accepts the highlighted suggestion; `Ctrl+j`/`Ctrl+k` move the
+  highlight down/up (clamped, not wrapped); `Escape` dismisses just the
+  popup, without also closing the grid (the grid's own `Escape` is
+  unconditional the rest of the time). These three keys' normal meaning
+  elsewhere — Tab cycling the grid selection, Escape closing the grid — is
+  unaffected once the popup is gone; the popup-specific handling in
+  `ui.rs`'s key-press handler runs first and only while `state.suggestions`
+  is non-empty.
 
-The tmux pickers already have a *narrower* form of this: `focus-picker.py`
+The tmux pickers already have a *narrower* form of field-name completion:
+`focus-picker.py`
 tab-completes a trailing `+$`/`-$`/`$field:` fragment to its first fuzzy
 match, shown as a `[tab → ...]` hint in the fzf header (see
 `suggest_completion`/`header_line` in `focus-picker.py`). That's real

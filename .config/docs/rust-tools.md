@@ -115,9 +115,11 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
   name or value contain spaces), `$col:val` fuzzy-matches column name and
   value independently (subsequence match both ways), bare words
   substring-match title+class (subsequence instead, spanning whitespace, if
-  quoted), multiple tokens AND together. Also exposes
-  `trailing_field_fragment`/`column_suggestions`, the autocomplete
-  narrowing `ui.rs`'s suggestions popup is built on. See
+  quoted), multiple tokens AND together. Also exposes the autocomplete
+  narrowing `ui.rs`'s suggestions popup is built on:
+  `trailing_field_fragment`/`column_suggestions` for field names, and
+  `trailing_value_fragment`/`value_suggestions` for a chosen field's
+  actual live values (e.g. every workspace currently in use). See
   [query-dsl.md](query-dsl.md) for how this relates to the same DSL's other
   implementations (tmux's pickers, `claude-history`).
 - **`src/ui.rs`** — the layer-shell `GtkFlowBox` grid. Two-phase key state
@@ -125,10 +127,12 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
   confirms; any other printable key locks into search mode
   (`GtkSearchEntry` + the `query.rs` DSL), Alt no longer confirms once
   locked, Enter/Escape confirm/cancel either way. While locked, typing a
-  trailing `$fragment` opens a column-name autocomplete popup (a plain
-  `GtkListBox` under the search entry, not a `GtkPopover` — gtk-layer-shell
-  has no xdg_popup positioner to anchor one to): `Ctrl+j`/`Ctrl+k` move the
-  highlight, `Tab` accepts it, `Escape` dismisses just the popup. See
+  trailing `$fragment` or `$field:fragment` opens an autocomplete popup (a
+  plain `GtkListBox` under the search entry, not a `GtkPopover` —
+  gtk-layer-shell has no xdg_popup positioner to anchor one to) offering
+  field names or that field's live values respectively (`SuggestionKind`
+  tracks which): `Ctrl+j`/`Ctrl+k` move the highlight, `Tab` accepts it,
+  `Escape` dismisses just the popup. See
   [query-dsl.md](query-dsl.md#autocompletion).
 - **`src/wayland_capture.rs`** — live thumbnails via
   `hyprland-toplevel-export-v1`, on a wholly separate low-level

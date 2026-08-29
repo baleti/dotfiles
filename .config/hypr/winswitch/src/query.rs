@@ -121,10 +121,54 @@ pub fn trailing_field_fragment(query: &str) -> Option<(usize, String)> {
 /// empty fragment matches (and so lists) every column, which is what makes
 /// typing a bare `$` immediately show the full set -- see
 /// ~/.config/docs/query-dsl.md's autocompletion section for why this only
-/// works at all because the field list is small and fully enumerable,
-/// unlike a value would be.
+/// works at all because the field list is small and fully enumerable.
 pub fn column_suggestions(fragment: &str) -> Vec<&'static str> {
     COLUMNS.iter().copied().filter(|c| subsequence(fragment, c)).collect()
+}
+
+/// If `query` currently ends in a `$col:fragment` token whose `col` resolves
+/// -- via the same fuzzy rule `column_suggestions` uses -- to *exactly one*
+/// column, -> the byte offset where that trailing token starts, the
+/// resolved column name, and the fragment after `:` to narrow values by.
+/// `None` if `col` is ambiguous (resolves to zero or more than one column):
+/// there's no single value set to suggest from in that case, the same way
+/// `trailing_field_fragment` only fires before a `:` exists at all -- the
+/// two functions are mutually exclusive on any given query.
+///
+/// Quote-agnostic for free: `tokenize_with_spans` has already folded a
+/// still-open `$title:"imp` into one token by the time this looks at it, so
+/// `fragment` here is already dequoted.
+pub fn trailing_value_fragment(query: &str) -> Option<(usize, &'static str, String)> {
+    let (start, last) = tokenize_with_spans(query).into_iter().last()?;
+    let (col_query, val_frag) = last.strip_prefix('$')?.split_once(':')?;
+    let mut resolved = COLUMNS.iter().copied().filter(|c| subsequence(col_query, c));
+    let col = resolved.next()?;
+    if resolved.next().is_some() {
+        return None;
+    }
+    Some((start, col, val_frag.to_string()))
+}
+
+/// Every distinct, non-empty value `column` actually has across `windows`
+/// right now, subsequence-fuzzy-narrowed by `fragment` -- exactly the same
+/// matching a manually typed `$column:value` would apply, so what's offered
+/// here is guaranteed to be something that would actually match if typed.
+/// Sorted and deduplicated (`BTreeSet`) for a stable, predictable order
+/// rather than window-list order, which shuffles as focus/list order
+/// changes underneath the popup. Unlike `column_suggestions`'s fixed
+/// `COLUMNS`, this list's *size* isn't bounded by anything but how many
+/// distinct values are currently live -- fine at winswitch's scale (at most
+/// a couple dozen open windows), but why this is winswitch-only for now,
+/// not (yet) attempted for a corpus with hundreds of live values.
+pub fn value_suggestions(windows: &[Window], column: &str, fragment: &str) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for w in windows {
+        let v = column_value(w, column);
+        if !v.is_empty() && subsequence(fragment, &v) {
+            seen.insert(v);
+        }
+    }
+    seen.into_iter().collect()
 }
 
 fn parse(query: &str) -> Vec<Token> {
@@ -307,5 +351,40 @@ mod tests {
         assert_eq!(column_suggestions("ti"), vec!["title"]);
         assert_eq!(column_suggestions("ss"), vec!["class"]); // "workspace" has only one 's'
         assert!(column_suggestions("zzz").is_empty());
+    }
+
+    #[test]
+    fn trailing_value_fragment_needs_an_unambiguous_column() {
+        assert_eq!(
+            trailing_value_fragment("$workspace:"),
+            Some((0, "workspace", "".to_string()))
+        );
+        assert_eq!(
+            trailing_value_fragment("$workspace:2"),
+            Some((0, "workspace", "2".to_string()))
+        );
+        assert_eq!(
+            trailing_value_fragment("foo $ti:al"),
+            Some((4, "title", "al".to_string()))
+        );
+        // "c" is a subsequence of both "class" and "workspace" - ambiguous,
+        // no single value set to suggest from
+        assert_eq!(trailing_value_fragment("$c:x"), None);
+        assert_eq!(trailing_value_fragment("$title"), None); // no ':' yet
+        assert_eq!(trailing_value_fragment("plain"), None);
+    }
+
+    #[test]
+    fn value_suggestions_are_deduped_sorted_and_fuzzy_narrowed() {
+        let windows = vec![
+            win("a", "Firefox", "1", 1),
+            win("b", "Alacritty", "1", 2),
+            win("c", "Alacritty", "2", 3),
+            win("d", "kitty", "", 4), // empty workspace never suggested
+        ];
+        assert_eq!(value_suggestions(&windows, "workspace", ""), vec!["1", "2"]);
+        assert_eq!(value_suggestions(&windows, "class", ""), vec!["Alacritty", "Firefox", "kitty"]);
+        assert_eq!(value_suggestions(&windows, "class", "ala"), vec!["Alacritty"]);
+        assert!(value_suggestions(&windows, "class", "zzz").is_empty());
     }
 }
