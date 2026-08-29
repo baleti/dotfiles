@@ -353,6 +353,12 @@ Item {
             seriesList: root.memSeriesList
             maxValue: 100
             valueFraction: root.last(SysmonSvc.memUsedPct) / 100
+            // Always-visible second reading in the same box, not just inside
+            // the hover graph -- swap can be under pressure while memory
+            // itself looks fine, and that's worth seeing at a glance.
+            secondaryIcon: Icons.swap
+            secondaryText: Math.round(root.last(SysmonSvc.swapUsedPct)) + "%"
+            secondaryValueFraction: root.last(SysmonSvc.swapUsedPct) / 100
             legendItems: root.memLegend
             topProcs: SysmonSvc.topMem
             topUnit: " MB"

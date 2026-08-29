@@ -34,6 +34,16 @@ Rectangle {
 
     property color color1: graded ? gradedColor : Theme.cyan
 
+    // Optional second always-visible icon+value in the SAME box, e.g. the
+    // memory pill's swap readout -- a separate ramped color from the
+    // primary metric since e.g. memory can be comfortable while swap is
+    // under pressure (or vice versa). Empty icon (the default) omits this
+    // whole group, so every other GraphPill is unaffected.
+    property string secondaryIcon: ""
+    property string secondaryText: ""
+    property real secondaryValueFraction: NaN
+    readonly property color secondaryColor: !isNaN(secondaryValueFraction) ? Theme.rampColor(secondaryValueFraction) : Theme.text
+
     // Formats a raw value (0..maxValue) for the y-axis label column --
     // Bar.qml overrides per-widget (percent for cpu/mem, a byte-rate
     // string for net/disk, "N°C" for temperature).
@@ -147,6 +157,30 @@ Rectangle {
             font.family: Theme.iconFontFamily
             font.pixelSize: Theme.fontSize
             color: root.gradedColor
+        }
+
+        Rectangle {
+            visible: root.secondaryIcon.length > 0
+            width: 1
+            height: parent.height * 0.6
+            anchors.verticalCenter: parent.verticalCenter
+            color: Theme.border
+        }
+
+        Text {
+            visible: root.secondaryIcon.length > 0
+            text: root.secondaryText
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSize
+            color: root.secondaryColor
+        }
+
+        Text {
+            visible: root.secondaryIcon.length > 0
+            text: root.secondaryIcon
+            font.family: Theme.iconFontFamily
+            font.pixelSize: Theme.fontSize
+            color: root.secondaryColor
         }
     }
 

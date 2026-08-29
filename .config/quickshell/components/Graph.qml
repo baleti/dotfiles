@@ -186,9 +186,17 @@ Canvas {
         drawGrid(ctx);
 
         if (seriesList.length > 0) {
-            const many = seriesList.length > 2;
             const primary = seriesList.filter(s => !s.dashed);
             const secondary = seriesList.filter(s => !!s.dashed);
+            // Mud comes from stacking many overlapping FILLED areas (cpu
+            // cores) -- a couple of filled primaries next to an unfilled,
+            // de-emphasised secondary (mem used+swap next to cached) never
+            // has that problem, so this counts primary only. Counting
+            // seriesList.length instead (pre-2026-08-29) made mem's own
+            // 3rd series (swap) flip it into a single shared envelope wash
+            // in the pill's overall graded color -- losing both series'
+            // individual fill colors, not just swap's.
+            const many = primary.length > 2;
 
             // Lines on top of fills, always (two passes). Fill strategy
             // depends on how many series there are -- per-core translucent

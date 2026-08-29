@@ -21,6 +21,9 @@ QtObject {
     readonly property string temp: ""
     readonly property string network: ""
     readonly property string disk: ""
+    // md-swap_horizontal -- a different icon set/shape than network's
+    // fa-exchange, so the two don't read as the same glyph.
+    readonly property string swap: "󰓡"
 
     readonly property string batteryCharging: ""
     readonly property string batteryPlugged: ""
