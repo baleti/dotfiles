@@ -50,3 +50,25 @@ These are hand-written, not generated. When a project's active/inactive
 status changes (e.g. waybar gets formally archived, or a script gets
 replaced), update the relevant doc in the same commit as the code change
 where practical, or as a prompt follow-up otherwise.
+
+## Website
+
+This doc set is also published at
+<https://baleti.github.io/dotfiles/>. The site is built from these exact
+`.md` files:
+
+- `./build.py` — converts every page (order/labels in `PAGES`) to a
+  self-contained static site under `./site/` using `pandoc`. Rewrites
+  inter-doc `*.md` links to `*.html`, builds the sidebar + per-page
+  contents rail, and emits a client-side search index. `./build.py --serve`
+  previews it on `localhost:8000`.
+- `./deploy.sh` — runs `build.py` and force-pushes `./site/` to the
+  repo's orphan `gh-pages` branch (GitHub Pages serves that at the URL
+  above). It builds a throwaway git repo inside `site/` rather than
+  checking `gh-pages` out in `$HOME`, so it never touches the working
+  tree. `./deploy.sh --setup` also (re)points the Pages config at the
+  branch via `gh`.
+- `assets/` (`style.css`, `site.js`) is the hand-written theme. `site/` is
+  generated output — git-ignored via `.git/info/exclude`, never committed.
+
+Requires `pandoc`. Run `./deploy.sh` after editing any doc to republish.

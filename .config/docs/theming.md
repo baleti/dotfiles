@@ -31,7 +31,9 @@ source. `~/wallpapers`, not `~/pictures`, is the rotation pool.
 `appearance.lua`'s existing cyan/green accent gradient rather than an
 image — used for the quickshell bar's fallback theme values.
 
-## What `gen-theme.py` writes (all atomic: temp file + rename)
+## What `gen-theme.py` writes
+
+Every write below is atomic (temp file + rename).
 
 | Target | Consumed by |
 |---|---|
