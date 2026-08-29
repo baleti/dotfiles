@@ -207,10 +207,12 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 -- Toggle the *quickshell bar's own* hover-graph panels open/closed on
 -- whichever monitor is focused (~/.config/hypr/scripts/bar-toggle.sh), AND
 -- enter a shared "graph_nav" submap: while active, 1-6 (no modifier) jumps
--- the last-toggled-on panel's history tier straight to 10m/30m/6h/7d/7w/
--- 7mo, and left/right step it one tier at a time, via bar-set-tier.sh ->
--- Bar.qml's setXxxTier() IpcHandler functions (same tier-setting path
--- GraphPill's own tier buttons use).
+-- the most-recently-pressed panel's history tier straight to
+-- 10m/30m/6h/7d/7w/7mo, and left/right step it one tier at a time, via
+-- bar-set-tier.sh -> Bar.qml's setXxxTier() IpcHandler functions (same
+-- tier-setting path GraphPill's own tier buttons use). Escape leaves
+-- graph_nav and returns to the normal keymap -- it does not close any
+-- panels, they stay pinned open independently of the submap.
 --
 -- Originally each widget got its OWN private submap (entered on its entry
 -- key, holding only that widget's own tier/Escape/entry-key binds). That
@@ -221,7 +223,10 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 -- Fixed by folding every widget's entry key into one shared submap: any
 -- entry key works from inside it, each toggling its own panel and
 -- becoming the tier-key target, so panels layer up freely (Bar.qml's
--- stackRight() lays out however many are open).
+-- stackRight() lays out however many are open). An interim version also
+-- tried auto-exiting graph_nav once every panel looked closed, tracked via
+-- a Lua-side open/closed shadow of each panel -- see toggle_widget() below
+-- for why that shadow couldn't be kept honest and was dropped.
 --
 -- temp, disk, mem, and cpu moved from ALT+t/s/m/p to mod+t/d/m/p (disk later
 -- moved off mod+s to mod+d). mod+m
@@ -241,14 +246,20 @@ local GRAPH_WIDGETS = {
     mem  = { key = mainMod .. " + m", toggle = "toggleMem",  tier = "setMemTier" },
 }
 
--- active_widget: whichever panel 1-6/left/right currently act on -- the
--- most recently *opened* one, not just most recently pressed (closing a
--- panel falls back to another still-open one, if any). widget_open mirrors
--- GraphPill's pinned state from the keybind side only -- toggling a panel
--- by clicking its pill directly can desync this, same limitation the old
--- per-widget submaps already had.
-local widget_open = {}
-for name in pairs(GRAPH_WIDGETS) do widget_open[name] = false end
+-- active_widget: whichever panel 1-6/left/right currently act on -- just
+-- the most recently *pressed* entry key, not a tracked open/closed state.
+-- An earlier version tried to mirror each panel's real pinned state here
+-- (to auto-drop back to the normal keymap once nothing was left open), but
+-- that shadow copy only lives as long as the Lua config does -- a plain
+-- `hyprctl reload` (or any edit to this file) resets it to "everything
+-- closed" while the quickshell panels themselves stay exactly as they
+-- were. Next keypress after a reload would then read as "opening" a panel
+-- that was actually already open, so the toggle it sent really *closed*
+-- it (looked like "nothing shows up"), and the open/closed bookkeeping
+-- could also decide to reset out of graph_nav even though a panel was
+-- still on screen (arrows going dead). Reported 2026-08-29. Not tracking
+-- open/closed at all sidesteps the desync entirely: an entry key always
+-- (a) fires the toggle and (b) lands you in graph_nav, full stop.
 local active_widget = nil
 local tier_index = {}
 for name in pairs(GRAPH_WIDGETS) do tier_index[name] = 1 end
@@ -260,44 +271,10 @@ local function set_tier(name, index)
         "~/.config/hypr/scripts/bar-set-tier.sh " .. GRAPH_WIDGETS[name].tier .. " " .. GRAPH_TIERS[index]))
 end
 
-local function any_widget_open()
-    for _, open in pairs(widget_open) do
-        if open then return true end
-    end
-    return false
-end
-
 local function toggle_widget(name)
-    local was_any_open = any_widget_open()
-
     hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. GRAPH_WIDGETS[name].toggle))
-    widget_open[name] = not widget_open[name]
-
-    if widget_open[name] then
-        active_widget = name
-    elseif active_widget == name then
-        active_widget = nil
-        for n, open in pairs(widget_open) do
-            if open then
-                active_widget = n
-                break
-            end
-        end
-    end
-
-    -- Nothing left open -> drop back to the normal keymap automatically
-    -- (mirrors the old "entry key again exits" feel); otherwise stay in
-    -- nav mode so the remaining open panel(s) keep their tier keys live.
-    -- Only dispatch on the actual 0<->1 transition of "any panel open" --
-    -- re-dispatching the SAME already-active "graph_nav" submap on every
-    -- later toggle (e.g. opening a 2nd panel, or closing one of several
-    -- still-open ones) was observed to drop back to the normal keymap
-    -- instead of staying a no-op, closing the graph_nav pill even though
-    -- a panel was still open (reported 2026-08-29).
-    local any_open = any_widget_open()
-    if any_open ~= was_any_open then
-        hl.dispatch(hl.dsp.submap(any_open and "graph_nav" or "reset"))
-    end
+    active_widget = name
+    hl.dispatch(hl.dsp.submap("graph_nav"))
 end
 
 hl.define_submap("graph_nav", function()

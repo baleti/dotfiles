@@ -60,6 +60,10 @@ QtObject {
     // value = combined sent+received KB over the last ~1s (nethogs trace
     // mode, sysmond's own subprocess -- see sysmond.rs's nethogs_loop).
     property var topNet: []
+    // value = combined read+write KB/s over the last sample tick, from
+    // /proc/[pid]/io -- excludes any process sysmond can't read (someone
+    // else's, or one marked non-dumpable), see sysmond.rs's proc_io_bytes.
+    property var topDisk: []
 
     // Whole-disk block devices, same shape as netInterfaces.
     readonly property var diskDevices: diskSock.data.devices ?? []
@@ -98,17 +102,28 @@ QtObject {
         }
     }
 
+    readonly property Socket topDiskSocket: Socket {
+        path: root.socketPath()
+        connected: true
+        onConnectedChanged: if (connected) write("topdisk\n")
+        parser: SplitParser {
+            splitMarker: "\n"
+            onRead: data => { root.topDisk = JSON.parse(data).procs; }
+        }
+    }
+
     // Re-assert each socket if sysmond drops (dev restarts, package
     // upgrades) -- `connected: true` is a constant binding and won't
     // re-fire on its own. Same fix as TieredSocket.qml's timer.
     readonly property Timer reconnectTimer: Timer {
         interval: 2000
         repeat: true
-        running: !root.topCpuSocket.connected || !root.topMemSocket.connected || !root.topNetSocket.connected
+        running: !root.topCpuSocket.connected || !root.topMemSocket.connected || !root.topNetSocket.connected || !root.topDiskSocket.connected
         onTriggered: {
             root.topCpuSocket.connected = true;
             root.topMemSocket.connected = true;
             root.topNetSocket.connected = true;
+            root.topDiskSocket.connected = true;
         }
     }
 }

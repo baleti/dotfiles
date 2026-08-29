@@ -112,6 +112,7 @@ pub enum Metric {
     TopCpu,
     TopMem,
     TopNet,
+    TopDisk,
 }
 
 impl Metric {
@@ -125,6 +126,7 @@ impl Metric {
             "topcpu" => Some(Metric::TopCpu),
             "topmem" => Some(Metric::TopMem),
             "topnet" => Some(Metric::TopNet),
+            "topdisk" => Some(Metric::TopDisk),
             _ => None,
         }
     }
@@ -169,6 +171,7 @@ pub struct ProcEntry {
     pub name: String,
     /// CPU: percent of one core (0-100*n_cores). Mem: resident set in MB.
     /// Net: combined sent+received KB over the last ~1s (nethogs trace mode).
+    /// Disk: combined read+write KB/s over the last sample tick.
     pub value: f64,
     /// A short distinguishing hint the bare `name` (comm) doesn't give --
     /// the command-line tail (`--resume <uuid>` for one of many `claude`s)
