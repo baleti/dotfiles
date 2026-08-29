@@ -8,28 +8,28 @@ duration = 0
 draw_bold_text_with_bright_colors = true
 
 [colors.bright]
-black = "#d4c4b4"
-blue = "#26c886"
-cyan = "#ffb95b"
-green = "#f49e00"
-magenta = "#6bb6ff"
-red = "#b8a3ff"
-white = "#ebe1d9"
-yellow = "#fb89dc"
+black = "#d5c3b5"
+blue = "#4bc776"
+cyan = "#ffb871"
+green = "#fd9916"
+magenta = "#51b9ff"
+red = "#ada7ff"
+white = "#ebe0d9"
+yellow = "#f38cea"
 
 [colors.normal]
-black = "#1f1b16"
-blue = "#26c886"
-cyan = "#ffb95b"
-green = "#f49e00"
-magenta = "#6bb6ff"
-red = "#b8a3ff"
-white = "#d4c4b4"
-yellow = "#fb89dc"
+black = "#201b16"
+blue = "#4bc776"
+cyan = "#ffb871"
+green = "#fd9916"
+magenta = "#51b9ff"
+red = "#ada7ff"
+white = "#d5c3b5"
+yellow = "#f38cea"
 
 [colors.primary]
-background = "#1f1b16"
-foreground = "#ebe1d9"
+background = "#201b16"
+foreground = "#ebe0d9"
 
 [cursor]
 # blinking = "Off"

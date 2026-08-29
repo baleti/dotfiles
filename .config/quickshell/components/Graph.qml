@@ -9,8 +9,11 @@ import "../theme"
 // Two usage modes:
 //  - single: set `series`/`color1`.
 //  - overlay (network rx/tx per interface, or one line per CPU core): set
-//    `seriesList` to [{data, color, dashed}, ...] -- dashed lines skip the
-//    fill so overlapping series don't muddy each other.
+//    `seriesList` to [{data, color, dashed}, ...]. `dashed` no longer means
+//    a dash pattern (that read as "the line broke up" on steep spikes,
+//    2026-08-29) -- it now marks a secondary/de-emphasised series (tx,
+//    disk-write, mem-cached): same hue, drawn at a lower alpha with no
+//    fill, so it still reads as "the quieter twin" of its solid partner.
 Canvas {
     id: root
 
@@ -83,7 +86,7 @@ Canvas {
         return points;
     }
 
-    function drawSeries(ctx, rawData, rawColor, fill, dashed, lineWidth, alpha) {
+    function drawSeries(ctx, rawData, rawColor, fill, lineWidth, strokeAlpha, fillAlpha) {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
@@ -110,21 +113,19 @@ Canvas {
                 ctx.lineTo(p.x, yOf(p.v));
             ctx.lineTo(points[points.length - 1].x, h);
             ctx.closePath();
-            ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, 0.18);
+            ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha);
             ctx.fill();
         }
 
         ctx.beginPath();
-        ctx.setLineDash(dashed ? [6, 4] : []);
         ctx.lineJoin = "round";
         ctx.lineCap = "round";
         ctx.moveTo(points[0].x, yOf(points[0].v));
         for (let i = 1; i < points.length; i++)
             ctx.lineTo(points[i].x, yOf(points[i].v));
-        ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, alpha);
+        ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, strokeAlpha);
         ctx.lineWidth = lineWidth;
         ctx.stroke();
-        ctx.setLineDash([]);
     }
 
     // Fractions of maxValue (0=bottom, 1=top) to draw a faint horizontal
@@ -149,21 +150,23 @@ Canvas {
         ctx.reset();
         drawGrid(ctx);
         if (seriesList.length > 0) {
-            // Many overlapping filled areas (e.g. 12 CPU cores) just muddy
-            // each other and cost more to draw -- stroke-only once there
-            // are more than a couple of series. That same overlap is also
-            // why "many" needs a bolder, more opaque line than a lone
-            // series: a dozen thin (1.25px, alpha 0.9) semi-transparent
-            // lines sharing the same few low-activity pixel rows optically
-            // blend into a dark, undifferentiated mud (reported as "CPU is
-            // all black", 2026-08-28) rather than reading as 12 distinct
-            // colors -- near-opaque + slightly thicker keeps each core's
-            // hue legible even where several overlap.
+            // Every non-secondary series gets a faint fill under it (same
+            // recipe as the single-series graph), even with many overlaid
+            // -- CPU cores mostly idle low, so the fills stack only in a
+            // thin band at the bottom and each spike still reads on its
+            // own. Thin 1px lines at near-full alpha keep each hue legible
+            // where several overlap (the earlier 1.5px "mud" fix, 2026-08-
+            // 28, over-corrected -- "cpu lines too thick", 2026-08-29).
             const many = seriesList.length > 2;
-            for (const s of seriesList)
-                drawSeries(ctx, s.data, s.color, many ? false : !s.dashed, !!s.dashed, many ? 1.5 : 1.25, many ? 1.0 : 0.9);
+            for (const s of seriesList) {
+                const secondary = !!s.dashed;
+                drawSeries(ctx, s.data, s.color, !secondary,
+                           many ? 1.0 : 1.25,
+                           secondary ? 0.4 : (many ? 0.92 : 0.9),
+                           many ? 0.2 : 0.18);
+            }
         } else {
-            drawSeries(ctx, series, color1, true, false, 1.25, 0.9);
+            drawSeries(ctx, series, color1, true, 1.25, 0.9, 0.18);
         }
     }
 }

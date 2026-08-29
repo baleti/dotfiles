@@ -14,27 +14,27 @@
  * showed the stock Pop-Dark blue highlight despite this file importing
  * last. */
 * {
-    background-color: #1f1b16;
-    text-color: #ebe1d9;
+    background-color: #201b16;
+    text-color: #ebe0d9;
 }
 window {
-    background-color: #1f1b16;
-    border-color: #ffb95b;
+    background-color: #201b16;
+    border-color: #ffb871;
 }
 inputbar {
-    background-color: #504539;
-    text-color: #ebe1d9;
+    background-color: #51453a;
+    text-color: #ebe0d9;
 }
 element {
-    text-color: #ebe1d9;
+    text-color: #ebe0d9;
 }
 element.selected.normal, element.selected.active, element.selected.urgent {
-    background-color: #ffb95b;
-    text-color: #462a00;
+    background-color: #ffb871;
+    text-color: #4a2800;
 }
 button.selected {
-    background-color: #ffb95b;
-    text-color: #462a00;
+    background-color: #ffb871;
+    text-color: #4a2800;
 }
 element-text, element-icon {
     background-color: transparent;

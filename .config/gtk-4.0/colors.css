@@ -2,9 +2,9 @@
  * libadwaita-style named colors, consumed by adw-gtk3-dark (from
  * extra/adw-gtk-theme) for GTK3 AND GTK4, and by libadwaita directly.
  * Imported by gtk.css; watched live by colorreload-gtk-module for GTK3. */
-@define-color accent_color #ffb1c5;
-@define-color accent_bg_color #ffb1c5;
-@define-color accent_fg_color #5e1130;
+@define-color accent_color #ffb871;
+@define-color accent_bg_color #ffb871;
+@define-color accent_fg_color #4a2800;
 @define-color destructive_color #ffb4ab;
 @define-color destructive_bg_color #ffb4ab;
 @define-color destructive_fg_color #0a0a0a;
@@ -12,27 +12,27 @@
 @define-color error_bg_color #ffb4ab;
 @define-color error_fg_color #0a0a0a;
 
-@define-color window_bg_color #201a1b;
-@define-color window_fg_color #ece0e1;
-@define-color view_bg_color #201a1b;
-@define-color view_fg_color #ece0e1;
+@define-color window_bg_color #201b16;
+@define-color window_fg_color #ebe0d9;
+@define-color view_bg_color #201b16;
+@define-color view_fg_color #ebe0d9;
 
-@define-color headerbar_bg_color #514346;
-@define-color headerbar_fg_color #ece0e1;
-@define-color headerbar_border_color #ece0e1;
-@define-color headerbar_backdrop_color #201a1b;
+@define-color headerbar_bg_color #51453a;
+@define-color headerbar_fg_color #ebe0d9;
+@define-color headerbar_border_color #ebe0d9;
+@define-color headerbar_backdrop_color #201b16;
 @define-color headerbar_shade_color rgba(0, 0, 0, 0.36);
 
-@define-color card_bg_color #514346;
-@define-color card_fg_color #ece0e1;
+@define-color card_bg_color #51453a;
+@define-color card_fg_color #ebe0d9;
 @define-color card_shade_color rgba(0, 0, 0, 0.36);
 
-@define-color dialog_bg_color #514346;
-@define-color dialog_fg_color #ece0e1;
-@define-color popover_bg_color #514346;
-@define-color popover_fg_color #ece0e1;
+@define-color dialog_bg_color #51453a;
+@define-color dialog_fg_color #ebe0d9;
+@define-color popover_bg_color #51453a;
+@define-color popover_fg_color #ebe0d9;
 
-@define-color sidebar_bg_color #201a1b;
-@define-color sidebar_fg_color #ece0e1;
-@define-color sidebar_backdrop_color #201a1b;
+@define-color sidebar_bg_color #201b16;
+@define-color sidebar_fg_color #ebe0d9;
+@define-color sidebar_backdrop_color #201b16;
 @define-color sidebar_shade_color rgba(0, 0, 0, 0.36);
