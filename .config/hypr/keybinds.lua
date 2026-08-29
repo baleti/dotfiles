@@ -260,7 +260,16 @@ local function set_tier(name, index)
         "~/.config/hypr/scripts/bar-set-tier.sh " .. GRAPH_WIDGETS[name].tier .. " " .. GRAPH_TIERS[index]))
 end
 
+local function any_widget_open()
+    for _, open in pairs(widget_open) do
+        if open then return true end
+    end
+    return false
+end
+
 local function toggle_widget(name)
+    local was_any_open = any_widget_open()
+
     hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. GRAPH_WIDGETS[name].toggle))
     widget_open[name] = not widget_open[name]
 
@@ -279,11 +288,16 @@ local function toggle_widget(name)
     -- Nothing left open -> drop back to the normal keymap automatically
     -- (mirrors the old "entry key again exits" feel); otherwise stay in
     -- nav mode so the remaining open panel(s) keep their tier keys live.
-    local any_open = false
-    for _, open in pairs(widget_open) do
-        any_open = any_open or open
+    -- Only dispatch on the actual 0<->1 transition of "any panel open" --
+    -- re-dispatching the SAME already-active "graph_nav" submap on every
+    -- later toggle (e.g. opening a 2nd panel, or closing one of several
+    -- still-open ones) was observed to drop back to the normal keymap
+    -- instead of staying a no-op, closing the graph_nav pill even though
+    -- a panel was still open (reported 2026-08-29).
+    local any_open = any_widget_open()
+    if any_open ~= was_any_open then
+        hl.dispatch(hl.dsp.submap(any_open and "graph_nav" or "reset"))
     end
-    hl.dispatch(hl.dsp.submap(any_open and "graph_nav" or "reset"))
 end
 
 hl.define_submap("graph_nav", function()
