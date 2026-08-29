@@ -113,17 +113,11 @@ Canvas {
                 ctx.lineTo(p.x, yOf(p.v));
             ctx.lineTo(points[points.length - 1].x, h);
             ctx.closePath();
-            // Vertical gradient, opaque near the top of the canvas and
-            // fading to nothing at the bottom -- not a flat wash. Stacked
-            // flat fills (12 CPU cores) turned every 2-3x overlap into an
-            // arbitrary darker band, which read as "a mess" (2026-08-29).
-            // With the fade, a busy core's fill has real presence up where
-            // its line is while idle cores contribute almost nothing down
-            // in the already-faint tail, so overlaps stop compounding.
-            const grad = ctx.createLinearGradient(0, 0, 0, h);
-            grad.addColorStop(0, Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha));
-            grad.addColorStop(1, Qt.rgba(rgb.r, rgb.g, rgb.b, 0));
-            ctx.fillStyle = grad;
+            // Flat fill (a gradient fade was tried and rejected as "not
+            // practical", 2026-08-29). Overlap between many core fills is
+            // accepted -- fillAlpha is kept modest in onPaint so a 2-3x
+            // stack darkens but doesn't turn to mud.
+            ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha);
             ctx.fill();
         }
 
@@ -173,7 +167,7 @@ Canvas {
                 drawSeries(ctx, s.data, s.color, !secondary,
                            many ? 1.0 : 1.25,
                            secondary ? 0.45 : (many ? 0.92 : 0.9),
-                           many ? 0.38 : 0.3);
+                           many ? 0.28 : 0.3);
             }
         } else {
             drawSeries(ctx, series, color1, true, 1.25, 0.9, 0.3);
