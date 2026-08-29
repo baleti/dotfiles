@@ -19,13 +19,33 @@ wallpaper-watch.sh (polls mtime; autostarted in hyprland.lua)
 gen-theme.py --image <path>     <- extracts the palette, writes every target below
 ```
 
-`wallpaper-rotate.sh` (autostarted, "for now" 2026-08-28 testing cadence —
-not a considered final value) picks a random image from `~/wallpapers`
-every 15 minutes and hands it to `set-wallpaper.sh`, which is what actually
-triggers the chain above — nothing extra is needed for colors to follow
-along. `wallpaper-cycle.sh` steps forward/back through `~/wallpapers`
-(sorted, wrapping) based on wherever `set-wallpaper.sh` last recorded as the
-source. `~/wallpapers`, not `~/pictures`, is the rotation pool.
+`wallpaper-rotate.sh` (autostarted; moved 2026-08-29 from a 15-min "for now"
+testing cadence to a considered 6h one) picks a random image from
+`~/wallpapers` every 6 hours and hands it to `set-wallpaper.sh`, which is
+what actually triggers the chain above — nothing extra is needed for colors
+to follow along. `wallpaper-cycle.sh` steps forward/back through
+`~/wallpapers` (sorted, wrapping) based on wherever `set-wallpaper.sh` last
+recorded as the source. `~/wallpapers`, not `~/pictures`, is the rotation
+pool.
+
+It's a plain `hl.exec_cmd`-launched `while true; sleep` loop, not a systemd
+unit — so a crash of the script itself won't be restarted until the next
+Hyprland session start (login, or a full compositor restart; `hyprctl
+reload` does *not* re-fire `hyprland.start`). Deliberately left this way
+2026-08-29: `set-wallpaper.sh` calls `qs ipc call background reload`, which
+only works talking to the live quickshell instance in the current graphical
+session, and none of this config's other autostart daemons (`sysmond`,
+`notifyd`, `wallpaper-watch.sh`, the `wl-paste --watch` line) are
+systemd units either — there's no environment-import plumbing
+(`systemctl --user import-environment ...`) set up anywhere in
+`hyprland.lua` for a `--user` unit to inherit `WAYLAND_DISPLAY`/the
+quickshell IPC socket. Converting just this one script would be the odd one
+out for a low-value gain, since a stalled rotator only freezes rotation —
+it doesn't affect `wallpaper-watch.sh`'s re-theming. **Revisit if this
+"minidaemon" is ever actually observed crashing** — at that point the
+right fix is probably systemd-ifying all of the session daemons together
+(a `hyprland-session.target` + explicit environment import in the
+`hyprland.start` hook), not just this one in isolation.
 
 `gen-theme.py` can also run seedless (default), deriving the scheme from
 `appearance.lua`'s existing cyan/green accent gradient rather than an
