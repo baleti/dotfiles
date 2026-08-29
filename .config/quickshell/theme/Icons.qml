@@ -15,7 +15,9 @@ QtObject {
     readonly property string ethernet: ""
 
     readonly property string cpu: ""
-    readonly property string memory: ""
+    // fa-memory (RAM stick glyph) -- was fa-reorder ("", a
+    // hamburger/list icon with no relation to memory) before 2026-08-29.
+    readonly property string memory: ""
     readonly property string temp: ""
     readonly property string network: ""
     readonly property string disk: ""

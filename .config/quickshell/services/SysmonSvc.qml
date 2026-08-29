@@ -52,6 +52,7 @@ QtObject {
 
     readonly property list<real> memUsedPct: memSock.data.used_pct ?? []
     readonly property list<real> memCachedPct: memSock.data.cached_pct ?? []
+    readonly property list<real> swapUsedPct: memSock.data.swap_used_pct ?? []
 
     // [{pid, name, value}], value = %CPU of one core, or MB resident.
     property var topCpu: []

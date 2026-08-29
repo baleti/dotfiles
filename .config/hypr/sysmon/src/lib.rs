@@ -195,8 +195,11 @@ pub enum Snapshot {
     Temp { celsius: Vec<f64> },
     // `used_pct` excludes reclaimable cache (same calc as before, matches
     // MemAvailable); `cached_pct` is Buffers+Cached, overlaid separately so
-    // both are visible instead of only the "true" used figure.
-    Mem { used_pct: Vec<f64>, cached_pct: Vec<f64> },
+    // both are visible instead of only the "true" used figure. `swap_used_pct`
+    // is a third overlaid line, percent of SwapTotal in use (2026-08-29).
+    // `#[serde(default)]` so an old sysmond (pre-swap) doesn't break a
+    // rebuilt client expecting this field.
+    Mem { used_pct: Vec<f64>, cached_pct: Vec<f64>, #[serde(default)] swap_used_pct: Vec<f64> },
     // One entry per whole-disk block device (partitions excluded), same
     // overlay-per-device treatment as Net.
     Disk { devices: Vec<DiskHistory> },
