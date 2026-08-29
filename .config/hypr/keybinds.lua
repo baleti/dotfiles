@@ -10,7 +10,9 @@ hl.bind(mainMod .. " + Q",     hl.dsp.window.close())
 hl.bind(mainMod .. " + E",     hl.dsp.exec_cmd(fileManager))
 hl.bind(mainMod .. " + SHIFT + space", hl.dsp.window.float({ action = "toggle" }))
 hl.bind(mainMod .. " + R",     hl.dsp.exec_cmd(menu))
-hl.bind(mainMod .. " + P",     hl.dsp.window.pseudo()) -- dwindle
+-- mod+P used to be dwindle pseudotile toggle; moved to the CPU graph
+-- widget (see graph_tier_widget below) and dropped entirely rather than
+-- rebound elsewhere, per instruction.
 
 -- Move focus with mainMod + arrow keys
 hl.bind(mainMod .. " + left",  hl.dsp.focus({ direction = "left" }))
@@ -210,14 +212,13 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 -- tier-setting path GraphPill's own tier buttons use). Escape or the entry
 -- key again exits back to the normal keymap.
 --
--- temp, disk, and mem moved from ALT+t/ALT+s/ALT+m to mod+t/mod+s/mod+m.
--- mod+m colliding with the media widget's own mod+m (below) was caught
--- live and resolved by moving media to mod+CTRL+m instead - see
--- feedback_hyprland_chord_via_submap memory. net/cpu stay on ALT+n/p:
--- mod+n is notifyctl invoke-last, mod+p is window.pseudo() (dwindle), both
--- pre-existing, so those two couldn't move without breaking something else
--- or being told which to give up. They still gained the same tier-submap
--- capability, just under their original key.
+-- temp, disk, mem, and cpu moved from ALT+t/s/m/p to mod+t/s/m/p. mod+m
+-- collided with the media widget's own mod+m (below) - resolved by moving
+-- media to mod+CTRL+m. mod+p collided with window.pseudo() (dwindle) -
+-- resolved by dropping that binding entirely (told to, not guessed). See
+-- feedback_hyprland_chord_via_submap memory. net stays on ALT+n: mod+n is
+-- notifyctl invoke-last, pre-existing, nothing asked to give it up yet -
+-- it still gained the same tier-submap capability, just under ALT.
 local GRAPH_TIERS = { "10m", "30m", "6h", "7d", "7w", "7mo" }
 
 local function graph_tier_widget(submap_name, entry_key, toggle_func, ipc_setter)
@@ -242,7 +243,7 @@ end
 graph_tier_widget("graph_temp", mainMod .. " + t", "toggleTemp", "setTempTier")
 graph_tier_widget("graph_disk", mainMod .. " + s", "toggleDisk", "setDiskTier")
 graph_tier_widget("graph_net",  "ALT + n",          "toggleNet",  "setNetTier")
-graph_tier_widget("graph_cpu",  "ALT + p",          "toggleCpu",  "setCpuTier")
+graph_tier_widget("graph_cpu",  mainMod .. " + p",  "toggleCpu",  "setCpuTier")
 graph_tier_widget("graph_mem",  mainMod .. " + m",  "toggleMem",  "setMemTier")
 -- mod+CTRL+m opens the media widget AND enters the "media_seek" submap:
 -- while active, bare 0-9 (no modifier -- Hyprland binds match one
