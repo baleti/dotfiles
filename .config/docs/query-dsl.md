@@ -2,44 +2,49 @@
 
 The small query language typed into the search box of every fzf-driven
 picker in this repo, plus winswitch's grid search and the GTK
-clipboard/notification pickers. It was arrived at independently in
+clipboard/notification pickers. Arrived at independently in
 `window-search.py`, then reused (by hand, not by import) in
 `claude-history` and `focus-picker.py`, then reimplemented in Rust for
 winswitch's `query.rs`, then ported by hand a second time into the shared
-`picker.rs` engine behind clipboard-picker and notification-picker. It
-stays copy-pasted rather than a shared library on purpose: the
-implementations split across two languages, and even the four Python/Rust
-ones, while structurally similar, differ enough in what they're searching
-(scored full-text vs. flat substring, tabular vs. grid vs. list) that a
-shared abstraction was judged not worth it — this doc exists so the
-*semantics* stay consistent even though the code doesn't.
+`picker.rs` engine behind clipboard-picker and notification-picker. Stays
+copy-pasted rather than a shared library on purpose — the implementations
+split across two languages and differ enough in what they're searching
+that a shared abstraction was judged not worth it — so this doc is what
+keeps the *semantics* consistent even though the code doesn't.
 
-Implementations, so this doc has a name for each:
+**Two syntax generations exist side by side, deliberately.** The three GTK
+pickers (winswitch, clipboard-picker, notification-picker) use **v2**,
+described in full below: `/` instead of `$`, because `$` sits on the shift
+layer on both UK and US layouts and `/` doesn't, and a picker's search box
+is typed into far more often than it's read about. The three fzf/tmux
+pickers (window-search, claude-history, focus-picker) still use **v1**
+(`$`) — not an oversight, a scoping choice: v1's terminal/fzf-driven UI
+doesn't have (or need) v2's `/sort`/`/reverse` actions or its
+GtkFlowBox-native column rendering, and migrating three more working
+implementations' muscle memory wasn't asked for alongside this redesign.
+Migrating them to v2 later is a natural follow-up, same as winswitch's
+autocomplete popup was built and proven once before being asked for
+elsewhere — not done here.
 
-| Name | File | Searches |
-|---|---|---|
-| window-search | `~/.config/tmux/scripts/window-search.py` | live tmux pane scrollback, BM25-ranked |
-| claude-history | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
-| focus-picker | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
-| winswitch | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout — plus tmux/Claude Code metadata cross-referenced onto them, see below |
-| clipboard-picker | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
-| notification-picker | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
+| Name | Syntax | File | Searches |
+|---|---|---|---|
+| window-search | v1 (`$`) | `~/.config/tmux/scripts/window-search.py` | live tmux pane scrollback, BM25-ranked |
+| claude-history | v1 (`$`) | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
+| focus-picker | v1 (`$`) | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
+| winswitch | v2 (`/`) | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout — plus tmux/Claude Code metadata cross-referenced onto them |
+| clipboard-picker | v2 (`/`) | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
+| notification-picker | v2 (`/`) | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
 
-clipboard-picker and notification-picker share one engine (`picker.rs`) and
-so share one DSL implementation between them — the table lists them
-separately because they configure different `field_names` (clipboard:
-`type`, `date`; notifications: `app`, `date`), not because the grammar
-differs. See [tmux.md](tmux.md) for the tmux bindings and
-[rust-tools.md](rust-tools.md) for winswitch and the GTK pickers.
+See [tmux.md](tmux.md) for the tmux bindings and [rust-tools.md](rust-tools.md)
+for winswitch and the GTK pickers.
 
-## Grammar
+## v1 grammar (`$`) — window-search, claude-history, focus-picker
 
-At each position in the query, one form is matched, tried in this order —
-order matters because later forms are unanchored and would otherwise
-swallow an earlier one's syntax:
+Unchanged by this revision; kept here in full for reference since v2 below
+is best read as a diff against it.
 
 ```
-"phrase"        exact quoted text — also the escape hatch, see below
+"phrase"        exact quoted text — also the escape hatch
 !token          negation prefix (window-search/claude-history only)
 +$group[.sub]   add a display column (focus-picker only)
 -$group[.sub]   remove a display column (focus-picker only)
@@ -47,457 +52,369 @@ $field:value    scope value to one field
 bareword        everything else
 ```
 
-A query is a sequence of these, implicitly ANDed: every requirement present
-must hold for a result to survive at all. Column directives (`+$`/`-$`)
-never filter — they only ever change what a matched row *displays*.
+- `$field:value` — `field` fuzzy-resolved (substring-containment) against
+  the implementation's known field list, unioned across every match.
+  window-search/claude-history score `value` (BM25, prefix-expanded);
+  focus-picker substring-matches it. An unresolvable field degrades to a
+  literal bare-word search over the whole `"$field:value"` text.
+- `+$group[.sub]` / `-$group[.sub]` (focus-picker only) — column
+  visibility, processed left-to-right against one running ordered set, so
+  `-$group.sub` after a `+$group` un-shows just that one column and a
+  later `+$group.sub` can re-show it. Never filters.
+- `!token` / `!"phrase"` (window-search/claude-history only) — negation.
+  `!` over the more conventional `-` specifically because these corpora
+  are full of literal minus signs worth searching *for* (`-rf`, `--stat`).
+- `"..."` — exact, whitespace-normalized text; also the universal escape
+  hatch for `$`/`+$`/`-$`/`!`.
+- Bare words — window-search/claude-history: prefix-expanded, BM25-scored,
+  required. focus-picker: plain substring, required, unranked (MRU order
+  otherwise).
 
-### `$field:value` — the one syntax every implementation shares
+Full detail — the punctuation-carrying "soft literal" bonus, the exact
+`MATCH_MODE=all` semantics, why `!` beat `-` — lives in each script's own
+comments (`window-search.py`, `claude-history`, `focus-picker.py`), not
+duplicated a second time here now that v2 is the actively-developed one.
 
-Scopes `value` to a single field instead of the whole document/row. `field`
-is itself **fuzzy** in every implementation, resolved against the known
-field list rather than requiring the exact name — but *which* fuzzy
-algorithm resolves it is not uniform (see "Fuzzy resolution, precisely"
-below for the two algorithms in play): window-search/claude-history/
-focus-picker use substring-containment (`$ti:foo` reaches `title` because
-`"ti" in "title"`), winswitch and the GTK pickers use subsequence
-(`$tsk:foo` would reach `workspace` — "t","s","k" appear in that order
-inside "workspace" — a match substring-containment alone would miss). Every
-implementation unions every field that resolves rather than picking just
-one, so an ambiguous prefix searches every field it could mean, not an
-arbitrarily-chosen first match.
+## v2 grammar (`/`) — winswitch, clipboard-picker, notification-picker
 
-- **window-search / claude-history**: `value` is itself BM25-scored against
-  that one field's own per-document vocabulary (prefix-expanded the same way
-  a bare word is — see below). An unresolvable field degrades to a literal
-  bare-word search over the whole `"$field:value"` text, since a typo'd
-  field prefix in front of real search text is still a real search someone
-  typed.
-- **focus-picker**: `value` is a plain case-insensitive substring test
-  against that field's literal text (no scoring — this picker doesn't rank).
-  Same unresolvable-field fallback to literal text.
-- **winswitch / clipboard-picker / notification-picker**: both `field` *and*
-  `value` are subsequence matches (see below) — the one family where field
-  resolution isn't substring-containment either, since these engines
-  already had subsequence wired up for values and reused it for names
-  rather than adding a second algorithm. An unresolvable field is
-  unmatchable (contributes nothing that can match), rather than a literal
-  fallback — these are all small, un-ranked corpora (a screen's worth of
-  windows, a few hundred clipboard/notification entries at most), so a
-  stray filter here reads as "narrow to nothing" rather than "silently
-  degrade to a weaker search." clipboard-picker/notification-picker's
-  `Entry::fields` additionally makes a field's *absence* on one entry
-  distinct from an empty value — an entry with no `date` field at all (no
-  logged timestamp for it yet) never matches any `$date:` query, whereas an
-  entry that does have the field always matches `$date:` with nothing after
-  the colon (an empty needle is a no-op for subsequence).
+```
+"phrase"           exact-whitespace / fuzzy-across-whitespace text — see Quoting
+/+path             show a column (path = field, group, group/sub, or group/*)
+/-path             hide a column, same path grammar
+/action/args...    a data-manipulation action — see Actions
+/path[:value]      filter — path = field, group, group/sub, or group/* ; bare group (no ":") = existence check
+bareword           everything else — see Bare words
+```
 
-### Dotted groups (`$group.sub:value`) and group existence (`$group`) — winswitch only
+Every `/`-token is parsed by looking at what immediately follows the `/`,
+in this order:
 
-winswitch is the one implementation whose fields aren't all properties of
-the thing being listed (a Hyprland window) — `tmux` and `claude` are
-**groups**, each with its own subfields, cross-referencing an open
-terminal window against the live tmux server and any live Claude Code
-session running in it (see `~/.config/hypr/winswitch/src/enrich.rs`):
+1. **`+` or `-`** → column visibility (`/+path`, `/-path`). No `:value`
+   ever follows here — a visibility token is *only* a path.
+2. **A known action verb** (currently just `sort`; see Actions) → an
+   action, its own args slash-separated after the verb. Checked *before*
+   field/group resolution: action verbs are a small, deliberately fixed
+   vocabulary (fuzzy-matched the same way field names are, so `/sor/` is
+   as valid as `/sort/`), and none of the current field/group names could
+   ever collide with one.
+3. **Anything else** → a filter: `path` optionally followed by `:value`.
+   `path` is one or more `/`-separated segments (`title`, `tmux/title`,
+   `claude/*`); a bare group with no `:` at all (`/tmux`, `/clau`) is an
+   *existence* check, not a text search.
 
-| Group | Subfields | Bare default (`$group:value`, no dot) |
-|---|---|---|
-| `tmux` | `session`, `window`, `title` | `title` |
-| `claude` | `title`, `path`, `session`, `contents` | `title` |
+The token itself is still found by the same whitespace/quote-aware
+tokenizer v1 uses (`tokenize_with_spans`) — only the character *inside*
+the token that used to be `$`/`+$`/`-$`/`.` changed to `/`+`/`. A dotted
+path is gone entirely: `$tmux.title:foo` is now `/tmux/title:foo`,
+`$claude.*:foo` is now `/claude/*:foo`.
 
-- `$tmux.title:foo` / `$claude.contents:foo` — explicit `group.sub`, fuzzy
-  (subsequence) on both the group name and the sub name, same two-level
-  resolution `+$group.sub` (below) already uses for column visibility, just
-  applied to filtering instead.
-- `$tmux:foo` / `$claude:foo` — bare group, **defaults to `.title`**, not
-  "every sub." Deliberate: a group's `title` is its one field expected to
-  carry a human-meaningful summary (a tmux pane's title, a claude
-  conversation's AI-generated name), so it's what a plain, undecorated
-  `$group:` search should mean.
-- `$group.*:value` — literal reserved suffix meaning "matches if *any*
-  subfield of this group matches." **Not regex** — Haskell-style pattern
-  matching isn't a precedent worth reaching for here either, since it
-  matches value *shape* (constructors, literals, wildcards), not strings.
-  `.*` is one hand-parsed special-case token, consistent with this DSL's
-  standing rule that nothing in it uses a real regex engine (see "Design
-  principles" below) — a further pattern like `$group.*[0-9]` would need
-  actual regex and is out of scope for the same reason. **Any field group a
-  future implementation adds subtypes to should follow this same `$group.*`
-  convention** for "search every subtype," rather than inventing a new one.
-- `$group` — bare group name, **no colon at all** (`$claude`, `$clau`): an
-  *existence* filter, not a text search — "does this window have any data
-  in this group at all." This is what makes typing just `$clau` immediately
-  narrow the grid down to claude-hosting windows before a colon or value is
-  ever typed. Existence isn't a meaningful question for an ordinary column
-  (every window always has *some* title), so this form only ever applies to
-  groups; an unresolved or still-dotted-but-colonless fragment (`$zzz`,
-  `$tmux.se`) falls back to the older plain bare-word behaviour unchanged.
+### `/path[:value]` — filtering
 
-Group data is gathered **asynchronously**, well after the grid is already
-shown — the first implementation in this whole DSL where a field's data
-isn't fully present the instant the picker opens. Alt+Tab has to stay
-instant to open even if tmux is slow to answer or a Claude Code transcript
-is large, so `enrich.rs` runs entirely in a background thread (spawned
-right after the grid's first paint) and streams results in as they land,
-re-running the current filter each time. Concretely: `$claude.contents:`
-(and, briefly, every other `$tmux.*`/`$claude.*` field) may simply not
-match *yet* on a freshly-opened grid, filling in live over the next moment
-as enrichment completes — not an error, the same "absence, not a fallback"
-rule an unresolvable field already had, just arriving on a delay instead of
-never. `$claude.contents` specifically is read last and per-window (one
-thread each), since it's the one genuinely expensive field (reading a whole
-conversation transcript) and must never delay every other window's cheap
-fields landing first.
+`path` is one segment (`title`) for a flat field, or two (`tmux/title`)
+for a group's subfield. Each segment is fuzzy-resolved by subsequence
+match against that level's known name list — `/tsk:foo` reaches
+`workspace` (t,s,k appear in order), `/tmux/se:foo` reaches
+`tmux/session` — and every match is unioned rather than only the first,
+so an ambiguous segment searches every field it could mean.
 
-One more cross-referencing wrinkle specific to tmux: because a terminal
-window can be split into several panes, "is claude running in this window"
-is checked across **every pane currently visible in that window**, not
-just the focused one — if a claude conversation is visible in a side pane
-while some other pane has keyboard focus, `$claude`/`$claude.*` still
-matches, since the point is what's actually on screen, not narrowly what's
-focused. `tmux.title`/`tmux.window` stay tied to the *focused* pane
-specifically, since those two describe what's focused, not merely visible.
+- **Flat field** (`title`, `class`, `workspace`, `pid` for winswitch;
+  `type`/`date` for clipboard-picker; `app`/`date` for
+  notification-picker): `/field:value` scopes `value` to just that field,
+  subsequence-matched.
+- **Group** (winswitch only today — `tmux`, `claude`, cross-referencing an
+  open terminal window against the live tmux server and any Claude Code
+  session running in it; see `~/.config/hypr/winswitch/src/enrich.rs`):
+  - `/group/sub:value` — explicit subfield.
+  - `/group:value` — bare group, **defaults to its `title` subfield**, not
+    "every subfield." A group's `title` is the one field expected to carry
+    a human-meaningful summary (a tmux pane's title, a Claude Code
+    conversation's AI-generated name).
+  - `/group/*:value` — matches if *any* subfield of the group matches.
+    `*` is one hand-parsed reserved segment, **not regex** — nothing in
+    this DSL uses a real regex engine (see Design principles); a further
+    pattern like `/group/*[0-9]` is out of scope for the same reason.
+  - `/group` — bare, **no colon at all**: an *existence* filter, "does
+    this window have any data in this group at all" — not a text search.
+    Typing just `/clau` alone immediately narrows to claude-hosting
+    windows before a colon or value is ever typed. Only meaningful for
+    groups (every window always has *some* title); an unresolved or
+    still-multi-segment-but-colonless fragment (`/zzz`, `/tmux/se`) is
+    still mid-typing, inert (see Design principles), not an existence
+    check.
+- An **unresolvable field/group** is unmatchable (contributes nothing that
+  can match, "narrows to nothing"), not a literal-text fallback — all
+  three v2 corpora are small and unranked, so a stray filter reads as
+  honest failure rather than a silently degraded search.
+- winswitch's group data is gathered **asynchronously**, well after the
+  grid is already shown (`enrich.rs` runs off-thread so a slow tmux server
+  or a large transcript never delays the grid's first paint). A
+  `/tmux/*`/`/claude/*` filter simply doesn't match *yet* on a
+  freshly-opened grid and fills in live as enrichment completes — the same
+  "absence, not a fallback" rule an unresolved field already had, just
+  arriving on a delay. Because a terminal window can be split into several
+  panes, "is claude running here" (`/claude`, `/claude/*`) is checked
+  across **every visible pane**, not just the focused one; `tmux/title`
+  and `tmux/window` stay tied to the *focused* pane specifically, since
+  those two describe what's focused.
 
-### `+$group[.sub]` / `-$group[.sub]` — column visibility (focus-picker only)
+### `/+path` / `/-path` — column visibility
 
-focus-picker is the one implementation with data that's tracked for every
-row but not always worth displaying (SSH destination/host/IP, computed once
-per invocation regardless — see `focus-picker.py`'s `ssh_info()`). `+$group`
-reveals every column in that group; `+$group.sub` reveals just one.
-`-$group[.sub]` is the exact mirror, removing what a `+$` added. Both
-`group` and `sub` are fuzzy the same substring-containment way `$field` is
-(`+$ssh.h` and `+$ssh.host` both reach `SSH.HOST`).
+Now available in **all three** v2 pickers (v1's `+$`/`-$` stayed
+focus-picker-only; v2 generalizes it), because all three now render
+optional per-entry metadata that's worth hiding by default:
 
-Tokens are processed **left to right** against one running ordered set, so
-`+$ssh -$ssh.host +$ssh.host` ends with the column back (removed, then
-re-added) — order is significant, unlike the AND-of-requirements semantics
-everything else in the grammar has. Removing a column that was never added,
-or whose group doesn't resolve, is a silent no-op, not an error.
+- **winswitch**: each grid cell's label. Default shown: `workspace` and
+  `title` (today's existing hardcoded "#N Title" look) — `class`/`pid`
+  and any `tmux`/`claude` field are hidden until added.
+- **clipboard-picker / notification-picker**: nothing beyond the entry's
+  own preview text (or thumbnail). Default shown: **no** extra columns at
+  all — `type`/`date`/`app` only appear once you type `/+date` etc. This
+  differs from winswitch's default on purpose: winswitch's two defaults
+  (workspace, title) are exactly what the grid always showed before this
+  DSL existed, so nothing regresses by default; the GTK list pickers never
+  had extra columns before, so there's no existing baseline to preserve.
 
-Every other implementation has no `+$`/`-$` at all: window-search and
-claude-history's fields are always either scored-in or not part of the
-document, with nothing "hideable"; winswitch's grid and the GTK pickers'
-list rows have no column layout to toggle in the first place (see
-winswitch's own `$field:value` note above — the same reasoning applies to
-clipboard-picker/notification-picker's single-line rows). Any future
-picker that gains optional, expensive-if-always-shown per-row data should
-reach for this same `+$`/`-$` pair rather than inventing a new shape.
+`path` follows the same field/group/sub/`*` grammar as filtering, minus
+the `:value` part (a visibility token is a path and nothing else):
 
-### Negation (`!token` / `!"phrase"`) — window-search / claude-history only
+- `/+workspace` — show a flat field.
+- `/+claude/title` — show one group subfield.
+- `/+claude` — show a group's default (`title`) subfield, same
+  bare-group-defaults-to-title rule filtering uses.
+- `/+claude/*` — show *every* subfield of that group, each as its own
+  column.
+- `/-workspace`, `/-claude/*`, etc. — the exact mirror, removing whatever
+  a `+` (individually or via `*`) added.
 
-`!` drops any result containing `token` (prefix-expanded the same as a bare
-word — `!log` also drops `logs`/`login`) or, quoted, the exact phrase.
-Chosen over the more conventional leading `-` specifically because these two
-corpora are full of literal minus signs worth searching *for* (`-rf`,
-`--stat`, CLI flags in general) — `-` was not available. `!` has no such
-collision, since these two implementations' tokenizers never produce a bare
-`!`. focus-picker and winswitch have no negation.
+Tokens are processed **left to right** against one running ordered set —
+`/+claude/* /-claude/path /+claude/path` ends with `claude/path` back
+(removed, then re-added), order significant unlike the AND-of-requirements
+semantics filtering has. Removing a column that was never shown, or whose
+path doesn't resolve, is a silent no-op, not an error. Column-visibility
+directives **never filter** — they only ever change what a matched entry
+*displays*, a strictly orthogonal concern from which entries survive.
 
-### Quoted phrases (`"..."`)
+### Actions (`/action/args...`)
 
-Doubles, everywhere, as the **literal escape hatch** for every other
-prefix character this grammar reserves (`$`, `+$`, `-$`, `!`): quoting is
-checked first at each position, so `"+$"` always means the two literal
-characters, never the column-add directive. Beyond that, what quoting
-*does* to the text inside it is the one place the four implementations
-genuinely diverge, not just in which forms they support:
+New in this revision: v2's first "do something to the result set" syntax,
+distinct from filtering (narrows which entries survive) and visibility
+(changes what a surviving entry shows). An action's args are always
+`/`-separated, never colon-separated — that's the tell that distinguishes
+`/sort/date/descending` (action) from `/tmux/title:foo` (filter): the verb
+at the front is checked against the small fixed action vocabulary first,
+and only falls through to field/group resolution if it isn't one.
 
-- **window-search / claude-history / focus-picker**: exact text,
-  whitespace-normalized, never fuzzy/prefix-expanded — the opposite end of
-  the spectrum from a bare word. window-search/claude-history additionally
-  give quoted (and punctuation-bearing bare) text a "soft literal" ranking
-  bonus, see the bare-word section above; focus-picker just takes it as a
-  literal substring/AND term.
-- **winswitch / clipboard-picker / notification-picker**: quoting means
-  something different here on purpose — not "exact," but "let this span
-  whitespace." Their tokenizers otherwise split on every whitespace run the
-  way all implementations do, which normally makes a multi-word field name
-  or value impossible to type as one unit (`$title:imperial rome` would
-  become two separate tokens, `$title:imperial` and a stray `rome`).
-  Quoting — `$title:"imperial rome"`, or `$app:"discord canary"` for
-  notification-picker's app-name field — keeps the run as one token without
-  splitting it, and it's still matched by the *same* subsequence()
-  fuzzy-match every unquoted `$field:value` already uses, not a literal
-  comparison. Concretely: `$title:"imp rom"` matches a window titled
-  "Imperial Rome" the identical way `$title:imp` already fuzzy-matches
-  "Imperial", because subsequence() already treats a literal space in the
-  needle as just another character to find in order — matching "imp",
-  then the space between the two haystack words, then "rom" — so no new
-  matching algorithm was needed, only a tokenizer that stops splitting the
-  run apart before subsequence() ever sees it. See each engine's
-  `tokenize_with_spans`/matching code — the whitespace *inside* a token,
-  after tokenizing, is itself the signal that it came from a quoted run,
-  since unquoted whitespace can never survive into a token at all.
+Built now, as the base other actions will extend:
 
-  This upgrade applies to bare (non-`$`) quoted text too in **winswitch**:
-  `"imp rom"` alone, quoted, subsequence-matches title+class; unquoted
-  `imp rom` still ANDs two independent substring tests the older way,
-  order not enforced — both work, but mean slightly different things. It
-  does **not** apply the same way in **clipboard-picker/notification-picker**,
-  because their bare words were never independent tokens to begin with —
-  multiple free words there always get joined into one space-separated
-  phrase and matched as a single literal run against `Entry::haystack`
-  (the original clipboard-picker behaviour, predating this DSL work and
-  left exactly as it was — see `picker.rs`'s module doc). Quoting a free
-  word there still works as the reserved-character escape hatch (searching
-  clipboard history for a literal `"$50"`, say), but doesn't change *how*
-  free text matches the way it does for `$field:value` or for winswitch's
-  independent bare words.
+- **`/sort/field[/direction]`** — sort the surviving (post-filter) entries
+  by `field` (same resolution as a filter's `path`: flat field, or
+  `group`/`group/sub` for winswitch — a bare group defaults to `.title`,
+  same as filtering; `group/*` is **not** valid here, since a sort key
+  has to be one field, not a set). `direction` fuzzy-matches
+  `ascending`/`descending`, defaulting to `ascending` if omitted. Only the
+  **last** `/sort/` token in a query takes effect (replaces, not stacks —
+  simplest predictable behaviour; multi-key sort is a natural but
+  unbuilt extension if it's ever actually wanted). Absent entirely, the
+  picker's own default order applies unchanged (MRU, cliphist recency,
+  winswitch's focus-history order, ...) — sorting is opt-in.
+- **`/reverse`** — reverses whatever order is currently in effect
+  (default order, or a `/sort/` if also present). No args. Idempotent —
+  any number of `/reverse` tokens in one query has the same effect as
+  one, not a toggle, since toggling-by-count would be surprising to type
+  against. Useful on its own specifically because it can flip a picker's
+  *default* order (e.g. see the least-recently-used window first)
+  without having to name a field at all.
+- **Anticipated, not built**: `/limit/N` (cap the result count) is the
+  obvious next one in the same shape — flagged here so the action
+  vocabulary and dispatch mechanism are understood to accommodate it
+  without a redesign, not implemented until it's actually wanted.
+
+**Sort comparison, precisely** — this is the one place a naive
+implementation gets a wrong answer on the very example that motivated it.
+Every v2 field is stored and matched as a `String` (that's what makes
+subsequence-fuzzy filtering and autocomplete simple and uniform), but
+plain lexicographic string comparison is wrong for two field shapes v2
+already has:
+
+- **Plain integers** (`workspace`, `pid`): `"10"` sorts before `"2"`
+  lexicographically. Wrong for a human reading a workspace/pid list in
+  order.
+- **Age buckets** (`date`, from `humanize_ago` — `"30s"`, `"5m"`, `"3h"`,
+  `"2d"`): comparing the strings is nonsense across units (`"10m"` <
+  `"2d"` lexicographically has no relationship to which is actually more
+  recent), and even converting to seconds and comparing *that* isn't
+  enough on its own — see the direction trap below.
+
+The comparator (`compare_field_values` in each engine's query/picker
+module) sniffs the shape of both values being compared and picks the
+right rule: both parse as plain non-negative integers → numeric compare;
+both match the `humanize_ago` bucket shape (`^\d+[smhd]$`) → convert to
+seconds and compare *that*; otherwise → plain lexicographic string
+compare (the correct behaviour already for `type`/`class`/`title`/`app`
+and anything else that's genuinely just text).
+
+**The direction trap**: `date`'s stored value is an *age* (seconds ago),
+not an absolute timestamp — smaller age means *more recent*. A user
+typing `/sort/date/descending` means "newest first" (the ordinary,
+calendar sense of "descending date"), which is **ascending by age in
+seconds** (smallest age first) — the literal opposite of what "descending"
+would mean applied to the raw number. So for age-bucket-shaped values
+specifically, the requested direction is inverted before it reaches the
+numeric comparison: `ascending` (oldest first, chronologically) compares
+by age *descending* (largest age first) internally, and `descending`
+(newest first) compares by age *ascending* internally. Plain-integer and
+text fields apply the requested direction literally, with no such
+inversion — the trap is specific to values that represent "time since,"
+not comparison in general.
+
+### Quoting
+
+Doubles, everywhere, as the **literal escape hatch** for every prefix
+character this grammar reserves (`/`, `+`, `-`): checked first at each
+token position, so `"+something"` always means those literal characters,
+never a visibility directive. Beyond that, quoting means "let this span
+whitespace" rather than "exact" — the same design v1's window-search/
+claude-history/focus-picker do *not* share (their quoting means exact,
+literal text; see the v1 section above and each script's own comments).
+v2's tokenizer otherwise splits on every whitespace run, which would
+normally make a multi-word field name or value impossible to type as one
+unit (`/title:imperial rome` would become two separate tokens). Quoting —
+`/title:"imperial rome"`, `/app:"discord canary"` — keeps the run as one
+token, still matched by the *same* subsequence() fuzzy-match an unquoted
+`/field:value` already uses, not a literal comparison: `/title:"imp rom"`
+matches "Imperial Rome" the identical way `/title:imp` already
+fuzzy-matches "Imperial", because subsequence() treats a literal space in
+the needle as just another character to find in order.
+
+This upgrade applies to bare (non-`/`) quoted text too in **winswitch**:
+`"imp rom"` alone, quoted, subsequence-matches title+class; unquoted
+`imp rom` still ANDs two independent substring tests the older way, order
+not enforced. It does **not** apply the same way in
+**clipboard-picker/notification-picker**, because their bare words were
+never independent tokens to begin with — multiple free words there always
+join into one space-separated phrase, matched as a single literal run
+against `Entry::haystack` (predates this DSL work, left as-is — see
+`picker.rs`'s module doc). Quoting a free word there still works as the
+reserved-character escape hatch, but doesn't change *how* free text
+matches.
 
 ### Bare words
 
-The default: no special character, no quotes. What counts as a "match"
-differs by implementation and is the main axis they differ on:
-
-- **window-search / claude-history**: prefix-expanded against the corpus's
-  own vocabulary (`"ric"` finds `"ricing"`), BM25-scored, and required
-  (`MATCH_MODE=all`, i.e. every bare word's expansion must appear
-  *somewhere* in the document — see [[bm25_score_gate_vs_filter_only_fields]]
-  memory for a gotcha hit while wiring required-vs-scoring together for
-  `$field:` terms specifically). A bare word carrying punctuation (`ctrl+.`)
-  additionally gets a **soft literal** bonus: it still searches for just the
-  alnum token (`ctrl`, since punctuation is stripped at the tokenizer), but
-  a document containing the literal punctuated text scores higher — nothing
-  is excluded by this, it only affects ranking.
-- **focus-picker**: plain case-insensitive substring test against the row's
-  full searchable text (session + window + title + any tracked-but-hidden
-  data), required, unranked — the base list is always MRU order; typing only
-  narrows it.
-- **winswitch**: substring test against `title + " " + class` only (not
-  workspace/pid — those need the explicit `$field:` form), required,
-  unranked — unless quoted (see above), in which case it's a
-  whitespace-preserving subsequence match instead.
-- **clipboard-picker / notification-picker**: every bare word is joined
-  into one space-separated phrase (not independent tokens — see the
-  "Quoted phrases" section above) and matched as one literal substring
-  against `Entry::haystack` (clipboard preview text; app name + summary +
-  body for notifications), required, unranked. This is the strictest of
-  the bunch: `hello world` requires that exact contiguous run, not "hello"
-  and "world" each present somewhere — predates this DSL work and wasn't
-  changed by it (see `picker.rs`'s module doc for why touching it wasn't
-  in scope here).
+No `/`, no quotes — the always-available default with no syntax to learn
+(see Design principles). **winswitch**: substring test against
+`title + " " + class`, required, unranked — subsequence instead if quoted
+(see Quoting). **clipboard-picker / notification-picker**: every bare
+word joins into one space-separated phrase, matched as one literal
+substring against `Entry::haystack` (clipboard preview; app+summary+body
+for notifications) — the strictest of the three, `hello world` requires
+that exact contiguous run, not "hello" and "world" independently present.
 
 ## Autocompletion
 
-Typing `$` alone should be enough to discover what fields exist — an empty
-field name is otherwise indistinguishable from "not typed yet," so without
-some form of visible completion, a picker's field set (winswitch's
-`title`/`class`/`workspace`/`pid`; clipboard-picker's `type`/`date`;
-notification-picker's `app`/`date`) has to be memorized or re-derived from
-source. The same problem repeats one level down: once past `$workspace:`,
-what *values* actually exist right now (`1`? `2`? a named workspace?) is
-just as undiscoverable without looking. All three GTK pickers — winswitch
-first, then clipboard-picker/notification-picker ported by hand from it —
-grow a real completion popup covering both, GTK-native rather than
-fzf-driven the way the tmux pickers' tab-completion already is (see below).
+Typing `/` alone should be enough to discover what exists — an empty
+fragment is otherwise indistinguishable from "not typed yet." All three
+v2 pickers grow a real GTK-native completion popup (not fzf-driven, since
+these aren't fzf-backed) covering every stage of the grammar, not just the
+field name:
 
-**Field-name completion** (`$fragment`, no `:` yet):
+1. **Top-level** (`/fragment`, nothing else typed yet): candidates are
+   every flat field, group, and action verb that fuzzy-matches
+   `fragment`, **plus** the two literal characters `+` and `-` as their
+   own candidates. Accepting `+`/`-` inserts just that character (no
+   trailing `:` or space) and immediately re-triggers completion one
+   level down.
+2. **After `+`/`-`** (`/+fragment`, `/-fragment`): candidates are fields
+   and groups only — no action verbs (an action can't be shown/hidden),
+   no further `+`/`-`. Accepting inserts the path segment with **no**
+   trailing punctuation — a visibility token is complete the moment its
+   path is (`/+claude` is already valid on its own, unlike a filter's
+   `/claude:`).
+3. **After a group + `/`** (`/tmux/fragment`, in any of the three
+   contexts above): candidates are that group's subfields plus `*`.
+4. **After an unambiguous field/group + `:`** (`/title:fragment`,
+   filtering only): candidates are every distinct, non-empty value that
+   field actually has across the current entries right now, fuzzy-
+   narrowed by `fragment`, deduplicated and sorted — this is what answers
+   `/workspace:` with the workspaces that actually exist this instant,
+   not a hardcoded guess, and is the one stage genuinely scoped to these
+   corpora being small (a couple dozen windows, a few hundred
+   clipboard/notification entries at most).
+5. **After `/sort/` + an unambiguous field** (`/sort/date/fragment`):
+   candidates are `ascending`/`descending`, fuzzy-narrowed the same way.
 
-- **Trigger**: the query's trailing token, considered on the same
-  "editing happens at the end of what's typed" assumption
-  `focus-picker.py`'s `suggest_completion` already uses, starts with `$`
-  and has no `:` yet — `trailing_field_fragment` (winswitch's `query.rs`;
-  `picker.rs` for the GTK pickers) detects this off the same quote-aware
-  tokenizer the matching logic uses (so `$"col na` — an in-progress quoted
-  field name — triggers it too), returning the fragment text after `$` and
-  the byte offset a chosen completion should replace.
-- **Candidates**: `column_suggestions`/`field_suggestions` — every
-  configured field name (winswitch's fixed `COLUMNS`; a picker's own
-  `PickerConfig::field_names` for the GTK pickers) that
-  `subsequence()`-fuzzy-matches `fragment`, in that list's own order; an
-  empty fragment (bare `$`) matches everything, which is what makes the
-  full set visible on the very first keystroke. Works as a *complete,
-  browsable* list only because each picker's field set is small and fully
-  enumerable (4 entries for winswitch, 2 each for the GTK pickers today).
-- Accepting inserts `$<field>:`, cursor landing right after the colon,
-  ready to type a value — which is where field completion hands off to:
-
-**Value completion** (`$field:fragment`, `:` already typed):
-
-- **Trigger**: `trailing_value_fragment` — the trailing token starts
-  `$field:`, and `field` resolves, via the same fuzzy rule field-name
-  completion uses, to *exactly one* field. An ambiguous typed name (ties
-  between two or more fields) has no single value set to offer, so this
-  simply doesn't trigger then — same "narrow to nothing rather than guess"
-  choice these engines already make for an ambiguous filter match (see
-  `$field:value` above).
-- **Candidates**: `value_suggestions(entries, field, fragment)` — every
-  *distinct, non-empty* value that field actually has across the current
-  entries right now (open windows; clipboard/notification history),
-  subsequence-fuzzy-narrowed by `fragment`, deduplicated and sorted for a
-  stable order. This is what answers `$workspace:` with the workspaces
-  that actually exist this instant, or `$type:` with `image`/`text` only
-  if both are actually present, rather than a hardcoded guess — and works
-  for any field the same way, not just the one it was first tried on.
-  Unlike field-name completion's fixed short list, this one's size tracks
-  how many distinct values are live, which is why it's scoped to these
-  pickers' small corpora (a couple dozen open windows; a few hundred
-  clipboard/notification entries at most, and typically far fewer
-  *distinct* values among them) rather than attempted anywhere with a
-  larger one.
-- Accepting inserts `$<field>:<value> ` — quoted (`"..."`) if the value
-  itself contains whitespace (e.g. notification-picker's `$app:"Discord
-  Canary"`), since splicing a multi-word value back in unquoted would
-  immediately re-split it into two tokens, undoing the quote-aware
-  tokenizing that made it matchable in the first place (see "Quoted
-  phrases" above) — with a **trailing space**, unlike field completion's
-  trailing colon: a value is always a complete term the instant it's
-  chosen, so the query is left ready for the *next* AND term rather than
-  mid-typing this one.
-
-**Shared UI**, for both, in all three GTK pickers:
-
-- A plain in-layout `GtkListBox` under the search entry, shown/hidden as
-  either trigger condition comes and goes — not a `GtkPopover`, because
-  gtk-layer-shell's layer surface has no xdg_popup positioner to anchor
-  one to. Narrows on every keystroke the same signal that already drives
-  the underlying list/grid filter. Which of the two modes is live is
-  tracked as a `SuggestionKind` enum (`Field` vs. `Value(field)`), since it
-  decides what `Tab` inserts but the popup itself renders identically
-  either way.
-- `Tab` accepts the highlighted suggestion; `Ctrl+j`/`Ctrl+k` move the
-  highlight down/up (clamped, not wrapped); `Escape` dismisses just the
-  popup, without closing the picker itself (the picker's own `Escape` is
-  unconditional the rest of the time). These three keys' normal meaning
-  elsewhere — Tab cycling/toggling focus, Escape closing the picker — is
-  unaffected once the popup is gone; the popup-specific handling in the
-  key-press handler runs first and only while suggestions are non-empty.
-- One real bug worth knowing if this popup ever silently stops appearing
-  again: a `GtkListBox` built with `no-show-all` (set so the picker's own
-  one-time `show_all()` at startup doesn't prematurely reveal an empty
-  popup) will *also* ignore a later `show_all()` call meant to reveal it —
-  the flag guards the widget it's set on, not just descendants reached
-  through an ancestor's recursive call. Every row/label has to be shown
-  explicitly, and the list itself revealed with a direct `.show()`, not
-  `.show_all()`. Hit and fixed once in winswitch's `ui.rs`, carried
-  correctly into `picker.rs` from the start the second time around.
-
-The tmux pickers still only have a *narrower* form of field-name
-completion: `focus-picker.py` tab-completes a trailing `+$`/`-$`/`$field:`
-fragment to its first fuzzy match, shown as a `[tab → ...]` hint in the
-fzf header (see `suggest_completion`/`header_line` in `focus-picker.py`).
-That's real completion, but text-only and single-candidate — no visible
-list, no up/down browsing among several matches. Whether to build the
-fuller popup-with-navigation treatment for the tmux pickers too (fzf
-supports a preview-window-driven candidate list, which could play the same
-role) is still open — three GTK implementations now agree on the design,
-which is a stronger case for eventually doing it than winswitch alone was,
-but it hasn't been done.
+Shared UI across all five stages, in all three pickers: a plain in-layout
+`GtkListBox` under the search entry (not a `GtkPopover` — gtk-layer-
+shell's layer surface has no xdg_popup positioner to anchor one to),
+narrowed on every keystroke off the same signal that drives the
+underlying filter. `Tab` accepts the highlighted suggestion; `Ctrl+j`/
+`Ctrl+k` move the highlight (clamped, not wrapped); `Escape` dismisses
+just the popup, never the picker itself, while it's showing. One real bug
+worth remembering if this popup ever silently stops appearing again: a
+`GtkListBox` built with `no-show-all` (so the picker's own one-time
+startup `show_all()` doesn't prematurely reveal an empty popup) also
+ignores a *later* `show_all()` meant to reveal it — the flag guards the
+widget it's set on, not just descendants an ancestor's recursive call
+reaches. Every row/label has to be shown explicitly, the list itself
+revealed with a direct `.show()`.
 
 ## Fuzzy resolution, precisely
 
-Two different "fuzzy" algorithms are in play here, and it matters which one
-a given implementation uses:
-
-- **Substring-containment** (field/group *names* — window-search,
-  claude-history, focus-picker; not winswitch or the GTK pickers, see
-  below): `needle in haystack`, i.e. `needle` appears somewhere in the
-  field name, not necessarily at the start. Cheap, and field name lists are
-  short (2-8 entries) and hand-picked, so ambiguity is rare and a union of
-  matches is the safe default where it happens.
-- **Prefix expansion** (bare-word and `$field:` *values*, window-search /
-  claude-history only): every corpus vocabulary term starting with the
-  typed text is a candidate, found by binary search over a sorted term list
-  — this is what makes live-as-you-type search work at all (`"ric"` matching
-  nothing until the whole word `"ricing"` is typed would be useless).
-- **Subsequence match** (winswitch and the GTK pickers, `$field:value`
-  *values and field names both*, plus winswitch's quoted bare words — see
-  "Quoted phrases" above): every character of the typed text must appear in
-  the target string in order, not necessarily contiguous
-  (`subsequence("crit", "alacritty")` is true). Chosen there because these
-  corpora are all tiny (a couple dozen open windows; a few hundred
-  clipboard/notification entries) — so subsequence's looser, "type any
-  letters roughly in order" feel costs nothing in precision at that scale,
-  unlike a scored full-text corpus where it would produce noise. This is
-  also what powers autocompletion's narrowing (`column_suggestions`/
-  `field_suggestions`, see below) — the same algorithm doing double duty
-  for both filtering and suggestion-ranking.
-- **Plain substring** (focus-picker's bare words and `$field:` values,
-  winswitch's *unquoted* bare words, and clipboard-picker/
-  notification-picker's bare words, quoted or not — see "Quoted phrases"):
-  `needle in haystack.lower()`, no fuzziness beyond case-insensitivity.
-  Used wherever there's no scoring model to rank fuzzy matches by, so a
-  looser match algorithm would just be noise with no way to sort the good
-  hits above it.
+- **v1** (window-search/claude-history/focus-picker): field/group names —
+  substring-containment. Bare words and `$field:` values — window-search/
+  claude-history: prefix-expansion against the corpus vocabulary, BM25-
+  scored; focus-picker: plain substring.
+- **v2** (winswitch and the GTK pickers): every level — path segments,
+  filter values, action verbs, sort direction — subsequence match
+  (`subsequence("crit","alacritty")` is true: every character of the
+  needle appears in the haystack in order, not necessarily contiguous).
+  Chosen because every v2 corpus is tiny (a couple dozen windows; a few
+  hundred clipboard/notification entries), so subsequence's looser feel
+  costs nothing in precision at that scale. The same algorithm powers
+  autocompletion's narrowing at every stage — one algorithm doing double
+  duty for filtering and suggestion-ranking throughout v2. Bare words are
+  plain substring in v2 (winswitch unquoted; both GTK pickers always) —
+  see Bare words above for why subsequence isn't used there.
 
 ## Design principles
 
-These are the rules that were arrived at by trial and error (see each
-script's own inline comments for the specific incident, where one exists)
-and that any new implementation of this DSL should keep:
-
 - **Never flash to zero results on a valid-so-far partial keystroke.** A
-  token that's mid-typed — `$`, `$ti` (no colon yet), `+$`, `+$ssh.` (no sub
-  yet), an unterminated `"phrase` — must be treated as inert (contributes no
-  requirement) rather than literal-searched-for-as-typed. Literal-searching
-  a half-typed DSL fragment is what makes a live-filtering list blank out
-  for the one keystroke before the user finishes typing the field name; see
-  `focus-picker.py`'s `parse_query()` docstring for the exact bug this
-  guards against, and contrast with the *next* rule.
-- **...but a genuinely unresolvable, *complete* token still degrades to a
-  literal search**, not a dropped/erroring one — `$zzz:foo` (window-search /
-  claude-history / focus-picker) becomes a literal search for the text
-  `"zzz:foo"`, because at that point it's not mid-typing anymore, it's
-  plausible real search text with a misspelled or unknown prefix in front of
-  it. winswitch and the GTK pickers are the exception (see the
-  `$field:value` note above) — their small, unranked corpora make "matches
-  nothing" the more honest answer than a fallback literal search would be.
+  token that's mid-typed (`/`, `/ti`, `/+`, `/tmux/`, `/sort/`, an
+  unterminated `"phrase`) is inert — contributes no requirement — rather
+  than literal-searched-for-as-typed.
+- **...but a genuinely unresolvable, *complete* v1 token still degrades
+  to a literal search** (`$zzz:foo` → literal search for `"zzz:foo"`),
+  since a typo'd prefix in front of real search text is still a real
+  search someone typed. v2 is the exception (see filtering above) — its
+  small, unranked corpora make "matches nothing" the more honest answer.
 - **Every picker keeps one plain-typing default with no special syntax at
-  all.** Whatever `$field:value` a picker grows, typing without any `$`
-  must always still search *something* sensible by default — clipboard
-  contents for clipboard-picker, window title+class for winswitch, pane
-  scrollback for window-search.py, notification summary/body/app for
-  notification-picker (`Entry::haystack` in the GTK pickers; the bare-word
-  path in every other implementation). This is what makes the DSL
-  additive rather than a wall a casual user has to learn before the picker
-  is useful at all: `$field:value` narrows or targets, but nothing here is
-  ever *required* to get a plausible result.
-- **No real regex anywhere in this DSL — every fuzzy match is one of
-  substring-containment, subsequence, or prefix-expansion.** Even the one
-  form that reads most like a wildcard, winswitch's `$group.*` ("match any
-  subfield of this group" — see above), is a single hand-parsed reserved
-  token, not a regex engine: a further pattern like `$group.*[0-9]` would
-  need one and is deliberately not supported. Any future field group with
-  subtypes should follow `$group.*` for "search every subtype" rather than
-  reaching for real regex.
-- **Column-visibility directives never filter.** `+$`/`-$` change what's
-  *shown*, never what *matches* — keeping "which rows survive" and "what
-  columns those rows show" as two orthogonal concerns is what let `-$` get
-  added on top of an existing `+$` without touching a single filtering code
-  path (see `focus-picker.py` git history).
-- **Quoting is the universal escape hatch**, tried before every other
-  grammar form at each position, so any reserved-character text a user
-  actually wants to search for verbatim (`"+$"`, `"$title:"`, `"!foo"`) is
-  always reachable, never permanently shadowed by the DSL.
-- **Field/group name resolution is never plain prefix matching.** Every
-  implementation resolves a field name more loosely than "starts with" —
-  substring-containment in three, subsequence in winswitch and the GTK
-  pickers (see "Fuzzy resolution, precisely" above) — specifically so an
-  abbreviation doesn't have to start at the beginning of the real name:
-  `$ti:` reaching `title` is the common case, but `$ssion:` reaching
-  `session` (substring) or `$tsk:` reaching `workspace` (subsequence) is
-  exactly as valid, and no implementation special-cases "assume they meant
-  the front."
-- **AND, not OR, across distinct tokens.** Every requirement a query
-  expresses (bare words, phrases, `$field:` terms) must all be satisfied by
-  a surviving result — this is what makes a query readable left to right as
-  "narrow, then narrow further," matching how every other filter-box tool
-  (recoll, Xapian-backed search, `fzf` itself in extended mode) already
-  behaves, so nothing here has to be relearned per picker.
+  all.** Whatever `/field:value`/`$field:value` a picker grows, typing
+  without any prefix character must always still search *something*
+  sensible by default — clipboard contents, window title+class, pane
+  scrollback, notification summary/body/app. This is what makes the DSL
+  additive, never a wall a casual user has to learn first.
+- **No real regex anywhere in this DSL.** Every fuzzy match is
+  substring-containment, subsequence, or prefix-expansion. `/group/*` is
+  one hand-parsed reserved segment, not a wildcard engine.
+- **Column-visibility directives never filter.** `/+`/`/-` (v2) and
+  `+$`/`-$` (v1, focus-picker) change what's *shown*, never what
+  *matches* — orthogonal to filtering by construction.
+- **Actions never filter or hide either** (v2). `/sort`/`/reverse`
+  reorder what filtering already decided should survive; they never
+  change which entries survive.
+- **Quoting is the universal escape hatch**, checked before every other
+  grammar form, so any reserved-character text a user actually wants to
+  search for verbatim is always reachable.
+- **Field/group name resolution is never plain prefix matching** — an
+  abbreviation doesn't have to start at the beginning of the real name.
+- **AND, not OR, across distinct filter tokens.** Every requirement a
+  query expresses must all be satisfied by a surviving entry.
 - **Selection follows the user, not the query — where there's no reason
-  for it to follow something else.** Auto-selecting the top result on open
-  or on every filtering keystroke reads as a highlight jumping around
-  unpredictably while typing, easy to mistake for something about to
-  happen on its own. clipboard-picker and notification-picker open with
-  nothing selected; the first explicit navigation (an arrow key, Tab into
-  the list, a mouse click) is what selects anything, and lands on the top
-  visible entry rather than skipping past it. `Enter` still falls back to
-  activating the top visible entry with nothing explicitly selected — no
-  visual pre-highlight, but a plain type-then-Enter flow still works, the
-  same "spotlight search" convention most such boxes already use. A
-  selection that a subsequent keystroke filters out of view is explicitly
-  cleared rather than left dangling and invisibly active. winswitch's grid
-  is the deliberate exception: it still auto-selects on open, because
-  landing on the *previously active window* the instant a single Alt+Tab
-  tap completes is the entire point of classic alt-tab behaviour, not a
-  leftover default to clean up — see winswitch's own `run()` and its
-  `initial_cmd`/`start_idx` handling.
+  for it to follow something else.** clipboard-picker and
+  notification-picker open with nothing selected; the first explicit
+  navigation selects the top visible entry, and a selection a later
+  keystroke filters out of view is cleared rather than left dangling.
+  `Enter` with nothing selected still activates the top visible entry.
+  winswitch's grid is the deliberate exception — it still auto-selects on
+  open, because landing on the previously active window the instant a
+  single Alt+Tab tap completes is the entire point of classic alt-tab
+  behaviour.

@@ -4,9 +4,23 @@
 //! (typed directly, or forwarded over the socket from a later Alt+Tab press
 //! while this instance is already open) cycles the selection and releasing
 //! Alt confirms it; pressing any other printable key locks the grid into
-//! search mode (a `GtkSearchEntry` filters the grid -- substring match for
-//! now, the `$column:value` DSL from `query.rs`), Alt no longer
-//! confirms once locked, and Enter/Escape confirm/cancel in either mode.
+//! search mode (a `GtkSearchEntry` filters the grid -- the `/field:value`
+//! DSL from `query.rs`), Alt no longer confirms once locked, and
+//! Enter/Escape confirm/cancel in either mode.
+//!
+//! **A window-identity subtlety worth knowing before touching filtering,
+//! sorting, or selection**: `state.selected` and the arrow-key/Tab
+//! navigation in `run()`'s key handler are all built around *visual grid
+//! position* (a `FlowBoxChild`'s live index in the box), because that's
+//! what "arrow right" spatially means once `/sort` can reorder the grid --
+//! `state.windows`' own index into that Vec is a *separate*, stable
+//! identity that survives any resort. `child_window_idx` (reading a small
+//! integer stashed in each child's `widget_name` at creation, since
+//! `FlowBoxChild::index()` itself changes under a custom sort func and so
+//! can't be used to recover "which window is this") is what bridges the
+//! two: filtering, sorting, and `confirm()` all resolve *from* a
+//! FlowBoxChild *to* a window index this way rather than assuming the two
+//! numbers are ever the same.
 
 use std::cell::RefCell;
 use std::io::Read;
@@ -19,24 +33,65 @@ use gtk_layer_shell::LayerShell;
 
 use crate::enrich::TmuxClaudeMeta;
 use crate::hyprctl::{self, Window};
+use crate::query::{self, ResolvedField};
 
 const MIN_FRAME: i32 = 64;
-const MAX_FRAME: i32 = 240;
+// Raised from 240: aspect-matched cells (see `grid_dims`) now often earn a
+// taller height budget for portrait windows, and capping the thumbnail
+// itself well below that budget would just turn the extra room back into
+// dead space under/over the frame instead of a bigger, more legible
+// thumbnail.
+const MAX_FRAME: i32 = 320;
 // A 2-line label plus its spacing under the frame.
 const LABEL_ALLOWANCE: i32 = 54;
 // Per-cell margin + flowbox row/column spacing, horizontal and vertical.
 const CELL_H_OVERHEAD: i32 = 24;
 const CELL_V_OVERHEAD: i32 = 24;
 
-/// A near-square column/row split so the grid's cells arrange sensibly for
-/// however many windows there are. Cols is clamped to [2, 6]: below 2, a
-/// single window would sit in an oddly narrow sliver; above 6, more windows
-/// mostly grows the grid *taller* rather than wider than it is tall, since a
-/// wide wall of cells reads worse than a taller rectangle.
-fn grid_dims(n: usize) -> (i32, i32) {
-    let n = n.max(1) as f64;
-    let cols = (n.sqrt().ceil() as i32).clamp(2, 6);
-    let rows = (n / cols as f64).ceil() as i32;
+/// The grid's baseline shown columns -- exactly what was hardcoded before
+/// `/+`/`/-` existed, so nothing regresses by default. `class`/`pid` and
+/// any `tmux`/`claude` field stay hidden until explicitly added.
+const DEFAULT_COLUMNS: [ResolvedField; 2] = [ResolvedField::Flat("workspace"), ResolvedField::Flat("title")];
+
+/// The aspect ratio (height/width) most windows in this set share, so
+/// `grid_dims` can shape the grid's cells to match instead of assuming
+/// they're roughly square. Median rather than mean so one or two outliers
+/// (an ultra-wide terminal next to a stack of portrait browsers) can't drag
+/// the whole grid's shape away from what most cells actually need.
+fn typical_aspect(windows: &[Window]) -> f64 {
+    let mut ratios: Vec<f64> = windows
+        .iter()
+        .filter(|w| w.width > 0 && w.height > 0)
+        .map(|w| (w.height as f64 / w.width as f64).clamp(0.3, 3.0))
+        .collect();
+    if ratios.is_empty() {
+        return 1.0;
+    }
+    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ratios[ratios.len() / 2]
+}
+
+/// A column/row split shaped so each cell's own budget box comes out close
+/// to `aspect` (the typical window's height/width), rather than always a
+/// near-square split. A near-square grid is fine when windows are
+/// themselves roughly square, but boxing mostly-portrait windows into
+/// near-square cells forces `frame_size` to letterbox them -- fit to the
+/// cell's height and leave the rest of the cell's width empty -- which is
+/// what reads as oversized gaps between thumbnails. Solving cell_h/cell_w =
+/// aspect for a grid that tiles an `avail_w` x `avail_h` box (cell_w =
+/// avail_w/cols, cell_h ~= avail_h*cols/n since rows ~= n/cols) gives
+/// `cols = sqrt(aspect * n * avail_w / avail_h)`. Clamped to [2, 8]: below
+/// 2, a single window sits in an oddly narrow sliver; above 8 a wall of
+/// cells reads worse than more rows.
+fn grid_dims(n: usize, aspect: f64, avail_w: i32, avail_h: i32) -> (i32, i32) {
+    let n = n.max(1);
+    if n == 1 {
+        return (1, 1);
+    }
+    let n_f = n as f64;
+    let ideal_cols = (aspect * n_f * avail_w.max(1) as f64 / avail_h.max(1) as f64).sqrt();
+    let cols = (ideal_cols.round() as i32).clamp(2, (n as i32).min(8));
+    let rows = (n_f / cols as f64).ceil() as i32;
     (cols, rows)
 }
 
@@ -73,25 +128,63 @@ fn frame_size(win_w: i32, win_h: i32, budget_w: i32, budget_h: i32) -> (i32, i32
     }
 }
 
-/// Which of the two things the autocomplete popup is currently offering --
-/// determines what `accept_suggestion` splices into the query text. Field
-/// and value completion are mutually exclusive per `update_suggestions`
-/// (query.rs's `trailing_field_fragment`/`trailing_value_fragment` can never
-/// both match the same query), so this only ever needs to remember which
-/// one is live, not both at once.
+/// Builds the markup for a grid cell's label from the currently active
+/// columns, in order -- `workspace` keeps its existing small-muted "#N"
+/// treatment wherever it appears, everything else renders plain, space-
+/// joined. `title` falls back to `win.class` when empty, the same
+/// long-standing behaviour from before columns were configurable. An empty
+/// value (a `tmux`/`claude` field not yet enriched in, or genuinely blank)
+/// is simply omitted rather than shown as a placeholder, so a still-loading
+/// column doesn't flash empty brackets into the label.
+fn render_label(label: &gtk::Label, win: &Window, meta: &TmuxClaudeMeta, columns: &[ResolvedField]) {
+    if columns.is_empty() {
+        label.set_text("");
+        return;
+    }
+    let mut parts = Vec::new();
+    for &field in columns {
+        let mut v = query::sort_field_value(win, meta, field);
+        if field == ResolvedField::Flat("title") && v.is_empty() {
+            v = win.class.clone();
+        }
+        if v.is_empty() {
+            continue;
+        }
+        if field == ResolvedField::Flat("workspace") {
+            parts.push(format!("<span size=\"smaller\" alpha=\"55%\">#{}</span>", glib::markup_escape_text(&v)));
+        } else {
+            parts.push(glib::markup_escape_text(&v).to_string());
+        }
+    }
+    label.set_markup(&parts.join(" "));
+}
+
+/// Which of the five completion stages the popup is currently offering --
+/// determines what `accept_suggestion` splices into the query text. Only
+/// one stage is ever live at once (`query::completion_context` returns a
+/// single `Completion`), so this only needs to remember which, not
+/// several.
 #[derive(Clone)]
 enum SuggestionKind {
-    /// Popup lists column/group entries; accepting inserts `$<name>:` (or
-    /// `$<name>` again with the dot still open, for a group -- see
-    /// `update_suggestions`).
-    Field,
-    /// Popup lists this field's live values across `state.windows`;
-    /// accepting inserts `$<field.key()>:<value> ` (trailing space -- a
-    /// value is always a *complete* term once chosen, unlike a field name,
-    /// which still needs its value typed next). Stored as the already-
-    /// formatted key text (`"title"`, `"tmux.session"`) rather than
-    /// `ResolvedField` itself, since that's exactly what gets spliced back
-    /// into the query.
+    /// Field/group/action name at the top level of a token. Accepting
+    /// inserts `/<chosen>` bare for `+`/`-` (re-triggers the next stage),
+    /// `/sort/` for the "sort" action, `/reverse ` (complete) for
+    /// "reverse", `/<chosen>` bare for a group (`has_subtypes`, ready for
+    /// `/sub` or to stand alone), or `/<chosen>:` for a flat field.
+    TopLevel,
+    /// `/+`/`/-` path. Accepting inserts `/<sign><chosen>`, always bare (no
+    /// colon, ever) -- a visibility token needs no terminator.
+    VisibilityPath(char),
+    /// Sort target (flat or group[/sub]). Accepting always appends `/` --
+    /// see query.rs's `completion_context` doc for why this uniformly
+    /// re-triggers the right next stage (direction, or a further group/sub
+    /// completion) regardless of what was chosen.
+    SortField,
+    /// Sort direction. Accepting inserts `<chosen> ` (trailing space,
+    /// complete term).
+    SortDirection,
+    /// Field value. Accepting inserts `<chosen> ` (re-quoted if it
+    /// contains whitespace), same trailing-space "complete term" contract.
     Value(String),
 }
 
@@ -99,15 +192,19 @@ struct State {
     windows: Vec<Window>,
     /// Parallel to `windows` (same index) -- tmux/claude metadata, filled in
     /// asynchronously by `enrich::start` well after the grid is already
-    /// shown. All-default until then; see query.rs's `$tmux.*`/`$claude.*`
+    /// shown. All-default until then; see query.rs's `/tmux/*`/`/claude/*`
     /// handling for why an unfilled field just doesn't match yet rather
     /// than needing special-casing here.
     tmux_claude: Vec<RefCell<TmuxClaudeMeta>>,
+    /// Visual grid position of the current selection -- see this module's
+    /// own doc comment for why that's a distinct thing from a window's
+    /// index into `windows` once `/sort` can reorder the grid.
     selected: RefCell<usize>,
     locked: RefCell<bool>,
-    /// Autocomplete popup state, live only while `trailing_field_fragment`
-    /// or `trailing_value_fragment` matches the current query (see
-    /// `update_suggestions`). `suggestions` empty means the popup is
+    active_columns: RefCell<Vec<ResolvedField>>,
+    sort_actions: RefCell<query::Actions>,
+    /// Autocomplete popup state, live only while `query::completion_context`
+    /// matches the current query. `suggestions` empty means the popup is
     /// hidden; `suggestion_start` is the byte offset in the query text
     /// that a chosen suggestion replaces; `suggestion_kind` is `None`
     /// exactly when `suggestions` is empty.
@@ -117,9 +214,19 @@ struct State {
     suggestion_kind: RefCell<Option<SuggestionKind>>,
 }
 
-/// Returns the child alongside its thumbnail `Image` so callers can swap in
-/// a live capture later (`wayland_capture::start`'s `on_thumbnail`
-/// callback) without having to dig back through the widget tree.
+/// The window index stashed in a `FlowBoxChild`'s `widget_name` at creation
+/// (`make_child`) -- see this module's doc comment for why this, and not
+/// `FlowBoxChild::index()`, is what every lookup from a child back to "which
+/// window is this" has to go through once a custom sort func is in play.
+fn child_window_idx(child: &gtk::FlowBoxChild) -> Option<usize> {
+    child.widget_name().parse().ok()
+}
+
+/// Returns the child alongside its thumbnail `Image` and its metadata
+/// `Label` so callers can swap in a live capture later
+/// (`wayland_capture::start`'s `on_thumbnail` callback) or re-render the
+/// label (`render_label`, on every keystroke and on enrichment) without
+/// having to dig back through the widget tree.
 ///
 /// No icon placeholder: the image starts empty in a `frame_size`-sized
 /// frame (outline via the "thumb-frame" CSS class set up in `run()`) that
@@ -127,7 +234,14 @@ struct State {
 /// until (unless) a live capture lands in it -- a small icon swapped out
 /// for a live capture used to read as a flicker even once it stopped
 /// resizing the cell.
-fn make_child(win: &Window, cell_w: i32, max_h: i32) -> (gtk::FlowBoxChild, gtk::Image) {
+fn make_child(
+    win: &Window,
+    meta: &TmuxClaudeMeta,
+    columns: &[ResolvedField],
+    idx: usize,
+    cell_w: i32,
+    max_h: i32,
+) -> (gtk::FlowBoxChild, gtk::Image, gtk::Label) {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
     vbox.set_size_request(cell_w, -1);
 
@@ -143,26 +257,8 @@ fn make_child(win: &Window, cell_w: i32, max_h: i32) -> (gtk::FlowBoxChild, gtk:
     frame.pack_start(&image, true, true, 0);
     vbox.pack_start(&frame, false, false, 0);
 
-    // The workspace number rides on the *same* line as the title (a muted
-    // "#N" prefix) rather than a dedicated line above it, so it costs
-    // nothing when the title is short and simply falls out of view under
-    // the label's own ellipsize/2-line budget when it isn't -- "if there's
-    // space" is exactly what set_ellipsize already guarantees per line, no
-    // separate layout logic needed. Built with set_markup rather than
-    // plain text so the "#N" prefix can be styled distinctly; both pieces
-    // are escaped since title/class/workspace all come from whatever the
-    // window (or the user's Hyprland workspace naming) put there.
-    let base_text = if win.title.is_empty() {
-        win.class.clone()
-    } else {
-        win.title.clone()
-    };
     let label = gtk::Label::new(None);
-    label.set_markup(&format!(
-        "<span size=\"smaller\" alpha=\"55%\">#{}</span> {}",
-        glib::markup_escape_text(&win.workspace),
-        glib::markup_escape_text(&base_text),
-    ));
+    render_label(&label, win, meta, columns);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     label.set_max_width_chars(1); // let ellipsize kick in early, as in picker.rs
     label.set_lines(2);
@@ -170,10 +266,11 @@ fn make_child(win: &Window, cell_w: i32, max_h: i32) -> (gtk::FlowBoxChild, gtk:
     vbox.pack_start(&label, false, false, 0);
 
     let child = gtk::FlowBoxChild::new();
+    child.set_widget_name(&idx.to_string());
     child.add(&vbox);
     child.set_margin(8);
     child.show_all();
-    (child, image)
+    (child, image, label)
 }
 
 /// The monitor Hyprland considers active. Duplicated from
@@ -245,9 +342,8 @@ fn hide_suggestions(list: &gtk::ListBox, state: &Rc<State>) {
 }
 
 /// Populates `list` with one row per entry in `items` and reveals it -- the
-/// shared tail end of both `update_suggestions` branches below (field-name
-/// and value completion differ only in *where the candidate strings come
-/// from*, not in how they're rendered).
+/// shared tail end of `update_suggestions` regardless of which completion
+/// stage is live.
 fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
     for item in items {
         let row = gtk::ListBoxRow::new();
@@ -272,47 +368,40 @@ fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
     list.show();
 }
 
-/// Re-derives the autocomplete popup from the query text on every keystroke
-/// -- cheap (at most a handful of columns, or a couple dozen windows' worth
-/// of one column's values, to filter), so no need to diff against the
-/// previous state. Field-name completion (`trailing_field_fragment`, no `:`
-/// yet) and value completion (`trailing_value_fragment`, `:` typed and the
-/// column before it unambiguous) are mutually exclusive, so value
-/// completion is tried first and field-name completion is the fallback --
-/// see query.rs's doc comments on both for why they can't both match.
-fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
+/// Re-derives the autocomplete popup from the query text on every
+/// keystroke -- cheap (at most a handful of fields, or a couple dozen
+/// windows' worth of one field's values, to filter), so no need to diff
+/// against the previous state. One `query::completion_context` call
+/// decides which of the five stages (if any) is live; this just renders
+/// whichever it is.
+fn update_suggestions(query_text: &str, list: &gtk::ListBox, state: &Rc<State>) {
     for child in list.children() {
         list.remove(&child);
     }
 
-    if let Some((start, field, frag)) = crate::query::trailing_value_fragment(query) {
-        let metas = snapshot_metas(state);
-        let vals = crate::query::value_suggestions(&state.windows, &metas, field, &frag);
-        if vals.is_empty() {
-            hide_suggestions(list, state);
-            return;
-        }
-        populate_suggestions(list, &vals);
-        *state.suggestions.borrow_mut() = vals;
-        *state.suggestion_start.borrow_mut() = start;
-        *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Value(field.key()));
-        select_suggestion(list, state, 0);
-        return;
-    }
-
-    let Some((start, frag)) = crate::query::trailing_field_fragment(query) else {
+    let Some(completion) = query::completion_context(query_text) else {
         hide_suggestions(list, state);
         return;
     };
-    let cols = crate::query::column_suggestions(&frag);
-    if cols.is_empty() {
+    let metas = snapshot_metas(state);
+    let items = query::completion_candidates(&completion, &state.windows, &metas);
+    if items.is_empty() {
         hide_suggestions(list, state);
         return;
     }
-    populate_suggestions(list, &cols);
-    *state.suggestions.borrow_mut() = cols;
+
+    let (start, kind) = match &completion {
+        query::Completion::TopLevel { start, .. } => (*start, SuggestionKind::TopLevel),
+        query::Completion::VisibilityPath { start, sign, .. } => (*start, SuggestionKind::VisibilityPath(*sign)),
+        query::Completion::SortField { start, .. } => (*start, SuggestionKind::SortField),
+        query::Completion::SortDirection { start, .. } => (*start, SuggestionKind::SortDirection),
+        query::Completion::Value { start, field, .. } => (*start, SuggestionKind::Value(field.key())),
+    };
+
+    populate_suggestions(list, &items);
+    *state.suggestions.borrow_mut() = items;
     *state.suggestion_start.borrow_mut() = start;
-    *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Field);
+    *state.suggestion_kind.borrow_mut() = Some(kind);
     select_suggestion(list, state, 0);
 }
 
@@ -325,17 +414,12 @@ fn snapshot_metas(state: &State) -> Vec<TmuxClaudeMeta> {
 }
 
 /// Replaces the trailing fragment the suggestions were built from with the
-/// chosen completion -- `$<column>:` for a field name (ready for the value
-/// to be typed next) or `$<column>:<value> ` for a value (a trailing space,
-/// since a value is always a *complete* AND term once chosen, unlike a
-/// field name). Mirrors focus-picker.py's `tab:transform-query` completion
-/// (same "tab accepts what the popup already shows highlighted" contract),
-/// just via direct GtkEntry text splicing instead of fzf's own
-/// transform-query bind. A value containing whitespace is re-quoted on the
-/// way back in -- otherwise splicing it in unquoted would immediately
-/// re-split into two tokens the moment this fires, undoing the very
-/// quote-aware tokenizing that made it matchable in the first place (see
-/// query.rs's module doc).
+/// chosen completion -- see `SuggestionKind`'s own doc for what each stage
+/// splices in. A value containing whitespace is re-quoted on the way back
+/// in -- otherwise splicing it in unquoted would immediately re-split into
+/// two tokens the moment this fires, undoing the very quote-aware
+/// tokenizing that made it matchable in the first place (see query.rs's
+/// module doc).
 fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<State>) {
     let idx = *state.suggestion_idx.borrow();
     let Some(chosen) = state.suggestions.borrow().get(idx).cloned() else {
@@ -345,16 +429,26 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
         return;
     };
     let start = *state.suggestion_start.borrow();
-    let query = search.text();
+    let query_text = search.text();
+    let prefix = &query_text[..start];
     let new_query = match kind {
-        SuggestionKind::Field => format!("{}${}:", &query[..start], chosen),
-        SuggestionKind::Value(col) => {
+        SuggestionKind::TopLevel => match chosen.as_str() {
+            "+" | "-" => format!("{prefix}/{chosen}"),
+            "sort" => format!("{prefix}/sort/"),
+            "reverse" => format!("{prefix}/reverse "),
+            _ if query::has_subtypes(&chosen) => format!("{prefix}/{chosen}"),
+            _ => format!("{prefix}/{chosen}:"),
+        },
+        SuggestionKind::VisibilityPath(sign) => format!("{prefix}/{sign}{chosen}"),
+        SuggestionKind::SortField => format!("{prefix}/sort/{chosen}/"),
+        SuggestionKind::SortDirection => format!("{prefix}{chosen} "),
+        SuggestionKind::Value(field_key) => {
             let value = if chosen.contains(char::is_whitespace) {
                 format!("\"{chosen}\"")
             } else {
                 chosen
             };
-            format!("{}${}:{} ", &query[..start], col, value)
+            format!("{prefix}/{field_key}:{value} ")
         }
     };
     hide_suggestions(list, state);
@@ -371,9 +465,17 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
 /// never changed while the surface was still up). Hiding first and letting
 /// one mainloop iteration flush that to the compositor before dispatching
 /// fixes it.
-fn confirm(win: &gtk::Window, state: &Rc<State>) {
-    let idx = *state.selected.borrow();
-    let address = state.windows.get(idx).map(|w| w.address.clone());
+///
+/// Resolves the confirmed window from the *visual* selection position via
+/// `flowbox` (see this module's doc comment on why that's not the same as
+/// an index into `state.windows` once `/sort` may have reordered the grid).
+fn confirm(win: &gtk::Window, state: &Rc<State>, flowbox: &gtk::FlowBox) {
+    let visual_idx = *state.selected.borrow();
+    let address = flowbox
+        .child_at_index(visual_idx as i32)
+        .and_then(|c| child_window_idx(&c))
+        .and_then(|wi| state.windows.get(wi))
+        .map(|w| w.address.clone());
     win.hide();
     glib::source::idle_add_local(move || {
         if let Some(addr) = &address {
@@ -472,23 +574,41 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         tmux_claude,
         selected: RefCell::new(0),
         locked: RefCell::new(false),
+        active_columns: RefCell::new(DEFAULT_COLUMNS.to_vec()),
+        sort_actions: RefCell::new(query::Actions::default()),
         suggestions: RefCell::new(Vec::new()),
         suggestion_idx: RefCell::new(0),
         suggestion_start: RefCell::new(0),
         suggestion_kind: RefCell::new(None),
     });
 
-    let (cols, rows) = grid_dims(state.windows.len());
+    // The box the grid may claim -- height's fraction raised from the old
+    // fixed 0.6 to 0.78 so a portrait-heavy window set (see `grid_dims`) has
+    // room to actually use the extra rows it now prefers, instead of being
+    // squeezed back toward letterboxed near-square cells.
+    let (avail_w, avail_h) = match &monitor {
+        Some(mon) => {
+            let g = mon.geometry();
+            ((g.width() as f64 * 0.7) as i32, (g.height() as f64 * 0.78) as i32)
+        }
+        None => (900, 700),
+    };
 
-    // Fixed fraction of the monitor regardless of window count -- cells
-    // scale up via `cell_size` below to fill it instead of the window
-    // shrinking around however many there are.
-    let (mut win_w, mut win_h) = (900, 600);
-    if let Some(mon) = &monitor {
-        let g = mon.geometry();
-        win_w = (g.width() as f64 * 0.7) as i32;
-        win_h = (g.height() as f64 * 0.6) as i32;
-    }
+    let aspect = typical_aspect(&state.windows);
+    let (cols, rows) = grid_dims(state.windows.len(), aspect, avail_w, avail_h);
+
+    // Cells are sized to match the *typical* window's aspect ratio instead
+    // of splitting `avail_w`/`avail_h` evenly -- see `grid_dims`. The window
+    // then only claims however much of that box it actually needs (rows *
+    // cell_h_budget, cols * cell_w_budget), rather than always the full
+    // fraction regardless of what's being shown.
+    let cell_w_budget = (avail_w / cols).max(MIN_FRAME + CELL_H_OVERHEAD);
+    let cell_h_budget = (((cell_w_budget as f64) * aspect) as i32)
+        .min(avail_h / rows)
+        .max(MIN_FRAME + LABEL_ALLOWANCE + CELL_V_OVERHEAD);
+    let win_w = (cell_w_budget * cols).min(avail_w);
+    let win_h = (cell_h_budget * rows).min(avail_h);
+
     win.set_size_request(win_w, win_h);
     let (cell_w, max_h) = cell_size(win_w, win_h, cols, rows);
 
@@ -522,10 +642,16 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     flowbox.set_column_spacing(4);
 
     let mut thumb_images = Vec::with_capacity(state.windows.len());
-    for win_entry in &state.windows {
-        let (child, image) = make_child(win_entry, cell_w, max_h);
-        flowbox.add(&child);
-        thumb_images.push(image);
+    let mut cell_labels: Vec<gtk::Label> = Vec::with_capacity(state.windows.len());
+    {
+        let columns = state.active_columns.borrow();
+        for (i, win_entry) in state.windows.iter().enumerate() {
+            let meta = state.tmux_claude[i].borrow();
+            let (child, image, label) = make_child(win_entry, &meta, &columns, i, cell_w, max_h);
+            flowbox.add(&child);
+            thumb_images.push(image);
+            cell_labels.push(label);
+        }
     }
 
     let scroll = gtk::ScrolledWindow::new(gtk::Adjustment::NONE, gtk::Adjustment::NONE);
@@ -537,13 +663,12 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     let search = gtk::SearchEntry::new();
     search.set_no_show_all(true);
 
-    // Column-name autocomplete popup: an in-layout ListBox directly under
+    // Field/action autocomplete popup: an in-layout ListBox directly under
     // the search entry (not a GtkPopover) -- gtk-layer-shell's layer
     // surface has no xdg_popup positioner to anchor a real popover to, so
     // this just reserves its own row in the same vbox and is shown/hidden
-    // as query text comes and goes. `COLUMNS` (query.rs) is small (4
-    // entries today) and fully enumerable, so a fixed unscrolled list is
-    // enough -- see ~/.config/docs/query-dsl.md's autocompletion section.
+    // as query text comes and goes -- see ~/.config/docs/query-dsl.md's
+    // autocompletion section.
     let suggestions_list = gtk::ListBox::new();
     suggestions_list.set_selection_mode(gtk::SelectionMode::Browse);
     suggestions_list.set_no_show_all(true);
@@ -563,11 +688,41 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
             if !*state.locked.borrow() {
                 return true;
             }
-            let q = search.text();
-            let idx = child.index() as usize;
+            let Some(idx) = child_window_idx(child) else { return false };
             let Some(w) = state.windows.get(idx) else { return false };
             let meta = state.tmux_claude.get(idx).map(|m| m.borrow().clone()).unwrap_or_default();
+            let q = search.text();
             crate::query::matches_str(w, &meta, &q)
+        }
+    })));
+
+    flowbox.set_sort_func(Some(Box::new({
+        let state = state.clone();
+        move |a: &gtk::FlowBoxChild, b: &gtk::FlowBoxChild| -> i32 {
+            let (Some(ia), Some(ib)) = (child_window_idx(a), child_window_idx(b)) else {
+                return 0;
+            };
+            let actions = state.sort_actions.borrow();
+            let mut ord = match &actions.sort {
+                Some((field, direction)) => {
+                    let meta_a = state.tmux_claude.get(ia).map(|m| m.borrow().clone()).unwrap_or_default();
+                    let meta_b = state.tmux_claude.get(ib).map(|m| m.borrow().clone()).unwrap_or_default();
+                    let va = state.windows.get(ia).map(|w| query::sort_field_value(w, &meta_a, *field)).unwrap_or_default();
+                    let vb = state.windows.get(ib).map(|w| query::sort_field_value(w, &meta_b, *field)).unwrap_or_default();
+                    query::compare_with_direction(&va, &vb, *direction)
+                }
+                // No /sort/ typed: keep the grid's own default (recency)
+                // order, i.e. compare by the stable window index itself.
+                None => ia.cmp(&ib),
+            };
+            if actions.reverse {
+                ord = ord.reverse();
+            }
+            match ord {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            }
         }
     })));
 
@@ -575,21 +730,31 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         let flowbox = flowbox.clone();
         let suggestions_list = suggestions_list.clone();
         let state = state.clone();
+        let cell_labels = cell_labels.clone();
         search.connect_search_changed(move |entry| {
             let q = entry.text();
+            *state.active_columns.borrow_mut() = crate::query::active_columns(&q, &DEFAULT_COLUMNS);
+            *state.sort_actions.borrow_mut() = crate::query::parse_actions(&q);
+            for (i, label) in cell_labels.iter().enumerate() {
+                let meta = state.tmux_claude[i].borrow();
+                render_label(label, &state.windows[i], &meta, &state.active_columns.borrow());
+            }
             flowbox.invalidate_filter();
-            // Move `selected` (what Enter confirms) to the first match, but
-            // without `select()`'s grab_focus() -- that would yank keyboard
-            // focus back out of the search entry mid-type.
-            let first_match = state.windows.iter().enumerate().position(|(i, w)| {
-                let meta = state.tmux_claude.get(i).map(|m| m.borrow().clone()).unwrap_or_default();
-                crate::query::matches_str(w, &meta, &q)
-            });
-            if let Some(idx) = first_match {
-                *state.selected.borrow_mut() = idx;
-                if let Some(child) = flowbox.child_at_index(idx as i32) {
+            flowbox.invalidate_sort();
+            // Move `selected` (what Enter confirms) to the first *visually
+            // positioned* match, but without `select()`'s grab_focus() --
+            // that would yank keyboard focus back out of the search entry
+            // mid-type. Has to walk the flowbox's own current child order
+            // (not `state.windows` directly), since that order is what
+            // "first" means once /sort has reordered it.
+            let mut i = 0;
+            while let Some(child) = flowbox.child_at_index(i) {
+                if child.is_child_visible() {
+                    *state.selected.borrow_mut() = i as usize;
                     flowbox.select_child(&child);
+                    break;
                 }
+                i += 1;
             }
             update_suggestions(&q, &suggestions_list, &state);
         });
@@ -598,9 +763,10 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     {
         let win = win.clone();
         let state = state.clone();
+        let flowbox_for_activate = flowbox.clone();
         flowbox.connect_child_activated(move |_, child| {
             *state.selected.borrow_mut() = child.index() as usize;
-            confirm(&win, &state);
+            confirm(&win, &state, &flowbox_for_activate);
         });
     }
 
@@ -623,11 +789,11 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
             let ctrl = ev.state().contains(gdk::ModifierType::CONTROL_MASK);
             let locked = *state.locked.borrow();
 
-            // Column-name autocomplete popup takes over Ctrl+j/k, Tab, and
-            // Escape while it's showing -- checked before any of those
-            // keys' normal meaning below, and before the generic
-            // Escape-quits-the-grid handling right after this block, since
-            // the popup's own Escape only dismisses itself.
+            // Autocomplete popup takes over Ctrl+j/k, Tab, and Escape while
+            // it's showing -- checked before any of those keys' normal
+            // meaning below, and before the generic Escape-quits-the-grid
+            // handling right after this block, since the popup's own
+            // Escape only dismisses itself.
             if locked && !state.suggestions.borrow().is_empty() {
                 if ctrl && k == key::j {
                     let idx = *state.suggestion_idx.borrow();
@@ -654,7 +820,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
                 return glib::Propagation::Stop;
             }
             if k == key::Return || k == key::KP_Enter {
-                confirm(&win_for_confirm, &state);
+                confirm(&win_for_confirm, &state, &flowbox);
                 return glib::Propagation::Stop;
             }
 
@@ -760,12 +926,13 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
 
     {
         let win_for_confirm = win.clone();
+        let flowbox_for_confirm = flowbox.clone();
         let state = state.clone();
         win.connect_key_release_event(move |_, ev| {
             use gdk::keys::constants as key;
             let k = ev.keyval();
             if (k == key::Alt_L || k == key::Alt_R) && !*state.locked.borrow() {
-                confirm(&win_for_confirm, &state);
+                confirm(&win_for_confirm, &state, &flowbox_for_confirm);
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -849,16 +1016,24 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     // Same fire-and-forget shape as wayland_capture::start just above:
     // tmux/claude metadata streams in well after the grid is already up and
     // interactive, merged into `state.tmux_claude` as it lands so a
-    // `$tmux.*`/`$claude.*` query already typed keeps matching live -- see
+    // `/tmux/*`/`/claude/*` query already typed keeps matching live -- see
     // enrich.rs's module doc for why this has to stay off the critical path
     // (a slow tmux server or a large transcript read must never delay the
-    // grid's first paint, which by this point has already happened).
+    // grid's first paint, which by this point has already happened). Labels
+    // are re-rendered too, in case the newly-landed data now shows up in an
+    // already-active column.
     let state_for_enrich = state.clone();
     let flowbox_for_enrich = flowbox.clone();
+    let cell_labels_for_enrich = cell_labels;
     crate::enrich::start(&state.windows, move |index, meta| {
         if let Some(cell) = state_for_enrich.tmux_claude.get(index) {
             cell.borrow_mut().merge(meta);
+            if let (Some(label), Some(win)) = (cell_labels_for_enrich.get(index), state_for_enrich.windows.get(index)) {
+                let m = cell.borrow();
+                render_label(label, win, &m, &state_for_enrich.active_columns.borrow());
+            }
             flowbox_for_enrich.invalidate_filter();
+            flowbox_for_enrich.invalidate_sort();
         }
     });
 
