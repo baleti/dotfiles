@@ -10,6 +10,38 @@ Project: **personal automation cli** — originally created for a Google Calenda
 sync tool, renamed once it became clear the same OAuth client is the
 right vehicle for broader personal Google API access, not just Calendar.
 
+## Why any of this is necessary at all: Internal vs External audience
+
+The root cause of the entire Testing/Production/Branding/Publish dance
+below is a single fork in OAuth consent screen setup: **Audience**, a
+choice between **Internal** and **External**.
+
+- **Internal** is only offered to a **Google Workspace user** (an
+  account that's a member of a Workspace-managed domain). Internal apps
+  have no Testing/Production distinction, no Branding requirements, no
+  domain hosting, no verification, no refresh-token expiry, ever — for
+  any user within that Workspace domain.
+- **External** is everyone else's only option, and it's what triggers
+  every step in this doc.
+
+Confirmed directly from Google's own UI (attempting to select Internal
+on a personal-Gmail-owned project): *"Because you're not a Google
+Workspace user, you can only make your app available to external
+(general audience) users."*
+
+Critically, **merely holding IAM admin rights on a Cloud Resource
+Manager Organization does not make an account a Workspace user** —
+these are separate axes. `baleti3266@gmail.com` has full Organization
+Admin rights on the Cloud Resource Manager Organization it administers (confirmed via IAM), yet Google's consent screen still refuses
+Internal for it, and the account's own `myaccount.google.com` page shows
+no "managed by an organization" banner (the standard indicator of real
+Workspace membership). A personal Gmail identity cannot be converted
+into a Workspace/domain member after the fact, either — Organizations
+are inherently domain-based; the closest equivalent (Cloud Identity Free
+anchored to a separately-verified custom domain) creates *new*
+domain-based accounts, not a retroactive upgrade of an existing
+`@gmail.com` address.
+
 ## Where the credentials live
 
 - `~/.config/claude-calendar/accounts/<email>/client_secret.json` — the
