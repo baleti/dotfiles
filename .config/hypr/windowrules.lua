@@ -13,18 +13,12 @@ hl.window_rule({
     suppress_event = "maximize",
 })
 
--- The quickshell notification cards (~/.config/quickshell/notifications/,
--- rendered for the headless notifyd) set this namespace so this rule can
--- find them -- layer-shell surfaces don't get appearance.lua's
--- decoration.blur automatically the way normal windows do. Needs the card
--- background to actually be translucent (Theme.bgAlpha) or there's nothing
--- for the blur to show through.
-hl.layer_rule({
-    name  = "blur-notifications",
-    match = { namespace = "^quickshell-notifications$" },
-
-    blur = true,
-})
+-- No blur rule for the quickshell notification layer
+-- (namespace "quickshell-notifications"): unlike the old notifyd, whose
+-- GTK popups were each sized to their card, the quickshell layer is one
+-- persistent full-height surface per monitor, so `blur = true` on it
+-- painted a permanent blurred column down the right edge of every screen.
+-- The cards are translucent (Theme.bgAlpha) and read fine without blur.
 
 hl.window_rule({
     -- Fix some dragging issues with XWayland
