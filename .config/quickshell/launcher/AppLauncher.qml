@@ -59,6 +59,7 @@ PanelWindow {
             const kws = (e.keywords || []).map(c => String(c));
             out.push({
                 entry: e,
+                id: e.id || "",
                 name: e.name || "",
                 comment: e.comment || "",
                 generic: e.genericName || "",
@@ -132,9 +133,14 @@ PanelWindow {
                 return s.dir === "desc" ? -c : c;
             });
         } else {
+            // rank first (only meaningful when text was typed), then launch
+            // frecency, then alphabetical.
             rows = rows.slice().sort((a, b) => {
                 const r = root._rank(a) - root._rank(b);
-                return r !== 0 ? r : (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1);
+                if (r !== 0) return r;
+                const f = LauncherHistory.score(b.id) - LauncherHistory.score(a.id);
+                if (f !== 0) return f;
+                return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
             });
         }
         if (root.parsed.reverse)
@@ -147,6 +153,7 @@ PanelWindow {
     function launch(i) {
         const app = root.results[i];
         if (!app) return;
+        LauncherHistory.bump(app.id);
         app.entry.execute();
         root.hide();
     }
@@ -345,7 +352,7 @@ PanelWindow {
             id: list
             anchors.top: ac.visible ? ac.bottom : header.bottom
             width: parent.width
-            height: Math.min(root.results.length, 13) * 26 + 8
+            height: Math.min(root.results.length, 13) * 30 + 8
             clip: true
             model: root.results
             currentIndex: root.selected
@@ -359,7 +366,7 @@ PanelWindow {
                 required property var modelData
                 required property int index
                 width: list.width
-                height: 26
+                height: 30
                 color: index === root.selected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
                                                : "transparent"
 
@@ -367,18 +374,27 @@ PanelWindow {
                     id: appIcon
                     x: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 17
-                    height: 17
-                    sourceSize.width: 34
-                    sourceSize.height: 34
+                    width: 20
+                    height: 20
+                    sourceSize.width: 40
+                    sourceSize.height: 40
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     source: Quickshell.iconPath(modelData.entry.icon, "application-x-executable")
                 }
+                // Generic glyph when the theme has no icon for this app.
+                Text {
+                    anchors.centerIn: appIcon
+                    visible: appIcon.status !== Image.Ready
+                    text: ""
+                    font.family: Theme.iconFontFamily
+                    font.pixelSize: 14
+                    color: Theme.textDim
+                }
 
                 Text {
                     id: appName
-                    x: 36
+                    x: 40
                     anchors.verticalCenter: parent.verticalCenter
                     width: Math.min(implicitWidth, parent.width * 0.55)
                     text: modelData.name
