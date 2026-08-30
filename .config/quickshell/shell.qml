@@ -7,6 +7,7 @@ import "bar"
 import "background"
 import "osd"
 import "notifications"
+import "launcher"
 import "services"
 
 ShellRoot {
@@ -25,6 +26,15 @@ ShellRoot {
         }
     }
 
+    // App launcher (mod + Super_l). Same single-top-level-target /
+    // latched-monitor pattern as mprisPicker.
+    IpcHandler {
+        target: "launcher"
+        function toggle(): void {
+            LauncherState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
     Variants {
         model: Quickshell.screens
 
@@ -38,6 +48,15 @@ ShellRoot {
         model: Quickshell.screens
 
         NotifLayer {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        AppLauncher {
             required property var modelData
             screen: modelData
         }
