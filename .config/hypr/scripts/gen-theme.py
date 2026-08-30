@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates a Material You dark scheme, either seeded from this desktop's
-existing cyan/green accent (appearance.lua's col.active_border gradient,
+existing cyan/green accent (the PRIMARY_SEED/SECONDARY_SEED pair,
 the default) or extracted from a wallpaper image via --image PATH.
 
 Uses python-materialyoucolor (the same real HCT/tonal-palette algorithm
@@ -76,8 +76,8 @@ from materialyoucolor.utils.theme_utils import CustomColor, theme_from_source_co
 from materialyoucolor.score.score import Score, ScoreOptions
 from materialyoucolor.quantize import QuantizeCelebi
 
-PRIMARY_SEED = "#33ccff"   # appearance.lua active_border gradient start
-SECONDARY_SEED = "#00ff99"  # appearance.lua active_border gradient end
+PRIMARY_SEED = "#33ccff"   # appearance.lua active_border color / scheme primary seed
+SECONDARY_SEED = "#00ff99"  # scheme secondary seed
 
 STATE_DIR = Path.home() / ".local/state/quickshell"
 GTK3_DIR = Path.home() / ".config/gtk-3.0"
