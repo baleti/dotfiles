@@ -296,8 +296,9 @@ hl.bind(mainMod .. " + j", hl.dsp.focus({ direction = "down" }))
 hl.bind(mainMod .. " + k", hl.dsp.focus({ direction = "up" }))
 hl.bind(mainMod .. " + l", hl.dsp.focus({ direction = "right" }))
 
--- rofi
-hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd("pkill rofi || rofi -show drun"), { release = true })
+-- app launcher (quickshell, ~/.config/quickshell/launcher/ -- replaced
+-- `rofi -show drun`). A second tap toggles it closed; Escape also closes.
+hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd("qs ipc call launcher toggle"), { release = true })
 
 -- master/stack layout cycling
 -- NOTE: this rebinds mainMod + R, already bound above to launch $menu. Same conflict existed
