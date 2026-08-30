@@ -218,7 +218,16 @@ Item {
         ? root.naturalRightFor(root.openPanels[root.openCount - 1])
         : root.screen.width - 20
     readonly property real panelAreaWidth: root.rowRightAnchor - 10
-    readonly property real maxPanelWidth: 560
+    // Wide-end clamp on the shared panelWidth below. Normally 560; when the
+    // calendar is one of the open panels it rises to half this monitor's
+    // width -- the month grid + grouped agenda list need the room. This is
+    // still the *cap*, not a fixed width: with other panels also open the
+    // even division lands well under it and every panel shares the row
+    // equally as before, so the raised cap only bites when the calendar is
+    // open alone (or with just one other).
+    readonly property real maxPanelWidth: root.openPanels.indexOf("calendar") >= 0
+        ? Math.max(560, root.screen.width / 2)
+        : 560
     // Only a sanity floor now that there's no row to wrap the rest onto --
     // keeps the divide-by-openCount below from ever reaching 0/negative if
     // something pathological were to happen (e.g. openCount misreported),
