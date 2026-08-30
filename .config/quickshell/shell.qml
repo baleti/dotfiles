@@ -33,16 +33,16 @@ ShellRoot {
                 right: true
             }
 
-            // Fixed at the largest any hover panel can plausibly get, and
-            // never resized reactively -- resizing the actual layer-shell
-            // surface (previously bound to bar.totalHeight) caused a visible
-            // flicker on every collapse. The mask below is what actually
-            // keeps clicks passing through to windows underneath the empty
-            // area when nothing's expanded; it's cheap to update since it
-            // only changes the input region, not the rendered surface size.
-            // Kept in sync by hand with Bar.qml's `windowHeight` (panels
-            // clamp their own scroll areas to what fits under this).
-            implicitHeight: 800
+            // Full monitor height, fixed -- a panel can only render within
+            // the layer-shell surface, and the calendar's agenda list is
+            // allowed to grow to fill the screen. Not reactively resized
+            // (binding it to bar.totalHeight caused a visible flicker on
+            // every collapse); the surface just stays screen-sized and
+            // transparent, and the mask below limits input to the bar +
+            // whatever's currently expanded so clicks pass through the
+            // empty area. Bar.qml reads screen.height for its own
+            // maxPanelHeight the same way.
+            implicitHeight: panel.screen.height
             exclusiveZone: 38
             color: "transparent"
 
@@ -50,7 +50,7 @@ ShellRoot {
                 x: 0
                 y: 0
                 width: panel.width
-                height: bar.totalHeight
+                height: Math.min(bar.totalHeight, panel.height)
             }
 
             // mod+CTRL+m (media), mod+CTRL+c (calendar), and mod+n/p/m/t/d
