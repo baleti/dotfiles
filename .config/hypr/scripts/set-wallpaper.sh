@@ -38,7 +38,13 @@ realpath -- "$src" > "$HOME/.local/state/quickshell/wallpaper-source"
 # fallback measured a 20-40s real-world delay reacting to this same write,
 # vs effectively instant over IPC (same pattern bar-toggle.sh uses).
 qs ipc call background reload 2>/dev/null || true
-if ! python3 "$HOME/.config/hypr/scripts/gen-theme.py" --image "$dest"; then
-    echo "set-wallpaper: gen-theme.py failed, theme not updated for this change" >&2
+# gen-theme.py's own progress prints (one "wrote ..." line per target) are
+# noise on the common path now that this runs synchronously in whatever
+# shell called set-wallpaper.sh, not silently inside wallpaper-watch.sh's
+# background loop like before -- log them instead, only surfaced on failure.
+log="$HOME/.local/state/quickshell/gen-theme.log"
+if ! python3 "$HOME/.config/hypr/scripts/gen-theme.py" --image "$dest" > "$log" 2>&1; then
+    echo "set-wallpaper: gen-theme.py failed, theme not updated for this change (see $log)" >&2
+    tail -n 20 "$log" >&2
 fi
 echo "wallpaper set to $src"
