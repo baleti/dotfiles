@@ -62,7 +62,8 @@ Item {
     // seek, space toggles play/pause, escape closes; mod+CTRL+m (the same
     // combo that opened it) also closes it, handled in hyprland/keybinds.lua
     // as a toggle. Calendar: delegated to CalendarExpanded.handleKey() -
-    // Tab/arrows/enter/escape drive its month nav + year-picker.
+    // arrows / h j k l move the day cursor, [ / ] page the month,
+    // Tab/enter/escape drive the year-picker.
     Keys.onPressed: event => {
         if (mediaExpanded.expanded && Players.active) {
             const player = Players.active;

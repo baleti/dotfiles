@@ -12,18 +12,21 @@ import "../theme"
 // mod+CTRL+c (keybinds.lua) opens this with real keyboard focus (same
 // WlrKeyboardFocus.OnDemand mechanism the media panel already uses for its
 // own arrow-seek), so bare keys reach handleKey() below directly - no
-// Hyprland submap needed. Two modes: plain month view (Left/Right =
-// prev/next month, Up/Down = prev/next year, Tab = enter the year-picker,
-// click a day = open its task list, Escape = clear that selection then
-// close the panel) and the year-picker (Tab opened it; all four arrows
-// move the highlight within the 2-column 10-cell grid - Left/Right by one,
-// Up/Down by a row - Backspace zooms out a level among the 10/20/50/100-
-// year spans, Enter drills into a coarse cell or confirms a single year,
-// Escape/Tab cancel back to month view unchanged).
+// Hyprland submap needed. Two modes: plain month view (Left/Right or h/l =
+// move the day cursor ±1 day, Up/Down or k/j = ±1 week - the cursor
+// carries the view into adjacent months; [ / ] page the month; Tab =
+// enter the year-picker; Escape = close) and the year-picker (Tab opened
+// it; all four arrows move the highlight within the 2-column 10-cell grid
+// - Left/Right by one, Up/Down by a row - Backspace zooms out a level
+// among the 10/20/50/100-year spans, Enter drills into a coarse cell or
+// confirms a single year, Escape/Tab cancel back to month view unchanged).
 //
-// Day cells carry accent dots when ~/notes/orgzly/todo.org has anything
-// scheduled that day (accent-coloured = something still open, grey = all
-// done); clicking a day opens a list of that day's entries below the grid.
+// The day cursor (ring) is always on some day - today when the panel
+// opens - and the task list below the grid always shows that day's
+// ~/notes/orgzly/todo.org entries (no click needed). In the compact
+// hover view, days with entries also carry accent dots (accent-coloured =
+// something still open, grey = all done); the wide keybind view prints
+// the entry titles straight into the day cells instead.
 Rectangle {
     id: root
 
@@ -33,10 +36,27 @@ Rectangle {
     readonly property date today: new Date()
     property int viewYear: today.getFullYear()
     property int viewMonth: today.getMonth() // 0-11
-    // Clicked day: drawn as a ring (not a fill - today's own fill wins when
-    // they're the same day) and drives the task list at the bottom of the
-    // panel. Cleared on close and by the first Escape press.
-    property var selectedDate: null
+    // Day cursor: drawn as a ring (not a fill - today's own fill wins when
+    // they're the same day) and drives the always-on task list at the
+    // bottom of the panel. Moved with the arrow keys / h j k l (see
+    // handleKey) or by clicking a day; reset to today on close. Never null
+    // while open - the list always shows *some* day.
+    property var cursorDate: today
+
+    function cursorOn(d: date): bool {
+        return root.cursorDate && d.toDateString() === root.cursorDate.toDateString();
+    }
+    // Move the cursor by whole days (±1 = h/l/←/→, ±7 = k/j/↑/↓). Follows
+    // the cursor into an adjacent month so it never lands off-grid.
+    function moveCursor(deltaDays: int): void {
+        const c = root.cursorDate || root.today;
+        const n = new Date(c.getFullYear(), c.getMonth(), c.getDate() + deltaDays);
+        root.cursorDate = n;
+        if (n.getMonth() !== root.viewMonth || n.getFullYear() !== root.viewYear) {
+            root.viewMonth = n.getMonth();
+            root.viewYear = n.getFullYear();
+        }
+    }
 
     // ------------------------------------------------------------------
     // Org agenda: ~/notes/orgzly/todo.org parsed by
@@ -79,15 +99,26 @@ Rectangle {
         onTriggered: agendaProc.running = true
     }
 
-    function prevMonth(): void {
-        if (viewMonth === 0) { viewMonth = 11; viewYear -= 1; } else { viewMonth -= 1; }
+    // Mouse ‹/› and [ / ] keys: shift the month and carry the cursor along
+    // by the same one-month step (clamped to the month's length) so the
+    // ring and its task list stay put relative to the grid.
+    function shiftMonth(delta: int): void {
+        let m = viewMonth + delta;
+        let y = viewYear;
+        while (m < 0) { m += 12; y -= 1; }
+        while (m > 11) { m -= 12; y += 1; }
+        viewMonth = m;
+        viewYear = y;
+        const c = root.cursorDate || root.today;
+        const lastDay = new Date(y, m + 1, 0).getDate();
+        root.cursorDate = new Date(y, m, Math.min(c.getDate(), lastDay));
     }
-    function nextMonth(): void {
-        if (viewMonth === 11) { viewMonth = 0; viewYear += 1; } else { viewMonth += 1; }
-    }
+    function prevMonth(): void { shiftMonth(-1); }
+    function nextMonth(): void { shiftMonth(1); }
     function goToday(): void {
         viewYear = today.getFullYear();
         viewMonth = today.getMonth();
+        root.cursorDate = today;
     }
 
     // Closing (mod+CTRL+c again, or Escape) resets state rather than
@@ -100,7 +131,6 @@ Rectangle {
         } else {
             root.goToday();
             root.exitYearPicker();
-            root.selectedDate = null;
         }
     }
 
@@ -180,6 +210,11 @@ Rectangle {
     function yearPickerConfirm(): void {
         if (root.yearPickerSpan === 10) {
             root.viewYear = yearPickerCellStart(root.yearPickerHighlight);
+            // Carry the cursor to the same month/day in the chosen year so
+            // the ring and its task list stay on-grid.
+            const c = root.cursorDate || root.today;
+            const lastDay = new Date(root.viewYear, root.viewMonth + 1, 0).getDate();
+            root.cursorDate = new Date(root.viewYear, root.viewMonth, Math.min(c.getDate(), lastDay));
             root.exitYearPicker();
         } else {
             yearPickerZoomIn();
@@ -211,27 +246,33 @@ Rectangle {
                 event.accepted = true;
             }
         } else {
-            if (event.key === Qt.Key_Left) {
+            // Arrow keys and vim h/j/k/l move the day cursor: ±1 day
+            // horizontally, ±1 week vertically. The task list at the bottom
+            // follows the cursor. [ / ] page the month; Tab opens the year
+            // picker; Escape closes.
+            if (event.key === Qt.Key_Left || event.key === Qt.Key_H) {
+                root.moveCursor(-1);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Right || event.key === Qt.Key_L) {
+                root.moveCursor(1);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) {
+                root.moveCursor(-7);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) {
+                root.moveCursor(7);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_BracketLeft) {
                 root.prevMonth();
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Right) {
+            } else if (event.key === Qt.Key_BracketRight) {
                 root.nextMonth();
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Up) {
-                root.viewYear -= 1;
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Down) {
-                root.viewYear += 1;
                 event.accepted = true;
             } else if (event.key === Qt.Key_Tab) {
                 root.enterYearPicker();
                 event.accepted = true;
             } else if (event.key === Qt.Key_Escape) {
-                // First Escape drops an open day list, second closes.
-                if (root.selectedDate)
-                    root.selectedDate = null;
-                else
-                    root.expanded = false;
+                root.expanded = false;
                 event.accepted = true;
             }
         }
@@ -376,8 +417,7 @@ Rectangle {
                     readonly property bool isToday: modelData.toDateString() === root.today.toDateString()
                     readonly property bool inMonth: modelData.getMonth() === root.viewMonth
                     readonly property bool isWeekend: [0, 6].includes(modelData.getDay())
-                    readonly property bool isSelected: !isToday && root.selectedDate
-                        && modelData.toDateString() === root.selectedDate.toDateString()
+                    readonly property bool isCursor: !isToday && root.cursorOn(modelData)
 
                     readonly property var dayTasks: root.tasksFor(modelData)
                     readonly property bool hasOpenTask: dayTasks.some(t => !t.done)
@@ -387,8 +427,8 @@ Rectangle {
                     radius: Theme.rounding - 4
                     color: isToday ? Theme.cyan
                         : (root.bigMode && inMonth ? Qt.rgba(1, 1, 1, 0.03) : "transparent")
-                    border.color: isSelected ? Theme.cyan : "transparent"
-                    border.width: isSelected ? 1 : 0
+                    border.color: isCursor ? Theme.cyan : "transparent"
+                    border.width: isCursor ? 1 : 0
 
                     Text {
                         anchors.centerIn: root.bigMode ? undefined : parent
@@ -491,7 +531,7 @@ Rectangle {
                                 root.viewMonth = cell.modelData.getMonth();
                                 root.viewYear = cell.modelData.getFullYear();
                             }
-                            root.selectedDate = cell.modelData;
+                            root.cursorDate = cell.modelData;
                         }
                     }
                 }
@@ -553,17 +593,17 @@ Rectangle {
             font.pixelSize: Theme.fontSize - 3
             text: root.yearPickerActive
                 ? qsTr("↑↓←→ move · Enter select · ⌫ zoom out · Esc cancel")
-                : qsTr("←→ month · ↑↓ year · Tab year · click a day")
+                : qsTr("←→/hl day · ↑↓/kj week · [ ] month · Tab year")
         }
 
-        // Day task list: opens under the grid when a day is clicked,
-        // showing that day's org entries (or "Nothing scheduled"). Grows
-        // the panel downward - Bar.qml's overflow math keys off
-        // calendarExpanded.height, so nothing else needs to know.
+        // Day task list: always on (not click-gated), showing the org
+        // entries for whatever day the cursor is on - or "Nothing
+        // scheduled". Grows the panel downward - Bar.qml's overflow math
+        // keys off calendarExpanded.height, so nothing else needs to know.
         Rectangle {
             id: dayList
             width: parent.width
-            visible: root.selectedDate !== null && !root.yearPickerActive
+            visible: !root.yearPickerActive
             implicitHeight: visible ? dayListCol.implicitHeight + 16 : 0
             height: implicitHeight
             clip: true
@@ -572,7 +612,7 @@ Rectangle {
             border.color: Theme.border
             border.width: 1
 
-            readonly property var tasks: root.selectedDate ? root.tasksFor(root.selectedDate) : []
+            readonly property var tasks: root.tasksFor(root.cursorDate)
 
             Column {
                 id: dayListCol
@@ -584,8 +624,8 @@ Rectangle {
                 Text {
                     width: parent.width
                     elide: Text.ElideRight
-                    text: root.selectedDate
-                        ? Qt.formatDate(root.selectedDate, "ddd d MMM yyyy")
+                    text: root.cursorDate
+                        ? Qt.formatDate(root.cursorDate, "ddd d MMM yyyy")
                         : ""
                     color: Theme.text
                     font.family: Theme.fontFamily
@@ -606,7 +646,10 @@ Rectangle {
                 // capped so a very full day can't push the panel off-screen.
                 ListView {
                     width: parent.width
-                    height: Math.min(contentHeight, 176)
+                    // Shorter cap in the tall keybind view (the grid itself
+                    // is already ~200px taller there) so the whole panel
+                    // stays inside the 800px layer-shell window.
+                    height: Math.min(contentHeight, root.bigMode ? 132 : 176)
                     visible: dayList.tasks.length > 0
                     clip: true
                     interactive: contentHeight > height
