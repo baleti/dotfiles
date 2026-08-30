@@ -1,62 +1,62 @@
-//! notifyd: replaces dunst. See ~/.claude2/plans/silly-percolating-rose.md
-//! for the full phased plan and why dunst can't be fixed in place (it
-//! invalidates a notification's actions the instant it closes, even on
-//! timeout -- confirmed via `man 5 dunst` and live D-Bus testing).
+//! notifyd: owns the real `org.freedesktop.Notifications` bus name and does
+//! all notification tracking / timeout / action-routing. Headless since
+//! 2026-08-30 -- the GTK popup layer (old src/popup.rs) was replaced by
+//! quickshell rendering (~/.config/quickshell/notifications/). notifyd now
+//! writes the current popup set to ~/.cache/notifyd/state.json (see
+//! render.rs) for quickshell to draw, and quickshell reports card clicks
+//! back through the Control interface below (notifyctl invoke-action /
+//! dismiss / close-all).
 //!
-//! Owns the real `org.freedesktop.Notifications` bus name (`BUS_NAME`) as
-//! of the Phase 10 cutover -- Phases 1-9 developed against a throwaway
-//! name instead so dunst could keep serving real notifications untouched
-//! until everything up to that point was verified working.
+//! Why not just use quickshell's own Quickshell.Services.Notifications: that
+//! module fuses "the Notification object exists" with "the notification is
+//! open" -- emitting NotificationClosed destroys the object, and you can't
+//! invoke an action on a destroyed one. notifyd's whole point is that a
+//! notification's actions stay invokable after it closes (dunst couldn't do
+//! that). So notifyd keeps owning the bus; quickshell is just the renderer.
 //!
-//! Phase 3 adds popup rendering (popup.rs). The D-Bus method_call closures
-//! registered below must be `Send + Sync` (gio's binding requires it even
-//! though everything actually runs on one thread here -- see the comment
-//! on `DBusInterfaceInfo` further down), but GTK widgets are emphatically
-//! not `Send`. So the D-Bus side only ever touches `state: SharedState`
-//! (`Arc<Mutex<..>>`, plain data) directly, and hands off to the GTK side
-//! by pushing a `UiMsg` through a `glib::MainContext` channel -- the
-//! standard bridge for exactly this situation, since `Receiver::attach`'s
-//! callback has no `Send` bound and can freely capture `Rc<RefCell<..>>`
-//! popup state.
+//! The D-Bus method_call closures gio registers must be `Send + Sync` (its
+//! binding requires it even though everything runs on one thread here), and
+//! the render state is `Rc<RefCell<..>>` which isn't -- so the D-Bus side
+//! only touches `state: SharedState` (Arc<Mutex<..>>, plain data) directly
+//! and hands UI work to the glib-main-thread receiver via a channel.
 
 mod config;
-mod popup;
+mod render;
 mod state;
 
 use config::Config;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use gio::prelude::*;
 
 use notifyd::dbus_names::{BUS_NAME, CONTROL_INTERFACE, NOTIFICATIONS_INTERFACE, OBJECT_PATH};
 use state::{AppState, Notification, SharedState};
 
-/// NotificationClosed reason codes, per the freedesktop Notifications spec.
-/// `pub` so popup.rs's mouse handlers (mouse_middle_click/mouse_right_click
-/// = close_current/close_all) can pass the right reason without main.rs
-/// having to mediate every mouse-triggered close individually.
+/// NotificationClosed reason codes, per the freedesktop spec. `pub` so
+/// render.rs can pass the right reason for each close path.
 pub mod close_reason {
     pub const EXPIRED: u32 = 1;
     pub const DISMISSED: u32 = 2;
     pub const CLOSE_NOTIFICATION_CALLED: u32 = 3;
-    #[allow(dead_code)] // reserved by spec for daemon-defined reasons
+    #[allow(dead_code)]
     pub const UNDEFINED: u32 = 4;
 }
 
-/// Sent from the (Send + Sync) D-Bus callbacks to the GTK-main-thread
-/// receiver in `main()`. Carries only ids, not full `Notification` data --
-/// the receiver re-reads `state` for the current content, so there's one
-/// source of truth rather than two copies that could disagree.
+/// Sent from the (Send + Sync) D-Bus callbacks to the glib-main-thread
+/// receiver in `main()`. Carries ids, not full data -- the receiver
+/// re-reads `state` so there's one source of truth.
 enum UiMsg {
-    Show { id: u32, expire_timeout: i32 },
+    Show { id: u32, urgency: u8, expire_timeout: i32 },
+    /// A client's CloseNotification -- the signal is already emitted.
     Close(u32),
+    /// quickshell middle-click on a card.
+    Dismiss(u32),
+    /// quickshell right-click, or `notifyctl close-all`.
     CloseAll,
 }
 
-/// Both interfaces notifyd registers at `OBJECT_PATH`, in one document --
-/// `DBusNodeInfo::for_xml` happily parses multiple `<interface>` elements
-/// under one `<node>`, and `lookup_interface` then finds either by name.
 const INTROSPECTION_XML: &str = r#"
 <node>
   <interface name="org.freedesktop.Notifications">
@@ -93,12 +93,9 @@ const INTROSPECTION_XML: &str = r#"
     </signal>
   </interface>
   <interface name="org.hypr.notifyd1.Control">
-    <!-- Invokes the resolved default action (dunstrc: action_name's
-         default -- see popup::default_action_key) without needing a
-         popup on screen at all: unlike dunst/mako, closing a notification
-         here never invalidates it (state.rs), so there's no
-         redisplay-then-act dance to do. id = 0 means "the most recently
-         received notification". -->
+    <!-- Invokes the resolved default action without needing a popup on
+         screen: closing a notification here never invalidates it, unlike
+         dunst/mako. id = 0 means "the most recently received". -->
     <method name="InvokeLastAction"/>
     <method name="InvokeAction">
       <arg type="u" name="id" direction="in"/>
@@ -106,6 +103,12 @@ const INTROSPECTION_XML: &str = r#"
     <method name="InvokeActionByKey">
       <arg type="u" name="id" direction="in"/>
       <arg type="s" name="action_key" direction="in"/>
+    </method>
+    <!-- Drop one card without invoking anything (quickshell middle-click /
+         `notifyctl dismiss`). Emits NotificationClosed(dismissed) but keeps
+         the notification in history. -->
+    <method name="DismissPopup">
+      <arg type="u" name="id" direction="in"/>
     </method>
     <!-- "key\tlabel\n" per action, id = 0 means most recent. -->
     <method name="Actions">
@@ -144,6 +147,86 @@ fn emit_action_invoked(connection: &gio::DBusConnection, id: u32, action_key: &s
     }
 }
 
+fn cache_dir(sub: &str) -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".cache/notifyd").join(sub)
+}
+
+/// Resolve the icon Notify() gave us to something quickshell can load: a
+/// themed icon name, an absolute path, or a PNG we wrote from an image-data
+/// hint. Spec priority: image-data > image-path > app_icon > desktop-entry.
+fn resolve_icon(id: u32, app_icon: &str, hints: &HashMap<String, glib::Variant>) -> String {
+    for key in ["image-data", "image_data", "icon_data"] {
+        if let Some(v) = hints.get(key) {
+            if let Some(path) = decode_image_data(id, v) {
+                return path;
+            }
+        }
+    }
+    if let Some(p) = hints.get("image-path").and_then(|v| v.get::<String>()) {
+        if !p.is_empty() {
+            return p;
+        }
+    }
+    if !app_icon.is_empty() {
+        return app_icon.to_string();
+    }
+    if let Some(de) = hints.get("desktop-entry").and_then(|v| v.get::<String>()) {
+        if !de.is_empty() {
+            return de;
+        }
+    }
+    String::new()
+}
+
+/// Decode the spec's `(iiibiiay)` image-data hint (width, height, rowstride,
+/// has_alpha, bits_per_sample, channels, data) to a PNG at
+/// ~/.cache/notifyd/icons/<id>.png. Returns its path, or None if the hint
+/// is malformed / an unsupported shape.
+fn decode_image_data(id: u32, v: &glib::Variant) -> Option<String> {
+    let (w, h, rowstride, _has_alpha, bits, channels, data): (
+        i32,
+        i32,
+        i32,
+        bool,
+        i32,
+        i32,
+        Vec<u8>,
+    ) = v.get()?;
+    if w <= 0 || h <= 0 || rowstride <= 0 || bits != 8 || !(channels == 3 || channels == 4) {
+        return None;
+    }
+    let (w, h, rowstride, channels) =
+        (w as usize, h as usize, rowstride as usize, channels as usize);
+    if rowstride < w * channels || data.len() < rowstride * (h - 1) + w * channels {
+        return None;
+    }
+
+    let dir = cache_dir("icons");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{id}.png"));
+    let file = std::io::BufWriter::new(std::fs::File::create(&path).ok()?);
+
+    let mut enc = png::Encoder::new(file, w as u32, h as u32);
+    enc.set_color(if channels == 4 { png::ColorType::Rgba } else { png::ColorType::Rgb });
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().ok()?;
+
+    let mut packed = Vec::with_capacity(w * h * channels);
+    for row in 0..h {
+        let start = row * rowstride;
+        packed.extend_from_slice(&data[start..start + w * channels]);
+    }
+    writer.write_image_data(&packed).ok()?;
+    drop(writer);
+
+    Some(path.to_string_lossy().into_owned())
+}
+
+fn drop_icon_file(id: u32) {
+    let _ = std::fs::remove_file(cache_dir("icons").join(format!("{id}.png")));
+}
+
 fn handle_notify(
     state: &SharedState,
     ui_tx: &glib::Sender<UiMsg>,
@@ -164,33 +247,36 @@ fn handle_notify(
     let urgency = hints
         .get("urgency")
         .and_then(|v| v.get::<u8>())
-        .unwrap_or(1); // NORMAL, per spec default
+        .unwrap_or(1); // NORMAL
 
     let id = {
         let mut state = state.lock().expect("state mutex poisoned");
         let id = state.allocate_id(replaces_id);
-        state.insert(Notification {
+        let icon = resolve_icon(id, &app_icon, &hints);
+        let evicted = state.insert(Notification {
             id,
             sender: sender.to_string(),
             app_name: app_name.clone(),
             summary: summary.clone(),
             body: body.clone(),
-            icon: app_icon.clone(),
+            icon,
             actions: actions.clone(),
             urgency,
             timestamp: state::now_unix(),
         });
+        drop(state);
+        if let Some(old) = evicted {
+            drop_icon_file(old);
+        }
         id
     };
 
     println!(
-        "Notify #{id} from {sender}: app={app_name:?} icon={app_icon:?} \
-         summary={summary:?} body={body:?} actions={actions:?} \
-         urgency={urgency} timeout={expire_timeout}"
+        "Notify #{id} from {sender}: app={app_name:?} summary={summary:?} \
+         actions={actions:?} urgency={urgency} timeout={expire_timeout}"
     );
 
-    let _ = ui_tx.send(UiMsg::Show { id, expire_timeout });
-
+    let _ = ui_tx.send(UiMsg::Show { id, urgency, expire_timeout });
     Some(id)
 }
 
@@ -203,22 +289,9 @@ fn handle_close_notification(
     let (id,): (u32,) = parameters.get()?;
 
     if config.ignore_dbusclose {
-        // dunstrc: ignore_dbusclose -- "Useful to enforce the timeout set
-        // by dunst configuration. Without this parameter, an application
-        // may close the notification sent before the user defined
-        // timeout." Only the daemon's own timeout/mouse closes get
-        // through popup::close/fire_close in that case.
         return Some(());
     }
 
-    // Known-id check only, not removal: Phase 6 keeps every notification in
-    // `state` after it closes (that's the whole point -- see state.rs), so
-    // there's no "remove and see if it was there" signal to key off
-    // anymore. This can't distinguish "currently displayed" from "already
-    // history" (state.rs doesn't track that), so CloseNotification on an
-    // id that's already closed is a harmless no-op re-emission rather than
-    // a true no-op -- popup::close() (via UiMsg::Close below) already
-    // no-ops correctly either way.
     let (known, connection) = {
         let state = state.lock().expect("state mutex poisoned");
         (state.notifications.contains_key(&id), state.connection.clone())
@@ -235,9 +308,6 @@ fn handle_close_notification(
     Some(())
 }
 
-/// `id == 0` means "the most recently received notification" throughout
-/// the control interface, matching the spec's own convention that 0 is
-/// never a real notification id (`replaces_id = 0` means "not applicable").
 fn resolve_target_id(state: &SharedState, id: u32) -> Option<u32> {
     if id != 0 {
         Some(id)
@@ -246,12 +316,8 @@ fn resolve_target_id(state: &SharedState, id: u32) -> Option<u32> {
     }
 }
 
-/// Emits ActionInvoked for `id`, resolving to the default action
-/// (`popup::default_action_key`) if `key` is `None`, or that exact key if
-/// it's actually one of the notification's actions. Returns whether
-/// anything was actually emitted -- false for an unknown id, an
-/// unresolvable default (see `default_action_key`'s doc), or a `key` that
-/// doesn't belong to this notification.
+/// Emits ActionInvoked for `id`, resolving to the default action if `key` is
+/// None, or that exact key if it's one of the notification's actions.
 fn invoke_action(state: &SharedState, id: u32, key: Option<&str>) -> bool {
     let (notification, connection) = {
         let state = state.lock().expect("state mutex poisoned");
@@ -262,7 +328,7 @@ fn invoke_action(state: &SharedState, id: u32, key: Option<&str>) -> bool {
     };
     let key = match key {
         Some(k) => notification.action_keys().find(|&k2| k2 == k),
-        None => popup::default_action_key(&notification),
+        None => notification.default_action_key(),
     };
     let Some(key) = key else {
         return false;
@@ -273,8 +339,6 @@ fn invoke_action(state: &SharedState, id: u32, key: Option<&str>) -> bool {
     true
 }
 
-/// "key\tlabel\n" per action -- same tab-separated convention as
-/// `cliphist list`/`dunstctl history`, easy to pipe into `rofi -dmenu`.
 fn actions_string(state: &SharedState, id: u32) -> String {
     let notification = state
         .lock()
@@ -286,19 +350,16 @@ fn actions_string(state: &SharedState, id: u32) -> String {
         return String::new();
     };
     let mut out = String::new();
-    for pair in notification.actions.chunks(2) {
-        if let [key, label] = pair {
-            out.push_str(key);
-            out.push('\t');
-            out.push_str(label);
-            out.push('\n');
-        }
+    for (key, label) in notification.action_pairs() {
+        out.push_str(key);
+        out.push('\t');
+        out.push_str(label);
+        out.push('\n');
     }
     out
 }
 
-/// Newest first, matching the order dunst's own `dunstctl history` returns
-/// (confirmed earlier this session).
+/// Newest first, matching `dunstctl history`.
 fn list_history_json(state: &SharedState) -> String {
     let state = state.lock().expect("state mutex poisoned");
     let mut items: Vec<&Notification> = state.notifications.values().collect();
@@ -308,12 +369,8 @@ fn list_history_json(state: &SharedState) -> String {
         .iter()
         .map(|n| {
             let actions: Vec<serde_json::Value> = n
-                .actions
-                .chunks(2)
-                .filter_map(|pair| match pair {
-                    [key, label] => Some(serde_json::json!({"key": key, "label": label})),
-                    _ => None,
-                })
+                .action_pairs()
+                .map(|(key, label)| serde_json::json!({ "key": key, "label": label }))
                 .collect();
             serde_json::json!({
                 "id": n.id,
@@ -367,6 +424,17 @@ fn handle_control_call(
             invoke_action(state, id, Some(&key));
             invocation.return_value(None);
         }
+        "DismissPopup" => {
+            let Some((id,)): Option<(u32,)> = parameters.get() else {
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.InvalidArgs",
+                    "DismissPopup: unexpected argument shape",
+                );
+                return;
+            };
+            let _ = ui_tx.send(UiMsg::Dismiss(id));
+            invocation.return_value(None);
+        }
         "Actions" => {
             let Some((id,)): Option<(u32,)> = parameters.get() else {
                 invocation.return_dbus_error(
@@ -405,11 +473,11 @@ fn handle_method_call(
 ) {
     match method_name {
         "GetCapabilities" => {
-            let caps: Vec<&str> = vec!["body", "actions"];
+            let caps: Vec<&str> = vec!["body", "body-markup", "actions", "icon-static"];
             invocation.return_value(Some(&(caps,).to_variant()));
         }
         "GetServerInformation" => {
-            let info = ("notifyd", "hypr", "0.1.0", "1.2");
+            let info = ("notifyd", "hypr", "0.2.0", "1.2");
             invocation.return_value(Some(&info.to_variant()));
         }
         "Notify" => match handle_notify(state, ui_tx, sender, parameters) {
@@ -429,77 +497,56 @@ fn handle_method_call(
         other => {
             invocation.return_dbus_error(
                 "org.freedesktop.DBus.Error.UnknownMethod",
-                &format!("notifyd: method {other} not implemented yet"),
+                &format!("notifyd: method {other} not implemented"),
             );
         }
     }
 }
 
 fn main() {
-    if gtk::init().is_err() {
-        eprintln!("notifyd: failed to initialise GTK");
-        std::process::exit(1);
-    }
-
     let main_loop = glib::MainLoop::new(None, false);
     let config = Config::load();
-    // gio's D-Bus callbacks must be Send + Sync (see the module doc), so the
-    // handful of config fields they need (currently just
-    // ignore_dbusclose) go in via an Arc alongside `state`, separate from
-    // the Rc<Config> popup.rs holds for its own (GTK-thread-only) use.
     let config_arc = std::sync::Arc::new(config.clone());
-    let state: SharedState = std::sync::Arc::new(std::sync::Mutex::new(AppState::new(config.history_length)));
+    let state: SharedState =
+        std::sync::Arc::new(std::sync::Mutex::new(AppState::new(config.history_length)));
 
-    // These two are the only things popup.rs's mouse handlers and expiry
-    // timers need from the D-Bus/AppState world: tell the original sender a
-    // notification closed (any reason) or that one of its actions was
-    // invoked. Notably this does *not* remove anything from `state` --
-    // closing just stops the popup being displayed, it doesn't stop the
-    // notification being invokable later (that's the entire point of
-    // Phase 6, see state.rs). Everything about closing/redrawing itself
-    // stays inside popup.rs.
-    let popups = popup::new_manager(
-        config,
-        {
-            let state = state.clone();
-            move |id, reason| {
-                let connection = state.lock().expect("state mutex poisoned").connection.clone();
-                if let Some(connection) = connection {
-                    emit_notification_closed(&connection, id, reason);
-                }
+    // Fresh start: no leftover cards / icons from a previous run.
+    let _ = std::fs::remove_dir_all(cache_dir("icons"));
+    if let Some(dir) = render::state_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(render::state_path(), "{\"popups\":[]}");
+
+    let render = render::new_manager(config, state.clone(), {
+        let state = state.clone();
+        move |id, reason| {
+            let connection = state.lock().expect("state mutex poisoned").connection.clone();
+            if let Some(connection) = connection {
+                emit_notification_closed(&connection, id, reason);
             }
-        },
-        {
-            let state = state.clone();
-            move |id, action_key| {
-                let connection = state.lock().expect("state mutex poisoned").connection.clone();
-                if let Some(connection) = connection {
-                    emit_action_invoked(&connection, id, action_key);
-                }
-            }
-        },
-    );
+        }
+    });
 
     let (ui_tx, ui_rx) = glib::MainContext::channel::<UiMsg>(glib::Priority::DEFAULT);
 
     {
         let state = state.clone();
-        let popups = popups.clone();
+        let render = render.clone();
         ui_rx.attach(None, move |msg| {
             match msg {
-                UiMsg::Show { id, expire_timeout } => {
-                    let notification = state
+                UiMsg::Show { id, urgency, expire_timeout } => {
+                    let exists = state
                         .lock()
                         .expect("state mutex poisoned")
                         .notifications
-                        .get(&id)
-                        .cloned();
-                    if let Some(notification) = notification {
-                        popup::show(&popups, &notification, expire_timeout);
+                        .contains_key(&id);
+                    if exists {
+                        render::show(&render, id, urgency, expire_timeout);
                     }
                 }
-                UiMsg::Close(id) => popup::close(&popups, id),
-                UiMsg::CloseAll => popup::close_all(&popups),
+                UiMsg::Close(id) => render::close_silent(&render, id),
+                UiMsg::Dismiss(id) => render::fire_close(&render, id, close_reason::DISMISSED),
+                UiMsg::CloseAll => render::close_all(&render, close_reason::DISMISSED),
             }
             glib::ControlFlow::Continue
         });
@@ -511,13 +558,9 @@ fn main() {
         gio::BusNameOwnerFlags::NONE,
         move |connection, _name| {
             state.lock().expect("state mutex poisoned").connection = Some(connection.clone());
-            // DBusInterfaceInfo wraps a raw pointer and isn't Send/Sync, so it
-            // can't be captured from outside this (Send + Sync) closure --
-            // parse it fresh here instead, which is cheap and only happens
-            // once per bus-name acquisition. Both interfaces live in the one
-            // document (see INTROSPECTION_XML's doc comment).
-            let node_info = gio::DBusNodeInfo::for_xml(INTROSPECTION_XML)
-                .expect("bad introspection xml");
+
+            let node_info =
+                gio::DBusNodeInfo::for_xml(INTROSPECTION_XML).expect("bad introspection xml");
 
             let notifications_info = node_info
                 .lookup_interface(NOTIFICATIONS_INTERFACE)
@@ -566,6 +609,6 @@ fn main() {
         |_connection, name| eprintln!("notifyd: lost bus name {name} (already running?)"),
     );
 
-    println!("notifyd: running as {BUS_NAME}, Ctrl+C to stop");
+    println!("notifyd: running headless as {BUS_NAME}, Ctrl+C to stop");
     main_loop.run();
 }

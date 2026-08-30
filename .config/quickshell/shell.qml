@@ -6,6 +6,7 @@ import Quickshell.Hyprland
 import "bar"
 import "background"
 import "osd"
+import "notifications"
 import "services"
 
 ShellRoot {
@@ -28,6 +29,15 @@ ShellRoot {
         model: Quickshell.screens
 
         VolumeOsd {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        NotifLayer {
             required property var modelData
             screen: modelData
         }

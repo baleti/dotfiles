@@ -65,12 +65,14 @@ hl.on("hyprland.start", function()
     -- what clipboard-picker's $date: field reads from. See that script's
     -- own comment for how it correlates a log line to the right id.
     hl.exec_cmd([[wl-paste --watch ~/.config/hypr/scripts/cliphist-store-logged.sh]])
-    -- Replaces dunst (~/.claude2/plans/silly-percolating-rose.md): dunst
-    -- invalidates a notification's actions the instant it closes, even on
-    -- timeout, so mod+n/ctrl+mod+n could never invoke one after it left
-    -- the screen. notifyd never discards that data. Rollback: revert this
-    -- line to hl.exec_cmd("dunst") -- the dunst package is untouched and
-    -- its systemd unit was already masked before this switch.
+    -- notifyd owns org.freedesktop.Notifications. Replaced dunst
+    -- (~/.claude2/plans/silly-percolating-rose.md): dunst invalidates a
+    -- notification's actions the instant it closes, so mod+n / ctrl+mod+n
+    -- could never invoke one after it left the screen; notifyd never
+    -- discards that. Headless since 2026-08-30 -- the cards are drawn by
+    -- quickshell (~/.config/quickshell/notifications/, off
+    -- ~/.cache/notifyd/state.json). Rollback to dunst: revert this line to
+    -- hl.exec_cmd("dunst") (the package is untouched, its unit masked).
     hl.exec_cmd("~/.config/hypr/notifyd/target/release/notifyd")
     -- Background sampler for the bar's hover-graphs and the alt+mod+n/p/t/m
     -- standalone popups (~/.config/hypr/sysmon). keybinds.lua's comments

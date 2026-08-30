@@ -9,7 +9,7 @@ use notifyd::dbus_names::{BUS_NAME, CONTROL_INTERFACE, OBJECT_PATH};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: notifyctl <invoke-last | invoke ID | invoke-action ID KEY | actions [ID] | list | close-all>"
+        "usage: notifyctl <invoke-last | invoke ID | invoke-action ID KEY | dismiss ID | actions [ID] | list | close-all>"
     );
     std::process::exit(2);
 }
@@ -85,6 +85,10 @@ fn main() {
         Some("invoke-action") if args.len() == 3 => {
             let id = parse_id(&args[1]);
             call_unit(&connection, "InvokeActionByKey", Some(&(id, args[2].as_str()).to_variant()));
+        }
+        Some("dismiss") if args.len() == 2 => {
+            let id = parse_id(&args[1]);
+            call_unit(&connection, "DismissPopup", Some(&(id,).to_variant()));
         }
         Some("actions") if args.len() <= 2 => {
             let id: u32 = args.get(1).map(|s| parse_id(s)).unwrap_or(0);
