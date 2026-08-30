@@ -4,8 +4,8 @@
 //! (typed directly, or forwarded over the socket from a later Alt+Tab press
 //! while this instance is already open) cycles the selection and releasing
 //! Alt confirms it; pressing any other printable key locks the grid into
-//! search mode (a `GtkSearchEntry` filters the grid -- the `/field:value`
-//! DSL from `query.rs`), Alt no longer confirms once locked, and
+//! search mode (a `GtkSearchEntry` filters the grid -- the `/verb`
+//! command DSL from `query.rs`), Alt no longer confirms once locked, and
 //! Enter/Escape confirm/cancel in either mode.
 //!
 //! **A window-identity subtlety worth knowing before touching filtering,
@@ -49,8 +49,9 @@ const CELL_H_OVERHEAD: i32 = 24;
 const CELL_V_OVERHEAD: i32 = 24;
 
 /// The grid's baseline shown columns -- exactly what was hardcoded before
-/// `/+`/`/-` existed, so nothing regresses by default. `class`/`pid` and
-/// any `tmux`/`claude` field stay hidden until explicitly added.
+/// column verbs existed, so nothing regresses by default. `class`/`pid`
+/// and any `tmux`/`claude` field stay hidden until `/at` (or a surviving
+/// `/ft`) brings them in.
 const DEFAULT_COLUMNS: [ResolvedField; 2] = [ResolvedField::Flat("workspace"), ResolvedField::Flat("title")];
 
 /// The aspect ratio (height/width) most windows in this set share, so
@@ -159,32 +160,28 @@ fn render_label(label: &gtk::Label, win: &Window, meta: &TmuxClaudeMeta, columns
     label.set_markup(&parts.join(" "));
 }
 
-/// Which of the five completion stages the popup is currently offering --
+/// Which of the four completion stages the popup is currently offering --
 /// determines what `accept_suggestion` splices into the query text. Only
 /// one stage is ever live at once (`query::completion_context` returns a
 /// single `Completion`), so this only needs to remember which, not
 /// several.
 #[derive(Clone)]
 enum SuggestionKind {
-    /// Field/group/action name at the top level of a token. Accepting
-    /// inserts `/<chosen>` bare for `+`/`-` (re-triggers the next stage),
-    /// `/sort/` for the "sort" action, `/reverse ` (complete) for
-    /// "reverse", `/<chosen>` bare for a group (`has_subtypes`, ready for
-    /// `/sub` or to stand alone), or `/<chosen>:` for a flat field.
-    TopLevel,
-    /// `/+`/`/-` path. Accepting inserts `/<sign><chosen>`, always bare (no
-    /// colon, ever) -- a visibility token needs no terminator.
-    VisibilityPath(char),
-    /// Sort target (flat or group[/sub]). Accepting always appends `/` --
-    /// see query.rs's `completion_context` doc for why this uniformly
-    /// re-triggers the right next stage (direction, or a further group/sub
-    /// completion) regardless of what was chosen.
-    SortField,
+    /// A verb short form being typed (`/f` -> `fv`, `ft`). Accepting
+    /// inserts `/<chosen> ` (trailing space) for a path-taking verb so
+    /// completion re-triggers at the path stage, or `/rv ` for `/reverse`
+    /// which takes no argument.
+    Verb,
+    /// A type path being typed as an argument. Accepting a group leaves a
+    /// trailing `.` ready for a subfield (`query::is_group`); a flat type
+    /// or an explicit subfield completes the token, plus a trailing `:`
+    /// when the governing verb is `/fv` (ready for a value).
+    TypePath(query::Verb),
     /// Sort direction. Accepting inserts `<chosen> ` (trailing space,
     /// complete term).
     SortDirection,
-    /// Field value. Accepting inserts `<chosen> ` (re-quoted if it
-    /// contains whitespace), same trailing-space "complete term" contract.
+    /// Filter value. Accepting inserts `/fv <field>:<value> ` (re-quoted
+    /// if it contains whitespace), trailing-space "complete term".
     Value(String),
 }
 
@@ -372,7 +369,7 @@ fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
 /// keystroke -- cheap (at most a handful of fields, or a couple dozen
 /// windows' worth of one field's values, to filter), so no need to diff
 /// against the previous state. One `query::completion_context` call
-/// decides which of the five stages (if any) is live; this just renders
+/// decides which of the four stages (if any) is live; this just renders
 /// whichever it is.
 fn update_suggestions(query_text: &str, list: &gtk::ListBox, state: &Rc<State>) {
     for child in list.children() {
@@ -391,9 +388,8 @@ fn update_suggestions(query_text: &str, list: &gtk::ListBox, state: &Rc<State>) 
     }
 
     let (start, kind) = match &completion {
-        query::Completion::TopLevel { start, .. } => (*start, SuggestionKind::TopLevel),
-        query::Completion::VisibilityPath { start, sign, .. } => (*start, SuggestionKind::VisibilityPath(*sign)),
-        query::Completion::SortField { start, .. } => (*start, SuggestionKind::SortField),
+        query::Completion::Verb { start, .. } => (*start, SuggestionKind::Verb),
+        query::Completion::TypePath { start, verb, .. } => (*start, SuggestionKind::TypePath(*verb)),
         query::Completion::SortDirection { start, .. } => (*start, SuggestionKind::SortDirection),
         query::Completion::Value { start, field, .. } => (*start, SuggestionKind::Value(field.key())),
     };
@@ -432,23 +428,31 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
     let query_text = search.text();
     let prefix = &query_text[..start];
     let new_query = match kind {
-        SuggestionKind::TopLevel => match chosen.as_str() {
-            "+" | "-" => format!("{prefix}/{chosen}"),
-            "sort" => format!("{prefix}/sort/"),
-            "reverse" => format!("{prefix}/reverse "),
-            _ if query::has_subtypes(&chosen) => format!("{prefix}/{chosen}"),
-            _ => format!("{prefix}/{chosen}:"),
-        },
-        SuggestionKind::VisibilityPath(sign) => format!("{prefix}/{sign}{chosen}"),
-        SuggestionKind::SortField => format!("{prefix}/sort/{chosen}/"),
+        SuggestionKind::Verb => {
+            // "rv"/"reverse" take no argument; everything else does, so
+            // leave a trailing space to re-trigger path completion.
+            format!("{prefix}/{chosen} ")
+        }
+        SuggestionKind::TypePath(verb) => {
+            if query::is_group(&chosen) {
+                // ready for `.sub`, or to stand on its own
+                format!("{prefix}{chosen}")
+            } else if verb == query::Verb::FilterValue {
+                format!("{prefix}{chosen}:")
+            } else {
+                format!("{prefix}{chosen} ")
+            }
+        }
         SuggestionKind::SortDirection => format!("{prefix}{chosen} "),
         SuggestionKind::Value(field_key) => {
+            // `prefix` already ends in `/fv ` -- the last token is just
+            // `path:frag`, so only the `path:value ` is spliced back.
             let value = if chosen.contains(char::is_whitespace) {
                 format!("\"{chosen}\"")
             } else {
                 chosen
             };
-            format!("{prefix}/{field_key}:{value} ")
+            format!("{prefix}{field_key}:{value} ")
         }
     };
     hide_suggestions(list, state);

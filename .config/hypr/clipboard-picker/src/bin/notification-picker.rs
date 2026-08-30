@@ -21,7 +21,7 @@ use serde_json::Value;
 use clipboard_picker::picker::{self, Entry, PickerConfig};
 
 const NOTIFYCTL: &str = "/home/user1/.config/hypr/notifyd/target/release/notifyctl";
-/// `$field:value`-selectable fields, offered by the autocomplete popup.
+/// `/fv field:value`-selectable fields, offered by the autocomplete popup.
 const FIELD_NAMES: [&str; 2] = ["app", "date"];
 
 fn get_str(obj: &Value, key: &str) -> String {
