@@ -11,8 +11,8 @@ hl.bind(mainMod .. " + E",     hl.dsp.exec_cmd(fileManager))
 hl.bind(mainMod .. " + SHIFT + space", hl.dsp.window.float({ action = "toggle" }))
 hl.bind(mainMod .. " + R",     hl.dsp.exec_cmd(menu))
 -- mod+P used to be dwindle pseudotile toggle; moved to the CPU graph
--- widget (see graph_tier_widget below) and dropped entirely rather than
--- rebound elsewhere, per instruction.
+-- widget (see the mod+t/d/n/p/m binds below) and dropped entirely rather
+-- than rebound elsewhere, per instruction.
 
 -- Move focus with mainMod + arrow keys
 hl.bind(mainMod .. " + left",  hl.dsp.focus({ direction = "left" }))
@@ -205,28 +205,16 @@ hl.bind("ALT + " .. mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph mem"))
 
 -- Toggle the *quickshell bar's own* hover-graph panels open/closed on
--- whichever monitor is focused (~/.config/hypr/scripts/bar-toggle.sh), AND
--- enter a shared "graph_nav" submap: while active, 1-6 (no modifier) jumps
--- the most-recently-pressed panel's history tier straight to
--- 10m/30m/6h/7d/7w/7mo, and left/right step it one tier at a time, via
--- bar-set-tier.sh -> Bar.qml's setXxxTier() IpcHandler functions (same
--- tier-setting path GraphPill's own tier buttons use). Escape leaves
--- graph_nav and returns to the normal keymap -- it does not close any
--- panels, they stay pinned open independently of the submap.
---
--- Originally each widget got its OWN private submap (entered on its entry
--- key, holding only that widget's own tier/Escape/entry-key binds). That
--- meant entering e.g. graph_temp's submap left mod+d totally unbound --
--- Hyprland submaps replace the *entire* active keymap -- so a second panel
--- could never be opened without first Escaping back to the normal keymap
--- (reported 2026-08-29, broke the "show several panels at once" flow).
--- Fixed by folding every widget's entry key into one shared submap: any
--- entry key works from inside it, each toggling its own panel and
--- becoming the tier-key target, so panels layer up freely (Bar.qml's
--- stackRight() lays out however many are open). An interim version also
--- tried auto-exiting graph_nav once every panel looked closed, tracked via
--- a Lua-side open/closed shadow of each panel -- see toggle_widget() below
--- for why that shadow couldn't be kept honest and was dropped.
+-- whichever monitor is focused (~/.config/hypr/scripts/bar-toggle.sh). Just
+-- a plain toggle each -- no submap. 1-6/left-right tier switching and
+-- Escape-to-close now go straight to whichever panel holds real keyboard
+-- focus, handled in GraphPill.qml's own Keys.onPressed, the same
+-- HyprlandFocusGrab-based mechanism the calendar/media panels already used
+-- (see shell.qml). That replaces an earlier "graph_nav" Hyprland submap
+-- that tracked which panel(s) were open on the Lua side in parallel with
+-- (and prone to desyncing from -- reported 2026-08-29 twice) each pill's
+-- own real state; routing keys to the actually-focused QML item needs no
+-- such tracking at all, so this entire block collapsed down to five binds.
 --
 -- temp, disk, mem, and cpu moved from ALT+t/s/m/p to mod+t/d/m/p (disk later
 -- moved off mod+s to mod+d). mod+m
@@ -236,102 +224,27 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 -- feedback_hyprland_chord_via_submap memory. net was left on ALT+n because
 -- mod+n was notifyctl invoke-last (above) - swapped 2026-08-29 so net
 -- matches the other widgets on plain mod+n, and invoke-last moved to ALT+n.
-local GRAPH_TIERS = { "10m", "30m", "6h", "7d", "7w", "7mo" }
+hl.bind(mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleTemp"))
+hl.bind(mainMod .. " + d", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleDisk"))
+hl.bind(mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleNet"))
+hl.bind(mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"))
+hl.bind(mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"))
+-- mod+CTRL+m just toggles the media widget open/closed -- not plain mod+m,
+-- that's the memory graph widget above (caught live before this ever
+-- shipped wrong). No submap: 0-9 decile-seek used to be a separate
+-- "media_seek" Hyprland submap running alongside the arrow-seek/space/
+-- escape keys, which already reached Bar.qml's Keys.onPressed directly via
+-- real WlrKeyboardFocus.OnDemand focus (shell.qml) -- the bar's Submap{}
+-- indicator would visibly show "media_seek" whenever it was live, which is
+-- how the leftover got noticed (reported 2026-08-30). Digits now go
+-- through that same Keys.onPressed as everything else.
+hl.bind(mainMod .. " + CTRL + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
 
-local GRAPH_WIDGETS = {
-    temp = { key = mainMod .. " + t", toggle = "toggleTemp", tier = "setTempTier" },
-    disk = { key = mainMod .. " + d", toggle = "toggleDisk", tier = "setDiskTier" },
-    net  = { key = mainMod .. " + n", toggle = "toggleNet",  tier = "setNetTier" },
-    cpu  = { key = mainMod .. " + p", toggle = "toggleCpu",  tier = "setCpuTier" },
-    mem  = { key = mainMod .. " + m", toggle = "toggleMem",  tier = "setMemTier" },
-}
-
--- active_widget: whichever panel 1-6/left/right currently act on -- just
--- the most recently *pressed* entry key, not a tracked open/closed state.
--- An earlier version tried to mirror each panel's real pinned state here
--- (to auto-drop back to the normal keymap once nothing was left open), but
--- that shadow copy only lives as long as the Lua config does -- a plain
--- `hyprctl reload` (or any edit to this file) resets it to "everything
--- closed" while the quickshell panels themselves stay exactly as they
--- were. Next keypress after a reload would then read as "opening" a panel
--- that was actually already open, so the toggle it sent really *closed*
--- it (looked like "nothing shows up"), and the open/closed bookkeeping
--- could also decide to reset out of graph_nav even though a panel was
--- still on screen (arrows going dead). Reported 2026-08-29. Not tracking
--- open/closed at all sidesteps the desync entirely: an entry key always
--- (a) fires the toggle and (b) lands you in graph_nav, full stop.
-local active_widget = nil
-local tier_index = {}
-for name in pairs(GRAPH_WIDGETS) do tier_index[name] = 1 end
-
-local function set_tier(name, index)
-    index = math.max(1, math.min(#GRAPH_TIERS, index))
-    tier_index[name] = index
-    hl.dispatch(hl.dsp.exec_cmd(
-        "~/.config/hypr/scripts/bar-set-tier.sh " .. GRAPH_WIDGETS[name].tier .. " " .. GRAPH_TIERS[index]))
-end
-
-local function toggle_widget(name)
-    hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh " .. GRAPH_WIDGETS[name].toggle))
-    active_widget = name
-    hl.dispatch(hl.dsp.submap("graph_nav"))
-end
-
-hl.define_submap("graph_nav", function()
-    for name, w in pairs(GRAPH_WIDGETS) do
-        hl.bind(w.key, function() toggle_widget(name) end)
-    end
-
-    for i, code in ipairs(GRAPH_TIERS) do
-        hl.bind(tostring(i), function()
-            if active_widget then set_tier(active_widget, i) end
-        end)
-    end
-    hl.bind("left", function()
-        if active_widget then set_tier(active_widget, tier_index[active_widget] + 1) end
-    end)
-    hl.bind("right", function()
-        if active_widget then set_tier(active_widget, tier_index[active_widget] - 1) end
-    end)
-
-    hl.bind("Escape", function() hl.dispatch(hl.dsp.submap("reset")) end)
-end)
-
-for name, w in pairs(GRAPH_WIDGETS) do
-    hl.bind(w.key, function() toggle_widget(name) end)
-end
--- mod+CTRL+m opens the media widget AND enters the "media_seek" submap:
--- while active, bare 0-9 (no modifier -- Hyprland binds match one
--- non-modifier key at a time, so a real simultaneous "mod+ctrl+m+2"
--- four-key chord isn't expressible; a submap is the idiomatic equivalent --
--- press mod+CTRL+m once to enter, then tap digits freely) jump to that
--- decile of the current track (2 -> 20%, 9 -> 90%, ...), via
--- playerctl-seek-percent.sh against whichever player
--- ~/.config/playerctl-current names. Escape or mod+CTRL+m again exits back
--- to the normal keymap (and mod+CTRL+m also re-closes the widget, mirroring
--- its toggle behavior outside the submap). Not plain mod+m: that's the
--- memory graph widget above (caught live before this ever shipped wrong).
-hl.define_submap("media_seek", function()
-    for i = 0, 9 do
-        hl.bind(tostring(i), hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek-percent.sh " .. i))
-    end
-    hl.bind("Escape", function() hl.dispatch(hl.dsp.submap("reset")) end)
-    hl.bind(mainMod .. " + CTRL + m", function()
-        hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
-        hl.dispatch(hl.dsp.submap("reset"))
-    end)
-end)
-
-hl.bind(mainMod .. " + CTRL + m", function()
-    hl.dispatch(hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
-    hl.dispatch(hl.dsp.submap("media_seek"))
-end)
 -- Moved from CTRL+ALT+c to mod+CTRL+c. No Hyprland submap needed here
--- (unlike media_seek/graph_*): once open, CalendarExpanded.qml gets real
--- WlrKeyboardFocus.OnDemand focus (shell.qml) the same way the media panel
--- already does for its own arrow-seek/space/escape keys, so bare
--- Tab/arrows/Enter/Escape just reach the QML panel directly - no global
--- digit-style interception required. See CalendarExpanded.qml's
+-- either: once open, CalendarExpanded.qml gets real WlrKeyboardFocus.OnDemand
+-- focus (shell.qml) the same way the media panel does for its own keys, so
+-- bare Tab/arrows/Enter/Escape just reach the QML panel directly - no
+-- global digit-style interception required. See CalendarExpanded.qml's
 -- handleKey() for the year-picker (Tab enters it; arrows navigate/zoom;
 -- Enter drills in or confirms; Escape exits).
 hl.bind(mainMod .. " + CTRL + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))

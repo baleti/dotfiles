@@ -80,6 +80,89 @@ if `sysmond` restarts or drops, the QML side never reconnects on its own
 and the graphs silently freeze until `qs` itself reloads. Keep this pattern
 for any new socket consumer.
 
+## Panel width sizing
+
+Every popup panel that pops out of the bar — `CalendarExpanded`,
+`MediaExpanded`, and all 5 `GraphPill` expand panels (net/cpu/mem/disk/
+temp) — shares **one** dynamic-width layout system in `Bar.qml`, always on
+a single row, not per-panel hardcoded pixel widths or separate positioning
+math. This used to be two independent systems (media/calendar ran a
+single-row `stackRight` sweep with no left-edge clamp, while the 5 graph
+pills had their own row-*wrapping* system added 2026-08-29); the two
+disagreeing about a panel's real width/position once panels from both
+groups were open together is what let a panel get pushed off the left edge
+of the screen, and let calendar render directly on top of an open graph
+panel instead of shifting clear of it (both reported 2026-08-30) — merged
+into one system rather than patched independently again. A row-wrapping
+version of the merged system was tried next and rejected (reported
+2026-08-30, unusable) — **there is deliberately no second row**: every
+open panel always shares the one row, and width just divides evenly among
+however many are open, shrinking with no floor-triggered fallback. All 7
+open at once on a ~1920px monitor lands around 260px each; that's
+considered an acceptable, rare edge case (see `Bar.qml`'s comment on
+`openPanels` for why spilling onto a neighboring monitor's own bar was
+floated and deliberately skipped — it would need real IPC between separate
+per-monitor `Bar.qml` instances, since each one's layer-shell surface is
+tied to a single output).
+
+`Bar.qml`'s `panelOrder` (`["media", "net", "cpu", "mem", "disk", "temp",
+"calendar"]`, bar-visual left-to-right order — calendar's trigger is the
+clock, the rightmost item) is the single ordering the whole system is built
+on:
+
+- `openPanels`/`openCount` — which of those 7 are currently expanded.
+- `rowRightAnchor` — the rightmost open panel's own natural pill position
+  (not the raw screen edge — see its comment for why that overstated
+  available room and ran the leftmost panel off the left edge).
+- `panelWidth` — one shared width every open panel gets: divides
+  `panelAreaWidth` evenly among `openCount`, clamped only against
+  `maxPanelWidth` (560px, the one-panel-alone case) and a `minPanelWidth`
+  sanity floor (40px, not a legibility target — there's nowhere left to
+  wrap to).
+- `layoutFor(name)` — `{right}` for one open panel: panels fill
+  right-to-left within the row, matching the pills' own left-to-right order
+  in the bar.
+- `overflowHeightFor(name)`/`panelYFor(name)` — each panel's own current
+  expand height (`GraphPill.overflowHeight`, or plain `.height` for
+  `MediaExpanded`/`CalendarExpanded`, since their `implicitHeight` already
+  collapses to 0 when not expanded); `panelYFor` is just the shared
+  `panelY` baseline now (kept as a named function, not inlined at each
+  binding site, so a future panel kind that genuinely needs to differ has
+  one place to change).
+- `panelGridHeight` — the tallest currently-open panel's own expand height;
+  this is `overflow` (and so `totalHeight`) directly.
+
+Every panel binds to this the same way: `GraphPill`'s `expandWidth`/
+`targetRight`/`targetY` and `CalendarExpanded`/`MediaExpanded`'s own
+`panelWidth`/`x`/`y` all read `root.panelWidth`/`root.layoutFor(name).right`/
+`root.panelYFor(name)`. A future single-instance popup panel should become
+a member of this same pool (add its name to `panelOrder`, wire
+`panelExpandedFor`/`naturalRightFor`/`overflowHeightFor` for it, bind its
+width/position the same way) rather than inventing its own sizing or
+positioning — that's exactly the split that caused the bug this section
+describes.
+
+**This is a different problem from winswitch's Alt-Tab grid sizing**
+(`~/.config/hypr/winswitch/src/ui.rs`'s `grid_dims`/`typical_aspect`, see
+[rust-tools.md](rust-tools.md#winswitch)): that one packs an *unknown
+number of items of varying aspect ratio* into a grid and picks a column
+count to match their shape. This one shares a fixed, screen-relative width
+pool among a handful of named, fixed-content panels, always on one row. A
+future widget that lays out N variable-aspect items in a grid (a dock, a
+gallery, another picker) should port winswitch's algorithm instead of this
+one.
+
+**Restarting after a structural edit to `Bar.qml`:** quickshell's hot
+reload only re-binds *expressions*; it doesn't recreate already-running
+root object instances. Renaming or removing a root-level `function`/
+`property` (as this system's own refactors did twice, 2026-08-30) leaves
+long-running instances' meta-objects stuck with the old names — `qs log`
+shows `TypeError: Property 'x' ... is not a function` and `Unable to
+assign [undefined] to double` even though the file on disk is correct.
+Fix: `qs kill` then relaunch the same way `hyprland.lua` does
+(`qs -n -d`) — a plain value/expression change never needs this, only a
+changed function/property *signature*.
+
 ## Theme
 
 `theme/Theme.qml` (singleton) — a `FileView` on

@@ -76,6 +76,23 @@ QtObject {
         return hi <= lo ? 0 : Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
     }
 
+    // Bar.qml's popup panels (calendar, media, and the sysmon graph pills)
+    // all share ONE dynamic width + row-wrapping layout system now --
+    // Bar.qml's "Popup panels" block (`openPanels`/`layoutFor`/
+    // `panelWidth`/`panelYFor`) -- rather than each computing its own width
+    // independently. No standalone per-panel-kind width helper lives here
+    // any more; a future single-instance popup panel should become a
+    // member of that same shared pool (add it to Bar.qml's `panelOrder`
+    // and route its width/position through `panelWidth`/`layoutFor`/
+    // `panelYFor`), not reinvent its own sizing. See
+    // ~/.config/docs/quickshell-bar.md's "Panel width sizing" section for
+    // the full writeup, and why this is a *different* problem from
+    // winswitch's Alt-Tab grid sizing (`~/.config/hypr/winswitch/src/ui.rs`,
+    // `grid_dims`/`typical_aspect`) -- that one packs an unknown number of
+    // items of *varying aspect ratio* into a grid; this one shares a fixed
+    // screen-relative width pool among a handful of named, fixed-content
+    // panels.
+
     readonly property int rounding: 10
     readonly property int barHeight: 38
     readonly property int pillPadH: 11

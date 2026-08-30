@@ -18,8 +18,44 @@ Item {
     // keyboard-focus mode from each panel's own open/closed state.
     readonly property alias mediaPanel: mediaExpanded
     readonly property alias calendarPanel: calendarExpanded
+    readonly property bool anyGraphExpanded: netPill.expanded || cpuPill.expanded || memPill.expanded || diskPill.expanded || tempPill.expanded
 
-    focus: mediaExpanded.expanded || calendarExpanded.expanded
+    // shell.qml watches this to tell "a panel just opened" (reclaim window
+    // keyboard focus) apart from "a panel closed but others are still open"
+    // (do nothing -- see holdsFocus there). A plain increase-vs-decrease
+    // read on the count, not per-panel signals, since any of 7 panels could
+    // be the one that changed.
+    readonly property int openPanelCount: (mediaExpanded.expanded ? 1 : 0) + (calendarExpanded.expanded ? 1 : 0)
+        + (netPill.expanded ? 1 : 0) + (cpuPill.expanded ? 1 : 0) + (memPill.expanded ? 1 : 0)
+        + (diskPill.expanded ? 1 : 0) + (tempPill.expanded ? 1 : 0)
+
+    // Always focus-eligible -- actual keyboard delivery is already gated at
+    // the window level by shell.qml's WlrLayershell.keyboardFocus/
+    // HyprlandFocusGrab (both None/inactive when nothing is expanded), so
+    // this being unconditionally true is harmless. It used to track
+    // mediaExpanded/calendarExpanded.expanded directly, but that meant it
+    // dropped to false whenever only a *graph* pill was focused (this
+    // property didn't know about those), which yanks QML's activeFocus
+    // away from that pill's Keys.onPressed the moment this binding
+    // re-evaluates -- unconditional true removes that failure mode instead
+    // of chasing every panel that can hold focus through this expression.
+    focus: true
+
+    // Hands keyboard focus to another still-open graph pill when the one
+    // that had it closes (Escape or its entry key again) -- forceActiveFocus()
+    // in GraphPill.togglePin() only ever claims focus on *open*, so without
+    // this, closing the focused pill while others stay open would stick
+    // arrow/digit presses on a pill that's no longer visible.
+    function reclaimGraphFocus(closedPill): void {
+        if (!closedPill.activeFocus)
+            return;
+        for (const p of [netPill, cpuPill, memPill, diskPill, tempPill]) {
+            if (p !== closedPill && p.expanded) {
+                p.forceActiveFocus();
+                return;
+            }
+        }
+    }
 
     // Only live while a panel that wants real keyboard control is open (see
     // shell.qml's OnDemand/None keyboardFocus binding). Media: arrow keys
@@ -41,6 +77,21 @@ Item {
                 event.accepted = true;
             } else if (event.key === Qt.Key_Escape) {
                 mediaExpanded.expanded = false;
+                event.accepted = true;
+            } else if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9 && player.canSeek && player.length > 0) {
+                // Jump to that decile of the track (2 -> 20%, 9 -> 90%, 0 ->
+                // start, ...) -- used to be a separate "media_seek" Hyprland
+                // submap (mod+CTRL+m entered it, bare 0-9 while active) that
+                // ran alongside this same real-QML-focus handling for
+                // arrows/space/escape above, which left the bar's Submap{}
+                // indicator visibly showing "media_seek" whenever it was
+                // live (reported 2026-08-30). Same seek() workaround
+                // MediaExpanded's own draggable seek bar uses -- .position
+                // (MprisPlayer's SetPosition) isn't implemented by the phone
+                // bridge, only relative Seek, which every player supports.
+                const digit = event.key - Qt.Key_0;
+                const target = player.length * digit / 10;
+                player.seek(target - player.position);
                 event.accepted = true;
             }
         } else if (calendarExpanded.expanded) {
@@ -64,18 +115,20 @@ Item {
 
     // Bar itself stays a fixed height (exclusiveZone in shell.qml is pinned
     // to Theme.barHeight); this is the *window's* total height, letting the
-    // media/graph hover-panels grow the window downward without reserving
-    // that extra space from tiling. graphGridHeight (below) already sums
-    // every open graph widget's row, so this just maxes that block against
-    // whichever of media/calendar's own single-row panels is open.
-    readonly property real overflow: Math.max(root.graphGridHeight, mediaExpanded.height, calendarExpanded.height)
+    // popup panels grow the window downward without reserving that extra
+    // space from tiling. panelGridHeight (below) is the single source of
+    // truth for every open panel's row -- media/calendar are full members
+    // of that same grid now, not maxed in separately (see its own comment
+    // for why that used to cause an overlap).
+    readonly property real overflow: root.panelGridHeight
     readonly property real totalHeight: Theme.barHeight + (overflow > 0 ? 6 + overflow : 0)
 
-    // Multiple panels can be open at once (e.g. alt+m then ctrl+alt+c).
-    // Default position is always directly under each panel's own trigger
-    // pill; panels only shift, and only by the minimum needed, when two
-    // open ones would actually overlap. A panel with nothing open next to
-    // it never moves from its natural spot.
+    // Any of these 7 can be open at once (e.g. mod+CTRL+m then mod+t then
+    // mod+CTRL+c) and all share one row-wrapping layout (see the "Popup
+    // panels" block below, once `panelY`/`naturalRightFor` are defined) --
+    // this is that system's bar-visual left-to-right ordering (matching
+    // rightRow's child order, with calendar's clock trigger last since
+    // it's the rightmost).
     readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "calendar"]
 
     // Which of SysmonSvc's 6 fixed tiers (10m/30m/6h/7d/7w/7mo) each panel is
@@ -102,19 +155,6 @@ Item {
         }
     }
 
-    function panelWidthFor(name: string): real {
-        switch (name) {
-        case "calendar": return calendarExpanded.width;
-        case "temp": return tempPill.panelWidth;
-        case "disk": return diskPill.panelWidth;
-        case "mem": return memPill.panelWidth;
-        case "cpu": return cpuPill.panelWidth;
-        case "net": return netPill.panelWidth;
-        case "media": return mediaExpanded.width;
-        default: return 0;
-        }
-    }
-
     // This panel's right edge with nothing else open -- directly below its
     // own trigger pill, right-aligned to it.
     function naturalRightFor(name: string): real {
@@ -130,149 +170,115 @@ Item {
         }
     }
 
-    // Absolute (this file's coordinate space) right edge the named panel
-    // should align to: its natural position, nudged rightward only enough
-    // to clear whichever open panel to its left would otherwise overlap it
-    // (classic left-to-right minimal-displacement sweep over open panels'
-    // natural extents).
-    function stackRight(name: string): real {
-        const open = [];
-        for (const n of root.panelOrder) {
-            if (!root.panelExpandedFor(n))
-                continue;
-            const w = root.panelWidthFor(n);
-            open.push({ name: n, right: root.naturalRightFor(n), width: w });
-        }
-        // Rightmost natural position goes first and is never moved -- it's
-        // the one closest to the real screen edge, with nothing further
-        // right to push into. Every panel further left only ever gets
-        // pushed further left (never right) to clear the one already
-        // placed, so nothing can be shoved off the right edge of the
-        // monitor. (Previous version swept the other way, which is what
-        // was pushing the rightmost panel off-screen once three were open.)
-        open.sort((a, b) => b.right - a.right);
-
-        let claimedLeft = Infinity;
-        for (const p of open) {
-            const right = Math.min(p.right, claimedLeft - 6);
-            claimedLeft = right - p.width;
-            if (p.name === name)
-                return right;
-        }
-        return root.naturalRightFor(name);
-    }
-
     // Shared Y for every panel -- all their trigger pills sit in the same
-    // row at the same height, so there's only ever one sensible value.
+    // row at the same height, and every popup panel now stays on that one
+    // row too (see below), so there's only ever this one Y.
     readonly property real panelY: rightRow.y + (Theme.barHeight - 10) + 6
 
-    // --- Sysmon graph widgets (net/cpu/mem/disk/temp): dynamic width +
-    // multi-row wrapping -----------------------------------------------
-    // Separate from the generic panelOrder/stackRight sweep above (which
-    // only ever produces a single row) because all 5 of these can be open
-    // at once and, at a fixed width, that ran wider than the screen and
-    // pushed the leftmost ones off its left edge -- stackRight only ever
-    // defended the right edge (reported 2026-08-29). Width shrinks as more
-    // open (so they keep sharing one row where possible) down to a
-    // legibility floor, past which the rest wrap to a new row instead of
-    // shrinking further. screen.width is THIS monitor's own (Bar.qml runs
-    // once per screen, via shell.qml's Variants), so this scales with
-    // whatever resolution/monitor it's actually running on, not a
-    // hardcoded pixel target.
-    readonly property var graphPanelOrder: ["net", "cpu", "mem", "disk", "temp"]
-    readonly property var openGraphPanels: root.graphPanelOrder.filter(n => root.panelExpandedFor(n))
-    readonly property int openGraphCount: root.openGraphPanels.length
+    // --- Popup panels (media, net/cpu/mem/disk/temp, calendar): shared
+    // dynamic width, always one row -----------------------------------
+    // One shared layout system for every panel that pops out of the bar.
+    // Media/calendar used to run through a separate single-row `stackRight`
+    // sweep while the 5 sysmon graph panels had their own row-*wrapping*
+    // system; the two disagreeing about a panel's real width/position once
+    // panels from both groups were open together is what let a panel run
+    // off the left edge of the screen, or let calendar render directly on
+    // top of an open graph panel instead of shifting clear of it (both
+    // reported 2026-08-30). `panelOrder` above (bar-visual left-to-right
+    // order, matching rightRow's child order, with calendar's clock
+    // trigger last since it's the rightmost) is the single ordering this
+    // whole system is built on now.
+    //
+    // Deliberately no row-wrapping: a second row was tried and rejected
+    // (reported 2026-08-30, unusable) -- instead every open panel always
+    // shares the one row, and width just keeps dividing evenly among
+    // however many are open, with only a tiny sanity floor. All 7 open at
+    // once on a ~1920px monitor lands around 260px each, which is
+    // considered an acceptable, rare edge case rather than something worth
+    // solving with e.g. spilling onto a neighboring monitor's own bar
+    // (floated and deliberately skipped -- that would need real IPC
+    // between separate per-monitor Bar.qml instances, since each one's
+    // layer-shell surface is tied to a single output and can't render onto
+    // another monitor's screen). screen.width is THIS monitor's own
+    // (Bar.qml runs once per screen, via shell.qml's Variants), so this
+    // still scales with whatever resolution/monitor it's actually running
+    // on, not a hardcoded pixel target.
+    readonly property var openPanels: root.panelOrder.filter(n => root.panelExpandedFor(n))
+    readonly property int openCount: root.openPanels.length
 
-    // Every row is flush to the same right edge: the rightmost-open panel's
-    // own natural pill position, NOT the screen's right edge -- that pill
-    // usually isn't at the true edge (temp's own natural spot still has
-    // battery+clock to its right), so sizing off the full screen width
-    // overstated how much room a row actually has and ran the leftmost
+    // Flush to the rightmost-open panel's own natural pill position, NOT
+    // the screen's right edge -- that pill usually isn't at the true edge
+    // (temp's own natural spot still has battery+clock to its right, and
+    // calendar's is the clock itself), so sizing off the full screen width
+    // overstated how much room the row actually has and ran the leftmost
     // panel(s) off the left edge once several were open (reported
     // 2026-08-29). This is the real, single source of truth for it.
-    readonly property real graphRowRightAnchor: root.openGraphCount > 0
-        ? root.naturalRightFor(root.openGraphPanels[root.openGraphCount - 1])
+    readonly property real rowRightAnchor: root.openCount > 0
+        ? root.naturalRightFor(root.openPanels[root.openCount - 1])
         : root.screen.width - 20
-    readonly property real panelAreaWidth: Math.max(root.minGraphPanelWidth, root.graphRowRightAnchor - 10)
-    readonly property real minGraphPanelWidth: 300
-    readonly property real maxGraphPanelWidth: 560
+    readonly property real panelAreaWidth: root.rowRightAnchor - 10
+    readonly property real maxPanelWidth: 560
+    // Only a sanity floor now that there's no row to wrap the rest onto --
+    // keeps the divide-by-openCount below from ever reaching 0/negative if
+    // something pathological were to happen (e.g. openCount misreported),
+    // not a legibility target.
+    readonly property real minPanelWidth: 40
     readonly property real panelGap: 6
 
-    // Most columns a row could ever hold, at the narrowest usable width --
-    // an upper bound used only to decide how many rows are needed at all.
-    readonly property int graphColumns: root.openGraphCount === 0 ? 1 :
-        Math.min(root.openGraphCount, Math.max(1, Math.floor((root.panelAreaWidth + root.panelGap) / (root.minGraphPanelWidth + root.panelGap))))
-    readonly property int graphRows: root.openGraphCount === 0 ? 0 : Math.ceil(root.openGraphCount / root.graphColumns)
-    // Actual per-row count, evened out across however many rows that took
-    // (e.g. 5 open over 2 rows -> 3 then 2, not 4 then 1) -- graphLayoutFor
-    // below MUST bucket rows using this same number, not graphColumns'
-    // upper bound, or a row can end up holding more panels than its width
-    // was sized for (e.g. 4 open, graphColumns=3 -> rows of [3,1] by index
-    // while the width below assumes 2-per-row -- confirmed as the actual
-    // cause of the reported overflow/unevenness, not just the anchor bug).
-    readonly property int graphPerRow: root.graphRows === 0 ? 0 : Math.ceil(root.openGraphCount / root.graphRows)
-    // Width that lets graphPerRow panels share the row -- clamped so it
-    // never gets uncomfortably narrow on one end or comically wide alone on
-    // the other (the single-widget default).
-    readonly property real graphPanelWidth: {
-        if (root.openGraphCount === 0)
-            return root.maxGraphPanelWidth;
-        const even = (root.panelAreaWidth - (root.graphPerRow - 1) * root.panelGap) / root.graphPerRow;
-        return Math.max(root.minGraphPanelWidth, Math.min(root.maxGraphPanelWidth, even));
+    // Width every open panel shares -- straight even division of the row's
+    // available width, clamped only against maxPanelWidth on the wide end
+    // (one panel alone) and the sanity floor on the narrow end. No
+    // "wrap once this gets too narrow" branch: however small this gets is
+    // however small it gets.
+    readonly property real panelWidth: {
+        if (root.openCount === 0)
+            return root.maxPanelWidth;
+        const even = (root.panelAreaWidth - (root.openCount - 1) * root.panelGap) / root.openCount;
+        return Math.max(root.minPanelWidth, Math.min(root.maxPanelWidth, even));
     }
 
-    // {row, right} for one open graph panel -- columns fill right-to-left
-    // within a row (matching the pills' own left-to-right order in the
-    // bar), rows stack downward, bucketed by graphPerRow (see its comment
-    // above for why not graphColumns).
-    function graphLayoutFor(name: string): var {
-        const idx = root.openGraphPanels.indexOf(name);
+    // This panel's right edge -- columns fill right-to-left within the one
+    // row (matching the pills' own left-to-right order in the bar).
+    function layoutFor(name: string): var {
+        const idx = root.openPanels.indexOf(name);
         if (idx < 0)
-            return { row: 0, right: 0 };
-        const total = root.openGraphPanels.length;
-        const posFromRight = total - 1 - idx;
-        const row = Math.floor(posFromRight / root.graphPerRow);
-        const colFromRight = posFromRight % root.graphPerRow;
-        const right = root.graphRowRightAnchor - colFromRight * (root.graphPanelWidth + root.panelGap);
-        return { row, right };
+            return { right: 0 };
+        const posFromRight = root.openPanels.length - 1 - idx;
+        const right = root.rowRightAnchor - posFromRight * (root.panelWidth + root.panelGap);
+        return { right };
     }
 
-    function panelOverflowHeightFor(name: string): real {
+    // How tall this panel's own expand area currently is (0 while
+    // collapsed) -- GraphPill exposes this as `overflowHeight`;
+    // MediaExpanded/CalendarExpanded's own `height` already means the same
+    // thing, since their implicitHeight collapses to 0 when not expanded.
+    function overflowHeightFor(name: string): real {
         switch (name) {
         case "net": return netPill.overflowHeight;
         case "cpu": return cpuPill.overflowHeight;
         case "mem": return memPill.overflowHeight;
         case "disk": return diskPill.overflowHeight;
         case "temp": return tempPill.overflowHeight;
+        case "media": return mediaExpanded.height;
+        case "calendar": return calendarExpanded.height;
         default: return 0;
         }
     }
 
-    function graphRowHeight(row: int): real {
-        let h = 0;
-        for (const n of root.openGraphPanels)
-            if (root.graphLayoutFor(n).row === row)
-                h = Math.max(h, root.panelOverflowHeightFor(n));
-        return h;
+    // Every open panel is in the same one row now, so its Y is always the
+    // shared baseline -- kept as a named function (rather than inlining
+    // `root.panelY` at each binding site below) so a future panel kind
+    // that genuinely needs to differ only has one place to change.
+    function panelYFor(name: string): real {
+        return root.panelY;
     }
 
-    function graphPanelYFor(name: string): real {
-        const row = root.graphLayoutFor(name).row;
-        let y = root.panelY;
-        for (let r = 0; r < row; r++)
-            y += root.graphRowHeight(r) + root.panelGap;
-        return y;
-    }
-
-    // Total height of the graph grid block (every open row, summed) -- used
-    // by `overflow` above instead of a plain max across the 5 pills, since
-    // wrapped rows stack rather than overlap.
-    readonly property real graphGridHeight: {
-        if (root.openGraphCount === 0)
-            return 0;
+    // The one row's height: the tallest currently-open panel's own expand
+    // area. This is `overflow` (and so `totalHeight`) directly.
+    readonly property real panelGridHeight: {
         let h = 0;
-        for (let r = 0; r < root.graphRows; r++)
-            h += root.graphRowHeight(r) + (r > 0 ? root.panelGap : 0);
+        for (const n of root.openPanels)
+            h = Math.max(h, root.overflowHeightFor(n));
         return h;
     }
 
@@ -429,11 +435,12 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.netTier
             onTierRequested: code => { root.netTier = code; SysmonSvc.setNetTier(code); }
+            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(netPill)
             groupX: rightRow.x
             groupY: rightRow.y
-            targetRight: root.graphLayoutFor("net").right
-            targetY: root.graphPanelYFor("net")
-            expandWidth: root.graphPanelWidth
+            targetRight: root.layoutFor("net").right
+            targetY: root.panelYFor("net")
+            expandWidth: root.panelWidth
         }
 
         GraphPill {
@@ -453,11 +460,12 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.cpuTier
             onTierRequested: code => { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
+            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(cpuPill)
             groupX: rightRow.x
             groupY: rightRow.y
-            targetRight: root.graphLayoutFor("cpu").right
-            targetY: root.graphPanelYFor("cpu")
-            expandWidth: root.graphPanelWidth
+            targetRight: root.layoutFor("cpu").right
+            targetY: root.panelYFor("cpu")
+            expandWidth: root.panelWidth
         }
 
         GraphPill {
@@ -484,11 +492,12 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.memTier
             onTierRequested: code => { root.memTier = code; SysmonSvc.setMemTier(code); }
+            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(memPill)
             groupX: rightRow.x
             groupY: rightRow.y
-            targetRight: root.graphLayoutFor("mem").right
-            targetY: root.graphPanelYFor("mem")
-            expandWidth: root.graphPanelWidth
+            targetRight: root.layoutFor("mem").right
+            targetY: root.panelYFor("mem")
+            expandWidth: root.panelWidth
         }
 
         GraphPill {
@@ -510,11 +519,12 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.diskTier
             onTierRequested: code => { root.diskTier = code; SysmonSvc.setDiskTier(code); }
+            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(diskPill)
             groupX: rightRow.x
             groupY: rightRow.y
-            targetRight: root.graphLayoutFor("disk").right
-            targetY: root.graphPanelYFor("disk")
-            expandWidth: root.graphPanelWidth
+            targetRight: root.layoutFor("disk").right
+            targetY: root.panelYFor("disk")
+            expandWidth: root.panelWidth
         }
 
         GraphPill {
@@ -535,11 +545,12 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.tempTier
             onTierRequested: code => { root.tempTier = code; SysmonSvc.setTempTier(code); }
+            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(tempPill)
             groupX: rightRow.x
             groupY: rightRow.y
-            targetRight: root.graphLayoutFor("temp").right
-            targetY: root.graphPanelYFor("temp")
-            expandWidth: root.graphPanelWidth
+            targetRight: root.layoutFor("temp").right
+            targetY: root.panelYFor("temp")
+            expandWidth: root.panelWidth
         }
 
         BatteryPill {}
@@ -582,8 +593,9 @@ Item {
     MediaExpanded {
         id: mediaExpanded
 
-        x: root.stackRight("media") - width
-        y: root.panelY
+        panelWidth: root.panelWidth
+        x: root.layoutFor("media").right - width
+        y: root.panelYFor("media")
     }
 
     // Same pattern for the clock's calendar hover-panel. Click-to-pin
@@ -634,17 +646,28 @@ Item {
     CalendarExpanded {
         id: calendarExpanded
 
-        x: root.stackRight("calendar") - width
-        y: root.panelY
+        panelWidth: root.panelWidth
+        x: root.layoutFor("calendar").right - width
+        y: root.panelYFor("calendar")
     }
 
-    // Keyboard shortcuts (hyprland/keybinds.lua: alt+n/p/m/t/d, via
+    // Keyboard shortcuts (hyprland/keybinds.lua: mod+n/p/m/t/d, via
     // ~/.config/hypr/scripts/bar-toggle.sh) call these -- same open/close
     // toggle feel as the old standalone sysmon-graph popups, just for the
     // bar's own panels. Target is per-screen: this file runs once per
     // monitor (shell.qml's Variants over Quickshell.screens), and a shared
     // "bar" target name would collide across those instances -- the script
     // resolves whichever monitor is currently focused to "bar-<name>".
+    //
+    // No setXxxTier()/closeAllGraphs() functions here anymore -- those
+    // existed only to shuttle 1-6/left/right tier keys and reload-time
+    // resync through a Hyprland submap that tracked "which panel is open"
+    // on the Lua side, in parallel with (and prone to desyncing from) each
+    // GraphPill's own real pinned/expanded state. Tier keys now go straight
+    // to whichever GraphPill holds real keyboard focus (forceActiveFocus()
+    // in GraphPill.togglePin(), shell.qml's HyprlandFocusGrab) the same way
+    // the calendar/media panels already worked -- nothing left to desync.
+    // Reported 2026-08-29/30.
     IpcHandler {
         target: "bar-" + root.screen.name
 
@@ -655,32 +678,5 @@ Item {
         function toggleDisk(): void { diskPill.togglePin(); }
         function toggleMedia(): void { mediaExpanded.expanded = !mediaExpanded.expanded; }
         function toggleCalendar(): void { root.toggleClockPin(); }
-
-        // keybinds.lua calls this once on every Hyprland config reload (a
-        // reload re-executes that file's top-level Lua state, resetting its
-        // "which panels are open" tracking to all-closed, but does NOT
-        // restart quickshell -- so without this, a panel left open across a
-        // reload would desync from that fresh assumption: the next entry-key
-        // press would read as "opening" an already-open panel and actually
-        // close it, and the open-count bookkeeping could wrongly drop out of
-        // the graph_nav submap too. Reported 2026-08-29. Forcing every panel
-        // closed here keeps both sides starting from the same state.
-        function closeAllGraphs(): void {
-            netPill.pinned = false; netPill.expanded = false;
-            cpuPill.pinned = false; cpuPill.expanded = false;
-            memPill.pinned = false; memPill.expanded = false;
-            diskPill.pinned = false; diskPill.expanded = false;
-            tempPill.pinned = false; tempPill.expanded = false;
-        }
-
-        // mod+t/mod+s/ALT+n/ALT+p/ALT+m's "graph_*" submaps (keybinds.lua):
-        // 1-6 sets that panel's history tier while the submap is active, via
-        // ~/.config/hypr/scripts/bar-set-tier.sh. Same tier-setting path
-        // GraphPill's own tier buttons already use (onTierRequested).
-        function setNetTier(code: string): void { root.netTier = code; SysmonSvc.setNetTier(code); }
-        function setCpuTier(code: string): void { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
-        function setMemTier(code: string): void { root.memTier = code; SysmonSvc.setMemTier(code); }
-        function setTempTier(code: string): void { root.tempTier = code; SysmonSvc.setTempTier(code); }
-        function setDiskTier(code: string): void { root.diskTier = code; SysmonSvc.setDiskTier(code); }
     }
 }
