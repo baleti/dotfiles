@@ -1,13 +1,28 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import Quickshell.Wayland
 import Quickshell.Hyprland
 import "bar"
 import "background"
 import "osd"
+import "services"
 
 ShellRoot {
     Background {}
+
+    // Single, top-level target -- the picker itself is instantiated once per
+    // monitor inside each Bar PanelWindow (below), so a per-screen
+    // IpcHandler would collide the same way bar-toggle.sh has to route
+    // around. Latches the currently-focused monitor so the picker opens
+    // there and stays put (follow_mouse=1). `toggle` (not `show`): a bare
+    // `show` function name collides with `qs ipc show` -- see VolumeOsd.
+    IpcHandler {
+        target: "mprisPicker"
+        function toggle(): void {
+            MprisPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
 
     Variants {
         model: Quickshell.screens
@@ -46,11 +61,15 @@ ShellRoot {
             exclusiveZone: 38
             color: "transparent"
 
+            // While the MPRIS picker is up it's a full-screen modal (dim
+            // backdrop + centered card), so the whole surface has to accept
+            // input; otherwise input is limited to the bar strip + whatever
+            // panel is expanded, and everything else clicks through.
             mask: Region {
                 x: 0
                 y: 0
                 width: panel.width
-                height: Math.min(bar.totalHeight, panel.height)
+                height: mprisPicker.showing ? panel.height : Math.min(bar.totalHeight, panel.height)
             }
 
             // mod+CTRL+m (media), mod+CTRL+c (calendar), and mod+n/p/m/t/d
@@ -145,6 +164,27 @@ ShellRoot {
             Bar {
                 id: bar
                 screen: panel.screen
+            }
+
+            // Modal MPRIS player picker (ALT+CTRL+SHIFT+m). Overlays the bar
+            // on the one monitor MprisPickerState latched. Takes real
+            // keyboard control on open the same way the media/calendar
+            // panels do -- holdsFocus true drives shell.qml's
+            // HyprlandFocusGrab -- and hands it back on close (to a
+            // still-open bar panel if there is one, else nothing).
+            MprisPicker {
+                id: mprisPicker
+                anchors.fill: parent
+                screenName: panel.screen.name
+                onShowingChanged: {
+                    if (showing) {
+                        panel.holdsFocus = true;
+                        forceActiveFocus();
+                    } else {
+                        panel.holdsFocus = bar.openPanelCount > 0;
+                        bar.refocusActivePanel();
+                    }
+                }
             }
         }
     }

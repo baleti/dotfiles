@@ -262,7 +262,13 @@ hl.bind(mainMod .. " + CTRL + z", hl.dsp.exec_cmd("playerctl --player=$(cat ~/.c
 -- seeking, but only resumes play if the player was actually playing before the seek.
 hl.bind(mainMod .. " + CTRL + SHIFT + z", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek.sh -"), { repeating = true })
 hl.bind(mainMod .. " + CTRL + SHIFT + x", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-seek.sh +"), { repeating = true })
-hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-picker.sh"), { repeating = true })
+-- Player picker: reimplemented as a themed quickshell overlay
+-- (quickshell/bar/MprisPicker.qml), driven by the single top-level
+-- `mprisPicker` IpcHandler in shell.qml. Still writes the same bare player
+-- name to ~/.config/playerctl-current. A second press toggles it closed --
+-- same feel as the bar's own panels / the clipboard picker -- so no
+-- `repeating` (it's a one-shot toggle now, not a held dialog).
+hl.bind("ALT + CTRL + SHIFT + m", hl.dsp.exec_cmd("qs ipc call mprisPicker toggle"))
 -- ~/.config/hypr/scripts/playerctl-volume.sh: local sink, unless
 -- playerctl-current is pixel6, in which case its MPRIS Volume (-> phone
 -- STREAM_MUSIC) instead. See pixel6-mpris-bridge.py for the MPRIS side.

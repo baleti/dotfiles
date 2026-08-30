@@ -1,14 +1,16 @@
 import QtQuick
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Services.Mpris
 import "../theme"
 import "../services"
 
 // custom/mpris equivalent, narrower than the old bash-script pill and with a
 // real play/pause glyph instead of an empty one. Click toggles play/pause,
-// scroll next/previous, middle-click opens the existing player picker --
-// same interactions as the old waybar module, same playerctl-current file
-// as the source of truth (see services/Players.qml). Self-contained pill
+// scroll next/previous, middle-click opens the player picker
+// (bar/MprisPicker.qml, via MprisPickerState) -- same interactions as the
+// old waybar module, same playerctl-current file as the source of truth
+// (see services/Players.qml). Self-contained pill
 // (own background, unlike the other bar widgets) so Bar.qml can reference
 // it directly by id for the hover-expand panel below it.
 Rectangle {
@@ -131,7 +133,7 @@ Rectangle {
             if (mouse.button === Qt.LeftButton && root.player.canTogglePlaying)
                 root.player.togglePlaying();
             else if (mouse.button === Qt.MiddleButton)
-                Quickshell.execDetached(["/home/user1/.config/hypr/scripts/playerctl-picker.sh"]);
+                MprisPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
         }
         onWheel: wheel => {
             if (!root.hasPlayer)
