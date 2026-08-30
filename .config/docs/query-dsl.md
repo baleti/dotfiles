@@ -197,7 +197,9 @@ Reorder the survivors; never filter or hide.
   defaulting to `ascending`. Only the **last** `/sort` in a query takes
   effect (replace, not stack). Absent entirely, the picker's own default
   order stands (MRU, cliphist recency, winswitch focus-history, BM25
-  score).
+  score). Honoured by winswitch and focus-picker; inert in
+  clipboard-picker / notification-picker (no re-sort machinery) and the
+  BM25 pickers (score *is* the order).
 - **`/reverse`** - flips whatever order is in effect (default, or a
   `/sort`). No arguments. Idempotent: any number of `/reverse` tokens ==
   one, not a toggle. Useful alone to flip a picker's default order (see

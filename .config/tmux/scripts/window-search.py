@@ -42,6 +42,14 @@ here - see parse_query/phrase_re). Two orthogonal rules: quotes mean exact,
   !foo           drop windows containing foo (prefix-expanded, so !log also
                  drops logs/login - use !"log" to be exact)
   !"foo bar"     drop windows containing that exact phrase
+  /fv title:foo  field-scoped term: foo must appear in that field (also
+                 /filter-value; field name substring-resolved). !/fv ... to
+                 negate. Fields: session, window, title, body.
+
+`/fv` is the one DSL verb this picker uses. The column verbs (/ft, /at,
+/rt) and order verbs (/s, /rv) from the shared grammar
+(~/.config/docs/query-dsl.md) are recognised but do nothing here - this
+is a single BM25-ranked line, not a table.
 
 Everything present is required; ranking then orders what survived. So
 `error "connection refused" !timeout` keeps only windows with the exact
@@ -110,9 +118,27 @@ def tokenize(text):
     return TOKEN_RE.findall(text.lower())
 
 
-# one query element: optional leading ! (negation), then either a
-# double-quoted phrase or a run of non-space characters
-QUERY_ELEM_RE = re.compile(r'(!?)(?:\$([a-zA-Z]+):(\S+)|"([^"]*)"|(\S+))')
+# One query element: an optional leading ! (negation), then one of -
+#   /fv field:word     a field-scoped term (also /filter-value)
+#   "phrase"           an exact phrase
+#   word               a bare (prefix-expanded) word
+# plus the other DSL verbs, which this ranked single-line picker has no
+# use for (no columns, BM25 score is the order) and so matches-and-drops:
+#   /ft /at /rt /s /sort  ... and their long forms, with an optional arg
+#   /rv /reverse          ... no arg
+# See ~/.config/docs/query-dsl.md. Verb names are exact; `field` in a
+# /fv term is substring-resolved (see resolve_fields).
+# Long verb forms are listed before their short forms so ordered
+# alternation doesn't let `/s` swallow the `s` of `/sort`.
+QUERY_ELEM_RE = re.compile(
+    r'(!?)(?:'
+    r'/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
+    r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
+    r'|/(?:reverse|rv)'
+    r'|"([^"]*)"'
+    r'|(\S+)'
+    r')'
+)
 
 # recoll ANDs all elements together ("all elements in the search entry are
 # normally combined with an implicit AND"). "all" reproduces that: every bare
@@ -122,16 +148,15 @@ QUERY_ELEM_RE = re.compile(r'(!?)(?:\$([a-zA-Z]+):(\S+)|"([^"]*)"|(\S+))')
 # type, and swapping back is a one-word change rather than a revert.
 MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
 
-# On top of the base language below, a field-scoped DSL: $field:word
+# On top of the base language below, a field-scoped term: `/fv field:word`
 # restricts word to one field instead of the whole document. field is
-# itself fuzzy - any FIELD_NAMES entry *containing* field as a substring
-# (not just a prefix) is searched, unioned - so $sess:foo and $s:foo both
-# reach only "session" (nothing else contains "s"... wait, "session" does
-# twice and nothing else does), while $ti:foo would reach "title" only
-# here (there's no second field containing "ti", unlike claude-history's
-# path/tmux/session/window/pane/title/time/body set). An unresolvable
-# field name degrades to a plain bare-word search over the literal text,
-# same "still usable half-typed" principle as the rest of this language.
+# substring-resolved - any FIELD_NAMES entry *containing* it is searched,
+# unioned - so `/fv sess:foo` and `/fv s:foo` both reach only "session",
+# while `/fv ti:foo` reaches "title" only here (there's no second field
+# containing "ti", unlike claude-history's path/tmux/session/window/pane/
+# title/time/body set). An unresolvable field name degrades to a plain
+# bare-word search over the literal "field:word" text, same "still usable
+# half-typed" principle as the rest of this language.
 #
 #   session  the tmux session name
 #   window   the window name

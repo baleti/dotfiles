@@ -136,17 +136,18 @@ def tokenize(text):
 # share (same reasoning focus-picker.py gives for not sharing jump() as a
 # module).
 #
-# On top of that base language, this tool adds a field-scoped DSL:
-# $field:word restricts word to one field instead of the whole document.
-# field is itself fuzzy - any FIELD_NAMES entry whose name *contains*
-# field as a substring (not just a prefix: $x: has to reach "tmux" by its
-# last letter, not its first) is searched, unioned. So $tit:foo searches
-# only title (nothing else contains "tit"), $ti:foo searches both time and
-# title (both contain "ti"), and $x:foo searches only tmux. An unresolvable
-# field name ($qqq:foo, or still being typed) degrades to a plain bare-word
-# search over the literal text instead of erroring or matching nothing, the
-# same "still usable half-typed" principle the rest of this query language
-# already follows.
+# On top of that base language, this tool adds a field-scoped term:
+# `/fv field:word` (also `/filter-value`) restricts word to one field
+# instead of the whole document. field is substring-resolved - any
+# FIELD_NAMES entry whose name *contains* it (not just a prefix: `/fv x:`
+# reaches "tmux" by its last letter) is searched, unioned. So
+# `/fv tit:foo` searches only title, `/fv ti:foo` searches both time and
+# title, `/fv x:foo` searches only tmux. `!/fv ...` negates. An
+# unresolvable field name (`/fv qqq:foo`, or still being typed) degrades
+# to a plain bare-word search over the literal "field:word" text. The
+# other shared-grammar verbs (/ft, /at, /rt, /s, /rv - see
+# ~/.config/docs/query-dsl.md) are recognised but inert here: this is a
+# single BM25-ranked line, no columns and no re-sort.
 #
 #   path     session's working directory
 #   tmux     session:window.pane, if currently live and reachable here
@@ -168,7 +169,17 @@ FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "bo
 BM25_FIELDS = {"title", "body"}
 FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 
-QUERY_ELEM_RE = re.compile(r'(!?)(?:\$([a-zA-Z]+):(\S+)|"([^"]*)"|(\S+))')
+# Long verb forms before their short forms so ordered alternation doesn't
+# let `/s` swallow the `s` of `/sort`. See ~/.config/docs/query-dsl.md.
+QUERY_ELEM_RE = re.compile(
+    r'(!?)(?:'
+    r'/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
+    r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
+    r'|/(?:reverse|rv)'
+    r'|"([^"]*)"'
+    r'|(\S+)'
+    r')'
+)
 MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
 
 Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms")

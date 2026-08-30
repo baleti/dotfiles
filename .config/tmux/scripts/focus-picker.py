@@ -39,37 +39,34 @@ scrollback (see preview()) and the same dynamic list/preview resize
 window-search.py and claude-history already use - the list only takes as
 many rows as it has matches, the preview gets the rest.
 
-Query DSL (parse_query): the base list is always MRU-ordered - typing never
-re-ranks it, only narrows it and/or adds/removes columns.
+Query DSL (parse_query) - the /verb command grammar shared with winswitch
+and the GTK pickers (see ~/.config/docs/query-dsl.md). The base list is
+MRU-ordered; /sort and /reverse are opt-in on top of that.
 
-  foo bar         every bare word must appear (case-insensitive substring)
-                  somewhere in the pane's searchable text - session, window
-                  name, title, and any tracked-but-not-shown extra data
-                  (e.g. ssh host/ip - see COLUMN_GROUPS below), regardless
-                  of whether that data's column is currently displayed.
-  $field:word     scope word to one column instead of the whole row:
-                  session/window/title. field is itself fuzzy - any
-                  FILTER_FIELDS entry *containing* field as a substring
-                  matches (so $ti:foo and $title:foo both reach only
-                  title). An unresolvable field degrades to a literal
-                  bare-word search on the whole "$field:word" text.
-  +$group         add every column in group to the display (not a filter -
-                  matches nothing, just changes what's shown).
-  +$group.sub     add only that one column. sub is fuzzy the same way
-                  field is above (+$ssh.h and +$ssh.host both add SSH.HOST).
-  -$group         remove every column in group from the display - the
-                  mirror of +$group, same fuzzy group resolution. A column
-                  removed this way can be re-added by a later +$ in the same
-                  query; removing one that was never added is a no-op.
-  -$group.sub     remove only that one column, fuzzy the same way +$ is.
+  foo bar              every bare word must appear (case-insensitive
+                       substring) somewhere in the pane's searchable text -
+                       session, window name, title, and any tracked-but-
+                       not-shown extra data (ssh host/ip - see COLUMN_GROUPS
+                       below). A bare word is identical to /fv <word>.
+  /fv session:word     scope: word must appear in one field (session /
+  /filter-value ...    window / title). The field name is substring-
+                       resolved (/fv se:foo reaches session).
+  /at ssh.host         add a tracked column to the display; /at ssh adds
+  /add-type ...        every ssh.* column. Group/sub substring-resolved.
+  /rt ssh              remove matching columns (mirror of /at).
+  /ft host             narrow the displayed extra columns to matches.
+  /s title [desc]      order the list by session / window / title / time,
+  /sort ...            optional ascending/descending (substring-matched).
+  /rv  /reverse        reverse the current order.
 
-This exists because tracking more per-pane data (ssh connection info today,
-maybe others later) shouldn't mean permanent new columns everyone sees
-whether they use them or not - the data rides along in every snapshot
-(cheap: computed once per invocation, not per keystroke - see build_snapshot
-and ssh_info's docstring for why ssh info specifically is only computed for
-panes tmux already reports as running ssh) and stays searchable via bare
-words either way; +$group/-$group just changes what's visible.
+Verb names are exact-matched (short or long form); everything else -
+field names, group/sub, directions - is substring containment. "..."
+quotes span whitespace and are the literal escape hatch. This exists
+because tracking more per-pane data (ssh connection info today) shouldn't
+mean permanent columns everyone sees - the data rides along in every
+snapshot (computed once per invocation, see build_snapshot / ssh_info)
+and stays searchable via bare words either way; /at//rt just change what
+is visible.
 
 Deps: tmux, fzf, python3. ssh columns additionally use ps, lsof.
 """
@@ -316,162 +313,255 @@ def ssh_info(pane_pid):
 FILTER_FIELDS = ["session", "window", "title"]
 FIELD_KEY = {"session": "session", "window": "window_name", "title": "pane_title"}
 
-# tried in this order at each position: a quoted phrase first (so `"+$"`
-# reaches the DSL literally, never the +$/-$/$ branches below - the escape
-# hatch a literal search for that text needs), then "+$group[.sub]",
-# "-$group[.sub]" and "$field:word", all of which have to be checked before
-# the generic bare-word fallback, or the fallback (being unanchored) would
-# just swallow their whole span itself - same left-to-right-alternative
-# trick window-search.py's QUERY_ELEM_RE uses.
-QUERY_ELEM_RE = re.compile(
-    r'"(?P<phrase>[^"]*)"'
-    r'|\+\$(?P<add_group>[a-zA-Z]+)(?:\.(?P<add_sub>[a-zA-Z]*))?'
-    r'|-\$(?P<del_group>[a-zA-Z]+)(?:\.(?P<del_sub>[a-zA-Z]*))?'
-    r'|\$(?P<field>[a-zA-Z]+):(?P<field_term>\S+)'
-    r'|(?P<bare>\S+)'
-)
+# Sortable types for /sort: the three text fields plus focus time. `time`
+# is the raw ts (absolute, so "descending" = newest first, applied
+# literally - no age-bucket direction trap here).
+SORT_KEYS = {
+    "session": lambda p: p["session"].lower(),
+    "window": lambda p: p["window_name"].lower(),
+    "title": lambda p: p["pane_title"].lower(),
+    "time": lambda p: p["ts"],
+}
+
+# The verb command DSL - one grammar shared (by hand, not import) with
+# winswitch and the GTK pickers; see ~/.config/docs/query-dsl.md.
+#   /fv /filter-value  keep matching panes (bare text = this)
+#   /at /add-type      add a tracked column (ssh.*) to the display
+#   /rt /remove-type   drop one
+#   /ft /filter-type   narrow the displayed extra columns to matches
+#   /s  /sort          order the (MRU) list by a type [+ direction]
+#   /rv /reverse       reverse the current order
+# The base TIME/SESSION/NAME/TITLE columns are always shown; only the
+# tracked group columns (COLUMN_GROUPS) are toggled by /at//rt//ft.
+VERB_SHORTS = ["fv", "ft", "at", "rt", "s", "rv"]
+VERB_FORMS = VERB_SHORTS + ["filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"]
+FV_FORMS = {"fv", "filter-value"}
+FT_FORMS = {"ft", "filter-type"}
+AT_FORMS = {"at", "add-type"}
+RT_FORMS = {"rt", "remove-type"}
+SORT_FORMS = {"s", "sort"}
+REV_FORMS = {"rv", "reverse"}
+DIRECTIONS = ["ascending", "descending"]
+
+
+def tokenize(query):
+    """[(start, text, lead_quote)] - whitespace split, "..." kept whole
+    (quotes dropped), unterminated quote still closes at end-of-input.
+    lead_quote marks a run that began with " (never read as a command)."""
+    toks, cur = [], []
+    start = None
+    lead_quote = in_quotes = False
+    for i, c in enumerate(query):
+        if c == '"':
+            if start is None:
+                start, lead_quote = i, True
+            in_quotes = not in_quotes
+            continue
+        if c.isspace() and not in_quotes:
+            if start is not None:
+                toks.append((start, "".join(cur), lead_quote))
+                cur, start, lead_quote = [], None, False
+            continue
+        if start is None:
+            start = i
+        cur.append(c)
+    if start is not None:
+        toks.append((start, "".join(cur), lead_quote))
+    return toks
+
+
+def is_verb_prefix(s):
+    return bool(s) and any(v.startswith(s) for v in VERB_FORMS)
+
+
+def starts_cmd(text, lead_quote):
+    """True if a token begins (or is still being typed toward) a command,
+    so it can't be swallowed as another verb's argument."""
+    if lead_quote or not text.startswith("/"):
+        return False
+    rest = text[1:]
+    return rest in VERB_FORMS or is_verb_prefix(rest)
 
 
 def resolve_by_substring(prefix, names):
-    """Every entry in names containing prefix as a substring (not just a
-    prefix) - lets "+$ssh.h" reach "host" and "$ti:foo" reach "title"
-    without full spelling, same forgiving-DSL principle as window-search.py's
-    resolve_fields."""
+    """Every entry in names containing prefix as a substring - "ho" reaches
+    "host", "ti" reaches "title". The one resolution rule everywhere."""
     prefix = prefix.lower()
     return [n for n in names if prefix in n]
 
 
+def parse_direction(tok):
+    """A direction token -> "ascending"/"descending"/None. Any substring
+    match counts; ambiguous or empty -> ascending."""
+    m = [d for d in DIRECTIONS if tok.lower() in d]
+    if not m:
+        return None
+    return "descending" if m == ["descending"] else "ascending"
+
+
+def _apply_col(verb, arg, active_cols, seen_cols):
+    """/at //rt //ft over the tracked group columns. arg is `group.sub`,
+    or a single segment matching a group name (-> all its subs) or a sub
+    name (-> that sub in any group)."""
+    group_pfx, dot, sub_pfx = arg.partition(".")
+    cols = []
+    if dot:
+        for g in resolve_by_substring(group_pfx, COLUMN_GROUPS):
+            cols.extend((g, s) for s in resolve_by_substring(sub_pfx, COLUMN_GROUPS[g]))
+    else:
+        seg = group_pfx.lower()
+        for g, subs in COLUMN_GROUPS.items():
+            for s in subs:
+                if (seg in g or seg in s) and (g, s) not in cols:
+                    cols.append((g, s))
+    if verb in AT_FORMS:
+        for col in cols:
+            if col not in seen_cols:
+                seen_cols.add(col)
+                active_cols.append(col)
+    elif verb in RT_FORMS:
+        for col in cols:
+            if col in seen_cols:
+                seen_cols.discard(col)
+                active_cols.remove(col)
+    else:  # /ft - keep only matches
+        keep = set(cols)
+        active_cols[:] = [c for c in active_cols if c in keep]
+        seen_cols.intersection_update(keep)
+
+
+def _add_filter(arg, bare_terms, field_terms):
+    """One /fv argument (or a bare word): scoped when it has a colon and
+    the field resolves, else a plain bare term."""
+    field_pfx, sep, term = arg.partition(":")
+    if sep:
+        fields = resolve_by_substring(field_pfx, FILTER_FIELDS)
+        if fields:
+            field_terms.append((fields, term.lower()))
+            return
+    bare_terms.append(arg.lower())
+
+
 def parse_query(query):
-    """-> (bare_terms, field_terms, active_cols).
+    """-> (bare_terms, field_terms, active_cols, sort, reverse).
 
-    bare_terms: lowercased words that must each appear somewhere in a pane's
-      full searchable text (AND).
-    field_terms: [(matched_field_names, word), ...] - word must appear in at
-      least one of the matched columns.
-    active_cols: ordered, de-duplicated [(group, sub), ...] to append to the
-      display - never affects which panes match, only what's shown.
-
-    "+$..." adds column(s), "-$..." removes them - both display directives,
-    never search terms: whether either resolves (a known group/sub) or not
-    (a typo, or - the common case while typing - no letters after the $
-    yet), it contributes nothing to bare_terms. Falling back to a
-    literal-text search here (the way an unresolvable "$field:" below does)
-    would otherwise empty the whole list for the single keystroke where the
-    query is just "+$" or "-$", every time - the exact bug this guards
-    against. A literal "+$"/"-$" search is still possible, just has to be
-    quoted (see QUERY_ELEM_RE) - '"+$"' finds it exactly, since the quoted
-    branch is matched before either ever sees it.
-
-    "-$" is processed left-to-right against whatever "+$" has added so far
-    in the same query (and un-marks it in seen_cols), so a later "+$" for
-    the same column can re-add it - "+$ssh -$ssh.host +$ssh.host" ends with
-    the column back. Removing a column that was never added, or whose group
-    doesn't resolve, is a silent no-op - same "still usable half-typed"
-    principle as everything else in this DSL, not an error.
-
-    An unresolvable "$field:" (the filter form, unlike "+$"/"-$") still
-    degrades to a literal bare-word search on its own text rather than being
-    dropped - that one really is text someone typed to search for, just
-    with a misspelled/unknown field prefix in front of it."""
+    sort is (SORT_KEYS name, "ascending"/"descending") or None (last /sort
+    wins); reverse is a bool (any number of /rv == one). A bare word is an
+    implicit /fv term - identical to /fv <word>. A "-led token is literal
+    text; a /xyz that is neither a verb nor a verb-prefix (e.g. /usr/bin)
+    is literal text too; a /prefix still on its way to a verb is inert."""
+    toks = tokenize(query)
     bare_terms, field_terms, active_cols = [], [], []
     seen_cols = set()
-    for m in QUERY_ELEM_RE.finditer(query):
-        gd = m.groupdict()
-        if gd["phrase"] is not None:
-            bare_terms.append(gd["phrase"].lower())
-            continue
-        if gd["add_group"]:
-            groups = resolve_by_substring(gd["add_group"], COLUMN_GROUPS)
-            for g in groups:
-                subs = COLUMN_GROUPS[g]
-                if gd["add_sub"]:
-                    subs = resolve_by_substring(gd["add_sub"], subs)
-                for s in subs:
-                    col = (g, s)
-                    if col not in seen_cols:
-                        seen_cols.add(col)
-                        active_cols.append(col)
-            continue
-        if gd["del_group"]:
-            groups = resolve_by_substring(gd["del_group"], COLUMN_GROUPS)
-            for g in groups:
-                subs = COLUMN_GROUPS[g]
-                if gd["del_sub"]:
-                    subs = resolve_by_substring(gd["del_sub"], subs)
-                for s in subs:
-                    col = (g, s)
-                    if col in seen_cols:
-                        seen_cols.discard(col)
-                        active_cols.remove(col)
-            continue
-        if gd["field"]:
-            fields = resolve_by_substring(gd["field"], FILTER_FIELDS)
-            if fields:
-                field_terms.append((fields, gd["field_term"].lower()))
-            else:
-                bare_terms.append(f"{gd['field']}:{gd['field_term']}".lower())
-            continue
-        bare = gd["bare"]
-        if bare:
-            # same inertness as "+$..."/"-$..." above, for the filter form
-            # while it's still being typed: "$ti" (no colon yet) or
-            # "$title:" (colon typed, term not yet - notably also where
-            # tab-completion itself lands, see suggest_completion) would
-            # otherwise be a literal-text search for that exact fragment
-            # until a real term follows the colon - the identical "list
-            # empties out mid-keystroke" bug, just on this DSL form instead
-            # of "+$"/"-$".
-            if bare.startswith("+$") or bare.startswith("-$") or re.fullmatch(r'\$[a-zA-Z]*:?', bare):
+    sort = None
+    reverse = False
+    i, n = 0, len(toks)
+
+    def take_arg():
+        nonlocal i
+        if i < n and not starts_cmd(toks[i][1], toks[i][2]):
+            a = toks[i][1]
+            i += 1
+            return a
+        return None
+
+    while i < n:
+        _, text, lead_quote = toks[i]
+        i += 1
+        if not lead_quote and text.startswith("/"):
+            rest = text[1:]
+            if rest in FV_FORMS:
+                arg = take_arg()
+                if arg is not None:
+                    _add_filter(arg, bare_terms, field_terms)
                 continue
-            bare_terms.append(bare.lower())
-    return bare_terms, field_terms, active_cols
+            if rest in AT_FORMS or rest in RT_FORMS or rest in FT_FORMS:
+                arg = take_arg()
+                if arg is not None:
+                    _apply_col(rest, arg, active_cols, seen_cols)
+                continue
+            if rest in SORT_FORMS:
+                path = take_arg()
+                if path is not None:
+                    fields = resolve_by_substring(path, list(SORT_KEYS))
+                    if len(fields) == 1:
+                        direction = "ascending"
+                        if i < n and not starts_cmd(toks[i][1], toks[i][2]):
+                            d = parse_direction(toks[i][1])
+                            if d is not None:
+                                direction = d
+                                i += 1
+                        sort = (fields[0], direction)
+                continue
+            if rest in REV_FORMS:
+                reverse = True
+                continue
+            if is_verb_prefix(rest):
+                continue  # mid-typing a verb - inert
+            # a literal /usr/bin etc
+            bare_terms.append(text.lower())
+            continue
+        # bare word or "-quoted literal
+        bare_terms.append(text.lower())
+    return bare_terms, field_terms, active_cols, sort, reverse
 
 
 def suggest_completion(query):
-    """If the query's trailing token is a partial "+$group[.sub]",
-    "-$group[.sub]" or "$field" directive, -> (completed_query, hint) - hint
-    is just the token it would expand to, completed_query is the full query
-    with that token replaced by it; (None, None) if there's nothing to
-    complete (already complete, unresolvable, or the trailing token isn't
-    DSL at all).
-
-    Only ever looks at the trailing token - the same "editing happens at the
-    end of what you're typing" assumption any live-filter query box already
-    makes (there's no way to learn fzf's actual cursor position mid-query
-    from here, and every other part of this DSL already assumes left-to-right
-    typing, e.g. QUERY_ELEM_RE's own left-to-right scan)."""
-    m = re.search(r'([+-]\$[a-zA-Z]*(?:\.[a-zA-Z]*)?|\$[a-zA-Z]*)$', query)
-    if not m:
+    """If the query's trailing token is a partial verb or a partial
+    argument to /fv//at//rt//ft, -> (completed_query, hint); (None, None)
+    otherwise. Trailing token only - editing happens at the end."""
+    if not query or query[-1].isspace():
         return None, None
-    token = m.group(1)
-    prefix = query[:m.start()]
+    toks = tokenize(query)
+    if not toks:
+        return None, None
+    start, text, lead_quote = toks[-1]
+    if lead_quote:
+        return None, None
+    prefix = query[:start]
 
-    if token.startswith("+$") or token.startswith("-$"):
-        sign = token[:2]
-        group_pfx, _, sub_pfx = token[2:].partition(".")
+    # partial verb: "/f" -> "/fv "
+    if text.startswith("/"):
+        rest = text[1:]
+        cands = [v for v in VERB_SHORTS if rest in v]
+        if not cands or (len(cands) == 1 and cands[0] == rest):
+            return None, None
+        completed = f"/{cands[0]} "
+        return prefix + completed, completed
+
+    # argument to the governing verb (the last /verb before this token)
+    gv = None
+    for _, t, lq in reversed(toks[:-1]):
+        if not lq and t.startswith("/") and t[1:] in VERB_FORMS:
+            gv = t[1:]
+            break
+        if not lq and t.startswith("/") and is_verb_prefix(t[1:]):
+            return None, None
+    if gv in AT_FORMS or gv in RT_FORMS or gv in FT_FORMS:
+        group_pfx, dot, sub_pfx = text.partition(".")
         groups = resolve_by_substring(group_pfx, COLUMN_GROUPS) if group_pfx else []
         if not groups:
             return None, None
         g = groups[0]
-        if "." in token:
+        if dot:
             subs = resolve_by_substring(sub_pfx, COLUMN_GROUPS[g]) if sub_pfx else COLUMN_GROUPS[g]
             if not subs:
                 return None, None
-            completed = f"{sign}{g}.{subs[0]}"
+            completed = f"{g}.{subs[0]}"
         else:
-            completed = f"{sign}{g}"
-    else:
-        field_pfx = token[1:]
-        if not field_pfx:
+            completed = g
+        if completed == text:
             return None, None
-        fields = resolve_by_substring(field_pfx, FILTER_FIELDS)
+        return prefix + completed, completed
+    if gv in FV_FORMS and ":" not in text and text:
+        fields = resolve_by_substring(text, FILTER_FIELDS)
         if not fields:
             return None, None
-        completed = f"${fields[0]}:"
-
-    if completed == token:
-        return None, None  # already fully typed - nothing left to complete
-    return prefix + completed, completed
+        completed = f"{fields[0]}:"
+        if completed == text:
+            return None, None
+        return prefix + completed, completed
+    return None, None
 
 
 def row(p, active_cols):
@@ -508,7 +598,7 @@ def header_line(active_cols, hint=None):
 
 
 def header(query):
-    _, _, active_cols = parse_query(query)
+    _, _, active_cols, _, _ = parse_query(query)
     _, hint = suggest_completion(query)
     sys.stdout.write(header_line(active_cols, hint))
 
@@ -686,9 +776,9 @@ def search(snapshot_path, query):
     directly, the header area just stayed permanently blank."""
     with open(snapshot_path) as f:
         panes = json.load(f)
-    bare_terms, field_terms, active_cols = parse_query(query)
+    bare_terms, field_terms, active_cols, sort, reverse = parse_query(query)
 
-    lines = []
+    matched = []
     for p in panes:
         haystack_parts = [p["session"], p["window_name"], p["pane_title"]]
         if p["ssh"]:
@@ -699,8 +789,17 @@ def search(snapshot_path, query):
         if not all(any(term in p[FIELD_KEY[f]].lower() for f in fields)
                    for fields, term in field_terms):
             continue
-        lines.append(row(p, active_cols))
-    sys.stdout.write("\n".join(lines))
+        matched.append(p)
+
+    # Default order is MRU (snapshot file order); /sort and /reverse are
+    # opt-in on top of it.
+    if sort is not None:
+        key_name, direction = sort
+        matched.sort(key=SORT_KEYS[key_name], reverse=(direction == "descending"))
+    if reverse:
+        matched.reverse()
+
+    sys.stdout.write("\n".join(row(p, active_cols) for p in matched))
 
 
 def drive():
