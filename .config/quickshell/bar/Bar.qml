@@ -648,15 +648,10 @@ Item {
         id: calendarExpanded
 
         panelWidth: root.panelWidth
-        // Pinned open (mod+CTRL+c or a clock click) -> the wide month-view
-        // layout with event titles under each day; a passing hover stays
-        // compact. bigWidth is clamped to the row's real available width so
-        // it can't run off the left edge on a narrow monitor.
+        // Pinned open (mod+CTRL+c or a clock click) -> the month-view layout
+        // with event titles under each day; a passing hover stays compact.
+        // Width is the shared even-division panelWidth either way.
         bigMode: root.clockPinned
-        // Half the monitor width - the month-view cells + the grouped
-        // agenda list need the room. Clamped to the row's real free width
-        // so it still can't run off the left edge.
-        bigWidth: Math.min(root.screen.width / 2, root.panelAreaWidth)
         x: root.layoutFor("calendar").right - width
         y: root.panelYFor("calendar")
     }
