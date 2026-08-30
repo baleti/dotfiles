@@ -19,7 +19,7 @@ use clipboard_picker::picker::{self, Entry, PickerConfig};
 const PROGRAM_NAME: &str = "clipboard-picker";
 const THUMB_HEIGHT: i32 = 160;
 const THUMB_MAX_WIDTH: i32 = 480;
-/// `$field:value`-selectable fields, offered by the autocomplete popup.
+/// `/fv field:value`-selectable fields, offered by the autocomplete popup.
 const FIELD_NAMES: [&str; 2] = ["type", "date"];
 
 /// cliphist renders non-text entries as "[[ binary data 50 KiB png 600x509 ]]".

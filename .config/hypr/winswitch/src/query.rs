@@ -1,74 +1,116 @@
-//! The `/field:value` filter DSL (v2 — see ~/.config/docs/query-dsl.md for
-//! the full spec covering this and every other implementation): tokens
-//! split on whitespace, `/field:val` fuzzy-matches both the field name and
-//! the value independently (subsequence matching, case-insensitive --
-//! `/tit:crit` matches field "title" and any window whose title
-//! subsequence-matches "crit"), bare words substring-match a combined
-//! title+class haystack, and multiple tokens in one query are ANDed
-//! together.
+//! The picker query DSL, verb-command generation (see
+//! ~/.config/docs/query-dsl.md for the full cross-implementation spec).
 //!
-//! On top of the flat fields (`title`/`class`/`workspace`/`pid`), two
-//! **groups** add a nested namespace: `/tmux/<sub>:value` and
-//! `/claude/<sub>:value`, backed by `enrich::TmuxClaudeMeta` rather than
-//! `hyprctl::Window` (data gathered asynchronously -- a window's group
-//! fields may simply be absent for a while after the grid opens, which
-//! behaves exactly like an unresolved field always has here -- no match
-//! yet, not an error):
-//!   - `/tmux/title:foo` / `/claude/contents:foo` -- explicit group/sub.
-//!   - `/tmux:foo` -- bare group, defaults to `/title` (not "every sub").
-//!   - `/tmux/*:foo` -- literal reserved segment: matches if *any* subfield
-//!     of the group matches. Not regex -- `*` is one hand-parsed segment,
-//!     same "no real regex anywhere in this DSL" rule every other form here
-//!     already follows.
-//!   - `/claude` / `/clau` -- bare, **no colon at all**: an existence
-//!     filter, not a text search -- "does this window have any claude data
-//!     at all." Only applies to groups; a multi-segment-but-colonless
-//!     fragment (`/zzz`, `/tmux/se`) falls back to the plain-text bare-word
-//!     behaviour unchanged.
+//! The search box text is whitespace-split into tokens (a `"..."` run
+//! stays one token, and a token that *starts* with `"` is never read as a
+//! command - the literal escape hatch). Each token is either a `/verb`
+//! that opens a command and consumes the tokens after it as arguments, or
+//! a bare value that is an implicit `/filter-value` term.
 //!
-//! Column visibility (`/+path`, `/-path`) and actions (`/sort/field
-//! [/direction]`, `/reverse`) are handled by `active_columns`/
-//! `parse_actions` below, entirely separate from the matching logic above
-//! -- neither one filters, both only affect what's displayed or in what
-//! order. See query-dsl.md for the full grammar and, especially, the
-//! "direction trap" for sorting `date`-shaped (age-bucket) values, which
-//! `compare_field_values` implements.
+//! Six verbs, each exact-matched against a short and a long form - no
+//! fuzzy resolution on the verb itself, that is the entire reason the
+//! grammar is verb-first (a type name can never be mistaken for a
+//! command):
 //!
-//! `"..."` quoting lets a field/group name or value contain whitespace
-//! without it splitting into separate (and separately required) tokens --
-//! subsequence() already matches a needle containing a literal space
-//! against a haystack with a real space in the right place, so no new
-//! matching algorithm is needed, only a tokenizer that stops splitting the
-//! run apart first. A bare (unquoted) Free word keeps the older
-//! literal-substring behaviour; only a token that contains whitespace --
-//! which, since whitespace splits tokens, can only happen if it came from a
-//! quoted run -- gets the subsequence treatment. See
-//! `tokenize`/`token_matches`.
+//!   /fv /filter-value   keep rows matching the arg (bare text = this)
+//!   /ft /filter-type    keep only columns whose name matches; hide the rest
+//!   /at /add-type       add columns whose name matches into view
+//!   /rt /remove-type    drop columns whose name matches from view
+//!   /s  /sort           order rows by one type, optional direction
+//!   /rv /reverse        reverse the current order
+//!
+//! Everything that is *not* a verb - type-path segments, filter values,
+//! sort directions - is matched by case-insensitive substring
+//! containment, with every match unioned for a path segment. No
+//! subsequence, no regex; `*` (as in `claude.*`) is one hand-parsed
+//! reserved segment meaning "every subfield of the group".
+//!
+//! Three orthogonal axes, three entry points: `matches_str` (row
+//! filters), `active_columns` (column verbs, left-to-right pipeline over
+//! the picker defaults), `parse_actions` (`/sort` last-wins + `/reverse`
+//! idempotent). `compare_field_values` carries the age-bucket "direction
+//! trap" for sorting `date`-shaped values - see query-dsl.md.
 
 use crate::enrich::TmuxClaudeMeta;
 use crate::hyprctl::Window;
 
-/// Every flat field name a `/field:` prefix can fuzzy-resolve to. Add new
-/// fields here and in `column_value` together.
+/// Every flat type name a path segment can resolve to. Add new types here
+/// and in `column_value` together.
 const COLUMNS: &[&str] = &["title", "class", "workspace", "pid"];
 
-/// Group name -> its own subfield list, in display order. Add a new group's
-/// data to `enrich::TmuxClaudeMeta` and `group_sub_value` together.
+/// Group name -> its own subfield list, in display order. Add a new
+/// group's data to `enrich::TmuxClaudeMeta` and `group_sub_value`
+/// together.
 const GROUPS: &[(&str, &[&str])] = &[
     ("tmux", &["session", "window", "title"]),
     ("claude", &["title", "path", "session", "contents"]),
 ];
 
-/// What a bare `/group:value` (no `/sub`) resolves its group to.
+/// What a bare `group` path resolves its group to for *filtering and
+/// sorting* (a column verb instead takes every subfield - see
+/// `resolve_column_fields`).
 const GROUP_DEFAULT_SUB: &str = "title";
 
-/// Recognized action verbs (`/sort/...`, `/reverse`) -- see `parse_actions`.
-/// Small and fixed by design (query-dsl.md's Design principles: no real
-/// regex, and this stays a hand-curated vocabulary rather than growing
-/// unboundedly); add a new one here plus its own arg-parsing/apply logic.
-const ACTIONS: &[&str] = &["sort", "reverse"];
-
 const DIRECTIONS: &[&str] = &["ascending", "descending"];
+
+/// The six verbs. Both the short and long spelling map here; nothing else
+/// does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Verb {
+    FilterValue,
+    FilterType,
+    AddType,
+    RemoveType,
+    Sort,
+    Reverse,
+}
+
+impl Verb {
+    /// Exact match against the short and long form. `tok` is the text
+    /// after the leading `/`.
+    fn parse(tok: &str) -> Option<Verb> {
+        match tok {
+            "fv" | "filter-value" => Some(Verb::FilterValue),
+            "ft" | "filter-type" => Some(Verb::FilterType),
+            "at" | "add-type" => Some(Verb::AddType),
+            "rt" | "remove-type" => Some(Verb::RemoveType),
+            "s" | "sort" => Some(Verb::Sort),
+            "rv" | "reverse" => Some(Verb::Reverse),
+            _ => None,
+        }
+    }
+
+    /// Whether this verb's argument (the first one, for `/sort`) is a type
+    /// path - used by completion to know it's in the path stage.
+    fn takes_path(self) -> bool {
+        !matches!(self, Verb::Reverse)
+    }
+}
+
+/// Every verb short form, for top-level completion, in canonical order.
+const VERB_SHORTS: &[&str] = &["fv", "ft", "at", "rt", "s", "rv"];
+
+/// Every accepted verb spelling, short and long.
+const VERB_FORMS: &[&str] = &[
+    "fv", "ft", "at", "rt", "s", "rv", "filter-value", "filter-type", "add-type", "remove-type", "sort",
+    "reverse",
+];
+
+/// True if `s` is a non-empty prefix of some verb form - i.e. a `/s...`
+/// token that could still become a verb once more is typed, so it stays
+/// inert (mid-typing) rather than being searched for literally. A `/xyz`
+/// that is neither a verb nor a prefix of one (e.g. `/usr/bin`) is real
+/// text and does get searched.
+fn is_verb_prefix(s: &str) -> bool {
+    !s.is_empty() && VERB_FORMS.iter().any(|v| v.starts_with(s))
+}
+
+/// Case-insensitive substring containment. Empty needle always matches.
+/// The one matching rule for every path segment, filter value and sort
+/// direction in this DSL.
+fn substr(needle: &str, hay: &str) -> bool {
+    hay.to_lowercase().contains(&needle.to_lowercase())
+}
 
 fn column_value(win: &Window, column: &str) -> String {
     match column {
@@ -98,50 +140,22 @@ fn group_subs(group: &str) -> &'static [&'static str] {
     GROUPS.iter().find(|(g, _)| *g == group).map(|(_, subs)| *subs).unwrap_or(&[])
 }
 
-/// True if `group` has *any* non-empty subfield on this window -- what a
-/// bare `/group` (no colon at all, e.g. `/claude`/`/clau`) checks for. Not a
-/// text search: it's an existence filter, "does this window have any
-/// tmux/claude data at all," which is what makes `/claude` alone a useful
-/// complete query on its own rather than something that only starts doing
-/// anything once a value is typed after a colon.
+/// True if `group` has any non-empty subfield on this window - what a
+/// colonless `/fv group` (existence filter) checks for.
 fn group_has_any_value(meta: &TmuxClaudeMeta, group: &str) -> bool {
     group_subs(group).iter().any(|s| !group_sub_value(meta, group, s).is_empty())
 }
 
-/// Every group name subsequence-fuzzy-matching `prefix`, in `GROUPS`' own
-/// order -- the group-level analogue of resolving a flat column.
-fn resolve_groups(prefix: &str) -> Vec<&'static str> {
-    GROUPS.iter().map(|(g, _)| *g).filter(|g| subsequence(prefix, g)).collect()
+fn resolve_groups(seg: &str) -> Vec<&'static str> {
+    GROUPS.iter().map(|(g, _)| *g).filter(|g| substr(seg, g)).collect()
 }
 
-/// Every subfield of `group` subsequence-fuzzy-matching `prefix`.
-fn resolve_group_subs(group: &str, prefix: &str) -> Vec<&'static str> {
-    group_subs(group).iter().copied().filter(|s| subsequence(prefix, s)).collect()
+fn resolve_group_subs(group: &str, seg: &str) -> Vec<&'static str> {
+    group_subs(group).iter().copied().filter(|s| substr(seg, s)).collect()
 }
 
-fn resolve_actions(prefix: &str) -> Vec<&'static str> {
-    ACTIONS.iter().copied().filter(|a| subsequence(prefix, a)).collect()
-}
-
-fn resolve_directions(prefix: &str) -> Vec<&'static str> {
-    DIRECTIONS.iter().copied().filter(|d| subsequence(prefix, d)).collect()
-}
-
-/// True if every character of `needle` appears in `hay`, in order, but not
-/// necessarily contiguously (case-insensitive). Empty needle always matches.
-fn subsequence(needle: &str, hay: &str) -> bool {
-    let needle = needle.to_lowercase();
-    let hay = hay.to_lowercase();
-    let mut hay_chars = hay.chars();
-    needle
-        .chars()
-        .all(|nc| hay_chars.any(|hc| hc == nc))
-}
-
-/// Which single concrete field a `/field:` prefix (flat or group/sub)
-/// unambiguously names -- what value-completion/suggestion and sorting need
-/// in order to know which one field's live values (or comparison rule)
-/// applies.
+/// Which concrete field(s) a path names. `Flat` for a top-level type,
+/// `Group` for a group subfield.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResolvedField {
     Flat(&'static str),
@@ -149,13 +163,12 @@ pub enum ResolvedField {
 }
 
 impl ResolvedField {
-    /// The text that goes right after `/` and before `:` (or, for a
-    /// visibility/sort token, with no `:` at all) to name this field
-    /// explicitly -- `"title"` or `"tmux/session"`.
+    /// Dotted key - `"title"` or `"claude.title"` - for splicing an
+    /// accepted completion back in and for `SuggestionKind::Value`.
     pub fn key(&self) -> String {
         match self {
             ResolvedField::Flat(c) => c.to_string(),
-            ResolvedField::Group(g, s) => format!("{g}/{s}"),
+            ResolvedField::Group(g, s) => format!("{g}.{s}"),
         }
     }
 }
@@ -166,56 +179,70 @@ pub enum Direction {
     Descending,
 }
 
-/// The result of `/sort/field[/direction]`, plus whether `/reverse` was
-/// also typed -- see query-dsl.md's Actions section for the full grammar
-/// and why `sort`/`reverse` are independent (both can apply at once:
-/// `/sort` picks an order, `/reverse` flips whatever order is in effect).
+/// `/sort` result plus whether `/reverse` was also typed. Both can apply
+/// at once: `/sort` picks an order, `/reverse` flips whatever order is in
+/// effect.
 #[derive(Clone, Default)]
 pub struct Actions {
     pub sort: Option<(ResolvedField, Direction)>,
     pub reverse: bool,
 }
 
-enum Token {
-    /// `field_query` is the text before an optional `/sub`; `sub_query` is
-    /// `Some` (possibly `"*"`) only when a second segment was actually
-    /// typed.
-    Field { field_query: String, sub_query: Option<String>, value: String },
-    /// A bare `/group` with **no colon at all** (`/claude`, `/clau`,
-    /// `/tmux`) -- an existence filter ("does this window have any
-    /// tmux/claude data at all"), distinct from `/group:` (colon, empty
-    /// value), which trivially matches everything the same way every other
-    /// `/field:` empty-value form already does. Only created when the
-    /// fragment actually resolves to a group and contains no `/` -- a
-    /// multi-segment, colonless fragment (`/tmux/se`, still mid-typing a
-    /// sub) and an unresolvable one both fall back to `Free`.
-    GroupExists(String),
+/// A parsed row-filter term (from a bare word or a `/fv` command).
+enum FilterTerm {
+    /// Substring over the free-text haystack (title + class).
     Free(String),
+    /// `path:value` - substring `value` against every type `path`
+    /// resolves to.
+    Scoped { path: String, value: String },
+    /// Colonless `group` that resolved to a group - existence check.
+    GroupExists(String),
 }
 
-/// Split `query` on whitespace like `str::split_whitespace`, except a
-/// `"..."`-quoted run is kept as one token with its interior whitespace
-/// intact (quote characters themselves are dropped, wherever in the token
-/// they fall). Also returns each token's starting byte offset in `query`,
-/// for callers that need to splice a replacement in (`completion_context`).
-///
-/// An unterminated quote (mid-typing) still closes its token at the end of
-/// the string rather than being dropped -- same "still usable half-typed"
-/// principle the rest of this DSL follows.
-fn tokenize_with_spans(query: &str) -> Vec<(usize, String)> {
+/// A column verb and its raw path argument.
+#[derive(Clone, Copy)]
+enum ColOp {
+    Filter,
+    Add,
+    Remove,
+}
+
+// --- tokenizer -------------------------------------------------------------
+
+/// One token: its byte offset in the source, its text (quotes stripped,
+/// interior whitespace kept), and whether the source run *started* with a
+/// `"` (which makes it a literal, never a command).
+struct Tok {
+    start: usize,
+    text: String,
+    lead_quote: bool,
+}
+
+/// Split on whitespace like `str::split_whitespace`, except a `"..."` run
+/// keeps its interior whitespace and stays one token. An unterminated
+/// quote still closes at end-of-input rather than being dropped (same
+/// "half-typed stays usable" rule the rest of the DSL follows). The
+/// `lead_quote` flag records whether the run began with a `"`, so a
+/// caller can honour `"/literal"` as text.
+fn tokenize(query: &str) -> Vec<Tok> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
     let mut start: Option<usize> = None;
+    let mut lead_quote = false;
     let mut in_quotes = false;
     for (i, c) in query.char_indices() {
         if c == '"' {
+            if start.is_none() {
+                lead_quote = true;
+            }
             in_quotes = !in_quotes;
             start.get_or_insert(i);
             continue;
         }
         if c.is_whitespace() && !in_quotes {
             if let Some(s) = start.take() {
-                tokens.push((s, std::mem::take(&mut cur)));
+                tokens.push(Tok { start: s, text: std::mem::take(&mut cur), lead_quote });
+                lead_quote = false;
             }
             continue;
         }
@@ -223,195 +250,226 @@ fn tokenize_with_spans(query: &str) -> Vec<(usize, String)> {
         cur.push(c);
     }
     if let Some(s) = start {
-        tokens.push((s, cur));
+        tokens.push(Tok { start: s, text: cur, lead_quote });
     }
     tokens
 }
 
-fn tokenize(query: &str) -> Vec<String> {
-    tokenize_with_spans(query).into_iter().map(|(_, t)| t).collect()
+/// The verb a token names, or `None` if it isn't a `/verb` (or is a
+/// quote-led literal).
+fn tok_verb(tok: &Tok) -> Option<Verb> {
+    if tok.lead_quote {
+        return None;
+    }
+    tok.text.strip_prefix('/').and_then(Verb::parse)
 }
 
-/// Every completion candidate for a bare field/group/action fragment (no
-/// `+`/`-`, no `:` yet), each a full string ready to splice right after
-/// `/` -- `"title"`, `"tmux"`, `"tmux/session"`, `"sort"`. `actions_too`
-/// controls whether action verbs are included -- true for the real
-/// top-level case, false for a visibility path or a sort target, neither
-/// of which can themselves be an action.
-///
-/// No `/` yet in `fragment`: unions flat fields, group names, and (if
-/// `actions_too`) action verbs -- same "union everything that resolves"
-/// rule `/field:value` itself follows. A `/` already typed: only offers
-/// completions once the group name before it is unambiguous (mirrors
-/// `resolve_field_unambiguous`'s "exactly one" rule, one level up) -- an
-/// ambiguous or unknown group has no fixed subfield list to suggest from.
-/// `*` is offered as its own candidate alongside real subfields so "match
-/// any sub" stays discoverable without already knowing it exists.
-fn path_suggestions(fragment: &str, actions_too: bool) -> Vec<String> {
-    if let Some((group_frag, sub_frag)) = fragment.split_once('/') {
-        let groups = resolve_groups(group_frag);
-        let [group] = groups[..] else { return Vec::new() };
-        let mut out: Vec<String> =
-            resolve_group_subs(group, sub_frag).into_iter().map(|s| format!("{group}/{s}")).collect();
-        if subsequence(sub_frag, "*") {
-            out.push(format!("{group}/*"));
-        }
-        return out;
+/// True if a token would begin (or continue typing) a command rather than
+/// serve as an argument - a complete `/verb` or a `/prefix` still on its
+/// way to being one. A literal `/usr/bin` is neither, so it *can* be an
+/// argument.
+fn starts_command(tok: &Tok) -> bool {
+    if tok.lead_quote {
+        return false;
     }
-    let mut out: Vec<String> = COLUMNS.iter().filter(|c| subsequence(fragment, c)).map(|c| c.to_string()).collect();
-    out.extend(resolve_groups(fragment).iter().map(|g| g.to_string()));
-    if actions_too {
-        out.extend(resolve_actions(fragment).iter().map(|a| a.to_string()));
-    }
-    out
-}
-
-/// True if `candidate` (a suggestion with no `/` in it) still has further
-/// subtypes reachable via `/` -- i.e. it names a group, not a flat field.
-/// Tab-completion uses this to decide whether landing on `/claude` (no
-/// colon -- ready for either `/sub` next, or to stand on its own as the
-/// bare existence-filter form) beats jumping straight to `/claude:` the way
-/// a childless field like `/title:` always should.
-pub fn has_subtypes(candidate: &str) -> bool {
-    !candidate.contains('/') && GROUPS.iter().any(|(g, _)| *g == candidate)
-}
-
-/// Resolves `field_and_sub` (flat, or `group/sub`, `/` optional) to exactly
-/// one concrete field, or `None` if it's ambiguous, unknown, or a `group/*`
-/// (which names a *set* of fields, not one value domain -- same "no single
-/// value set to offer" reasoning an ambiguous flat field already gets).
-fn resolve_field_unambiguous(field_and_sub: &str) -> Option<ResolvedField> {
-    if let Some((group_frag, sub_frag)) = field_and_sub.split_once('/') {
-        if sub_frag == "*" {
-            return None;
-        }
-        let groups = resolve_groups(group_frag);
-        let [group] = groups[..] else { return None };
-        let subs = resolve_group_subs(group, sub_frag);
-        let [sub] = subs[..] else { return None };
-        return Some(ResolvedField::Group(group, sub));
-    }
-    let mut candidates: Vec<ResolvedField> =
-        COLUMNS.iter().copied().filter(|c| subsequence(field_and_sub, c)).map(ResolvedField::Flat).collect();
-    candidates.extend(resolve_groups(field_and_sub).into_iter().map(|g| ResolvedField::Group(g, GROUP_DEFAULT_SUB)));
-    match candidates[..] {
-        [only] => Some(only),
-        _ => None,
+    match tok.text.strip_prefix('/') {
+        Some(rest) => Verb::parse(rest).is_some() || is_verb_prefix(rest),
+        None => false,
     }
 }
 
-/// Every `ResolvedField` a visibility path (`path` in `/+path`/`/-path`,
-/// `/` already stripped along with the leading `+`/`-`) names -- unlike
-/// `resolve_field_unambiguous`, this *unions* every match rather than
-/// requiring exactly one, since showing/hiding is fine to apply to several
-/// fields at once (an ambiguous flat/group prefix, or an explicit
-/// `group/*`). Empty for an unresolvable path.
-fn resolve_path(path: &str) -> Vec<ResolvedField> {
-    if let Some((group_frag, sub_frag)) = path.split_once('/') {
-        let groups = resolve_groups(group_frag);
-        if sub_frag == "*" {
-            return groups.iter().flat_map(|&g| group_subs(g).iter().map(move |&s| ResolvedField::Group(g, s))).collect();
-        }
-        return groups
+// --- direction parsing ---------------------------------------------------
+
+/// A sort-direction token -> `Direction`. Any substring match counts;
+/// `descending` only when it matches that and not `ascending`, otherwise
+/// (including an ambiguous or empty fragment) `Ascending`.
+fn parse_direction(tok: &str) -> Option<Direction> {
+    let matched: Vec<&str> = DIRECTIONS.iter().copied().filter(|d| substr(tok, d)).collect();
+    match matched[..] {
+        [] => None,
+        ["descending"] => Some(Direction::Descending),
+        _ => Some(Direction::Ascending),
+    }
+}
+
+fn resolve_directions(frag: &str) -> Vec<&'static str> {
+    DIRECTIONS.iter().copied().filter(|d| substr(frag, d)).collect()
+}
+
+// --- path resolution ---------------------------------------------------
+
+/// Split a path on `.` into at most two meaningful segments.
+fn path_segs(path: &str) -> (&str, Option<&str>) {
+    match path.split_once('.') {
+        Some((g, s)) => (g, Some(s)),
+        None => (path, None),
+    }
+}
+
+/// Fields a path names for *filtering* - a bare `group` becomes its
+/// default subfield only.
+fn resolve_filter_fields(path: &str) -> Vec<ResolvedField> {
+    match path_segs(path) {
+        (g_seg, Some("*")) => resolve_groups(g_seg)
             .iter()
-            .flat_map(|&g| resolve_group_subs(g, sub_frag).into_iter().map(move |s| ResolvedField::Group(g, s)))
-            .collect();
+            .flat_map(|&g| group_subs(g).iter().map(move |&s| ResolvedField::Group(g, s)))
+            .collect(),
+        (g_seg, Some(s_seg)) => resolve_groups(g_seg)
+            .iter()
+            .flat_map(|&g| resolve_group_subs(g, s_seg).into_iter().map(move |s| ResolvedField::Group(g, s)))
+            .collect(),
+        (seg, None) => {
+            let mut out: Vec<ResolvedField> =
+                COLUMNS.iter().copied().filter(|c| substr(seg, c)).map(ResolvedField::Flat).collect();
+            out.extend(resolve_groups(seg).into_iter().map(|g| ResolvedField::Group(g, GROUP_DEFAULT_SUB)));
+            out
+        }
     }
-    let mut out: Vec<ResolvedField> = COLUMNS.iter().copied().filter(|c| subsequence(path, c)).map(ResolvedField::Flat).collect();
-    out.extend(resolve_groups(path).into_iter().map(|g| ResolvedField::Group(g, GROUP_DEFAULT_SUB)));
+}
+
+/// Fields a path names for a *column verb* - a bare `group` becomes every
+/// subfield.
+fn resolve_column_fields(path: &str) -> Vec<ResolvedField> {
+    match path_segs(path) {
+        (g_seg, Some("*")) => resolve_groups(g_seg)
+            .iter()
+            .flat_map(|&g| group_subs(g).iter().map(move |&s| ResolvedField::Group(g, s)))
+            .collect(),
+        (g_seg, Some(s_seg)) => resolve_groups(g_seg)
+            .iter()
+            .flat_map(|&g| resolve_group_subs(g, s_seg).into_iter().map(move |s| ResolvedField::Group(g, s)))
+            .collect(),
+        (seg, None) => {
+            let mut out: Vec<ResolvedField> =
+                COLUMNS.iter().copied().filter(|c| substr(seg, c)).map(ResolvedField::Flat).collect();
+            for g in resolve_groups(seg) {
+                out.extend(group_subs(g).iter().map(|&s| ResolvedField::Group(g, s)));
+            }
+            out
+        }
+    }
+}
+
+/// The single field a path names, or `None` if ambiguous, unknown, or a
+/// `*` set - what `/sort` needs.
+fn resolve_one(path: &str) -> Option<ResolvedField> {
+    match path_segs(path) {
+        (_, Some("*")) => None,
+        (g_seg, Some(s_seg)) => {
+            let groups = resolve_groups(g_seg);
+            let [group] = groups[..] else { return None };
+            let subs = resolve_group_subs(group, s_seg);
+            let [sub] = subs[..] else { return None };
+            Some(ResolvedField::Group(group, sub))
+        }
+        (seg, None) => {
+            let mut c: Vec<ResolvedField> =
+                COLUMNS.iter().copied().filter(|x| substr(seg, x)).map(ResolvedField::Flat).collect();
+            c.extend(resolve_groups(seg).into_iter().map(|g| ResolvedField::Group(g, GROUP_DEFAULT_SUB)));
+            match c[..] {
+                [only] => Some(only),
+                _ => None,
+            }
+        }
+    }
+}
+
+// --- command parsing -------------------------------------------------------
+
+/// Everything one query parses to, across all three axes. Cheap to
+/// recompute per keystroke.
+struct Parsed {
+    filters: Vec<FilterTerm>,
+    col_ops: Vec<(ColOp, String)>,
+    sort: Option<(ResolvedField, Direction)>,
+    reverse: bool,
+}
+
+/// One raw filter argument -> a `FilterTerm`. A colon makes it scoped; a
+/// colonless single segment that resolves to a group is an existence
+/// check; anything else is free text.
+fn filter_term(arg: &str) -> FilterTerm {
+    if let Some((path, value)) = arg.split_once(':') {
+        return FilterTerm::Scoped { path: path.to_string(), value: value.to_string() };
+    }
+    if !arg.contains('.') && !resolve_groups(arg).is_empty() {
+        return FilterTerm::GroupExists(arg.to_string());
+    }
+    FilterTerm::Free(arg.to_string())
+}
+
+fn parse(query: &str) -> Parsed {
+    let toks = tokenize(query);
+    let mut out = Parsed { filters: Vec::new(), col_ops: Vec::new(), sort: None, reverse: false };
+
+    let mut i = 0;
+    while i < toks.len() {
+        let tok = &toks[i];
+        let Some(verb) = tok_verb(tok) else {
+            // Not a verb. A `/prefix` still on its way to being one is
+            // inert; anything else (a bare value, or a literal `/usr/bin`)
+            // is an implicit /fv term.
+            let mid_typing = !tok.lead_quote
+                && tok.text.strip_prefix('/').map(is_verb_prefix).unwrap_or(false);
+            if !mid_typing {
+                out.filters.push(filter_term(&tok.text));
+            }
+            i += 1;
+            continue;
+        };
+        i += 1;
+        // Collect this verb's argument tokens: the following tokens that
+        // are not themselves commands, up to each verb's arity.
+        let mut args: Vec<String> = Vec::new();
+        let max_args = match verb {
+            Verb::Reverse => 0,
+            Verb::Sort => 2,
+            _ => 1,
+        };
+        while args.len() < max_args && i < toks.len() && !starts_command(&toks[i]) {
+            // /sort's optional 2nd arg is only taken if it reads as a
+            // direction; otherwise it's a fresh /fv term.
+            if verb == Verb::Sort && args.len() == 1 && parse_direction(&toks[i].text).is_none() {
+                break;
+            }
+            args.push(toks[i].text.clone());
+            i += 1;
+        }
+
+        match verb {
+            Verb::FilterValue => {
+                if let Some(a) = args.first() {
+                    out.filters.push(filter_term(a));
+                }
+            }
+            Verb::FilterType => {
+                if let Some(a) = args.first() {
+                    out.col_ops.push((ColOp::Filter, a.clone()));
+                }
+            }
+            Verb::AddType => {
+                if let Some(a) = args.first() {
+                    out.col_ops.push((ColOp::Add, a.clone()));
+                }
+            }
+            Verb::RemoveType => {
+                if let Some(a) = args.first() {
+                    out.col_ops.push((ColOp::Remove, a.clone()));
+                }
+            }
+            Verb::Sort => {
+                if let Some(field) = args.first().and_then(|p| resolve_one(p)) {
+                    let dir = args.get(1).and_then(|d| parse_direction(d)).unwrap_or(Direction::Ascending);
+                    out.sort = Some((field, dir));
+                }
+            }
+            Verb::Reverse => out.reverse = true,
+        }
+    }
     out
 }
 
-/// Applies every `/+path`/`/-path` token in `query`, left to right, to
-/// `defaults` (winswitch's baseline shown columns -- `workspace`+`title`
-/// today) -- see query-dsl.md's column-visibility section for the
-/// add-then-remove-then-re-add ordering semantics. Returns the resulting
-/// ordered, de-duplicated column list. Recomputed fresh from the whole
-/// query text on every keystroke (cheap -- a handful of tokens at most),
-/// not diffed against the previous result.
-pub fn active_columns(query: &str, defaults: &[ResolvedField]) -> Vec<ResolvedField> {
-    let mut cols: Vec<ResolvedField> = defaults.to_vec();
-    for (_, token) in tokenize_with_spans(query) {
-        let Some(rest) = token.strip_prefix('/') else { continue };
-        let (sign, path) = match rest.strip_prefix('+') {
-            Some(p) => ('+', p),
-            None => match rest.strip_prefix('-') {
-                Some(p) => ('-', p),
-                None => continue,
-            },
-        };
-        for field in resolve_path(path) {
-            if sign == '+' {
-                if !cols.contains(&field) {
-                    cols.push(field);
-                }
-            } else {
-                cols.retain(|c| *c != field);
-            }
-        }
-    }
-    cols
-}
-
-/// One `/sort/field[/direction]` token's argument (`after_verb` is
-/// everything after the `sort/`), or `None` if the field doesn't resolve.
-/// The field path may itself be one segment (flat) or two (`group/sub`),
-/// so this can't just split on a fixed segment count -- it tries the
-/// *last* segment as a direction first (only committing to that split if
-/// what's left before it also resolves to a field), and falls back to
-/// treating the whole remainder as the field path with the default
-/// direction. See query-dsl.md's Actions section for why direction can't
-/// simply be "whatever's after the second slash."
-fn parse_sort_arg(after_verb: &str) -> Option<(ResolvedField, Direction)> {
-    let segs: Vec<&str> = after_verb.split('/').collect();
-    if segs.len() >= 2 {
-        let dirs = resolve_directions(segs[segs.len() - 1]);
-        if let [only] = dirs[..] {
-            let field_path = segs[..segs.len() - 1].join("/");
-            if let Some(field) = resolve_field_unambiguous(&field_path) {
-                let direction = if only == "ascending" { Direction::Ascending } else { Direction::Descending };
-                return Some((field, direction));
-            }
-        }
-    }
-    resolve_field_unambiguous(after_verb).map(|f| (f, Direction::Ascending))
-}
-
-/// Every `/sort/...`/`/reverse` token in `query`, applied in order (a
-/// later `/sort/` replaces an earlier one; any number of `/reverse` tokens
-/// has the same effect as one -- see query-dsl.md's Actions section for
-/// why). Malformed action args (an unresolvable sort field, say) are
-/// silently inert, same "half-typed/invalid stays a no-op, never an error
-/// or a fallback" principle the rest of this DSL follows.
-pub fn parse_actions(query: &str) -> Actions {
-    let mut actions = Actions::default();
-    for (_, token) in tokenize_with_spans(query) {
-        let Some(rest) = token.strip_prefix('/') else { continue };
-        if rest.starts_with('+') || rest.starts_with('-') {
-            continue;
-        }
-        let Some((verb, after_verb)) = rest.split_once('/') else {
-            if let [only] = resolve_actions(rest)[..] {
-                if only == "reverse" {
-                    actions.reverse = true;
-                }
-            }
-            continue;
-        };
-        if let [only] = resolve_actions(verb)[..] {
-            match only {
-                "sort" => {
-                    if let Some(spec) = parse_sort_arg(after_verb) {
-                        actions.sort = Some(spec);
-                    }
-                }
-                "reverse" => actions.reverse = true,
-                _ => {}
-            }
-        }
-    }
-    actions
-}
+// --- axis 1: row filtering -----------------------------------------------
 
 fn field_value(win: &Window, meta: &TmuxClaudeMeta, field: ResolvedField) -> String {
     match field {
@@ -420,14 +478,64 @@ fn field_value(win: &Window, meta: &TmuxClaudeMeta, field: ResolvedField) -> Str
     }
 }
 
-/// A value's shape, for `compare_field_values` -- sniffed independently on
-/// each side of a comparison rather than trusted from the field, since a
-/// field can legitimately be empty/absent on one of the two entries being
-/// compared.
+fn term_matches(win: &Window, meta: &TmuxClaudeMeta, term: &FilterTerm) -> bool {
+    match term {
+        FilterTerm::Free(s) => {
+            let haystack = format!("{} {}", win.title, win.class);
+            substr(s, &haystack)
+        }
+        FilterTerm::Scoped { path, value } => {
+            let fields = resolve_filter_fields(path);
+            !fields.is_empty() && fields.iter().any(|&f| substr(value, &field_value(win, meta, f)))
+        }
+        FilterTerm::GroupExists(seg) => {
+            let groups = resolve_groups(seg);
+            !groups.is_empty() && groups.iter().any(|g| group_has_any_value(meta, g))
+        }
+    }
+}
+
+pub fn matches_str(win: &Window, meta: &TmuxClaudeMeta, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    parse(query).filters.iter().all(|t| term_matches(win, meta, t))
+}
+
+// --- axis 2: column visibility -----------------------------------------
+
+/// Applies every column verb in `query`, left to right, to `defaults`.
+/// `/ft` intersects the running set with the matching fields, `/at`
+/// unions them in at the end, `/rt` subtracts them. See query-dsl.md.
+pub fn active_columns(query: &str, defaults: &[ResolvedField]) -> Vec<ResolvedField> {
+    let mut cols: Vec<ResolvedField> = defaults.to_vec();
+    for (op, path) in parse(query).col_ops {
+        let fields = resolve_column_fields(&path);
+        match op {
+            ColOp::Filter => cols.retain(|c| fields.contains(c)),
+            ColOp::Add => {
+                for f in fields {
+                    if !cols.contains(&f) {
+                        cols.push(f);
+                    }
+                }
+            }
+            ColOp::Remove => cols.retain(|c| !fields.contains(c)),
+        }
+    }
+    cols
+}
+
+// --- axis 3: sort / reverse -------------------------------------------
+
+pub fn parse_actions(query: &str) -> Actions {
+    let p = parse(query);
+    Actions { sort: p.sort, reverse: p.reverse }
+}
+
+/// A value's shape, sniffed on each side of a comparison independently.
 enum ValueShape {
     Int(u64),
-    /// Seconds, parsed from an `humanize_ago`-shaped bucket (`"5m"`,
-    /// `"3h"`, `"2d"`, `"30s"`).
     AgeSeconds(u64),
     Text,
 }
@@ -451,39 +559,20 @@ fn sniff_shape(v: &str) -> ValueShape {
     ValueShape::Text
 }
 
-/// Compares two field values for `/sort`, sniffing shape on each side
-/// rather than trusting the field: plain integers compare numerically
-/// (`"10"` > `"2"`, unlike lexicographically); age buckets
-/// (`humanize_ago`'s `"5m"`/`"3h"`/`"2d"`/`"30s"`) convert to seconds and
-/// compare *that*; anything else (or a shape mismatch between the two
-/// sides) falls back to plain lexicographic string comparison, which is
-/// already correct for genuinely textual fields like `title`/`class`.
-///
-/// Direction is applied by the caller, with one deliberate exception this
-/// function itself handles: an age bucket is a value's *age* (smaller =
-/// more recent), not its absolute time, so "ascending"/"descending" would
-/// be backwards read literally against the raw seconds -- see
-/// query-dsl.md's "direction trap." This function always returns
-/// ascending-by-*chronological*-order for two age values (oldest-first),
-/// already correct for a direct `Ordering` regardless of which numeric
-/// direction that happens to be internally -- callers never need their own
-/// special case for age fields, only for plain int/text ones.
+/// Compares two type values for `/sort`, sniffing shape on each side:
+/// plain ints numerically, `humanize_ago` age buckets by seconds (larger
+/// age = earlier moment = sorts first, i.e. chronological ascending),
+/// everything else lexicographically. Direction is applied by
+/// `compare_with_direction`, except the age-bucket inversion which is
+/// baked in here - see query-dsl.md's "direction trap".
 fn compare_field_values(a: &str, b: &str) -> std::cmp::Ordering {
     match (sniff_shape(a), sniff_shape(b)) {
         (ValueShape::Int(x), ValueShape::Int(y)) => x.cmp(&y),
-        // Larger age = earlier (older) moment = sorts first for "oldest
-        // first" -- i.e. compare seconds *descending* to get chronological
-        // ascending.
         (ValueShape::AgeSeconds(x), ValueShape::AgeSeconds(y)) => y.cmp(&x),
         _ => a.cmp(b),
     }
 }
 
-/// `compare_field_values` with `direction` applied -- the one place a
-/// caller (winswitch's `ui.rs` flowbox sort func) needs to reach for, so
-/// the age-bucket direction inversion documented above stays entirely
-/// internal to this module rather than something every call site has to
-/// remember.
 pub fn compare_with_direction(a: &str, b: &str, direction: Direction) -> std::cmp::Ordering {
     let ord = compare_field_values(a, b);
     match direction {
@@ -496,228 +585,187 @@ pub fn sort_field_value(win: &Window, meta: &TmuxClaudeMeta, field: ResolvedFiel
     field_value(win, meta, field)
 }
 
-/// Every distinct, non-empty value `field` actually has across
-/// `windows`/`metas` (parallel, same index) right now, subsequence-fuzzy-
-/// narrowed by `fragment` -- exactly the same matching a manually typed
-/// `/field:value` would apply, so what's offered here is guaranteed to be
-/// something that would actually match if typed. Sorted and deduplicated
-/// (`BTreeSet`) for a stable, predictable order rather than window-list
-/// order, which shuffles as focus/list order changes underneath the popup.
-pub fn value_suggestions(windows: &[Window], metas: &[TmuxClaudeMeta], field: ResolvedField, fragment: &str) -> Vec<String> {
+// --- autocompletion ---------------------------------------------------
+
+/// Every distinct non-empty value `field` has across `windows`/`metas`
+/// right now, substring-narrowed by `fragment`, deduped and sorted.
+pub fn value_suggestions(
+    windows: &[Window],
+    metas: &[TmuxClaudeMeta],
+    field: ResolvedField,
+    fragment: &str,
+) -> Vec<String> {
     let empty = TmuxClaudeMeta::default();
     let mut seen = std::collections::BTreeSet::new();
     for (i, w) in windows.iter().enumerate() {
         let meta = metas.get(i).unwrap_or(&empty);
         let v = field_value(w, meta, field);
-        if !v.is_empty() && subsequence(fragment, &v) {
+        if !v.is_empty() && substr(fragment, &v) {
             seen.insert(v);
         }
     }
     seen.into_iter().collect()
 }
 
-/// What the autocomplete popup should offer right now, and where a chosen
-/// completion gets spliced back in -- one entry point covering every stage
-/// of the grammar (see query-dsl.md's Autocompletion section), so `ui.rs`
-/// only has to match on this instead of re-deriving "which stage am I in"
-/// itself. `start` is always the byte offset in the query text where the
-/// trailing token begins.
+/// Type-path candidates for `fragment` (which may contain a `.`): flat
+/// type names and group names before a dot, that group's subfields plus
+/// `*` after one. Each ready to splice in after the verb.
+fn path_suggestions(fragment: &str) -> Vec<String> {
+    if let Some((g_seg, s_seg)) = fragment.split_once('.') {
+        let groups = resolve_groups(g_seg);
+        let [group] = groups[..] else { return Vec::new() };
+        let mut out: Vec<String> =
+            resolve_group_subs(group, s_seg).into_iter().map(|s| format!("{group}.{s}")).collect();
+        if substr(s_seg, "*") {
+            out.push(format!("{group}.*"));
+        }
+        return out;
+    }
+    let mut out: Vec<String> =
+        COLUMNS.iter().filter(|c| substr(fragment, c)).map(|c| c.to_string()).collect();
+    out.extend(resolve_groups(fragment).iter().map(|g| g.to_string()));
+    out
+}
+
+/// Which stage the completion popup is in. Exactly one is live at a time.
 pub enum Completion {
-    /// `/fragment`, no `+`/`-`, no `:`, not (yet) committed to `/sort/`'s
-    /// own sub-grammar -- candidates are fields, groups, and action verbs
-    /// (plus the two literal `+`/`-` themselves, only when `fragment` has
-    /// no `/` in it, since those only ever make sense as the very first
-    /// thing after `/`).
-    TopLevel { start: usize, fragment: String },
-    /// `/+fragment` or `/-fragment` -- candidates are fields and groups
-    /// only (see `path_suggestions`'s `actions_too: false`).
-    VisibilityPath { start: usize, sign: char, fragment: String },
-    /// `/sort/fragment`, not yet a second `/` -- candidates are fields and
-    /// groups (the sort target), same as `VisibilityPath`.
-    SortField { start: usize, fragment: String },
-    /// `/sort/<unambiguous field>/fragment` -- candidates are
-    /// `ascending`/`descending`.
-    SortDirection { start: usize, field: ResolvedField, fragment: String },
-    /// `/field:fragment`, field unambiguous -- candidates are that field's
-    /// live values (`value_suggestions`).
+    /// `/frag` - a verb is being typed. Candidates are the short forms.
+    Verb { start: usize, fragment: String },
+    /// A type path is being typed as `verb`'s argument.
+    TypePath { start: usize, verb: Verb, fragment: String },
+    /// `/fv path:frag`, `path` unambiguous - candidates are that type's
+    /// live values.
     Value { start: usize, field: ResolvedField, fragment: String },
+    /// `/s path frag`, `path` unambiguous - candidates are the directions.
+    /// `field` is kept for call sites that want to show the resolved sort
+    /// key alongside the direction choices.
+    #[allow(dead_code)]
+    SortDirection { start: usize, field: ResolvedField, fragment: String },
+}
+
+/// Replays argument consumption over every token *except the last*, to
+/// learn which slot the last (still-being-typed) token occupies.
+enum Open {
+    /// No command is waiting for more arguments.
+    None,
+    /// `verb` has consumed `args` argument(s) and can take more.
+    Verb { verb: Verb, args: Vec<String> },
+}
+
+fn replay(context: &[Tok]) -> Open {
+    let mut open = Open::None;
+    for tok in context {
+        loop {
+            match &mut open {
+                Open::None => {
+                    if let Some(v) = tok_verb(tok) {
+                        if v == Verb::Reverse {
+                            // consumes nothing, stays closed
+                        } else {
+                            open = Open::Verb { verb: v, args: Vec::new() };
+                        }
+                    }
+                    // bare value or inert /... - nothing to track
+                    break;
+                }
+                Open::Verb { verb, args } => {
+                    let verb = *verb;
+                    if starts_command(tok) {
+                        open = Open::None;
+                        continue; // reprocess this token as a fresh command
+                    }
+                    match verb {
+                        Verb::Sort => {
+                            if args.is_empty() {
+                                args.push(tok.text.clone()); // path; still open for a direction
+                            } else if parse_direction(&tok.text).is_some() {
+                                open = Open::None; // direction consumed
+                            } else {
+                                open = Open::None; // not a direction - sort closes
+                                continue;
+                            }
+                        }
+                        Verb::Reverse => unreachable!(),
+                        _ => {
+                            open = Open::None; // single arg consumed
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    open
 }
 
 pub fn completion_context(query: &str) -> Option<Completion> {
-    let (start, last) = tokenize_with_spans(query).into_iter().last()?;
-    let rest = last.strip_prefix('/')?;
+    let toks = tokenize(query);
+    if toks.is_empty() {
+        return None; // nothing typed - no popup
+    }
+    // A trailing space means the last token is complete and the cursor is
+    // at a fresh (empty) argument position; otherwise the last token is
+    // still being typed.
+    let trailing_space = query.ends_with(char::is_whitespace);
+    let (context, start, frag, lead_quote) = if trailing_space {
+        (&toks[..], query.len(), String::new(), false)
+    } else {
+        let last = toks.last().unwrap();
+        (&toks[..toks.len() - 1], last.start, last.text.clone(), last.lead_quote)
+    };
+    if lead_quote {
+        return None; // a quoted literal offers nothing
+    }
 
-    if let Some((field_and_sub, val_frag)) = rest.split_once(':') {
-        let field = resolve_field_unambiguous(field_and_sub)?;
-        return Some(Completion::Value { start, field, fragment: val_frag.to_string() });
+    // Typing a verb: `/frag`, no space after it yet.
+    if let Some(verb_frag) = frag.strip_prefix('/') {
+        return Some(Completion::Verb { start, fragment: verb_frag.to_string() });
     }
-    if let Some(path) = rest.strip_prefix('+') {
-        return Some(Completion::VisibilityPath { start, sign: '+', fragment: path.to_string() });
-    }
-    if let Some(path) = rest.strip_prefix('-') {
-        return Some(Completion::VisibilityPath { start, sign: '-', fragment: path.to_string() });
-    }
-    if let Some((verb, after_verb)) = rest.split_once('/') {
-        if let [only] = resolve_actions(verb)[..] {
-            if only == "sort" {
-                // Same two-attempt shape as parse_sort_arg: try "last
-                // segment is a direction fragment, everything before it is
-                // the field" first, but only commit to that reading if it
-                // actually resolves to *something* worth completing -- a
-                // resolvable field prefix isn't enough on its own, since
-                // "tmux/session" (a complete 2-segment field, no direction
-                // typed) and "tmux/se" (field still mid-typing) both have a
-                // resolvable "tmux" as segs[..1], yet only one of them is
-                // really in the direction stage. What decides it is
-                // whether the *last* segment resolves to any direction
-                // candidate at all (empty included, since empty matches
-                // both) -- "session" resolves to none, so that reading is
-                // rejected and the fallback (still building the field
-                // path) takes over instead.
-                let segs: Vec<&str> = after_verb.split('/').collect();
-                if segs.len() >= 2 {
-                    let field_path = segs[..segs.len() - 1].join("/");
-                    let dir_frag = segs[segs.len() - 1];
-                    if let Some(field) = resolve_field_unambiguous(&field_path) {
-                        if !resolve_directions(dir_frag).is_empty() {
-                            return Some(Completion::SortDirection { start, field, fragment: dir_frag.to_string() });
-                        }
-                    }
-                }
-                return Some(Completion::SortField { start, fragment: after_verb.to_string() });
+
+    // Otherwise `frag` is an argument. Which command owns it?
+    match replay(context) {
+        Open::Verb { verb, args } if verb.takes_path() => {
+            if verb == Verb::Sort && args.len() == 1 {
+                // path already given - `frag` is the direction, if the
+                // path resolved unambiguously; otherwise keep completing
+                // the (ambiguous) path.
+                return match resolve_one(&args[0]) {
+                    Some(field) => Some(Completion::SortDirection { start, field, fragment: frag }),
+                    None => Some(Completion::TypePath { start, verb, fragment: frag }),
+                };
             }
+            // `/fv path:frag` - value stage once a colon is present.
+            if verb == Verb::FilterValue {
+                if let Some((path, val_frag)) = frag.split_once(':') {
+                    let field = resolve_one(path)?;
+                    return Some(Completion::Value { start, field, fragment: val_frag.to_string() });
+                }
+            }
+            Some(Completion::TypePath { start, verb, fragment: frag })
         }
+        _ => None, // a bare value, or nothing open after a space
     }
-    Some(Completion::TopLevel { start, fragment: rest.to_string() })
 }
 
-/// Candidate strings for a given `Completion` -- kept separate from
-/// `completion_context` itself so `ui.rs` can compute the trigger once and
-/// the candidate list separately (it needs `windows`/`metas` only for the
-/// `Value` case).
+/// Candidate strings for a `Completion`. `windows`/`metas` are only used
+/// for the `Value` stage.
 pub fn completion_candidates(completion: &Completion, windows: &[Window], metas: &[TmuxClaudeMeta]) -> Vec<String> {
     match completion {
-        Completion::TopLevel { fragment, .. } => {
-            let mut out = path_suggestions(fragment, true);
-            // "+"/"-" only ever make sense as the very first thing typed
-            // after "/" -- once a "/" has been typed as part of the
-            // fragment itself (e.g. "tmux/"), we're already inside a
-            // group's own subfield list, where a visibility marker no
-            // longer means anything.
-            if !fragment.contains('/') {
-                out.push("+".to_string());
-                out.push("-".to_string());
-            }
-            out
+        Completion::Verb { fragment, .. } => {
+            VERB_SHORTS.iter().filter(|v| substr(fragment, v)).map(|v| v.to_string()).collect()
         }
-        Completion::VisibilityPath { fragment, .. } => path_suggestions(fragment, false),
-        Completion::SortField { fragment, .. } => path_suggestions(fragment, false),
-        Completion::SortDirection { fragment, .. } => resolve_directions(fragment).iter().map(|d| d.to_string()).collect(),
+        Completion::TypePath { fragment, .. } => path_suggestions(fragment),
         Completion::Value { field, fragment, .. } => value_suggestions(windows, metas, *field, fragment),
-    }
-}
-
-fn parse(query: &str) -> Vec<Token> {
-    tokenize(query)
-        .into_iter()
-        .filter_map(|word| {
-            if let Some(rest) = word.strip_prefix('/') {
-                // Visibility and action tokens carry no filtering meaning at
-                // all -- excluded here rather than falling through to Free,
-                // same "narrow down what survives vs. what's shown/ordered
-                // are orthogonal" split query-dsl.md's Design principles
-                // call for.
-                if rest.starts_with('+') || rest.starts_with('-') {
-                    return None;
-                }
-                if let Some((verb, _)) = rest.split_once('/') {
-                    if let [only] = resolve_actions(verb)[..] {
-                        if only == "sort" {
-                            return None;
-                        }
-                    }
-                } else if let [only] = resolve_actions(rest)[..] {
-                    if only == "reverse" {
-                        return None;
-                    }
-                }
-                if let Some((field_and_sub, value)) = rest.split_once(':') {
-                    let (field_query, sub_query) = match field_and_sub.split_once('/') {
-                        Some((f, s)) => (f.to_string(), Some(s.to_string())),
-                        None => (field_and_sub.to_string(), None),
-                    };
-                    return Some(Token::Field { field_query, sub_query, value: value.to_string() });
-                }
-                if !rest.contains('/') && !resolve_groups(rest).is_empty() {
-                    return Some(Token::GroupExists(rest.to_string()));
-                }
-            }
-            Some(Token::Free(word))
-        })
-        .collect()
-}
-
-/// A `/field:value` token's match, covering all three forms: bare (unions
-/// flat columns and each matched group's `/title` default), `/sub`, and
-/// `/*` (any sub of the matched group(s)). An unresolvable field/group -- or
-/// a group field whose data just hasn't been enriched in yet, see
-/// `enrich.rs` -- naturally matches nothing here rather than needing a
-/// special case: an empty resolved set makes the `any()` below vacuously
-/// false, same as `column_value` returning `""` always failed to
-/// `subsequence`-match a non-empty typed value before groups existed at all.
-fn field_token_matches(win: &Window, meta: &TmuxClaudeMeta, field_query: &str, sub_query: Option<&str>, value: &str) -> bool {
-    match sub_query {
-        None => {
-            let flat = COLUMNS.iter().filter(|c| subsequence(field_query, c)).any(|c| subsequence(value, &column_value(win, c)));
-            let grouped = resolve_groups(field_query)
-                .iter()
-                .any(|g| subsequence(value, &group_sub_value(meta, g, GROUP_DEFAULT_SUB)));
-            flat || grouped
+        Completion::SortDirection { fragment, .. } => {
+            resolve_directions(fragment).iter().map(|d| d.to_string()).collect()
         }
-        Some("*") => resolve_groups(field_query)
-            .iter()
-            .any(|g| group_subs(g).iter().any(|s| subsequence(value, &group_sub_value(meta, g, s)))),
-        Some(sub) => resolve_groups(field_query)
-            .iter()
-            .any(|g| resolve_group_subs(g, sub).iter().any(|s| subsequence(value, &group_sub_value(meta, g, s)))),
     }
 }
 
-fn token_matches(win: &Window, meta: &TmuxClaudeMeta, token: &Token) -> bool {
-    match token {
-        Token::Free(word) => {
-            // A Free token can only contain whitespace if it came from a
-            // quoted run (unquoted whitespace always splits tokens apart
-            // before this point) -- that's the signal to switch from plain
-            // substring to order-preserving subsequence matching, the same
-            // upgrade /field:value quoting gets below.
-            if word.contains(char::is_whitespace) {
-                let haystack = format!("{} {}", win.title, win.class);
-                subsequence(word, &haystack)
-            } else {
-                let haystack = format!("{} {}", win.title, win.class).to_lowercase();
-                haystack.contains(&word.to_lowercase())
-            }
-        }
-        Token::Field { field_query, sub_query, value } => {
-            field_token_matches(win, meta, field_query, sub_query.as_deref(), value)
-        }
-        Token::GroupExists(field_query) => resolve_groups(field_query).iter().any(|g| group_has_any_value(meta, g)),
-    }
-}
-
-fn matches(win: &Window, meta: &TmuxClaudeMeta, tokens: &[Token]) -> bool {
-    tokens.iter().all(|t| token_matches(win, meta, t))
-}
-
-/// Convenience wrapper for call sites that don't need to hold onto the
-/// parsed tokens (they're cheap to reparse -- at most a few dozen windows,
-/// once per keystroke).
-pub fn matches_str(win: &Window, meta: &TmuxClaudeMeta, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    matches(win, meta, &parse(query))
+/// Whether a completed type-path token names a group (so accepting it can
+/// leave a trailing `.` ready for a subfield) rather than a flat type.
+pub fn is_group(candidate: &str) -> bool {
+    !candidate.contains('.') && GROUPS.iter().any(|(g, _)| *g == candidate)
 }
 
 #[cfg(test)]
@@ -745,199 +793,162 @@ mod tests {
     }
 
     #[test]
-    fn subsequence_matches_in_order_non_contiguous() {
-        assert!(subsequence("crit", "alacritty"));
-        assert!(subsequence("ALA", "alacritty"));
-        assert!(!subsequence("actira", "alacritty")); // wrong order
-        assert!(subsequence("", "anything"));
+    fn substr_is_containment_not_subsequence() {
+        assert!(substr("rit", "alacritty"));
+        assert!(substr("crit", "alacritty")); // alaCRITty - contiguous
+        assert!(!substr("actt", "alacritty")); // not contiguous
+        assert!(substr("", "anything"));
+        assert!(substr("ALA", "alacritty"));
     }
 
     #[test]
-    fn free_word_substring_matches_title_or_class() {
+    fn verb_parsing_is_exact_short_and_long() {
+        assert_eq!(Verb::parse("fv"), Some(Verb::FilterValue));
+        assert_eq!(Verb::parse("filter-value"), Some(Verb::FilterValue));
+        assert_eq!(Verb::parse("s"), Some(Verb::Sort));
+        assert_eq!(Verb::parse("sort"), Some(Verb::Sort));
+        assert_eq!(Verb::parse("filter"), None); // no fuzzy
+        assert_eq!(Verb::parse("f"), None);
+    }
+
+    #[test]
+    fn bare_text_and_fv_are_identical() {
         let w = win("My Terminal", "Alacritty", "1", 100);
         assert!(matches_win(&w, "terminal"));
-        assert!(matches_win(&w, "alacritty"));
+        assert!(matches_win(&w, "/fv terminal"));
+        assert!(matches_win(&w, "/filter-value terminal"));
         assert!(!matches_win(&w, "firefox"));
+        assert!(!matches_win(&w, "/fv firefox"));
     }
 
     #[test]
-    fn exact_field_and_value() {
+    fn scoped_filter_by_type_and_value() {
         let w = win("hyprpm build log", "Alacritty", "1", 100);
-        assert!(matches_win(&w, "/title:hyprpm"));
-        assert!(!matches_win(&w, "/title:firefox"));
+        assert!(matches_win(&w, "/fv title:hyprpm"));
+        assert!(!matches_win(&w, "/fv title:firefox"));
+        // type name substring-resolves
+        assert!(matches_win(&w, "/fv tit:build"));
+        assert!(matches_win(&w, "/fv cl:alac")); // class, not title
+        assert!(!matches_win(&w, "/fv cl:hyprpm"));
     }
 
     #[test]
-    fn fuzzy_field_and_value_both_subsequence() {
-        let w = win("Alacritty", "Alacritty", "1", 100);
-        assert!(matches_win(&w, "/tit:crit"));
-    }
-
-    #[test]
-    fn field_prefix_resolves_to_the_matching_field_only() {
-        let w = win("something", "Firefox", "1", 100);
-        assert!(matches_win(&w, "/cl:fire"));
-        assert!(!matches_win(&w, "/cl:something")); // "something" is the title, not the class
-    }
-
-    #[test]
-    fn multiple_tokens_are_anded() {
+    fn multiple_filters_are_anded() {
         let w = win("hyprpm build log", "Alacritty", "1", 100);
-        assert!(matches_win(&w, "/title:hyprpm /class:alac"));
-        assert!(!matches_win(&w, "/title:hyprpm /class:firefox"));
+        assert!(matches_win(&w, "/fv title:hyprpm /fv class:alac"));
+        assert!(matches_win(&w, "hyprpm /fv class:alac"));
+        assert!(!matches_win(&w, "hyprpm firefox"));
     }
 
     #[test]
-    fn unknown_field_matches_nothing() {
+    fn unresolvable_scoped_filter_narrows_to_nothing() {
         let w = win("hyprpm", "Alacritty", "1", 100);
-        assert!(!matches_win(&w, "/zzz:hyprpm"));
+        assert!(!matches_win(&w, "/fv zzz:hyprpm"));
+    }
+
+    #[test]
+    fn quoted_value_is_a_literal_substring() {
+        let w = win("Imperial Rome", "Alacritty", "1", 100);
+        assert!(matches_win(&w, r#"/fv title:"imperial rome""#));
+        assert!(matches_win(&w, r#"/fv title:"perial ro""#));
+        assert!(!matches_win(&w, r#"/fv title:"imp rom""#)); // not contiguous
+    }
+
+    #[test]
+    fn unknown_slash_token_is_literal_but_verb_prefix_is_inert() {
+        let w = win("open /usr/bin/env", "X", "1", 1);
+        assert!(matches_win(&w, "/usr/bin")); // not a verb, not a prefix -> literal
+        assert!(!matches_win(&w, "/usr/nope"));
+        // "/f" could still become /fv or /ft -> inert, matches everything
+        assert!(matches_win(&w, "/f"));
+        assert!(matches_win(&w, "/filter"));
+    }
+
+    #[test]
+    fn quote_led_token_is_never_a_command() {
+        let w = win(r#"say /fv out loud"#, "X", "1", 1);
+        assert!(matches_win(&w, r#""/fv""#)); // literal text search for "/fv"
     }
 
     #[test]
     fn pid_field_matches_numeric_string() {
         let w = win("t", "c", "1", 12345);
-        assert!(matches_win(&w, "/pid:234"));
-        assert!(!matches_win(&w, "/pid:999"));
+        assert!(matches_win(&w, "/fv pid:234"));
+        assert!(!matches_win(&w, "/fv pid:999"));
     }
 
     #[test]
-    fn quoted_value_survives_as_one_token_and_matches_by_subsequence() {
-        let w = win("Imperial Rome", "Alacritty", "1", 100);
-        assert!(matches_win(&w, r#"/title:"imp rom""#));
-        assert!(matches_win(&w, r#"/title:"imperial rome""#));
-        assert!(!matches_win(&w, r#"/title:"rom imp""#)); // wrong order
-    }
-
-    #[test]
-    fn quoted_free_word_matches_by_subsequence_across_the_space() {
-        let w = win("Imperial Rome", "Alacritty", "1", 100);
-        assert!(matches_win(&w, r#""imp rom""#));
-        assert!(!matches_win(&w, r#""rom imp""#)); // wrong order
-        assert!(matches_win(&w, "rom imp")); // unquoted still ANDs independent substrings
-    }
-
-    #[test]
-    fn field_suggestions_narrow_fuzzily_and_include_actions() {
-        assert_eq!(
-            path_suggestions("", true),
-            vec!["title", "class", "workspace", "pid", "tmux", "claude", "sort", "reverse"]
-        );
-        assert_eq!(path_suggestions("ti", true), vec!["title"]);
-        assert!(path_suggestions("", false).iter().all(|s| s != "sort" && s != "reverse"));
-    }
-
-    #[test]
-    fn group_slash_suggestions_need_an_unambiguous_group() {
-        let subs = path_suggestions("tmux/", true);
-        assert!(subs.contains(&"tmux/session".to_string()));
-        assert!(subs.contains(&"tmux/window".to_string()));
-        assert!(subs.contains(&"tmux/title".to_string()));
-        assert!(subs.contains(&"tmux/*".to_string()));
-        assert_eq!(path_suggestions("tmux/se", true), vec!["tmux/session"]);
-        assert!(path_suggestions("zzz/foo", true).is_empty());
-    }
-
-    #[test]
-    fn trailing_value_fragment_needs_an_unambiguous_field() {
-        let Some(Completion::Value { field, fragment, .. }) = completion_context("/workspace:") else { panic!() };
-        assert_eq!((field, fragment.as_str()), (ResolvedField::Flat("workspace"), ""));
-        assert!(matches!(completion_context("/c:x"), None)); // ambiguous: class/claude
-        assert!(matches!(completion_context("/title"), Some(Completion::TopLevel { .. }))); // no ':' yet
-        let Some(Completion::Value { field, .. }) = completion_context("/tmux:foo") else { panic!() };
-        assert_eq!(field, ResolvedField::Group("tmux", "title")); // bare group defaults to title
-        let Some(Completion::Value { field, .. }) = completion_context("/tmux/session:foo") else { panic!() };
-        assert_eq!(field, ResolvedField::Group("tmux", "session"));
-        assert!(completion_context("/tmux/*:foo").is_none()); // "*" names a set, not one field
-    }
-
-    #[test]
-    fn value_suggestions_are_deduped_sorted_and_fuzzy_narrowed() {
-        let windows = vec![
-            win("a", "Firefox", "1", 1),
-            win("b", "Alacritty", "1", 2),
-            win("c", "Alacritty", "2", 3),
-            win("d", "kitty", "", 4),
-        ];
-        let metas = vec![no_meta(), no_meta(), no_meta(), no_meta()];
-        assert_eq!(value_suggestions(&windows, &metas, ResolvedField::Flat("workspace"), ""), vec!["1", "2"]);
-        assert_eq!(
-            value_suggestions(&windows, &metas, ResolvedField::Flat("class"), ""),
-            vec!["Alacritty", "Firefox", "kitty"]
-        );
-    }
-
-    #[test]
-    fn group_field_matches_bare_defaults_to_title_star_matches_any_sub() {
+    fn group_scoped_and_star_and_existence() {
         let w = win("t", "c", "1", 100);
         let mut meta = TmuxClaudeMeta::default();
         meta.tmux_session = Some("work".to_string());
         meta.tmux_title = Some("hyprpm build log".to_string());
 
-        assert!(matches_str(&w, &meta, "/tmux:hyprpm"));
-        assert!(!matches_str(&w, &meta, "/tmux:work"));
-        assert!(matches_str(&w, &meta, "/tmux/session:work"));
-        assert!(!matches_str(&w, &meta, "/tmux/session:hyprpm"));
-        assert!(matches_str(&w, &meta, "/tmux/*:work"));
-        assert!(matches_str(&w, &meta, "/tmux/*:hyprpm"));
-        assert!(!matches_str(&w, &meta, "/tmux/*:nope"));
+        assert!(matches_str(&w, &meta, "/fv tmux:hyprpm")); // bare group -> .title
+        assert!(!matches_str(&w, &meta, "/fv tmux:work"));
+        assert!(matches_str(&w, &meta, "/fv tmux.session:work"));
+        assert!(matches_str(&w, &meta, "/fv tmux.*:work"));
+        assert!(matches_str(&w, &meta, "/fv tmux.*:hyprpm"));
+        assert!(!matches_str(&w, &meta, "/fv tmux.*:nope"));
+
+        // colonless group -> existence
+        assert!(matches_str(&w, &meta, "/fv tmux"));
+        assert!(matches_str(&w, &meta, "tmux")); // bare, identical
+        assert!(!matches_str(&w, &meta, "/fv claude"));
     }
 
-    #[test]
-    fn bare_group_no_colon_is_an_existence_filter() {
-        let w = win("t", "c", "1", 100);
-        let mut has_claude = TmuxClaudeMeta::default();
-        has_claude.claude_title = Some("Waybar to quickshell migration".to_string());
-        let no_claude = TmuxClaudeMeta::default();
-
-        assert!(matches_str(&w, &has_claude, "/claude"));
-        assert!(matches_str(&w, &has_claude, "/clau"));
-        assert!(!matches_str(&w, &no_claude, "/claude"));
-
-        let mut has_tmux_only = TmuxClaudeMeta::default();
-        has_tmux_only.tmux_session = Some("work".to_string());
-        assert!(matches_str(&w, &has_tmux_only, "/tmux"));
-        assert!(!matches_str(&w, &has_tmux_only, "/claude"));
-    }
+    // --- column verbs --------------------------------------------------
 
     #[test]
-    fn dotted_or_unresolvable_colonless_fragment_is_not_an_existence_filter() {
-        let w = win("t", "c", "1", 100);
-        let mut meta = TmuxClaudeMeta::default();
-        meta.tmux_session = Some("work".to_string());
-        assert!(!matches_str(&w, &meta, "/tmux/se")); // still mid-typing a sub
-        assert!(!matches_str(&w, &meta, "/zzz"));
-    }
-
-    // --- visibility (/+path, /-path) --------------------------------------
-
-    #[test]
-    fn visibility_defaults_add_and_remove_left_to_right() {
+    fn add_and_remove_columns_left_to_right() {
         let defaults = [ResolvedField::Flat("workspace"), ResolvedField::Flat("title")];
         assert_eq!(active_columns("", &defaults), defaults.to_vec());
-        assert_eq!(active_columns("/-workspace", &defaults), vec![ResolvedField::Flat("title")]);
+        assert_eq!(active_columns("/rt workspace", &defaults), vec![ResolvedField::Flat("title")]);
         assert_eq!(
-            active_columns("/+claude/title", &defaults),
+            active_columns("/at claude.title", &defaults),
             vec![
                 ResolvedField::Flat("workspace"),
                 ResolvedField::Flat("title"),
-                ResolvedField::Group("claude", "title")
+                ResolvedField::Group("claude", "title"),
             ]
         );
-        // remove then re-add ends with it back, at the end (order significant)
-        let q = "/+claude/title /-claude/title /+claude/title";
+        // remove then re-add ends with it back, at the end
         assert_eq!(
-            active_columns(q, &defaults),
+            active_columns("/at claude.title /rt claude.title /at claude.title", &defaults),
             vec![
                 ResolvedField::Flat("workspace"),
                 ResolvedField::Flat("title"),
-                ResolvedField::Group("claude", "title")
+                ResolvedField::Group("claude", "title"),
             ]
         );
     }
 
     #[test]
-    fn visibility_star_adds_or_removes_every_subfield() {
-        let cols = active_columns("/+claude/*", &[]);
+    fn filter_type_intersects_current_columns() {
+        let defaults = [
+            ResolvedField::Flat("workspace"),
+            ResolvedField::Flat("title"),
+            ResolvedField::Flat("class"),
+        ];
+        // keep only the columns whose name contains "t" ("workspace" has none)
+        assert_eq!(active_columns("/ft t", &defaults), vec![ResolvedField::Flat("title")]);
+        // "s" keeps workspace and class
+        assert_eq!(
+            active_columns("/ft s", &defaults),
+            vec![ResolvedField::Flat("workspace"), ResolvedField::Flat("class")]
+        );
+        // ft never reveals a hidden column
+        assert_eq!(active_columns("/ft pid", &defaults), Vec::<ResolvedField>::new());
+        // ft then at: narrow, then bring one back
+        assert_eq!(
+            active_columns("/ft title /at workspace", &defaults),
+            vec![ResolvedField::Flat("title"), ResolvedField::Flat("workspace")]
+        );
+    }
+
+    #[test]
+    fn add_bare_group_adds_every_subfield() {
+        let cols = active_columns("/at claude", &[]);
         assert_eq!(
             cols,
             vec![
@@ -947,174 +958,161 @@ mod tests {
                 ResolvedField::Group("claude", "contents"),
             ]
         );
-        assert_eq!(active_columns("/+claude/* /-claude/*", &[]), Vec::<ResolvedField>::new());
+        assert_eq!(active_columns("/at claude.*", &[]), cols);
+        assert_eq!(active_columns("/at claude.title", &[]), vec![ResolvedField::Group("claude", "title")]);
     }
 
     #[test]
-    fn visibility_bare_group_adds_default_sub() {
-        assert_eq!(active_columns("/+claude", &[]), vec![ResolvedField::Group("claude", "title")]);
-    }
-
-    #[test]
-    fn visibility_tokens_are_not_filters() {
-        // A window that would never match "/+workspace" as literal text --
-        // this must not accidentally act as a $free-word filter.
+    fn column_verbs_are_not_row_filters() {
         let w = win("something else entirely", "X", "1", 1);
-        assert!(matches_str(&w, &no_meta(), "/+workspace"));
-        assert!(matches_str(&w, &no_meta(), "/-title"));
+        assert!(matches_str(&w, &no_meta(), "/at workspace"));
+        assert!(matches_str(&w, &no_meta(), "/ft title"));
+        assert!(matches_str(&w, &no_meta(), "/rt pid"));
     }
 
-    // --- actions (/sort, /reverse) -----------------------------------------
+    // --- sort / reverse ----------------------------------------------
 
     #[test]
-    fn sort_action_resolves_flat_field_and_direction() {
-        let a = parse_actions("/sort/workspace");
+    fn sort_resolves_field_and_direction() {
+        let a = parse_actions("/sort workspace");
         assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Ascending)));
-        let a = parse_actions("/sort/workspace/descending");
+        let a = parse_actions("/s workspace descending");
         assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Descending)));
-        // "de" is unambiguous ("ascending" has no 'e' after its own 'd'),
-        // unlike a bare "d" below.
-        let a = parse_actions("/sort/workspace/de");
+        let a = parse_actions("/s workspace desc");
         assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Descending)));
-    }
-
-    #[test]
-    fn single_char_direction_fragment_can_be_genuinely_ambiguous() {
-        // "ascending" itself contains a 'd' (ascen-D-ing), so a bare "d"
-        // fuzzy-matches *both* directions -- neither wins, and this must
-        // fall back to "still typing the field path" (which then also
-        // fails to resolve "workspace/d" as a field) rather than guessing.
-        assert!(parse_actions("/sort/workspace/d").sort.is_none());
-    }
-
-    #[test]
-    fn sort_action_resolves_nested_group_field() {
-        let a = parse_actions("/sort/tmux/session/ascending");
-        assert_eq!(a.sort, Some((ResolvedField::Group("tmux", "session"), Direction::Ascending)));
-        // no direction typed - both remaining segments are the field path
-        let a = parse_actions("/sort/tmux/session");
+        // nested group field
+        let a = parse_actions("/sort tmux.session asc");
         assert_eq!(a.sort, Some((ResolvedField::Group("tmux", "session"), Direction::Ascending)));
     }
 
     #[test]
-    fn last_sort_token_wins_not_stacked() {
-        let a = parse_actions("/sort/workspace /sort/title");
-        assert_eq!(a.sort, Some((ResolvedField::Flat("title"), Direction::Ascending)));
+    fn sort_second_arg_thats_not_a_direction_is_a_separate_fv_term() {
+        let w = win("workspace foo", "X", "1", 1);
+        // "foo" is not a direction -> it's an implicit /fv term
+        assert!(matches_str(&w, &no_meta(), "/sort title foo"));
+        assert!(!matches_str(&w, &no_meta(), "/sort title bar"));
+        assert_eq!(
+            parse_actions("/sort title foo").sort,
+            Some((ResolvedField::Flat("title"), Direction::Ascending))
+        );
     }
 
     #[test]
-    fn reverse_is_idempotent_and_takes_no_args() {
+    fn last_sort_wins_reverse_idempotent() {
+        assert_eq!(
+            parse_actions("/sort workspace /sort title").sort,
+            Some((ResolvedField::Flat("title"), Direction::Ascending))
+        );
         assert!(parse_actions("/reverse").reverse);
-        assert!(parse_actions("/rev").reverse); // fuzzy
-        assert!(parse_actions("/reverse /reverse").reverse);
+        assert!(parse_actions("/rv").reverse);
+        assert!(parse_actions("/rv /rv").reverse);
         assert!(!parse_actions("plain text").reverse);
     }
 
     #[test]
-    fn action_tokens_excluded_from_matching() {
-        let w = win("workspace descending", "X", "1", 1);
-        // must not accidentally free-word-match the literal text
-        assert!(matches_str(&w, &no_meta(), "/sort/date/descending"));
+    fn malformed_sort_is_inert() {
+        assert!(parse_actions("/sort zzz").sort.is_none());
+        assert!(parse_actions("/sort").sort.is_none());
+        assert!(parse_actions("/sort claude.*").sort.is_none()); // not one field
+    }
+
+    #[test]
+    fn actions_are_not_row_filters() {
+        let w = win("title descending", "X", "1", 1);
+        assert!(matches_str(&w, &no_meta(), "/sort class descending"));
         assert!(matches_str(&w, &no_meta(), "/reverse"));
     }
 
-    #[test]
-    fn malformed_sort_arg_is_inert_not_an_error() {
-        assert!(parse_actions("/sort/zzz").sort.is_none());
-        assert!(parse_actions("/sort").sort.is_none());
-    }
-
-    // --- completion cascade for /sort -----------------------------------
-    // The subtle case: a resolvable field-path prefix alone isn't enough
-    // to commit to "direction stage" -- the trailing segment also has to
-    // actually resolve to a direction candidate, or a still-mid-typing
-    // group/sub field (which also has a resolvable 1-segment prefix) would
-    // wrongly show zero candidates instead of falling back to field
-    // completion. See completion_context's own comment on this.
+    // --- completion --------------------------------------------------
 
     #[test]
-    fn sort_field_stage_before_any_slash() {
-        assert!(matches!(completion_context("/sort/"), Some(Completion::SortField { .. })));
-        assert!(matches!(completion_context("/sort/wor"), Some(Completion::SortField { .. })));
+    fn verb_stage() {
+        let Some(Completion::Verb { fragment, .. }) = completion_context("/") else { panic!() };
+        assert_eq!(fragment, "");
+        let cands = completion_candidates(&Completion::Verb { start: 0, fragment }, &[], &[]);
+        assert_eq!(cands, vec!["fv", "ft", "at", "rt", "s", "rv"]);
+        let Some(Completion::Verb { fragment, .. }) = completion_context("/f") else { panic!() };
+        let cands = completion_candidates(&Completion::Verb { start: 0, fragment }, &[], &[]);
+        assert_eq!(cands, vec!["fv", "ft"]);
     }
 
     #[test]
-    fn sort_direction_stage_after_a_flat_field_and_slash() {
-        let Some(Completion::SortDirection { field, fragment, .. }) = completion_context("/sort/workspace/") else {
-            panic!("expected SortDirection")
+    fn type_path_stage_after_a_verb_and_space() {
+        let Some(Completion::TypePath { verb, fragment, .. }) = completion_context("/ft ") else { panic!() };
+        assert_eq!(verb, Verb::FilterType);
+        assert_eq!(fragment, "");
+        let Some(Completion::TypePath { fragment, .. }) = completion_context("/at cla") else { panic!() };
+        assert_eq!(fragment, "cla");
+        let cands = completion_candidates(
+            &Completion::TypePath { start: 0, verb: Verb::AddType, fragment: "cla".to_string() },
+            &[],
+            &[],
+        );
+        assert_eq!(cands, vec!["class", "claude"]); // "class" contains "cla" too
+        let cands = completion_candidates(
+            &Completion::TypePath { start: 0, verb: Verb::AddType, fragment: "tmux.".to_string() },
+            &[],
+            &[],
+        );
+        assert!(cands.contains(&"tmux.session".to_string()));
+        assert!(cands.contains(&"tmux.*".to_string()));
+    }
+
+    #[test]
+    fn value_stage_after_fv_path_colon() {
+        let Some(Completion::Value { field, fragment, .. }) = completion_context("/fv workspace:") else {
+            panic!()
+        };
+        assert_eq!((field, fragment.as_str()), (ResolvedField::Flat("workspace"), ""));
+        let Some(Completion::Value { field, .. }) = completion_context("/fv tmux:foo") else { panic!() };
+        assert_eq!(field, ResolvedField::Group("tmux", "title"));
+        // ambiguous path before the colon -> no completion offered
+        assert!(completion_context("/fv c:x").is_none());
+    }
+
+    #[test]
+    fn sort_direction_stage() {
+        let Some(Completion::SortDirection { field, fragment, .. }) = completion_context("/s workspace ") else {
+            panic!()
         };
         assert_eq!(field, ResolvedField::Flat("workspace"));
         assert_eq!(fragment, "");
-    }
-
-    #[test]
-    fn sort_stays_in_field_stage_while_still_typing_a_group_sub() {
-        // "tmux" alone resolves (bare-default), but "session" isn't a
-        // direction -- must fall back to field completion, not go silent.
-        let Some(Completion::SortField { fragment, .. }) = completion_context("/sort/tmux/session") else {
-            panic!("expected SortField, not SortDirection with no candidates")
+        let Some(Completion::SortDirection { fragment, .. }) = completion_context("/sort title de") else {
+            panic!()
         };
-        assert_eq!(fragment, "tmux/session");
+        let cands = completion_candidates(
+            &Completion::SortDirection { start: 0, field: ResolvedField::Flat("title"), fragment },
+            &[],
+            &[],
+        );
+        assert_eq!(cands, vec!["descending"]);
     }
 
     #[test]
-    fn sort_direction_stage_after_a_complete_group_sub_and_slash() {
-        let Some(Completion::SortDirection { field, .. }) = completion_context("/sort/tmux/session/") else {
-            panic!("expected SortDirection")
-        };
-        assert_eq!(field, ResolvedField::Group("tmux", "session"));
+    fn value_suggestions_deduped_sorted_substring() {
+        let windows = vec![
+            win("a", "Firefox", "1", 1),
+            win("b", "Alacritty", "1", 2),
+            win("c", "Alacritty", "2", 3),
+            win("d", "kitty", "", 4),
+        ];
+        let metas = vec![no_meta(), no_meta(), no_meta(), no_meta()];
+        assert_eq!(value_suggestions(&windows, &metas, ResolvedField::Flat("workspace"), ""), vec!["1", "2"]);
+        assert_eq!(
+            value_suggestions(&windows, &metas, ResolvedField::Flat("class"), "itt"),
+            vec!["Alacritty", "kitty"]
+        );
     }
 
-    #[test]
-    fn top_level_completion_offers_visibility_markers_and_actions() {
-        let Some(Completion::TopLevel { fragment, .. }) = completion_context("/") else { panic!() };
-        let cands = completion_candidates(&Completion::TopLevel { start: 0, fragment }, &[], &[]);
-        assert!(cands.contains(&"+".to_string()));
-        assert!(cands.contains(&"-".to_string()));
-        assert!(cands.contains(&"sort".to_string()));
-        assert!(cands.contains(&"reverse".to_string()));
-    }
+    // --- comparator ------------------------------------------------
 
     #[test]
-    fn visibility_completion_excludes_actions_and_markers() {
-        let Some(Completion::VisibilityPath { fragment, sign, .. }) = completion_context("/+") else { panic!() };
-        assert_eq!(sign, '+');
-        let cands = completion_candidates(&Completion::VisibilityPath { start: 0, sign, fragment }, &[], &[]);
-        assert!(!cands.iter().any(|c| c == "sort" || c == "reverse" || c == "+" || c == "-"));
-        assert!(cands.contains(&"title".to_string()));
-    }
-
-    // --- comparator ----------------------------------------------------
-
-    #[test]
-    fn numeric_compare_beats_lexicographic_for_plain_ints() {
+    fn numeric_and_age_compare() {
         use std::cmp::Ordering;
-        assert_eq!(compare_field_values("2", "10"), Ordering::Less); // not lexicographic
-        assert_eq!(compare_field_values("10", "2"), Ordering::Greater);
-    }
-
-    #[test]
-    fn age_bucket_compare_is_chronological_ascending_oldest_first() {
-        use std::cmp::Ordering;
-        // 5m is more recent than 3h is more recent than 2d
-        assert_eq!(compare_field_values("2d", "3h"), Ordering::Less); // older sorts first (ascending)
-        assert_eq!(compare_field_values("3h", "5m"), Ordering::Less);
-        assert_eq!(compare_field_values("30s", "5m"), Ordering::Greater); // newer sorts last
-    }
-
-    #[test]
-    fn descending_direction_on_age_means_newest_first() {
-        use std::cmp::Ordering;
-        // "descending" on a date field colloquially means newest-first.
-        // 5m (recent) should sort BEFORE 3h (older) under Descending.
-        assert_eq!(compare_with_direction("5m", "3h", Direction::Descending), Ordering::Less);
-        assert_eq!(compare_with_direction("3h", "5m", Direction::Ascending), Ordering::Less);
-    }
-
-    #[test]
-    fn text_fields_compare_lexicographically_direction_applied_literally() {
-        use std::cmp::Ordering;
-        assert_eq!(compare_with_direction("apple", "banana", Direction::Ascending), Ordering::Less);
+        assert_eq!(compare_field_values("2", "10"), Ordering::Less);
+        assert_eq!(compare_field_values("2d", "3h"), Ordering::Less); // older first
+        assert_eq!(compare_field_values("30s", "5m"), Ordering::Greater);
+        assert_eq!(compare_with_direction("5m", "3h", Direction::Descending), Ordering::Less); // newest first
         assert_eq!(compare_with_direction("apple", "banana", Direction::Descending), Ordering::Greater);
     }
 }

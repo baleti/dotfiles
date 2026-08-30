@@ -1,5 +1,5 @@
 //! Shared GTK3 + wlr-layer-shell picker engine: a search box over a
-//! GtkListBox, with a `$field:value` selector DSL (autocompleted, see
+//! GtkListBox, with the `/verb` command DSL (autocompleted, see
 //! `update_suggestions`), keyboard navigation and an activate callback.
 //! Extracted from the original clipboard-picker so the same
 //! window/search/filter/keyboard machinery can back other pickers (e.g. a
@@ -9,15 +9,16 @@
 //! (including their named `fields`, see `Entry`), how (or whether)
 //! thumbnails are loaded, and what activating a row does.
 //!
-//! The `$field:value` grammar, its quoting, and its autocomplete popup are
-//! deliberately the same design winswitch's `query.rs` uses (ported by
-//! hand, not shared code -- see ~/.config/docs/query-dsl.md for why and for
-//! the full spec this is one more implementation of). One divergence,
-//! worth knowing before touching either: winswitch's bare free words are
-//! ANDed independently; this picker's are joined into a single phrase and
-//! matched as one literal run against `Entry::haystack` -- that's the
-//! original clipboard-picker behaviour, predates this DSL work, and is left
-//! exactly as it was rather than silently changed underneath this addition.
+//! The grammar, its quoting, and its autocomplete popup are deliberately
+//! the same design winswitch's `query.rs` uses (ported by hand, not shared
+//! code -- see ~/.config/docs/query-dsl.md for why and for the full spec
+//! this is one more implementation of). Two things worth knowing before
+//! touching either: (1) this picker only *acts* on `/fv` (and bare text,
+//! the same thing) - it renders no columns and has no re-sort, so `/ft`,
+//! `/at`, `/rt`, `/s`, `/rv` are recognised-but-inert; (2) winswitch's
+//! bare free words are ANDed independently, this picker's join into one
+//! phrase matched as a single literal run against `Entry::haystack` -
+//! original clipboard-picker behaviour, predates this DSL, left as-is.
 
 use std::cell::RefCell;
 use std::fs;
@@ -40,7 +41,7 @@ pub struct Entry {
     /// title+class for winswitch's alt-tab; pane scrollback for
     /// window-search.py -- see query-dsl.md's design principles).
     pub haystack: String,
-    /// Named field values this entry has, for `$field:value` filtering and
+    /// Named field values this entry has, for `/fv field:value` filtering and
     /// autocomplete -- e.g. `[("type", "image"), ("date", "5m")]`. A field
     /// name a caller never populates for some entries (e.g. no logged
     /// timestamp yet) is simply absent from that entry's list rather than
@@ -55,49 +56,65 @@ fn field_value<'a>(entry: &'a Entry, field: &str) -> Option<&'a str> {
     entry.fields.iter().find(|(k, _)| *k == field).map(|(_, v)| v.as_str())
 }
 
-/// True if every char of `needle` appears in `hay` in order, so "mg" matches
-/// "image" and "i" matches "image" but not "text".
-fn subsequence(needle: &str, hay: &str) -> bool {
-    let needle = needle.to_lowercase();
-    let hay = hay.to_lowercase();
-    let mut chars = hay.chars();
-    needle.chars().all(|c| chars.any(|h| h == c))
+/// Case-insensitive substring containment - the one matching rule for
+/// every field name and every filter value (see
+/// ~/.config/docs/query-dsl.md). Empty needle always matches.
+fn substr(needle: &str, hay: &str) -> bool {
+    hay.to_lowercase().contains(&needle.to_lowercase())
 }
 
-/// One `$field:value` selector, both parts fuzzy: `field` is resolved by
-/// subsequence against the picker's known field names (see
-/// `field_suggestions`), `value` is matched by subsequence against the
-/// resolved field(s)' actual value on each entry (see `token_matches`).
+/// Every accepted verb spelling (short and long). This picker only *acts*
+/// on `/fv` / `/filter-value` (and bare text, which is the same thing) -
+/// it renders no columns and has no re-sort, so `/ft`, `/at`, `/rt`,
+/// `/s`, `/rv` and their long forms are recognised (so they don't fall
+/// into the free-text phrase) but otherwise inert. See query-dsl.md.
+const VERB_FORMS: &[&str] = &[
+    "fv", "ft", "at", "rt", "s", "rv", "filter-value", "filter-type", "add-type", "remove-type", "sort",
+    "reverse",
+];
+
+fn is_filter_value_verb(rest: &str) -> bool {
+    rest == "fv" || rest == "filter-value"
+}
+
+/// A non-empty prefix of some verb form - a `/s...` token still on its way
+/// to being a verb, kept inert rather than searched for literally.
+fn is_verb_prefix(s: &str) -> bool {
+    !s.is_empty() && VERB_FORMS.iter().any(|v| v.starts_with(s))
+}
+
+fn is_verb(rest: &str) -> bool {
+    VERB_FORMS.contains(&rest)
+}
+
+/// One `/fv field:value` selector. `field` is resolved by substring
+/// against the picker's known field names (unioned - an ambiguous typed
+/// field matches if any resolved field's value matches); `value` is
+/// substring-matched against those fields' actual value on each entry.
 struct FieldTerm {
-    /// Every configured field name this term's typed field text resolves
-    /// to (subsequence, unioned -- an ambiguous typed field matches if
-    /// *any* resolved field's value matches, same union semantics
-    /// winswitch's query.rs uses for the identical reason).
     fields: Vec<&'static str>,
     value: String,
 }
 
 /// A parsed search box string: the free-text phrase (see `Entry::haystack`
-/// doc for why this stays a single joined phrase, not independent AND'd
-/// words) plus zero or more `$field:value` selectors.
+/// for why this stays one joined phrase, not independent AND'd words) plus
+/// zero or more `/fv field:value` selectors.
 struct Query {
     field_terms: Vec<FieldTerm>,
     text: String,
 }
 
-/// Which of the two things the autocomplete popup is currently offering --
-/// determines what `accept_suggestion` splices into the query text. Field
-/// and value completion are mutually exclusive per `update_suggestions`
-/// (`trailing_field_fragment`/`trailing_value_fragment` can never both
-/// match the same query), so this only ever needs to remember which one is
-/// live. Ported from winswitch's `ui.rs::SuggestionKind`.
+/// Which completion stage is live - determines what `accept_suggestion`
+/// splices in. Only one is ever live at a time.
 #[derive(Clone)]
 enum SuggestionKind {
-    /// Popup lists `field_names` entries; accepting inserts `$<field>:`.
+    /// A verb short form being typed. Accepting inserts `/<verb> `.
+    Verb,
+    /// A field name being typed as `/fv`'s path. Accepting inserts
+    /// `<field>:`.
     Field,
-    /// Popup lists this field's live values across `state.entries`;
-    /// accepting inserts `$<field>:<value> ` (trailing space -- a value is
-    /// always a complete term once chosen, unlike a field name).
+    /// A field's live values. Accepting inserts `<field>:<value> `
+    /// (re-quoted if it contains whitespace).
     Value(&'static str),
 }
 
@@ -111,27 +128,37 @@ struct State {
     suggestion_kind: RefCell<Option<SuggestionKind>>,
 }
 
-/// Split `query` on whitespace like `str::split_whitespace`, except a
-/// `"..."`-quoted run is kept as one token with its interior whitespace
-/// intact (quote characters themselves are dropped). Also returns each
-/// token's starting byte offset, for splicing a completion in. Ported
-/// verbatim from winswitch's `query.rs::tokenize_with_spans` -- see that
-/// function's own doc comment for the full reasoning (quote-toggling scan,
-/// unterminated-quote handling, why offsets survive quote-stripping).
-fn tokenize_with_spans(query: &str) -> Vec<(usize, String)> {
+/// One token: byte offset in the source, text (quotes stripped, interior
+/// whitespace kept), and whether the source run *started* with a `"` -
+/// which makes it a literal, never a command. Same shape as winswitch's
+/// `query.rs::Tok`.
+struct Tok {
+    start: usize,
+    text: String,
+    lead_quote: bool,
+}
+
+/// Whitespace split, `"..."` runs kept whole, unterminated quote still
+/// closes at end-of-input. `lead_quote` records a `"`-led run.
+fn tokenize(query: &str) -> Vec<Tok> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
     let mut start: Option<usize> = None;
+    let mut lead_quote = false;
     let mut in_quotes = false;
     for (i, c) in query.char_indices() {
         if c == '"' {
+            if start.is_none() {
+                lead_quote = true;
+            }
             in_quotes = !in_quotes;
             start.get_or_insert(i);
             continue;
         }
         if c.is_whitespace() && !in_quotes {
             if let Some(s) = start.take() {
-                tokens.push((s, std::mem::take(&mut cur)));
+                tokens.push(Tok { start: s, text: std::mem::take(&mut cur), lead_quote });
+                lead_quote = false;
             }
             continue;
         }
@@ -139,108 +166,171 @@ fn tokenize_with_spans(query: &str) -> Vec<(usize, String)> {
         cur.push(c);
     }
     if let Some(s) = start {
-        tokens.push((s, cur));
+        tokens.push(Tok { start: s, text: cur, lead_quote });
     }
     tokens
 }
 
+/// True if a token begins (or continues typing) a command rather than
+/// serving as an argument.
+fn starts_cmd(tok: &Tok) -> bool {
+    if tok.lead_quote {
+        return false;
+    }
+    match tok.text.strip_prefix('/') {
+        Some(rest) => is_verb(rest) || is_verb_prefix(rest),
+        None => false,
+    }
+}
+
 fn resolve_fields<'a>(query: &str, field_names: &[&'a str]) -> Vec<&'a str> {
-    field_names.iter().copied().filter(|f| subsequence(query, f)).collect()
+    field_names.iter().copied().filter(|f| substr(query, f)).collect()
+}
+
+fn push_fv_arg(arg: &str, field_names: &[&'static str], field_terms: &mut Vec<FieldTerm>, words: &mut Vec<String>) {
+    match arg.split_once(':') {
+        // `fields` may come back empty (typo'd field) - pushed anyway so
+        // the query "narrows to nothing" rather than silently dropping a
+        // selector the user clearly typed (see query-dsl.md).
+        Some((f, v)) => field_terms.push(FieldTerm { fields: resolve_fields(f, field_names), value: v.to_string() }),
+        None => words.push(arg.to_string()),
+    }
 }
 
 fn parse_query(input: &str, field_names: &[&'static str]) -> Query {
+    let toks = tokenize(input);
     let mut field_terms = Vec::new();
     let mut words: Vec<String> = Vec::new();
 
-    for (_, token) in tokenize_with_spans(input) {
-        if let Some(rest) = token.strip_prefix('$') {
-            if let Some((f, v)) = rest.split_once(':') {
-                // `fields` can legitimately come back empty (typo'd/unknown
-                // field name) -- pushed anyway, not dropped: an empty
-                // `fields` list can never satisfy the `.any()` a matching
-                // entry needs (see the filter_func below), so the query
-                // "narrows to nothing" rather than silently ignoring a
-                // selector the user clearly typed. Same deliberate choice
-                // winswitch's query.rs makes for the identical case (see
-                // query-dsl.md's design principles) -- "matches nothing" is
-                // the more honest answer than quietly dropping it, unlike
-                // the *incomplete* fragment below, which really is inert.
-                let fields = resolve_fields(f, field_names);
-                field_terms.push(FieldTerm { fields, value: v.to_string() });
+    let mut i = 0;
+    while i < toks.len() {
+        let tok = &toks[i];
+        if !tok.lead_quote {
+            if let Some(rest) = tok.text.strip_prefix('/') {
+                if is_filter_value_verb(rest) {
+                    i += 1;
+                    if let Some(arg) = toks.get(i).filter(|t| !starts_cmd(t)) {
+                        push_fv_arg(&arg.text, field_names, &mut field_terms, &mut words);
+                        i += 1;
+                    }
+                    continue;
+                }
+                if is_verb(rest) {
+                    // recognised but inert here - swallow its argument (if
+                    // any) so it doesn't fall into the free-text phrase.
+                    i += 1;
+                    let n: usize = if rest == "rv" || rest == "reverse" { 0 } else { 1 };
+                    let mut c = 0;
+                    while c < n && toks.get(i).map(|t| !starts_cmd(t)).unwrap_or(false) {
+                        i += 1;
+                        c += 1;
+                    }
+                    continue;
+                }
+                if is_verb_prefix(rest) {
+                    i += 1; // mid-typing a verb - inert
+                    continue;
+                }
+                // a literal `/usr/bin` etc - real phrase text
             }
-            // "$" alone, or "$frag" with no colon yet (bare or still
-            // quote-open): still being typed, contributes nothing either
-            // way -- see `trailing_field_fragment`'s own doc for why a
-            // half-typed token must stay inert rather than degrading to a
-            // literal search that would blank the list for one keystroke.
+        }
+        words.push(tok.text.clone());
+        i += 1;
+    }
+
+    Query { field_terms, text: words.join(" ").to_lowercase() }
+}
+
+/// Which completion stage a query is in.
+enum Suggest {
+    Verb { start: usize, frag: String },
+    Field { start: usize, frag: String },
+    Value { start: usize, field: &'static str, frag: String },
+}
+
+/// Whether the last complete command in `context` is a `/fv` still
+/// waiting for its argument.
+fn fv_open(context: &[Tok]) -> bool {
+    let mut open = false;
+    let mut pending: usize = 0; // args still owed to a non-fv verb
+    for tok in context {
+        if pending > 0 && !starts_cmd(tok) {
+            pending -= 1;
+            open = false;
             continue;
         }
-        words.push(token);
+        pending = 0;
+        if !tok.lead_quote {
+            if let Some(rest) = tok.text.strip_prefix('/') {
+                if is_filter_value_verb(rest) {
+                    open = true;
+                    continue;
+                }
+                if is_verb(rest) {
+                    open = false;
+                    pending = if rest == "rv" || rest == "reverse" { 0 } else { 1 };
+                    continue;
+                }
+                if is_verb_prefix(rest) {
+                    open = false;
+                    continue;
+                }
+            }
+        }
+        // a bare word or literal - if a /fv was open, this was its arg
+        open = false;
+    }
+    open
+}
+
+fn completion_context(query: &str, field_names: &[&'static str]) -> Option<Suggest> {
+    let toks = tokenize(query);
+    if toks.is_empty() {
+        return None;
+    }
+    let trailing_space = query.ends_with(char::is_whitespace);
+    let (context, start, frag, lead_quote) = if trailing_space {
+        (&toks[..], query.len(), String::new(), false)
+    } else {
+        let last = toks.last().unwrap();
+        (&toks[..toks.len() - 1], last.start, last.text.clone(), last.lead_quote)
+    };
+    if lead_quote {
+        return None;
     }
 
-    Query {
-        field_terms,
-        text: words.join(" ").to_lowercase(),
+    if let Some(verb_frag) = frag.strip_prefix('/') {
+        return Some(Suggest::Verb { start, frag: verb_frag.to_string() });
+    }
+
+    if !fv_open(context) {
+        return None; // fresh phrase text - nothing to complete
+    }
+    match frag.split_once(':') {
+        Some((f, val_frag)) => {
+            let mut resolved = field_names.iter().copied().filter(|c| substr(f, c));
+            let field = resolved.next()?;
+            if resolved.next().is_some() {
+                return None; // ambiguous field - no single value set
+            }
+            Some(Suggest::Value { start, field, frag: val_frag.to_string() })
+        }
+        None => Some(Suggest::Field { start, frag }),
     }
 }
 
-/// If `query` currently ends mid-typing a `$field` fragment (bare or still
-/// quote-open, no `:` yet) -> the byte offset where that trailing token
-/// starts (so a caller can replace `query[start..]` wholesale) and the
-/// fragment text after `$` to match field names against. `None` once a `:`
-/// has been typed or if the query isn't trailing a `$...` token at all.
-/// Ported from winswitch's `query.rs::trailing_field_fragment` -- see its
-/// doc for the "editing happens at the end" assumption this relies on.
-fn trailing_field_fragment(query: &str) -> Option<(usize, String)> {
-    // A trailing separator (the space `accept_suggestion` always appends
-    // after a value) means the last token is already complete and no
-    // longer being typed -- without this, tokenize_with_spans drops that
-    // trailing space silently and the just-accepted token still reads as
-    // an in-progress fragment, so its own suggestion reappears immediately
-    // after Tab.
-    if query.ends_with(char::is_whitespace) {
-        return None;
-    }
-    let (start, last) = tokenize_with_spans(query).into_iter().last()?;
-    let frag = last.strip_prefix('$')?;
-    if frag.contains(':') {
-        return None;
-    }
-    Some((start, frag.to_string()))
+fn verb_suggestions(frag: &str) -> Vec<String> {
+    ["fv", "ft", "at", "rt", "s", "rv"].iter().filter(|v| substr(frag, v)).map(|v| v.to_string()).collect()
 }
 
-/// Every configured field name, in `field_names`' own order, that
-/// subsequence-fuzzy-matches `fragment` -- an empty fragment (bare `$`)
-/// matches everything, so the full set is visible on the very first
-/// keystroke.
+/// Every configured field name, in order, whose name contains `fragment`
+/// as a substring - an empty fragment lists them all.
 fn field_suggestions(field_names: &[&'static str], fragment: &str) -> Vec<&'static str> {
-    field_names.iter().copied().filter(|f| subsequence(fragment, f)).collect()
-}
-
-/// If `query` currently ends in a `$field:fragment` token whose `field`
-/// resolves -- via the same fuzzy rule `field_suggestions` uses -- to
-/// *exactly one* configured field, -> the byte offset where that trailing
-/// token starts, the resolved field name, and the fragment after `:` to
-/// narrow values by. `None` if `field` is ambiguous (ties between two or
-/// more fields): there's no single value set to suggest from then, mirrors
-/// winswitch's `query.rs::trailing_value_fragment`.
-fn trailing_value_fragment(query: &str, field_names: &[&'static str]) -> Option<(usize, &'static str, String)> {
-    // Same trailing-separator guard as `trailing_field_fragment` above.
-    if query.ends_with(char::is_whitespace) {
-        return None;
-    }
-    let (start, last) = tokenize_with_spans(query).into_iter().last()?;
-    let (f, val_frag) = last.strip_prefix('$')?.split_once(':')?;
-    let mut resolved = field_names.iter().copied().filter(|c| subsequence(f, c));
-    let field = resolved.next()?;
-    if resolved.next().is_some() {
-        return None;
-    }
-    Some((start, field, val_frag.to_string()))
+    field_names.iter().copied().filter(|f| substr(fragment, f)).collect()
 }
 
 /// Every distinct, non-empty value `field` actually has across `entries`
-/// right now, subsequence-fuzzy-narrowed by `fragment`, deduplicated and
+/// right now, substring-narrowed by `fragment`, deduplicated and
 /// sorted for a stable order. Mirrors winswitch's
 /// `query.rs::value_suggestions` -- see its doc for why this only works as
 /// a *complete, browsable* list at a corpus this small (a few hundred
@@ -250,7 +340,7 @@ fn value_suggestions(entries: &[Entry], field: &str, fragment: &str) -> Vec<Stri
     let mut seen = std::collections::BTreeSet::new();
     for e in entries {
         if let Some(v) = field_value(e, field) {
-            if !v.is_empty() && subsequence(fragment, v) {
+            if !v.is_empty() && substr(fragment, v) {
                 seen.insert(v.to_string());
             }
         }
@@ -365,7 +455,7 @@ pub struct PickerConfig {
     /// Used for the pidfile name and the toggle-closed cmdline match, so
     /// must be unique per picker binary.
     pub program_name: &'static str,
-    /// Field names selectable from the search box with `$field:value`
+    /// Field names selectable with `/fv field:value`
     /// (autocompleted, see `update_suggestions`); empty if this picker has
     /// no named-field dimension at all, just free-text search.
     pub field_names: Vec<&'static str>,
@@ -485,51 +575,45 @@ fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
 }
 
 /// Re-derives the autocomplete popup from the query text on every
-/// keystroke. Value completion (`trailing_value_fragment`, `:` typed and
-/// the field before it unambiguous) is tried first, field-name completion
-/// (`trailing_field_fragment`, no `:` yet) is the fallback -- the two are
-/// mutually exclusive on any given query. Ported from winswitch's
-/// `ui.rs::update_suggestions`.
+/// keystroke - one `completion_context` call picks the stage (verb name,
+/// `/fv` field path, or that field's live values); this renders it.
+/// Ported from winswitch's `ui.rs::update_suggestions`.
 fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
     for child in list.children() {
         list.remove(&child);
     }
 
-    if let Some((start, field, frag)) = trailing_value_fragment(query, &state.field_names) {
-        let vals = value_suggestions(&state.entries, field, &frag);
-        if vals.is_empty() {
-            hide_suggestions(list, state);
-            return;
-        }
-        populate_suggestions(list, &vals);
-        *state.suggestions.borrow_mut() = vals;
-        *state.suggestion_start.borrow_mut() = start;
-        *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Value(field));
-        select_suggestion(list, state, 0);
-        return;
-    }
-
-    let Some((start, frag)) = trailing_field_fragment(query) else {
+    let Some(ctx) = completion_context(query, &state.field_names) else {
         hide_suggestions(list, state);
         return;
     };
-    let fields = field_suggestions(&state.field_names, &frag);
-    if fields.is_empty() {
+    let (start, items, kind) = match ctx {
+        Suggest::Verb { start, frag } => (start, verb_suggestions(&frag), SuggestionKind::Verb),
+        Suggest::Field { start, frag } => (
+            start,
+            field_suggestions(&state.field_names, &frag).into_iter().map(str::to_string).collect(),
+            SuggestionKind::Field,
+        ),
+        Suggest::Value { start, field, frag } => {
+            (start, value_suggestions(&state.entries, field, &frag), SuggestionKind::Value(field))
+        }
+    };
+    if items.is_empty() {
         hide_suggestions(list, state);
         return;
     }
-    let fields: Vec<String> = fields.into_iter().map(str::to_string).collect();
-    populate_suggestions(list, &fields);
-    *state.suggestions.borrow_mut() = fields;
+    populate_suggestions(list, &items);
+    *state.suggestions.borrow_mut() = items;
     *state.suggestion_start.borrow_mut() = start;
-    *state.suggestion_kind.borrow_mut() = Some(SuggestionKind::Field);
+    *state.suggestion_kind.borrow_mut() = Some(kind);
     select_suggestion(list, state, 0);
 }
 
 /// Replaces the trailing fragment the suggestions were built from with the
-/// chosen completion -- `$<field>:` for a field name, or `$<field>:<value> `
-/// for a value (re-quoted if it contains whitespace, trailing space since a
-/// value is always complete the instant it's chosen). Ported from
+/// chosen completion - `/<verb> ` for a verb, `<field>:` for a field name
+/// (the `/fv ` prefix is already in `query[..start]`), or `<field>:<value>
+/// ` for a value (re-quoted if it contains whitespace, trailing space
+/// since a value is complete the instant it's chosen). Ported from
 /// winswitch's `ui.rs::accept_suggestion`.
 fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<State>) {
     let idx = *state.suggestion_idx.borrow();
@@ -541,15 +625,17 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
     };
     let start = *state.suggestion_start.borrow();
     let query = search.text();
+    let prefix = &query[..start];
     let new_query = match kind {
-        SuggestionKind::Field => format!("{}${}:", &query[..start], chosen),
+        SuggestionKind::Verb => format!("{prefix}/{chosen} "),
+        SuggestionKind::Field => format!("{prefix}{chosen}:"),
         SuggestionKind::Value(field) => {
             let value = if chosen.contains(char::is_whitespace) {
                 format!("\"{chosen}\"")
             } else {
                 chosen
             };
-            format!("{}${}:{} ", &query[..start], field, value)
+            format!("{prefix}{field}:{value} ")
         }
     };
     hide_suggestions(list, state);
@@ -672,9 +758,7 @@ pub fn run(
                 return true;
             };
             if !q.field_terms.iter().all(|t| {
-                t.fields
-                    .iter()
-                    .any(|f| field_value(entry, f).map(|v| subsequence(&t.value, v)).unwrap_or(false))
+                t.fields.iter().any(|f| field_value(entry, f).map(|v| substr(&t.value, v)).unwrap_or(false))
             }) {
                 return false;
             }
@@ -961,118 +1045,139 @@ mod tests {
     fn matches(e: &Entry, query: &str) -> bool {
         let q = parse_query(query, &FIELDS);
         let field_ok = q.field_terms.iter().all(|t| {
-            t.fields.iter().any(|f| field_value(e, f).map(|v| subsequence(&t.value, v)).unwrap_or(false))
+            t.fields.iter().any(|f| field_value(e, f).map(|v| substr(&t.value, v)).unwrap_or(false))
         });
         field_ok && (q.text.is_empty() || e.haystack.contains(q.text.as_str()))
     }
 
     #[test]
-    fn subsequence_matches_in_order_non_contiguous() {
-        assert!(subsequence("mg", "image"));
-        assert!(!subsequence("gm", "image"));
-        assert!(subsequence("", "anything"));
+    fn substr_is_containment() {
+        assert!(substr("mag", "image"));
+        assert!(!substr("mg", "image")); // not contiguous
+        assert!(substr("", "anything"));
     }
 
     #[test]
     fn bare_words_join_into_one_literal_phrase() {
-        // Existing clipboard-picker behaviour, unchanged by this DSL work:
-        // multiple bare words become one space-joined literal run, not
-        // independent AND'd substrings.
         let e = entry("1", "hello there world", vec![]);
         assert!(matches(&e, "hello there"));
         assert!(!matches(&e, "hello world")); // not contiguous in the haystack
     }
 
     #[test]
-    fn field_term_filters_by_value_subsequence() {
-        let e = entry("1", "a screenshot", vec![("type", "image")]);
-        assert!(matches(&e, "$type:image"));
-        assert!(matches(&e, "$type:img")); // subsequence, not exact
-        assert!(!matches(&e, "$type:text"));
+    fn fv_and_bare_text_are_identical() {
+        let e = entry("1", "hello there world", vec![]);
+        assert!(matches(&e, "/fv there"));
+        assert!(matches(&e, "/filter-value there"));
+        assert!(!matches(&e, "/fv nope"));
+        // literal slash text still searchable (not a verb, not a prefix)
+        let e2 = entry("2", "see /usr/bin/env", vec![]);
+        assert!(matches(&e2, "/usr/bin"));
     }
 
     #[test]
-    fn field_name_is_fuzzy_resolved() {
+    fn scoped_fv_filters_by_value_substring() {
+        let e = entry("1", "a screenshot", vec![("type", "image")]);
+        assert!(matches(&e, "/fv type:image"));
+        assert!(matches(&e, "/fv type:mage")); // substring, not exact
+        assert!(!matches(&e, "/fv type:text"));
+    }
+
+    #[test]
+    fn field_name_is_substring_resolved() {
         let e = entry("1", "x", vec![("date", "5m")]);
-        assert!(matches(&e, "$da:5m"));
-        assert!(matches(&e, "$dt:5m")); // subsequence: d,t both in "date" in order
+        assert!(matches(&e, "/fv da:5m"));
+        assert!(matches(&e, "/fv ate:5m")); // "ate" in "date"
+        assert!(!matches(&e, "/fv dte:5m")); // not contiguous
     }
 
     #[test]
     fn unresolvable_field_narrows_to_nothing() {
         let e = entry("1", "x", vec![("type", "image")]);
-        assert!(!matches(&e, "$zzz:image"));
+        assert!(!matches(&e, "/fv zzz:image"));
     }
 
     #[test]
     fn missing_field_on_entry_never_matches() {
-        // "date" absent (e.g. no timestamp log line for this id) - not the
-        // same as an empty string, must never match any $date: query.
         let e = entry("1", "x", vec![("type", "image")]);
-        assert!(!matches(&e, "$date:"));
-        assert!(!matches(&e, "$date:5m"));
+        assert!(!matches(&e, "/fv date:"));
+        assert!(!matches(&e, "/fv date:5m"));
     }
 
     #[test]
-    fn quoted_value_survives_as_one_token_and_matches_by_subsequence() {
+    fn quoted_value_is_a_literal_substring() {
         let e = entry("1", "x", vec![("app", "Discord Canary")]);
-        assert!(matches(&e, r#"$app:"disc can""#));
-        assert!(!matches(&e, r#"$app:"can disc""#)); // wrong order
+        assert!(matches(&e, r#"/fv app:"discord can""#));
+        assert!(!matches(&e, r#"/fv app:"can disc""#)); // not contiguous
     }
 
     #[test]
     fn multiple_field_terms_are_anded() {
         let e = entry("1", "x", vec![("type", "image"), ("date", "5m")]);
-        assert!(matches(&e, "$type:image $date:5m"));
-        assert!(!matches(&e, "$type:image $date:1h"));
+        assert!(matches(&e, "/fv type:image /fv date:5m"));
+        assert!(!matches(&e, "/fv type:image /fv date:1h"));
     }
 
     #[test]
     fn field_term_and_free_text_combine() {
         let e = entry("1", "a cat photo", vec![("type", "image")]);
-        assert!(matches(&e, "$type:image cat"));
-        assert!(!matches(&e, "$type:image dog"));
+        assert!(matches(&e, "/fv type:image cat"));
+        assert!(!matches(&e, "/fv type:image dog"));
     }
 
     #[test]
-    fn incomplete_dollar_token_is_inert_not_literal() {
-        let e = entry("1", "$ literally in the text", vec![]);
-        // "$" and "$typ" (no colon) contribute nothing - they don't blank
-        // the list, and they don't literal-search for "$"/"$typ" either.
-        assert!(matches(&e, "$"));
-        assert!(matches(&e, "$typ"));
+    fn inert_verbs_dont_leak_into_the_phrase() {
+        let e = entry("1", "just some text", vec![("type", "image")]);
+        // /ft /at /rt /s /rv are recognised but do nothing here, and must
+        // not become literal phrase words.
+        assert!(matches(&e, "/ft type /sort date /reverse text"));
+        assert!(!matches(&e, "/ft type nope"));
     }
 
     #[test]
-    fn trailing_field_fragment_detects_mid_typed_dollar_token() {
-        assert_eq!(trailing_field_fragment("$"), Some((0, "".to_string())));
-        assert_eq!(trailing_field_fragment("$ty"), Some((0, "ty".to_string())));
-        assert_eq!(
-            trailing_field_fragment("$type:image $da"),
-            Some((12, "da".to_string()))
-        );
-        assert_eq!(trailing_field_fragment("$type:image"), None); // already has a value
-        assert_eq!(trailing_field_fragment("plain text"), None);
+    fn half_typed_verb_is_inert_not_literal() {
+        let e = entry("1", "some text", vec![]);
+        assert!(matches(&e, "/f")); // could still be /fv or /ft
+        assert!(matches(&e, "/rev"));
     }
 
     #[test]
-    fn field_suggestions_narrow_fuzzily_and_empty_fragment_lists_all() {
+    fn completion_verb_stage() {
+        let Some(Suggest::Verb { frag, .. }) = completion_context("/f", &FIELDS) else { panic!() };
+        assert_eq!(verb_suggestions(&frag), vec!["fv", "ft"]);
+        let Some(Suggest::Verb { frag, .. }) = completion_context("/", &FIELDS) else { panic!() };
+        assert_eq!(verb_suggestions(&frag), vec!["fv", "ft", "at", "rt", "s", "rv"]);
+    }
+
+    #[test]
+    fn completion_field_stage_after_fv() {
+        let Some(Suggest::Field { frag, start }) = completion_context("/fv da", &FIELDS) else { panic!() };
+        assert_eq!((frag.as_str(), start), ("da", 4));
+        let Some(Suggest::Field { .. }) = completion_context("/fv ", &FIELDS) else { panic!() };
+        // no /fv -> no completion mid-phrase
+        assert!(completion_context("plain text", &FIELDS).is_none());
+        assert!(completion_context("cat ", &FIELDS).is_none());
+    }
+
+    #[test]
+    fn completion_value_stage_needs_unambiguous_field() {
+        let Some(Suggest::Value { field, frag, .. }) = completion_context("/fv type:im", &FIELDS) else {
+            panic!()
+        };
+        assert_eq!((field, frag.as_str()), ("type", "im"));
+        // "a" is in both "date" and "app" - ambiguous
+        assert!(completion_context("/fv a:x", &FIELDS).is_none());
+    }
+
+    #[test]
+    fn field_suggestions_narrow_by_substring_and_empty_lists_all() {
         assert_eq!(field_suggestions(&FIELDS, ""), vec!["type", "date", "app"]);
-        assert_eq!(field_suggestions(&FIELDS, "ty"), vec!["type"]);
+        assert_eq!(field_suggestions(&FIELDS, "ate"), vec!["date"]);
         assert!(field_suggestions(&FIELDS, "zzz").is_empty());
     }
 
     #[test]
-    fn trailing_value_fragment_needs_an_unambiguous_field() {
-        assert_eq!(trailing_value_fragment("$type:", &FIELDS), Some((0, "type", "".to_string())));
-        assert_eq!(trailing_value_fragment("$type:im", &FIELDS), Some((0, "type", "im".to_string())));
-        // "a" is a subsequence of both "date" and "app" - ambiguous
-        assert_eq!(trailing_value_fragment("$a:x", &FIELDS), None);
-        assert_eq!(trailing_value_fragment("$type", &FIELDS), None); // no ':' yet
-    }
-
-    #[test]
-    fn value_suggestions_are_deduped_sorted_and_fuzzy_narrowed() {
+    fn value_suggestions_are_deduped_sorted_and_substring_narrowed() {
         let entries = vec![
             entry("1", "a", vec![("type", "image")]),
             entry("2", "b", vec![("type", "text")]),
