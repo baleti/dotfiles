@@ -1,19 +1,22 @@
 [package]
 name = "notifyd"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
+# Headless as of 2026-08-30: the GTK popup layer (src/popup.rs) was replaced
+# by quickshell rendering (~/.config/quickshell/notifications/). notifyd
+# still owns org.freedesktop.Notifications and does all the tracking /
+# timeout / action-routing exactly as before -- it just writes the current
+# popup set to ~/.cache/notifyd/state.json for quickshell to draw, instead
+# of drawing it itself. gio/glib stay for the D-Bus server + main loop +
+# timers; png is for decoding image-data hints to a file quickshell can load.
 [dependencies]
 gio = "0.18"
 glib = "0.18"
-gtk = "0.18"
-gdk = "0.18"
-gdk-pixbuf = "0.18"
-pango = "0.18"
-gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+png = "0.17"
 
 [[bin]]
 name = "notifyd"

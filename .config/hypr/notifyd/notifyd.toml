@@ -1,0 +1,18 @@
+# notifyd behaviour. Since notifyd went headless (2026-08-30) the card
+# styling lives in ~/.config/quickshell/notifications/ (Theme.qml); this
+# file only sets behaviour. Every value here is also its default -- delete
+# the file entirely and nothing changes. See src/config.rs for the field
+# list.
+
+notification_limit = 20   # dunstrc: max cards on screen at once
+history_length = 20       # dunstrc: notifications kept invokable after close
+ignore_dbusclose = false  # if true, only a timeout / dismiss closes a card
+
+[urgency_low]
+timeout_ms = 10000
+
+[urgency_normal]
+timeout_ms = 10000
+
+[urgency_critical]
+timeout_ms = 0            # 0 = sticky
