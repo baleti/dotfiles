@@ -179,11 +179,6 @@ PanelWindow {
     // (`/frag`, only the verbs that do something here) and `/fv path`
     // (before the `:`), including the bare `/fv ` / `/s ` case (empty
     // fragment -> all candidates).
-    readonly property var _verbInfo: ({
-        "/fv": { alias: "/filter-value", desc: "keep entries whose value matches (substring)" },
-        "/s":  { alias: "/sort",         desc: "order entries by a field, optional asc / desc" },
-        "/rv": { alias: "/reverse",      desc: "flip the current order" }
-    })
     readonly property var _acVerbs: ["/fv", "/s", "/rv"] // /ft /at /rt are inert here
 
     function _acCandidates() {
@@ -194,7 +189,7 @@ PanelWindow {
             const frag = vm[1].slice(1);
             return root._acVerbs.filter(v => v.indexOf(frag) >= 0).map(v => ({
                 text: v + " ", label: v,
-                alias: root._verbInfo[v].alias, desc: root._verbInfo[v].desc
+                alias: QueryDsl.verbInfo[v].long, desc: QueryDsl.verbInfo[v].desc
             }));
         }
 
