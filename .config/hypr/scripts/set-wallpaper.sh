@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Sole sanctioned way to change the desktop wallpaper. Copies the given
-# image to the fixed path Background.qml displays and wallpaper-watch.sh
-# polls, so both the background image and the Material You theme
-# (gen-theme.py) pick up the change automatically -- no separate manual
-# "now re-run the theme script" step.
+# image to the fixed path Background.qml displays and calls gen-theme.py
+# directly, so both the background image and the Material You theme
+# pick up the change immediately -- no separate manual "now re-run the
+# theme script" step, and no polling daemon (wallpaper-watch.sh, retired
+# 2026-08-30 -- this script is the only thing that ever wrote this path).
 #
 # Usage: set-wallpaper.sh /path/to/image.{png,jpg,...}
 set -euo pipefail
@@ -22,13 +23,10 @@ fi
 dest="$HOME/.local/state/quickshell/wallpaper.png"
 mkdir -p "$(dirname "$dest")"
 # Copy to a temp file then rename, not a direct `cp` onto dest -- a plain
-# cp isn't atomic, so wallpaper-watch.sh (polling this same path's mtime)
-# could catch dest mid-write and hand gen-theme.py a truncated PNG.
-# Confirmed happening live (2026-08-28 x8): that crashed gen-theme.py,
-# which -- since wallpaper-watch.sh used to run under `set -e` -- killed
-# the whole watcher loop, silently freezing theme regeneration on every
-# subsequent wallpaper switch. rename() on the same filesystem is atomic,
-# so a reader only ever sees the fully-old or fully-new file.
+# cp isn't atomic, so Background.qml's FileView (reading this same path
+# independently) could catch dest mid-write. rename() on the same
+# filesystem is atomic, so a reader only ever sees the fully-old or
+# fully-new file.
 tmp="$dest.tmp"
 cp -- "$src" "$tmp"
 mv -f -- "$tmp" "$dest"
@@ -40,4 +38,7 @@ realpath -- "$src" > "$HOME/.local/state/quickshell/wallpaper-source"
 # fallback measured a 20-40s real-world delay reacting to this same write,
 # vs effectively instant over IPC (same pattern bar-toggle.sh uses).
 qs ipc call background reload 2>/dev/null || true
-echo "wallpaper set to $src (theme will regenerate within ~2s)"
+if ! python3 "$HOME/.config/hypr/scripts/gen-theme.py" --image "$dest"; then
+    echo "set-wallpaper: gen-theme.py failed, theme not updated for this change" >&2
+fi
+echo "wallpaper set to $src"

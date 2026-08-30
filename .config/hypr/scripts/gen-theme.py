@@ -150,10 +150,7 @@ def max_chroma_hex(hue: float) -> str:
 def vivid_hex(hex_color: str, hue_offset: float = 0) -> str:
     """The color's own hue (or +hue_offset degrees around the wheel, for a
     complementary variant), pushed to its own true maximum saturation via
-    max_chroma_hex. Borders use hue_offset=0 -- the theme's actual color,
-    maximally saturated, per explicit request (a complementary/inverted
-    hue was tried first and rejected: "instead of inverting colors, use
-    the main color")."""
+    max_chroma_hex."""
     hue = (Hct.from_int(hex_to_argb(hex_color)).hue + hue_offset) % 360
     return max_chroma_hex(hue)
 
@@ -173,25 +170,9 @@ def soft_accent_hex(hex_color: str, hue_offset: float = 0, chroma: float = 35, t
     return argb_to_hex(Hct.from_hct(hue, chroma, tone).to_int())
 
 
-def seeds_from_image(path: Path) -> tuple[int, int, int]:
+def seeds_from_image(path: Path) -> tuple[int, int]:
     """primary (-> background/UI) and secondary are Score.score's usual
-    population-ranked dominant colors. accent is found completely
-    differently: the highest-HCT-chroma color cluster with at least a
-    handful of pixels behind it (filtering single-pixel/antialiasing
-    noise), NOT ranked by population at all.
-
-    Verified directly why this distinction matters (2026-08-28 x7):
-    ~/wallpapers/jp17.png is ~90% black background + a large tan/beige
-    stone structure, with one small, deliberately-graded red architectural
-    feature as the actual accent. Any population-based ranking -- Score.
-    score's desired=3 included, tried first -- is dominated by the vastly
-    larger black/tan areas and returns three near-duplicate beige tones,
-    missing the red entirely (confirmed: primary/secondary/"accent" all
-    landed within a few percent of #c2a693). Directly scanning
-    QuantizeCelebi's own {argb: pixel_count} clusters for max HCT chroma
-    picked the red immediately (chroma ~49 vs ~12-23 for the beiges) --
-    this finds exactly the color a wallpaper was graded to draw the eye
-    to, regardless of how little area it covers."""
+    population-ranked dominant colors."""
     from PIL import Image
 
     img = Image.open(path).convert("RGBA")
@@ -203,21 +184,10 @@ def seeds_from_image(path: Path) -> tuple[int, int, int]:
     primary = ranked[0]
     secondary = ranked[1] if len(ranked) > 1 else primary
 
-    min_cluster_count = 3
-    accent = primary
-    best_chroma = -1.0
-    for argb, count in quantized.items():
-        if count < min_cluster_count:
-            continue
-        chroma = Hct.from_int(argb).chroma
-        if chroma > best_chroma:
-            best_chroma = chroma
-            accent = argb
-
-    return primary, secondary, accent
+    return primary, secondary
 
 
-def build_scheme(primary_argb: int, secondary_argb: int, accent_argb: int | None = None) -> dict:
+def build_scheme(primary_argb: int, secondary_argb: int) -> dict:
     theme = theme_from_source_color(
         primary_argb,
         custom_colors=[CustomColor(secondary_argb, "accentSecondary", blend=True)],
@@ -271,12 +241,6 @@ def build_scheme(primary_argb: int, secondary_argb: int, accent_argb: int | None
         "error": argb_to_hex(scheme.error),
         "seriesPalette": series_palette,
         "intensityRamp": intensity_ramp,
-        # RAW extracted accent (not harmonized/blended toward primary like
-        # `secondary` above) -- the Hyprland border uses this directly.
-        # Falls back to `secondary` when there's no image (the hardcoded
-        # cyan/green seed case) since there's no real third color to draw
-        # from then.
-        "accent": argb_to_hex(accent_argb) if accent_argb is not None else argb_to_hex(secondary_group.color),
     }
 
 
@@ -640,23 +604,21 @@ def theme_hyprland_borders(out: dict) -> None:
     what was originally asked for before this final "just remove it"
     request superseded that).
 
-    Color is vivid_hex(accent), not primary -- ~/wallpapers (switched from
-    ~/pictures, 2026-08-28 x7) is deliberately graded with a real,
-    distinct accent color already designed to contrast against the
-    primary/background, which is a strictly better contrast source than
-    any hue-math derived from primary itself (complement/rotation attempts
-    were tried first and abandoned: "the primary color we are extracting
-    from the image still ends up blending in"). Still run through
-    vivid_hex for guaranteed saturation, same as before. border_size is
-    also re-set here (not just color) so this whole call is idempotent
-    with appearance.lua's own static border_size=2 rather than silently
-    depending on it."""
-    accent = vivid_hex(out["accent"]).lstrip("#")
+    Color is out["primary"] -- the same accent every other target (GTK's
+    accent_color, KDE's AccentColor, alacritty, rofi, nsxiv, ...) is built
+    from. This used to be a separately-extracted, max-chroma "accent"
+    color instead, specifically for this border; that special-casing was
+    removed on request (2026-08-29) so the focused-window border always
+    matches the desktop's one accent color rather than its own thing.
+    border_size is also re-set here (not just color) so this whole call is
+    idempotent with appearance.lua's own static border_size=2 rather than
+    silently depending on it."""
+    primary = out["primary"].lstrip("#")
     outline = out["outlineVariant"].lstrip("#")
     lua = (
         'hl.config({general={'
         'border_size=2,col={'
-        f'active_border="rgba({accent}f2)",'
+        f'active_border="rgba({primary}f2)",'
         f'inactive_border="rgba({outline}aa)"'
         '}}})'
     )
@@ -671,6 +633,52 @@ def theme_hyprland_borders(out: dict) -> None:
             print("applied Hyprland border colors live")
     except (subprocess.SubprocessError, OSError) as e:
         print(f"hyprctl border update failed (non-fatal): {e}", file=sys.stderr)
+
+
+# --- Emacs --------------------------------------------------------------------
+
+def theme_emacs(out: dict) -> None:
+    """Live only, via `emacsclient --eval` -- accent-only face patches, same
+    reasoning as theme_hyprland_borders(): no `load-theme`, no touching
+    config.el, so a doom sync/reload never happens and in-progress edits to
+    config files are untouched. `set-face-attribute` mutates faces already
+    loaded in the running daemon and repaints every attached frame
+    immediately, since all emacsclient frames share the one systemd-managed
+    daemon process.
+
+    Scoped to small/momentary accents (cursor, the current isearch match,
+    doom-modeline's focused-window bar) rather than `region`: region
+    highlighting can cover large blocks of text, and washing that much area
+    in a saturated wallpaper-derived color risks fighting the syntax
+    highlighting's own foreground colors.
+
+    doom-modeline-bar is the closest Emacs analog to the Hyprland focused-
+    window border: both are a colored accent meaning "this is the focused
+    one". Paired the same way as active_border/inactive_border -- primary
+    for focused, outlineVariant for unfocused."""
+    primary = out["primary"]
+    outline = out["outlineVariant"]
+    lisp = (
+        "(progn "
+        f'(set-face-attribute \'cursor nil :background "{primary}") '
+        f'(set-face-attribute \'isearch nil :background "{primary}") '
+        f'(set-face-attribute \'lazy-highlight nil :background "{outline}") '
+        "(when (facep 'doom-modeline-bar) "
+        f'(set-face-attribute \'doom-modeline-bar nil :background "{primary}")) '
+        "(when (facep 'doom-modeline-bar-inactive) "
+        f'(set-face-attribute \'doom-modeline-bar-inactive nil :background "{outline}")))'
+    )
+    try:
+        result = subprocess.run(
+            ["emacsclient", "--eval", lisp],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            print(f"emacsclient face update failed (non-fatal): {result.stderr.strip()}", file=sys.stderr)
+        else:
+            print("applied Emacs accent faces live")
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"emacsclient face update failed (non-fatal): {e}", file=sys.stderr)
 
 
 # --- Alacritty ---------------------------------------------------------------
@@ -853,19 +861,19 @@ def main() -> None:
     parser.add_argument("--image", type=Path, help="extract seed colors from this image instead of the hardcoded accent")
     args = parser.parse_args()
 
-    accent_argb = None
     if args.image:
-        primary_argb, secondary_argb, accent_argb = seeds_from_image(args.image)
-        print(f"seeded from {args.image}: primary={argb_to_hex(primary_argb)} secondary={argb_to_hex(secondary_argb)} accent={argb_to_hex(accent_argb)}")
+        primary_argb, secondary_argb = seeds_from_image(args.image)
+        print(f"seeded from {args.image}: primary={argb_to_hex(primary_argb)} secondary={argb_to_hex(secondary_argb)}")
     else:
         primary_argb = hex_to_argb(PRIMARY_SEED)
         secondary_argb = hex_to_argb(SECONDARY_SEED)
 
-    out = build_scheme(primary_argb, secondary_argb, accent_argb)
+    out = build_scheme(primary_argb, secondary_argb)
     write_scheme_json(out)
     theme_gtk(out)
     theme_kde(out)
     theme_hyprland_borders(out)
+    theme_emacs(out)
     theme_alacritty(out)
     theme_rofi(out)
     theme_tmux(out)
