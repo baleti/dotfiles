@@ -231,16 +231,6 @@ Item {
                     }
                 }
             }
-
-            Text {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                topPadding: 2
-                color: Theme.muted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize - 3
-                text: qsTr("↑↓ / jk move · Enter pick · Esc cancel")
-            }
         }
     }
 }
