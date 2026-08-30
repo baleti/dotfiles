@@ -165,6 +165,10 @@ fn main() {
     let config = PickerConfig {
         program_name: PROGRAM_NAME,
         field_names: FIELD_NAMES.to_vec(),
+        field_descs: vec![
+            ("type", "text or image"),
+            ("date", "how long ago it was copied"),
+        ],
         placeholder: "search   ·   $type:  $date:".to_string(),
         width_fraction: 0.5,
         height_fraction: 0.8,

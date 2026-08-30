@@ -88,6 +88,10 @@ fn main() {
     let config = PickerConfig {
         program_name: "notification-picker",
         field_names: FIELD_NAMES.to_vec(),
+        field_descs: vec![
+            ("app", "the sending application"),
+            ("date", "how long ago it arrived"),
+        ],
         placeholder: "search notifications   ·   $app:  $date:".to_string(),
         width_fraction: 0.5,
         height_fraction: 0.8,
