@@ -185,13 +185,11 @@ Item {
     // row too (see below), so there's only ever this one Y.
     readonly property real panelY: rightRow.y + (Theme.barHeight - 10) + 6
 
-    // Hard ceiling on how tall a popup panel may render: shell.qml pins the
-    // layer-shell surface at a fixed 800px (kept in sync by hand -- both
-    // sides carry a comment), so a panel that wants to grow past that just
-    // gets clipped. Panels that can produce a lot of content (the calendar's
-    // agenda list) clamp their scroll area to this and scroll internally.
-    readonly property real windowHeight: 800
-    readonly property real maxPanelHeight: root.windowHeight - root.panelY - 16
+    // Hard ceiling on how tall a popup panel may render: shell.qml sizes the
+    // layer-shell surface to the full monitor height, so a panel can grow
+    // down to the bottom of the screen (the calendar's agenda list does,
+    // when a long selection has more entries than fit) and scroll past that.
+    readonly property real maxPanelHeight: root.screen.height - root.panelY - 24
 
     // --- Popup panels (media, net/cpu/mem/disk/temp, calendar): shared
     // dynamic width, always one row -----------------------------------
