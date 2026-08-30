@@ -136,30 +136,58 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
   socket **is** the "already running" check.
 - **`src/hyprctl.rs`** — thin `hyprctl` wrappers: the window list the grid
   is built from, and the one dispatch call that changes focus.
-- **`src/query.rs`** — the `$column:value` filter DSL: quote-aware
-  whitespace-split tokens (a `"..."` run stays one token, letting a column
-  name or value contain spaces), `$col:val` fuzzy-matches column name and
-  value independently (subsequence match both ways), bare words
-  substring-match title+class (subsequence instead, spanning whitespace, if
-  quoted), multiple tokens AND together. Also exposes the autocomplete
-  narrowing `ui.rs`'s suggestions popup is built on:
-  `trailing_field_fragment`/`column_suggestions` for field names, and
-  `trailing_value_fragment`/`value_suggestions` for a chosen field's
-  actual live values (e.g. every workspace currently in use). See
-  [query-dsl.md](query-dsl.md) for how this relates to the same DSL's other
-  implementations (tmux's pickers, `claude-history`).
+- **`src/query.rs`** — the `/field:value` filter DSL (v2 — see
+  [query-dsl.md](query-dsl.md), which covers this and every other
+  implementation's syntax in full). Quote-aware whitespace-split tokens
+  (a `"..."` run stays one token, letting a field/group name or value
+  contain spaces); `/field:val` and nested `/group/sub:val` fuzzy-match
+  both name and value independently (subsequence both ways); bare words
+  substring-match title+class (subsequence instead, spanning whitespace,
+  if quoted); multiple tokens AND together. Also carries three things that
+  used to be elsewhere or didn't exist: `active_columns` (`/+path`/`/-path`
+  column visibility, generalized here from focus-picker.py's v1-only
+  `+$`/`-$`), `parse_actions`/`compare_with_direction` (`/sort`/`/reverse`,
+  including the shape-aware comparator that handles plain-int and
+  `humanize_ago`-bucket fields correctly — see query-dsl.md's "direction
+  trap"), and `completion_context`/`completion_candidates`, one entry
+  point covering the DSL's full five-stage autocomplete cascade (field/
+  group/action name → visibility path → sort target → sort direction →
+  filter value) that `ui.rs`'s suggestions popup is built on.
+- **`src/enrich.rs`** — cross-references an open terminal window against
+  the live tmux server and any Claude Code session running in it
+  (`TmuxClaudeMeta`: `tmux/session`, `tmux/window`, `tmux/title`,
+  `claude/title`, `claude/path`, `claude/session`, `claude/contents` —
+  the `/group/sub` fields `query.rs` filters/sorts/displays on). Runs
+  entirely off the main thread, spawned right after the grid's first
+  paint, and streams results in via a channel polled every 50ms — the grid
+  has to stay instant to open even if tmux is slow or a transcript is
+  large, so nothing here is ever on the critical path. A panic inside the
+  enrichment thread is caught and optionally logged (`touch
+  ~/.cache/winswitch-enrich-debug`) rather than silently vanishing, since
+  an unlogged panic there and "still enriching, give it a moment" look
+  identical from the grid's side.
 - **`src/ui.rs`** — the layer-shell `GtkFlowBox` grid. Two-phase key state
   machine: unlocked = Tab/Shift+Tab cycles selection, releasing Alt
   confirms; any other printable key locks into search mode
   (`GtkSearchEntry` + the `query.rs` DSL), Alt no longer confirms once
-  locked, Enter/Escape confirm/cancel either way. While locked, typing a
-  trailing `$fragment` or `$field:fragment` opens an autocomplete popup (a
+  locked, Enter/Escape confirm/cancel either way. A trailing `/fragment` at
+  any of the DSL's five stages opens the shared autocomplete popup (a
   plain `GtkListBox` under the search entry, not a `GtkPopover` —
-  gtk-layer-shell has no xdg_popup positioner to anchor one to) offering
-  field names or that field's live values respectively (`SuggestionKind`
-  tracks which): `Ctrl+j`/`Ctrl+k` move the highlight, `Tab` accepts it,
-  `Escape` dismisses just the popup. See
-  [query-dsl.md](query-dsl.md#autocompletion).
+  gtk-layer-shell has no xdg_popup positioner to anchor one to):
+  `Ctrl+j`/`Ctrl+k` move the highlight, `Tab` accepts it, `Escape`
+  dismisses just the popup. See [query-dsl.md](query-dsl.md#autocompletion).
+  Each cell's label is rebuilt from `active_columns` on every keystroke
+  (`render_label`) instead of hardcoding workspace+title, so `/+`/`/-`
+  actually changes what's shown. **Worth knowing before touching
+  filtering/sorting/selection here**: since `/sort` can now visually
+  reorder the grid, `FlowBoxChild::index()` (a child's *current* position)
+  can no longer be trusted to mean "this window's index into
+  `state.windows`" the way it always safely did before — every lookup from
+  a child back to its window goes through `child_window_idx`, which reads
+  a stable index stashed in the child's `widget_name` at creation instead.
+  `state.selected` itself stays a *visual* grid position (what arrow keys
+  spatially mean), resolved to an actual window only at the point of
+  confirming (`confirm()`).
 - **`src/wayland_capture.rs`** — live thumbnails via
   `hyprland-toplevel-export-v1`, on a wholly separate low-level
   `wayland-client` connection (GDK doesn't expose these extension
