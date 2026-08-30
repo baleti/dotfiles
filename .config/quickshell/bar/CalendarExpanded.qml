@@ -12,16 +12,21 @@ import "../theme"
 // mod+CTRL+c (keybinds.lua) opens this with real keyboard focus (same
 // WlrKeyboardFocus.OnDemand mechanism the media panel already uses for its
 // own arrow-seek), so bare keys reach handleKey() below directly - no
-// Hyprland submap needed. Two modes: plain month view (Left/Right or h/l =
-// move the day cursor ±1 day, Up/Down or k/j = ±1 week - the cursor
-// carries the view into adjacent months; hold Shift with any of those to
-// grow a multi-day selection out from the anchor; [ / ] page the month;
-// Tab = enter the year-picker; Escape = close) and the year-picker (Tab
-// opened it; all four arrows move the highlight within the 2-column
-// 10-cell grid - Left/Right by one, Up/Down by a row - Backspace zooms
-// out a level among the 10/20/50/100-year spans, Enter drills into a
-// coarse cell or confirms a single year, Escape/Tab cancel back to month
-// view unchanged).
+// Hyprland submap needed. Two modes:
+//
+//   month view - Left/Right or h/l move the day cursor ±1 day, Up/Down or
+//   k/j ±1 week (the cursor carries the view into adjacent months); hold
+//   Shift with any of those to grow a multi-day selection out from the
+//   anchor. Ctrl is the "bigger jump" modifier: Ctrl+Left/Right (Ctrl+h/l)
+//   page a whole month, Ctrl+Up (Ctrl+k) zooms out into the year-picker.
+//   Escape closes.
+//
+//   year-picker - all four arrows / h j k l move the highlight within the
+//   2-column 10-cell grid (Left/Right by one, Up/Down by a row). Ctrl+Up
+//   (Ctrl+k) or Backspace zooms out one level among the 10/20/50/100-year
+//   spans; Ctrl+Down (Ctrl+j) or Enter zooms back in, and on the finest
+//   1-year grid confirms the year and returns to the month view. Escape
+//   cancels back unchanged.
 //
 // The day cursor (ring) is always on some day - today when the panel
 // opens - and the agenda list below the grid always shows the selected
@@ -141,9 +146,9 @@ Rectangle {
         onTriggered: agendaProc.running = true
     }
 
-    // Mouse ‹/› and [ / ] keys: shift the month and carry the cursor along
-    // by the same one-month step (clamped to the month's length) so the
-    // ring and its task list stay put relative to the grid.
+    // Mouse ‹/› and Ctrl+Left/Right (Ctrl+h/l): shift the month and carry
+    // the cursor along by the same one-month step (clamped to the month's
+    // length) so the ring and its task list stay put relative to the grid.
     function shiftMonth(delta: int): void {
         let m = viewMonth + delta;
         let y = viewYear;
@@ -269,59 +274,78 @@ Rectangle {
     }
 
     function handleKey(event): void {
+        const k = event.key;
+        const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
+        const shift = (event.modifiers & Qt.ShiftModifier) !== 0;
+        const isLeft = k === Qt.Key_Left || k === Qt.Key_H;
+        const isRight = k === Qt.Key_Right || k === Qt.Key_L;
+        const isUp = k === Qt.Key_Up || k === Qt.Key_K;
+        const isDown = k === Qt.Key_Down || k === Qt.Key_J;
+
         if (root.yearPickerActive) {
-            if (event.key === Qt.Key_Left) {
-                root.yearPickerMove(-1);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Right) {
-                root.yearPickerMove(1);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Up) {
-                root.yearPickerMove(-2);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Down) {
-                root.yearPickerMove(2);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Backspace) {
+            // Ctrl+Up / Ctrl+k zoom OUT to wider year ranges (1->2->5->10
+            // years per cell); Ctrl+Down / Ctrl+j / Enter zoom IN, and on
+            // the finest grid confirm the year and drop back to the month.
+            if (ctrl && isUp) {
                 root.yearPickerZoomOut();
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            } else if (ctrl && isDown) {
                 root.yearPickerConfirm();
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Tab) {
+            } else if (isLeft) {
+                root.yearPickerMove(-1);
+                event.accepted = true;
+            } else if (isRight) {
+                root.yearPickerMove(1);
+                event.accepted = true;
+            } else if (isUp) {
+                root.yearPickerMove(-2);
+                event.accepted = true;
+            } else if (isDown) {
+                root.yearPickerMove(2);
+                event.accepted = true;
+            } else if (k === Qt.Key_Backspace) {
+                root.yearPickerZoomOut();
+                event.accepted = true;
+            } else if (k === Qt.Key_Return || k === Qt.Key_Enter) {
+                root.yearPickerConfirm();
+                event.accepted = true;
+            } else if (k === Qt.Key_Escape) {
                 root.exitYearPicker();
                 event.accepted = true;
             }
         } else {
-            // Arrow keys and vim h/j/k/l move the day cursor: ±1 day
-            // horizontally, ±1 week vertically. Holding Shift keeps the
-            // anchor put so the selection grows out to the cursor (multi-day
-            // range); the list at the bottom then shows every day in range,
-            // grouped. [ / ] page the month; Tab opens the year picker;
-            // Escape closes.
-            const ext = (event.modifiers & Qt.ShiftModifier) !== 0;
-            if (event.key === Qt.Key_Left || event.key === Qt.Key_H) {
-                root.moveCursor(-1, ext);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Right || event.key === Qt.Key_L) {
-                root.moveCursor(1, ext);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) {
-                root.moveCursor(-7, ext);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) {
-                root.moveCursor(7, ext);
-                event.accepted = true;
-            } else if (event.key === Qt.Key_BracketLeft) {
+            // Plain arrows / vim h j k l move the day cursor (±1 day
+            // horizontally, ±1 week vertically); Shift keeps the anchor put
+            // so the selection grows out to the cursor (multi-day range).
+            // Ctrl+Left/Right (or Ctrl+h/l) page a whole month; Ctrl+Up (or
+            // Ctrl+k) zooms out into the year picker. Escape closes.
+            if (ctrl && isLeft) {
                 root.prevMonth();
                 event.accepted = true;
-            } else if (event.key === Qt.Key_BracketRight) {
+            } else if (ctrl && isRight) {
                 root.nextMonth();
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Tab) {
+            } else if (ctrl && isUp) {
                 root.enterYearPicker();
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Escape) {
+            } else if (ctrl && isDown) {
+                // Nothing finer than the month grid to zoom into - swallow
+                // it so it doesn't fall through to a cursor move.
+                event.accepted = true;
+            } else if (isLeft) {
+                root.moveCursor(-1, shift);
+                event.accepted = true;
+            } else if (isRight) {
+                root.moveCursor(1, shift);
+                event.accepted = true;
+            } else if (isUp) {
+                root.moveCursor(-7, shift);
+                event.accepted = true;
+            } else if (isDown) {
+                root.moveCursor(7, shift);
+                event.accepted = true;
+            } else if (k === Qt.Key_Escape) {
                 root.expanded = false;
                 event.accepted = true;
             }
@@ -652,8 +676,8 @@ Rectangle {
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize - 3
             text: root.yearPickerActive
-                ? qsTr("↑↓←→ move · Enter select · ⌫ zoom out · Esc cancel")
-                : qsTr("←→hl day · ↑↓kj week · ⇧ range · [ ] month · Tab year")
+                ? qsTr("←→↑↓ / hjkl move · ctrl+↑ wider range · ctrl+↓ / Enter pick · Esc back")
+                : qsTr("←→↑↓ / hjkl day+week · ⇧ range · ctrl+←→ month · ctrl+↑ year")
         }
 
         // Agenda list: always on (not click-gated). Shows every day in the
