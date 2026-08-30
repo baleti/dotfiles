@@ -77,10 +77,6 @@ hl.on("hyprland.start", function()
     -- already claimed this was autostarted here -- it wasn't; this was
     -- only ever running because a dev-session build of it was left up.
     hl.exec_cmd("~/.config/hypr/sysmon/target/release/sysmond")
-    -- Regenerates the Material You theme (gen-theme.py) the instant the
-    -- wallpaper file actually changes on disk -- see wallpaper-watch.sh and
-    -- scripts/set-wallpaper.sh, the sole sanctioned way to change it.
-    hl.exec_cmd("~/.config/hypr/scripts/wallpaper-watch.sh")
     -- Load the theme's nsxiv colors (Nsxiv.* X resources) into the XWayland
     -- server now -- gen-theme.py also does this on every regen, but the
     -- wallpaper (hence that script) may not have changed yet this session.
