@@ -252,7 +252,12 @@ Rectangle {
         return out;
     }
 
-    width: 300
+    // Set from outside by Bar.qml (root.panelWidth -- shared with media and
+    // the sysmon graph pills via the same row-wrapping layout pool, same
+    // pattern as GraphPill's `expandWidth`; see quickshell-bar.md's "Panel
+    // width sizing" section). 300 is only the standalone-preview fallback.
+    property real panelWidth: 300
+    width: panelWidth
     implicitHeight: expanded ? content.implicitHeight + 24 : 0
     height: implicitHeight
     visible: height > 0

@@ -98,7 +98,7 @@ Rectangle {
     }
 
     property bool expanded: false
-    // Set by a click on the pill (or Bar.qml's IpcHandler, for the alt+t
+    // Set by a click on the pill (or Bar.qml's IpcHandler, for the mod+t
     // style keybind toggles) -- while pinned, hovering off no longer closes
     // the panel; only clicking again (or the keybind again) does.
     property bool pinned: false
@@ -160,6 +160,13 @@ Rectangle {
     // `else if (!hovered)` guard made the keypress do nothing until the
     // mouse moved away -- reported 2026-08-29). Moving the pointer off and
     // back on can still reopen it via hover; that's a separate path.
+    //
+    // Claims real keyboard focus on open via forceActiveFocus() -- see
+    // Keys.onPressed below and shell.qml's HyprlandFocusGrab (the same
+    // mechanism the calendar/media panels use). QML only lets one item
+    // hold focus within a scope at a time, so this doubles as "whichever
+    // panel was opened/clicked last" tracking -- no separate bookkeeping
+    // needed, unlike the old Hyprland-submap version of this (2026-08-29).
     function togglePin(): void {
         hideTimer.stop();
         if (pinned) {
@@ -168,6 +175,40 @@ Rectangle {
         } else {
             pinned = true;
             expanded = true;
+            forceActiveFocus();
+        }
+    }
+
+    // 1-6 jumps straight to a tier, left/right steps by one -- left towards
+    // *bigger* periods (10m -> ... -> 7mo), right towards smaller, matching
+    // GraphPill's tierCodes ordering. Escape closes, same as the calendar/
+    // media panels. Only live while this pill actually holds keyboard focus
+    // (forceActiveFocus() above, and shell.qml only grants the *window*
+    // real keyboard input while at least one panel is expanded) -- replaces
+    // the old graph_nav Hyprland submap, which could only ever act on one
+    // widget at a time and regularly desynced from which panels were
+    // actually open (reported 2026-08-29).
+    Keys.onPressed: event => {
+        if (root.tierCodes.length === 0)
+            return;
+        const idx = root.tierCodes.indexOf(root.tier);
+        if (event.key >= Qt.Key_1 && event.key <= Qt.Key_6) {
+            const i = event.key - Qt.Key_1;
+            if (i < root.tierCodes.length) {
+                root.tierRequested(root.tierCodes[i]);
+                event.accepted = true;
+            }
+        } else if (event.key === Qt.Key_Left) {
+            if (idx >= 0 && idx < root.tierCodes.length - 1)
+                root.tierRequested(root.tierCodes[idx + 1]);
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Right) {
+            if (idx > 0)
+                root.tierRequested(root.tierCodes[idx - 1]);
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Escape) {
+            root.togglePin();
+            event.accepted = true;
         }
     }
 
