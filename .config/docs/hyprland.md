@@ -154,7 +154,10 @@ docs:
   phone bridge).
 - `mainMod+CTRL+SHIFT+p/x/z` and friends — playerctl against
   `~/.config/playerctl-current`, the "currently selected player" file
-  written by `scripts/playerctl-picker.sh` (`ALT+CTRL+SHIFT+m`).
+  written by the `ALT+CTRL+SHIFT+m` player picker
+  (`quickshell/bar/MprisPicker.qml`, a themed overlay matching the bar's
+  panels — reimplemented from a zenity dialog; toggles closed on a second
+  press; also on the media pill's middle-click).
 - `mainMod+V` / `mainMod+CTRL+n` — clipboard/notification pickers (the Rust
   binaries; see [rust-tools.md](rust-tools.md)).
 - `mainMod+n` / `mainMod+SHIFT+n` — invoke last notification's default
@@ -211,7 +214,7 @@ above:
 | `bar-toggle.sh` | Resolves the focused monitor's quickshell `Bar` instance and toggles one of its hover panels via its per-monitor `IpcHandler` target |
 | `cliphist-expire.sh` | Age-based expiry for cliphist (no timestamps in cliphist's DB, so a monotonic-id watermark recorded each run stands in for "older than N hours"); driven by `cliphist-expire.timer`/`.service` |
 | `notifyd-actions-menu.sh` | rofi picker over one notification's actions (replaces `dunstctl context`) |
-| `playerctl-picker.sh` | zenity player picker for `ALT+CTRL+SHIFT+m`; never truncates `playerctl-current` on cancel (a bug in the old one-liner it replaced) |
+| `playerctl-picker.sh` | **superseded** — the old zenity player picker for `ALT+CTRL+SHIFT+m`, now `quickshell/bar/MprisPicker.qml`; kept in tree, not archived |
 | `playerctl-seek.sh` | 5s seek without a pause/play "kick" — confirmed unnecessary and harmful for the phone MPRIS bridge |
 | `set-wallpaper.sh` | The *sole* sanctioned way to change the wallpaper — see [theming.md](theming.md) |
 | `wallpaper-cycle.sh` / `wallpaper-rotate.sh` / `wallpaper-watch.sh` | See [theming.md](theming.md) |
