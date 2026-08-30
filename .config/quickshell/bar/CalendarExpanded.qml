@@ -28,8 +28,9 @@ import "../theme"
 // day(s), grouped by day with each day's ~/notes/orgzly/todo.org entries
 // in chronological order (no click needed). In the compact hover view,
 // days with entries also carry accent dots (accent-coloured = something
-// still open, grey = all done); the wide keybind view (half the monitor
-// width) prints the entry titles straight into the day cells instead.
+// still open, grey = all done); the keybind view prints the entry titles
+// straight into the day cells instead. Panel width always flexes evenly
+// with the bar's other panels (shared panelWidth), never fixed.
 Rectangle {
     id: root
 
@@ -348,14 +349,14 @@ Rectangle {
     // width sizing" section). 300 is only the standalone-preview fallback.
     property real panelWidth: 300
     // "Big mode": opened via the mod+CTRL+c keybind / clock click (Bar.qml
-    // binds this to clockPinned), as opposed to a passing hover. Widens the
-    // panel to `bigWidth` and switches the month grid from dot-only cells to
-    // tall cells that print each day's event titles underneath the number,
-    // month-view style. Hover stays the compact dot version.
+    // binds this to clockPinned), as opposed to a passing hover. Switches
+    // the month grid from dot-only cells to tall cells that print each
+    // day's event titles underneath the number, month-view style. Hover
+    // stays the compact dot version. Width is NOT special-cased - the panel
+    // flexes with the bar's other panels through the shared even-division
+    // panelWidth, same as media / the graph pills.
     property bool bigMode: false
-    property real bigWidth: 660
-    readonly property real effectiveWidth: bigMode ? Math.max(panelWidth, bigWidth) : panelWidth
-    width: effectiveWidth
+    width: panelWidth
     implicitHeight: expanded ? content.implicitHeight + 24 : 0
     height: implicitHeight
     visible: height > 0
