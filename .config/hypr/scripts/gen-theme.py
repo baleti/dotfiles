@@ -635,52 +635,6 @@ def theme_hyprland_borders(out: dict) -> None:
         print(f"hyprctl border update failed (non-fatal): {e}", file=sys.stderr)
 
 
-# --- Emacs --------------------------------------------------------------------
-
-def theme_emacs(out: dict) -> None:
-    """Live only, via `emacsclient --eval` -- accent-only face patches, same
-    reasoning as theme_hyprland_borders(): no `load-theme`, no touching
-    config.el, so a doom sync/reload never happens and in-progress edits to
-    config files are untouched. `set-face-attribute` mutates faces already
-    loaded in the running daemon and repaints every attached frame
-    immediately, since all emacsclient frames share the one systemd-managed
-    daemon process.
-
-    Scoped to small/momentary accents (cursor, the current isearch match,
-    doom-modeline's focused-window bar) rather than `region`: region
-    highlighting can cover large blocks of text, and washing that much area
-    in a saturated wallpaper-derived color risks fighting the syntax
-    highlighting's own foreground colors.
-
-    doom-modeline-bar is the closest Emacs analog to the Hyprland focused-
-    window border: both are a colored accent meaning "this is the focused
-    one". Paired the same way as active_border/inactive_border -- primary
-    for focused, outlineVariant for unfocused."""
-    primary = out["primary"]
-    outline = out["outlineVariant"]
-    lisp = (
-        "(progn "
-        f'(set-face-attribute \'cursor nil :background "{primary}") '
-        f'(set-face-attribute \'isearch nil :background "{primary}") '
-        f'(set-face-attribute \'lazy-highlight nil :background "{outline}") '
-        "(when (facep 'doom-modeline-bar) "
-        f'(set-face-attribute \'doom-modeline-bar nil :background "{primary}")) '
-        "(when (facep 'doom-modeline-bar-inactive) "
-        f'(set-face-attribute \'doom-modeline-bar-inactive nil :background "{outline}")))'
-    )
-    try:
-        result = subprocess.run(
-            ["emacsclient", "--eval", lisp],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode != 0:
-            print(f"emacsclient face update failed (non-fatal): {result.stderr.strip()}", file=sys.stderr)
-        else:
-            print("applied Emacs accent faces live")
-    except (subprocess.SubprocessError, OSError) as e:
-        print(f"emacsclient face update failed (non-fatal): {e}", file=sys.stderr)
-
-
 # --- Alacritty ---------------------------------------------------------------
 
 def theme_alacritty(out: dict) -> None:
@@ -873,7 +827,6 @@ def main() -> None:
     theme_gtk(out)
     theme_kde(out)
     theme_hyprland_borders(out)
-    theme_emacs(out)
     theme_alacritty(out)
     theme_rofi(out)
     theme_tmux(out)
