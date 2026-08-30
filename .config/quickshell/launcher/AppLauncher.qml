@@ -198,7 +198,13 @@ PanelWindow {
     }
 
     // ---- window -------------------------------------------------
-    anchors { top: true; bottom: true; left: true; right: true }
+    // Sized box with partial anchors, not a 4-edge full-screen anchor -- the
+    // latter is an Overlay surface that doesn't reliably map on every output
+    // here (the volume OSD's unresolved bug); NotifLayer proved this shape
+    // maps everywhere.
+    anchors { top: true; left: true }
+    implicitWidth: root.screen ? root.screen.width : 1920
+    implicitHeight: root.screen ? root.screen.height : 1080
     color: "transparent"
     visible: root.open
     WlrLayershell.layer: WlrLayer.Overlay
