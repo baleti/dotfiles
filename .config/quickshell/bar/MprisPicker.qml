@@ -105,18 +105,14 @@ Item {
         event.accepted = true;
     }
 
-    // Dim backdrop; a click anywhere outside the card dismisses without
-    // touching the file.
-    Rectangle {
+    // Invisible full-screen backdrop (no dim) -- just there so a click
+    // anywhere outside the card dismisses without touching the file, and
+    // clicks don't fall through to whatever's behind while the picker is up.
+    MouseArea {
         anchors.fill: parent
-        color: Qt.rgba(0, 0, 0, 0.35)
-
-        MouseArea {
-            anchors.fill: parent
-            acceptedButtons: Qt.AllButtons
-            onClicked: MprisPickerState.close()
-            onWheel: wheel => wheel.accepted = true
-        }
+        acceptedButtons: Qt.AllButtons
+        onClicked: MprisPickerState.close()
+        onWheel: wheel => wheel.accepted = true
     }
 
     Rectangle {
