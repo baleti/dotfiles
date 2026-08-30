@@ -744,8 +744,22 @@ Rectangle {
                 clip: true
                 interactive: contentHeight > height
                 boundsBehavior: Flickable.StopAtBounds
+                flickDeceleration: 6000
                 model: dayList.rows
                 spacing: 3
+
+                // Mouse wheel: bigger step than the Flickable default so a
+                // long selection scrolls in a few notches. Touchpads fall
+                // through to the native pixel-precise scroll (not boosted).
+                WheelHandler {
+                    acceptedDevices: PointerDevice.Mouse
+                    onWheel: event => {
+                        const maxY = Math.max(0, dayListView.contentHeight - dayListView.height);
+                        const notches = event.angleDelta.y / 120;
+                        dayListView.contentY = Math.max(0, Math.min(maxY,
+                            dayListView.contentY - notches * 120));
+                    }
+                }
 
                 delegate: Item {
                     required property var modelData
@@ -811,26 +825,65 @@ Rectangle {
                 }
             }
 
-            // Hand-rolled vertical scrollbar (no QtQuick.Controls anywhere
-            // in this project) - visible only when the list overflows its
-            // allowed height; thumb tracks the Flickable's visibleArea.
+            // Hand-rolled vertical scrollbar (no QtQuick.Controls anywhere in
+            // this project) - visible only when the list overflows. The thumb
+            // is click-and-drag; clicking the empty track jumps there.
             Rectangle {
                 id: scrollBar
                 visible: dayListView.contentHeight > dayListView.height + 1
                 anchors.right: parent.right
-                anchors.rightMargin: 4
+                anchors.rightMargin: 3
                 y: dayListView.y
-                width: 3
+                width: 8
                 height: dayListView.height
-                radius: 1.5
-                color: Qt.rgba(1, 1, 1, 0.07)
+                radius: 4
+                color: Qt.rgba(1, 1, 1, 0.06)
+
+                readonly property real thumbH: Math.max(28, dayListView.visibleArea.heightRatio * height)
+                readonly property real travel: Math.max(1, height - thumbH)
+                readonly property real maxContentY: Math.max(0, dayListView.contentHeight - dayListView.height)
+
+                // Drive contentY from a thumb-top position (px, 0..travel).
+                function scrollToThumbTop(ty: real): void {
+                    const clamped = Math.max(0, Math.min(scrollBar.travel, ty));
+                    dayListView.contentY = (clamped / scrollBar.travel) * scrollBar.maxContentY;
+                }
 
                 Rectangle {
+                    id: thumb
                     width: parent.width
-                    radius: 1.5
-                    color: Theme.textDim
-                    height: Math.max(24, dayListView.visibleArea.heightRatio * parent.height)
-                    y: dayListView.visibleArea.yPosition * parent.height
+                    radius: 4
+                    height: scrollBar.thumbH
+                    y: Math.min(scrollBar.travel, dayListView.visibleArea.yPosition * scrollBar.height)
+                    color: sbArea.pressed ? Theme.text
+                        : (sbArea.containsMouse ? Theme.textDim : Qt.rgba(1, 1, 1, 0.28))
+                }
+
+                MouseArea {
+                    id: sbArea
+                    anchors.fill: parent
+                    // Widen the hit area well past the 8px bar so it's easy
+                    // to grab with the mouse.
+                    anchors.leftMargin: -14
+                    anchors.topMargin: -4
+                    anchors.bottomMargin: -4
+                    hoverEnabled: true
+                    preventStealing: true
+                    property real grabOffset: 0
+
+                    onPressed: mouse => {
+                        const ty = mouse.y + anchors.topMargin; // back to scrollBar coords
+                        if (ty >= thumb.y && ty <= thumb.y + thumb.height) {
+                            grabOffset = ty - thumb.y;
+                        } else {
+                            grabOffset = thumb.height / 2;
+                            scrollBar.scrollToThumbTop(ty - grabOffset);
+                        }
+                    }
+                    onPositionChanged: mouse => {
+                        if (pressed)
+                            scrollBar.scrollToThumbTop(mouse.y + anchors.topMargin - grabOffset);
+                    }
                 }
             }
         }
