@@ -152,11 +152,15 @@ Rectangle {
     }
     // fallbackColor covers every existing org kind (scheduled/timestamp
     // pass their caller's normal/done/dimmed color through unchanged) -
-    // only google/holiday/deadline get an override here.
+    // only google/holiday/deadline get an override here. Holiday uses a
+    // seriesPalette slot (same wallpaper-derived distinguishable-hues
+    // mechanism as the sysmon CPU-core/network-interface colors), not a
+    // hardcoded value - Theme.orange exists but is Bar.qml's own fixed
+    // swap-usage color, unrelated to this and not reused here.
     function colorForKind(kind: string, fallbackColor: color): color {
         if (kind === "deadline") return Theme.red;
         if (kind === "google") return Theme.cyan;
-        if (kind === "holiday") return Theme.orange;
+        if (kind === "holiday") return Theme.seriesPalette[5];
         return fallbackColor;
     }
 
