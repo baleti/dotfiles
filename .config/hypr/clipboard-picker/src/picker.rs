@@ -87,6 +87,22 @@ fn is_verb(rest: &str) -> bool {
     VERB_FORMS.contains(&rest)
 }
 
+/// `(long-form alias, one-line description)` for a short verb form, for the
+/// marginalia-style autocomplete hints (query-dsl.md's "Suggestion row
+/// anatomy"). Keep these strings in sync with that doc's table and
+/// QueryDsl.qml's `verbInfo`.
+fn verb_meta(short: &str) -> (&'static str, &'static str) {
+    match short {
+        "fv" => ("/filter-value", "keep rows whose value matches (substring)"),
+        "ft" => ("/filter-type", "show only the matching columns"),
+        "at" => ("/add-type", "add the matching columns"),
+        "rt" => ("/remove-type", "drop the matching columns"),
+        "s" => ("/sort", "order rows by one field, optional asc / desc"),
+        "rv" => ("/reverse", "flip the current order"),
+        _ => ("", ""),
+    }
+}
+
 /// One `/fv field:value` selector. `field` is resolved by substring
 /// against the picker's known field names (unioned - an ambiguous typed
 /// field matches if any resolved field's value matches); `value` is
@@ -122,6 +138,7 @@ struct State {
     entries: Vec<Entry>,
     query: RefCell<Query>,
     field_names: Vec<&'static str>,
+    field_descs: Vec<(&'static str, &'static str)>,
     suggestions: RefCell<Vec<String>>,
     suggestion_idx: RefCell<usize>,
     suggestion_start: RefCell<usize>,
@@ -459,6 +476,10 @@ pub struct PickerConfig {
     /// (autocompleted, see `update_suggestions`); empty if this picker has
     /// no named-field dimension at all, just free-text search.
     pub field_names: Vec<&'static str>,
+    /// `(field, one-line description)` for the marginalia hint shown next to
+    /// a field name in the autocomplete popup. Fields absent here just show
+    /// no description. Empty vec = no descriptions anywhere.
+    pub field_descs: Vec<(&'static str, &'static str)>,
     pub placeholder: String,
     pub width_fraction: f64,
     /// Maximum height as a fraction of the monitor height; the window shrinks
@@ -561,15 +582,54 @@ fn hide_suggestions(list: &gtk::ListBox, state: &Rc<State>) {
 /// list. Ported from winswitch's `ui.rs::populate_suggestions`, which hit
 /// this as a real bug (the popup silently never appeared) before landing
 /// on this fix -- see that commit if this regresses again.
-fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
-    for item in items {
+/// One rendered autocomplete row: the visible label, plus a greyed
+/// long-form alias and a greyed one-line description (marginalia -- see
+/// query-dsl.md's "Suggestion row anatomy"). `alias` / `desc` empty ->
+/// that part is omitted.
+struct SuggestRow {
+    label: String,
+    alias: String,
+    desc: String,
+}
+
+fn dim_label(text: &str) -> gtk::Label {
+    // Pango `alpha` is relative to the resolved text colour, so this stays
+    // readable on both the normal and the selected-row background without
+    // hard-coding a grey.
+    let l = gtk::Label::new(None);
+    l.set_markup(&format!(
+        "<span alpha='55%'>{}</span>",
+        gtk::glib::markup_escape_text(text)
+    ));
+    l.set_halign(gtk::Align::Start);
+    l
+}
+
+fn populate_suggestions(list: &gtk::ListBox, rows: &[SuggestRow]) {
+    for r in rows {
         let row = gtk::ListBoxRow::new();
-        let label = gtk::Label::new(Some(item));
+        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+
+        let label = gtk::Label::new(Some(&r.label));
         label.set_halign(gtk::Align::Start);
-        row.add(&label);
+        hbox.add(&label);
+        label.show();
+
+        if !r.alias.is_empty() {
+            let a = dim_label(&format!("({})", r.alias));
+            hbox.add(&a);
+            a.show();
+        }
+        if !r.desc.is_empty() {
+            let d = dim_label(&r.desc);
+            hbox.add(&d);
+            d.show();
+        }
+
+        row.add(&hbox);
+        hbox.show();
         list.add(&row);
         row.show();
-        label.show();
     }
     list.show();
 }
@@ -602,7 +662,36 @@ fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
         hide_suggestions(list, state);
         return;
     }
-    populate_suggestions(list, &items);
+
+    let rows: Vec<SuggestRow> = items
+        .iter()
+        .map(|item| match &kind {
+            SuggestionKind::Verb => {
+                let (alias, desc) = verb_meta(item);
+                SuggestRow {
+                    label: format!("/{item}"),
+                    alias: alias.to_string(),
+                    desc: desc.to_string(),
+                }
+            }
+            SuggestionKind::Field => {
+                let desc = state
+                    .field_descs
+                    .iter()
+                    .find(|(f, _)| *f == item.as_str())
+                    .map(|(_, d)| d.to_string())
+                    .unwrap_or_default();
+                SuggestRow { label: item.clone(), alias: String::new(), desc }
+            }
+            SuggestionKind::Value(_) => SuggestRow {
+                label: item.clone(),
+                alias: String::new(),
+                desc: String::new(),
+            },
+        })
+        .collect();
+
+    populate_suggestions(list, &rows);
     *state.suggestions.borrow_mut() = items;
     *state.suggestion_start.borrow_mut() = start;
     *state.suggestion_kind.borrow_mut() = Some(kind);
@@ -671,6 +760,7 @@ pub fn run(
         entries,
         query: RefCell::new(parse_query("", &field_names)),
         field_names,
+        field_descs: config.field_descs.clone(),
         suggestions: RefCell::new(Vec::new()),
         suggestion_idx: RefCell::new(0),
         suggestion_start: RefCell::new(0),

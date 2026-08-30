@@ -338,15 +338,86 @@ fn hide_suggestions(list: &gtk::ListBox, state: &Rc<State>) {
     *state.suggestion_kind.borrow_mut() = None;
 }
 
-/// Populates `list` with one row per entry in `items` and reveals it -- the
+/// `(long-form alias, one-line description)` for a short verb form, for the
+/// marginalia-style autocomplete hints (query-dsl.md's "Suggestion row
+/// anatomy"). Keep in sync with that doc's table, picker.rs's `verb_meta`
+/// and QueryDsl.qml's `verbInfo`.
+fn verb_meta(short: &str) -> (&'static str, &'static str) {
+    match short {
+        "fv" => ("/filter-value", "keep windows whose value matches (substring)"),
+        "ft" => ("/filter-type", "show only the matching columns"),
+        "at" => ("/add-type", "add the matching columns"),
+        "rt" => ("/remove-type", "drop the matching columns"),
+        "s" => ("/sort", "order windows by one field, optional asc / desc"),
+        "rv" => ("/reverse", "flip the current order"),
+        _ => ("", ""),
+    }
+}
+
+/// One-line description of a type path (flat type or group) for the
+/// type-path autocomplete stage. `""` -> no description shown.
+fn type_desc(path: &str) -> &'static str {
+    match path {
+        "title" => "the window title",
+        "class" => "the app id / window class",
+        "workspace" => "the Hyprland workspace",
+        "pid" => "the process id",
+        "tmux" => "tmux session / window on this terminal",
+        "tmux.session" => "tmux session name",
+        "tmux.window" => "tmux window name",
+        "tmux.title" => "tmux window title",
+        "claude" => "Claude Code session on this terminal",
+        "claude.title" => "Claude Code session title",
+        "claude.path" => "Claude Code working directory",
+        "claude.session" => "Claude Code session id",
+        "claude.contents" => "Claude Code transcript text",
+        _ => "",
+    }
+}
+
+/// Greyed marginalia label -- Pango `alpha` is relative to the resolved
+/// text colour, so it stays readable on both the normal and selected-row
+/// backgrounds (same trick the result-grid `#N` prefix uses).
+fn dim_label(text: &str) -> gtk::Label {
+    let l = gtk::Label::new(None);
+    l.set_markup(&format!("<span alpha=\"55%\">{}</span>", glib::markup_escape_text(text)));
+    l.set_halign(gtk::Align::Start);
+    l
+}
+
+/// One rendered autocomplete row: visible label + greyed alias + greyed
+/// description (any of the latter two empty -> omitted).
+struct SuggestRow {
+    label: String,
+    alias: String,
+    desc: String,
+}
+
+/// Populates `list` with one row per entry in `rows` and reveals it -- the
 /// shared tail end of `update_suggestions` regardless of which completion
 /// stage is live.
-fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
-    for item in items {
+fn populate_suggestions(list: &gtk::ListBox, rows: &[SuggestRow]) {
+    for r in rows {
         let row = gtk::ListBoxRow::new();
-        let label = gtk::Label::new(Some(item));
+        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+
+        let label = gtk::Label::new(Some(&r.label));
         label.set_halign(gtk::Align::Start);
-        row.add(&label);
+        hbox.add(&label);
+        label.show();
+        if !r.alias.is_empty() {
+            let a = dim_label(&format!("({})", r.alias));
+            hbox.add(&a);
+            a.show();
+        }
+        if !r.desc.is_empty() {
+            let d = dim_label(&r.desc);
+            hbox.add(&d);
+            d.show();
+        }
+
+        row.add(&hbox);
+        hbox.show();
         list.add(&row);
         // `no-show-all` on `list` (set at construction, so the one-time
         // `win.show_all()` in `run()` doesn't prematurely reveal an empty
@@ -358,9 +429,9 @@ fn populate_suggestions(list: &gtk::ListBox, items: &[String]) {
         // `list.show()` below (a direct call, unlike show_all(), always
         // works regardless of no-show-all) is what actually reveals the
         // list -- same "set_no_show_all(false)-or-explicit-show()" pattern
-        // `search` already uses a few lines up in `run()`.
+        // `search` already uses a few lines up in `run()`. The row's
+        // children are shown as they're built above.
         row.show();
-        label.show();
     }
     list.show();
 }
@@ -394,7 +465,23 @@ fn update_suggestions(query_text: &str, list: &gtk::ListBox, state: &Rc<State>) 
         query::Completion::Value { start, field, .. } => (*start, SuggestionKind::Value(field.key())),
     };
 
-    populate_suggestions(list, &items);
+    let rows: Vec<SuggestRow> = items
+        .iter()
+        .map(|item| match &kind {
+            SuggestionKind::Verb => {
+                let (alias, desc) = verb_meta(item);
+                SuggestRow { label: format!("/{item}"), alias: alias.into(), desc: desc.into() }
+            }
+            SuggestionKind::TypePath(_) => {
+                SuggestRow { label: item.clone(), alias: String::new(), desc: type_desc(item).into() }
+            }
+            SuggestionKind::SortDirection | SuggestionKind::Value(_) => {
+                SuggestRow { label: item.clone(), alias: String::new(), desc: String::new() }
+            }
+        })
+        .collect();
+
+    populate_suggestions(list, &rows);
     *state.suggestions.borrow_mut() = items;
     *state.suggestion_start.borrow_mut() = start;
     *state.suggestion_kind.borrow_mut() = Some(kind);
