@@ -71,9 +71,12 @@ def main():
     elif cmd == "click":
         x, y = float(sys.argv[3]), float(sys.argv[4])
         send(ws, "Input.dispatchMouseEvent",
-             {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1}, msg_id=1)
+             {"type": "mouseMoved", "x": x, "y": y, "buttons": 0}, msg_id=1)
         send(ws, "Input.dispatchMouseEvent",
-             {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1}, msg_id=2)
+             {"type": "mousePressed", "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1}, msg_id=2)
+        time.sleep(0.05)
+        send(ws, "Input.dispatchMouseEvent",
+             {"type": "mouseReleased", "x": x, "y": y, "button": "left", "buttons": 0, "clickCount": 1}, msg_id=3)
         print("ok")
     elif cmd == "type":
         text = sys.argv[3]
@@ -92,6 +95,20 @@ def main():
         send(ws, "Input.dispatchKeyEvent", {"type": "keyDown", **kd}, msg_id=1)
         send(ws, "Input.dispatchKeyEvent", {"type": "keyUp", **kd}, msg_id=2)
         print("ok")
+    elif cmd == "jsclick":
+        # Fallback for pages where synthetic Input.dispatchMouseEvent
+        # doesn't register (seen on some Google accounts.google.com
+        # consent pages) - dispatches a real .click() on the first
+        # button/element whose trimmed text matches exactly.
+        text = sys.argv[3]
+        js = (
+            "(function(){const t=" + json.dumps(text) + ";"
+            "const els=[...document.querySelectorAll('button,div[role=button],span,a')]"
+            ".filter(e=>e.textContent.trim()===t);"
+            "if(els.length){els[0].click();return 'clicked'} return 'not found'})()"
+        )
+        r = send(ws, "Runtime.evaluate", {"expression": js, "returnByValue": True}, msg_id=1)
+        print(r.get("result", {}).get("result", {}).get("value"))
     elif cmd == "eval":
         r = send(ws, "Runtime.evaluate", {"expression": sys.argv[3], "returnByValue": True}, msg_id=1)
         print(json.dumps(r.get("result", {}).get("result", {}).get("value")))
