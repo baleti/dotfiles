@@ -6,11 +6,12 @@ import "../theme"
 import "../services"
 
 // Application launcher -- replaces `rofi -show drun` (mod + Super_l). Just
-// launches apps: no run-a-command, no calc, no window mode. Search box
-// speaks the shared picker DSL (QueryDsl.qml / ~/.config/docs/query-dsl.md):
-// bare text + /fv over name/comment/generic/exec/categories/keywords, /s
-// and /rv for order. One instance per monitor; only the focused one is
-// ever shown (shell.qml's IpcHandler targets Hyprland.focusedMonitor).
+// launches apps: icon + name, nothing else (no descriptions, no
+// run-a-command / calc / window modes). Search box speaks the shared
+// picker DSL (QueryDsl.qml / ~/.config/docs/query-dsl.md): bare text + /fv
+// over name/exec/categories/keywords, /s and /rv for order. The column
+// verbs (/ft /at /rt) are inert here -- there are no columns to toggle.
+// One instance per monitor; only the focused one is ever shown.
 PanelWindow {
     id: root
 
@@ -21,8 +22,15 @@ PanelWindow {
     // back into it.
     property bool open: false
 
-    // Type names filterable / sortable via the DSL.
-    readonly property var typeNames: ["name", "comment", "generic", "exec", "categories", "keywords"]
+    // Type names filterable / sortable via the DSL (comment + genericName
+    // are still in the free-text haystack, just not named scoped fields).
+    readonly property var typeNames: ["name", "exec", "categories", "keywords"]
+    readonly property var typeDescs: ({
+        "name": "the application name",
+        "exec": "the launch command",
+        "categories": "freedesktop Categories= entries",
+        "keywords": "freedesktop Keywords= entries"
+    })
 
     function _recompute() {
         root.open = LauncherState.active && LauncherState.monitor === root.screen.name;
@@ -80,8 +88,6 @@ PanelWindow {
     function _fieldVals(app, field) {
         switch (field) {
         case "name": return [app.name];
-        case "comment": return [app.comment];
-        case "generic": return [app.generic];
         case "exec": return [app.exec];
         case "categories": return app.categories;
         case "keywords": return app.keywords;
@@ -148,7 +154,11 @@ PanelWindow {
         return rows;
     }
 
-    onResultsChanged: if (root.selected >= results.length) root.selected = Math.max(0, results.length - 1)
+    onResultsChanged: {
+        if (root.selected >= results.length)
+            root.selected = Math.max(0, results.length - 1);
+        root._measure();
+    }
 
     function launch(i) {
         const app = root.results[i];
@@ -158,38 +168,44 @@ PanelWindow {
         root.hide();
     }
 
-    // ---- extra columns shown per row (name is always shown) ---------
-    readonly property var extraCols: {
-        let cols = ["comment"]; // launcher default: name + comment subtitle
-        for (const c of root.parsed.cols) {
-            const hit = QueryDsl.resolvePath(c.path, root.typeNames);
-            if (c.op === "filter") cols = cols.filter(x => hit.indexOf(x) >= 0);
-            else if (c.op === "add") for (const h of hit) if (cols.indexOf(h) < 0) cols.push(h);
-            else if (c.op === "remove") cols = cols.filter(x => hit.indexOf(x) < 0);
-        }
-        return cols;
-    }
-    function _colText(app, col) {
-        const v = root._fieldVals(app, col);
-        return Array.isArray(v) ? v.join(", ") : String(v[0] || "");
-    }
+    // Resolve every app's icon name to a real file path once the entry set
+    // is known (quickshell's own provider misses the hicolor fallback here).
+    onAppsChanged: LauncherIcons.resolve(root.apps.map(a => a.entry.icon))
 
-    // ---- autocomplete --------------------------------------------
-    // Minimal: verb stage (/frag) and /fv path stage. Value/direction
-    // completion (DSL stages 3-4) left for later.
+    // ---- autocomplete (marginalia-style) --------------------------
+    // Rows carry: what accepting inserts (`text`), the short label, the
+    // long-form alias, and a one-line description -- alias + desc rendered
+    // grey, like emacs marginalia / zsh completion hints. Stages: verb
+    // (`/frag`, only the verbs that do something here) and `/fv path`
+    // (before the `:`), including the bare `/fv ` / `/s ` case (empty
+    // fragment -> all candidates).
+    readonly property var _verbInfo: ({
+        "/fv": { alias: "/filter-value", desc: "keep entries whose value matches (substring)" },
+        "/s":  { alias: "/sort",         desc: "order entries by a field, optional asc / desc" },
+        "/rv": { alias: "/reverse",      desc: "flip the current order" }
+    })
+    readonly property var _acVerbs: ["/fv", "/s", "/rv"] // /ft /at /rt are inert here
+
     function _acCandidates() {
         const t = query.text;
-        const m = t.match(/(^|\s)(\/[a-z-]*)$/);
-        if (m) {
-            const frag = m[2];
-            return QueryDsl.shortVerbs.filter(v => v.indexOf(frag.slice(1)) >= 0)
-                .map(v => ({ text: v + " ", label: v }));
+
+        const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
+        if (vm) {
+            const frag = vm[1].slice(1);
+            return root._acVerbs.filter(v => v.indexOf(frag) >= 0).map(v => ({
+                text: v + " ", label: v,
+                alias: root._verbInfo[v].alias, desc: root._verbInfo[v].desc
+            }));
         }
-        const fv = t.match(/\/fv\s+([a-z]*)$/);
-        if (fv) {
-            const frag = fv[1];
-            return root.typeNames.filter(n => n.indexOf(frag) >= 0)
-                .map(n => ({ text: t.slice(0, t.length - frag.length) + n + ":", label: n }));
+
+        const pm = t.match(/(?:\/fv|\/filter-value|\/s|\/sort)\s+([a-z.]*)$/);
+        if (pm && t.indexOf(":", t.length - pm[1].length) < 0) {
+            const frag = pm[1];
+            const isFv = /\/fv|\/filter-value/.test(t.slice(0, t.length - frag.length));
+            return root.typeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
+                text: t.slice(0, t.length - frag.length) + n + (isFv ? ":" : " "),
+                label: n, alias: "", desc: root.typeDescs[n] || ""
+            }));
         }
         return [];
     }
@@ -203,6 +219,29 @@ PanelWindow {
         query.text = it.text;
         query.cursorPosition = query.text.length;
     }
+
+    // ---- dynamic card width: fit the widest visible name -----------
+    // Measured imperatively (from onResultsChanged) into a plain property --
+    // reading TextMetrics.width inside the width *binding* while also
+    // setting its text there is a binding loop.
+    TextMetrics {
+        id: nameMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 1
+    }
+    property real _widestName: 0
+    function _measure() {
+        let w = 0;
+        const n = Math.min(root.results.length, 13);
+        for (let i = 0; i < n; i++) {
+            nameMetrics.text = root.results[i].name;
+            if (nameMetrics.width > w) w = nameMetrics.width;
+        }
+        root._widestName = w;
+    }
+    // icon gutter (40) + name + right padding (28); floored so the search
+    // box always fits, capped so it never sprawls.
+    readonly property real cardWidth: Math.max(360, Math.min(560, root._widestName + 68))
 
     // ---- window -------------------------------------------------
     // Sized box with partial anchors, not a 4-edge full-screen anchor -- the
@@ -235,13 +274,15 @@ PanelWindow {
         id: card
         anchors.horizontalCenter: parent.horizontalCenter
         y: Math.round(parent.height * 0.18)
-        width: 620
+        width: root.cardWidth
         height: header.height + list.height + (ac.visible ? ac.height : 0)
         radius: Theme.rounding
         color: Theme.bgAlpha
         // Thin border in the wallpaper-derived accent (scheme.primary).
         border.color: Theme.cyan
         border.width: 1
+
+        Behavior on width { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
         // Swallow clicks so they don't reach the backdrop.
         MouseArea { anchors.fill: parent }
 
@@ -274,7 +315,7 @@ PanelWindow {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("search apps   ·   /  for filters")
+                    text: qsTr("search apps   ·   / ")
                     color: Theme.muted
                     font: query.font
                     visible: query.text.length === 0
@@ -313,36 +354,63 @@ PanelWindow {
             }
         }
 
-        // Autocomplete popup, in-layout under the header (like the GTK pickers).
+        // Autocomplete popup, in-layout under the header (like the GTK
+        // pickers). Each row: label, then the long-form alias and a
+        // one-line description, both dim (marginalia).
         Column {
             id: ac
             visible: false
             anchors.top: header.bottom
             width: parent.width
-            height: visible ? Math.min(root.acItems.length, 6) * 26 + 8 : 0
+            height: visible ? Math.min(root.acItems.length, 7) * 24 + 8 : 0
             clip: true
             padding: 4
 
             Repeater {
                 model: root.acItems
                 Rectangle {
+                    id: acRow
                     required property var modelData
                     required property int index
+                    readonly property bool cur: index === root.acSel
                     width: ac.width - 8
-                    height: 26
+                    height: 24
                     radius: Theme.rounding - 5
-                    color: index === root.acSel ? Theme.cyan : "transparent"
-                    Text {
+                    color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
+
+                    Row {
+                        id: acFields
                         anchors.verticalCenter: parent.verticalCenter
                         x: 10
-                        text: modelData.label
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 1
-                        color: index === root.acSel ? Theme.bg : Theme.text
+                        spacing: 8
+
+                        Text {
+                            id: acLabel
+                            text: acRow.modelData.label
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
+                            color: acRow.cur ? Theme.cyan : Theme.text
+                        }
+                        Text {
+                            visible: !!acRow.modelData.alias
+                            anchors.baseline: acLabel.baseline
+                            text: "(" + acRow.modelData.alias + ")"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            color: Theme.muted
+                        }
+                        Text {
+                            anchors.baseline: acLabel.baseline
+                            text: acRow.modelData.desc
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            color: Theme.textDim
+                        }
                     }
+
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: { root.acSel = index; root.acAccept(); }
+                        onClicked: { root.acSel = acRow.index; root.acAccept(); }
                     }
                 }
             }
@@ -360,8 +428,7 @@ PanelWindow {
             topMargin: 4
             bottomMargin: 4
 
-            // One compact line per entry (rofi-style): icon, name, then any
-            // extra DSL columns dimmed and elided on the same line.
+            // One compact line per entry: icon + name, nothing else.
             delegate: Rectangle {
                 required property var modelData
                 required property int index
@@ -380,9 +447,12 @@ PanelWindow {
                     sourceSize.height: 40
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
-                    source: Quickshell.iconPath(modelData.entry.icon, "application-x-executable")
+                    // Our own XDG resolution first, quickshell's provider as
+                    // a fallback for anything it misses.
+                    source: LauncherIcons.pathFor(modelData.entry.icon)
+                            || Quickshell.iconPath(modelData.entry.icon, "application-x-executable")
                 }
-                // Generic glyph when the theme has no icon for this app.
+                // Generic glyph when no icon resolves at all.
                 Text {
                     anchors.centerIn: appIcon
                     visible: appIcon.status !== Image.Ready
@@ -393,28 +463,14 @@ PanelWindow {
                 }
 
                 Text {
-                    id: appName
                     x: 40
                     anchors.verticalCenter: parent.verticalCenter
-                    width: Math.min(implicitWidth, parent.width * 0.55)
+                    width: parent.width - 52
                     text: modelData.name
                     elide: Text.ElideRight
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1
                     color: Theme.text
-                }
-
-                Text {
-                    anchors.left: appName.right
-                    anchors.leftMargin: 8
-                    anchors.right: parent.right
-                    anchors.rightMargin: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: root.extraCols.map(c => root._colText(modelData, c)).filter(s => !!s).join("  ·  ")
-                    elide: Text.ElideRight
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 2
-                    color: Theme.textDim
                 }
 
                 MouseArea {

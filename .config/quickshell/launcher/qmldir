@@ -1,3 +1,4 @@
 singleton QueryDsl 1.0 QueryDsl.qml
 singleton LauncherHistory 1.0 LauncherHistory.qml
+singleton LauncherIcons 1.0 LauncherIcons.qml
 AppLauncher 1.0 AppLauncher.qml
