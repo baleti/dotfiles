@@ -16,6 +16,16 @@ QtObject {
         "/filter-value": "/fv", "/filter-type": "/ft", "/add-type": "/at",
         "/remove-type": "/rt", "/sort": "/s", "/reverse": "/rv"
     })
+    // { short: { long, desc } } -- the long-form alias + a one-line
+    // description, for marginalia-style autocomplete hints (query-dsl.md).
+    readonly property var verbInfo: ({
+        "/fv": { long: "/filter-value", desc: "keep rows whose value matches (substring)" },
+        "/ft": { long: "/filter-type",  desc: "show only the matching columns" },
+        "/at": { long: "/add-type",     desc: "add the matching columns" },
+        "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
+        "/s":  { long: "/sort",         desc: "order rows by one field, optional asc / desc" },
+        "/rv": { long: "/reverse",      desc: "flip the current order" }
+    })
 
     // Split on whitespace, keeping "quoted runs" as one token (quotes stripped).
     function tokenize(text) {

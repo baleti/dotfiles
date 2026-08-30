@@ -1,17 +1,19 @@
 # Picker query DSL
 
 The small query language typed into the search box of every fzf-driven
-picker in this repo, plus winswitch's grid search and the GTK
-clipboard/notification pickers. Arrived at independently in
-`window-search.py`, then reused (by hand, not by import) in
-`claude-history` and `focus-picker.py`, then reimplemented in Rust for
-winswitch's `query.rs`, then ported by hand a second time into the shared
-`picker.rs` engine behind clipboard-picker and notification-picker. Stays
-copy-pasted rather than a shared library on purpose - the implementations
-split across two languages and differ enough in what they're searching
-(ranked scrollback vs. an unranked couple-dozen windows) that a shared
-abstraction was judged not worth it - so this doc is what keeps the
-*semantics* consistent even though the code doesn't.
+picker in this repo, plus winswitch's grid search, the GTK
+clipboard/notification pickers, and the quickshell app launcher. Arrived
+at independently in `window-search.py`, then reused (by hand, not by
+import) in `claude-history` and `focus-picker.py`, then reimplemented in
+Rust for winswitch's `query.rs`, then ported by hand a second time into
+the shared `picker.rs` engine behind clipboard-picker and
+notification-picker, then a third time into JS for the quickshell
+launcher (`QueryDsl.qml`). Stays copy-pasted rather than a shared library
+on purpose - the implementations split across three languages and differ
+enough in what they're searching (ranked scrollback vs. an unranked
+couple-dozen windows) that a shared abstraction was judged not worth it -
+so this doc is what keeps the *semantics* consistent even though the code
+doesn't.
 
 | Name | File | Searches |
 |---|---|---|
@@ -21,6 +23,7 @@ abstraction was judged not worth it - so this doc is what keeps the
 | winswitch | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
 | clipboard-picker | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
 | notification-picker | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
+| app-launcher | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML, mod+Super_l) |
 
 See [tmux.md](tmux.md) for the tmux bindings and [rust-tools.md](rust-tools.md)
 for winswitch and the GTK pickers.
@@ -251,7 +254,8 @@ Typing `/` alone is enough to discover the whole grammar. All the GTK
 pickers (winswitch, clipboard-picker, notification-picker) grow a
 GTK-native completion popup - a plain in-layout `GtkListBox` under the
 search entry, not a `GtkPopover` (gtk-layer-shell's layer surface has no
-xdg_popup positioner to anchor one to). Stages:
+xdg_popup positioner to anchor one to); the quickshell app launcher grows
+the equivalent in QML. Stages:
 
 1. **Verb** (`/frag`, nothing after it yet): candidates are every short
    verb form whose name contains `frag` as a substring (`/f` -> `/fv`,
@@ -269,6 +273,51 @@ xdg_popup positioner to anchor one to). Stages:
 4. **Sort direction** (`/s path frag`, `path` unambiguous): candidates
    are `ascending` / `descending`, narrowed by `frag`.
 
+**An empty fragment lists everything for that stage.** `/` alone is all
+six verbs; `/ft ` / `/at ` / `/rt ` / `/s ` / `/fv ` (verb, one space,
+nothing typed yet) is every type name; `/fv path: ` is every value that
+type has. The popup does not wait for a first character - the whole point
+is that it can be *discovered*, not just narrowed.
+
+### Suggestion row anatomy
+
+Each row is three fields, left to right, in the style of emacs
+`marginalia` / zsh's completion descriptions:
+
+```
+/ft   (/filter-type)   show only the matching columns
+└─┬─  └──────┬──────┘   └──────────────┬─────────────┘
+ what      the long-form alias,        a one-line description
+ accepting  greyed - a hint that       of what the verb does,
+ inserts    /ft *is* /filter-type,     also greyed
+            not a second command
+```
+
+- **Verb stage**: label is the short form; the alias is its `/long-form`
+  in parens, greyed; the description is the verb's one-liner (below).
+- **Type-path stage**: label is the type (or group) name; no alias; the
+  description is what that field/group *is* in this picker (e.g. `title`
+  -> "the window title", `claude` -> "Claude Code session metadata").
+  A picker with no per-field blurbs may leave the description empty.
+- **Value / direction stages**: label only; these are concrete data, not
+  grammar, so there's nothing to describe.
+
+Only the alias and description are greyed; the label itself takes the
+normal / selected-row colour. A picker that can't render three columns
+(the BM25 single-line pickers) shows the label alone.
+
+Verb one-liners (keep these consistent across implementations - the
+quickshell launcher reads them from `QueryDsl.qml`'s `verbInfo`):
+
+| Verb | Alias | Description |
+|---|---|---|
+| `/fv` | `/filter-value` | keep rows whose value matches (substring) |
+| `/ft` | `/filter-type` | show only the matching columns |
+| `/at` | `/add-type` | add the matching columns |
+| `/rt` | `/remove-type` | drop the matching columns |
+| `/s` | `/sort` | order rows by one field, optional asc / desc |
+| `/rv` | `/reverse` | flip the current order |
+
 Shared popup UI: `Tab` accepts the highlighted suggestion; `Ctrl+j` /
 `Ctrl+k` move the highlight (clamped, not wrapped); `Escape` dismisses
 just the popup, never the picker. One bug worth remembering if the popup
@@ -277,6 +326,12 @@ ever silently stops appearing: a `GtkListBox` built with `no-show-all`
 popup) also ignores a *later* `show_all()` meant to reveal it - every
 row/label has to be shown explicitly and the list revealed with a direct
 `.show()`.
+
+**Per-picker autocomplete scope.** A picker only offers the verbs that do
+something for it. The app launcher shows no columns, so it offers `/fv`,
+`/s`, `/rv` only - `/ft`/`/at`/`/rt` are still *parsed* (shared grammar)
+but inert, so they're left out of the popup rather than suggested and
+then ignored.
 
 ## Resolution, precisely
 
