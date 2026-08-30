@@ -257,7 +257,15 @@ Rectangle {
     // pattern as GraphPill's `expandWidth`; see quickshell-bar.md's "Panel
     // width sizing" section). 300 is only the standalone-preview fallback.
     property real panelWidth: 300
-    width: panelWidth
+    // "Big mode": opened via the mod+CTRL+c keybind / clock click (Bar.qml
+    // binds this to clockPinned), as opposed to a passing hover. Widens the
+    // panel to `bigWidth` and switches the month grid from dot-only cells to
+    // tall cells that print each day's event titles underneath the number,
+    // month-view style. Hover stays the compact dot version.
+    property bool bigMode: false
+    property real bigWidth: 660
+    readonly property real effectiveWidth: bigMode ? Math.max(panelWidth, bigWidth) : panelWidth
+    width: effectiveWidth
     implicitHeight: expanded ? content.implicitHeight + 24 : 0
     height: implicitHeight
     visible: height > 0
@@ -341,7 +349,7 @@ Rectangle {
             width: parent.width
             columns: 7
             rowSpacing: 4
-            columnSpacing: 0
+            columnSpacing: root.bigMode ? 3 : 0
             visible: !root.yearPickerActive
 
             Repeater {
@@ -375,23 +383,72 @@ Rectangle {
                     readonly property bool hasOpenTask: dayTasks.some(t => !t.done)
 
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 28
+                    Layout.preferredHeight: root.bigMode ? 66 : 28
                     radius: Theme.rounding - 4
-                    color: isToday ? Theme.cyan : "transparent"
+                    color: isToday ? Theme.cyan
+                        : (root.bigMode && inMonth ? Qt.rgba(1, 1, 1, 0.03) : "transparent")
                     border.color: isSelected ? Theme.cyan : "transparent"
                     border.width: isSelected ? 1 : 0
 
                     Text {
-                        anchors.centerIn: parent
+                        anchors.centerIn: root.bigMode ? undefined : parent
+                        anchors.top: root.bigMode ? parent.top : undefined
+                        anchors.left: root.bigMode ? parent.left : undefined
+                        anchors.topMargin: 3
+                        anchors.leftMargin: 4
                         text: cell.modelData.getDate()
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 1
+                        font.bold: cell.isToday
                         color: {
                             if (cell.isToday)
                                 return "#1a1a1a";
                             if (!cell.inMonth)
                                 return Theme.muted;
                             return cell.isWeekend ? Theme.textDim : Theme.text;
+                        }
+                    }
+
+                    // Big mode: each day's event titles, stacked under the
+                    // number (time prefix when the entry has one). Capped at
+                    // 3 with a "+N" overflow line; full list is still one
+                    // click away in the day-list panel below the grid.
+                    Column {
+                        visible: root.bigMode && cell.dayTasks.length > 0
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.topMargin: 19
+                        anchors.leftMargin: 3
+                        anchors.rightMargin: 3
+                        spacing: 1
+
+                        Repeater {
+                            model: Math.min(3, cell.dayTasks.length)
+
+                            Text {
+                                required property int index
+                                readonly property var task: cell.dayTasks[index]
+                                width: parent.width
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                                textFormat: Text.PlainText
+                                text: (task.time ? task.time + " " : "") + task.text
+                                color: cell.isToday ? "#1a1a1a"
+                                    : (task.done || !cell.inMonth ? Theme.muted
+                                        : (task.kind === "deadline" ? Theme.red : Theme.text))
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 4
+                                font.strikeout: task.done
+                            }
+                        }
+
+                        Text {
+                            visible: cell.dayTasks.length > 3
+                            text: "+" + (cell.dayTasks.length - 3)
+                            color: cell.isToday ? "#1a1a1a" : Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
                         }
                     }
 
@@ -405,7 +462,7 @@ Rectangle {
                         anchors.bottom: parent.bottom
                         anchors.bottomMargin: 2
                         spacing: 2
-                        visible: cell.dayTasks.length > 0
+                        visible: !root.bigMode && cell.dayTasks.length > 0
 
                         Repeater {
                             model: Math.min(3, cell.dayTasks.length)

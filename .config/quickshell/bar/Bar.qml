@@ -647,6 +647,12 @@ Item {
         id: calendarExpanded
 
         panelWidth: root.panelWidth
+        // Pinned open (mod+CTRL+c or a clock click) -> the wide month-view
+        // layout with event titles under each day; a passing hover stays
+        // compact. bigWidth is clamped to the row's real available width so
+        // it can't run off the left edge on a narrow monitor.
+        bigMode: root.clockPinned
+        bigWidth: Math.min(660, root.panelAreaWidth)
         x: root.layoutFor("calendar").right - width
         y: root.panelYFor("calendar")
     }
