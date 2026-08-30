@@ -218,22 +218,22 @@ PanelWindow {
         onCleared: root.hide()
     }
 
-    // Dim backdrop; click outside the card closes.
-    Rectangle {
+    // Transparent backdrop -- no dim. Click outside the card closes.
+    MouseArea {
         anchors.fill: parent
-        color: Qt.rgba(0, 0, 0, 0.35)
-        MouseArea { anchors.fill: parent; onClicked: root.hide() }
+        onClicked: root.hide()
     }
 
     Rectangle {
         id: card
         anchors.horizontalCenter: parent.horizontalCenter
         y: Math.round(parent.height * 0.18)
-        width: 640
+        width: 620
         height: header.height + list.height + (ac.visible ? ac.height : 0)
         radius: Theme.rounding
         color: Theme.bgAlpha
-        border.color: Theme.border
+        // Thin border in the wallpaper-derived accent (scheme.primary).
+        border.color: Theme.cyan
         border.width: 1
         // Swallow clicks so they don't reach the backdrop.
         MouseArea { anchors.fill: parent }
@@ -241,7 +241,7 @@ PanelWindow {
         Item {
             id: header
             width: parent.width
-            height: 52
+            height: 44
 
             Text {
                 id: prompt
@@ -345,7 +345,7 @@ PanelWindow {
             id: list
             anchors.top: ac.visible ? ac.bottom : header.bottom
             width: parent.width
-            height: Math.min(root.results.length, 9) * 48 + 8
+            height: Math.min(root.results.length, 13) * 26 + 8
             clip: true
             model: root.results
             currentIndex: root.selected
@@ -353,22 +353,24 @@ PanelWindow {
             topMargin: 4
             bottomMargin: 4
 
+            // One compact line per entry (rofi-style): icon, name, then any
+            // extra DSL columns dimmed and elided on the same line.
             delegate: Rectangle {
                 required property var modelData
                 required property int index
                 width: list.width
-                height: 48
+                height: 26
                 color: index === root.selected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
                                                : "transparent"
 
                 Image {
                     id: appIcon
-                    x: 12
+                    x: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 30
-                    height: 30
-                    sourceSize.width: 60
-                    sourceSize.height: 60
+                    width: 17
+                    height: 17
+                    sourceSize.width: 34
+                    sourceSize.height: 34
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     source: Quickshell.iconPath(modelData.entry.icon, "application-x-executable")
@@ -376,29 +378,26 @@ PanelWindow {
 
                 Text {
                     id: appName
-                    x: 54
-                    width: parent.width - 66
-                    anchors.top: parent.top
-                    anchors.topMargin: subtitle.text.length > 0 ? 7 : 0
-                    anchors.bottom: subtitle.text.length > 0 ? undefined : parent.bottom
-                    verticalAlignment: subtitle.text.length > 0 ? Text.AlignTop : Text.AlignVCenter
+                    x: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, parent.width * 0.55)
                     text: modelData.name
                     elide: Text.ElideRight
                     font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize
+                    font.pixelSize: Theme.fontSize - 1
                     color: Theme.text
                 }
 
                 Text {
-                    id: subtitle
-                    x: 54
-                    width: parent.width - 66
-                    anchors.top: appName.bottom
-                    anchors.topMargin: 1
+                    anchors.left: appName.right
+                    anchors.leftMargin: 8
+                    anchors.right: parent.right
+                    anchors.rightMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
                     text: root.extraCols.map(c => root._colText(modelData, c)).filter(s => !!s).join("  ·  ")
                     elide: Text.ElideRight
                     font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 3
+                    font.pixelSize: Theme.fontSize - 2
                     color: Theme.textDim
                 }
 
