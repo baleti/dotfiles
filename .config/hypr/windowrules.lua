@@ -49,16 +49,6 @@ hl.window_rule({
     float = true,
 })
 
--- The ALT+CTRL+SHIFT+m player picker (~/.config/hypr/scripts/playerctl-picker.sh)
--- should overlay centered, not tile into the workspace like a normal window.
-hl.window_rule({
-    name  = "float-center-playerctl-picker",
-    match = { class = "^[Zz]enity$" },
-
-    float  = true,
-    center = true,
-})
-
 -- Background job-search automation (Playwright/Chromium, launched via
 -- ~/.local/share/architect-job-search/lib/browser.js with --class=ArchitectJobAutomation).
 -- These pop up headed (Cloudflare blocks headless on Dezeen) on whatever workspace is

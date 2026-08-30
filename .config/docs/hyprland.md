@@ -106,7 +106,6 @@ for `epic-mouse-v1`.
 - XWayland drag fix (no-focus for empty-class/title floating XWayland
   windows).
 - Float+position the `hyprland-run` launcher.
-- Float+center the playerctl zenity picker.
 - No-focus for `ArchitectJobAutomation`-classed windows — the headed
   Playwright/Chromium browser used by the job-search automation
   (`~/.local/share/architect-job-search/lib/browser.js`, not part of this
@@ -214,7 +213,6 @@ above:
 | `bar-toggle.sh` | Resolves the focused monitor's quickshell `Bar` instance and toggles one of its hover panels via its per-monitor `IpcHandler` target |
 | `cliphist-expire.sh` | Age-based expiry for cliphist (no timestamps in cliphist's DB, so a monotonic-id watermark recorded each run stands in for "older than N hours"); driven by `cliphist-expire.timer`/`.service` |
 | `notifyd-actions-menu.sh` | rofi picker over one notification's actions (replaces `dunstctl context`) |
-| `playerctl-picker.sh` | **superseded** — the old zenity player picker for `ALT+CTRL+SHIFT+m`, now `quickshell/bar/MprisPicker.qml`; kept in tree, not archived |
 | `playerctl-seek.sh` | 5s seek without a pause/play "kick" — confirmed unnecessary and harmful for the phone MPRIS bridge |
 | `set-wallpaper.sh` | The *sole* sanctioned way to change the wallpaper — see [theming.md](theming.md) |
 | `wallpaper-cycle.sh` / `wallpaper-rotate.sh` / `wallpaper-watch.sh` | See [theming.md](theming.md) |
