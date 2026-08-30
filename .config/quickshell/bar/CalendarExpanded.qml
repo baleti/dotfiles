@@ -106,12 +106,33 @@ Rectangle {
     }
 
     // ------------------------------------------------------------------
-    // Org agenda: ~/notes/orgzly/todo.org parsed by
-    // scripts/org-agenda.py into { "YYYY-MM-DD": [ {text,done,time,kind} ] }.
-    // Re-run each time the panel opens (and every 5 min while it stays
-    // open) so edits synced down from orgzly show up without a restart.
+    // Agenda sources: three independent scripts, each printing
+    // { "YYYY-MM-DD": [ {text,done,time,kind} ] } in the same shape -
+    //   org-agenda.py       -> ~/notes/orgzly/todo.org      (kind: scheduled/deadline/timestamp)
+    //   gcal-agenda.py      -> krajnik.dan's Google Calendar (kind: "google")
+    //   uk-holidays-agenda.py -> UK public holidays feed     (kind: "holiday")
+    // Kept as three separate properties (not merged in-place) so one
+    // source's async result never clobbers another's; agendaDays merges
+    // them reactively. Re-run each time the panel opens (and every 5 min
+    // while it stays open) so edits/new events show up without a restart.
     // ------------------------------------------------------------------
-    property var agendaDays: ({})
+    property var orgDays: ({})
+    property var googleDays: ({})
+    property var holidayDays: ({})
+
+    readonly property var agendaDays: {
+        const out = {};
+        const merge = src => {
+            for (const k in src)
+                out[k] = (out[k] || []).concat(src[k]);
+        };
+        // Holiday first, then Google, then org - sets the default
+        // per-day source grouping order the day-list panel renders in.
+        merge(root.holidayDays);
+        merge(root.googleDays);
+        merge(root.orgDays);
+        return out;
+    }
 
     function dateKey(d: date): string {
         const m = d.getMonth() + 1;
@@ -121,6 +142,29 @@ Rectangle {
     function tasksFor(d): var {
         return (d && root.agendaDays[root.dateKey(d)]) || [];
     }
+    // "org" is intentionally not a source label shown in the UI - it's
+    // the default/home source and the original single-source behaviour,
+    // only "google"/"holiday" entries need calling out as different.
+    function sourceLabel(kind: string): string {
+        if (kind === "google") return "Google Calendar";
+        if (kind === "holiday") return "UK Holiday";
+        return "";
+    }
+    // fallbackColor covers every existing org kind (scheduled/timestamp
+    // pass their caller's normal/done/dimmed color through unchanged) -
+    // only google/holiday/deadline get an override here.
+    function colorForKind(kind: string, fallbackColor: color): color {
+        if (kind === "deadline") return Theme.red;
+        if (kind === "google") return Theme.cyan;
+        if (kind === "holiday") return Theme.orange;
+        return fallbackColor;
+    }
+
+    function runAgendaProcs(): void {
+        agendaProc.running = true;
+        gcalProc.running = true;
+        holidayProc.running = true;
+    }
 
     Process {
         id: agendaProc
@@ -129,11 +173,40 @@ Rectangle {
             id: agendaOut
             onStreamFinished: {
                 try {
-                    const parsed = JSON.parse(agendaOut.text);
-                    root.agendaDays = parsed.days || {};
+                    root.orgDays = JSON.parse(agendaOut.text).days || {};
                 } catch (e) {
                     // Keep whatever we had; a transient parse/read failure
                     // just means the accents don't refresh this cycle.
+                }
+            }
+        }
+    }
+
+    Process {
+        id: gcalProc
+        command: ["python3", Quickshell.env("HOME") + "/.config/quickshell/scripts/gcal-agenda.py"]
+        stdout: StdioCollector {
+            id: gcalOut
+            onStreamFinished: {
+                try {
+                    root.googleDays = JSON.parse(gcalOut.text).days || {};
+                } catch (e) {
+                    // Same as above - keep the last good data.
+                }
+            }
+        }
+    }
+
+    Process {
+        id: holidayProc
+        command: ["python3", Quickshell.env("HOME") + "/.config/quickshell/scripts/uk-holidays-agenda.py"]
+        stdout: StdioCollector {
+            id: holidayOut
+            onStreamFinished: {
+                try {
+                    root.holidayDays = JSON.parse(holidayOut.text).days || {};
+                } catch (e) {
+                    // Same as above - keep the last good data.
                 }
             }
         }
@@ -143,7 +216,7 @@ Rectangle {
         interval: 5 * 60 * 1000
         repeat: true
         running: root.expanded
-        onTriggered: agendaProc.running = true
+        onTriggered: root.runAgendaProcs()
     }
 
     // Mouse ‹/› and Ctrl+Left/Right (Ctrl+h/l): shift the month and carry
@@ -177,7 +250,7 @@ Rectangle {
     // year-picker if it was left open.
     onExpandedChanged: {
         if (expanded) {
-            agendaProc.running = true;
+            root.runAgendaProcs();
         } else {
             root.goToday();
             root.exitYearPicker();
@@ -561,7 +634,7 @@ Rectangle {
                                 text: (task.time ? task.time + " " : "") + task.text
                                 color: cell.isToday ? "#1a1a1a"
                                     : (task.done || !cell.inMonth ? Theme.muted
-                                        : (task.kind === "deadline" ? Theme.red : Theme.text))
+                                        : root.colorForKind(task.kind, Theme.text))
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 4
                                 font.strikeout: task.done
@@ -593,12 +666,14 @@ Rectangle {
                             model: Math.min(3, cell.dayTasks.length)
 
                             Rectangle {
+                                required property int index
                                 width: 3
                                 height: 3
                                 radius: 1.5
                                 color: cell.isToday
                                     ? "#1a1a1a"
-                                    : (cell.hasOpenTask ? Theme.green : Theme.muted)
+                                    : root.colorForKind(cell.dayTasks[index].kind,
+                                        (cell.hasOpenTask ? Theme.green : Theme.muted))
                             }
                         }
                     }
@@ -722,8 +797,20 @@ Rectangle {
                         type: "header",
                         label: Qt.formatDate(g.date, multi ? "ddd d MMM" : "ddd d MMM yyyy")
                     });
-                    for (const t of g.tasks)
+                    // A source label row precedes each run of same-source
+                    // tasks (org's own label is "", so plain org entries -
+                    // the default/pre-existing behaviour - never get one).
+                    // Re-emitted on every transition, so interleaved
+                    // sources each get their own header rather than only
+                    // the first run.
+                    let lastLabel = null;
+                    for (const t of g.tasks) {
+                        const lbl = root.sourceLabel(t.kind);
+                        if (lbl && lbl !== lastLabel)
+                            out.push({ type: "source", label: lbl, kind: t.kind });
+                        lastLabel = lbl;
                         out.push({ type: "task", time: t.time, text: t.text, done: t.done, kind: t.kind });
+                    }
                     if (g.tasks.length === 0)
                         out.push({ type: "none" });
                 }
@@ -771,8 +858,12 @@ Rectangle {
                         id: group
                         width: parent.width
                         anchors.top: parent.top
-                        // Breathing room above each day header except the first.
-                        anchors.topMargin: (modelData.type === "header" && index > 0) ? 8 : 0
+                        // Breathing room above each day header except the
+                        // first, and a smaller gap above each source-label
+                        // group (including one right after a day header -
+                        // a little extra space there is fine).
+                        anchors.topMargin: (modelData.type === "header" && index > 0) ? 8
+                            : (modelData.type === "source" ? 4 : 0)
 
                         Text {
                             visible: modelData.type === "header"
@@ -782,6 +873,17 @@ Rectangle {
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
+                            font.bold: true
+                        }
+
+                        Text {
+                            visible: modelData.type === "source"
+                            width: parent.width
+                            elide: Text.ElideRight
+                            text: (modelData.label || "").toUpperCase()
+                            color: root.colorForKind(modelData.kind, Theme.textDim)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
                             font.bold: true
                         }
 
@@ -805,7 +907,7 @@ Rectangle {
                                 text: modelData.time
                                     ? modelData.time
                                     : (modelData.kind === "deadline" ? "due" : "·")
-                                color: modelData.kind === "deadline" ? Theme.red : Theme.textDim
+                                color: root.colorForKind(modelData.kind, Theme.textDim)
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 2
                             }
