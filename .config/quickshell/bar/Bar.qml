@@ -653,7 +653,10 @@ Item {
         // compact. bigWidth is clamped to the row's real available width so
         // it can't run off the left edge on a narrow monitor.
         bigMode: root.clockPinned
-        bigWidth: Math.min(660, root.panelAreaWidth)
+        // Half the monitor width - the month-view cells + the grouped
+        // agenda list need the room. Clamped to the row's real free width
+        // so it still can't run off the left edge.
+        bigWidth: Math.min(root.screen.width / 2, root.panelAreaWidth)
         x: root.layoutFor("calendar").right - width
         y: root.panelYFor("calendar")
     }
