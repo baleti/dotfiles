@@ -1,0 +1,28 @@
+# rssd behaviour  --  key = value, '#' comments, edit freely (applies next run)
+
+# send desktop notifications for new items (notify-send)
+notify = true
+
+# append every new item to ~/.local/state/rssd/items.jsonl
+archive = true
+
+# cap notifications so a busy feed / catch-up run can't flood the screen;
+# items over the cap are still archived, just not shown
+max_notify_per_feed = 4
+max_notify_total    = 20
+
+# notification urgency: low | normal | critical
+urgency = low
+
+# characters of item summary shown in the notification body
+summary_chars = 220
+
+# parallel feed fetches
+workers = 8
+
+# per-feed HTTP timeout (seconds)
+timeout = 20
+
+# forget a seen item after this many days (keeps state file small;
+# a feed that goes quiet for longer then returns may re-notify old items)
+prune_days = 90

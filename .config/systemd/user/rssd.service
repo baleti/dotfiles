@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll RSS/Atom feeds, notify on new items, archive them
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/rssd/rssd.py
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

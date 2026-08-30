@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll RSS feeds every 30 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+RandomizedDelaySec=90
+Persistent=true
+
+[Install]
+WantedBy=timers.target

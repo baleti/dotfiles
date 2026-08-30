@@ -1,0 +1,63 @@
+# rssd feed list  --  https://github.com/ (local, no upstream)
+#
+# One feed per line:   <url>   [tag ...]   [# comment]
+# - blank lines and lines starting with '#' are ignored
+# - tags are optional, space-separated, free-form (used only for grouping/filtering)
+# - remove a feed by deleting its line (or commenting it out with '#')
+# - `rssd list` shows what this file currently parses to
+# - changes take effect on the next run (every 30 min, or `systemctl --user start rssd`)
+
+# ---------------------------------------------------------------- architecture
+https://www.architectsjournal.co.uk/feed              arch uk
+https://www.bdonline.co.uk/1.rss                      arch uk
+https://feeds.feedburner.com/Archdaily                arch
+https://www.dezeen.com/architecture/feed/             arch          # architecture-only sub-feed
+https://www.archpaper.com/feed/                       arch us
+https://www.architectural-review.com/feed             arch
+https://commonedge.org/feed/                          arch
+https://failedarchitecture.com/feed/                  arch
+https://community.osarch.org/discussions/feed.rss     arch bim      # open-source AEC community
+
+# ---------------------------------------------------------------- construction / AEC
+https://www.constructiondive.com/feeds/news/          construction us
+https://www.building.co.uk/5.rss                      construction uk
+https://www.pbctoday.co.uk/news/feed/                 construction uk
+https://www.globalconstructionreview.com/feed/        construction
+https://aecmag.com/feed/                              construction bim
+https://www.enr.com/rss/articles                      construction us
+
+# ---------------------------------------------------------------- construction law
+https://constructionlawmadeeasy.com/feed/             law construction   # AU-focused but good case notes
+
+# ---------------------------------------------------------------- property / real estate
+https://propertyindustryeye.com/feed/                 property uk
+https://www.placenorthwest.co.uk/feed/                property uk planning
+https://thenegotiator.co.uk/feed/                     property uk
+https://www.bisnow.com/rss                            property us
+https://www.curbed.com/rss/index.xml                  property us
+
+# ---------------------------------------------------------------- programming
+https://hnrss.org/frontpage                           programming
+https://lobste.rs/rss                                 programming
+https://simonwillison.net/atom/everything/            programming
+https://jvns.ca/atom.xml                              programming
+https://danluu.com/atom.xml                           programming
+https://this-week-in-rust.org/rss.xml                 programming rust
+https://blog.rust-lang.org/feed.xml                   programming rust
+
+# ---------------------------------------------------------------- linux
+https://lwn.net/headlines/rss                         linux
+https://archlinux.org/feeds/news/                     linux arch
+https://www.phoronix.com/rss.php                      linux
+https://rss.slashdot.org/Slashdot/slashdotMain        linux news
+https://www.omgubuntu.co.uk/feed                      linux
+https://itsfoss.com/feed/                             linux
+https://planet.kernel.org/rss20.xml                   linux kernel
+https://fedoramagazine.org/feed/                      linux
+
+# ---------------------------------------------------------------- science
+https://www.quantamagazine.org/feed/                  science
+https://arstechnica.com/science/feed/                 science
+https://www.nature.com/nature.rss                     science
+https://www.sciencedaily.com/rss/all.xml              science
+https://nautil.us/feed/                               science
