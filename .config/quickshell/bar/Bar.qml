@@ -41,20 +41,29 @@ Item {
     // of chasing every panel that can hold focus through this expression.
     focus: true
 
-    // Hands keyboard focus to another still-open graph pill when the one
-    // that had it closes (Escape or its entry key again) -- forceActiveFocus()
-    // in GraphPill.togglePin() only ever claims focus on *open*, so without
-    // this, closing the focused pill while others stay open would stick
-    // arrow/digit presses on a pill that's no longer visible.
-    function reclaimGraphFocus(closedPill): void {
-        if (!closedPill.activeFocus)
-            return;
-        for (const p of [netPill, cpuPill, memPill, diskPill, tempPill]) {
-            if (p !== closedPill && p.expanded) {
+    // Points QML keyboard focus at whichever panel should be driving the
+    // keys right now: a still-open graph pill if there is one (its own
+    // Keys.onPressed), otherwise the bar itself (root.Keys.onPressed, which
+    // routes to the media / calendar panels). Called after any panel closes.
+    //
+    // Without this, a graph pill that gets closed with Escape while the
+    // calendar stayed open keeps QML activeFocus on its now-collapsed self,
+    // and its Keys.onPressed goes on swallowing Left/Right (tier stepping) so
+    // those keys never reach the calendar -- while h/l, which the pill
+    // doesn't handle, still bubble through and work. Reported 2026-08-30.
+    function refocusActivePanel(): void {
+        for (const p of [tempPill, diskPill, memPill, cpuPill, netPill]) {
+            if (p.expanded) {
                 p.forceActiveFocus();
                 return;
             }
         }
+        root.forceActiveFocus();
+    }
+    // Back-compat shim for GraphPill's onExpandedChanged wiring.
+    function reclaimGraphFocus(closedPill): void {
+        if (closedPill.activeFocus)
+            root.refocusActivePanel();
     }
 
     // Only live while a panel that wants real keyboard control is open (see
@@ -176,6 +185,14 @@ Item {
     // row too (see below), so there's only ever this one Y.
     readonly property real panelY: rightRow.y + (Theme.barHeight - 10) + 6
 
+    // Hard ceiling on how tall a popup panel may render: shell.qml pins the
+    // layer-shell surface at a fixed 800px (kept in sync by hand -- both
+    // sides carry a comment), so a panel that wants to grow past that just
+    // gets clipped. Panels that can produce a lot of content (the calendar's
+    // agenda list) clamp their scroll area to this and scroll internally.
+    readonly property real windowHeight: 800
+    readonly property real maxPanelHeight: root.windowHeight - root.panelY - 16
+
     // --- Popup panels (media, net/cpu/mem/disk/temp, calendar): shared
     // dynamic width, always one row -----------------------------------
     // One shared layout system for every panel that pops out of the bar.
@@ -218,44 +235,52 @@ Item {
         ? root.naturalRightFor(root.openPanels[root.openCount - 1])
         : root.screen.width - 20
     readonly property real panelAreaWidth: root.rowRightAnchor - 10
-    // Wide-end clamp on the shared panelWidth below. Normally 560; when the
-    // calendar is one of the open panels it rises to half this monitor's
-    // width -- the month grid + grouped agenda list need the room. This is
-    // still the *cap*, not a fixed width: with other panels also open the
-    // even division lands well under it and every panel shares the row
-    // equally as before, so the raised cap only bites when the calendar is
-    // open alone (or with just one other).
-    readonly property real maxPanelWidth: root.openPanels.indexOf("calendar") >= 0
-        ? Math.max(560, root.screen.width / 2)
-        : 560
-    // Only a sanity floor now that there's no row to wrap the rest onto --
-    // keeps the divide-by-openCount below from ever reaching 0/negative if
-    // something pathological were to happen (e.g. openCount misreported),
-    // not a legibility target.
+    // Sanity floor -- keeps the shrink-to-fit below from ever reaching
+    // 0/negative if something pathological happens, not a legibility target.
     readonly property real minPanelWidth: 40
     readonly property real panelGap: 6
 
-    // Width every open panel shares -- straight even division of the row's
-    // available width, clamped only against maxPanelWidth on the wide end
-    // (one panel alone) and the sanity floor on the narrow end. No
-    // "wrap once this gets too narrow" branch: however small this gets is
-    // however small it gets.
-    readonly property real panelWidth: {
+    // Per-panel PREFERRED width. The graph pills / media want a normal 560
+    // (or less if the row is genuinely that narrow); the calendar wants half
+    // the monitor -- its month grid + grouped agenda list need the room.
+    // This is what each panel gets whenever the row has space for everyone's
+    // preferred width; only when the sum overflows does widthScale below pull
+    // them all in together (so panels don't shrink from the calendar merely
+    // being open, only from actually running out of screen).
+    readonly property real stdPanelWidth: Math.min(560, root.panelAreaWidth)
+    readonly property real calPanelWidth: Math.min(root.screen.width / 2, root.panelAreaWidth)
+
+    function preferredWidthFor(name: string): real {
+        return name === "calendar" ? root.calPanelWidth : root.stdPanelWidth;
+    }
+
+    // 1 while every open panel's preferred width still fits the row (with
+    // gaps); below 1 once they don't, shrinking everyone by the same factor.
+    readonly property real widthScale: {
         if (root.openCount === 0)
-            return root.maxPanelWidth;
-        const even = (root.panelAreaWidth - (root.openCount - 1) * root.panelGap) / root.openCount;
-        return Math.max(root.minPanelWidth, Math.min(root.maxPanelWidth, even));
+            return 1;
+        let sum = 0;
+        for (const n of root.openPanels)
+            sum += root.preferredWidthFor(n);
+        const avail = root.panelAreaWidth - (root.openCount - 1) * root.panelGap;
+        return sum > avail ? avail / sum : 1;
+    }
+
+    function widthFor(name: string): real {
+        return Math.max(root.minPanelWidth, root.preferredWidthFor(name) * root.widthScale);
     }
 
     // This panel's right edge -- columns fill right-to-left within the one
-    // row (matching the pills' own left-to-right order in the bar).
+    // row (matching the pills' own left-to-right order in the bar), each
+    // panel offset past the actual widths of the ones to its right.
     function layoutFor(name: string): var {
         const idx = root.openPanels.indexOf(name);
         if (idx < 0)
-            return { right: 0 };
-        const posFromRight = root.openPanels.length - 1 - idx;
-        const right = root.rowRightAnchor - posFromRight * (root.panelWidth + root.panelGap);
-        return { right };
+            return { right: 0, width: 0 };
+        let offset = 0;
+        for (let i = idx + 1; i < root.openPanels.length; i++)
+            offset += root.widthFor(root.openPanels[i]) + root.panelGap;
+        return { right: root.rowRightAnchor - offset, width: root.widthFor(name) };
     }
 
     // How tall this panel's own expand area currently is (0 while
@@ -450,7 +475,7 @@ Item {
             groupY: rightRow.y
             targetRight: root.layoutFor("net").right
             targetY: root.panelYFor("net")
-            expandWidth: root.panelWidth
+            expandWidth: root.widthFor("net")
         }
 
         GraphPill {
@@ -475,7 +500,7 @@ Item {
             groupY: rightRow.y
             targetRight: root.layoutFor("cpu").right
             targetY: root.panelYFor("cpu")
-            expandWidth: root.panelWidth
+            expandWidth: root.widthFor("cpu")
         }
 
         GraphPill {
@@ -507,7 +532,7 @@ Item {
             groupY: rightRow.y
             targetRight: root.layoutFor("mem").right
             targetY: root.panelYFor("mem")
-            expandWidth: root.panelWidth
+            expandWidth: root.widthFor("mem")
         }
 
         GraphPill {
@@ -534,7 +559,7 @@ Item {
             groupY: rightRow.y
             targetRight: root.layoutFor("disk").right
             targetY: root.panelYFor("disk")
-            expandWidth: root.panelWidth
+            expandWidth: root.widthFor("disk")
         }
 
         GraphPill {
@@ -560,7 +585,7 @@ Item {
             groupY: rightRow.y
             targetRight: root.layoutFor("temp").right
             targetY: root.panelYFor("temp")
-            expandWidth: root.panelWidth
+            expandWidth: root.widthFor("temp")
         }
 
         BatteryPill {}
@@ -603,9 +628,12 @@ Item {
     MediaExpanded {
         id: mediaExpanded
 
-        panelWidth: root.panelWidth
+        panelWidth: root.widthFor("media")
         x: root.layoutFor("media").right - width
         y: root.panelYFor("media")
+        // Take keyboard control on open (so a previously-focused graph pill
+        // stops eating the arrow keys), hand it on when closing.
+        onExpandedChanged: expanded ? root.forceActiveFocus() : root.refocusActivePanel()
     }
 
     // Same pattern for the clock's calendar hover-panel. Click-to-pin
@@ -656,13 +684,16 @@ Item {
     CalendarExpanded {
         id: calendarExpanded
 
-        panelWidth: root.panelWidth
+        panelWidth: root.widthFor("calendar")
+        maxPanelHeight: root.maxPanelHeight
         // Pinned open (mod+CTRL+c or a clock click) -> the month-view layout
         // with event titles under each day; a passing hover stays compact.
-        // Width is the shared even-division panelWidth either way.
         bigMode: root.clockPinned
         x: root.layoutFor("calendar").right - width
         y: root.panelYFor("calendar")
+        // Take keyboard control on open (so a previously-focused graph pill
+        // stops eating the arrow keys), hand it on when closing.
+        onExpandedChanged: expanded ? root.forceActiveFocus() : root.refocusActivePanel()
     }
 
     // Keyboard shortcuts (hyprland/keybinds.lua: mod+n/p/m/t/d, via

@@ -453,16 +453,6 @@ Rectangle {
                 }
             }
 
-            Text {
-                width: parent.width
-                text: root.tierLabels[root.tier] ?? ""
-                visible: text.length > 0
-                color: Theme.textDim
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize - 2
-                horizontalAlignment: Text.AlignRight
-            }
-
             Flow {
                 width: parent.width
                 spacing: 10

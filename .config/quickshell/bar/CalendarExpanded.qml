@@ -380,6 +380,11 @@ Rectangle {
     // flexes with the bar's other panels through the shared even-division
     // panelWidth, same as media / the graph pills.
     property bool bigMode: false
+    // Hard height ceiling for the whole panel, set by Bar.qml from the fixed
+    // layer-shell window height. The agenda list clamps its scroll area so
+    // the panel never renders past this (and shows a scrollbar past it).
+    // 700 is only the standalone-preview fallback.
+    property real maxPanelHeight: 700
     width: panelWidth
     implicitHeight: expanded ? content.implicitHeight + 24 : 0
     height: implicitHeight
@@ -697,6 +702,14 @@ Rectangle {
             border.color: Theme.border
             border.width: 1
 
+            // How tall the scroll area may grow: everything left in the
+            // panel's height ceiling once the month grid + chrome above it
+            // and this box's own padding are accounted for. dayList.y is set
+            // by the Column above and doesn't depend on this box's height
+            // (it's the last child), so there's no loop.
+            readonly property real maxViewHeight:
+                Math.max(120, root.maxPanelHeight - dayList.y - 40)
+
             // Flat row model: one {type:"header"} per selected day, then its
             // {type:"task"} rows (or a {type:"none"} placeholder). Built off
             // root.selectionGroups, which already sorts each day's entries.
@@ -721,11 +734,13 @@ Rectangle {
                 id: dayListView
                 x: 8
                 y: 8
+                // Constant width (scrollBar overlays the right edge rather
+                // than reserving space) - making width depend on
+                // scrollBar.visible would loop through contentHeight.
                 width: parent.width - 16
-                // Capped so a busy day / long range can't push the panel
-                // past shell.qml's fixed 800px layer-shell window; scrolls
-                // internally past that.
-                height: Math.min(contentHeight, root.bigMode ? 180 : 200)
+                // Grows with its content up to whatever fits under the fixed
+                // layer-shell window; scrolls internally (scrollBar) past that.
+                height: Math.min(contentHeight, dayList.maxViewHeight)
                 clip: true
                 interactive: contentHeight > height
                 boundsBehavior: Flickable.StopAtBounds
@@ -793,6 +808,29 @@ Rectangle {
                             }
                         }
                     }
+                }
+            }
+
+            // Hand-rolled vertical scrollbar (no QtQuick.Controls anywhere
+            // in this project) - visible only when the list overflows its
+            // allowed height; thumb tracks the Flickable's visibleArea.
+            Rectangle {
+                id: scrollBar
+                visible: dayListView.contentHeight > dayListView.height + 1
+                anchors.right: parent.right
+                anchors.rightMargin: 4
+                y: dayListView.y
+                width: 3
+                height: dayListView.height
+                radius: 1.5
+                color: Qt.rgba(1, 1, 1, 0.07)
+
+                Rectangle {
+                    width: parent.width
+                    radius: 1.5
+                    color: Theme.textDim
+                    height: Math.max(24, dayListView.visibleArea.heightRatio * parent.height)
+                    y: dayListView.visibleArea.yPosition * parent.height
                 }
             }
         }

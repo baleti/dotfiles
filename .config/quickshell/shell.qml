@@ -40,6 +40,8 @@ ShellRoot {
             // keeps clicks passing through to windows underneath the empty
             // area when nothing's expanded; it's cheap to update since it
             // only changes the input region, not the rendered surface size.
+            // Kept in sync by hand with Bar.qml's `windowHeight` (panels
+            // clamp their own scroll areas to what fits under this).
             implicitHeight: 800
             exclusiveZone: 38
             color: "transparent"
