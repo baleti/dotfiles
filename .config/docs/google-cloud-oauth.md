@@ -175,9 +175,15 @@ documented REST call:
    curl -X PUT \
      -H "Authorization: Bearer $CF_API_TOKEN" \
      -F "metadata=@metadata.json;type=application/json" \
-     -F "worker.js=@worker.js;type=application/javascript+module" \
+     -F "worker.js=@/path/to/local/worker.js;filename=worker.js;type=application/javascript+module" \
      "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/$SCRIPT_NAME"
    ```
+
+   Cloudflare matches the module by the multipart **filename**, not the
+   form field name — if the local file isn't literally named `worker.js`
+   (e.g. deploying a second, differently-named script from a shared
+   scratch dir), this fails with `Uncaught Error: No such module:
+   worker.js` unless `filename=worker.js` is set explicitly, as above.
 
    The Worker script itself is a plain ES module `export default { async
    fetch(request) {...} }` returning different inline HTML per
