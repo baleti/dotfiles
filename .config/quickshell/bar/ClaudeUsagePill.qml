@@ -27,16 +27,24 @@ Rectangle {
     border.width: 1
     radius: Theme.rounding
 
-    // Claude's brand orange (#DA7756 -> hue 15deg, sat 0.641, light 0.596),
-    // but with its saturation scaled by how close the *current* generated
-    // scheme's own primary hue is to that same orange -- a warm (red/
-    // yellow) theme lets it stay close to full brand vividness, a cool
-    // (blue/cyan) one tones it down toward grey, rather than sitting there
-    // as a fixed hardcoded orange clashing with whatever wallpaper-derived
-    // palette is active. Hue and lightness stay pinned to the brand's own
-    // (it should still read as orange, just quieter), only saturation
-    // moves. minSat (0.12) is a floor, not zero -- fully desaturating would
-    // erase the "orange" identity entirely on a strongly cool theme.
+    // Not Claude's brand orange at all any more (tried: hue pinned to the
+    // brand's own 15deg with only saturation scaled toward/away from it by
+    // theme warmth -- still read as an outside color forced to blend in,
+    // not something that belongs to this theme). Instead: search the
+    // *current* generated scheme's own colors (Theme.seriesPalette +
+    // Theme.intensityRamp -- both come straight from
+    // ~/.local/state/quickshell/scheme.json, gen-theme.py's per-wallpaper
+    // output, see theming.md) for whichever one already sits closest to
+    // orange, and use that swatch exactly as generated. gen-theme.py's own
+    // ramp is documented to trend "toward red-orange" at its hot end, and
+    // seriesPalette spreads 8 hues around the wheel, so there's reliably
+    // something in the ballpark even on a theme whose primary is nowhere
+    // near orange (confirmed on the current blue-primary theme: closest is
+    // seriesPalette's own #eca200, a genuine amber). Theme.orange itself
+    // is deliberately excluded -- it's a fixed hardcoded fallback color
+    // (see Theme.qml), not something generated from the wallpaper, so
+    // using it here would be the same "not actually this theme's own
+    // color" problem in a different disguise.
     function rgbToHsl(c) {
         const r = c.r, g = c.g, b = c.b;
         const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -56,18 +64,18 @@ Rectangle {
     }
 
     readonly property color logoColor: {
-        const brandH = 15, brandL = 0.596;
-        const themeHsl = root.rgbToHsl(Theme.cyan);
-        const dist = Math.min(Math.abs(brandH - themeHsl.h), 360 - Math.abs(brandH - themeHsl.h));
-        const warmth = 1 - dist / 180; // 1 = theme hue aligned with orange, 0 = its exact opposite
-        // 0.641 (the brand color's own saturation) read as too faint even
-        // at warmth=1, and 0.12 as flat grey at warmth=0 -- both raised
-        // (twice, nudged up further the second time) so it reads as
-        // orange (muted on a cool theme, vivid on a warm one) across the
-        // whole range instead of only near max warmth.
-        const minSat = 0.58, maxSat = 0.94;
-        const sat = minSat + (maxSat - minSat) * warmth;
-        return Qt.hsla(brandH / 360, sat, brandL, 1);
+        const targetH = 30; // canonical "orange" reference hue
+        const candidates = Theme.seriesPalette.concat(Theme.intensityRamp);
+        let best = candidates[0], bestDist = 360;
+        for (const hex of candidates) {
+            const hsl = root.rgbToHsl(Qt.color(hex));
+            const dist = Math.min(Math.abs(hsl.h - targetH), 360 - Math.abs(hsl.h - targetH));
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = hex;
+            }
+        }
+        return Qt.color(best);
     }
 
     Row {
