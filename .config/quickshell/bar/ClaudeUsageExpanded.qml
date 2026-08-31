@@ -278,15 +278,20 @@ Rectangle {
     // overflows a value-sized column" bug the status *value* column had
     // before "waiting" got abbreviated to "wait".
     readonly property int colStatusW: 52
-    // The CLI's own per-session name (sessions/<pid>.json's "name", e.g.
-    // "user1-46") -- short in practice, but not fixed-format, so this
-    // still elides rather than assuming it never grows.
+    // Title (tmux's own pane_title, e.g. "Reddit API automation for
+    // unixporn posts") is the fillWidth column, not path -- path is
+    // almost always just "~" in this environment (single-cwd workflow),
+    // so giving *it* the stretch instead just wasted the panel's extra
+    // width as blank space while titles sat elided at a fixed 90px
+    // (reported "title column is too short" 2026-08-31). colTitleW is now
+    // a *minimum*, not the fixed width.
     readonly property int colTitleW: 90
     readonly property int colPidW: 68
     readonly property int colTokensW: 60
     // "last" itself is short, but values like "2mo 1w" aren't.
     readonly property int colLastW: 56
     readonly property int colTmuxW: 92
+    readonly property int colPathW: 160
     readonly property int expandedGroupCount: {
         let n = 0;
         for (const a of ClaudeUsageSvc.accounts)
@@ -530,7 +535,8 @@ Rectangle {
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         elide: Text.ElideRight
-                        Layout.preferredWidth: root.colTitleW
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: root.colTitleW
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
@@ -592,7 +598,8 @@ Rectangle {
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
-                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                        Layout.preferredWidth: root.colPathW
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
@@ -622,7 +629,8 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             elide: Text.ElideRight
-                            Layout.preferredWidth: root.colTitleW
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: root.colTitleW
                         }
                         Text {
                             text: root.fmtTokens(modelData.context_tokens)
@@ -660,7 +668,7 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             elide: Text.ElideRight
-                            Layout.fillWidth: true
+                            Layout.preferredWidth: root.colPathW
                         }
                     }
                 }
