@@ -179,6 +179,32 @@ fn resolve_icon(id: u32, app_icon: &str, hints: &HashMap<String, glib::Variant>)
     String::new()
 }
 
+/// The "large image" for a card, kept separate from the app/source icon:
+/// rssd's private `x-rssd-image-path` hint, then the spec's `image-data` /
+/// `image-path`. Returns "" when there's none. (`resolve_icon` is unchanged,
+/// so an app that only sends image-data still gets it as its icon too; the
+/// renderer skips this when it equals the icon.)
+fn resolve_image(id: u32, hints: &HashMap<String, glib::Variant>) -> String {
+    if let Some(p) = hints.get("x-rssd-image-path").and_then(|v| v.get::<String>()) {
+        if !p.is_empty() {
+            return p;
+        }
+    }
+    for key in ["image-data", "image_data"] {
+        if let Some(v) = hints.get(key) {
+            if let Some(path) = decode_image_data(id, v) {
+                return path;
+            }
+        }
+    }
+    if let Some(p) = hints.get("image-path").and_then(|v| v.get::<String>()) {
+        if !p.is_empty() {
+            return p;
+        }
+    }
+    String::new()
+}
+
 /// Decode the spec's `(iiibiiay)` image-data hint (width, height, rowstride,
 /// has_alpha, bits_per_sample, channels, data) to a PNG at
 /// ~/.cache/notifyd/icons/<id>.png. Returns its path, or None if the hint
@@ -253,6 +279,13 @@ fn handle_notify(
         let mut state = state.lock().expect("state mutex poisoned");
         let id = state.allocate_id(replaces_id);
         let icon = resolve_icon(id, &app_icon, &hints);
+        // libnotify 0.8 sends `notify-send -i <path>` as the image-path hint,
+        // which resolve_icon already used -- so drop image when it's just that
+        // same file again (no distinct large image was supplied).
+        let image = match resolve_image(id, &hints) {
+            im if im == icon => String::new(),
+            im => im,
+        };
         let evicted = state.insert(Notification {
             id,
             sender: sender.to_string(),
@@ -260,6 +293,7 @@ fn handle_notify(
             summary: summary.clone(),
             body: body.clone(),
             icon,
+            image,
             actions: actions.clone(),
             urgency,
             timestamp: state::now_unix(),
@@ -379,6 +413,7 @@ fn list_history_json(state: &SharedState) -> String {
                 "summary": n.summary,
                 "body": n.body,
                 "icon": n.icon,
+                "image": n.image,
                 "urgency": n.urgency,
                 "timestamp": n.timestamp,
                 "actions": actions,

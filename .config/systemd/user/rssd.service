@@ -6,6 +6,7 @@ Wants=graphical-session.target
 [Service]
 Type=oneshot
 ExecStart=%h/.config/rssd/rssd.py
+TimeoutStartSec=300
 Nice=10
 IOSchedulingClass=idle
 

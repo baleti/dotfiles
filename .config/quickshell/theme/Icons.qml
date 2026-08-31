@@ -11,6 +11,9 @@ QtObject {
 
     readonly property var backlightLevels: ["", "", "", "", "", "", "", "", ""]
 
+    // fa-rss (U+F09E) -- badge on rssd notification cards
+    readonly property string rss: ""
+
     readonly property string wifi: ""
     readonly property string ethernet: ""
 
