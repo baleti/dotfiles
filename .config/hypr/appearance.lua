@@ -4,6 +4,23 @@
 
 -- Refer to https://wiki.hypr.land/Configuring/Basics/Variables/
 
+-- Focused/unfocused border colors: gen-theme.py applies these live via
+-- `hyprctl eval` on every wallpaper change AND writes them here, so that a
+-- plain `hyprctl reload` re-reads the current theme instead of reverting to
+-- the hardcoded fallback below (confirmed 2026-08-31 -- reload used to wipe
+-- the live theme color because appearance.lua never saw it). Falls back to
+-- the hardcoded rgba(33ccff...) pair before gen-theme.py has ever run.
+local border_colors = { active_border = "rgba(33ccfff2)", inactive_border = "rgba(595959aa)" }
+do
+    local chunk = loadfile(os.getenv("HOME") .. "/.local/state/quickshell/hyprland-border-colors.lua")
+    if chunk then
+        local ok, generated = pcall(chunk)
+        if ok and type(generated) == "table" then
+            border_colors = generated
+        end
+    end
+end
+
 hl.config({
     general = {
         gaps_in  = 3,
@@ -13,8 +30,8 @@ hl.config({
 
         -- https://wiki.hypr.land/Configuring/Basics/Variables/#variable-types for info about colors
         col = {
-            active_border   = "rgba(33ccfff2)",
-            inactive_border = "rgba(595959aa)",
+            active_border   = border_colors.active_border,
+            inactive_border = border_colors.inactive_border,
         },
 
         -- Set to true to enable resizing windows by clicking and dragging on borders and gaps
