@@ -590,7 +590,11 @@ Item {
             // to the pill's own I/O-throughput value, without needing to
             // open the panel.
             secondaryIcon: Icons.disk
-            secondaryText: "/" + (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "%"
+            // Whitespace here is tuned by hand now that the "|" divider is
+            // gone: a hair space (U+200A) between "/" and the percentage (a
+            // normal space read too wide, none read as touching), and a thin
+            // space (U+2009) after it to set the number off the disk glyph.
+            secondaryText: "/ " + (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "% "
             secondaryDivider: false
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
