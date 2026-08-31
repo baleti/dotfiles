@@ -59,8 +59,8 @@ domain-based accounts, not a retroactive upgrade of an existing
   **do not show up in plain `git status` at all**, ignored or not. Any
   new secret file anywhere in `$HOME` needs an explicit exclude pattern
   added *before* it's written, not discovered later by review.
-- `~/.config/claude-cloudflare/credentials.env` (`CF_ACCOUNT_ID`,
-  `CF_API_TOKEN`) — same treatment, covered by
+- `~/.config/claude-cloudflare/credentials-<oauth-account>.env`
+  (`CF_ACCOUNT_ID`, `CF_API_TOKEN`) — same treatment, covered by
   `.config/claude-cloudflare/` in the same exclude file.
 
 ## Why curl, not `gcloud`
