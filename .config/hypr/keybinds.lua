@@ -253,6 +253,15 @@ hl.bind(mainMod .. " + CTRL + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-to
 -- Enter drills in or confirms; Escape exits).
 hl.bind(mainMod .. " + CTRL + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))
 
+-- Claude Code usage panel (session/weekly % for each of the 3 accounts on
+-- this machine) -- CTRL+ALT+c was free since calendar moved off it (above).
+-- No real keyboard focus grab, unlike calendar/media: ClaudeUsageExpanded.qml
+-- has no arrow-key navigation, so it never asks for
+-- WlrKeyboardFocus.OnDemand -- toggling again (or clicking the pill) is the
+-- only way to close it. Backed by claude-usage-daemon.py (systemd user
+-- service), not queried directly here.
+hl.bind("CTRL + ALT + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleClaudeUsage"))
+
 -- bluetooth
 hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"))
 

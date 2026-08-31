@@ -182,6 +182,12 @@ docs:
   `Up/Down` zoom out/in a level re-centered on it, `Enter` drills into a
   coarse cell or confirms a single year, `Escape`/`Tab` cancel back
   unchanged), `Escape` closes the panel. See `CalendarExpanded.qml`.
+- `CTRL+ALT+c` — toggle the Claude Code usage panel (session/weekly % for
+  every account on this machine, see [claude-usage.md](claude-usage.md)).
+  Free since the calendar bind above moved off it. No submap and no real
+  keyboard focus grab either — the panel has nothing to navigate with
+  arrow keys, so the bind (or a click on the pill) is the only way to
+  close it again.
 - `mainMod+CTRL+m` — media widget + a `media_seek` submap: bare `0`-`9`
   jumps to that decile of the current track (`playerctl-seek-percent.sh`,
   against whichever player `~/.config/playerctl-current` names). Not plain
@@ -223,13 +229,19 @@ above:
 
 ## Systemd units tracked in this repo
 
-Only two systemd user units live in the git repo (everything else under
-`~/.config/systemd/user/` — backups, mail sync, the flight tracker,
+A handful of systemd user units live in the git repo (everything else
+under `~/.config/systemd/user/` — backups, mail sync, the flight tracker,
 peer-agent, rclone/restic mounts — is local-only, not tracked):
 
 - `cliphist-expire.service` + `.timer` — runs `cliphist-expire.sh` every 15
   minutes (`OnCalendar=*:0/15`), finer than the 3h expiry window needs on
   its own so no entry can live past ~4h under the watermark scheme.
+- `rssd.service` + `.timer` — one-shot `rssd.py` run every 30 minutes; see
+  [quickshell-bar.md](quickshell-bar.md).
+- `claude-usage.service` — continuous (`Type=simple`, `Restart=always`),
+  not a timer — `claude-usage-daemon.py` self-paces its own poll interval,
+  so a timer re-invoking it on a fixed schedule wouldn't fit. See
+  [claude-usage.md](claude-usage.md).
 - `pixel6-mpris-bridge.service` — see [[android_companion_app_and_adb_setup]]
   memory; not itself part of this repo's Rust/QML projects, it's the
   desktop-facing half of the PeerAgent Companion Android app.

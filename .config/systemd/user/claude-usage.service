@@ -1,0 +1,14 @@
+[Unit]
+Description=Poll Claude Code account usage (session/weekly %) for the quickshell bar
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/claude-usage/claude-usage-daemon.py
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=default.target

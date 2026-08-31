@@ -20,9 +20,10 @@ quickshell/
 │   ├── Workspaces.qml, Submap.qml, Tray.qml
 │   ├── Clock.qml, Media.qml, MediaExpanded.qml
 │   ├── BatteryPill.qml, GraphPill.qml, CalendarExpanded.qml
+│   ├── ClaudeUsagePill.qml, ClaudeUsageExpanded.qml
 ├── osd/VolumeOsd.qml       side volume popup (mainMod+F11/F12)
 ├── components/             BarIcon, BarText, Graph, Pill (generic building blocks)
-├── services/                BatterySvc, Players, SysmonSvc, TieredSocket
+├── services/                BatterySvc, Players, SysmonSvc, TieredSocket, ClaudeUsageSvc
 └── theme/                   Theme, Icons
 ```
 
@@ -190,6 +191,12 @@ wash, not per-series fills.
 - **`Players.qml`** — MPRIS player state for `Media.qml`/`MediaExpanded.qml`,
   including the phone bridge (`pixel6-mpris-bridge.py`, see
   [[android_companion_app_and_adb_setup]] memory).
+- **`ClaudeUsageSvc.qml`** — feeds `ClaudeUsagePill.qml`/
+  `ClaudeUsageExpanded.qml` (session/weekly rate-limit % across every
+  Claude Code account on this machine, `CTRL+ALT+c`); reads the state
+  `claude-usage-daemon.py` writes, same pattern as `RssSvc.qml`/`rssd`. See
+  [claude-usage.md](claude-usage.md) for the full writeup (endpoint, the
+  adaptive poll interval, why it skips OAuth-refresh entirely).
 
 ## Related keybinds
 
@@ -197,9 +204,10 @@ See [hyprland.md](hyprland.md#keybinds-keybindslua) for the full bind list;
 the bar-specific ones are `ALT+n` and `mainMod+t/s/m/p` (per-metric panel
 toggle + `graph_<name>` tier submap), `mainMod+CTRL+m` (media panel +
 `media_seek` submap), `mainMod+CTRL+c` (calendar panel + keyboard month/
-year nav and year-picker, no submap needed), `mainMod+F11/F12` (volume, see
-below), and the calendar/graph pills' own click-to-pin behavior (matching
-each other, added 2026-08-28/29).
+year nav and year-picker, no submap needed), `CTRL+ALT+c` (Claude usage
+panel — see [claude-usage.md](claude-usage.md)), `mainMod+F11/F12` (volume,
+see below), and the calendar/graph pills' own click-to-pin behavior
+(matching each other, added 2026-08-28/29).
 
 ## Demo
 

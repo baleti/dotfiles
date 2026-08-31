@@ -139,7 +139,7 @@ Item {
     // this is that system's bar-visual left-to-right ordering (matching
     // rightRow's child order, with calendar's clock trigger last since
     // it's the rightmost).
-    readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "calendar"]
+    readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "claudeUsage", "calendar"]
 
     // Which of SysmonSvc's 6 fixed tiers (10m/30m/6h/7d/7w/7mo) each panel is
     // currently viewing -- kept here (not just read off SysmonSvc directly)
@@ -155,6 +155,7 @@ Item {
     function panelExpandedFor(name: string): bool {
         switch (name) {
         case "calendar": return calendarExpanded.expanded;
+        case "claudeUsage": return claudeUsageExpanded.expanded;
         case "temp": return tempPill.expanded;
         case "disk": return diskPill.expanded;
         case "mem": return memPill.expanded;
@@ -170,6 +171,7 @@ Item {
     function naturalRightFor(name: string): real {
         switch (name) {
         case "calendar": return rightRow.x + clockLoader.x + clockLoader.width;
+        case "claudeUsage": return rightRow.x + claudeUsagePill.x + claudeUsagePill.width;
         case "temp": return rightRow.x + tempPill.x + tempPill.width;
         case "disk": return rightRow.x + diskPill.x + diskPill.width;
         case "mem": return rightRow.x + memPill.x + memPill.width;
@@ -294,6 +296,7 @@ Item {
         case "temp": return tempPill.overflowHeight;
         case "media": return mediaExpanded.height;
         case "calendar": return calendarExpanded.height;
+        case "claudeUsage": return claudeUsageExpanded.height;
         default: return 0;
         }
     }
@@ -596,6 +599,11 @@ Item {
 
         BatteryPill {}
 
+        ClaudeUsagePill {
+            id: claudeUsagePill
+            onToggled: claudeUsageExpanded.expanded = !claudeUsageExpanded.expanded
+        }
+
         Loader {
             id: clockLoader
             active: true
@@ -702,6 +710,19 @@ Item {
         onExpandedChanged: expanded ? root.forceActiveFocus() : root.refocusActivePanel()
     }
 
+    // CTRL+ALT+c (keybinds.lua) or a click on claudeUsagePill toggles this.
+    // Deliberately does NOT take real keyboard focus the way media/calendar
+    // do (no root.forceActiveFocus()/refocusActivePanel() here) -- nothing
+    // in this panel needs arrow-key navigation, so it stays out of
+    // shell.qml's HyprlandFocusGrab/holdsFocus machinery entirely.
+    ClaudeUsageExpanded {
+        id: claudeUsageExpanded
+
+        panelWidth: root.widthFor("claudeUsage")
+        x: root.layoutFor("claudeUsage").right - width
+        y: root.panelYFor("claudeUsage")
+    }
+
     // Keyboard shortcuts (hyprland/keybinds.lua: mod+n/p/m/t/d, via
     // ~/.config/hypr/scripts/bar-toggle.sh) call these -- same open/close
     // toggle feel as the old standalone sysmon-graph popups, just for the
@@ -729,5 +750,6 @@ Item {
         function toggleDisk(): void { diskPill.togglePin(); }
         function toggleMedia(): void { mediaExpanded.expanded = !mediaExpanded.expanded; }
         function toggleCalendar(): void { root.toggleClockPin(); }
+        function toggleClaudeUsage(): void { claudeUsageExpanded.expanded = !claudeUsageExpanded.expanded; }
     }
 }
