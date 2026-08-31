@@ -52,6 +52,12 @@ Rectangle {
 
     // [{name, color}] -- shown under the graph when non-empty.
     property var legendItems: []
+    // [{name, pcent}] -- shown as a labelled bar per entry, under the graph
+    // (above legendItems/topProcs) when non-empty. Percent-of-capacity
+    // readings (e.g. disk space used) rather than the graph's own
+    // time-series metric, so they get their own subsection instead of
+    // being folded into legendItems (which is just a color key).
+    property var usageItems: []
     // [{name, value}] -- top-10 list shown when non-empty.
     property var topProcs: []
     property string topUnit: ""
@@ -410,6 +416,69 @@ Rectangle {
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 4
+                        }
+                    }
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 4
+                visible: root.usageItems.length > 0
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.border
+                }
+
+                Repeater {
+                    model: root.usageItems
+
+                    Row {
+                        id: usageRow
+                        required property var modelData
+                        width: parent.width
+                        spacing: 6
+
+                        Text {
+                            id: usageName
+                            width: 90
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: usageRow.modelData.name
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            elide: Text.ElideMiddle
+                        }
+
+                        Rectangle {
+                            id: usageBarBg
+                            width: parent.width - usageName.width - usageValue.width - parent.spacing * 2
+                            height: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            radius: 3
+                            color: Theme.bgAlpha
+                            border.color: Theme.border
+                            border.width: 1
+
+                            Rectangle {
+                                height: parent.height
+                                width: Math.max(0, Math.min(1, usageRow.modelData.pcent / 100)) * parent.width
+                                radius: parent.radius
+                                color: Theme.rampColor(usageRow.modelData.pcent / 100)
+                            }
+                        }
+
+                        Text {
+                            id: usageValue
+                            width: 32
+                            anchors.verticalCenter: parent.verticalCenter
+                            horizontalAlignment: Text.AlignRight
+                            text: Math.round(usageRow.modelData.pcent) + "%"
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
                         }
                     }
                 }

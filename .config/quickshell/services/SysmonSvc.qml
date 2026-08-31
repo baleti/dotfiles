@@ -68,6 +68,95 @@ QtObject {
     // Whole-disk block devices, same shape as netInterfaces.
     readonly property var diskDevices: diskSock.data.devices ?? []
 
+    // Filesystem *space* usage (percent full), separate from diskDevices'
+    // I/O-rate history above -- that's per whole-disk block device, this is
+    // per mounted filesystem, and changes slowly enough that polling `df`
+    // every 60s (instead of sysmond's per-second sampler) is plenty.
+    // [{name: "/", pcent: 46}, ...], restricted to the mounts listed in
+    // ~/.config/quickshell/disk-usage-mounts.conf (user-editable, plain
+    // text -- see that file's header) and ordered the same way, since a
+    // btrfs root has one usage% per subvolume mount (/, /home, /var, ...
+    // all read the same, would just be noise) and the FUSE remotes
+    // (gdrive: etc.) are otherwise out of scope for local disk usage (see
+    // memory) but the user does want specific ones surfaced here.
+    property var diskUsage: []
+    readonly property real rootUsagePct: {
+        for (const d of root.diskUsage)
+            if (d.name === "/")
+                return d.pcent;
+        return NaN;
+    }
+
+    property var _wantedMounts: []
+    property string _lastDfText: ""
+
+    // Re-applies the wanted-mounts filter to the last `df` run, without
+    // waiting up to 60s for diskUsageTimer's next tick -- so editing the
+    // config file takes effect close to immediately.
+    readonly property FileView diskMountsConfig: FileView {
+        path: `${Quickshell.env("HOME")}/.config/quickshell/disk-usage-mounts.conf`
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: {
+            root._wantedMounts = text().split("\n")
+                .map(l => l.trim())
+                .filter(l => l.length > 0 && !l.startsWith("#"));
+            if (root._lastDfText)
+                root._parseDfOutput(root._lastDfText);
+        }
+        onLoadFailed: root._wantedMounts = ["/"];
+    }
+
+    function _parseDfOutput(text) {
+        root._lastDfText = text;
+        const lines = text.trim().split("\n");
+        lines.shift(); // header: "Filesystem Type Use% Mounted on"
+        const bySource = {};
+        for (const line of lines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length < 4)
+                continue;
+            const source = parts[0];
+            const pcent = parseInt(parts[2]);
+            const target = parts.slice(3).join(" ");
+            if (isNaN(pcent))
+                continue;
+            // Dedupes multiple mounts of the same source (btrfs subvolumes
+            // under one device) down to its shortest/topmost mount path,
+            // before the wanted-list filter matches against it.
+            const existing = bySource[source];
+            if (!existing || target.length < existing.target.length)
+                bySource[source] = { source, target, pcent };
+        }
+        const bySourceOrTarget = {};
+        for (const d of Object.values(bySource)) {
+            bySourceOrTarget[d.source] = d;
+            bySourceOrTarget[d.target] = d;
+        }
+        const out = [];
+        for (const wanted of root._wantedMounts) {
+            const d = bySourceOrTarget[wanted];
+            if (d)
+                out.push({ name: d.target, pcent: d.pcent });
+        }
+        root.diskUsage = out;
+    }
+
+    readonly property Process dfProc: Process {
+        command: ["df", "--output=source,fstype,pcent,target", "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs"]
+        stdout: StdioCollector {
+            onStreamFinished: root._parseDfOutput(text)
+        }
+    }
+
+    readonly property Timer diskUsageTimer: Timer {
+        interval: 60000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: root.dfProc.running = true
+    }
+
     function socketPath(): string {
         return `${Quickshell.env("XDG_RUNTIME_DIR")}/sysmond.sock`;
     }
