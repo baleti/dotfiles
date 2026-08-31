@@ -100,11 +100,11 @@ fetch shows as `--`.
 
 ## Active processes per account
 
-The detail panel also lists each account's live `claude` processes —
-PID, status, context tokens, tmux location, and how long since it last did
-anything. Entirely local, no network call, so it runs on its own fixed 30s
-cadence independent of the tiers/backoff above (and keeps updating even
-mid-backoff).
+The detail panel also lists each account's live `claude` processes — a
+per-account sortable table: status, title, context tokens, last-active
+time, tmux location, pid, path. Entirely local, no network call, so it
+runs on its own fixed 30s cadence independent of the tiers/backoff above
+(and keeps updating even mid-backoff).
 
 - **Finding them**: each account's `sessions/<pid>.json` (written by the
   CLI itself) gives `pid`/`sessionId`/`cwd`/`status`/`tmux` directly, keyed
@@ -117,6 +117,17 @@ mid-backoff).
   sends *all* of them, sorted most-recently-active first — capping that
   list is the quickshell side's job, not the daemon's (see below), so the
   real total is always known even when the panel can't show all of it.
+- **Title** is tmux's own `pane_title` (set by the CLI via terminal escape
+  sequences, e.g. `"Focused window border accent color"`), looked up with
+  one batched `tmux list-panes -a` call per cycle (not one subprocess per
+  session) and matched by the globally-unique `%pane-id` embedded in that
+  session's own `tmux` field. **Not** `sessions/<pid>.json`'s own `"name"`
+  field — that looks like a title but is actually just an opaque
+  auto-derived id the CLI assigns internally (e.g. `"user1-46"`), unrelated
+  to what the session is doing; using it was the original version's bug,
+  caught by comparing both against the same real session. `name` is kept
+  as the fallback for a process tmux can't find a pane for (not running in
+  tmux at all — daemon/bg-pty-host processes).
 - **Token usage** is read from the last `type: "assistant"` entry's
   `usage` field in that session's own transcript
   (`~/.claudeN/projects/<cwd-slug>/<sessionId>.jsonl` — the same
@@ -126,22 +137,26 @@ mid-backoff).
   `input + cache_creation + cache_read` tokens from that one call — i.e.
   roughly how full that session's context window is *right now*, not a
   lifetime running total across the session's history.
-- **Each process is one line**, columns: status (`idle`/`wait`/`busy`,
-  abbreviated — `waiting` alone was wide enough to run into the next
-  column with no gap, a real bug the first version had), pid, context
-  tokens, path (cwd, `~`-shortened, elided if the row's too narrow), tmux
-  (its own column now — originally folded into path, split back out on
-  request), and last-active time. A single `status pid tokens path tmux
-  last active` header row sits above each account's list instead of
+- **Each process is one line**, columns in this order: status
+  (`idle`/`wait`/`busy`, abbreviated — `waiting` alone was wide enough to
+  run into the next column with no gap, a real bug the first version had),
+  title (elided), context tokens, last-active time, tmux location, pid,
+  path (cwd, `~`-shortened, elided if the row's too narrow — the one
+  column with no fixed width, since it's the least critical to keep fully
+  visible). A single header row sits above each account's list instead of
   repeating those words on every row (same fixed column widths as the data
   rows, shared via `root.col*W`). The header row hit this same too-narrow-
-  for-its-own-label bug twice — once on `"status"` itself, once on
-  `"last active"` after its sort-arrow suffix (below) was added — each
-  column had to be sized off its own *header word* (plus that suffix),
-  not the shorter values it actually holds.
-- **Last-active is a plain duration, no "ago"** — the header says that
-  once, instead of every row repeating it (`fmtDuration()`, shared with
-  the reset countdowns above). It breaks down through seconds → minutes →
+  for-its-own-label bug twice — once on `"status"`, once on `"last"` after
+  its sort-arrow suffix (below) was added — each column had to be sized
+  off its own *header word* (plus that suffix), not the shorter values it
+  actually holds.
+- **The panel is wider than the other bar panels by default** —
+  `Bar.qml`'s `claudeUsagePanelWidth` (760px cap, vs. the standard 560) —
+  since 7 columns plus a usable path column don't fit the shared width the
+  graph/media panels use.
+- **Last is a plain duration, no "ago"** — the header says that once,
+  instead of every row repeating it (`fmtDuration()`, shared with the
+  reset countdowns above). It breaks down through seconds → minutes →
   hours → days → weeks → months → years (e.g. `2d 3h`, `3w 1d`, `2mo 1w`),
   not just hours — some of these sessions have been alive since Aug 14,
   and an hours-only version rolling over into `410h` instead of `17d 2h`
@@ -149,36 +164,39 @@ mid-backoff).
   approximations (a coarse "roughly how long", not a calendar
   computation).
 - **Every column header is clickable** — sorts that account's table by
-  that column (status/pid/tokens/path/tmux alphabetically or numerically
-  as appropriate, last-active by raw timestamp), a `▲`/`▼` marks whichever
-  column is currently driving the order, and clicking the *same* header
-  again flips ascending/descending (`ClaudeUsageExpanded.qml`'s
-  `groupSort`, keyed per account — sorting `claude`'s table doesn't touch
-  `claude2`/`claude3`'s). Resets to the daemon's own most-recent-first
-  order on every panel open **and** close (`onExpandedChanged`), so a sort
-  never silently carries over into an unrelated later look at the panel.
+  that column, a `▲`/`▼` marks whichever column is currently driving the
+  order, and clicking the *same* header again flips ascending/descending
+  (`ClaudeUsageExpanded.qml`'s `groupSort`, keyed per account — sorting
+  `claude`'s table doesn't touch `claude2`/`claude3`'s).
 - **How many rows actually render** is a fit-estimate against
   `ClaudeUsageExpanded.qml`'s `maxPanelHeight` (screen-height-derived, same
   as `CalendarExpanded` — the panel is allowed to grow as tall as the
-  monitor allows, not capped to some fixed small height), split evenly
-  across whichever account groups are currently expanded — one group open
-  alone gets far more rows than when all 3 are. This can't be pixel-exact
-  without a two-pass layout (a group's fair share depends on its siblings'
-  actual heights, which depend on their own share — circular), so it's a
-  heuristic biased slightly toward under-filling rather than clipping.
-  Whatever doesn't fit shows as a real count, e.g. `+13 more` — the true
-  remainder from the account's full list, never silently dropped.
+  monitor allows, not capped to some fixed small height). `groupRowBudgets`
+  water-fills that estimate across whichever account groups are currently
+  expanded, smallest-total-first, so a group with fewer real processes
+  than an equal split would give it only takes what it needs and every
+  leftover row rolls forward to groups that actually have more to show —
+  an equal-split version tried first meant folding one group could
+  visibly *shrink the whole panel* even while another group still had a
+  "+N more" waiting to grow into the freed space, reported 2026-08-31.
+  Whatever still doesn't fit shows as a real count, e.g. `+13 more` — the
+  true remainder from the account's full list, never silently dropped.
 - **Each account group is collapsible** — a `▾`/`▸` chevron (sized
   `Theme.fontSize + 2`, a couple points larger than the body text around
   it so it reads as a clickable affordance rather than punctuation) left
   of the `claude`/`claude2`/`claude3` heading (click anywhere on the
-  heading)
-  folds/unfolds that account's session%/weekly%/process-list section.
-  Collapsed accounts free their vertical share for whichever groups stay
-  open. State lives on the panel's own persistent QML instance (it's never
-  destroyed, only collapses to zero height when the panel itself closes —
-  same pattern as its open/closed state), so it survives closing and
-  reopening the panel with `CTRL+ALT+c`.
+  heading) folds/unfolds that account's session%/weekly%/process-list
+  section, freeing its vertical share for whichever groups stay open (see
+  `groupRowBudgets` above).
+- **Both fold state and sort reset on every panel open *and* close**
+  (`onExpandedChanged`) — this Rectangle instance is never destroyed
+  (only its height collapses to 0 when the panel itself closes, same
+  pattern as Media/CalendarExpanded), so without this a fold or a sort
+  from one look at the panel would otherwise still be there next time.
+  The first version only reset sort and let fold state persist
+  (reasoned, at the time, as the more useful default) — reported as
+  inconsistent with the intended "clean slate every open" behavior, so
+  both reset together now.
 
 ## Files
 
@@ -240,14 +258,18 @@ mid-backoff).
      theme-generated as the series/ramp swatches, so excluding them was
      the actual bug, not the closest-hue approach itself.
 - `bar/ClaudeUsageExpanded.qml` — per-account session%/weekly% + reset
-  countdown + its own "active processes" list (see above), plus the
+  countdown + its own "active processes" table (see above), plus the
   current poll tier/backoff countdown and staleness ("updated Ns ago").
   Wired into `Bar.qml`'s shared panel-row layout system (`panelOrder` etc.
   — see quickshell-bar.md) the same way `CalendarExpanded`/`MediaExpanded`
-  are, but deliberately stays **out** of `shell.qml`'s
-  `HyprlandFocusGrab`/`holdsFocus` machinery: nothing in this panel needs
-  arrow-key navigation, so it never requests real keyboard focus. Toggling
-  again (or clicking the pill) is the only way to close it.
+  are, **including** `shell.qml`'s `HyprlandFocusGrab`/`holdsFocus`
+  machinery (`Bar.qml`'s `openPanelCount` and the `claudeUsageExpanded`
+  instance's `onExpandedChanged` both include it) — first version left
+  this out entirely, reasoning nothing here needed arrow-key nav, but
+  Escape-to-close was requested and that needs the same real focus grab
+  the other panels use. `root.Keys.onPressed` in `Bar.qml` handles Escape
+  while this is the open panel; toggling again (or clicking the pill)
+  still works too.
 
 ## Keybind
 
