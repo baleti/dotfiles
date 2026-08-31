@@ -554,6 +554,7 @@ Item {
             // itself looks fine, and that's worth seeing at a glance.
             secondaryIcon: Icons.swap
             secondaryText: Math.round(root.last(SysmonSvc.swapUsedPct)) + "%"
+            secondaryDivider: false
             secondaryValueFraction: root.last(SysmonSvc.swapUsedPct) / 100
             legendItems: root.memLegend
             topProcs: SysmonSvc.topMem
@@ -590,6 +591,7 @@ Item {
             // open the panel.
             secondaryIcon: Icons.disk
             secondaryText: "/ " + (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "%"
+            secondaryDivider: false
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
             usageItems: SysmonSvc.diskUsage

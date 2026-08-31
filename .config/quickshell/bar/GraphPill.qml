@@ -41,6 +41,11 @@ Rectangle {
     // whole group, so every other GraphPill is unaffected.
     property string secondaryIcon: ""
     property string secondaryText: ""
+    // When true (default) the secondary group is set off from the primary
+    // value by a thin vertical divider; when false they're just separated
+    // by blank space (disk pill -- the I/O rate and "/ NN%" read fine
+    // without a rule between them).
+    property bool secondaryDivider: true
     property real secondaryValueFraction: NaN
     readonly property color secondaryColor: !isNaN(secondaryValueFraction) ? Theme.rampColor(secondaryValueFraction) : Theme.text
 
@@ -250,11 +255,19 @@ Rectangle {
         }
 
         Rectangle {
-            visible: root.secondaryIcon.length > 0
+            visible: root.secondaryIcon.length > 0 && root.secondaryDivider
             width: 1
             height: parent.height * 0.6
             anchors.verticalCenter: parent.verticalCenter
             color: Theme.border
+        }
+
+        // Divider suppressed (secondaryDivider: false): keep an equivalent
+        // gap so the primary and secondary readings stay visually separated.
+        Item {
+            visible: root.secondaryIcon.length > 0 && !root.secondaryDivider
+            width: 2
+            height: 1
         }
 
         Text {
