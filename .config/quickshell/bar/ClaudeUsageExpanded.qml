@@ -37,30 +37,36 @@ Rectangle {
         onWheel: wheel => wheel.accepted = true
     }
 
-    // "resets in Xd Yh" / "Xh Ym" / "<1m" -- ISO8601 in, coarse relative-time
-    // out. null (an account whose tier wasn't returned, e.g. it's disabled)
-    // reads as "--", not "resets in NaN".
-    function fmtResets(iso) {
-        if (!iso)
-            return "--";
-        const target = new Date(iso).getTime();
-        if (isNaN(target))
-            return "--";
-        let deltaS = Math.round((target - Date.now()) / 1000);
+    // Coarse "Xd Yh" / "Xh Ym" / "Xm" / "<1m" for a delta in seconds --
+    // shared by the per-limit reset countdown and the backoff/staleness
+    // lines below.
+    function fmtDelta(deltaS) {
         if (deltaS <= 0)
-            return qsTr("resetting");
+            return qsTr("<1m");
         const days = Math.floor(deltaS / 86400);
         deltaS -= days * 86400;
         const hours = Math.floor(deltaS / 3600);
         deltaS -= hours * 3600;
         const mins = Math.floor(deltaS / 60);
         if (days > 0)
-            return qsTr("resets in %1d %2h").arg(days).arg(hours);
+            return qsTr("%1d %2h").arg(days).arg(hours);
         if (hours > 0)
-            return qsTr("resets in %1h %2m").arg(hours).arg(mins);
+            return qsTr("%1h %2m").arg(hours).arg(mins);
         if (mins > 0)
-            return qsTr("resets in %1m").arg(mins);
-        return qsTr("resets in <1m");
+            return qsTr("%1m").arg(mins);
+        return qsTr("<1m");
+    }
+
+    // "resets in Xd Yh" -- ISO8601 in. null (an account whose tier wasn't
+    // returned, e.g. it's disabled) reads as "--", not "resets in NaN".
+    function fmtResets(iso) {
+        if (!iso)
+            return "--";
+        const target = new Date(iso).getTime();
+        if (isNaN(target))
+            return "--";
+        const deltaS = Math.round((target - Date.now()) / 1000);
+        return deltaS <= 0 ? qsTr("resetting") : qsTr("resets in %1").arg(root.fmtDelta(deltaS));
     }
 
     // "12s ago" / "4m ago" -- same coarse style, for the daemon's own
@@ -81,9 +87,22 @@ Rectangle {
 
     readonly property var pollModeLabels: ({
         "locked": qsTr("polling hourly (locked/screen off)"),
-        "active": qsTr("polling every 30s (active)"),
+        "active": qsTr("polling every 2m (active)"),
         "idle": qsTr("polling every 5m (idle)"),
     })
+
+    // Backoff isn't a fixed label like the other 3 tiers -- it's a live
+    // countdown to when polling resumes, computed from updated_at (when
+    // this backoff started) + poll_interval_s (how long it runs), same
+    // pair every other mode uses for its own bookkeeping.
+    function modeLine() {
+        if (ClaudeUsageSvc.pollMode === "backoff") {
+            const resumeMs = new Date(ClaudeUsageSvc.updatedAt).getTime() + ClaudeUsageSvc.pollIntervalS * 1000;
+            const deltaS = Math.round((resumeMs - Date.now()) / 1000);
+            return qsTr("rate limited (429) -- retrying in %1").arg(root.fmtDelta(Math.max(0, deltaS)));
+        }
+        return root.pollModeLabels[ClaudeUsageSvc.pollMode] || qsTr("Claude usage");
+    }
 
     // Re-render the relative-time strings once a second while open -- they
     // read off Date.now()/live deltas, which QML has no binding source for
@@ -105,10 +124,7 @@ Rectangle {
 
         Text {
             width: parent.width
-            text: root.tick >= 0
-                ? (root.pollModeLabels[ClaudeUsageSvc.pollMode] || qsTr("Claude usage"))
-                    + " -- " + qsTr("updated %1").arg(root.fmtAgo(ClaudeUsageSvc.updatedAt))
-                : ""
+            text: root.tick >= 0 ? root.modeLine() + " -- " + qsTr("updated %1").arg(root.fmtAgo(ClaudeUsageSvc.updatedAt)) : ""
             color: Theme.textDim
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize - 2
@@ -123,6 +139,8 @@ Rectangle {
                 spacing: 2
 
                 required property var modelData
+                readonly property bool hasSession: typeof modelData.session_pct === "number"
+                readonly property bool hasWeekly: typeof modelData.weekly_pct === "number"
 
                 Text {
                     text: modelData.account || ""
@@ -132,10 +150,16 @@ Rectangle {
                     font.bold: true
                 }
 
+                // A stale reading still shows its (dimmed) numbers below --
+                // this is just the "why" note, not a replacement for them.
+                // Only a genuinely never-fetched account has no numbers to
+                // dim, in which case this is the only line shown.
                 Text {
                     visible: !!modelData.error
                     width: parent.width
-                    text: qsTr("error: %1").arg(modelData.error || "")
+                    text: parent.hasSession || parent.hasWeekly
+                        ? qsTr("%1 -- showing last known values").arg(modelData.error)
+                        : qsTr("error: %1").arg(modelData.error)
                     color: Theme.red
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 2
@@ -143,13 +167,14 @@ Rectangle {
                 }
 
                 RowLayout {
-                    visible: !modelData.error
+                    visible: parent.hasSession
+                    opacity: modelData.stale ? 0.55 : 1
                     width: parent.width
                     spacing: 10
 
                     Text {
-                        text: qsTr("session %1%").arg(Math.round(modelData.session_pct ?? 0))
-                        color: Theme.rampColor((modelData.session_pct ?? 0) / 100)
+                        text: qsTr("session %1%").arg(Math.round(modelData.session_pct))
+                        color: Theme.rampColor(modelData.session_pct / 100)
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 1
                     }
@@ -163,13 +188,14 @@ Rectangle {
                 }
 
                 RowLayout {
-                    visible: !modelData.error
+                    visible: parent.hasWeekly
+                    opacity: modelData.stale ? 0.55 : 1
                     width: parent.width
                     spacing: 10
 
                     Text {
-                        text: qsTr("weekly %1%").arg(Math.round(modelData.weekly_pct ?? 0))
-                        color: Theme.rampColor((modelData.weekly_pct ?? 0) / 100)
+                        text: qsTr("weekly %1%").arg(Math.round(modelData.weekly_pct))
+                        color: Theme.rampColor(modelData.weekly_pct / 100)
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 1
                     }

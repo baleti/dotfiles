@@ -16,32 +16,20 @@ Singleton {
     readonly property string _stateFile: Quickshell.env("HOME") + "/.cache/claude-usage/state.json"
 
     // [{account, session_pct, session_resets_at, weekly_pct,
-    //   weekly_resets_at, fetched_at, error}], one entry per ~/.claude*.
+    //   weekly_resets_at, fetched_at, error, stale}], one entry per
+    // ~/.claude*, always in that fixed order. `stale: true` means this
+    // cycle's fetch failed (commonly a 429 -- see claude-usage.md's
+    // Backoff section) and these are the last successfully fetched
+    // numbers, carried forward rather than blanked; `error` names why.
+    // ClaudeUsagePill/ClaudeUsageExpanded both iterate this directly, not
+    // an aggregate -- each account's own number is what matters here.
     property var accounts: []
+    // "locked" | "active" | "idle" | "backoff" -- see claude-usage.md.
     property string pollMode: ""
     property int pollIntervalS: 0
     property string updatedAt: ""
 
     readonly property bool hasData: accounts.length > 0
-
-    // Highest percent across every account for each kind -- drives the
-    // compact pill's headline numbers/color. 0 (not -1) when nothing has
-    // loaded yet, same "nothing alarming to show" convention as the other
-    // metric pills use before their first real reading.
-    readonly property real worstSessionPct: {
-        let m = 0;
-        for (const a of root.accounts)
-            if (typeof a.session_pct === "number")
-                m = Math.max(m, a.session_pct);
-        return m;
-    }
-    readonly property real worstWeeklyPct: {
-        let m = 0;
-        for (const a of root.accounts)
-            if (typeof a.weekly_pct === "number")
-                m = Math.max(m, a.weekly_pct);
-        return m;
-    }
 
     FileView {
         id: stateFile

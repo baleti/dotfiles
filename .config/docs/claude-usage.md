@@ -16,10 +16,16 @@ strings, then confirmed with one live call). It isn't published in
 Anthropic's public API docs, so it's not a contract that's guaranteed
 stable across CLI versions, but it's not a special/hidden route either —
 it's the identical authenticated, read-only account-info call the CLI
-itself makes, using credentials the account already holds. Polling it on
-top of the traffic dozens of live `claude` sessions already generate
-(token refreshes, heartbeats) is a negligible addition, not a new kind of
-request.
+itself makes, using credentials the account already holds.
+
+**It does rate-limit, and it's stricter than expected.** The first version
+of this polled every 30s per account with all 3 fired back-to-back, and
+tripped a 429 on all 3 accounts *simultaneously* within about 30 minutes of
+continuous "active" use — evidence the limit is IP-wide, not per-account/
+per-token. Treat this endpoint as scarce: it's built for an occasional
+`/usage` check, not continuous polling. See Backoff below for how this is
+now handled, and the interval table for the (now much more conservative)
+tuning that followed.
 
 Response shape (the field actually used, `limits[]`):
 
@@ -59,8 +65,12 @@ when a fetch is due for that tier:
 | Condition | Interval |
 |---|---|
 | Any monitor DPMS-off, or the session locked (`hyprctl -j monitors` / `loginctl … LockedHint`) | 1 hour |
-| A transcript under `~/.claude*/projects/*/*.jsonl` was modified in the last 90s (i.e. *something* is actively generating, anywhere — not just the focused window) | 30 seconds |
+| A transcript under `~/.claude*/projects/*/*.jsonl` was modified in the last 90s (i.e. *something* is actively generating, anywhere — not just the focused window) | 2 minutes |
 | Otherwise (screen on, nothing actively generating) | 5 minutes |
+
+(The "active" tier started at 30 seconds and got widened to 2 minutes after
+the 429 above — see Backoff.) Each fetch cycle also staggers the 3
+accounts' requests 5s apart, so they never land as one 3-request burst.
 
 Plain process-existence (`pgrep claude`) was deliberately **not** used for
 the "active" check — this machine keeps dozens of resumed `claude`
@@ -71,6 +81,22 @@ mtime only moves while a session is genuinely generating or using a tool.
 There's also no idle/lock daemon actually running here (`hypridle`/
 `swayidle` absent, KDE autolock off), so the "locked" check is a live query
 each cycle rather than a state some other daemon maintains.
+
+## Backoff on 429
+
+A 429 from any one of the 3 accounts suspends fetching for **all 3** for at
+least 10 minutes (longer if the response sends a `Retry-After` header),
+doubling on each further 429 hit before the backoff clears, capped at 1
+hour. `poll_mode` becomes `"backoff"` in `state.json` during this window,
+which the detail panel renders as a live "rate limited — retrying in Xm"
+countdown instead of the usual tier label.
+
+Critically, a 429 (or any other fetch error) no longer blanks out that
+account's numbers: the daemon carries the last successful reading forward
+into `state.json`, flagged `"stale": true`, so the bar keeps showing the
+last-known percentages (dimmed) through a rate-limit window instead of
+going blank or red. Only an account that has *never* had a successful
+fetch shows as `--`.
 
 ## Files
 
@@ -89,17 +115,20 @@ each cycle rather than a state some other daemon maintains.
 
 - `services/ClaudeUsageSvc.qml` — singleton `FileView` on `state.json`
   (`watchChanges: true`); never touches the network itself.
-- `bar/ClaudeUsagePill.qml` — compact `S <session%> W <weekly%>` pill,
-  worst (highest) percent across the 3 accounts for each kind, colored via
-  `Theme.rampColor`. Click toggles the detail panel.
+- `bar/ClaudeUsagePill.qml` — compact per-account **session%** only (fixed
+  `claude`/`claude2`/`claude3` order, e.g. `12% 100% 16%`), colored via
+  `Theme.rampColor`; a stale (carried-forward-after-an-error) reading is
+  dimmed rather than hidden. Weekly% doesn't fit 3-accounts-wide in a bar
+  pill at a glance, so it's detail-panel-only. Click toggles the detail
+  panel.
 - `bar/ClaudeUsageExpanded.qml` — per-account session%/weekly% + reset
-  countdown, plus the current poll tier and staleness ("updated Ns ago").
-  Wired into `Bar.qml`'s shared panel-row layout system (`panelOrder`
-  etc. — see quickshell-bar.md) the same way `CalendarExpanded`/
-  `MediaExpanded` are, but deliberately stays **out** of `shell.qml`'s
-  `HyprlandFocusGrab`/`holdsFocus` machinery: nothing in this panel needs
-  arrow-key navigation, so it never requests real keyboard focus. Toggling
-  again (or clicking the pill) is the only way to close it.
+  countdown, plus the current poll tier/backoff countdown and staleness
+  ("updated Ns ago"). Wired into `Bar.qml`'s shared panel-row layout system
+  (`panelOrder` etc. — see quickshell-bar.md) the same way
+  `CalendarExpanded`/`MediaExpanded` are, but deliberately stays **out** of
+  `shell.qml`'s `HyprlandFocusGrab`/`holdsFocus` machinery: nothing in this
+  panel needs arrow-key navigation, so it never requests real keyboard
+  focus. Toggling again (or clicking the pill) is the only way to close it.
 
 ## Keybind
 
