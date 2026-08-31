@@ -34,6 +34,22 @@ one. A 429/other error also no longer blanks out that account's last-known
 numbers in state.json -- it carries the last good reading forward, flagged
 "stale", so the bar doesn't just go blank/red on every hiccup.
 
+2026-08-31: also lists each account's live `claude` processes ("sessions"
+in state.json), entirely from local files -- no network call, so it runs
+on its own fixed 30s cadence regardless of the tier/backoff logic above.
+Each account's `sessions/<pid>.json` (written by the CLI itself, keyed by
+PID) gives pid/sessionId/cwd/status/tmux directly; a process only shows up
+here if /proc/<pid> still exists, so an exited session's leftover json
+doesn't linger. "Context tokens" per session comes from the last
+`type: "assistant"` message's `usage` field in that session's own
+transcript (~/.claudeN/projects/<cwd-slug>/<sessionId>.jsonl, found by a
+tail-window read, not a full-file parse -- see context_tokens_for) --
+input + cache_creation + cache_read tokens, i.e. roughly how full that
+session's context window currently is, not a lifetime total. Only the 6
+most-recently-active sessions per account are kept (there are routinely
+20-40 alive at once here, almost all idle resumed shells -- a full list
+isn't a "current activity" view, it's just clutter).
+
 State is written atomically to ~/.cache/claude-usage/state.json.
 """
 import json
@@ -75,6 +91,16 @@ ACCOUNT_STAGGER = 5
 # backoff has cleared (capped at MAX_BACKOFF).
 BACKOFF_MIN = 600
 BACKOFF_MAX = 3600
+
+# Session/process listing: purely local (no network), so it runs on its
+# own short cadence independent of the tiers above.
+SESSIONS_INTERVAL = 30
+SESSIONS_KEEP = 6
+# Tail-window sizes tried in order (bytes) when hunting for the last
+# assistant usage entry -- most files find it in the first, smallest pass;
+# this only escalates for a session whose last turn had a huge tool result
+# between it and EOF.
+TOKEN_SEARCH_WINDOWS = (200_000, 1_500_000, None)  # None = whole file
 
 
 def log(msg: str) -> None:
@@ -179,10 +205,104 @@ def fetch_usage(cred_path: Path) -> dict:
     }
 
 
-def write_state(accounts_data: list, mode: str, interval: int) -> None:
+def is_pid_alive(pid) -> bool:
+    try:
+        return Path(f"/proc/{int(pid)}").is_dir()
+    except (TypeError, ValueError):
+        return False
+
+
+def cwd_to_slug(cwd: str) -> str:
+    # ~/.claudeN/projects/<slug>/ naming: every '/' and '.' in the cwd
+    # becomes '-' (confirmed against real project dirs, e.g.
+    # "/home/user1/.claude" -> "-home-user1--claude").
+    return cwd.replace(".", "-").replace("/", "-")
+
+
+def context_tokens_for(transcript_path: Path):
+    """(context_tokens, last_output_tokens) from the last assistant
+    message's usage in transcript_path, or (None, None). context_tokens is
+    input + cache_creation + cache_read -- roughly how full that session's
+    context window currently is, not a lifetime running total."""
+    try:
+        size = transcript_path.stat().st_size
+    except OSError:
+        return None, None
+
+    for window in TOKEN_SEARCH_WINDOWS:
+        take = size if window is None else min(window, size)
+        try:
+            with transcript_path.open("rb") as fh:
+                fh.seek(size - take)
+                data = fh.read().decode("utf-8", errors="ignore")
+        except OSError:
+            return None, None
+
+        for line in reversed(data.split("\n")):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") != "assistant":
+                continue
+            usage = (rec.get("message") or {}).get("usage")
+            if usage:
+                ctx = (
+                    (usage.get("input_tokens") or 0)
+                    + (usage.get("cache_creation_input_tokens") or 0)
+                    + (usage.get("cache_read_input_tokens") or 0)
+                )
+                return ctx, usage.get("output_tokens")
+
+        if take >= size:
+            break
+    return None, None
+
+
+def list_sessions(base: Path) -> list:
+    sessions_dir = base / "sessions"
+    if not sessions_dir.is_dir():
+        return []
+
+    rows = []
+    for f in sessions_dir.glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        pid = data.get("pid")
+        if not is_pid_alive(pid):
+            continue
+
+        session_id = data.get("sessionId")
+        cwd = data.get("cwd") or ""
+        context_tokens = last_output_tokens = None
+        if session_id and cwd:
+            transcript = base / "projects" / cwd_to_slug(cwd) / f"{session_id}.jsonl"
+            context_tokens, last_output_tokens = context_tokens_for(transcript)
+
+        rows.append({
+            "pid": pid,
+            "status": data.get("status"),
+            "cwd": cwd,
+            "tmux": data.get("tmux"),
+            "updated_at_ms": data.get("updatedAt"),
+            "context_tokens": context_tokens,
+            "last_output_tokens": last_output_tokens,
+        })
+
+    rows.sort(key=lambda s: s.get("updated_at_ms") or 0, reverse=True)
+    return rows[:SESSIONS_KEEP]
+
+
+def write_state(accounts_data: list, sessions_data: dict, mode: str, interval: int) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "accounts": accounts_data,
+        "sessions": sessions_data,
         "poll_mode": mode,
         "poll_interval_s": interval,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -195,63 +315,79 @@ def write_state(accounts_data: list, mode: str, interval: int) -> None:
 def main() -> None:
     log("claude-usage-daemon starting")
     next_fetch = 0.0
+    next_sessions = 0.0
     backoff_until = 0.0
     consecutive_429 = 0
     # account name -> last successful fetch_usage() result (no "account" key)
     last_good: dict[str, dict] = {}
+    accounts_data = [{"account": name} for name, _ in ACCOUNTS]
+    sessions_data = {name: [] for name, _ in ACCOUNTS}
+    mode, interval = "idle", INTERVAL_IDLE
 
     while True:
         now = time.time()
+        dirty = False
+
+        # Session/process listing: local-only, its own cadence, runs even
+        # during a network backoff window.
+        if now >= next_sessions:
+            sessions_data = {name: list_sessions(base) for name, base in ACCOUNTS}
+            next_sessions = time.time() + SESSIONS_INTERVAL
+            dirty = True
+
         if now < backoff_until:
-            time.sleep(CHECK_GRANULARITY)
-            continue
+            new_mode, new_interval = "backoff", int(backoff_until - now)
+            if (mode, interval) != (new_mode, new_interval):
+                mode, interval = new_mode, new_interval
+                dirty = True
+        elif now >= next_fetch:
+            mode, interval = current_tier()
+            accounts_data = []
+            hit_429 = False
+            retry_after_max = 0.0
+            for i, (name, base) in enumerate(ACCOUNTS):
+                if i > 0:
+                    time.sleep(ACCOUNT_STAGGER)
+                result = fetch_usage(base / ".credentials.json")
 
-        mode, interval = current_tier()
-        if now < next_fetch:
-            time.sleep(CHECK_GRANULARITY)
-            continue
+                if result.get("http_status") == 429:
+                    hit_429 = True
+                    retry_after_max = max(retry_after_max, result.get("retry_after") or 0.0)
 
-        accounts_data = []
-        hit_429 = False
-        retry_after_max = 0.0
-        for i, (name, base) in enumerate(ACCOUNTS):
-            if i > 0:
-                time.sleep(ACCOUNT_STAGGER)
-            result = fetch_usage(base / ".credentials.json")
+                if "error" in result:
+                    prev = last_good.get(name)
+                    row = dict(prev) if prev else {}
+                    row["account"] = name
+                    row["error"] = result["error"]
+                    row["stale"] = prev is not None
+                    accounts_data.append(row)
+                    if result["error"] != "http 429":
+                        log(f"{name}: {result['error']}")
+                else:
+                    result["account"] = name
+                    last_good[name] = {k: v for k, v in result.items() if k != "account"}
+                    accounts_data.append(result)
 
-            if result.get("http_status") == 429:
-                hit_429 = True
-                retry_after_max = max(retry_after_max, result.get("retry_after") or 0.0)
-
-            if "error" in result:
-                prev = last_good.get(name)
-                row = dict(prev) if prev else {}
-                row["account"] = name
-                row["error"] = result["error"]
-                row["stale"] = prev is not None
-                accounts_data.append(row)
-                if result["error"] != "http 429":
-                    log(f"{name}: {result['error']}")
+            if hit_429:
+                consecutive_429 += 1
+                backoff_s = min(
+                    BACKOFF_MAX,
+                    max(BACKOFF_MIN, retry_after_max) * (2 ** (consecutive_429 - 1)),
+                )
+                backoff_until = time.time() + backoff_s
+                mode = "backoff"
+                interval = int(backoff_s)
+                log(f"hit 429 (consecutive={consecutive_429}), backing off {backoff_s:.0f}s")
             else:
-                result["account"] = name
-                last_good[name] = {k: v for k, v in result.items() if k != "account"}
-                accounts_data.append(result)
+                consecutive_429 = 0
 
-        if hit_429:
-            consecutive_429 += 1
-            backoff_s = min(
-                BACKOFF_MAX,
-                max(BACKOFF_MIN, retry_after_max) * (2 ** (consecutive_429 - 1)),
-            )
-            backoff_until = time.time() + backoff_s
-            mode = "backoff"
-            interval = int(backoff_s)
-            log(f"hit 429 (consecutive={consecutive_429}), backing off {backoff_s:.0f}s")
-        else:
-            consecutive_429 = 0
+            next_fetch = time.time() + interval
+            dirty = True
 
-        write_state(accounts_data, mode, interval)
-        next_fetch = time.time() + interval
+        if dirty:
+            write_state(accounts_data, sessions_data, mode, interval)
+
+        time.sleep(CHECK_GRANULARITY)
 
 
 if __name__ == "__main__":

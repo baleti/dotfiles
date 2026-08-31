@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
 import "../theme"
 import "../services"
 
@@ -83,6 +84,45 @@ Rectangle {
         if (deltaS < 3600)
             return qsTr("%1m ago").arg(Math.floor(deltaS / 60));
         return qsTr("%1h ago").arg(Math.floor(deltaS / 3600));
+    }
+
+    readonly property string homeDir: Quickshell.env("HOME") || ""
+
+    // "/home/user1/foo" -> "~/foo" (or "~" for the home dir itself); left
+    // as-is otherwise. Paired with Text.ElideLeft at the call site so a
+    // long path still shows its most identifying (rightmost) part.
+    function shortCwd(cwd) {
+        if (!cwd)
+            return "";
+        if (cwd === root.homeDir)
+            return "~";
+        if (root.homeDir && cwd.startsWith(root.homeDir + "/"))
+            return "~" + cwd.slice(root.homeDir.length);
+        return cwd;
+    }
+
+    // 274308 -> "274k", 850 -> "850", null/undefined -> "--". Context
+    // tokens routinely run into the hundreds of thousands here, so this
+    // stays readable at a glance instead of a long raw digit string.
+    function fmtTokens(n) {
+        if (typeof n !== "number")
+            return "--";
+        if (n < 1000)
+            return String(n);
+        return (n / 1000).toFixed(n < 10000 ? 1 : 0) + "k";
+    }
+
+    function fmtAgoMs(ms) {
+        return ms ? root.fmtAgo(new Date(ms).toISOString()) : qsTr("never");
+    }
+
+    readonly property var statusColors: ({
+        "busy": Theme.red,
+        "waiting": Theme.orange,
+        "idle": Theme.muted,
+    })
+    function statusColor(status) {
+        return root.statusColors[status] || Theme.textDim;
     }
 
     readonly property var pollModeLabels: ({
@@ -206,6 +246,75 @@ Rectangle {
                         font.pixelSize: Theme.fontSize - 2
                     }
                     Item { Layout.fillWidth: true }
+                }
+
+                // Up to 6 most-recently-active live `claude` processes for
+                // this account (of routinely 20-40 alive at once here,
+                // almost all idle resumed shells -- see
+                // claude-usage-daemon.py's list_sessions()). Local-only,
+                // refreshed every 30s regardless of the tier above.
+                readonly property var procs: ClaudeUsageSvc.sessions[modelData.account] || []
+
+                Text {
+                    visible: parent.procs.length > 0
+                    text: qsTr("processes")
+                    color: Theme.textDim
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    topPadding: 2
+                }
+
+                Repeater {
+                    model: parent.procs
+
+                    delegate: Column {
+                        width: content.width
+                        spacing: 0
+
+                        required property var modelData
+
+                        RowLayout {
+                            width: parent.width
+                            spacing: 6
+
+                            Text {
+                                text: modelData.status || "?"
+                                color: root.statusColor(modelData.status)
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                Layout.preferredWidth: 46
+                            }
+                            Text {
+                                text: qsTr("pid %1").arg(modelData.pid)
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                            }
+                            Text {
+                                text: root.fmtTokens(modelData.context_tokens) + qsTr(" tok")
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                            }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                            }
+                        }
+
+                        Text {
+                            width: parent.width
+                            text: root.shortCwd(modelData.cwd) + (modelData.tmux ? qsTr("  tmux %1").arg(modelData.tmux) : "")
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            elide: Text.ElideLeft
+                            horizontalAlignment: Text.AlignRight
+                        }
+                    }
                 }
             }
         }

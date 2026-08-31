@@ -24,6 +24,13 @@ Singleton {
     // ClaudeUsagePill/ClaudeUsageExpanded both iterate this directly, not
     // an aggregate -- each account's own number is what matters here.
     property var accounts: []
+    // {account: [{pid, status, cwd, tmux, updated_at_ms, context_tokens,
+    //   last_output_tokens}]} -- up to 6 most-recently-active live `claude`
+    // processes per account (of routinely 20-40 alive at once here, almost
+    // all idle), local-only (no network), refreshed every 30s regardless
+    // of the accounts/backoff tier above. See claude-usage-daemon.py's
+    // list_sessions()/context_tokens_for().
+    property var sessions: ({})
     // "locked" | "active" | "idle" | "backoff" -- see claude-usage.md.
     property string pollMode: ""
     property int pollIntervalS: 0
@@ -40,6 +47,7 @@ Singleton {
             try {
                 const d = JSON.parse(stateFile.text());
                 root.accounts = d.accounts || [];
+                root.sessions = d.sessions || ({});
                 root.pollMode = d.poll_mode || "";
                 root.pollIntervalS = d.poll_interval_s || 0;
                 root.updatedAt = d.updated_at || "";
