@@ -98,20 +98,21 @@ into one system rather than patched independently again. A row-wrapping
 version of the merged system was tried next and rejected (reported
 2026-08-30, unusable) — **there is deliberately no second row**: every
 open panel always shares the one row, and width just divides evenly among
-however many are open, shrinking with no floor-triggered fallback. All 7
-open at once on a ~1920px monitor lands around 260px each; that's
-considered an acceptable, rare edge case (see `Bar.qml`'s comment on
+however many are open, shrinking with no floor-triggered fallback. All 8
+open at once on a ~1920px monitor squeezes every one of them well below
+its own preferred width; that's considered an acceptable, rare edge case
+(see `Bar.qml`'s comment on
 `openPanels` for why spilling onto a neighboring monitor's own bar was
 floated and deliberately skipped — it would need real IPC between separate
 per-monitor `Bar.qml` instances, since each one's layer-shell surface is
 tied to a single output).
 
 `Bar.qml`'s `panelOrder` (`["media", "net", "cpu", "mem", "disk", "temp",
-"calendar"]`, bar-visual left-to-right order — calendar's trigger is the
-clock, the rightmost item) is the single ordering the whole system is built
-on:
+"claudeUsage", "calendar"]`, bar-visual left-to-right order — calendar's
+trigger is the clock, the rightmost item) is the single ordering the whole
+system is built on:
 
-- `openPanels`/`openCount` — which of those 7 are currently expanded.
+- `openPanels`/`openCount` — which of those 8 are currently expanded.
 - `rowRightAnchor` — the rightmost open panel's own natural pill position
   (not the raw screen edge — see its comment for why that overstated
   available room and ran the leftmost panel off the left edge).
@@ -130,8 +131,12 @@ on:
   `panelY` baseline now (kept as a named function, not inlined at each
   binding site, so a future panel kind that genuinely needs to differ has
   one place to change).
-- `panelGridHeight` — the tallest currently-open panel's own expand height;
-  this is `overflow` (and so `totalHeight`) directly.
+- `panelGridHeight` — the tallest currently-open panel's own expand
+  height. Also feeds `shell.qml`'s input mask (see claude-usage.md's own
+  writeup on `openPanelsLeftEdge` for why that mask is two separate
+  rectangles, not one sized off this alone — a real bug once
+  `ClaudeUsageExpanded` started routinely reaching close to full monitor
+  height).
 
 Every panel binds to this the same way: `GraphPill`'s `expandWidth`/
 `targetRight`/`targetY` and `CalendarExpanded`/`MediaExpanded`'s own

@@ -102,9 +102,9 @@ fetch shows as `--`.
 
 The detail panel also lists each account's live `claude` processes — a
 per-account sortable table: status, title, context tokens, last-active
-time, tmux location, pid, path. Entirely local, no network call, so it
-runs on its own fixed 30s cadence independent of the tiers/backoff above
-(and keeps updating even mid-backoff).
+time, tmux (session/window/pane), pid, path. Entirely local, no network
+call, so it runs on its own fixed 30s cadence independent of the
+tiers/backoff above (and keeps updating even mid-backoff).
 
 - **Finding them**: each account's `sessions/<pid>.json` (written by the
   CLI itself) gives `pid`/`sessionId`/`cwd`/`status`/`tmux` directly, keyed
@@ -140,14 +140,25 @@ runs on its own fixed 30s cadence independent of the tiers/backoff above
 - **Each process is one line**, columns in this order: status
   (`idle`/`wait`/`busy`, abbreviated — `waiting` alone was wide enough to
   run into the next column with no gap, a real bug the first version had),
-  title, context tokens, last-active time, tmux location, pid, path (cwd,
-  `~`-shortened). A single header row sits above each account's list
-  instead of repeating those words on every row (same fixed column widths
-  as the data rows, shared via `root.col*W`). The header row hit this same
+  title, context tokens, last-active time, **tmux** (a 3-column group —
+  see below), pid, path (cwd, `~`-shortened). Two header rows sit above
+  each account's list instead of repeating column words on every row (same
+  fixed column widths as the data rows, shared via `root.col*W`): a
+  group-label row (blank except a centered "tmux" spanning its 3
+  sub-columns) and the column-header row proper. That row hit the
   too-narrow-for-its-own-label bug twice — once on `"status"`, once on
   `"last"` after its sort-arrow suffix (below) was added — each column had
   to be sized off its own *header word* (plus that suffix), not the
   shorter values it actually holds.
+- **tmux is a grouped column**: session / window / pane, each its own
+  sub-column under one "tmux" group header, sourced from
+  `sessions/<pid>.json`'s `"tmux"` field
+  (e.g. `"653:@1017.%1828"`) split into 3 plain numbers by the daemon
+  (`TMUX_FIELD_RE`) — `653`, `1017`, `1828`, not tmux's own `@`/`%`-
+  prefixed object-type notation, which is tmux's internal sigil syntax,
+  not meaningful outside a tmux command. Clicking the "tmux" group label
+  sorts by all 3 together (session, then window, then pane) — the 3
+  sub-column headers are plain labels, not individually sortable.
 - **Title, not path, is the column that stretches** to fill leftover
   width (`Layout.fillWidth`, `colTitleW` as its floor rather than a fixed
   size) — path got that job in the first version, on the reasoning that
@@ -282,6 +293,28 @@ runs on its own fixed 30s cadence independent of the tiers/backoff above
   the other panels use. `root.Keys.onPressed` in `Bar.qml` handles Escape
   while this is the open panel; toggling again (or clicking the pill)
   still works too.
+
+  **Taking that focus grab surfaced a separate, real bug in
+  `shell.qml`'s input mask**, not this panel's own doing but only visible
+  once something rendered this tall: the mask used to be one rectangle,
+  full monitor *width* regardless of which panel was actually open,
+  sized in height off the tallest currently-open panel
+  (`bar.panelGridHeight`). Media/Calendar's typically-modest heights never
+  pushed that rectangle far enough to matter, but `ClaudeUsageExpanded`
+  routinely reaches close to full monitor height now (see "How many rows
+  actually render" above) — meaning that one rectangle became nearly the
+  *entire screen*, silently swallowing clicks meant for whatever window
+  was underneath, anywhere on screen, not just behind the visible panel.
+  Reported "block[s] everything" 2026-08-31. Fixed by splitting the mask
+  into two unioned rectangles (`Region`'s default `regions` list combines
+  by default — see `Intersection.Combine`): the always-full-width bar-pill
+  strip (unchanged, just the compact bar height), plus a *second*,
+  narrower rectangle only as wide as where an open panel actually renders
+  (`Bar.qml`'s new `openPanelsLeftEdge` — the leftmost x of any expanded
+  panel's own rectangle — to the screen edge). `bar.totalHeight`/`overflow`
+  (the old combined-height figures the single-rectangle mask read) had no
+  remaining reader after this split, so they were removed rather than left
+  as dead code.
 
 ## Keybind
 
