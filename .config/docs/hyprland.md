@@ -173,7 +173,8 @@ docs:
   dwindle `window.pseudo()` — dropped entirely (told to) so CPU could move
   there. `mainMod+n` is still notify-invoke-last (pre-existing, not given
   up), so net stayed on `ALT+n` but still gained the tier submap.
-- `mainMod+CTRL+c` — toggle the calendar panel (moved from `CTRL+ALT+c`).
+- `mainMod+c` — toggle the calendar panel (moved `CTRL+ALT+c` →
+  `mainMod+CTRL+c` → `mainMod+c`).
   No submap — it gets real keyboard focus instead (same mechanism as the
   media panel below), so bare keys reach it directly:
   `Left/Right` = prev/next month, `Up/Down` = prev/next year, `Tab` enters

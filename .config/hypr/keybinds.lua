@@ -210,7 +210,7 @@ hl.bind("CTRL + ALT + z", hl.dsp.exec_cmd("~/.config/hypr/notifyd/target/release
 -- as clipboard-picker). "m" for memory added 2026-08-27 alongside the
 -- quickshell bar's own hover graphs, which share this same daemon.
 hl.bind("ALT + " .. mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph net"))
-hl.bind("ALT + " .. mainMod .. " + c", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph cpu"))
+hl.bind("ALT + " .. mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph cpu"))
 hl.bind("ALT + " .. mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph temp"))
 hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph mem"))
 
@@ -227,8 +227,9 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 -- such tracking at all, so this entire block collapsed down to five binds.
 --
 -- temp, disk, mem, and cpu moved from ALT+t/s/m/p to mod+t/d/m/p (disk later
--- moved off mod+s to mod+d; cpu later moved off mod+p to mod+c, and its
--- sysmon-graph popup from ALT+mod+p to ALT+mod+c, "c" for cpu). mod+m
+-- moved off mod+s to mod+d; cpu briefly moved to mod+c / ALT+mod+c but moved
+-- back to mod+p / ALT+mod+p when mod+c was wanted for the calendar panel).
+-- mod+m
 -- collided with the media widget's own mod+m (below) - resolved by moving
 -- media to mod+CTRL+m. mod+p collided with window.pseudo() (dwindle) -
 -- resolved by dropping that binding entirely (told to, not guessed). See
@@ -238,7 +239,7 @@ hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/ta
 hl.bind(mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleTemp"))
 hl.bind(mainMod .. " + d", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleDisk"))
 hl.bind(mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleNet"))
-hl.bind(mainMod .. " + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"))
+hl.bind(mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"))
 hl.bind(mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"))
 -- mod+CTRL+m just toggles the media widget open/closed -- not plain mod+m,
 -- that's the memory graph widget above (caught live before this ever
@@ -251,14 +252,15 @@ hl.bind(mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh
 -- through that same Keys.onPressed as everything else.
 hl.bind(mainMod .. " + CTRL + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMedia"))
 
--- Moved from CTRL+ALT+c to mod+CTRL+c. No Hyprland submap needed here
+-- Moved CTRL+ALT+c -> mod+CTRL+c -> mod+c (cpu, which had briefly taken
+-- mod+c, went back to mod+p). No Hyprland submap needed here
 -- either: once open, CalendarExpanded.qml gets real WlrKeyboardFocus.OnDemand
 -- focus (shell.qml) the same way the media panel does for its own keys, so
 -- bare Tab/arrows/Enter/Escape just reach the QML panel directly - no
 -- global digit-style interception required. See CalendarExpanded.qml's
 -- handleKey() for the year-picker (Tab enters it; arrows navigate/zoom;
 -- Enter drills in or confirms; Escape exits).
-hl.bind(mainMod .. " + CTRL + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))
+hl.bind(mainMod .. " + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCalendar"))
 
 -- Claude Code usage panel (session/weekly % for each of the 3 accounts on
 -- this machine) -- CTRL+ALT+c was free since calendar moved off it (above).
