@@ -196,16 +196,26 @@ mid-backoff).
      needed its saturation range raised twice (0.12–0.641 →
      0.58–0.94) because it kept coming out grey-to-faint.
   3. **Current**: no hardcoded orange at all. `ClaudeUsagePill.qml`'s
-     `logoColor` searches the *current* generated scheme's own colors —
-     `Theme.seriesPalette` (8 hues) concat `Theme.intensityRamp` (5 stops,
-     documented to trend toward red-orange at its hot end) — for whichever
-     one already sits closest to a canonical orange hue, and uses that
-     swatch exactly as `gen-theme.py` generated it. `Theme.orange` itself
-     (a fixed hardcoded fallback, see `Theme.qml`) is deliberately excluded
-     from the search — using it would just be the same "not actually this
-     theme's own color" problem again. On the theme active while writing
-     this (primary hue in the blue range), the winner is `seriesPalette`'s
-     own `#eca200`, a genuine generated amber.
+     `logoColor` searches the *current* generated scheme's own colors for
+     whichever one already sits closest to a canonical orange hue, and
+     uses that swatch exactly as `gen-theme.py` generated it. `Theme.orange`
+     itself (a fixed hardcoded fallback, see `Theme.qml`) is deliberately
+     excluded — using it would just be the same "not actually this theme's
+     own color" problem again.
+
+     The candidate list is `Theme.seriesPalette` (8 hues) +
+     `Theme.intensityRamp` (5 stops, documented to trend toward red-orange
+     at its hot end) + `Theme.cyan`/`Theme.green` (`scheme.primary`/
+     `secondary` — misleading names, they're just whatever hue the
+     generator happened to land on for those 2 roles this time, not
+     reliably cyan/green). That last pair was added after the first
+     version — series+ramp only — landed on `seriesPalette`'s `#e8a400`
+     (hue 42°, into yellow) on a scheme where `scheme.secondary` happened
+     to be `#ffb693` (hue 19°, genuinely orange) but wasn't in the search
+     at all, reported "too yellow, doesn't match any theme color"
+     2026-08-31. Both accent roles are just as legitimately
+     theme-generated as the series/ramp swatches, so excluding them was
+     the actual bug, not the closest-hue approach itself.
 - `bar/ClaudeUsageExpanded.qml` — per-account session%/weekly% + reset
   countdown + its own "active processes" list (see above), plus the
   current poll tier/backoff countdown and staleness ("updated Ns ago").
