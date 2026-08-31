@@ -97,33 +97,47 @@ pane_is_idle_prompt() {
 info=$(tmux list-panes -a -F '#{window_id}	#{pane_id}	#{history_size}	#{pane_current_command}	#{session_attached}	#{window_active}	#{session_name}	#{window_index}	#{window_name}')
 
 # window_id -> max history_size across its panes, whether it's the current
-# window of an attached session, whether every pane is zsh, and a label
+# window of an attached session, and whether every pane is zsh.
+#
+# SECURITY: only numeric fields (maxhist/allzsh/current, all guaranteed
+# integers by the tmux format specifiers used to build $info) may ever be
+# spliced into the string handed to eval below. Session/window names are
+# fully attacker-controlled (anyone can `tmux rename-window`/`rename-session`
+# to arbitrary text, e.g. containing '; rm -rf ~ #) - never let them anywhere
+# near eval. The human-readable label is looked up separately, on demand,
+# via label_for_wid() (untested - review before relying on it).
 eval "$(printf '%s\n' "$info" | awk -F'\t' '
   {
     wid = $1; hist = $3; cmd = $4; attached = $5; active = $6
-    sess = $7; widx = $8; wname = $9
     if (!(wid in maxhist) || hist > maxhist[wid]) maxhist[wid] = hist
     if (attached == 1 && active == 1) current[wid] = 1
     if (!(wid in allzsh)) allzsh[wid] = 1
     if (cmd != "zsh") allzsh[wid] = 0
-    label[wid] = sess ":" widx " (" wname ")"
   }
   END {
     for (wid in maxhist) {
       key = wid; gsub(/[^a-zA-Z0-9_]/, "_", key)
-      printf "maxhist_%s=%d; allzsh_%s=%d; current_%s=%d; label_%s=%s\n", \
-        key, maxhist[wid], key, allzsh[wid], key, (wid in current), \
-        key, "\"" label[wid] "\""
+      printf "maxhist_%s=%d; allzsh_%s=%d; current_%s=%d\n", \
+        key, maxhist[wid], key, allzsh[wid], key, (wid in current)
     }
   }
 ')"
+
+# label_for_wid WID -> "session:index (name)" for that window, read straight
+# out of $info - never passed through eval, so arbitrary characters in a
+# session/window name (quotes, $(), backticks, semicolons, ...) are inert.
+label_for_wid() {
+  printf '%s\n' "$info" | awk -F'\t' -v w="$1" '
+    $1 == w { print $7 ":" $8 " (" $9 ")"; exit }
+  '
+}
 
 candidates=$(printf '%s\n' "$info" | awk -F'\t' '{ print $1 }' | sort -u)
 
 killed_or_found=0
 for wid in $candidates; do
   key=$(printf '%s' "$wid" | sed 's/[^a-zA-Z0-9_]/_/g')
-  eval "maxhist=\$maxhist_$key; allzsh=\$allzsh_$key; current=\$current_$key; label=\$label_$key"
+  eval "maxhist=\$maxhist_$key; allzsh=\$allzsh_$key; current=\$current_$key"
 
   [ "$current" -eq 1 ] && continue
 
@@ -139,6 +153,8 @@ for wid in $candidates; do
   fi
 
   [ -n "$reason" ] || continue
+
+  label=$(label_for_wid "$wid")
 
   if [ "$dry_run" -eq 1 ]; then
     echo "would kill $wid $label [$reason]"
