@@ -126,11 +126,17 @@ mid-backoff).
   `input + cache_creation + cache_read` tokens from that one call — i.e.
   roughly how full that session's context window is *right now*, not a
   lifetime running total across the session's history.
-- **Each process is one line**: status (`idle`/`wait`/`busy`, abbreviated —
-  `waiting` alone was wide enough to run into the next column with no gap,
-  a real bug the first version had), pid, context tokens, cwd (`~`-
-  shortened) + tmux location (elided if the row's too narrow), and a
-  relative last-active time.
+- **Each process is one line**, columns: status (`idle`/`wait`/`busy`,
+  abbreviated — `waiting` alone was wide enough to run into the next
+  column with no gap, a real bug the first version had), pid, context
+  tokens, location (cwd, `~`-shortened, + tmux, elided if the row's too
+  narrow), and a relative last-active time. A single `status pid tokens
+  location active` header row sits above each account's list instead of
+  repeating those words on every row (same fixed column widths as the data
+  rows, shared via `root.col*W`). The header row hit this same too-narrow-
+  for-its-own-label bug once too, on `"status"` itself — that column's
+  width had to be sized off the *header word*, not the shorter idle/busy/
+  wait values it actually holds.
 - **How many rows actually render** is a fit-estimate against
   `ClaudeUsageExpanded.qml`'s `maxPanelHeight` (screen-height-derived, same
   as `CalendarExpanded` — the panel is allowed to grow as tall as the
@@ -180,15 +186,17 @@ mid-backoff).
   via `QtQuick.Effects`' `MultiEffect` (`colorization: 1`, which replaces
   RGB but keeps the source alpha shape). The recolor target isn't a fixed
   color: `ClaudeUsagePill.qml`'s `logoColor` keeps the brand orange's own
-  hue/lightness (hue 15°, from `#DA7756`) but scales its *saturation* by
-  how close the current generated scheme's primary hue is to that same
-  orange — a warm (red/yellow) wallpaper-derived theme lets it stay near
-  full brand vividness, a cool (blue/cyan) one desaturates it toward a
-  muted tan rather than clashing as a hardcoded orange would (there's a
-  0.12 saturation floor so it never fully greys out). `Theme.cyan` and
-  `Theme.text` were both tried first and rejected: cyan didn't read as
-  Claude's own icon anymore, and `Theme.text` was flat low-contrast grey
-  at this icon size.
+  hue/lightness (hue 15°, from `#DA7756`) but scales its *saturation*
+  between a 0.58 floor and a 0.94 ceiling (both raised twice from an
+  initial 0.12–0.641 range — that first pass came out as flat grey on a
+  cool theme and still too faint even at its warmest) by how close the
+  current generated scheme's primary hue is to that same orange — a warm
+  (red/yellow) wallpaper-derived theme lets it sit near that ceiling, a
+  cool (blue/cyan) one settles toward the floor (still visibly orange, not
+  grey) rather than clashing as a hardcoded orange would. `Theme.cyan` and
+  `Theme.text` were both tried first and rejected outright: cyan didn't
+  read as Claude's own icon anymore, and `Theme.text` was flat
+  low-contrast grey at this icon size.
 - `bar/ClaudeUsageExpanded.qml` — per-account session%/weekly% + reset
   countdown + its own "active processes" list (see above), plus the
   current poll tier/backoff countdown and staleness ("updated Ns ago").

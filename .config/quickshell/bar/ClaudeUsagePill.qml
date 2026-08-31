@@ -56,12 +56,17 @@ Rectangle {
     }
 
     readonly property color logoColor: {
-        const brandH = 15, brandS = 0.641, brandL = 0.596;
+        const brandH = 15, brandL = 0.596;
         const themeHsl = root.rgbToHsl(Theme.cyan);
         const dist = Math.min(Math.abs(brandH - themeHsl.h), 360 - Math.abs(brandH - themeHsl.h));
         const warmth = 1 - dist / 180; // 1 = theme hue aligned with orange, 0 = its exact opposite
-        const minSat = 0.12;
-        const sat = minSat + (brandS - minSat) * warmth;
+        // 0.641 (the brand color's own saturation) read as too faint even
+        // at warmth=1, and 0.12 as flat grey at warmth=0 -- both raised
+        // (twice, nudged up further the second time) so it reads as
+        // orange (muted on a cool theme, vivid on a warm one) across the
+        // whole range instead of only near max warmth.
+        const minSat = 0.58, maxSat = 0.94;
+        const sat = minSat + (maxSat - minSat) * warmth;
         return Qt.hsla(brandH / 360, sat, brandL, 1);
     }
 

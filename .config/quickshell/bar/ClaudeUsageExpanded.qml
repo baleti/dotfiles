@@ -204,6 +204,18 @@ Rectangle {
     readonly property int rowH: 20
     readonly property int groupHeaderH: 78
     readonly property int collapsedH: 20
+
+    // Shared column widths -- the process-list header row and every data
+    // row below it bind to these same values so the two stay aligned
+    // without hardcoding the same number twice.
+    // Sized for the "status" header label (6 chars), not the shorter
+    // idle/busy/wait values it holds -- the header row hit the exact same
+    // "wider label overflows a value-sized column" bug the status *value*
+    // column itself had before "waiting" got abbreviated to "wait".
+    readonly property int colStatusW: 44
+    readonly property int colPidW: 68
+    readonly property int colTokensW: 56
+    readonly property int colAgoW: 42
     readonly property int expandedGroupCount: {
         let n = 0;
         for (const a of ClaudeUsageSvc.accounts)
@@ -362,13 +374,51 @@ Rectangle {
                     Item { Layout.fillWidth: true }
                 }
 
-                Text {
+                // Column headers, once per group -- shares its widths with
+                // every data row below via root.col*W so the two stay
+                // aligned without repeating "pid"/"tok"/"tmux" on every
+                // single row.
+                RowLayout {
                     visible: parent.groupOpen && parent.procs.length > 0
-                    text: qsTr("processes")
-                    color: Theme.textDim
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 3
-                    topPadding: 2
+                    width: content.width
+                    spacing: 6
+
+                    Text {
+                        text: qsTr("status")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        Layout.preferredWidth: root.colStatusW
+                    }
+                    Text {
+                        text: qsTr("pid")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        Layout.preferredWidth: root.colPidW
+                    }
+                    Text {
+                        text: qsTr("tokens")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        Layout.preferredWidth: root.colTokensW
+                    }
+                    Text {
+                        text: qsTr("location")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: qsTr("active")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: root.colAgoW
+                    }
                 }
 
                 Repeater {
@@ -384,24 +434,24 @@ Rectangle {
                             color: root.statusColor(modelData.status)
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: 30
+                            Layout.preferredWidth: root.colStatusW
                         }
                         Text {
-                            text: qsTr("pid %1").arg(modelData.pid)
+                            text: String(modelData.pid)
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: 68
+                            Layout.preferredWidth: root.colPidW
                         }
                         Text {
-                            text: root.fmtTokens(modelData.context_tokens) + qsTr(" tok")
+                            text: root.fmtTokens(modelData.context_tokens)
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: 56
+                            Layout.preferredWidth: root.colTokensW
                         }
                         Text {
-                            text: root.shortCwd(modelData.cwd) + (modelData.tmux ? qsTr("  tmux %1").arg(modelData.tmux) : "")
+                            text: root.shortCwd(modelData.cwd) + (modelData.tmux ? qsTr(" · %1").arg(modelData.tmux) : "")
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
@@ -414,7 +464,7 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: 42
+                            Layout.preferredWidth: root.colAgoW
                         }
                     }
                 }
