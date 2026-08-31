@@ -544,7 +544,15 @@ Item {
             seriesList: root.diskSeriesList
             maxValue: root.diskMax
             valueFraction: Theme.norm(root.diskTotalNow, 0, 300 * 1024 * 1024)
+            // Always-visible second reading, same pattern as memPill's
+            // swap readout above -- how full the root filesystem is, next
+            // to the pill's own I/O-throughput value, without needing to
+            // open the panel.
+            secondaryIcon: Icons.diskUsage
+            secondaryText: "/ " + (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "%"
+            secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
+            usageItems: SysmonSvc.diskUsage
             topProcs: SysmonSvc.topDisk
             topUnit: " KB/s"
             yAxisFormatter: v => root.fmtRate(v)
