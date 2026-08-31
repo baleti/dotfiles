@@ -140,20 +140,32 @@ runs on its own fixed 30s cadence independent of the tiers/backoff above
 - **Each process is one line**, columns in this order: status
   (`idle`/`wait`/`busy`, abbreviated — `waiting` alone was wide enough to
   run into the next column with no gap, a real bug the first version had),
-  title (elided), context tokens, last-active time, tmux location, pid,
-  path (cwd, `~`-shortened, elided if the row's too narrow — the one
-  column with no fixed width, since it's the least critical to keep fully
-  visible). A single header row sits above each account's list instead of
-  repeating those words on every row (same fixed column widths as the data
-  rows, shared via `root.col*W`). The header row hit this same too-narrow-
-  for-its-own-label bug twice — once on `"status"`, once on `"last"` after
-  its sort-arrow suffix (below) was added — each column had to be sized
-  off its own *header word* (plus that suffix), not the shorter values it
-  actually holds.
+  title, context tokens, last-active time, tmux location, pid, path (cwd,
+  `~`-shortened). A single header row sits above each account's list
+  instead of repeating those words on every row (same fixed column widths
+  as the data rows, shared via `root.col*W`). The header row hit this same
+  too-narrow-for-its-own-label bug twice — once on `"status"`, once on
+  `"last"` after its sort-arrow suffix (below) was added — each column had
+  to be sized off its own *header word* (plus that suffix), not the
+  shorter values it actually holds.
+- **Title, not path, is the column that stretches** to fill leftover
+  width (`Layout.fillWidth`, `colTitleW` as its floor rather than a fixed
+  size) — path got that job in the first version, on the reasoning that
+  it was the least critical column to keep fully visible, but in a
+  single-cwd-per-account environment path is nearly always just `~`,
+  so giving *it* the stretch just wasted the panel's extra width as blank
+  space while titles (routinely 30-40 characters, e.g. "Reddit API
+  automation for unixporn posts") sat elided at a fixed 90px. Reported
+  "title column is too short" 2026-08-31; path now gets a fixed
+  `colPathW` (160px) instead.
 - **The panel is wider than the other bar panels by default** —
   `Bar.qml`'s `claudeUsagePanelWidth` (760px cap, vs. the standard 560) —
-  since 7 columns plus a usable path column don't fit the shared width the
-  graph/media panels use.
+  since 7 columns plus a usable title column don't fit the shared width
+  the graph/media panels use. (A "rectangle that doesn't span full panel
+  width" also reported the same day turned out to be a stale compositor-
+  side render artifact from rapid `qs kill`/relaunch cycles during
+  debugging, not a real layout bug — confirmed gone after one clean
+  restart with nothing else changed.)
 - **Last is a plain duration, no "ago"** — the header says that once,
   instead of every row repeating it (`fmtDuration()`, shared with the
   reset countdowns above). It breaks down through seconds → minutes →
