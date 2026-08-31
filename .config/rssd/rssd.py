@@ -88,6 +88,9 @@ _IMAGE_SIGS = {
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _IMG_RE = re.compile(r"<img[^>]+src=[\"']([^\"']+)[\"']", re.I)
+_MEDIA_TAG_RE = re.compile(
+    r"(?is)<(img|picture|source|video|audio|figure|figcaption)\b[^>]*>"
+    r"|</(picture|video|audio|figure|figcaption)\s*>")
 _LINK_ICON_RE = re.compile(
     r"<link\b[^>]*rel=[\"'][^\"']*icon[^\"']*[\"'][^>]*>", re.I)
 _HREF_RE = re.compile(r"href=[\"']([^\"']+)[\"']", re.I)
@@ -361,6 +364,29 @@ def fetch_image(url: str, timeout: int, max_bytes: int) -> str | None:
 
 # ---------------------------------------------------------------- item helpers
 
+def content_html(entry) -> str:
+    """Sanitised HTML for the reader's reading pane.
+
+    feedparser already runs its HTML sanitiser on feed content by default
+    (drops <script>/<style>/<iframe>/<object>, event-handler attributes,
+    javascript: URIs, dangerous CSS) and resolves relative links -- that is
+    the battle-tested layer. On top of it we drop <img>/<picture>/<video>
+    (the reader shows the validated local lead image instead of pulling
+    remote media) and cap the length. Qt's QTextDocument renders the result
+    with no scripting engine.
+    """
+    blob = ""
+    for c in entry.get("content") or []:
+        if c.get("value"):
+            blob = c["value"]
+            break
+    blob = blob or entry.get("summary", "")
+    blob = _MEDIA_TAG_RE.sub("", blob)
+    if len(blob) > 12000:
+        blob = blob[:12000] + "…"
+    return blob.strip()
+
+
 def entry_id(entry) -> str:
     for key in ("id", "guid", "link"):
         val = entry.get(key)
@@ -400,11 +426,15 @@ def append_archive(records: list[dict]):
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def prune_archive(archive_days: int):
+def prune_archive(archive_days: int, feed_icons: dict | None = None):
+    """Drop records older than archive_days, sweep orphaned media, and
+    re-point each record's `icon` at its feed's current cached favicon (paths
+    drift when the slug scheme or a site's icon changes)."""
     if not ARCHIVE_FILE.exists() or archive_days <= 0:
         return
+    feed_icons = feed_icons or {}
     cutoff = datetime.now(timezone.utc).timestamp() - archive_days * 86400
-    kept, dropped = [], 0
+    kept, dropped, changed = [], 0, False
     for line in ARCHIVE_FILE.read_text().splitlines():
         if not line.strip():
             continue
@@ -414,15 +444,20 @@ def prune_archive(archive_days: int):
         except (json.JSONDecodeError, ValueError):
             kept.append(line)
             continue
-        if ts >= cutoff:
-            kept.append(line)
-        else:
+        if ts < cutoff:
             dropped += 1
-    if dropped:
+            continue
+        want = feed_icons.get(rec.get("feed_url", ""))
+        if want and rec.get("icon") != want:
+            rec["icon"] = want
+            line = json.dumps(rec, ensure_ascii=False)
+            changed = True
+        kept.append(line)
+    if dropped or changed:
         tmp = ARCHIVE_FILE.with_suffix(".jsonl.tmp")
         tmp.write_text("\n".join(kept) + "\n")
         tmp.replace(ARCHIVE_FILE)
-        # sweep now-orphaned media
+    if dropped:
         refs = {rec for line in kept for rec in [json.loads(line).get("image", "")] if rec}
         for m in MEDIA_DIR.glob("*"):
             if str(m) not in refs:
@@ -593,8 +628,10 @@ def cmd_run(mode: str):
                         "feed_title": feed_title,
                         "tags": feed["tags"],
                         "title": title,
+                        "author": clean_text(entry.get("author", ""), 120),
                         "link": link,
                         "summary": summary,
+                        "content_html": content_html(entry),
                         "image": img_path or "",
                         "icon": feed_icon,
                     })
@@ -612,7 +649,6 @@ def cmd_run(mode: str):
 
     if do_archive:
         append_archive(archive_records)
-        prune_archive(cfg_int(cfg, "archive_days"))
 
     # resolve any missing source icons before dispatching, so first-seen
     # feeds still notify with their favicon rather than the generic glyph
@@ -621,6 +657,10 @@ def cmd_run(mode: str):
                               cfg_int(cfg, "favicon_refresh_days"), workers)
         if got:
             log(f"icons  resolved {got} new source icon(s)")
+
+    if do_archive:
+        prune_archive(cfg_int(cfg, "archive_days"),
+                      {u: fs["icon"] for u, fs in fstates.items() if fs.get("icon")})
 
     if do_notify:
         for feed_url, title, body, image, feed_title, link in pending[:total_cap]:

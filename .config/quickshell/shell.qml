@@ -8,6 +8,7 @@ import "background"
 import "osd"
 import "notifications"
 import "launcher"
+import "rssreader"
 import "services"
 
 ShellRoot {
@@ -35,6 +36,15 @@ ShellRoot {
         }
     }
 
+    // RSS reader (mod + R). Same single-top-level-target / latched-monitor
+    // pattern; `toggle` not `show` (collides with `qs ipc show`).
+    IpcHandler {
+        target: "rssReader"
+        function toggle(): void {
+            RssReaderState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
     Variants {
         model: Quickshell.screens
 
@@ -57,6 +67,15 @@ ShellRoot {
         model: Quickshell.screens
 
         AppLauncher {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        RssReader {
             required property var modelData
             screen: modelData
         }
