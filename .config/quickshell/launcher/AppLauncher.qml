@@ -268,9 +268,12 @@ PanelWindow {
     Rectangle {
         id: card
         anchors.horizontalCenter: parent.horizontalCenter
-        y: Math.round(parent.height * 0.18)
+        anchors.verticalCenter: parent.verticalCenter
         width: root.cardWidth
-        height: header.height + list.height + (ac.visible ? ac.height : 0)
+        // Fixed at 60% of the screen height, centred -- the results list
+        // fills whatever's left under the search box (and the autocomplete
+        // popup when it's up).
+        height: Math.round((root.screen ? root.screen.height : 1080) * 0.6)
         radius: Theme.rounding
         color: Theme.bgAlpha
         // Thin border in the wallpaper-derived accent (scheme.primary).
@@ -414,8 +417,8 @@ PanelWindow {
         ListView {
             id: list
             anchors.top: ac.visible ? ac.bottom : header.bottom
+            anchors.bottom: parent.bottom
             width: parent.width
-            height: Math.min(root.results.length, 13) * 30 + 8
             clip: true
             model: root.results
             currentIndex: root.selected
