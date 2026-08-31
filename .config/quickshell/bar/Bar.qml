@@ -538,7 +538,9 @@ Item {
 
         GraphPill {
             id: diskPill
-            icon: Icons.disk
+            // No primary icon here -- the pill shows one disk glyph total,
+            // moved to the secondary (rightmost) slot below instead of
+            // having one on each side of the divider.
             title: qsTr("Disk")
             compactText: root.fmtRate(root.diskTotalNow)
             compactTextWidth: 72
@@ -551,7 +553,7 @@ Item {
             // swap readout above -- how full the root filesystem is, next
             // to the pill's own I/O-throughput value, without needing to
             // open the panel.
-            secondaryIcon: Icons.diskUsage
+            secondaryIcon: Icons.disk
             secondaryText: "/ " + (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "%"
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend

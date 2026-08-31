@@ -435,50 +435,61 @@ Rectangle {
                 Repeater {
                     model: root.usageItems
 
-                    Row {
-                        id: usageRow
+                    // Name on its own full-width line above the bar, not
+                    // sharing a row with it -- a fixed-width elided name
+                    // column cut off longer mount paths (e.g. an rclone
+                    // remote's real target dir), reported 2026-08-31.
+                    Column {
+                        id: usageItem
                         required property var modelData
                         width: parent.width
-                        spacing: 6
+                        spacing: 2
 
                         Text {
-                            id: usageName
-                            width: 90
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: usageRow.modelData.name
+                            width: parent.width
+                            text: usageItem.modelData.name
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
-                            elide: Text.ElideMiddle
+                            // Wraps instead of eliding -- a fixed-width
+                            // column cutting off longer mount paths was the
+                            // complaint (2026-08-31); WrapAnywhere (not
+                            // Wrap) since a path has no spaces to break on.
+                            wrapMode: Text.WrapAnywhere
                         }
 
-                        Rectangle {
-                            id: usageBarBg
-                            width: parent.width - usageName.width - usageValue.width - parent.spacing * 2
-                            height: 8
-                            anchors.verticalCenter: parent.verticalCenter
-                            radius: 3
-                            color: Theme.bgAlpha
-                            border.color: Theme.border
-                            border.width: 1
+                        Row {
+                            width: parent.width
+                            spacing: 6
 
                             Rectangle {
-                                height: parent.height
-                                width: Math.max(0, Math.min(1, usageRow.modelData.pcent / 100)) * parent.width
-                                radius: parent.radius
-                                color: Theme.rampColor(usageRow.modelData.pcent / 100)
-                            }
-                        }
+                                id: usageBarBg
+                                width: parent.width - usageValue.width - parent.spacing
+                                height: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                radius: 3
+                                color: Theme.bgAlpha
+                                border.color: Theme.border
+                                border.width: 1
 
-                        Text {
-                            id: usageValue
-                            width: 32
-                            anchors.verticalCenter: parent.verticalCenter
-                            horizontalAlignment: Text.AlignRight
-                            text: Math.round(usageRow.modelData.pcent) + "%"
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
+                                Rectangle {
+                                    height: parent.height
+                                    width: Math.max(0, Math.min(1, usageItem.modelData.pcent / 100)) * parent.width
+                                    radius: parent.radius
+                                    color: Theme.rampColor(usageItem.modelData.pcent / 100)
+                                }
+                            }
+
+                            Text {
+                                id: usageValue
+                                width: 32
+                                anchors.verticalCenter: parent.verticalCenter
+                                horizontalAlignment: Text.AlignRight
+                                text: Math.round(usageItem.modelData.pcent) + "%"
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                            }
                         }
                     }
                 }

@@ -27,9 +27,6 @@ QtObject {
     // md-swap_horizontal -- a different icon set/shape than network's
     // fa-exchange, so the two don't read as the same glyph.
     readonly property string swap: "󰓡"
-    // fa-database -- disk *space* usage (df-derived), distinct from disk's
-    // I/O-throughput glyph so the two readings don't look like duplicates.
-    readonly property string diskUsage: ""
 
     readonly property string batteryCharging: ""
     readonly property string batteryPlugged: ""
