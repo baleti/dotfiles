@@ -300,6 +300,13 @@ def get_tmux_pane_titles() -> dict:
 
 
 PANE_ID_RE = re.compile(r"%\d+")
+# sessions/<pid>.json's "tmux" field, e.g. "653:@1017.%1828" -- session id
+# (no prefix), window id ("@"-prefixed), pane id ("%"-prefixed). Split out
+# so quickshell can show them as their own sub-columns without the tmux
+# object-type sigils (session 653, window 1017, pane 1828), not because
+# they're wrong, but because they're tmux's own internal notation, not
+# meaningful outside a tmux command.
+TMUX_FIELD_RE = re.compile(r"^(\d+):@(\d+)\.%(\d+)$")
 
 
 def list_sessions(base: Path, tmux_titles: dict) -> list:
@@ -326,10 +333,14 @@ def list_sessions(base: Path, tmux_titles: dict) -> list:
 
         tmux_field = data.get("tmux")
         title = None
+        tmux_session = tmux_window = tmux_pane = None
         if tmux_field:
             m = PANE_ID_RE.search(tmux_field)
             if m:
                 title = tmux_titles.get(m.group(0))
+            m2 = TMUX_FIELD_RE.match(tmux_field)
+            if m2:
+                tmux_session, tmux_window, tmux_pane = m2.group(1), m2.group(2), m2.group(3)
         if not title:
             # Not in tmux (or that pane's gone) -- fall back to the CLI's
             # own opaque auto-id rather than showing nothing.
@@ -340,7 +351,9 @@ def list_sessions(base: Path, tmux_titles: dict) -> list:
             "status": data.get("status"),
             "title": title,
             "cwd": cwd,
-            "tmux": tmux_field,
+            "tmux_session": tmux_session,
+            "tmux_window": tmux_window,
+            "tmux_pane": tmux_pane,
             "updated_at_ms": data.get("updatedAt"),
             "context_tokens": context_tokens,
             "last_output_tokens": last_output_tokens,
