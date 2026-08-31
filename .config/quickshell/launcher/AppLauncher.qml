@@ -181,6 +181,48 @@ PanelWindow {
     // fragment -> all candidates).
     readonly property var _acVerbs: ["/fv", "/s", "/rv"] // /ft /at /rt are inert here
 
+    // ---- inline command-validity coloring (query-dsl.md) -----------
+    // True if `v` (leading "/" included) is still a genuine prefix of some
+    // real verb form - not wrong yet, just incomplete, so `_commandSpans`
+    // leaves it in the default text color rather than either accent.
+    function _isVerbPrefix(v) {
+        if (v.length <= 1) return false; // just "/" - too early to call wrong
+        const forms = QueryDsl.shortVerbs.concat(Object.keys(QueryDsl.verbAliases));
+        return forms.some(f => f.startsWith(v));
+    }
+
+    // Every `/`-led token in `text` that's unambiguously a command attempt
+    // - {start, end, valid} for each (byte/char offsets into `text`,
+    // since JS strings are UTF-16 code units the same way QML text
+    // positions are). Ported from winswitch's query.rs::command_spans.
+    function _commandSpans(text) {
+        const spans = [];
+        let i = 0;
+        while (i < text.length) {
+            while (i < text.length && text[i] === " ") i++;
+            if (i >= text.length) break;
+            const start = i;
+            if (text[i] === '"') {
+                const end = text.indexOf('"', i + 1);
+                i = end < 0 ? text.length : end + 1;
+                continue; // quoted literal - never a command
+            }
+            let j = i;
+            while (j < text.length && text[j] !== " ") j++;
+            const tok = text.slice(i, j);
+            i = j;
+            if (tok.length > 1 && tok[0] === "/") {
+                if (QueryDsl.canonVerb({ q: false, v: tok })) {
+                    spans.push({ start, end: start + tok.length, valid: true });
+                } else if (!root._isVerbPrefix(tok)) {
+                    spans.push({ start, end: start + tok.length, valid: false });
+                }
+                // else: still forming - neutral, no span at all
+            }
+        }
+        return spans;
+    }
+
     function _acCandidates() {
         const t = query.text;
 
@@ -347,6 +389,30 @@ PanelWindow {
                     color: Theme.muted
                     font: query.font
                     visible: query.text.length === 0
+                }
+
+                // Inline command-validity coloring (query-dsl.md): an
+                // underline under each `/command` token, not a recolored
+                // glyph - TextInput has no per-range text styling to hook
+                // (unlike GTK's Pango-backed Entry, see winswitch's
+                // apply_command_colors), and coloring the *whole* input
+                // would falsely tint bare filter words alongside it, so an
+                // underline positioned via positionToRectangle (already
+                // scroll-adjusted, unlike a manual TextMetrics measurement)
+                // is the safe middle ground: real color signal, zero risk
+                // to the TextInput's own text/cursor/selection rendering.
+                Repeater {
+                    model: query.text.length ? root._commandSpans(query.text) : []
+                    Rectangle {
+                        required property var modelData
+                        x: query.positionToRectangle(modelData.start).x
+                        y: query.positionToRectangle(modelData.start).y
+                           + query.positionToRectangle(modelData.start).height - 2
+                        width: Math.max(1, query.positionToRectangle(modelData.end).x - x)
+                        height: 2
+                        radius: 1
+                        color: modelData.valid ? Theme.cyan : Theme.red
+                    }
                 }
 
                 Keys.onPressed: event => {

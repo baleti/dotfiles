@@ -143,6 +143,11 @@ struct State {
     suggestion_idx: RefCell<usize>,
     suggestion_start: RefCell<usize>,
     suggestion_kind: RefCell<Option<SuggestionKind>>,
+    /// Valid/invalid colors for the search entry's inline command-token
+    /// coloring (see `load_command_validity_colors`), read once at
+    /// startup.
+    command_valid_color: Option<(u16, u16, u16)>,
+    command_invalid_color: Option<(u16, u16, u16)>,
 }
 
 /// One token: byte offset in the source, text (quotes stripped, interior
@@ -198,6 +203,34 @@ fn starts_cmd(tok: &Tok) -> bool {
         Some(rest) => is_verb(rest) || is_verb_prefix(rest),
         None => false,
     }
+}
+
+/// Every `/`-led token in `query` that's unambiguously a *command*
+/// attempt - `(byte_start, byte_end, is_valid)` for each, in order. Skips
+/// a still-forming prefix of a real verb (e.g. `/f` while typing `/fv`) -
+/// that's not wrong yet, just incomplete, so a caller rendering this
+/// should leave it in the ordinary text color rather than either accent.
+/// Ported from winswitch's `query.rs::command_spans` - see
+/// query-dsl.md's "Inline command-validity coloring".
+fn command_spans(query: &str) -> Vec<(usize, usize, bool)> {
+    let mut out = Vec::new();
+    for tok in tokenize(query) {
+        if tok.lead_quote {
+            continue;
+        }
+        let Some(rest) = tok.text.strip_prefix('/') else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue; // just "/" typed so far - too early to call wrong
+        }
+        let valid = is_verb(rest);
+        if !valid && is_verb_prefix(rest) {
+            continue; // still forming - neutral, not wrong yet
+        }
+        out.push((tok.start, tok.start + tok.text.len(), valid));
+    }
+    out
 }
 
 fn resolve_fields<'a>(query: &str, field_names: &[&'a str]) -> Vec<&'a str> {
@@ -363,6 +396,63 @@ fn value_suggestions(entries: &[Entry], field: &str, fragment: &str) -> Vec<Stri
         }
     }
     seen.into_iter().collect()
+}
+
+/// Pango's `AttrColor` wants 16-bit channel values; replicate the byte
+/// (`x*257` maps `0..=255` onto `0..=65535` exactly, since `257*255 ==
+/// 65535`) rather than left-shifting, which would leave the low byte zero
+/// and skew every color slightly dark. Ported from winswitch's
+/// `ui.rs::hex_to_rgb16`.
+fn hex_to_rgb16(hex: &str) -> Option<(u16, u16, u16)> {
+    let h = hex.strip_prefix('#').unwrap_or(hex);
+    if h.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some((r as u16 * 257, g as u16 * 257, b as u16 * 257))
+}
+
+/// The colors the `/command` token in the search entry should use while
+/// it currently resolves ("primary" - a wallpaper-derived accent) and
+/// while it doesn't ("error" - a distinctly different hue at the same
+/// read) - see query-dsl.md's "Inline command-validity coloring" and
+/// `command_spans`. Read from gen-theme.py's live scheme file (the same
+/// one winswitch's `load_theme_palette` draws `seriesPalette` from);
+/// `None` for either (or both) if the file's missing, malformed, or
+/// missing that key - `apply_command_colors` already treats a missing
+/// color as "leave that span in the default text color," so there's
+/// nothing further to fall back to.
+fn load_command_validity_colors() -> (Option<(u16, u16, u16)>, Option<(u16, u16, u16)>) {
+    let Some(home) = std::env::var_os("HOME") else { return (None, None) };
+    let path = PathBuf::from(home).join(".local/state/quickshell/scheme.json");
+    let Ok(content) = std::fs::read_to_string(path) else { return (None, None) };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { return (None, None) };
+    let get = |key: &str| v.get(key).and_then(|c| c.as_str()).and_then(hex_to_rgb16);
+    (get("primary"), get("error"))
+}
+
+/// Rebuilds `search`'s Pango attributes from `command_spans` - colors
+/// each `/command` token by whether it currently resolves, using
+/// whichever colors this theme maps "valid"/"invalid" to (see
+/// `load_command_validity_colors`); every other span is left in the
+/// entry's ordinary text color. Cheap enough to call on every keystroke -
+/// at most a handful of tokens - and always rebuilds the whole list from
+/// scratch rather than diffing, so a shorter or edited query correctly
+/// clears colors a longer one had set. Ported from winswitch's
+/// `ui.rs::apply_command_colors`.
+fn apply_command_colors(search: &gtk::SearchEntry, query_text: &str, state: &State) {
+    let attrs = gtk::pango::AttrList::new();
+    for (start, end, valid) in command_spans(query_text) {
+        let rgb = if valid { state.command_valid_color } else { state.command_invalid_color };
+        let Some((r, g, b)) = rgb else { continue };
+        let mut attr = gtk::pango::AttrColor::new_foreground(r, g, b);
+        attr.set_start_index(start as u32);
+        attr.set_end_index(end as u32);
+        attrs.insert(attr);
+    }
+    search.set_attributes(&attrs);
 }
 
 /// A Unix timestamp (seconds) as a short "how long ago" bucket -- "5m",
@@ -786,6 +876,7 @@ pub fn run(
     let _ = fs::write(&pid_path, std::process::id().to_string());
 
     let field_names = config.field_names.clone();
+    let (command_valid_color, command_invalid_color) = load_command_validity_colors();
     let state = Rc::new(State {
         entries,
         query: RefCell::new(parse_query("", &field_names)),
@@ -795,6 +886,8 @@ pub fn run(
         suggestion_idx: RefCell::new(0),
         suggestion_start: RefCell::new(0),
         suggestion_kind: RefCell::new(None),
+        command_valid_color,
+        command_invalid_color,
     });
     let pending: Rc<RefCell<Vec<(gtk::Image, String)>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -896,6 +989,7 @@ pub fn run(
         // Filtering the whole list measures in single-digit ms.
         search.connect_changed(move |entry| {
             let text = entry.text();
+            apply_command_colors(entry, text.as_str(), &state);
             // Resolve the needle once per keystroke rather than once per row,
             // and drop the borrow before the filter func takes it.
             *state.query.borrow_mut() = parse_query(text.as_str(), &state.field_names);
@@ -1280,6 +1374,19 @@ mod tests {
         let e = entry("1", "some text", vec![]);
         assert!(matches(&e, "/f")); // could still be /fv or /ft
         assert!(matches(&e, "/rev"));
+    }
+
+    #[test]
+    fn command_spans_valid_invalid_and_neutral() {
+        assert_eq!(command_spans("/fv foo"), vec![(0, 3, true)]);
+        assert_eq!(command_spans("/xyz foo"), vec![(0, 4, false)]);
+        assert_eq!(command_spans("/usr/bin"), vec![(0, 8, false)]);
+        assert!(command_spans("/f").is_empty()); // still forming
+        assert!(command_spans("/").is_empty());
+        assert!(command_spans("plain text").is_empty());
+        assert!(command_spans(r#""/fv""#).is_empty()); // quote-led literal
+        let spans = command_spans("/fv foo /xyz bar /ft baz");
+        assert_eq!(spans, vec![(0, 3, true), (8, 12, false), (17, 20, true)]);
     }
 
     #[test]
