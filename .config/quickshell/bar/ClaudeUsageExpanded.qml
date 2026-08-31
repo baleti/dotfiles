@@ -17,9 +17,17 @@ Rectangle {
 
     property bool expanded: false
     property real panelWidth: 320
+    // Set from Bar.qml (root.maxPanelHeight, screen-height-derived, same
+    // as CalendarExpanded); this fallback only matters for a standalone
+    // preview. "As tall as the monitor allows" per-request -- no fixed
+    // small cap -- but real per-account process counts (20-40 alive here)
+    // routinely exceed even that, so perGroupRowBudget below still has to
+    // truncate with a "+N more" line rather than ever actually fitting
+    // everything unconditionally.
+    property real maxPanelHeight: 700
 
     width: panelWidth
-    implicitHeight: expanded ? content.implicitHeight + 24 : 0
+    implicitHeight: expanded ? Math.min(content.implicitHeight + 24, root.maxPanelHeight) : 0
     height: implicitHeight
     visible: height > 0
     clip: true
@@ -124,6 +132,18 @@ Rectangle {
     function statusColor(status) {
         return root.statusColors[status] || Theme.textDim;
     }
+    // "waiting" is visibly wider than "busy"/"idle" -- abbreviated so the
+    // fixed-width status column in each single-line process row doesn't
+    // have it run into the pid field right after it with no gap (a real
+    // bug the first version of this row layout had).
+    readonly property var statusLabels: ({
+        "busy": qsTr("busy"),
+        "waiting": qsTr("wait"),
+        "idle": qsTr("idle"),
+    })
+    function statusLabel(status) {
+        return root.statusLabels[status] || status || "?";
+    }
 
     readonly property var pollModeLabels: ({
         "locked": qsTr("polling hourly (locked/screen off)"),
@@ -155,6 +175,53 @@ Rectangle {
     }
     property int tick: 0
 
+    // Per-account collapse state, keyed by account name -- missing/absent
+    // means expanded (so a brand new account name defaults open). Persists
+    // across the panel's own open/close (this Rectangle instance is never
+    // destroyed, only its height collapses to 0 -- same "sibling overlay"
+    // pattern as Media/CalendarExpanded), so a click on the pill or
+    // CTRL+ALT+c re-opens it exactly as you left it.
+    property var groupExpanded: ({})
+    function isGroupExpanded(name) {
+        return root.groupExpanded[name] !== false;
+    }
+    function toggleGroup(name) {
+        const next = Object.assign({}, root.groupExpanded);
+        next[name] = !root.isGroupExpanded(name);
+        root.groupExpanded = next;
+    }
+
+    // How many process rows each *expanded* account group gets to show,
+    // derived from the real remaining vertical budget rather than a fixed
+    // count -- so one account open alone gets to show many more than when
+    // all 3 are open together. The header/row heights below are rough
+    // rendered-size estimates (not measured live -- doing that without a
+    // two-pass layout would mean each group's budget depending on its
+    // siblings' actual process counts, which themselves depend on their
+    // own budget: circular), so this is a heuristic, not a guarantee of
+    // zero clipping -- the 20px safety margin exists to bias it toward
+    // under-filling rather than over-filling.
+    readonly property int rowH: 20
+    readonly property int groupHeaderH: 78
+    readonly property int collapsedH: 20
+    readonly property int expandedGroupCount: {
+        let n = 0;
+        for (const a of ClaudeUsageSvc.accounts)
+            if (root.isGroupExpanded(a.account))
+                n++;
+        return n;
+    }
+    readonly property real processAreaBudget: {
+        const collapsedCount = ClaudeUsageSvc.accounts.length - root.expandedGroupCount;
+        const fixedOverhead = 40 + 24 + 20
+            + root.expandedGroupCount * root.groupHeaderH
+            + collapsedCount * root.collapsedH;
+        return Math.max(0, root.maxPanelHeight - fixedOverhead);
+    }
+    readonly property int perGroupRowBudget: root.expandedGroupCount > 0
+        ? Math.max(1, Math.floor(root.processAreaBudget / root.expandedGroupCount / root.rowH))
+        : 0
+
     Column {
         id: content
         x: 12
@@ -175,19 +242,66 @@ Rectangle {
             model: ClaudeUsageSvc.accounts
 
             delegate: Column {
+                id: acctCol
                 width: content.width
                 spacing: 2
 
                 required property var modelData
                 readonly property bool hasSession: typeof modelData.session_pct === "number"
                 readonly property bool hasWeekly: typeof modelData.weekly_pct === "number"
+                readonly property bool groupOpen: root.isGroupExpanded(modelData.account)
+                // Every alive process for this account, most-recently-active
+                // first (claude-usage-daemon.py's list_sessions()) -- 20-40
+                // of these routinely exist per account here, almost all idle
+                // resumed shells, so visibleProcs below is what actually
+                // renders; procs.length (the real total) drives "+N more".
+                readonly property var procs: ClaudeUsageSvc.sessions[modelData.account] || []
+                readonly property var visibleProcs: groupOpen ? procs.slice(0, root.perGroupRowBudget) : []
+                readonly property int hiddenProcCount: groupOpen ? Math.max(0, procs.length - root.perGroupRowBudget) : 0
 
-                Text {
-                    text: modelData.account || ""
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize
-                    font.bold: true
+                Item {
+                    id: heading
+                    width: headingRow.width
+                    height: headingRow.height
+
+                    Row {
+                        id: headingRow
+                        spacing: 6
+
+                        Text {
+                            // Folded (collapsed): points right. Unfolded
+                            // (expanded): points down. Plain Unicode
+                            // triangles, not a Nerd Font glyph -- no
+                            // icon-font dependency needed for two shapes
+                            // this simple.
+                            text: acctCol.groupOpen ? "▾" : "▸"
+                            color: Theme.textDim
+                            font.pixelSize: Theme.fontSize - 2
+                            anchors.verticalCenter: nameText.verticalCenter
+                        }
+                        Text {
+                            id: nameText
+                            text: acctCol.modelData.account || ""
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize
+                            font.bold: true
+                        }
+                    }
+
+                    // MouseArea deliberately lives on this wrapping Item,
+                    // not inside headingRow itself -- a MouseArea with
+                    // anchors.fill: parent whose parent is the Row it's
+                    // also a child of creates a layout cycle (the Row's
+                    // own size depends on its children, one of which then
+                    // depends back on the Row's size), which silently
+                    // collapsed this whole heading to zero size the first
+                    // time this was written that way.
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleGroup(acctCol.modelData.account)
+                    }
                 }
 
                 // A stale reading still shows its (dimmed) numbers below --
@@ -195,7 +309,7 @@ Rectangle {
                 // Only a genuinely never-fetched account has no numbers to
                 // dim, in which case this is the only line shown.
                 Text {
-                    visible: !!modelData.error
+                    visible: parent.groupOpen && !!modelData.error
                     width: parent.width
                     text: parent.hasSession || parent.hasWeekly
                         ? qsTr("%1 -- showing last known values").arg(modelData.error)
@@ -207,7 +321,7 @@ Rectangle {
                 }
 
                 RowLayout {
-                    visible: parent.hasSession
+                    visible: parent.groupOpen && parent.hasSession
                     opacity: modelData.stale ? 0.55 : 1
                     width: parent.width
                     spacing: 10
@@ -228,7 +342,7 @@ Rectangle {
                 }
 
                 RowLayout {
-                    visible: parent.hasWeekly
+                    visible: parent.groupOpen && parent.hasWeekly
                     opacity: modelData.stale ? 0.55 : 1
                     width: parent.width
                     spacing: 10
@@ -248,15 +362,8 @@ Rectangle {
                     Item { Layout.fillWidth: true }
                 }
 
-                // Up to 6 most-recently-active live `claude` processes for
-                // this account (of routinely 20-40 alive at once here,
-                // almost all idle resumed shells -- see
-                // claude-usage-daemon.py's list_sessions()). Local-only,
-                // refreshed every 30s regardless of the tier above.
-                readonly property var procs: ClaudeUsageSvc.sessions[modelData.account] || []
-
                 Text {
-                    visible: parent.procs.length > 0
+                    visible: parent.groupOpen && parent.procs.length > 0
                     text: qsTr("processes")
                     color: Theme.textDim
                     font.family: Theme.fontFamily
@@ -265,56 +372,65 @@ Rectangle {
                 }
 
                 Repeater {
-                    model: parent.procs
+                    model: parent.visibleProcs
 
-                    delegate: Column {
-                        width: content.width
-                        spacing: 0
-
+                    delegate: RowLayout {
                         required property var modelData
-
-                        RowLayout {
-                            width: parent.width
-                            spacing: 6
-
-                            Text {
-                                text: modelData.status || "?"
-                                color: root.statusColor(modelData.status)
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                Layout.preferredWidth: 46
-                            }
-                            Text {
-                                text: qsTr("pid %1").arg(modelData.pid)
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                            }
-                            Text {
-                                text: root.fmtTokens(modelData.context_tokens) + qsTr(" tok")
-                                color: Theme.textDim
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                            }
-                            Item { Layout.fillWidth: true }
-                            Text {
-                                text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
-                                color: Theme.muted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                            }
-                        }
+                        width: content.width
+                        spacing: 6
 
                         Text {
-                            width: parent.width
+                            text: root.statusLabel(modelData.status)
+                            color: root.statusColor(modelData.status)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: 30
+                        }
+                        Text {
+                            text: qsTr("pid %1").arg(modelData.pid)
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: 68
+                        }
+                        Text {
+                            text: root.fmtTokens(modelData.context_tokens) + qsTr(" tok")
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: 56
+                        }
+                        Text {
                             text: root.shortCwd(modelData.cwd) + (modelData.tmux ? qsTr("  tmux %1").arg(modelData.tmux) : "")
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
-                            elide: Text.ElideLeft
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
                             horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: 42
                         }
                     }
+                }
+
+                // Real remaining count, not a vague "more" -- perGroupRowBudget
+                // is a fit-estimate (see its own comment), so this can be
+                // slightly off if a row rendered shorter/taller than assumed,
+                // but it's always derived from procs.length, the true total
+                // the daemon sent, never silently dropped.
+                Text {
+                    visible: parent.hiddenProcCount > 0
+                    text: qsTr("+%1 more").arg(parent.hiddenProcCount)
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    topPadding: 1
                 }
             }
         }

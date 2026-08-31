@@ -721,6 +721,7 @@ Item {
         id: claudeUsageExpanded
 
         panelWidth: root.widthFor("claudeUsage")
+        maxPanelHeight: root.maxPanelHeight
         x: root.layoutFor("claudeUsage").right - width
         y: root.panelYFor("claudeUsage")
     }
