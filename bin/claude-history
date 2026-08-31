@@ -74,6 +74,10 @@ needed to learn "which pane am I"):
     second writer on the same transcript) even though it can't switch to
     it either.
 
+Tab completes the query DSL (see the "query language" comment below and
+complete_query) - a unique field/value completes directly, an ambiguous
+one opens a small nested fzf popup to pick from.
+
 Deps: fzf, python3. tmux is optional - only needed for the live/switch path.
 """
 import argparse
@@ -839,6 +843,125 @@ def search(snapshot_path, query):
         print(row(sid, s, live_map, targets, qset, show_rxs))
 
 
+# --- Tab completion (bound to `tab` in drive(), see query-dsl.md's "Via
+# paths") -------------------------------------------------------------
+
+def _completion_context(query):
+    """(frag, prev, trailing_space): `frag` is the token currently being
+    typed (empty right after a trailing space, at a fresh argument
+    position); `prev` is the whitespace-delimited token immediately before
+    it (`None` at the very start of the query). No quote-awareness here,
+    unlike the real DSL tokenizer - completion only ever needs to look at
+    `/fv/...` shaped tokens, which are never quoted."""
+    trailing_space = query == "" or query[-1].isspace()
+    toks = query.split()
+    if trailing_space:
+        return "", (toks[-1] if toks else None), True
+    frag = toks[-1] if toks else ""
+    prev = toks[-2] if len(toks) > 1 else None
+    return frag, prev, False
+
+
+def _value_candidates(fields, fragment, snap, live_map, targets):
+    """Every distinct, non-empty FILTER_FIELDS value across all sessions
+    for the resolved `fields`, substring-narrowed by `fragment` - the same
+    "live values, deduped" corpus the GTK pickers' own Value stage draws
+    from (see query.rs::value_suggestions)."""
+    fragment = fragment.lower()
+    seen = set()
+    for sid, s in snap["sessions"].items():
+        filter_text = session_filter_text(sid, s, live_map, targets)
+        for f in fields:
+            v = filter_text.get(f, "")
+            if v and fragment in v:
+                seen.add(v)
+    return sorted(seen)
+
+
+def _pick_candidate(candidates):
+    """A unique candidate completes directly, no popup - same "narrow
+    match completes silently, ambiguous one shows a list" rule ordinary
+    shell tab-completion follows. 2+ candidates open a small nested fzf
+    (fzf's `execute(...)` action hands over the terminal to whatever it
+    runs, same as `execute(less {})` in fzf's own docs, so a real
+    interactive picker works here even though it's launched *from inside*
+    the outer fzf) - its own stdout is the chosen line, its stdin is the
+    candidate list (fzf reads the UI from /dev/tty directly, never stdin/
+    stdout, which is exactly what makes `selected=$(fzf < list)` and this
+    nested case both work)."""
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    try:
+        r = subprocess.run(
+            ["fzf", "--height=~40%", "--layout=reverse", "--border=rounded", "--prompt=complete> "],
+            input="\n".join(candidates), capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return None
+    chosen = r.stdout.strip()
+    return chosen or None
+
+
+def complete_query(query, snapshot_path):
+    """Prints the query with one token completed via Tab - unchanged if
+    there's nothing to complete (a `transform-query` no-op back in fzf).
+    Only ever steers towards the `/fv/field value` via spelling (see
+    query-dsl.md's "Via paths") regardless of which stage is reached -
+    that's the one this exists to make discoverable; the older
+    `/fv field:value` spelling still works when typed by hand, it just
+    isn't Tab-assisted."""
+    frag, prev, _ = _completion_context(query)
+
+    if frag.startswith("/"):
+        rest = frag[1:]
+        if "/" in rest:
+            # `/fv/via_frag` - completing the field name.
+            name, via_frag = rest.split("/", 1)
+            if name in ("fv", "filter-value") and ":" not in via_frag:
+                candidates = resolve_fields(via_frag)
+                chosen = _pick_candidate(candidates)
+                if chosen:
+                    prefix = query[: len(query) - len(via_frag)]
+                    print(f"{prefix}{chosen} ", end="")
+                    return
+            print(query, end="")
+            return
+        # `/frag` - completing the verb itself. Only "fv"/"filter-value"
+        # ever do anything in this picker (see the module docstring), so
+        # those are the only two ever offered - same "a picker only
+        # offers the verbs that do something for it" rule the app
+        # launcher's autocomplete already follows (query-dsl.md).
+        candidates = [v for v in ("fv", "filter-value") if rest.lower() in v]
+        chosen = _pick_candidate(candidates)
+        if chosen:
+            prefix = query[: len(query) - len(frag)]
+            print(f"{prefix}/{chosen}/", end="")
+            return
+        print(query, end="")
+        return
+
+    if prev and prev.startswith("/"):
+        prest = prev[1:]
+        if "/" in prest:
+            pname, pfield = prest.split("/", 1)
+            if pname in ("fv", "filter-value") and pfield and ":" not in pfield:
+                fields = resolve_fields(pfield)
+                if fields and os.path.exists(snapshot_path):
+                    with open(snapshot_path) as f:
+                        snap = json.load(f)
+                    live_map = get_live_sessions()
+                    targets = pane_targets() if in_tmux() else {}
+                    candidates = _value_candidates(fields, frag, snap, live_map, targets)
+                    chosen = _pick_candidate(candidates)
+                    if chosen:
+                        prefix = query[: len(query) - len(frag)] if frag else query
+                        print(f"{prefix}{chosen} ", end="")
+                        return
+    print(query, end="")
+
+
 PREVIEW_CONTEXT_TURNS = 2  # turns of leading context kept above a jumped-to match
 
 
@@ -1100,6 +1223,15 @@ def drive():
     fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
                                      suffix=".json", dir=snapshot_dir())
     atexit.register(lambda: _rm(snap_path))
+    # `tab`'s completion result lands here (see complete_query) rather
+    # than being captured directly - `execute(...)` doesn't feed its own
+    # stdout back into fzf, so `transform-query` reads it from this file
+    # right after (same tempfile-handoff pattern `snap_path` already
+    # uses, just for one line instead of the whole snapshot).
+    complete_fd, complete_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-complete-",
+                                                   suffix=".txt", dir=snapshot_dir())
+    os.close(complete_fd)
+    atexit.register(lambda: _rm(complete_path))
     for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: sys.exit(1))
     with os.fdopen(fd, "w") as f:
@@ -1116,6 +1248,10 @@ def drive():
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
     preview_cmd = f"{py} --preview {{1}} --query={{q}} --snapshot={shlex.quote(snap_path)}"
+    complete_cmd = (
+        f"{py} --complete --query={{q}} --snapshot={shlex.quote(snap_path)} "
+        f"> {shlex.quote(complete_path)}"
+    )
     resize_on_result = (
         # list gets just enough rows for its matches (+4: the header row,
         # the prompt line, the match-count info line, one extra - $FZF_LINES
@@ -1165,11 +1301,20 @@ def drive():
                 "--bind", f"resize:transform:{resize_on_result}",
                 "--bind", "ctrl-left:backward-word",
                 "--bind", "ctrl-right:forward-word",
+                # `execute` hands the terminal over to complete_cmd (same
+                # as fzf's own `execute(less {})` example) - a genuine
+                # nested interactive picker when there's more than one
+                # candidate, see _pick_candidate - then `transform-query`
+                # loads whatever it wrote back into the search box,
+                # which also re-triggers `change` (a query change always
+                # does) so results refresh against the completed query.
+                "--bind", f"tab:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
             ],
             capture_output=True, text=True,
         )
     finally:
         _rm(snap_path)
+        _rm(complete_path)
 
     selected = result.stdout.strip()
     if not selected:
@@ -1185,6 +1330,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--search", metavar="SNAPSHOT")
     parser.add_argument("--preview", metavar="SESSION_ID")
+    parser.add_argument("--complete", action="store_true")
     parser.add_argument("--query", default="")
     parser.add_argument("--snapshot", metavar="SNAPSHOT")
     args = parser.parse_args()
@@ -1193,6 +1339,8 @@ def main():
         preview(args.preview, args.query, args.snapshot)
     elif args.search:
         search(args.search, args.query)
+    elif args.complete:
+        complete_query(args.query, args.snapshot)
     else:
         drive()
 

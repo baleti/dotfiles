@@ -444,7 +444,18 @@ row/label has to be shown explicitly and the list revealed with a direct
 something for it. The app launcher shows no columns, so it offers `/fv`,
 `/s`, `/rv` only - `/ft`/`/at`/`/rt` are still *parsed* (shared grammar)
 but inert, so they're left out of the popup rather than suggested and
-then ignored.
+then ignored. claude-history only acts on `/fv` at all (see its own
+header), so its Tab-completion only ever offers that - the verb stage
+lists `fv`/`filter-value` and nothing else, and only via paths get
+completed (`/fv/field value`, steering towards that spelling specifically
+even though the older `/fv field:value` still works when typed by hand).
+Its completion UI can't be an in-layout popup the GTK pickers' way (fzf
+has one list, not a widget tree) - a unique candidate completes directly,
+the same way shell tab-completion does with no ambiguity to show; an
+ambiguous one opens a small *nested* fzf as the actual picker, launched
+via `execute(...)` (which hands the terminal over to it, same as fzf's
+own `execute(less {})`) and fed back into the query with
+`transform-query(...)` once you pick one.
 
 ## Resolution, precisely
 
