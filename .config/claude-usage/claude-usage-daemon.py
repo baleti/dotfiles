@@ -45,10 +45,11 @@ doesn't linger. "Context tokens" per session comes from the last
 transcript (~/.claudeN/projects/<cwd-slug>/<sessionId>.jsonl, found by a
 tail-window read, not a full-file parse -- see context_tokens_for) --
 input + cache_creation + cache_read tokens, i.e. roughly how full that
-session's context window currently is, not a lifetime total. Only the 6
-most-recently-active sessions per account are kept (there are routinely
-20-40 alive at once here, almost all idle resumed shells -- a full list
-isn't a "current activity" view, it's just clutter).
+session's context window currently is, not a lifetime total. Every alive
+session is sent, sorted most-recently-active first -- deciding how many
+actually fit on screen (there are routinely 20-40 alive per account here)
+is the quickshell side's job, not this daemon's; it shows "+N more" using
+the real count this sends rather than silently dropping data.
 
 State is written atomically to ~/.cache/claude-usage/state.json.
 """
@@ -93,9 +94,13 @@ BACKOFF_MIN = 600
 BACKOFF_MAX = 3600
 
 # Session/process listing: purely local (no network), so it runs on its
-# own short cadence independent of the tiers above.
+# own short cadence independent of the tiers above. SESSIONS_KEEP is a
+# sanity ceiling, not a UI decision -- real counts here run 20-40 alive per
+# account, so this is normally never hit; the quickshell side decides how
+# many of the (sorted-most-recent-first) list actually fit on screen and
+# shows "+N more" for the rest, using the real total this sends.
 SESSIONS_INTERVAL = 30
-SESSIONS_KEEP = 6
+SESSIONS_KEEP = 100
 # Tail-window sizes tried in order (bytes) when hunting for the last
 # assistant usage entry -- most files find it in the first, smallest pass;
 # this only escalates for a session whose last turn had a huge tool result
