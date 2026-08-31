@@ -10,8 +10,10 @@ hl.bind(mainMod .. " + Q",     hl.dsp.window.close())
 hl.bind(mainMod .. " + E",     hl.dsp.exec_cmd(fileManager))
 hl.bind(mainMod .. " + SHIFT + space", hl.dsp.window.float({ action = "toggle" }))
 -- mod+R was `menu` (hyprlauncher); the quickshell launcher on mod+Super_l is
--- the primary app launcher, so R now opens the rssd feed reader instead.
-hl.bind(mainMod .. " + R",     hl.dsp.exec_cmd("alacritty --class rssd-reader -e ~/.config/rssd/reader.py"))
+-- the primary app launcher, so R opens the quickshell RSS reader instead
+-- (~/.config/quickshell/rssreader/; the curses ~/.config/rssd/reader.py is
+-- still there for ssh/tty use, just not bound).
+hl.bind(mainMod .. " + R",     hl.dsp.exec_cmd("qs ipc call rssReader toggle"))
 -- mod+P used to be dwindle pseudotile toggle; moved to the CPU graph
 -- widget (see the mod+t/d/n/p/m binds below) and dropped entirely rather
 -- than rebound elsewhere, per instruction.
