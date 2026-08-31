@@ -3,11 +3,17 @@ pragma Singleton
 import QtQuick
 
 // The shared picker query DSL (~/.config/docs/query-dsl.md), ported to JS
-// for the quickshell app launcher -- the same grammar alt+tab (winswitch)
-// and mod+v (clipboard-picker) use, just a 7th hand-written implementation
-// as that doc intends. Scope here: `/fv` + bare text (row filter), `/s` +
-// `/rv` (order), `/ft` `/at` `/rt` (columns). Verbs are exact-matched;
-// type-path segments substring-match, case-insensitively, unioned.
+// for the quickshell app launcher and RSS reader -- the same grammar
+// alt+tab (winswitch) and mod+v (clipboard-picker) use, hand-written a
+// 7th time as that doc intends. Verbs are exact-matched; type-path
+// segments substring-match, case-insensitively, unioned.
+//
+// Via paths (query-dsl.md "Via paths"): every path-taking verb can carry
+// its type path glued straight onto the verb with a second `/` --
+// `/fv/feed dezeen` means exactly what `/fv feed:dezeen` did, no colon.
+// `tokVerb` returns { verb, via } for this; `parse` handles both spellings
+// through the same term shape. Mirrors winswitch's query.rs::tok_verb /
+// starts_command / parse.
 QtObject {
     id: root
 
@@ -26,6 +32,13 @@ QtObject {
         "/s":  { long: "/sort",         desc: "order rows by one field, optional asc / desc" },
         "/rv": { long: "/reverse",      desc: "flip the current order" }
     })
+
+    // Every accepted verb spelling, WITHOUT the leading "/" (query.rs's
+    // VERB_FORMS) -- for prefix detection on the verb-name portion only.
+    readonly property var verbForms: [
+        "fv", "ft", "at", "rt", "s", "rv",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"
+    ]
 
     // Split on whitespace, keeping "quoted runs" as one token (quotes stripped).
     function tokenize(text) {
@@ -49,54 +62,126 @@ QtObject {
         return out;
     }
 
+    // "fv" / "filter-value" -> "/fv"; anything else -> null. (query.rs's
+    // Verb::parse, keyed by short form.)
+    function _canonName(name) {
+        if (root.shortVerbs.indexOf("/" + name) >= 0) return "/" + name;
+        if (root.verbAliases["/" + name]) return root.verbAliases["/" + name];
+        return null;
+    }
+
+    // query.rs::tok_verb -- { verb, via } or null. `verb` is a canonical
+    // short form ("/fv" ...); `via` is the glued-on type path (lowercased
+    // by the caller where it matters) or null. A "/xyz" that isn't a verb
+    // (or "/usr/bin") is not a verb token -> null.
+    function tokVerb(tok) {
+        if (tok.q || tok.v[0] !== "/") return null;
+        const rest = tok.v.slice(1);
+        const slash = rest.indexOf("/");
+        if (slash >= 0) {
+            const v = root._canonName(rest.slice(0, slash));
+            return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
+        }
+        const v = root._canonName(rest);
+        return v === null ? null : { verb: v, via: null };
+    }
+
+    // query.rs::is_verb_prefix -- `s` (no leading "/") is a non-empty
+    // prefix of some verb form, so a "/s..." token still on its way to a
+    // verb stays inert mid-typing rather than being searched literally.
+    function isVerbPrefix(s) {
+        return s.length > 0 && root.verbForms.some(f => f.indexOf(s) === 0);
+    }
+
+    // query.rs::starts_command -- true for a real verb token OR a "/frag"
+    // still forming into one. Used to bound a verb's argument span.
+    function startsCommand(tok) {
+        if (tok.q || tok.v[0] !== "/") return false;
+        const rest = tok.v.slice(1);
+        const slash = rest.indexOf("/");
+        const name = slash >= 0 ? rest.slice(0, slash) : rest;
+        return root._canonName(name) !== null || root.isVerbPrefix(rest);
+    }
+
+    // Back-compat shim for the two consumers' _commandSpans: canonical verb
+    // for a real verb token (via form included), "" for an unrecognised
+    // "/xyz", null for a non-command token.
     function canonVerb(tok) {
-        if (tok.q) return null;
-        if (root.shortVerbs.indexOf(tok.v) >= 0) return tok.v;
-        if (root.verbAliases[tok.v]) return root.verbAliases[tok.v];
-        // An unrecognised "/xyz" is inert, not a literal search.
-        if (tok.v.startsWith("/")) return "";
+        const tv = root.tokVerb(tok);
+        if (tv) return tv.verb;
+        if (!tok.q && tok.v[0] === "/") return "";
         return null;
     }
 
     // True if `tok` reads as a (possibly abbreviated) sort direction -
-    // substring-matches "ascending" or "descending". Empty never matches
-    // (a not-yet-typed slot isn't a direction either).
+    // substring-matches "ascending" or "descending".
     function _isDirectionLike(tok) {
         const d = tok.toLowerCase();
         if (d.length === 0) return false;
         return "ascending".indexOf(d) === 0 || "descending".indexOf(d) === 0;
     }
 
-    // Parse into { terms:[{field,value,quoted}|{text}], sort:{field,dir}|null,
+    function _dirOf(tok) {
+        return "descending".indexOf(tok.toLowerCase()) === 0 ? "desc" : "asc";
+    }
+
+    // Parse into { terms:[{field,value,quoted}|{text,quoted}], sort:{field,dir}|null,
     // reverse:bool, cols:[{op,path}] }. Incomplete trailing tokens are dropped
-    // (never flash to zero on a valid partial keystroke).
-    //
-    // Every verb has a fixed arity (max argument tokens it will ever take -
-    // see query-dsl.md's Grammar section): 0 for /rv, 1 for /fv /ft /at /rt,
-    // 1-2 for /s (the 2nd, direction, slot only counts as consumed when the
-    // token there actually reads as one). A token past a verb's arity is
-    // never swallowed just because no new /verb intervened - it's left for
-    // the next loop iteration, where a non-verb token becomes its own /fv
-    // term. This is what keeps `/s name blender` from losing `blender` as a
-    // rejected sort direction.
+    // (never flash to zero on a valid partial keystroke). Mirrors query.rs::parse.
     function parse(text) {
         const toks = root.tokenize(text);
         const res = { terms: [], sort: null, reverse: false, cols: [] };
         let k = 0;
         while (k < toks.length) {
-            const verb = root.canonVerb(toks[k]);
-            if (verb === null) {
-                // bare word -> free-text term (each its own AND term)
-                if (toks[k].v.length > 0)
-                    res.terms.push({ text: toks[k].v.toLowerCase(), quoted: toks[k].q });
+            const tv = root.tokVerb(toks[k]);
+            if (tv === null) {
+                // Not a verb: a "/frag" still forming into one is inert;
+                // anything else (bare word, "/usr/bin") is an implicit /fv term.
+                const t = toks[k];
+                const midTyping = !t.q && t.v[0] === "/" && root.isVerbPrefix(t.v.slice(1));
+                if (!midTyping && t.v.length > 0)
+                    res.terms.push({ text: t.v.toLowerCase(), quoted: t.q });
                 k++;
                 continue;
             }
-            if (verb === "") { k++; continue; } // inert /xyz
             k++;
+            const verb = tv.verb;
+
+            if (tv.via !== null) {
+                // Via form: path came glued onto the verb. Every verb still
+                // takes the same *remaining* args, minus the path.
+                const via = tv.via.toLowerCase();
+                if (verb === "/fv") {
+                    if (k < toks.length && !root.startsCommand(toks[k])) {
+                        res.terms.push({ field: via, value: toks[k].v.toLowerCase(),
+                                         quoted: toks[k].q });
+                        k++;
+                    } else {
+                        // colonless via path alone -> free text (matches
+                        // query.rs filter_term(via) for a flat type)
+                        res.terms.push({ text: via, quoted: false });
+                    }
+                } else if (verb === "/s") {
+                    let dir = "asc";
+                    if (k < toks.length && !root.startsCommand(toks[k])
+                            && root._isDirectionLike(toks[k].v)) {
+                        dir = root._dirOf(toks[k].v);
+                        k++;
+                    }
+                    res.sort = { field: via, dir: dir };
+                } else if (verb === "/rv") {
+                    res.reverse = true; // via meaningless here, harmless
+                } else {
+                    const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
+                    res.cols.push({ op: op, path: via });
+                }
+                continue;
+            }
+
+            // Space form: collect argument tokens up to this verb's arity.
             const args = [];
             const maxArgs = verb === "/rv" ? 0 : (verb === "/s" ? 2 : 1);
-            while (args.length < maxArgs && k < toks.length && root.canonVerb(toks[k]) === null) {
+            while (args.length < maxArgs && k < toks.length && !root.startsCommand(toks[k])) {
                 if (verb === "/s" && args.length === 1 && !root._isDirectionLike(toks[k].v)) break;
                 args.push(toks[k]);
                 k++;
@@ -122,8 +207,8 @@ QtObject {
                 res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q });
             }
         } else if (verb === "/s") {
-            const dir = (args.length > 1 && root._isDirectionLike(args[1].v)
-                         && "descending".indexOf(args[1].v.toLowerCase()) === 0) ? "desc" : "asc";
+            const dir = (args.length > 1 && root._isDirectionLike(args[1].v))
+                ? root._dirOf(args[1].v) : "asc";
             res.sort = { field: a0.toLowerCase(), dir: dir };
         } else {
             const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");

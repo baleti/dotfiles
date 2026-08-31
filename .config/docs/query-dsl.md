@@ -416,11 +416,17 @@ RSS reader grow the equivalent in QML. Stages:
    `/ft`; `/` alone -> all six). Accepting a verb inserts it plus a
    trailing space and re-triggers completion at the argument stage.
 2. **Type path** (`/ft frag`, `/at frag`, `/rt frag`, `/s frag`, or
-   `/fv frag` before any `:`): candidates are flat type names and group
-   names containing `frag`; after a `.`, that group's subfields plus `*`.
-   Accepting a column-verb path or a group completes the token; accepting
-   a `/fv` path inserts a trailing `:` ready for a value.
-3. **Filter value** (`/fv path:frag`, `path` unambiguous): candidates are
+   `/fv frag` before any `:`; the via form `/verb/frag` is the same stage):
+   candidates are flat type names and group names containing `frag`; after
+   a `.`, that group's subfields plus `*`. Accepting a column-verb path or
+   a group completes the token; accepting a `/fv` or `/s` path inserts a
+   trailing space ready for the value/direction, in the **via spelling** -
+   `/fv frag` + accept lands `/fv/<type> `, not `/fv <type>:` (rss-reader
+   and claude-history both steer completion toward the via form this way;
+   the colon form still parses when typed by hand). The GTK pickers and
+   app launcher still land the `:` form here.
+3. **Filter value** (`/fv path:frag` or `/fv/path frag`, `path`
+   unambiguous): candidates are
    every distinct non-empty value that type actually has across the
    current entries right now, substring-narrowed by `frag`, deduplicated
    and sorted. This is the one stage genuinely scoped to a small corpus.
