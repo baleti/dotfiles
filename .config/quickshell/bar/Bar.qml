@@ -127,14 +127,17 @@ Item {
     }
 
     // Bar itself stays a fixed height (exclusiveZone in shell.qml is pinned
-    // to Theme.barHeight); this is the *window's* total height, letting the
-    // popup panels grow the window downward without reserving that extra
-    // space from tiling. panelGridHeight (below) is the single source of
-    // truth for every open panel's row -- media/calendar are full members
-    // of that same grid now, not maxed in separately (see its own comment
-    // for why that used to cause an overlap).
-    readonly property real overflow: root.panelGridHeight
-    readonly property real totalHeight: Theme.barHeight + (overflow > 0 ? 6 + overflow : 0)
+    // to Theme.barHeight); popup panels grow the *window* downward without
+    // reserving that extra space from tiling. panelGridHeight (below) is
+    // the single source of truth for every open panel's row -- media/
+    // calendar are full members of that same grid, not maxed in
+    // separately (see its own comment for why that used to cause an
+    // overlap). totalHeight/overflow (a combined bar+panel-grid height
+    // figure) used to live here for shell.qml's input mask, but that mask
+    // is now two separate rectangles (bar strip + panel area, see its own
+    // comment on openPanelsLeftEdge below) rather than one sized off a
+    // single combined height, so nothing reads these two any more --
+    // removed rather than left as dead code.
 
     // Any of these 7 can be open at once (e.g. mod+CTRL+m then mod+t then
     // mod+CTRL+c) and all share one row-wrapping layout (see the "Popup
@@ -328,6 +331,26 @@ Item {
         for (const n of root.openPanels)
             h = Math.max(h, root.overflowHeightFor(n));
         return h;
+    }
+
+    // Leftmost edge of any currently-open panel's own rendered rectangle
+    // -- screen.width (i.e. a zero-width region) when nothing's open.
+    // shell.qml's input mask uses this to keep the *expanded-panel* click
+    // region only as wide as where panels actually render, separate from
+    // the always-full-width bar-pill strip above it. A single full-width
+    // rectangle sized off panelGridHeight alone (the original version)
+    // meant any panel tall enough -- ClaudeUsageExpanded routinely
+    // reaches close to the full monitor height now -- turned nearly the
+    // *entire screen* into a click-blocking overlay, since that one
+    // rectangle's width was always the full monitor regardless of which
+    // panel was actually open. Reported "block[s] everything" 2026-08-31.
+    readonly property real openPanelsLeftEdge: {
+        if (root.openCount === 0)
+            return root.screen.width;
+        let minX = Infinity;
+        for (const n of root.openPanels)
+            minX = Math.min(minX, root.layoutFor(n).right - root.widthFor(n));
+        return minX;
     }
 
     function last(arr: var): real {

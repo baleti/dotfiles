@@ -99,12 +99,12 @@ ShellRoot {
             // Full monitor height, fixed -- a panel can only render within
             // the layer-shell surface, and the calendar's agenda list is
             // allowed to grow to fill the screen. Not reactively resized
-            // (binding it to bar.totalHeight caused a visible flicker on
-            // every collapse); the surface just stays screen-sized and
-            // transparent, and the mask below limits input to the bar +
-            // whatever's currently expanded so clicks pass through the
-            // empty area. Bar.qml reads screen.height for its own
-            // maxPanelHeight the same way.
+            // (binding it to the bar+panel-grid height caused a visible
+            // flicker on every collapse); the surface just stays
+            // screen-sized and transparent, and the mask below limits
+            // input to the bar + whatever's currently expanded so clicks
+            // pass through the empty area. Bar.qml reads screen.height for
+            // its own maxPanelHeight the same way.
             implicitHeight: panel.screen.height
             exclusiveZone: 38
             color: "transparent"
@@ -113,11 +113,32 @@ ShellRoot {
             // backdrop + centered card), so the whole surface has to accept
             // input; otherwise input is limited to the bar strip + whatever
             // panel is expanded, and everything else clicks through.
+            //
+            // Two separate rectangles (Region's default property is a list
+            // of child Region items, combined/unioned by default -- see
+            // Intersection.Combine), not one full-width rectangle sized off
+            // the tallest open panel: a single rectangle's *width* is
+            // always the full monitor regardless of which panel is open,
+            // so a panel tall enough turns nearly the entire screen into a
+            // click-blocking overlay even though it only visually renders
+            // on the right-hand side. ClaudeUsageExpanded routinely
+            // reaches close to full monitor height now (see its own docs),
+            // which is what surfaced this -- reported "block[s]
+            // everything" 2026-08-31; media/calendar's typically-modest
+            // heights never grew tall enough to make the same latent bug
+            // visible. 38 matches exclusiveZone above / Theme.barHeight.
             mask: Region {
                 x: 0
                 y: 0
                 width: panel.width
-                height: mprisPicker.showing ? panel.height : Math.min(bar.totalHeight, panel.height)
+                height: mprisPicker.showing ? panel.height : 38
+
+                Region {
+                    x: bar.openPanelsLeftEdge
+                    y: bar.panelY
+                    width: panel.width - bar.openPanelsLeftEdge
+                    height: mprisPicker.showing ? 0 : bar.panelGridHeight
+                }
             }
 
             // mod+CTRL+m (media), mod+CTRL+c (calendar), and mod+n/p/m/t/d
