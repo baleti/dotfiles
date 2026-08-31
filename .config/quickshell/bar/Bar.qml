@@ -590,7 +590,7 @@ Item {
             // to the pill's own I/O-throughput value, without needing to
             // open the panel.
             secondaryIcon: Icons.disk
-            secondaryText: "/ " + (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "%"
+            secondaryText: "/" + (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "%"
             secondaryDivider: false
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
