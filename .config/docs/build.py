@@ -66,14 +66,15 @@ SHARED_PAGES = {
 # Sidebar order + short labels (README is always the section landing page).
 ORDER = [
     "README.md", "hyprland.md", "rust-tools.md", "quickshell-bar.md",
-    "theming.md", "tmux.md", "zsh-and-terminal.md", "desktop-apps.md",
-    "claude-history.md", "query-dsl.md",
+    "claude-usage.md", "theming.md", "tmux.md", "zsh-and-terminal.md",
+    "desktop-apps.md", "claude-history.md", "query-dsl.md",
 ]
 LABELS = {
     "README.md":           "Overview",
     "hyprland.md":          "Hyprland",
     "rust-tools.md":        "Rust tools",
     "quickshell-bar.md":    "quickshell bar",
+    "claude-usage.md":      "Claude usage widget",
     "theming.md":           "Theming pipeline",
     "tmux.md":              "tmux",
     "zsh-and-terminal.md":  "zsh & terminal",
