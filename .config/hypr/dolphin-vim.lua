@@ -1,16 +1,17 @@
 -- Ctrl+h/j/k/l vim-style list navigation inside Dolphin: re-emits as
--- Alt+Up/Down/Up/Return. Dolphin's list view has no KActionCollection
--- shortcut for "move selection down/up" or "open selected item" -- those are
--- raw QAbstractItemView keyPressEvent handling (Down/Up/Return), not
--- configurable via Dolphin's own Settings > Configure Shortcuts (confirmed
--- against dolphinui.rc: only go_up is a real action there, and even that
--- only covers Ctrl+h). So this remaps at the Hyprland level instead, via
--- send_shortcut, which delivers a synthetic key event straight to the
--- target client's wl_keyboard -- Qt can't tell it apart from a real keypress.
+-- Left/Down/Up/Right. Dolphin's list view has no KActionCollection shortcut
+-- for "move selection down/up" or "expand/collapse selected folder" -- those
+-- are raw QAbstractItemView keyPressEvent handling, not configurable via
+-- Dolphin's own Settings > Configure Shortcuts (confirmed against
+-- dolphinui.rc: no action there is bound to any of Ctrl+h/j/k/l by default).
+-- So this remaps at the Hyprland level instead, via send_shortcut, which
+-- delivers a synthetic key event straight to the target client's
+-- wl_keyboard -- Qt can't tell it apart from a real keypress.
 --
--- Ctrl+h re-emits Alt+Up (Dolphin's compiled-in default for "go to parent
--- folder") rather than Left, since Left has no special meaning in Dolphin's
--- list/details views.
+-- Note: Ctrl+l IS a real Dolphin default (replace_location -- focus the
+-- address bar, "Ctrl+L; Alt+D"), so this bind shadows it inside Dolphin;
+-- only Alt+D still reaches the native shortcut. Deliberate trade-off for
+-- vim-style navigation -- use Alt+D to edit the location bar instead.
 --
 -- Deliberately NOT a submap swap on window focus (unlike rdp-guard.lua):
 -- a submap replaces the *entire* active keymap while it's active, which
@@ -34,5 +35,5 @@ end
 
 hl.bind("CTRL + j", dolphin_or_passthrough("j", "", "Down"))
 hl.bind("CTRL + k", dolphin_or_passthrough("k", "", "Up"))
-hl.bind("CTRL + l", dolphin_or_passthrough("l", "", "Return"))
-hl.bind("CTRL + h", dolphin_or_passthrough("h", "ALT", "Up"))
+hl.bind("CTRL + l", dolphin_or_passthrough("l", "", "Right"))
+hl.bind("CTRL + h", dolphin_or_passthrough("h", "", "Left"))
