@@ -46,24 +46,43 @@ Rectangle {
         onWheel: wheel => wheel.accepted = true
     }
 
-    // Coarse "Xd Yh" / "Xh Ym" / "Xm" / "<1m" for a delta in seconds --
-    // shared by the per-limit reset countdown and the backoff/staleness
-    // lines below.
-    function fmtDelta(deltaS) {
-        if (deltaS <= 0)
-            return qsTr("<1m");
-        const days = Math.floor(deltaS / 86400);
-        deltaS -= days * 86400;
-        const hours = Math.floor(deltaS / 3600);
-        deltaS -= hours * 3600;
-        const mins = Math.floor(deltaS / 60);
-        if (days > 0)
-            return qsTr("%1d %2h").arg(days).arg(hours);
-        if (hours > 0)
-            return qsTr("%1h %2m").arg(hours).arg(mins);
-        if (mins > 0)
-            return qsTr("%1m").arg(mins);
-        return qsTr("<1m");
+    // Coarse "bigUnit smallUnit" for a duration in seconds, e.g. "5m",
+    // "2h 14m", "1d 3h", "2w 4d", "3mo 1w", "1y 2mo" -- shared by the
+    // per-limit reset countdown, the backoff/staleness lines, and the
+    // process list's "last active" column. Months/years are approximated
+    // (30d/365d) since this is a coarse "roughly how long" readout, not a
+    // calendar computation -- some sessions here go back weeks, so hours-
+    // only (the original version of this) rolled over into meaningless
+    // "410h" instead of "17d 2h".
+    function fmtDuration(totalS) {
+        const s = Math.max(0, Math.round(totalS));
+        if (s < 60)
+            return qsTr("%1s").arg(s);
+        if (s < 3600)
+            return qsTr("%1m").arg(Math.floor(s / 60));
+        if (s < 86400) {
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            return qsTr("%1h %2m").arg(h).arg(m);
+        }
+        if (s < 7 * 86400) {
+            const d = Math.floor(s / 86400);
+            const h = Math.floor((s % 86400) / 3600);
+            return qsTr("%1d %2h").arg(d).arg(h);
+        }
+        if (s < 30 * 86400) {
+            const w = Math.floor(s / (7 * 86400));
+            const d = Math.floor((s % (7 * 86400)) / 86400);
+            return qsTr("%1w %2d").arg(w).arg(d);
+        }
+        if (s < 365 * 86400) {
+            const mo = Math.floor(s / (30 * 86400));
+            const w = Math.floor((s % (30 * 86400)) / (7 * 86400));
+            return qsTr("%1mo %2w").arg(mo).arg(w);
+        }
+        const y = Math.floor(s / (365 * 86400));
+        const mo = Math.floor((s % (365 * 86400)) / (30 * 86400));
+        return qsTr("%1y %2mo").arg(y).arg(mo);
     }
 
     // "resets in Xd Yh" -- ISO8601 in. null (an account whose tier wasn't
@@ -75,23 +94,19 @@ Rectangle {
         if (isNaN(target))
             return "--";
         const deltaS = Math.round((target - Date.now()) / 1000);
-        return deltaS <= 0 ? qsTr("resetting") : qsTr("resets in %1").arg(root.fmtDelta(deltaS));
+        return deltaS <= 0 ? qsTr("resetting") : qsTr("resets in %1").arg(root.fmtDuration(deltaS));
     }
 
-    // "12s ago" / "4m ago" -- same coarse style, for the daemon's own
-    // updated_at (staleness indicator, not a countdown).
+    // Raw "12s" / "4m" / "2d 3h" -- no "ago" baked in, so this doubles as
+    // both the mode-line staleness readout (which adds its own " ago") and
+    // the process list's "last active" column (which doesn't).
     function fmtAgo(iso) {
         if (!iso)
             return qsTr("never");
         const t = new Date(iso).getTime();
         if (isNaN(t))
             return qsTr("never");
-        const deltaS = Math.max(0, Math.round((Date.now() - t) / 1000));
-        if (deltaS < 60)
-            return qsTr("%1s ago").arg(deltaS);
-        if (deltaS < 3600)
-            return qsTr("%1m ago").arg(Math.floor(deltaS / 60));
-        return qsTr("%1h ago").arg(Math.floor(deltaS / 3600));
+        return root.fmtDuration((Date.now() - t) / 1000);
     }
 
     readonly property string homeDir: Quickshell.env("HOME") || ""
@@ -159,7 +174,7 @@ Rectangle {
         if (ClaudeUsageSvc.pollMode === "backoff") {
             const resumeMs = new Date(ClaudeUsageSvc.updatedAt).getTime() + ClaudeUsageSvc.pollIntervalS * 1000;
             const deltaS = Math.round((resumeMs - Date.now()) / 1000);
-            return qsTr("rate limited (429) -- retrying in %1").arg(root.fmtDelta(Math.max(0, deltaS)));
+            return qsTr("rate limited (429) -- retrying in %1").arg(root.fmtDuration(Math.max(0, deltaS)));
         }
         return root.pollModeLabels[ClaudeUsageSvc.pollMode] || qsTr("Claude usage");
     }
@@ -191,6 +206,41 @@ Rectangle {
         root.groupExpanded = next;
     }
 
+    // Per-account process-table sort, keyed by account name -> {col, asc}.
+    // Independent per account -- each has its own header row, so clicking
+    // claude's "pid" header doesn't touch claude2/claude3's ordering.
+    // Reset on every panel open/close (not just close) per request, so a
+    // sort never quietly carries over into an unrelated look at the
+    // panel later.
+    property var groupSort: ({})
+    onExpandedChanged: root.groupSort = ({})
+
+    function toggleSort(account, col) {
+        const cur = root.groupSort[account];
+        const next = Object.assign({}, root.groupSort);
+        next[account] = (cur && cur.col === col) ? { col: col, asc: !cur.asc } : { col: col, asc: true };
+        root.groupSort = next;
+    }
+    function sortArrow(account, col) {
+        const s = root.groupSort[account];
+        return (s && s.col === col) ? (s.asc ? " ▲" : " ▼") : "";
+    }
+    // undefined/null (context_tokens can be either for a session with no
+    // recorded usage yet) sorts as lower than any real number, in both
+    // directions -- "no data" reads more sensibly grouped at one end than
+    // scattered wherever 0 would fall.
+    function compareForSort(a, b, col) {
+        switch (col) {
+        case "status": return (a.status || "").localeCompare(b.status || "");
+        case "pid": return (a.pid || 0) - (b.pid || 0);
+        case "tokens": return (a.context_tokens ?? -1) - (b.context_tokens ?? -1);
+        case "path": return root.shortCwd(a.cwd).localeCompare(root.shortCwd(b.cwd));
+        case "tmux": return (a.tmux || "").localeCompare(b.tmux || "");
+        case "active": return (a.updated_at_ms || 0) - (b.updated_at_ms || 0);
+        default: return 0;
+        }
+    }
+
     // How many process rows each *expanded* account group gets to show,
     // derived from the real remaining vertical budget rather than a fixed
     // count -- so one account open alone gets to show many more than when
@@ -208,14 +258,19 @@ Rectangle {
     // Shared column widths -- the process-list header row and every data
     // row below it bind to these same values so the two stay aligned
     // without hardcoding the same number twice.
-    // Sized for the "status" header label (6 chars), not the shorter
-    // idle/busy/wait values it holds -- the header row hit the exact same
-    // "wider label overflows a value-sized column" bug the status *value*
-    // column itself had before "waiting" got abbreviated to "wait".
-    readonly property int colStatusW: 44
+    // Sized for the "status" header label (6 chars) plus its clickable
+    // sort-arrow suffix (" ▲"/" ▼"), not the shorter idle/busy/wait values
+    // it holds -- the header row hit the exact same "wider label
+    // overflows a value-sized column" bug the status *value* column had
+    // before "waiting" got abbreviated to "wait".
+    readonly property int colStatusW: 52
     readonly property int colPidW: 68
-    readonly property int colTokensW: 56
-    readonly property int colAgoW: 42
+    readonly property int colTokensW: 60
+    readonly property int colTmuxW: 92
+    // Sized for "last active ▼" (14 chars incl. sort arrow), not the
+    // shorter values that column actually holds -- same reason colStatusW
+    // is sized off "status" rather than "idle"/"busy"/"wait".
+    readonly property int colLastActiveW: 88
     readonly property int expandedGroupCount: {
         let n = 0;
         for (const a of ClaudeUsageSvc.accounts)
@@ -243,7 +298,7 @@ Rectangle {
 
         Text {
             width: parent.width
-            text: root.tick >= 0 ? root.modeLine() + " -- " + qsTr("updated %1").arg(root.fmtAgo(ClaudeUsageSvc.updatedAt)) : ""
+            text: root.tick >= 0 ? root.modeLine() + " -- " + qsTr("updated %1 ago").arg(root.fmtAgo(ClaudeUsageSvc.updatedAt)) : ""
             color: Theme.textDim
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize - 2
@@ -268,7 +323,19 @@ Rectangle {
                 // resumed shells, so visibleProcs below is what actually
                 // renders; procs.length (the real total) drives "+N more".
                 readonly property var procs: ClaudeUsageSvc.sessions[modelData.account] || []
-                readonly property var visibleProcs: groupOpen ? procs.slice(0, root.perGroupRowBudget) : []
+                // Column-header-click sort, this account's own (see
+                // root.groupSort) -- falls back to the daemon's own
+                // most-recent-first order when nothing's been clicked.
+                readonly property var sortSpec: root.groupSort[modelData.account]
+                readonly property var sortedProcs: {
+                    if (!sortSpec)
+                        return procs;
+                    const arr = procs.slice().sort((a, b) => root.compareForSort(a, b, sortSpec.col));
+                    if (!sortSpec.asc)
+                        arr.reverse();
+                    return arr;
+                }
+                readonly property var visibleProcs: groupOpen ? sortedProcs.slice(0, root.perGroupRowBudget) : []
                 readonly property int hiddenProcCount: groupOpen ? Math.max(0, procs.length - root.perGroupRowBudget) : 0
 
                 Item {
@@ -288,7 +355,7 @@ Rectangle {
                             // this simple.
                             text: acctCol.groupOpen ? "▾" : "▸"
                             color: Theme.textDim
-                            font.pixelSize: Theme.fontSize - 2
+                            font.pixelSize: Theme.fontSize + 2
                             anchors.verticalCenter: nameText.verticalCenter
                         }
                         Text {
@@ -377,47 +444,91 @@ Rectangle {
                 // Column headers, once per group -- shares its widths with
                 // every data row below via root.col*W so the two stay
                 // aligned without repeating "pid"/"tok"/"tmux" on every
-                // single row.
+                // single row. Each is clickable: sorts this account's
+                // table by that column, a second click on the same one
+                // flips ascending/descending (root.toggleSort), and a ▲/▼
+                // marks whichever column is currently driving the order.
+                // Sort state resets on every panel open/close
+                // (root.onExpandedChanged), so it never silently persists
+                // into an unrelated later look at the panel.
                 RowLayout {
                     visible: parent.groupOpen && parent.procs.length > 0
                     width: content.width
                     spacing: 6
 
                     Text {
-                        text: qsTr("status")
+                        text: qsTr("status") + root.sortArrow(modelData.account, "status")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colStatusW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "status")
+                        }
                     }
                     Text {
-                        text: qsTr("pid")
+                        text: qsTr("pid") + root.sortArrow(modelData.account, "pid")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colPidW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "pid")
+                        }
                     }
                     Text {
-                        text: qsTr("tokens")
+                        text: qsTr("tokens") + root.sortArrow(modelData.account, "tokens")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colTokensW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "tokens")
+                        }
                     }
                     Text {
-                        text: qsTr("location")
+                        text: qsTr("path") + root.sortArrow(modelData.account, "path")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.fillWidth: true
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "path")
+                        }
                     }
                     Text {
-                        text: qsTr("active")
+                        text: qsTr("tmux") + root.sortArrow(modelData.account, "tmux")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        elide: Text.ElideRight
+                        Layout.preferredWidth: root.colTmuxW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "tmux")
+                        }
+                    }
+                    Text {
+                        text: qsTr("last active") + root.sortArrow(modelData.account, "active")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         horizontalAlignment: Text.AlignRight
-                        Layout.preferredWidth: root.colAgoW
+                        Layout.preferredWidth: root.colLastActiveW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "active")
+                        }
                     }
                 }
 
@@ -451,7 +562,7 @@ Rectangle {
                             Layout.preferredWidth: root.colTokensW
                         }
                         Text {
-                            text: root.shortCwd(modelData.cwd) + (modelData.tmux ? qsTr(" · %1").arg(modelData.tmux) : "")
+                            text: root.shortCwd(modelData.cwd)
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
@@ -459,12 +570,20 @@ Rectangle {
                             Layout.fillWidth: true
                         }
                         Text {
+                            text: modelData.tmux || ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: root.colTmuxW
+                        }
+                        Text {
                             text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: root.colAgoW
+                            Layout.preferredWidth: root.colLastActiveW
                         }
                     }
                 }
