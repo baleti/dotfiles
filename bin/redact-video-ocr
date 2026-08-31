@@ -1,0 +1,202 @@
+#!/home/user1/.cache/video-redact-venv/bin/python3
+"""OCR-driven frame-by-frame video redaction.
+
+Runs Tesseract OCR on every frame in-memory, matches detected text against a
+list of sensitive stems/phrases, and blurs the matching regions. No frame is
+ever sent through an LLM vision call -- OCR + blur is fully programmatic, so
+this scales to any video length at OCR speed instead of vision-token cost.
+
+Requires the venv at ~/.cache/video-redact-venv (opencv-python-headless,
+pytesseract) and the `tesseract` binary on PATH. Recreate the venv with:
+    python3 -m venv ~/.cache/video-redact-venv
+    ~/.cache/video-redact-venv/bin/pip install opencv-python-headless pytesseract
+
+Usage:
+    redact-video-ocr input.mp4 output.mp4 --words stems.txt [--debug-dir debug/]
+
+`stems.txt` is one word/phrase per line (case-insensitive, matched by prefix/
+substring/truncation), '#' starts a comment, trailing '!' means whole-word only.
+"""
+import argparse
+import re
+import subprocess
+import sys
+
+import cv2
+import numpy as np
+import pytesseract
+
+
+def normalize(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def load_stems(path: str) -> list[tuple[str, bool]]:
+    """Returns (normalized_stem, whole_word_only) pairs. A trailing '!'
+    on a line (before any comment) marks it whole-word-only, e.g. to stop
+    a short stem like "mom" from also matching "moment" as a prefix."""
+    stems = []
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            whole_word = line.endswith("!")
+            if whole_word:
+                line = line[:-1]
+            stems.append((normalize(line), whole_word))
+    return stems
+
+
+def line_key(data: dict, i: int) -> tuple:
+    return (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+
+
+def boxes_from_data(data: dict, stems: list[tuple[str, bool]], pad: int) -> list[tuple[int, int, int, int]]:
+    n = len(data["text"])
+    boxes = []
+
+    # group word indices by line so multi-word phrases (e.g. "job application")
+    # can be matched against a stem that spans more than one OCR word
+    lines: dict[tuple, list[int]] = {}
+    for i in range(n):
+        if not data["text"][i].strip():
+            continue
+        lines.setdefault(line_key(data, i), []).append(i)
+
+    for idxs in lines.values():
+        idxs.sort(key=lambda i: data["left"][i])
+        words = [normalize(data["text"][i]) for i in idxs]
+        for start in range(len(idxs)):
+            # try growing windows of 1..4 words for phrase stems, longest first
+            for span in range(min(4, len(idxs) - start), 0, -1):
+                window = idxs[start : start + span]
+                joined = "".join(words[start : start + span])
+                if not joined:
+                    continue
+                hit = False
+                for stem, whole_word in stems:
+                    if len(stem) < 3:
+                        continue
+                    if whole_word:
+                        if joined == stem:
+                            hit = True
+                            break
+                    elif (
+                        joined.startswith(stem)  # noisy OCR text with the stem as a prefix
+                        or stem in joined  # stem embedded in a longer garbled token
+                        or (len(joined) >= 3 and stem.startswith(joined))  # truncated on-screen text, e.g. "Evg..." for "evgenia"
+                    ):
+                        hit = True
+                        break
+                if hit:
+                    xs = [data["left"][i] for i in window]
+                    ys = [data["top"][i] for i in window]
+                    x2s = [data["left"][i] + data["width"][i] for i in window]
+                    y2s = [data["top"][i] + data["height"][i] for i in window]
+                    x, y = max(min(xs) - pad, 0), max(min(ys) - pad, 0)
+                    x2, y2 = max(x2s) + pad, max(y2s) + pad
+                    boxes.append((x, y, x2 - x, y2 - y))
+                    break  # this window matched; don't also flag sub-windows
+    return boxes
+
+
+def find_redact_boxes(
+    frame: np.ndarray,
+    stems: list[tuple[str, bool]],
+    pad: int,
+    scale: int = 2,
+    psm_modes: tuple[int, ...] = (3, 11),
+) -> list[tuple[int, int, int, int]]:
+    """Return (x, y, w, h) boxes in the ORIGINAL frame's coordinates,
+    matching single words or adjacent-word phrases (e.g. "job" +
+    "application") against stems.
+
+    OCR runs on an upscaled copy (small UI/terminal text at native
+    1080p resolution is often below Tesseract's reliable size) and with
+    multiple page-segmentation modes -- psm 3 (default, good for dense
+    tabular text like process lists) and psm 11 (sparse text, good for
+    scattered short UI labels like calendar cells) catch different text,
+    so both are run and their hits merged.
+    """
+    img = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC) if scale != 1 else frame
+    boxes = []
+    for psm in psm_modes:
+        data = pytesseract.image_to_data(img, config=f"--psm {psm}", output_type=pytesseract.Output.DICT)
+        boxes += boxes_from_data(data, stems, pad * scale)
+    if scale != 1:
+        boxes = [(x // scale, y // scale, w // scale, h // scale) for (x, y, w, h) in boxes]
+    return boxes
+
+
+def blur_boxes(frame: np.ndarray, boxes: list[tuple[int, int, int, int]]) -> np.ndarray:
+    h, w = frame.shape[:2]
+    for (x, y, bw, bh) in boxes:
+        x2, y2 = min(x + bw, w), min(y + bh, h)
+        x, y = max(x, 0), max(y, 0)
+        if x2 <= x or y2 <= y:
+            continue
+        roi = frame[y:y2, x:x2]
+        k = max(15, (min(roi.shape[:2]) // 2) | 1)  # odd kernel, scales with box
+        frame[y:y2, x:x2] = cv2.GaussianBlur(roi, (k, k), 0)
+    return frame
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("input")
+    ap.add_argument("output")
+    ap.add_argument("--words", required=True, help="text file, one stem/phrase per line")
+    ap.add_argument("--pad", type=int, default=6)
+    ap.add_argument("--scale", type=int, default=3, help="OCR upscale factor for small UI text (blur still applies at native res)")
+    ap.add_argument("--psm", default="3,11", help="comma-separated Tesseract page-segmentation modes to run and merge")
+    ap.add_argument("--debug-dir", help="if set, write every frame with boxes drawn (not blurred) here for review")
+    args = ap.parse_args()
+    psm_modes = tuple(int(p) for p in args.psm.split(","))
+
+    stems = load_stems(args.words)
+    print(f"Loaded {len(stems)} stems: " + ", ".join(f"{s}{'!' if w else ''}" for s, w in stems), file=sys.stderr)
+
+    cap = cv2.VideoCapture(args.input)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    ffmpeg = subprocess.Popen(
+        [
+            "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
+            "-i", args.input,
+            "-map", "0:v", "-map", "1:a?",
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            args.output,
+        ],
+        stdin=subprocess.PIPE,
+    )
+
+    frame_i = 0
+    total_boxes = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        boxes = find_redact_boxes(frame, stems, args.pad, scale=args.scale, psm_modes=psm_modes)
+        total_boxes += len(boxes)
+        if args.debug_dir:
+            dbg = frame.copy()
+            for (x, y, bw, bh) in boxes:
+                cv2.rectangle(dbg, (x, y), (x + bw, y + bh), (0, 0, 255), 2)
+            cv2.imwrite(f"{args.debug_dir}/frame-{frame_i:04d}.png", dbg)
+        frame = blur_boxes(frame, boxes)
+        ffmpeg.stdin.write(frame.tobytes())
+        frame_i += 1
+
+    cap.release()
+    ffmpeg.stdin.close()
+    ffmpeg.wait()
+    print(f"Processed {frame_i} frames, {total_boxes} redaction boxes total.", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
