@@ -245,7 +245,13 @@ Rectangle {
         case "pid": return (a.pid || 0) - (b.pid || 0);
         case "tokens": return (a.context_tokens ?? -1) - (b.context_tokens ?? -1);
         case "path": return root.shortCwd(a.cwd).localeCompare(root.shortCwd(b.cwd));
-        case "tmux": return (a.tmux || "").localeCompare(b.tmux || "");
+        case "tmux": {
+            const as = Number(a.tmux_session) || 0, bs = Number(b.tmux_session) || 0;
+            if (as !== bs) return as - bs;
+            const aw = Number(a.tmux_window) || 0, bw = Number(b.tmux_window) || 0;
+            if (aw !== bw) return aw - bw;
+            return (Number(a.tmux_pane) || 0) - (Number(b.tmux_pane) || 0);
+        }
         case "active": return (a.updated_at_ms || 0) - (b.updated_at_ms || 0);
         default: return 0;
         }
@@ -266,7 +272,9 @@ Rectangle {
     // true` is the actual backstop against a rare 1-2px partial last row
     // now that the margin's thinner, not a promise of zero clipping.
     readonly property int rowH: 18
-    readonly property int groupHeaderH: 70
+    // +14 over the original 70 for the tmux group-label row added above
+    // the column-header row.
+    readonly property int groupHeaderH: 84
     readonly property int collapsedH: 18
 
     // Shared column widths -- the process-list header row and every data
@@ -290,7 +298,14 @@ Rectangle {
     readonly property int colTokensW: 60
     // "last" itself is short, but values like "2mo 1w" aren't.
     readonly property int colLastW: 56
-    readonly property int colTmuxW: 92
+    // tmux is a *grouped* column -- one "tmux" super-header spanning these
+    // 3, sized off their own header labels ("session"/"window"/"pane",
+    // the widest of which is "session" at 7 chars) rather than the
+    // (shorter, numeric) session/window/pane ids they actually hold.
+    readonly property int colTmuxSessionW: 54
+    readonly property int colTmuxWindowW: 50
+    readonly property int colTmuxPaneW: 40
+    readonly property int colTmuxGroupW: colTmuxSessionW + colTmuxWindowW + colTmuxPaneW + 12 // +2 inter-column spacings (6 each)
     readonly property int colPathW: 160
     readonly property int expandedGroupCount: {
         let n = 0;
@@ -502,16 +517,54 @@ Rectangle {
                     Item { Layout.fillWidth: true }
                 }
 
+                // Group-header row, once per group -- blank over every
+                // plain column, one "tmux" label spanning the 3 tmux
+                // sub-columns below (session/window/pane). Same column
+                // widths as the two rows below it (root.col*W) so all
+                // three stay aligned; clicking the "tmux" label sorts by
+                // the group as a whole (session, then window, then pane --
+                // see root.compareForSort), the 3 sub-columns don't get
+                // their own individual sort.
+                RowLayout {
+                    visible: parent.groupOpen && parent.procs.length > 0
+                    width: content.width
+                    spacing: 6
+
+                    Item { Layout.preferredWidth: root.colStatusW }
+                    Item { Layout.fillWidth: true; Layout.minimumWidth: root.colTitleW }
+                    Item { Layout.preferredWidth: root.colTokensW }
+                    Item { Layout.preferredWidth: root.colLastW }
+                    Text {
+                        text: qsTr("tmux") + root.sortArrow(modelData.account, "tmux")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        horizontalAlignment: Text.AlignHCenter
+                        Layout.preferredWidth: root.colTmuxGroupW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "tmux")
+                        }
+                    }
+                    Item { Layout.preferredWidth: root.colPidW }
+                    Item { Layout.preferredWidth: root.colPathW }
+                }
+
                 // Column headers, once per group -- shares its widths with
-                // every data row below via root.col*W so the two stay
-                // aligned without repeating "pid"/"tok"/"tmux" on every
-                // single row. Each is clickable: sorts this account's
-                // table by that column, a second click on the same one
-                // flips ascending/descending (root.toggleSort), and a ▲/▼
-                // marks whichever column is currently driving the order.
-                // Sort state resets on every panel open/close
-                // (root.onExpandedChanged), so it never silently persists
-                // into an unrelated later look at the panel.
+                // the data row below via root.col*W so the two stay
+                // aligned without repeating "pid"/"tok" on every single
+                // row. Status/title/tokens/last/pid/path are each
+                // individually clickable: sorts this account's table by
+                // that column, a second click on the same one flips
+                // ascending/descending (root.toggleSort), and a ▲/▼ marks
+                // whichever column is currently driving the order (the
+                // tmux group's own arrow lives on its label in the row
+                // above, not here -- session/window/pane are plain labels,
+                // not separately sortable). Sort state resets on every
+                // panel open/close (root.onExpandedChanged), so it never
+                // silently persists into an unrelated later look at the
+                // panel.
                 RowLayout {
                     visible: parent.groupOpen && parent.procs.length > 0
                     width: content.width
@@ -569,17 +622,25 @@ Rectangle {
                         }
                     }
                     Text {
-                        text: qsTr("tmux") + root.sortArrow(modelData.account, "tmux")
+                        text: qsTr("session")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
-                        elide: Text.ElideRight
-                        Layout.preferredWidth: root.colTmuxW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "tmux")
-                        }
+                        Layout.preferredWidth: root.colTmuxSessionW
+                    }
+                    Text {
+                        text: qsTr("window")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        Layout.preferredWidth: root.colTmuxWindowW
+                    }
+                    Text {
+                        text: qsTr("pane")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        Layout.preferredWidth: root.colTmuxPaneW
                     }
                     Text {
                         text: qsTr("pid") + root.sortArrow(modelData.account, "pid")
@@ -648,12 +709,25 @@ Rectangle {
                             Layout.preferredWidth: root.colLastW
                         }
                         Text {
-                            text: modelData.tmux || ""
+                            text: modelData.tmux_session || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
-                            elide: Text.ElideRight
-                            Layout.preferredWidth: root.colTmuxW
+                            Layout.preferredWidth: root.colTmuxSessionW
+                        }
+                        Text {
+                            text: modelData.tmux_window || ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            Layout.preferredWidth: root.colTmuxWindowW
+                        }
+                        Text {
+                            text: modelData.tmux_pane || ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            Layout.preferredWidth: root.colTmuxPaneW
                         }
                         Text {
                             text: String(modelData.pid)
