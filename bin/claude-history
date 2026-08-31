@@ -137,17 +137,22 @@ def tokenize(text):
 # module).
 #
 # On top of that base language, this tool adds a field-scoped term:
-# `/fv field:word` (also `/filter-value`) restricts word to one field
-# instead of the whole document. field is substring-resolved - any
-# FIELD_NAMES entry whose name *contains* it (not just a prefix: `/fv x:`
-# reaches "tmux" by its last letter) is searched, unioned. So
-# `/fv tit:foo` searches only title, `/fv ti:foo` searches both time and
-# title, `/fv x:foo` searches only tmux. `!/fv ...` negates. An
-# unresolvable field name (`/fv qqq:foo`, or still being typed) degrades
-# to a plain bare-word search over the literal "field:word" text. The
-# other shared-grammar verbs (/ft, /at, /rt, /s, /rv - see
-# ~/.config/docs/query-dsl.md) are recognised but inert here: this is a
-# single BM25-ranked line, no columns and no re-sort.
+# `/fv/field word` (also `/filter-value/field`) restricts word to one
+# field instead of the whole document - the field is glued onto the verb
+# with a second `/` (the "via" operator, see ~/.config/docs/query-dsl.md's
+# "Via paths"), no colon involved at all: `/fv/tit foo` searches only
+# title, `/fv/x foo` searches only tmux (field is substring-resolved - any
+# FIELD_NAMES entry whose name *contains* it, unioned - not just a prefix).
+# `/fv/field` alone (no word following) matches every row for that field -
+# there's no group/subfield distinction here (every FIELD_NAMES entry is
+# already flat) so there's nothing to existence-check beyond that. `!/fv/
+# ...` negates. The older `/fv field:word` (space, colon) spelling still
+# works too, unchanged - via is an additional spelling, not a replacement -
+# and an unresolvable field name in *either* spelling (`/fv/qqq foo`,
+# `/fv qqq:foo`, or either still being typed) degrades to a plain bare-word
+# search over the literal text instead of being dropped. The other
+# shared-grammar verbs (/ft, /at, /rt, /s, /rv) are recognised but inert
+# here: this is a single BM25-ranked line, no columns and no re-sort.
 #
 #   path     session's working directory
 #   tmux     session:window.pane, if currently live and reachable here
@@ -170,10 +175,17 @@ BM25_FIELDS = {"title", "body"}
 FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 
 # Long verb forms before their short forms so ordered alternation doesn't
-# let `/s` swallow the `s` of `/sort`. See ~/.config/docs/query-dsl.md.
+# let `/s` swallow the `s` of `/sort`. The via-form alternative
+# (`/fv/field word`) has to come before the generic catch-all line below -
+# alternation tries left to right and takes the first that matches at all,
+# so if the generic "/fv(?:\s+\S+)?" line came first it would happily
+# match just "/fv" (its optional trailing arg requires whitespace, not a
+# literal "/") and leave "/field word" to be re-scanned as its own,
+# unrelated tokens. See ~/.config/docs/query-dsl.md.
 QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
-    r'/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
+    r'/(?:filter-value|fv)/([a-zA-Z]+)(?:\s+(\S+))?'
+    r'|/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
     r'|/(?:reverse|rv)'
     r'|"([^"]*)"'
@@ -196,8 +208,19 @@ def resolve_fields(prefix):
 def parse_query(query):
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     field_terms, neg_field_terms = [], []
-    for neg, fprefix, fterm, quoted, bare in QUERY_ELEM_RE.findall(query):
-        if fprefix:
+    for neg, via_field, via_word, fprefix, fterm, quoted, bare in QUERY_ELEM_RE.findall(query):
+        if via_field:
+            fields = resolve_fields(via_field)
+            if fields:
+                (neg_field_terms if neg else field_terms).append((fields, via_word.lower()))
+                continue
+            # unresolvable field name - fall through to plain bare-word
+            # handling on the whole "field word" text (both already
+            # consumed by this one regex match), same reasoning the colon
+            # form below uses for "field:term" - `tokenize()` splits it
+            # back into independent words either way.
+            bare = f"{via_field} {via_word}" if via_word else via_field
+        elif fprefix:
             fields = resolve_fields(fprefix)
             if fields:
                 (neg_field_terms if neg else field_terms).append((fields, fterm.lower()))
