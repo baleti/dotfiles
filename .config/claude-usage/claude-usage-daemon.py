@@ -40,7 +40,18 @@ on its own fixed 30s cadence regardless of the tier/backoff logic above.
 Each account's `sessions/<pid>.json` (written by the CLI itself, keyed by
 PID) gives pid/sessionId/cwd/status/tmux directly; a process only shows up
 here if /proc/<pid> still exists, so an exited session's leftover json
-doesn't linger. "Context tokens" per session comes from the last
+doesn't linger. The "title" shown per session is tmux's own pane_title
+(set by the CLI via terminal escape sequences, e.g. "Focused window
+border accent color"), looked up once per cycle via one batched `tmux
+list-panes -a` call (not one subprocess per session) and matched by the
+globally-unique %pane-id embedded in that session's own "tmux" field --
+NOT sessions/<pid>.json's own "name" field, which despite sounding like a
+title is just an opaque auto-derived id (e.g. "user1-46") the CLI assigns
+internally, unrelated to what the session is actually doing (confirmed by
+comparing both against the same real pid 2026-08-31; name is kept as a
+fallback for a session tmux can't find, e.g. one not running in a tmux
+pane at all -- daemon/bg-pty-host processes). "Context tokens" per
+session comes from the last
 `type: "assistant"` message's `usage` field in that session's own
 transcript (~/.claudeN/projects/<cwd-slug>/<sessionId>.jsonl, found by a
 tail-window read, not a full-file parse -- see context_tokens_for) --
@@ -54,6 +65,7 @@ the real count this sends rather than silently dropping data.
 State is written atomically to ~/.cache/claude-usage/state.json.
 """
 import json
+import re
 import subprocess
 import sys
 import time
@@ -267,7 +279,30 @@ def context_tokens_for(transcript_path: Path):
     return None, None
 
 
-def list_sessions(base: Path) -> list:
+def get_tmux_pane_titles() -> dict:
+    """{pane_id ("%1828"): pane_title} for every pane on the server, in one
+    batched call -- not one `tmux display-message` subprocess per session
+    (85+ of those every cycle would be wasteful). Empty dict (not an
+    exception) if tmux isn't running or isn't on PATH."""
+    try:
+        out = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}"],
+            capture_output=True, timeout=3, text=True, check=True,
+        )
+    except Exception:
+        return {}
+    titles = {}
+    for line in out.stdout.splitlines():
+        pane_id, _, title = line.partition("\t")
+        if pane_id:
+            titles[pane_id] = title
+    return titles
+
+
+PANE_ID_RE = re.compile(r"%\d+")
+
+
+def list_sessions(base: Path, tmux_titles: dict) -> list:
     sessions_dir = base / "sessions"
     if not sessions_dir.is_dir():
         return []
@@ -289,11 +324,23 @@ def list_sessions(base: Path) -> list:
             transcript = base / "projects" / cwd_to_slug(cwd) / f"{session_id}.jsonl"
             context_tokens, last_output_tokens = context_tokens_for(transcript)
 
+        tmux_field = data.get("tmux")
+        title = None
+        if tmux_field:
+            m = PANE_ID_RE.search(tmux_field)
+            if m:
+                title = tmux_titles.get(m.group(0))
+        if not title:
+            # Not in tmux (or that pane's gone) -- fall back to the CLI's
+            # own opaque auto-id rather than showing nothing.
+            title = data.get("name")
+
         rows.append({
             "pid": pid,
             "status": data.get("status"),
+            "title": title,
             "cwd": cwd,
-            "tmux": data.get("tmux"),
+            "tmux": tmux_field,
             "updated_at_ms": data.get("updatedAt"),
             "context_tokens": context_tokens,
             "last_output_tokens": last_output_tokens,
@@ -336,7 +383,8 @@ def main() -> None:
         # Session/process listing: local-only, its own cadence, runs even
         # during a network backoff window.
         if now >= next_sessions:
-            sessions_data = {name: list_sessions(base) for name, base in ACCOUNTS}
+            tmux_titles = get_tmux_pane_titles()
+            sessions_data = {name: list_sessions(base, tmux_titles) for name, base in ACCOUNTS}
             next_sessions = time.time() + SESSIONS_INTERVAL
             dirty = True
 

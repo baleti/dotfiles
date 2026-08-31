@@ -27,7 +27,7 @@ Item {
     // be the one that changed.
     readonly property int openPanelCount: (mediaExpanded.expanded ? 1 : 0) + (calendarExpanded.expanded ? 1 : 0)
         + (netPill.expanded ? 1 : 0) + (cpuPill.expanded ? 1 : 0) + (memPill.expanded ? 1 : 0)
-        + (diskPill.expanded ? 1 : 0) + (tempPill.expanded ? 1 : 0)
+        + (diskPill.expanded ? 1 : 0) + (tempPill.expanded ? 1 : 0) + (claudeUsageExpanded.expanded ? 1 : 0)
 
     // Always focus-eligible -- actual keyboard delivery is already gated at
     // the window level by shell.qml's WlrLayershell.keyboardFocus/
@@ -106,6 +106,9 @@ Item {
             }
         } else if (calendarExpanded.expanded) {
             calendarExpanded.handleKey(event);
+        } else if (claudeUsageExpanded.expanded && event.key === Qt.Key_Escape) {
+            claudeUsageExpanded.expanded = false;
+            event.accepted = true;
         }
     }
 
@@ -249,9 +252,18 @@ Item {
     // being open, only from actually running out of screen).
     readonly property real stdPanelWidth: Math.min(560, root.panelAreaWidth)
     readonly property real calPanelWidth: Math.min(root.screen.width / 2, root.panelAreaWidth)
+    // The process table's 7 columns (status/title/tokens/last/tmux/pid/
+    // path) don't fit the standard 560 without squeezing path to
+    // near-nothing -- wider by default, though still well short of the
+    // calendar's half-monitor.
+    readonly property real claudeUsagePanelWidth: Math.min(760, root.panelAreaWidth)
 
     function preferredWidthFor(name: string): real {
-        return name === "calendar" ? root.calPanelWidth : root.stdPanelWidth;
+        if (name === "calendar")
+            return root.calPanelWidth;
+        if (name === "claudeUsage")
+            return root.claudeUsagePanelWidth;
+        return root.stdPanelWidth;
     }
 
     // 1 while every open panel's preferred width still fits the row (with
@@ -713,10 +725,11 @@ Item {
     }
 
     // CTRL+ALT+c (keybinds.lua) or a click on claudeUsagePill toggles this.
-    // Deliberately does NOT take real keyboard focus the way media/calendar
-    // do (no root.forceActiveFocus()/refocusActivePanel() here) -- nothing
-    // in this panel needs arrow-key navigation, so it stays out of
-    // shell.qml's HyprlandFocusGrab/holdsFocus machinery entirely.
+    // Takes real keyboard control on open the same way media/calendar do
+    // (root.Keys.onPressed above handles Escape while this is the open
+    // panel) -- originally left out of this machinery since nothing here
+    // needed arrow-key nav, but Escape-to-close was explicitly requested
+    // and that needs real focus the same way the other panels get it.
     ClaudeUsageExpanded {
         id: claudeUsageExpanded
 
@@ -724,6 +737,7 @@ Item {
         maxPanelHeight: root.maxPanelHeight
         x: root.layoutFor("claudeUsage").right - width
         y: root.panelYFor("claudeUsage")
+        onExpandedChanged: expanded ? root.forceActiveFocus() : root.refocusActivePanel()
     }
 
     // Keyboard shortcuts (hyprland/keybinds.lua: mod+n/p/m/t/d, via

@@ -8,10 +8,13 @@ import "../services"
 // each of the 3 Claude Code accounts on this machine, plus the poller's
 // current adaptive-interval tier so it's obvious why a number looks stale.
 // Same sibling-overlay / collapses-to-0-height-when-closed shape as
-// MediaExpanded/CalendarExpanded, but click/CTRL+ALT+c-toggled only -- no
-// hover-open, and no real keyboard focus grab (nothing here needs arrow-key
-// navigation, so it deliberately stays out of shell.qml's
-// HyprlandFocusGrab/holdsFocus machinery Bar.qml's other panels use).
+// MediaExpanded/CalendarExpanded, click/CTRL+ALT+c-toggled only -- no
+// hover-open. Takes real keyboard focus on open the same way media/
+// calendar do (Bar.qml wires onExpandedChanged the same way, and
+// root.Keys.onPressed there handles Escape while this is the open panel)
+// -- originally left out of that machinery since nothing here needed
+// arrow-key nav, reversed once Escape-to-close was requested, since that
+// needs the same real focus grab the other panels use.
 Rectangle {
     id: root
 
@@ -21,9 +24,9 @@ Rectangle {
     // as CalendarExpanded); this fallback only matters for a standalone
     // preview. "As tall as the monitor allows" per-request -- no fixed
     // small cap -- but real per-account process counts (20-40 alive here)
-    // routinely exceed even that, so perGroupRowBudget below still has to
-    // truncate with a "+N more" line rather than ever actually fitting
-    // everything unconditionally.
+    // routinely exceed even that combined across all 3, so
+    // groupRowBudgets below still has to truncate with a "+N more" line
+    // rather than ever actually fitting everything unconditionally.
     property real maxPanelHeight: 700
 
     width: panelWidth
@@ -191,11 +194,7 @@ Rectangle {
     property int tick: 0
 
     // Per-account collapse state, keyed by account name -- missing/absent
-    // means expanded (so a brand new account name defaults open). Persists
-    // across the panel's own open/close (this Rectangle instance is never
-    // destroyed, only its height collapses to 0 -- same "sibling overlay"
-    // pattern as Media/CalendarExpanded), so a click on the pill or
-    // CTRL+ALT+c re-opens it exactly as you left it.
+    // means expanded (so a brand new account name defaults open).
     property var groupExpanded: ({})
     function isGroupExpanded(name) {
         return root.groupExpanded[name] !== false;
@@ -209,11 +208,21 @@ Rectangle {
     // Per-account process-table sort, keyed by account name -> {col, asc}.
     // Independent per account -- each has its own header row, so clicking
     // claude's "pid" header doesn't touch claude2/claude3's ordering.
-    // Reset on every panel open/close (not just close) per request, so a
-    // sort never quietly carries over into an unrelated look at the
-    // panel later.
     property var groupSort: ({})
-    onExpandedChanged: root.groupSort = ({})
+
+    // Both view-state pieces above reset on every panel open *and* close
+    // -- this Rectangle instance is never destroyed (only its height
+    // collapses to 0, same "sibling overlay" pattern as Media/
+    // CalendarExpanded), so without this a fold or a sort from one look
+    // at the panel would silently still be there next time. First
+    // version only reset groupSort, leaving fold state to persist
+    // (reasoned, at the time, that persisting collapse felt like the more
+    // useful default) -- reported as inconsistent with the intended
+    // "clean slate every open" behavior, so both reset together now.
+    onExpandedChanged: {
+        root.groupExpanded = ({});
+        root.groupSort = ({});
+    }
 
     function toggleSort(account, col) {
         const cur = root.groupSort[account];
@@ -232,6 +241,7 @@ Rectangle {
     function compareForSort(a, b, col) {
         switch (col) {
         case "status": return (a.status || "").localeCompare(b.status || "");
+        case "title": return (a.title || "").localeCompare(b.title || "");
         case "pid": return (a.pid || 0) - (b.pid || 0);
         case "tokens": return (a.context_tokens ?? -1) - (b.context_tokens ?? -1);
         case "path": return root.shortCwd(a.cwd).localeCompare(root.shortCwd(b.cwd));
@@ -244,16 +254,20 @@ Rectangle {
     // How many process rows each *expanded* account group gets to show,
     // derived from the real remaining vertical budget rather than a fixed
     // count -- so one account open alone gets to show many more than when
-    // all 3 are open together. The header/row heights below are rough
-    // rendered-size estimates (not measured live -- doing that without a
-    // two-pass layout would mean each group's budget depending on its
-    // siblings' actual process counts, which themselves depend on their
-    // own budget: circular), so this is a heuristic, not a guarantee of
-    // zero clipping -- the 20px safety margin exists to bias it toward
-    // under-filling rather than over-filling.
-    readonly property int rowH: 20
-    readonly property int groupHeaderH: 78
-    readonly property int collapsedH: 20
+    // all 3 are open together. The header/row heights below are rendered-
+    // size estimates (not measured live -- doing that without a two-pass
+    // layout would mean each group's budget depending on its siblings'
+    // actual process counts, which themselves depend on their own budget:
+    // circular), calibrated against real screenshots rather than guessed
+    // once and left alone -- an earlier, more conservative pass (rowH 20,
+    // groupHeaderH 78, a 20px safety margin) reliably left 10-20% of
+    // maxPanelHeight unused before truncating with "+N more", reported
+    // "it still is using only about 80-90%". Tightened here; `root.clip:
+    // true` is the actual backstop against a rare 1-2px partial last row
+    // now that the margin's thinner, not a promise of zero clipping.
+    readonly property int rowH: 18
+    readonly property int groupHeaderH: 70
+    readonly property int collapsedH: 18
 
     // Shared column widths -- the process-list header row and every data
     // row below it bind to these same values so the two stay aligned
@@ -264,13 +278,15 @@ Rectangle {
     // overflows a value-sized column" bug the status *value* column had
     // before "waiting" got abbreviated to "wait".
     readonly property int colStatusW: 52
+    // The CLI's own per-session name (sessions/<pid>.json's "name", e.g.
+    // "user1-46") -- short in practice, but not fixed-format, so this
+    // still elides rather than assuming it never grows.
+    readonly property int colTitleW: 90
     readonly property int colPidW: 68
     readonly property int colTokensW: 60
+    // "last" itself is short, but values like "2mo 1w" aren't.
+    readonly property int colLastW: 56
     readonly property int colTmuxW: 92
-    // Sized for "last active ▼" (14 chars incl. sort arrow), not the
-    // shorter values that column actually holds -- same reason colStatusW
-    // is sized off "status" rather than "idle"/"busy"/"wait".
-    readonly property int colLastActiveW: 88
     readonly property int expandedGroupCount: {
         let n = 0;
         for (const a of ClaudeUsageSvc.accounts)
@@ -280,14 +296,53 @@ Rectangle {
     }
     readonly property real processAreaBudget: {
         const collapsedCount = ClaudeUsageSvc.accounts.length - root.expandedGroupCount;
-        const fixedOverhead = 40 + 24 + 20
+        // 40: mode-line text (~14px) + the content Column's own spacing
+        // gaps between its visible top-level children (~30px, varies
+        // slightly with how many groups are visible). 24: root's own
+        // implicitHeight padding (content.implicitHeight + 24). 4: a
+        // small safety margin, not the 20px an earlier pass used -- see
+        // this property's own comment on why that was cut.
+        const fixedOverhead = 40 + 24 + 4
             + root.expandedGroupCount * root.groupHeaderH
             + collapsedCount * root.collapsedH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
     }
-    readonly property int perGroupRowBudget: root.expandedGroupCount > 0
-        ? Math.max(1, Math.floor(root.processAreaBudget / root.expandedGroupCount / root.rowH))
-        : 0
+    // Water-filling row allocation across expanded groups, keyed by
+    // account name -> row count. An equal per-group split (the original
+    // version of this) wastes height whenever some group has fewer real
+    // processes than its equal share: that leftover just sat unused
+    // instead of flowing to a group that actually has more to show,
+    // which is what made the whole panel visibly shrink on folding a
+    // group even while another one still had a "+N more" waiting to grow
+    // into the freed space (reported 2026-08-31). Processing
+    // smallest-total-first and handing each group only what it can use,
+    // with every leftover row rolling forward to the remaining groups,
+    // means the panel only shrinks when there's genuinely nothing left
+    // to show anywhere, not from an uneven split.
+    readonly property var groupRowBudgets: {
+        const totalRows = Math.max(0, Math.floor(root.processAreaBudget / root.rowH));
+        const items = [];
+        for (const a of ClaudeUsageSvc.accounts) {
+            if (root.isGroupExpanded(a.account)) {
+                items.push({ account: a.account, total: (ClaudeUsageSvc.sessions[a.account] || []).length });
+            }
+        }
+        items.sort((x, y) => x.total - y.total);
+
+        let remaining = totalRows;
+        const budgets = {};
+        for (let i = 0; i < items.length; i++) {
+            const groupsLeft = items.length - i;
+            const fairShare = Math.max(1, Math.floor(remaining / groupsLeft));
+            const give = Math.min(items[i].total, fairShare, remaining);
+            budgets[items[i].account] = give;
+            remaining -= give;
+        }
+        return budgets;
+    }
+    function rowBudgetFor(account) {
+        return root.groupRowBudgets[account] || 0;
+    }
 
     Column {
         id: content
@@ -335,8 +390,9 @@ Rectangle {
                         arr.reverse();
                     return arr;
                 }
-                readonly property var visibleProcs: groupOpen ? sortedProcs.slice(0, root.perGroupRowBudget) : []
-                readonly property int hiddenProcCount: groupOpen ? Math.max(0, procs.length - root.perGroupRowBudget) : 0
+                readonly property int rowBudget: root.rowBudgetFor(modelData.account)
+                readonly property var visibleProcs: groupOpen ? sortedProcs.slice(0, rowBudget) : []
+                readonly property int hiddenProcCount: groupOpen ? Math.max(0, procs.length - rowBudget) : 0
 
                 Item {
                     id: heading
@@ -469,15 +525,16 @@ Rectangle {
                         }
                     }
                     Text {
-                        text: qsTr("pid") + root.sortArrow(modelData.account, "pid")
+                        text: qsTr("title") + root.sortArrow(modelData.account, "title")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colPidW
+                        elide: Text.ElideRight
+                        Layout.preferredWidth: root.colTitleW
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "pid")
+                            onClicked: root.toggleSort(modelData.account, "title")
                         }
                     }
                     Text {
@@ -493,15 +550,16 @@ Rectangle {
                         }
                     }
                     Text {
-                        text: qsTr("path") + root.sortArrow(modelData.account, "path")
+                        text: qsTr("last") + root.sortArrow(modelData.account, "active")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
-                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: root.colLastW
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "path")
+                            onClicked: root.toggleSort(modelData.account, "active")
                         }
                     }
                     Text {
@@ -518,16 +576,27 @@ Rectangle {
                         }
                     }
                     Text {
-                        text: qsTr("last active") + root.sortArrow(modelData.account, "active")
+                        text: qsTr("pid") + root.sortArrow(modelData.account, "pid")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
-                        horizontalAlignment: Text.AlignRight
-                        Layout.preferredWidth: root.colLastActiveW
+                        Layout.preferredWidth: root.colPidW
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "active")
+                            onClicked: root.toggleSort(modelData.account, "pid")
+                        }
+                    }
+                    Text {
+                        text: qsTr("path") + root.sortArrow(modelData.account, "path")
+                        color: Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        Layout.fillWidth: true
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "path")
                         }
                     }
                 }
@@ -548,11 +617,12 @@ Rectangle {
                             Layout.preferredWidth: root.colStatusW
                         }
                         Text {
-                            text: String(modelData.pid)
+                            text: modelData.title || "--"
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: root.colPidW
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: root.colTitleW
                         }
                         Text {
                             text: root.fmtTokens(modelData.context_tokens)
@@ -562,12 +632,12 @@ Rectangle {
                             Layout.preferredWidth: root.colTokensW
                         }
                         Text {
-                            text: root.shortCwd(modelData.cwd)
+                            text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.colLastW
                         }
                         Text {
                             text: modelData.tmux || ""
@@ -578,21 +648,29 @@ Rectangle {
                             Layout.preferredWidth: root.colTmuxW
                         }
                         Text {
-                            text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
+                            text: String(modelData.pid)
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: root.colPidW
+                        }
+                        Text {
+                            text: root.shortCwd(modelData.cwd)
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
-                            horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: root.colLastActiveW
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
                         }
                     }
                 }
 
-                // Real remaining count, not a vague "more" -- perGroupRowBudget
-                // is a fit-estimate (see its own comment), so this can be
-                // slightly off if a row rendered shorter/taller than assumed,
-                // but it's always derived from procs.length, the true total
-                // the daemon sent, never silently dropped.
+                // Real remaining count, not a vague "more" -- rowBudget is
+                // a fit-estimate (see groupRowBudgets' own comment), so
+                // this can be slightly off if a row rendered shorter/
+                // taller than assumed, but it's always derived from
+                // procs.length, the true total the daemon sent, never
+                // silently dropped.
                 Text {
                     visible: parent.hiddenProcCount > 0
                     text: qsTr("+%1 more").arg(parent.hiddenProcCount)
