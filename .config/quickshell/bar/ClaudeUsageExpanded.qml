@@ -210,18 +210,20 @@ Rectangle {
     // claude's "pid" header doesn't touch claude2/claude3's ordering.
     property var groupSort: ({})
 
-    // Both view-state pieces above reset on every panel open *and* close
+    // All three view-state pieces reset on every panel open *and* close
     // -- this Rectangle instance is never destroyed (only its height
     // collapses to 0, same "sibling overlay" pattern as Media/
-    // CalendarExpanded), so without this a fold or a sort from one look
-    // at the panel would silently still be there next time. First
-    // version only reset groupSort, leaving fold state to persist
-    // (reasoned, at the time, that persisting collapse felt like the more
-    // useful default) -- reported as inconsistent with the intended
-    // "clean slate every open" behavior, so both reset together now.
+    // CalendarExpanded), so without this a fold, a sort, or a manual
+    // column resize from one look at the panel would silently still be
+    // there next time. First version only reset groupSort, leaving fold
+    // state to persist (reasoned, at the time, that persisting collapse
+    // felt like the more useful default) -- reported as inconsistent with
+    // the intended "clean slate every open" behavior, so all three reset
+    // together now.
     onExpandedChanged: {
         root.groupExpanded = ({});
         root.groupSort = ({});
+        root.resetColumnWidths();
     }
 
     function toggleSort(account, col) {
@@ -271,42 +273,79 @@ Rectangle {
     // "it still is using only about 80-90%". Tightened here; `root.clip:
     // true` is the actual backstop against a rare 1-2px partial last row
     // now that the margin's thinner, not a promise of zero clipping.
-    readonly property int rowH: 18
-    // +14 over the original 70 for the tmux group-label row added above
-    // the column-header row.
-    readonly property int groupHeaderH: 84
+    // Both nudged down 1px from 18/84 to reflect acctCol's spacing
+    // tightening (2 -> 1) above.
+    readonly property int rowH: 17
+    readonly property int groupHeaderH: 78
     readonly property int collapsedH: 18
 
     // Shared column widths -- the process-list header row and every data
     // row below it bind to these same values so the two stay aligned
-    // without hardcoding the same number twice.
+    // without hardcoding the same number twice. Mutable (not readonly):
+    // each column's own resize handle (see ColumnResizeHandle usages
+    // below) drags these directly, and resetColumnWidths() below restores
+    // colDefaults on every panel open/close, same as groupExpanded/
+    // groupSort -- a manual resize isn't meant to quietly outlive the
+    // look at the panel that made it, any more than a fold or a sort is.
+    readonly property var colDefaults: ({
+        status: 52, title: 140, tokens: 60, last: 56,
+        tmuxSession: 54, tmuxWindow: 50, tmuxPane: 40,
+        pid: 68, path: 100,
+    })
     // Sized for the "status" header label (6 chars) plus its clickable
     // sort-arrow suffix (" ▲"/" ▼"), not the shorter idle/busy/wait values
     // it holds -- the header row hit the exact same "wider label
     // overflows a value-sized column" bug the status *value* column had
     // before "waiting" got abbreviated to "wait".
-    readonly property int colStatusW: 52
+    property real colStatusW: colDefaults.status
     // Title (tmux's own pane_title, e.g. "Reddit API automation for
-    // unixporn posts") is the fillWidth column, not path -- path is
-    // almost always just "~" in this environment (single-cwd workflow),
-    // so giving *it* the stretch instead just wasted the panel's extra
-    // width as blank space while titles sat elided at a fixed 90px
-    // (reported "title column is too short" 2026-08-31). colTitleW is now
-    // a *minimum*, not the fixed width.
-    readonly property int colTitleW: 90
-    readonly property int colPidW: 68
-    readonly property int colTokensW: 60
+    // unixporn posts") used to be the one column with Layout.fillWidth,
+    // absorbing whatever width the panel had spare -- path had that job
+    // first, on the reasoning that it was the least critical column to
+    // keep fully visible, but path is almost always just "~" in this
+    // environment, so giving *it* the stretch just wasted the panel's
+    // extra width as blank space while titles sat elided (reported "title
+    // column is too short"). Now that every column can be dragged to a
+    // manual width (ColumnResizeHandle below), there's no need for any
+    // one column to auto-absorb leftover space -- all 9 are plain fixed
+    // widths, defaults tuned so title (140) starts noticeably roomier
+    // than path (100), and a trailing filler after the last column
+    // (path) soaks up genuine leftover space instead of stretching a
+    // specific column into it.
+    property real colTitleW: colDefaults.title
+    property real colPidW: colDefaults.pid
+    property real colTokensW: colDefaults.tokens
     // "last" itself is short, but values like "2mo 1w" aren't.
-    readonly property int colLastW: 56
+    property real colLastW: colDefaults.last
     // tmux is a *grouped* column -- one "tmux" super-header spanning these
     // 3, sized off their own header labels ("session"/"window"/"pane",
     // the widest of which is "session" at 7 chars) rather than the
     // (shorter, numeric) session/window/pane ids they actually hold.
-    readonly property int colTmuxSessionW: 54
-    readonly property int colTmuxWindowW: 50
-    readonly property int colTmuxPaneW: 40
-    readonly property int colTmuxGroupW: colTmuxSessionW + colTmuxWindowW + colTmuxPaneW + 12 // +2 inter-column spacings (6 each)
-    readonly property int colPathW: 160
+    property real colTmuxSessionW: colDefaults.tmuxSession
+    property real colTmuxWindowW: colDefaults.tmuxWindow
+    property real colTmuxPaneW: colDefaults.tmuxPane
+    // Derived, not resized directly -- follows its 3 sub-columns
+    // automatically as they're dragged.
+    readonly property real colTmuxGroupW: colTmuxSessionW + colTmuxWindowW + colTmuxPaneW + 2 * root.handleW
+    property real colPathW: colDefaults.path
+    // Width of each drag-resize handle between columns (see
+    // ColumnResizeHandle.qml) -- also the RowLayout spacing everywhere a
+    // handle isn't interactive (the group-header row, data rows), so
+    // every row's columns line up regardless of which row it is.
+    readonly property real handleW: 8
+    readonly property real colMinW: 24
+
+    function resetColumnWidths() {
+        root.colStatusW = root.colDefaults.status;
+        root.colTitleW = root.colDefaults.title;
+        root.colTokensW = root.colDefaults.tokens;
+        root.colLastW = root.colDefaults.last;
+        root.colTmuxSessionW = root.colDefaults.tmuxSession;
+        root.colTmuxWindowW = root.colDefaults.tmuxWindow;
+        root.colTmuxPaneW = root.colDefaults.tmuxPane;
+        root.colPidW = root.colDefaults.pid;
+        root.colPathW = root.colDefaults.path;
+    }
     readonly property int expandedGroupCount: {
         let n = 0;
         for (const a of ClaudeUsageSvc.accounts)
@@ -319,10 +358,12 @@ Rectangle {
         // 40: mode-line text (~14px) + the content Column's own spacing
         // gaps between its visible top-level children (~30px, varies
         // slightly with how many groups are visible). 24: root's own
-        // implicitHeight padding (content.implicitHeight + 24). 4: a
-        // small safety margin, not the 20px an earlier pass used -- see
-        // this property's own comment on why that was cut.
-        const fixedOverhead = 40 + 24 + 4
+        // implicitHeight padding (content.implicitHeight + 24). 16: safety
+        // margin -- was cut to 4 from an original 20 to reclaim wasted
+        // height, but 4 proved too thin in practice: the last "+N more"
+        // line was visibly clipped (reported 2026-08-31). 16 is a
+        // middle ground between the two.
+        const fixedOverhead = 40 + 24 + 16
             + root.expandedGroupCount * root.groupHeaderH
             + collapsedCount * root.collapsedH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
@@ -386,7 +427,12 @@ Rectangle {
             delegate: Column {
                 id: acctCol
                 width: content.width
-                spacing: 2
+                // 2 -> 1: reclaims a little vertical space across the ~20
+                // rows/headers each account block can have, compounding
+                // into a real amount -- reported "there is a lot of empty
+                // space above" the tmux header, asking for the whole
+                // table to sit one line higher.
+                spacing: 1
 
                 required property var modelData
                 readonly property bool hasSession: typeof modelData.session_pct === "number"
@@ -518,27 +564,37 @@ Rectangle {
                 }
 
                 // Group-header row, once per group -- blank over every
-                // plain column, one "tmux" label spanning the 3 tmux
-                // sub-columns below (session/window/pane). Same column
-                // widths as the two rows below it (root.col*W) so all
+                // plain column, one "tmux" label (underlined, to read as
+                // a group heading for the session/window/pane sub-columns
+                // below it rather than a 4th independent column) spanning
+                // the 3 tmux sub-columns. Same column widths as the two
+                // rows below it (root.col*W, gaps all root.handleW) so all
                 // three stay aligned; clicking the "tmux" label sorts by
                 // the group as a whole (session, then window, then pane --
                 // see root.compareForSort), the 3 sub-columns don't get
-                // their own individual sort.
+                // their own individual sort. Gaps here are plain Items,
+                // not ColumnResizeHandles -- dragging happens on the
+                // column-header row below; this row just has to match its
+                // widths.
                 RowLayout {
                     visible: parent.groupOpen && parent.procs.length > 0
                     width: content.width
-                    spacing: 6
+                    spacing: 0
 
                     Item { Layout.preferredWidth: root.colStatusW }
-                    Item { Layout.fillWidth: true; Layout.minimumWidth: root.colTitleW }
+                    Item { Layout.preferredWidth: root.handleW }
+                    Item { Layout.preferredWidth: root.colTitleW }
+                    Item { Layout.preferredWidth: root.handleW }
                     Item { Layout.preferredWidth: root.colTokensW }
+                    Item { Layout.preferredWidth: root.handleW }
                     Item { Layout.preferredWidth: root.colLastW }
+                    Item { Layout.preferredWidth: root.handleW }
                     Text {
                         text: qsTr("tmux") + root.sortArrow(modelData.account, "tmux")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
+                        font.underline: true
                         horizontalAlignment: Text.AlignHCenter
                         Layout.preferredWidth: root.colTmuxGroupW
                         MouseArea {
@@ -547,8 +603,11 @@ Rectangle {
                             onClicked: root.toggleSort(modelData.account, "tmux")
                         }
                     }
+                    Item { Layout.preferredWidth: root.handleW }
                     Item { Layout.preferredWidth: root.colPidW }
+                    Item { Layout.preferredWidth: root.handleW }
                     Item { Layout.preferredWidth: root.colPathW }
+                    Item { Layout.fillWidth: true }
                 }
 
                 // Column headers, once per group -- shares its widths with
@@ -565,10 +624,23 @@ Rectangle {
                 // panel open/close (root.onExpandedChanged), so it never
                 // silently persists into an unrelated later look at the
                 // panel.
+                //
+                // Every gap between two columns is a ColumnResizeHandle
+                // (hover -> resize cursor, drag -> adjusts the column
+                // immediately to its left; see that component's own
+                // comment for why it reports the drag via a signal rather
+                // than writing the bound property directly). All 9
+                // columns are independent fixed widths now, not one
+                // fillWidth column auto-absorbing spare space -- with
+                // manual resize available there's no need for that
+                // anymore, and a trailing filler after "path" soaks up any
+                // genuine leftover row width instead. Resizes reset on
+                // every panel open/close along with fold state and sort
+                // (root.onExpandedChanged / root.resetColumnWidths()).
                 RowLayout {
                     visible: parent.groupOpen && parent.procs.length > 0
                     width: content.width
-                    spacing: 6
+                    spacing: 0
 
                     Text {
                         text: qsTr("status") + root.sortArrow(modelData.account, "status")
@@ -582,19 +654,30 @@ Rectangle {
                             onClicked: root.toggleSort(modelData.account, "status")
                         }
                     }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colStatusW
+                        onWidthChangeRequested: w => root.colStatusW = w
+                    }
                     Text {
                         text: qsTr("title") + root.sortArrow(modelData.account, "title")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         elide: Text.ElideRight
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: root.colTitleW
+                        Layout.preferredWidth: root.colTitleW
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.toggleSort(modelData.account, "title")
                         }
+                    }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colTitleW
+                        onWidthChangeRequested: w => root.colTitleW = w
                     }
                     Text {
                         text: qsTr("tokens") + root.sortArrow(modelData.account, "tokens")
@@ -607,6 +690,12 @@ Rectangle {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.toggleSort(modelData.account, "tokens")
                         }
+                    }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colTokensW
+                        onWidthChangeRequested: w => root.colTokensW = w
                     }
                     Text {
                         text: qsTr("last") + root.sortArrow(modelData.account, "active")
@@ -621,12 +710,24 @@ Rectangle {
                             onClicked: root.toggleSort(modelData.account, "active")
                         }
                     }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colLastW
+                        onWidthChangeRequested: w => root.colLastW = w
+                    }
                     Text {
                         text: qsTr("session")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colTmuxSessionW
+                    }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colTmuxSessionW
+                        onWidthChangeRequested: w => root.colTmuxSessionW = w
                     }
                     Text {
                         text: qsTr("window")
@@ -635,12 +736,24 @@ Rectangle {
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colTmuxWindowW
                     }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colTmuxWindowW
+                        onWidthChangeRequested: w => root.colTmuxWindowW = w
+                    }
                     Text {
                         text: qsTr("pane")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colTmuxPaneW
+                    }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colTmuxPaneW
+                        onWidthChangeRequested: w => root.colTmuxPaneW = w
                     }
                     Text {
                         text: qsTr("pid") + root.sortArrow(modelData.account, "pid")
@@ -653,6 +766,12 @@ Rectangle {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.toggleSort(modelData.account, "pid")
                         }
+                    }
+                    ColumnResizeHandle {
+                        Layout.preferredWidth: root.handleW
+                        Layout.fillHeight: true
+                        targetWidth: root.colPidW
+                        onWidthChangeRequested: w => root.colPidW = w
                     }
                     Text {
                         text: qsTr("path") + root.sortArrow(modelData.account, "path")
@@ -667,6 +786,7 @@ Rectangle {
                             onClicked: root.toggleSort(modelData.account, "path")
                         }
                     }
+                    Item { Layout.fillWidth: true }
                 }
 
                 Repeater {
@@ -675,7 +795,7 @@ Rectangle {
                     delegate: RowLayout {
                         required property var modelData
                         width: content.width
-                        spacing: 6
+                        spacing: 0
 
                         Text {
                             text: root.statusLabel(modelData.status)
@@ -684,15 +804,16 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colStatusW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.title || "--"
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             elide: Text.ElideRight
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: root.colTitleW
+                            Layout.preferredWidth: root.colTitleW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.fmtTokens(modelData.context_tokens)
                             color: Theme.textDim
@@ -700,6 +821,7 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colTokensW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
                             color: Theme.muted
@@ -708,6 +830,7 @@ Rectangle {
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: root.colLastW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_session || ""
                             color: Theme.muted
@@ -715,6 +838,7 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxSessionW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_window || ""
                             color: Theme.muted
@@ -722,6 +846,7 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxWindowW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_pane || ""
                             color: Theme.muted
@@ -729,6 +854,7 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxPaneW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: String(modelData.pid)
                             color: Theme.text
@@ -736,6 +862,7 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colPidW
                         }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.shortCwd(modelData.cwd)
                             color: Theme.muted
@@ -744,6 +871,7 @@ Rectangle {
                             elide: Text.ElideRight
                             Layout.preferredWidth: root.colPathW
                         }
+                        Item { Layout.fillWidth: true }
                     }
                 }
 

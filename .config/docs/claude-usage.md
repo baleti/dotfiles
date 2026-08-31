@@ -151,27 +151,49 @@ tiers/backoff above (and keeps updating even mid-backoff).
   to be sized off its own *header word* (plus that suffix), not the
   shorter values it actually holds.
 - **tmux is a grouped column**: session / window / pane, each its own
-  sub-column under one "tmux" group header, sourced from
-  `sessions/<pid>.json`'s `"tmux"` field
+  sub-column under one "tmux" group header (underlined, to read as a
+  heading for the 3 sub-columns rather than a 4th independent column),
+  sourced from `sessions/<pid>.json`'s `"tmux"` field
   (e.g. `"653:@1017.%1828"`) split into 3 plain numbers by the daemon
   (`TMUX_FIELD_RE`) — `653`, `1017`, `1828`, not tmux's own `@`/`%`-
   prefixed object-type notation, which is tmux's internal sigil syntax,
   not meaningful outside a tmux command. Clicking the "tmux" group label
   sorts by all 3 together (session, then window, then pane) — the 3
   sub-column headers are plain labels, not individually sortable.
-- **Title, not path, is the column that stretches** to fill leftover
-  width (`Layout.fillWidth`, `colTitleW` as its floor rather than a fixed
-  size) — path got that job in the first version, on the reasoning that
-  it was the least critical column to keep fully visible, but in a
-  single-cwd-per-account environment path is nearly always just `~`,
-  so giving *it* the stretch just wasted the panel's extra width as blank
-  space while titles (routinely 30-40 characters, e.g. "Reddit API
-  automation for unixporn posts") sat elided at a fixed 90px. Reported
-  "title column is too short" 2026-08-31; path now gets a fixed
-  `colPathW` (160px) instead.
+- **Every column is independently resizable** — hovering the gap between
+  two headers shows a resize cursor (`ColumnResizeHandle.qml`, a small
+  reusable `MouseArea` with `cursorShape: Qt.SizeHorCursor`); dragging
+  adjusts the column immediately to its left, reported back via a
+  `widthChangeRequested` signal rather than the component writing the
+  bound `colXxxW` property directly (a QML property binding and a direct
+  write to that same property fight each other otherwise). Every row —
+  the tmux group-label row, the column-header row, every data row — uses
+  the exact same `handleW`-wide gap between columns (`spacing: 0` on each
+  `RowLayout`, explicit `Item`s filling the gaps that aren't the
+  interactive column-header row), so all of them stay aligned regardless
+  of a resize. Resizes reset to `colDefaults` on every panel open **and**
+  close (`resetColumnWidths()`, called from the same `onExpandedChanged`
+  that already resets fold state and sort), so a manual resize doesn't
+  quietly outlive the look at the panel that made it.
+- **All 9 columns are fixed widths now, none of them `Layout.fillWidth`**
+  — title used to be the one column absorbing the panel's spare width
+  (path had that job before it, see below); once every column could be
+  resized by hand there was no reason for one to auto-absorb space
+  anymore, so a trailing filler after "path" soaks up genuine leftover
+  row width instead, and title/path both just have their own tuned
+  default (`colDefaults`): title 140, path 100 — title wider and path
+  narrower than their previous values by request. Path had the stretch
+  role in the very first version, on the reasoning that it was the least
+  critical column to keep fully visible, but path is nearly always just
+  `~` in this single-cwd-per-account environment, so giving *it* the
+  stretch just wasted the panel's extra width as blank space while titles
+  (routinely 30-40 characters, e.g. "Reddit API automation for unixporn
+  posts") sat elided at a fixed 90px — reported "title column is too
+  short" 2026-08-31, fixed first by swapping the stretch onto title, then
+  superseded entirely by manual resize.
 - **The panel is wider than the other bar panels by default** —
   `Bar.qml`'s `claudeUsagePanelWidth` (760px cap, vs. the standard 560) —
-  since 7 columns plus a usable title column don't fit the shared width
+  since 9 columns plus a usable title column don't fit the shared width
   the graph/media panels use. (A "rectangle that doesn't span full panel
   width" also reported the same day turned out to be a stale compositor-
   side render artifact from rapid `qs kill`/relaunch cycles during
@@ -204,6 +226,16 @@ tiers/backoff above (and keeps updating even mid-backoff).
   "+N more" waiting to grow into the freed space, reported 2026-08-31.
   Whatever still doesn't fit shows as a real count, e.g. `+13 more` — the
   true remainder from the account's full list, never silently dropped.
+  The safety margin in this estimate has moved twice in opposite
+  directions: 20px originally, cut to 4px to reclaim height that was
+  going unused, then raised to 16px after 4px proved too thin in
+  practice (the last "+N more" line was visibly clipped). Separately,
+  `acctCol`'s own inter-row spacing (name/session/weekly/headers/every
+  data row) was tightened 2px → 1px, which — compounding across the ~20
+  rows/headers one account block can have — reclaimed enough height that
+  every account's table now typically fits with no truncation at all
+  (`+0 more`) rather than needing the water-filling above to matter much
+  in the common case.
 - **Each account group is collapsible** — a `▾`/`▸` chevron (sized
   `Theme.fontSize + 2`, a couple points larger than the body text around
   it so it reads as a clickable affordance rather than punctuation) left
@@ -211,15 +243,15 @@ tiers/backoff above (and keeps updating even mid-backoff).
   heading) folds/unfolds that account's session%/weekly%/process-list
   section, freeing its vertical share for whichever groups stay open (see
   `groupRowBudgets` above).
-- **Both fold state and sort reset on every panel open *and* close**
-  (`onExpandedChanged`) — this Rectangle instance is never destroyed
-  (only its height collapses to 0 when the panel itself closes, same
-  pattern as Media/CalendarExpanded), so without this a fold or a sort
-  from one look at the panel would otherwise still be there next time.
-  The first version only reset sort and let fold state persist
-  (reasoned, at the time, as the more useful default) — reported as
-  inconsistent with the intended "clean slate every open" behavior, so
-  both reset together now.
+- **Fold state, sort, and column widths all reset on every panel open
+  *and* close** (`onExpandedChanged`) — this Rectangle instance is never
+  destroyed (only its height collapses to 0 when the panel itself closes,
+  same pattern as Media/CalendarExpanded), so without this a fold, a
+  sort, or a manual column resize from one look at the panel would
+  otherwise still be there next time. The first version only reset sort
+  and let fold state persist (reasoned, at the time, as the more useful
+  default) — reported as inconsistent with the intended "clean slate
+  every open" behavior, so all three reset together now.
 
 ## Files
 
@@ -315,6 +347,12 @@ tiers/backoff above (and keeps updating even mid-backoff).
   (the old combined-height figures the single-rectangle mask read) had no
   remaining reader after this split, so they were removed rather than left
   as dead code.
+- `bar/ColumnResizeHandle.qml` — the drag-to-resize `MouseArea` used
+  between every pair of columns in the process table's header row (see
+  "Every column is independently resizable" above). Standalone, no
+  dependency on `ClaudeUsageExpanded` beyond the `targetWidth`/
+  `widthChangeRequested` contract, so it's reusable for any other
+  RowLayout-based table that wants the same behavior.
 
 ## Keybind
 

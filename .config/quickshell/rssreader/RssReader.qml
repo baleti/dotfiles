@@ -195,9 +195,30 @@ PanelWindow {
         return spans;
     }
 
+    // Distinct non-empty values a resolved field has across the current
+    // articles, substring-narrowed by `frag`, sorted (query-dsl.md stage 3).
+    function _fieldValueCandidates(field, frag) {
+        const fields = QueryDsl.resolvePath(field, root.typeNames);
+        if (fields.length !== 1)
+            return [];
+        const f = fields[0], seen = ({}), out = [];
+        for (const it of RssSvc.items) {
+            for (const raw of root._fieldVals(it, f)) {
+                const s = String(raw).trim();
+                const key = s.toLowerCase();
+                if (!s || seen[key] || (frag && key.indexOf(frag) < 0))
+                    continue;
+                seen[key] = true;
+                out.push(s);
+            }
+        }
+        return out.sort();
+    }
+
     function _acCandidates() {
         const t = search.text;
 
+        // verb stage: "/frag" at the end of the box
         const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
@@ -207,15 +228,48 @@ PanelWindow {
             }));
         }
 
-        const pm = t.match(/(?:\/fv|\/filter-value|\/s|\/sort)\s+([a-z.]*)$/);
-        if (pm && t.indexOf(":", t.length - pm[1].length) < 0) {
-            const frag = pm[1];
-            const isFv = /\/fv|\/filter-value/.test(t.slice(0, t.length - frag.length));
+        // value stage, via form:  ".../fv/<field> <frag>"
+        // value stage, colon form: ".../fv <field>:<frag>"
+        const val = t.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
+        if (val) {
+            const field = (val[1] || val[3]).toLowerCase();
+            const frag = (val[2] !== undefined ? val[2] : val[4]).toLowerCase();
+            const base = t.slice(0, t.length - frag.length);
+            return root._fieldValueCandidates(field, frag).slice(0, 40)
+                .map(v => ({ text: base + v, label: v, alias: "", desc: "" }));
+        }
+
+        // sort-direction stage:  ".../s/<field> <frag>"  or  ".../s <field> <frag>"
+        const dir = t.match(/(?:^|\s)\/(?:s|sort)(?:\/[a-z.]+|\s+[a-z.]+)\s+([a-z]*)$/);
+        if (dir) {
+            const frag = dir[1].toLowerCase();
+            const base = t.slice(0, t.length - frag.length);
+            return ["ascending", "descending"].filter(d => d.indexOf(frag) === 0)
+                .map(d => ({ text: base + d, label: d, alias: "", desc: "" }));
+        }
+
+        // type-path stage, via form:  ".../fv/<frag>" / ".../s/<frag>"
+        const vp = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
+        if (vp) {
+            const frag = vp[2];
+            const base = t.slice(0, t.length - frag.length); // includes ".../fv/"
             return root.typeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
-                text: t.slice(0, t.length - frag.length) + n + (isFv ? ":" : " "),
-                label: n, alias: "", desc: root.typeDescs[n] || ""
+                text: base + n + " ", label: n, alias: "", desc: root.typeDescs[n] || ""
             }));
         }
+
+        // type-path stage, space form:  ".../fv <frag>" / ".../s <frag>" (pre-colon)
+        // -> steer to the via spelling (query-dsl.md "Via paths"): rewrite the
+        // trailing space into the second "/".
+        const pm = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\s+([a-z.]*)$/);
+        if (pm && pm[2].indexOf(":") < 0) {
+            const frag = pm[2];
+            const head = t.slice(0, t.length - frag.length).replace(/\s+$/, "/");
+            return root.typeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
+                text: head + n + " ", label: n, alias: "", desc: root.typeDescs[n] || ""
+            }));
+        }
+
         return [];
     }
     // Tab-triggered only (see _triggerCompletion) - never recomputed just

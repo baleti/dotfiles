@@ -20,7 +20,7 @@ quickshell/
 │   ├── Workspaces.qml, Submap.qml, Tray.qml
 │   ├── Clock.qml, Media.qml, MediaExpanded.qml
 │   ├── BatteryPill.qml, GraphPill.qml, CalendarExpanded.qml
-│   ├── ClaudeUsagePill.qml, ClaudeUsageExpanded.qml, assets/claude-logo.png
+│   ├── ClaudeUsagePill.qml, ClaudeUsageExpanded.qml, ColumnResizeHandle.qml, assets/claude-logo.png
 ├── osd/VolumeOsd.qml       side volume popup (mainMod+F11/F12)
 ├── components/             BarIcon, BarText, Graph, Pill (generic building blocks)
 ├── services/                BatterySvc, Players, SysmonSvc, TieredSocket, ClaudeUsageSvc
