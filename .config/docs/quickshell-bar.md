@@ -60,7 +60,7 @@ into a `Graph` (`components/Graph.qml`) on hover, backed by `sysmond`'s
 rolling history via `services/SysmonSvc.qml`. Visually matches the
 standalone `ALT+mainMod+n/p/t/m` `sysmon-graph` popups
 ([rust-tools.md](rust-tools.md)) since both read the same daemon.
-`bar-toggle.sh` (`ALT+n`, `mainMod+t/s/m/p`, `mainMod+CTRL+c`) toggles these
+`bar-toggle.sh` (`ALT+n`, `mainMod+t/d/m/p`, `mainMod+c`) toggles these
 panels open/closed per-monitor by talking to each `Bar` instance's own
 `IpcHandler` target `bar-<screen name>` — one shared target would collide
 across multi-monitor instances, so the toggle script resolves the focused
@@ -206,9 +206,9 @@ wash, not per-series fills.
 ## Related keybinds
 
 See [hyprland.md](hyprland.md#keybinds-keybindslua) for the full bind list;
-the bar-specific ones are `ALT+n` and `mainMod+t/s/m/p` (per-metric panel
+the bar-specific ones are `ALT+n` and `mainMod+t/d/m/p` (per-metric panel
 toggle + `graph_<name>` tier submap), `mainMod+CTRL+m` (media panel +
-`media_seek` submap), `mainMod+CTRL+c` (calendar panel + keyboard month/
+`media_seek` submap), `mainMod+c` (calendar panel + keyboard month/
 year nav and year-picker, no submap needed), `CTRL+ALT+c` (Claude usage
 panel — see [claude-usage.md](claude-usage.md)), `mainMod+F11/F12` (volume,
 see below), and the calendar/graph pills' own click-to-pin behavior
