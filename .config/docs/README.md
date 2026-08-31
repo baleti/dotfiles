@@ -28,6 +28,7 @@ version-controlled here and is out of scope for this doc set.
 | [claude-history.md](claude-history.md) | `bin/claude-history`, the standalone CLI search over Claude Code conversation history |
 | [query-dsl.md](query-dsl.md) | The shared (copy-pasted, not imported) query language behind `window-search.py`, `focus-picker.py`, `claude-history`, and winswitch's grid search — grammar, fuzzy-matching rules, and the design principles behind them |
 | [google-cloud-oauth.md](google-cloud-oauth.md) | Setting up a Google OAuth client for personal Google API access: Testing vs Production, what actually gates Publish, and hosting the required Branding pages on a Cloudflare Worker with no local binaries |
+| [redact-video-ocr.md](redact-video-ocr.md) | `bin/redact-video-ocr`, an OCR-driven tool that blurs sensitive on-screen text out of a screen-recording video automatically instead of by manual frame review |
 
 ## Architecture at a glance
 
