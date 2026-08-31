@@ -184,19 +184,28 @@ mid-backoff).
   what the browser actually downloaded visiting the site, not a redrawn
   guess) into `bar/assets/claude-logo.png`, then recolored at render time
   via `QtQuick.Effects`' `MultiEffect` (`colorization: 1`, which replaces
-  RGB but keeps the source alpha shape). The recolor target isn't a fixed
-  color: `ClaudeUsagePill.qml`'s `logoColor` keeps the brand orange's own
-  hue/lightness (hue 15°, from `#DA7756`) but scales its *saturation*
-  between a 0.58 floor and a 0.94 ceiling (both raised twice from an
-  initial 0.12–0.641 range — that first pass came out as flat grey on a
-  cool theme and still too faint even at its warmest) by how close the
-  current generated scheme's primary hue is to that same orange — a warm
-  (red/yellow) wallpaper-derived theme lets it sit near that ceiling, a
-  cool (blue/cyan) one settles toward the floor (still visibly orange, not
-  grey) rather than clashing as a hardcoded orange would. `Theme.cyan` and
-  `Theme.text` were both tried first and rejected outright: cyan didn't
-  read as Claude's own icon anymore, and `Theme.text` was flat
-  low-contrast grey at this icon size.
+  RGB but keeps the source alpha shape). The recolor target went through 3
+  designs before landing on the current one:
+  1. `Theme.cyan` / `Theme.text` (the scheme's primary accent, or plain
+     neutral foreground) — didn't read as Claude's own icon anymore, or
+     was flat low-contrast grey at this icon size.
+  2. Claude's own brand orange (`#DA7756`, hue 15°) with its hue/lightness
+     pinned and only *saturation* scaled by how close the theme's primary
+     hue was to that same orange — still read as an outside color forced
+     to blend in, not something that actually belonged to the theme, and
+     needed its saturation range raised twice (0.12–0.641 →
+     0.58–0.94) because it kept coming out grey-to-faint.
+  3. **Current**: no hardcoded orange at all. `ClaudeUsagePill.qml`'s
+     `logoColor` searches the *current* generated scheme's own colors —
+     `Theme.seriesPalette` (8 hues) concat `Theme.intensityRamp` (5 stops,
+     documented to trend toward red-orange at its hot end) — for whichever
+     one already sits closest to a canonical orange hue, and uses that
+     swatch exactly as `gen-theme.py` generated it. `Theme.orange` itself
+     (a fixed hardcoded fallback, see `Theme.qml`) is deliberately excluded
+     from the search — using it would just be the same "not actually this
+     theme's own color" problem again. On the theme active while writing
+     this (primary hue in the blue range), the winner is `seriesPalette`'s
+     own `#eca200`, a genuine generated amber.
 - `bar/ClaudeUsageExpanded.qml` — per-account session%/weekly% + reset
   countdown + its own "active processes" list (see above), plus the
   current poll tier/backoff countdown and staleness ("updated Ns ago").
