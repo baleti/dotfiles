@@ -129,14 +129,34 @@ mid-backoff).
 - **Each process is one line**, columns: status (`idle`/`wait`/`busy`,
   abbreviated — `waiting` alone was wide enough to run into the next
   column with no gap, a real bug the first version had), pid, context
-  tokens, location (cwd, `~`-shortened, + tmux, elided if the row's too
-  narrow), and a relative last-active time. A single `status pid tokens
-  location active` header row sits above each account's list instead of
+  tokens, path (cwd, `~`-shortened, elided if the row's too narrow), tmux
+  (its own column now — originally folded into path, split back out on
+  request), and last-active time. A single `status pid tokens path tmux
+  last active` header row sits above each account's list instead of
   repeating those words on every row (same fixed column widths as the data
   rows, shared via `root.col*W`). The header row hit this same too-narrow-
-  for-its-own-label bug once too, on `"status"` itself — that column's
-  width had to be sized off the *header word*, not the shorter idle/busy/
-  wait values it actually holds.
+  for-its-own-label bug twice — once on `"status"` itself, once on
+  `"last active"` after its sort-arrow suffix (below) was added — each
+  column had to be sized off its own *header word* (plus that suffix),
+  not the shorter values it actually holds.
+- **Last-active is a plain duration, no "ago"** — the header says that
+  once, instead of every row repeating it (`fmtDuration()`, shared with
+  the reset countdowns above). It breaks down through seconds → minutes →
+  hours → days → weeks → months → years (e.g. `2d 3h`, `3w 1d`, `2mo 1w`),
+  not just hours — some of these sessions have been alive since Aug 14,
+  and an hours-only version rolling over into `410h` instead of `17d 2h`
+  was the original bug report here. Months/years are 30-/365-day
+  approximations (a coarse "roughly how long", not a calendar
+  computation).
+- **Every column header is clickable** — sorts that account's table by
+  that column (status/pid/tokens/path/tmux alphabetically or numerically
+  as appropriate, last-active by raw timestamp), a `▲`/`▼` marks whichever
+  column is currently driving the order, and clicking the *same* header
+  again flips ascending/descending (`ClaudeUsageExpanded.qml`'s
+  `groupSort`, keyed per account — sorting `claude`'s table doesn't touch
+  `claude2`/`claude3`'s). Resets to the daemon's own most-recent-first
+  order on every panel open **and** close (`onExpandedChanged`), so a sort
+  never silently carries over into an unrelated later look at the panel.
 - **How many rows actually render** is a fit-estimate against
   `ClaudeUsageExpanded.qml`'s `maxPanelHeight` (screen-height-derived, same
   as `CalendarExpanded` — the panel is allowed to grow as tall as the
@@ -148,8 +168,11 @@ mid-backoff).
   heuristic biased slightly toward under-filling rather than clipping.
   Whatever doesn't fit shows as a real count, e.g. `+13 more` — the true
   remainder from the account's full list, never silently dropped.
-- **Each account group is collapsible** — a `▾`/`▸` chevron left of the
-  `claude`/`claude2`/`claude3` heading (click anywhere on the heading)
+- **Each account group is collapsible** — a `▾`/`▸` chevron (sized
+  `Theme.fontSize + 2`, a couple points larger than the body text around
+  it so it reads as a clickable affordance rather than punctuation) left
+  of the `claude`/`claude2`/`claude3` heading (click anywhere on the
+  heading)
   folds/unfolds that account's session%/weekly%/process-list section.
   Collapsed accounts free their vertical share for whichever groups stay
   open. State lives on the panel's own persistent QML instance (it's never
