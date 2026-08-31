@@ -433,6 +433,25 @@ fn load_command_validity_colors() -> (Option<(u16, u16, u16)>, Option<(u16, u16,
     (get("primary"), get("error"))
 }
 
+/// The wallpaper-derived accent as a `#rrggbb` string, straight from the
+/// same scheme file the color helpers above read. Used for the 1px
+/// window frame so the picker matches the quickshell launcher / rss
+/// reader cards (their `Theme.cyan` == `scheme.primary`). `"#a1c9ff"`
+/// -- a neutral light blue -- if the file's missing or malformed, which
+/// is only cosmetic (the border still renders, just not recolored).
+fn load_accent_hex() -> String {
+    let fallback = || "#a1c9ff".to_string();
+    let Some(home) = std::env::var_os("HOME") else { return fallback() };
+    let path = PathBuf::from(home).join(".local/state/quickshell/scheme.json");
+    let Ok(content) = std::fs::read_to_string(path) else { return fallback() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { return fallback() };
+    v.get("primary")
+        .and_then(|c| c.as_str())
+        .filter(|s| s.len() == 7 && s.starts_with('#'))
+        .map(str::to_string)
+        .unwrap_or_else(fallback)
+}
+
 /// Rebuilds `search`'s Pango attributes from `command_spans` - colors
 /// each `/command` token by whether it currently resolves, using
 /// whichever colors this theme maps "valid"/"invalid" to (see
@@ -917,14 +936,23 @@ pub fn run(
 
     if let Some(screen) = gdk::Screen::default() {
         let css = gtk::CssProvider::new();
-        let _ = css.load_from_data(
-            b".suggestions { border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; } \
-              .suggestions row { padding: 2px 6px; } \
-              .suggestions row:selected, .suggestions row:hover, \
-              .results row:selected, .results row:hover { \
-                  background-color: rgba(255,255,255,0.18); background-image: none; \
-                  box-shadow: none; border-radius: 0; }",
+        // 1px accent frame on the picker window itself, matching the
+        // quickshell launcher / rss reader cards (their `Theme.cyan`
+        // border == `scheme.primary`, both seeded from the wallpaper by
+        // gen-theme.py). Interpolated as a literal hex rather than GTK's
+        // `@accent_color` -- that named color lives in another
+        // CssProvider (the theme's) and wouldn't resolve from here.
+        let css_data = format!(
+            "window {{ border: 1px solid {accent}; }} \
+             .suggestions {{ border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; }} \
+             .suggestions row {{ padding: 2px 6px; }} \
+             .suggestions row:selected, .suggestions row:hover, \
+             .results row:selected, .results row:hover {{ \
+                 background-color: rgba(255,255,255,0.18); background-image: none; \
+                 box-shadow: none; border-radius: 0; }}",
+            accent = load_accent_hex(),
         );
+        let _ = css.load_from_data(css_data.as_bytes());
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
 

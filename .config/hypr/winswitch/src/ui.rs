@@ -204,6 +204,25 @@ fn load_command_validity_colors() -> (Option<(u16, u16, u16)>, Option<(u16, u16,
     (get("primary"), get("error"))
 }
 
+/// The wallpaper-derived accent as a `#rrggbb` string, from the same
+/// scheme file `load_theme_palette` reads. Used for the 1px window frame
+/// so the switcher matches the quickshell launcher / rss reader cards
+/// (their `Theme.cyan` == `scheme.primary`). `"#a1c9ff"` -- a neutral
+/// light blue -- if the file's missing or malformed; only cosmetic (the
+/// border still renders, just not recolored).
+fn load_accent_hex() -> String {
+    let fallback = || "#a1c9ff".to_string();
+    let Some(home) = std::env::var_os("HOME") else { return fallback() };
+    let path = std::path::PathBuf::from(home).join(".local/state/quickshell/scheme.json");
+    let Ok(content) = std::fs::read_to_string(path) else { return fallback() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { return fallback() };
+    v.get("primary")
+        .and_then(|c| c.as_str())
+        .filter(|s| s.len() == 7 && s.starts_with('#'))
+        .map(str::to_string)
+        .unwrap_or_else(fallback)
+}
+
 /// Which palette entry a field gets -- a simple string hash of its dotted
 /// key (`"claude.contents"`), not an assignment order, so the same field
 /// keeps the same color across different `/at` combinations and across
@@ -910,14 +929,22 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
 
     if let Some(screen) = gdk::Screen::default() {
         let css = gtk::CssProvider::new();
-        // An outline, not a filled block: this is a placeholder for a
-        // window frame, not a loading skeleton.
-        let _ = css.load_from_data(
-            b".thumb-frame { border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; } \
-              .suggestions { border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; } \
-              .suggestions row { padding: 2px 6px; } \
-              .suggestions row:selected { background-color: rgba(255,255,255,0.18); }",
+        // `.thumb-frame` is an outline, not a filled block: a placeholder
+        // for a window frame, not a loading skeleton. `window` gets a 1px
+        // accent frame matching the quickshell launcher / rss reader
+        // cards (their `Theme.cyan` border == `scheme.primary`, both
+        // seeded from the wallpaper by gen-theme.py) -- interpolated as a
+        // literal hex rather than GTK's `@accent_color`, which lives in
+        // another CssProvider and wouldn't resolve from here.
+        let css_data = format!(
+            "window {{ border: 1px solid {accent}; }} \
+             .thumb-frame {{ border: 1px solid rgba(255,255,255,0.18); background-color: rgba(255,255,255,0.02); border-radius: 4px; }} \
+             .suggestions {{ border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; }} \
+             .suggestions row {{ padding: 2px 6px; }} \
+             .suggestions row:selected {{ background-color: rgba(255,255,255,0.18); }}",
+            accent = load_accent_hex(),
         );
+        let _ = css.load_from_data(css_data.as_bytes());
         gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
 
