@@ -421,6 +421,37 @@ Rectangle {
                 }
             }
 
+            Flow {
+                width: parent.width
+                spacing: 10
+                visible: root.legendItems.length > 0
+
+                Repeater {
+                    model: root.legendItems
+
+                    Row {
+                        id: legendRow
+                        spacing: 5
+                        required property var modelData
+
+                        Rectangle {
+                            width: 9
+                            height: 9
+                            radius: 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: legendRow.modelData.color
+                        }
+
+                        Text {
+                            text: legendRow.modelData.name
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
+                    }
+                }
+            }
+
             Column {
                 width: parent.width
                 spacing: 4
@@ -528,37 +559,6 @@ Rectangle {
                         MouseArea {
                             anchors.fill: parent
                             onClicked: root.tierRequested(tierBtn.modelData)
-                        }
-                    }
-                }
-            }
-
-            Flow {
-                width: parent.width
-                spacing: 10
-                visible: root.legendItems.length > 0
-
-                Repeater {
-                    model: root.legendItems
-
-                    Row {
-                        id: legendRow
-                        spacing: 5
-                        required property var modelData
-
-                        Rectangle {
-                            width: 9
-                            height: 9
-                            radius: 2
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: legendRow.modelData.color
-                        }
-
-                        Text {
-                            text: legendRow.modelData.name
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
                         }
                     }
                 }
