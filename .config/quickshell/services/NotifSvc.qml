@@ -21,8 +21,10 @@ Singleton {
 
     // Kept in sync with notifyd's state.json by id, so a state write for one
     // notification doesn't rebuild every card. Each row has one `n` role:
-    // { id, app_name, summary, body, icon, urgency, timestamp,
-    //   actions: [{key,label}], default_action }. Newest first.
+    // { id, app_name, sender, summary, body, icon, urgency, timestamp,
+    //   actions: [{key,label}], default_action }. `sender` is the D-Bus
+    //   unique name that called Notify -- used by summonSource() to find the
+    //   originating window. Newest first.
     ListModel {
         id: popups
         dynamicRoles: true
@@ -81,5 +83,19 @@ Singleton {
     }
     function closeAll() {
         Quickshell.execDetached([root.notifyctl, "close-all"]);
+    }
+
+    // Left-click on a card whose notification has no default action: bring
+    // the window that sent it to the current workspace and focus it,
+    // pulling it out of its per-app scratch workspace if that's where it's
+    // hiding (e.g. Signal). All the window matching -- by app_name/class and
+    // by the sender's pid -- lives in the script; this just hands it the
+    // two hints from the notification.
+    function summonSource(n) {
+        Quickshell.execDetached([
+            Quickshell.env("HOME") + "/.config/hypr/scripts/notify-summon.sh",
+            (n.app_name ?? "").toString(),
+            (n.sender ?? "").toString()
+        ]);
     }
 }

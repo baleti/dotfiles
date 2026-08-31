@@ -9,9 +9,12 @@ import "../services"
 // translucent dark card, 10px rounding, JetBrains Mono, 32px icon on the
 // left, bold summary above the body, action buttons along the bottom.
 //
-// Mouse (matches the old dunstrc bindings): left = default action (or
-// dismiss if there is none), middle = dismiss this card, right = dismiss
-// all. None of these destroy the notification -- notifyd keeps it invokable.
+// Mouse (matches the old dunstrc bindings): left = default action, or --
+// when there is no default action -- summon the window that sent the
+// notification (see NotifSvc.summonSource); middle = dismiss this card,
+// right = dismiss all. A left-click drops the card either way. None of
+// these destroy the notification -- notifyd keeps it invokable from
+// history. The pointing-hand cursor over the card advertises all this.
 Rectangle {
     id: root
 
@@ -228,6 +231,10 @@ Rectangle {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
         propagateComposedEvents: true
+        hoverEnabled: true
+        // The whole card is a click target -- say so. (Action buttons and
+        // body links set their own cursor; they sit above this.)
+        cursorShape: Qt.PointingHandCursor
         // Sit behind the buttons / body links.
         z: -1
         onClicked: mouse => {
@@ -235,7 +242,8 @@ Rectangle {
                 if (root.defaultAction.length > 0)
                     NotifSvc.invokeDefault(root.notification.id);
                 else
-                    NotifSvc.dismiss(root.notification.id);
+                    NotifSvc.summonSource(root.notification);
+                NotifSvc.dismiss(root.notification.id);
             } else if (mouse.button === Qt.MiddleButton) {
                 NotifSvc.dismiss(root.notification.id);
             } else if (mouse.button === Qt.RightButton) {

@@ -80,6 +80,10 @@ impl RenderManager {
                     serde_json::json!({
                         "id": n.id,
                         "app_name": n.app_name,
+                        // Unique D-Bus name that called Notify -- quickshell's
+                        // summonSource() resolves it to a pid to find the
+                        // originating window.
+                        "sender": n.sender,
                         "summary": n.summary,
                         "body": n.body,
                         "icon": n.icon,
