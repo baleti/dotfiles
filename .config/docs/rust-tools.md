@@ -29,7 +29,11 @@ two binaries sharing it:
   a shared convention now: the list opens with nothing selected, the first
   arrow/Tab lands on the top visible entry, and `Enter` with nothing
   explicitly selected still activates it (see query-dsl.md's Design
-  principles).
+  principles). The window carries a 1px accent frame (`window { border }`
+  in the `CssProvider`, colour interpolated from `scheme.json`'s `primary`
+  via `load_accent_hex` — GTK's `@accent_color` lives in the theme's own
+  provider and won't resolve from here) so every picker built on the
+  engine matches the quickshell launcher / rss reader cards.
 - **`src/bin/clipboard-picker.rs`** (bound to `mainMod+V`) — cliphist picker
   on top of the engine; a Rust port of the older `scripts/clipboard-picker.py`
   that skips ~140ms of Python/GObject-introspection interpreter startup.
@@ -187,7 +191,10 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
   a stable index stashed in the child's `widget_name` at creation instead.
   `state.selected` itself stays a *visual* grid position (what arrow keys
   spatially mean), resolved to an actual window only at the point of
-  confirming (`confirm()`).
+  confirming (`confirm()`). The grid window carries the same 1px accent
+  frame as the clipboard-picker engine (`window { border }`, colour from
+  `scheme.json`'s `primary` via `load_accent_hex`) to match the quickshell
+  launcher / rss reader cards.
 - **`src/wayland_capture.rs`** — live thumbnails via
   `hyprland-toplevel-export-v1`, on a wholly separate low-level
   `wayland-client` connection (GDK doesn't expose these extension

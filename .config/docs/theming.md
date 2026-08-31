@@ -57,7 +57,7 @@ Every write below is atomic (temp file + rename).
 
 | Target | Consumed by |
 |---|---|
-| `~/.local/state/quickshell/scheme.json` | quickshell bar (`Theme.qml`, live `FileView`). Includes `seriesPalette` (8 hues, per-core/iface lines) and `intensityRamp` (5 calm→hot stops) — see [quickshell-bar.md](quickshell-bar.md) |
+| `~/.local/state/quickshell/scheme.json` | quickshell bar (`Theme.qml`, live `FileView`). Includes `seriesPalette` (8 hues, per-core/iface lines) and `intensityRamp` (5 calm→hot stops) — see [quickshell-bar.md](quickshell-bar.md). Also read directly by the GTK Rust tools: `winswitch` + `clipboard-picker` pull `primary` for their 1px accent window frame (`load_accent_hex`) and DSL command-validity colouring — GTK's own `@accent_color` isn't visible to a per-app `CssProvider`, so they interpolate the hex themselves |
 | `~/.config/gtk-{3,4}.0/colors.css` | libadwaita `@define-color` block; `gtk.css` is a static `@import "colors.css"` shim. GTK3 live-reloads via `colorreload-gtk-module` (GFileMonitor on mtime — no restart, no flash). GTK4/libadwaita has no live-reload equivalent. |
 | `~/.local/share/color-schemes/MaterialYou.colors` + `kdeglobals` `[Colors:*]`/`[WM]`/`[ColorEffects:*]` | Breeze widget style reads the scheme. `gen-theme.py` writes the **complete** key set straight into `kdeglobals` (see [Qt widget style](#qt-widget-style-breeze-not-kvantum)) and fires the `KGlobalSettings` `notifyChange` D-Bus signal — `plasma-apply-colorscheme` short-circuits once `MaterialYou` is current and won't re-copy changed colours |
 | Hyprland border colors | via `hyprctl eval` (Lua binding — `keyword` is refused under the non-legacy parser). **Not** written to `appearance.lua` |
