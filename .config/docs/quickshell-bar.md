@@ -201,6 +201,13 @@ year nav and year-picker, no submap needed), `mainMod+F11/F12` (volume, see
 below), and the calendar/graph pills' own click-to-pin behavior (matching
 each other, added 2026-08-28/29).
 
+## Demo
+
+<!-- Demo video removed 2026-08-31: was hosted on Cloudflare R2, which
+     is being decommissioned. Re-host on B2/own server and re-embed
+     here (see redact-video-ocr.md for the redaction process used on
+     the original recording). -->
+
 ## Volume OSD
 
 `osd/VolumeOsd.qml` — one click-through `PanelWindow` per monitor (own
