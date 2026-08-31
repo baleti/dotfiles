@@ -48,6 +48,10 @@ pub struct TmuxClaudeMeta {
     pub claude_title: Option<String>,
     pub claude_path: Option<String>,
     pub claude_session: Option<String>,
+    /// "5m"/"3h"/"2d"-style age bucket of the transcript file's mtime --
+    /// cheap (one `stat`), so filled in alongside the other cheap claude
+    /// fields rather than waiting on the deferred contents read below.
+    pub claude_time: Option<String>,
     /// Filled in last, by its own deferred thread -- see module doc.
     pub claude_contents: Option<String>,
 }
@@ -64,6 +68,7 @@ impl TmuxClaudeMeta {
         if other.claude_title.is_some() { self.claude_title = other.claude_title; }
         if other.claude_path.is_some() { self.claude_path = other.claude_path; }
         if other.claude_session.is_some() { self.claude_session = other.claude_session; }
+        if other.claude_time.is_some() { self.claude_time = other.claude_time; }
         if other.claude_contents.is_some() { self.claude_contents = other.claude_contents; }
     }
 }
@@ -82,7 +87,26 @@ impl TmuxClaudeMeta {
 pub fn start(windows: &[Window], on_meta: impl Fn(usize, TmuxClaudeMeta) + 'static) {
     let win_specs: Vec<(usize, i32)> = windows.iter().enumerate().map(|(i, w)| (i, w.pid)).collect();
     let (tx, rx) = mpsc::channel::<(usize, TmuxClaudeMeta)>();
-    std::thread::spawn(move || run_enrichment(win_specs, tx));
+    std::thread::spawn(move || {
+        // A silent panic in this thread (bad index, an unexpected shape from
+        // a real exec environment that never showed up in testing, ...)
+        // would otherwise just vanish -- no crash, no output, `$tmux.*`/
+        // `$claude.*` simply never matching anything and looking identical
+        // to "still enriching." Caught and logged (opt-in, see
+        // debug_enabled() below) specifically so that failure mode is
+        // distinguishable from "working, just slow" without guessing.
+        let tx_for_panic_log = tx.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_enrichment(win_specs, tx)));
+        if let Err(payload) = result {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+            debug_log(&format!("run_enrichment PANICKED: {msg}"));
+            drop(tx_for_panic_log);
+        }
+    });
 
     glib::source::timeout_add_local(Duration::from_millis(50), move || loop {
         match rx.try_recv() {
@@ -91,6 +115,30 @@ pub fn start(windows: &[Window], on_meta: impl Fn(usize, TmuxClaudeMeta) + 'stat
             Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
         }
     });
+}
+
+/// Same opt-in convention `window-search.py`'s `_DEBUG`/`_dbg` already uses:
+/// `touch ~/.cache/winswitch-enrich-debug` to enable, `rm` it to disable,
+/// zero cost when absent beyond one `exists()` stat per log call (this
+/// module logs a handful of times per Alt+Tab session, not per keystroke,
+/// so re-checking each call rather than caching it once is cheap enough and
+/// keeps `debug_log` a plain free function with no state to thread through).
+fn debug_enabled() -> bool {
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".cache/winswitch-enrich-debug").exists())
+        .unwrap_or(false)
+}
+
+fn debug_log(msg: &str) {
+    if !debug_enabled() {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let path = PathBuf::from(home).join(".cache/winswitch-enrich-debug.log");
+    let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) else { return };
+    use std::io::Write;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = writeln!(f, "[{secs} pid={}] {msg}", std::process::id());
 }
 
 struct ProcInfo {
@@ -365,6 +413,36 @@ fn collect_strings(v: &Value, out: &mut String, budget: usize) {
 /// (one document has no idf to speak of, so this stays a plain
 /// subsequence-matched field like every other winswitch field rather than
 /// reimplementing BM25 for n=1).
+/// "5m"/"3h"/"2d"-style age bucket from a seconds-ago delta -- same bucket
+/// scheme clipboard-picker's own `humanize_ago` (its `date` field) and
+/// tmux's `focus-picker.py` use, hand-ported rather than shared (this crate
+/// has no dependency on that one -- see query-dsl.md's "why copy-pasted"
+/// note). `query.rs`'s comparator already sniffs and sorts this shape
+/// generically (any `^\d+[smhd]$` value, not just a specific field name),
+/// so `claude.time` sorts correctly with no extra wiring there.
+fn humanize_ago(delta_secs: u64) -> String {
+    if delta_secs < 60 {
+        format!("{delta_secs}s")
+    } else if delta_secs < 3600 {
+        format!("{}m", delta_secs / 60)
+    } else if delta_secs < 86400 {
+        format!("{}h", delta_secs / 3600)
+    } else {
+        format!("{}d", delta_secs / 86400)
+    }
+}
+
+/// `claude.time`'s value: how long ago the transcript file was last
+/// modified. Cheap (a `find_transcript` scan plus one `stat`), unlike
+/// `load_claude_contents`'s full read, so this doesn't need its own
+/// deferred thread.
+fn claude_time_bucket(base_dir: &Path, session_id: &str) -> Option<String> {
+    let path = find_transcript(base_dir, session_id)?;
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    let delta = std::time::SystemTime::now().duration_since(modified).ok()?.as_secs();
+    Some(humanize_ago(delta))
+}
+
 fn load_claude_contents(base_dir: &Path, session_id: &str) -> Option<String> {
     let path = find_transcript(base_dir, session_id)?;
     let content = fs::read_to_string(path).ok()?;
@@ -457,6 +535,7 @@ fn run_enrichment(win_specs: Vec<(usize, i32)>, tx: mpsc::Sender<(usize, TmuxCla
             claude_title: Some(session.name.clone().unwrap_or_else(|| session.session_id.clone())),
             claude_path: Some(session.cwd.clone()),
             claude_session: Some(session.session_id.clone()),
+            claude_time: claude_time_bucket(&session.base_dir, &session.session_id),
             ..Default::default()
         };
         let _ = tx.send((idx, meta));
@@ -503,7 +582,7 @@ mod tests {
         for (idx, meta) in &results {
             let w = &windows[*idx];
             println!(
-                "window[{idx}] pid={} class={:?} title={:?}\n  tmux_session={:?} tmux_window={:?} tmux_title={:?}\n  claude_title={:?} claude_path={:?} claude_session={:?} claude_contents_len={:?}",
+                "window[{idx}] pid={} class={:?} title={:?}\n  tmux_session={:?} tmux_window={:?} tmux_title={:?}\n  claude_title={:?} claude_path={:?} claude_session={:?} claude_time={:?} claude_contents_len={:?}",
                 w.pid,
                 w.class,
                 w.title,
@@ -513,6 +592,7 @@ mod tests {
                 meta.claude_title,
                 meta.claude_path,
                 meta.claude_session,
+                meta.claude_time,
                 meta.claude_contents.as_ref().map(|c| c.len()),
             );
         }
