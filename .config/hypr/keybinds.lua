@@ -196,6 +196,12 @@ hl.bind(mainMod .. " + SHIFT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/notif
 -- GTK+layer-shell picker engine (~/.config/hypr/clipboard-picker/src/picker.rs).
 hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/notification-picker"))
 
+-- notifications: clear all on-screen cards without touching history --
+-- notifyctl close-all only drops the render order, it never removes
+-- entries from state.json/ListHistory (see the DismissPopup/CloseAll
+-- doc comments in notifyd/src/main.rs).
+hl.bind("CTRL + ALT + z", hl.dsp.exec_cmd("~/.config/hypr/notifyd/target/release/notifyctl close-all"))
+
 -- system monitor popups (~/.config/hypr/sysmon): small graph overlay for the
 -- last 10 minutes of network/cpu/temperature/memory, replacing the KDE
 -- alt+n network widget. sysmond (autostarted in hyprland.lua) samples
