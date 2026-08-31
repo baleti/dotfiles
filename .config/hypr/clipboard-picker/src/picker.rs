@@ -634,19 +634,13 @@ fn populate_suggestions(list: &gtk::ListBox, rows: &[SuggestRow]) {
     list.show();
 }
 
-/// Re-derives the autocomplete popup from the query text on every
-/// keystroke - one `completion_context` call picks the stage (verb name,
-/// `/fv` field path, or that field's live values); this renders it.
-/// Ported from winswitch's `ui.rs::update_suggestions`.
-fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
-    for child in list.children() {
-        list.remove(&child);
-    }
-
-    let Some(ctx) = completion_context(query, &state.field_names) else {
-        hide_suggestions(list, state);
-        return;
-    };
+/// Computes the completion candidates for the query text right now -
+/// `(start, items, kind)`, or `None` if there's nothing to complete.
+/// Doesn't touch `list`/`state` at all: what to *do* with the result
+/// (auto-accept, or reveal the popup) is `trigger_completion`'s call,
+/// since that differs by candidate count.
+fn compute_candidates(query: &str, state: &State) -> Option<(usize, Vec<String>, SuggestionKind)> {
+    let ctx = completion_context(query, &state.field_names)?;
     let (start, items, kind) = match ctx {
         Suggest::Verb { start, frag } => (start, verb_suggestions(&frag), SuggestionKind::Verb),
         Suggest::Field { start, frag } => (
@@ -659,43 +653,79 @@ fn update_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
         }
     };
     if items.is_empty() {
-        hide_suggestions(list, state);
-        return;
+        return None;
     }
+    Some((start, items, kind))
+}
 
-    let rows: Vec<SuggestRow> = items
-        .iter()
-        .map(|item| match &kind {
-            SuggestionKind::Verb => {
-                let (alias, desc) = verb_meta(item);
-                SuggestRow {
-                    label: format!("/{item}"),
-                    alias: alias.to_string(),
-                    desc: desc.to_string(),
-                }
-            }
-            SuggestionKind::Field => {
-                let desc = state
-                    .field_descs
-                    .iter()
-                    .find(|(f, _)| *f == item.as_str())
-                    .map(|(_, d)| d.to_string())
-                    .unwrap_or_default();
-                SuggestRow { label: item.clone(), alias: String::new(), desc }
-            }
-            SuggestionKind::Value(_) => SuggestRow {
-                label: item.clone(),
-                alias: String::new(),
-                desc: String::new(),
-            },
-        })
-        .collect();
-
-    populate_suggestions(list, &rows);
+/// Stores `(start, items, kind)` into `state` - just the bookkeeping
+/// `accept_suggestion` reads, no GTK widget touched. A single candidate
+/// reads this state right back out to accept it without ever building or
+/// showing a row (see `trigger_completion`).
+fn set_completion_state(state: &Rc<State>, start: usize, items: Vec<String>, kind: SuggestionKind) {
     *state.suggestions.borrow_mut() = items;
     *state.suggestion_start.borrow_mut() = start;
     *state.suggestion_kind.borrow_mut() = Some(kind);
+}
+
+fn suggest_row(state: &State, kind: &SuggestionKind, item: &str) -> SuggestRow {
+    match kind {
+        SuggestionKind::Verb => {
+            let (alias, desc) = verb_meta(item);
+            SuggestRow { label: format!("/{item}"), alias: alias.to_string(), desc: desc.to_string() }
+        }
+        SuggestionKind::Field => {
+            let desc = state
+                .field_descs
+                .iter()
+                .find(|(f, _)| *f == item)
+                .map(|(_, d)| d.to_string())
+                .unwrap_or_default();
+            SuggestRow { label: item.to_string(), alias: String::new(), desc }
+        }
+        SuggestionKind::Value(_) => SuggestRow { label: item.to_string(), alias: String::new(), desc: String::new() },
+    }
+}
+
+/// Builds `list`'s rows from whatever's already in `state` (see
+/// `set_completion_state`) and reveals it - only reached for 2+
+/// candidates, see `trigger_completion`.
+fn show_suggestions_popup(list: &gtk::ListBox, state: &Rc<State>) {
+    for child in list.children() {
+        list.remove(&child);
+    }
+    let Some(kind) = state.suggestion_kind.borrow().clone() else {
+        return;
+    };
+    let items = state.suggestions.borrow().clone();
+    let rows: Vec<SuggestRow> = items.iter().map(|item| suggest_row(state, &kind, item)).collect();
+    populate_suggestions(list, &rows);
     select_suggestion(list, state, 0);
+}
+
+/// Tab's entire job: never shown unless Tab is actually pressed (typing
+/// alone never opens this - see `connect_changed`, which just hides
+/// whatever's open instead of recomputing it every keystroke - a popup
+/// that popped open on every keystroke was obtrusive and could steal
+/// keyboard focus at the wrong moment). A single candidate completes
+/// immediately with no popup ever built or shown, same as ordinary shell
+/// tab-completion; 2+ reveals the popup so Ctrl+j/k can choose one.
+/// Returns whether it actually found anything to do, so a caller with its
+/// own, different meaning for a bare Tab (this picker's search<->list
+/// focus toggle - see the key-press handler) knows when to fall through
+/// to that instead.
+fn trigger_completion(query: &str, search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<State>) -> bool {
+    let Some((start, items, kind)) = compute_candidates(query, state) else {
+        return false;
+    };
+    if items.len() == 1 {
+        set_completion_state(state, start, items, kind);
+        accept_suggestion(search, list, state);
+        return true;
+    }
+    set_completion_state(state, start, items, kind);
+    show_suggestions_popup(list, state);
+    true
 }
 
 /// Replaces the trailing fragment the suggestions were built from with the
@@ -884,7 +914,12 @@ pub fn run(
                     listbox.select_row(None::<&gtk::ListBoxRow>);
                 }
             }
-            update_suggestions(text.as_str(), &suggestions_list, &state);
+            // The autocomplete popup is Tab-triggered only (see
+            // trigger_completion) - it never opens itself as you type, so
+            // any further typing past a shown popup just closes it, same
+            // as it would in a shell or IDE; pressing Tab again recomputes
+            // it fresh for wherever the cursor is now.
+            hide_suggestions(&suggestions_list, &state);
             resize_to_content();
         });
     }
@@ -931,16 +966,20 @@ pub fn run(
         let search = search.clone();
         let suggestions_list = suggestions_list.clone();
         let state = state.clone();
+        let resize_to_content = resize_to_content.clone();
         win.connect_key_press_event(move |_, ev| {
             use gdk::keys::constants as key;
             let k = ev.keyval();
             let ctrl = ev.state().contains(gdk::ModifierType::CONTROL_MASK);
 
-            // Autocomplete popup takes over Ctrl+j/k, Tab, and Escape while
-            // it's showing -- checked before any of those keys' normal
-            // meaning below, and before Escape's own unconditional
-            // quit-the-picker handling right after this block, since the
-            // popup's own Escape only dismisses itself. Ported from
+            // The autocomplete popup is Tab-triggered, never shown just
+            // from typing (see `connect_changed` and `trigger_completion`)
+            // - checked before Tab's own normal meaning below (and before
+            // Escape's own unconditional quit-the-picker handling right
+            // after this block, since the popup's own Escape only
+            // dismisses itself), so a Tab press either opens it fresh or,
+            // once it's already open, accepts the highlighted row;
+            // Ctrl+j/k only ever apply while it's showing. Ported from
             // winswitch's `ui.rs` key-press handler.
             if !state.suggestions.borrow().is_empty() {
                 if ctrl && k == key::j {
@@ -955,12 +994,24 @@ pub fn run(
                 }
                 if k == key::Tab {
                     accept_suggestion(&search, &suggestions_list, &state);
+                    resize_to_content();
                     return glib::Propagation::Stop;
                 }
                 if k == key::Escape {
                     hide_suggestions(&suggestions_list, &state);
+                    resize_to_content();
                     return glib::Propagation::Stop;
                 }
+            }
+            // Only while the search entry itself has focus - Tab already
+            // means something else once focus has moved into the list
+            // (the toggle below) - and only consumed if there was
+            // actually something to complete, so a bare Tab with nothing
+            // typed yet still falls through to that same list toggle
+            // rather than silently doing nothing.
+            if k == key::Tab && search.is_focus() && trigger_completion(&search.text(), &search, &suggestions_list, &state) {
+                resize_to_content();
+                return glib::Propagation::Stop;
             }
 
             if k == key::Escape {

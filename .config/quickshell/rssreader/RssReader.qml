@@ -4,6 +4,7 @@ import Quickshell.Wayland
 import Quickshell.Hyprland
 import "../theme"
 import "../services"
+import "../launcher" // QueryDsl -- shared picker DSL, see query-dsl.md
 
 // Graphical RSS reader (mod + R). Master-detail: article list on the left,
 // reading pane on the right. All feed fetching / XML + HTML parsing /
@@ -34,6 +35,7 @@ PanelWindow {
     onOpenChanged: {
         if (root.open) {
             search.text = "";
+            search.focus = false; // don't let a stale focus-scope memory re-trap into search on reopen
             focusGrab.active = true;
             Qt.callLater(() => keyScope.forceActiveFocus());
             if (RssSvc.items.length === 0)
@@ -49,21 +51,81 @@ PanelWindow {
     property string tagFilter: ""
     property int selected: 0
 
+    // Search box speaks the shared picker DSL (QueryDsl.qml /
+    // ~/.config/docs/query-dsl.md): bare text + /fv over title/feed/tag/
+    // author, /s + /rv for order. /ft /at /rt are inert -- this is a list,
+    // not a column view.
+    readonly property var typeNames: ["title", "feed", "author", "tag", "date"]
+    readonly property var typeDescs: ({
+        "title": "article title",
+        "feed": "source feed name",
+        "author": "article author",
+        "tag": "assigned tag",
+        "date": "published/fetched date"
+    })
+
+    function _fieldVals(item, field) {
+        switch (field) {
+        case "title": return [item.title || ""];
+        case "feed": return [item.feed_title || ""];
+        case "author": return [item.author || ""];
+        case "tag": return item.tags || [];
+        case "date": return [item.sortKey || ""];
+        }
+        return [];
+    }
+
+    property var parsed: QueryDsl.parse(search.text)
+
+    function _matches(item, term) {
+        if (term.text !== undefined) {
+            const hay = (item.title + " " + item.feed_title + " "
+                         + (item.author || "") + " " + (item.tags || []).join(" ")).toLowerCase();
+            return hay.indexOf(term.text) >= 0;
+        }
+        // scoped path:value
+        const fields = QueryDsl.resolvePath(term.field, root.typeNames);
+        if (fields.length === 0)
+            return false; // unresolvable complete path -> narrows to nothing
+        for (const f of fields) {
+            for (const v of root._fieldVals(item, f)) {
+                if (String(v).toLowerCase().indexOf(term.value) >= 0)
+                    return true;
+            }
+        }
+        return false;
+    }
+
     readonly property var view: {
         RssSvc.readRevision; // dependency
-        const q = search.text.trim().toLowerCase();
-        const out = [];
+        root.parsed; // dependency
+        let rows = [];
         for (let i = 0; i < RssSvc.items.length; i++) {
             const it = RssSvc.items[i];
             if (root.unreadOnly && RssSvc.isRead(it.key))
                 continue;
             if (root.tagFilter && (it.tags || []).indexOf(root.tagFilter) < 0)
                 continue;
-            if (q && (it.title + " " + it.feed_title).toLowerCase().indexOf(q) < 0)
+            if (!root.parsed.terms.every(t => root._matches(it, t)))
                 continue;
-            out.push(it);
+            rows.push(it);
         }
-        return out;
+
+        const s = root.parsed.sort;
+        if (s) {
+            const fields = QueryDsl.resolvePath(s.field, root.typeNames);
+            const f = fields.length === 1 ? fields[0] : (fields[0] || "title");
+            rows = rows.slice().sort((a, b) => {
+                const av = String(root._fieldVals(a, f)[0] || "").toLowerCase();
+                const bv = String(root._fieldVals(b, f)[0] || "").toLowerCase();
+                const c = av < bv ? -1 : (av > bv ? 1 : 0);
+                return s.dir === "desc" ? -c : c;
+            });
+        } // else: RssSvc.items' own newest-first order stands
+
+        if (root.parsed.reverse)
+            rows = rows.slice().reverse();
+        return rows;
     }
     onViewChanged: {
         if (root.selected >= view.length)
@@ -78,6 +140,82 @@ PanelWindow {
         id: dwell
         interval: 1100
         onTriggered: if (root.current) RssSvc.markRead(root.current.key)
+    }
+
+    // FocusScope remembers the last-focused child within it, so a bare
+    // keyScope.forceActiveFocus() while `search` still holds focus just gets
+    // redirected straight back into `search` -- clearing its focus first is
+    // what actually lets the scope (and its own Keys.onPressed) take over.
+    function _returnFocusToList() {
+        search.focus = false;
+        keyScope.forceActiveFocus();
+    }
+
+    // ---- autocomplete (marginalia-style, mirrors launcher/AppLauncher.qml)
+    readonly property var _acVerbs: ["/fv", "/s", "/rv"] // /ft /at /rt are inert here
+
+    function _acCandidates() {
+        const t = search.text;
+
+        const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
+        if (vm) {
+            const frag = vm[1].slice(1);
+            return root._acVerbs.filter(v => v.indexOf(frag) >= 0).map(v => ({
+                text: v + " ", label: v,
+                alias: QueryDsl.verbInfo[v].long, desc: QueryDsl.verbInfo[v].desc
+            }));
+        }
+
+        const pm = t.match(/(?:\/fv|\/filter-value|\/s|\/sort)\s+([a-z.]*)$/);
+        if (pm && t.indexOf(":", t.length - pm[1].length) < 0) {
+            const frag = pm[1];
+            const isFv = /\/fv|\/filter-value/.test(t.slice(0, t.length - frag.length));
+            return root.typeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
+                text: t.slice(0, t.length - frag.length) + n + (isFv ? ":" : " "),
+                label: n, alias: "", desc: root.typeDescs[n] || ""
+            }));
+        }
+        return [];
+    }
+    // Tab-triggered only (see _triggerCompletion) - never recomputed just
+    // from typing, so this stays a plain property rather than a binding
+    // on search.text; a popup that popped open on every keystroke was
+    // obtrusive and could steal focus at the wrong moment.
+    property var acItems: []
+    property int acSel: 0
+    // Escape sets this instead of writing to `ac.visible` directly -- an
+    // imperative write there would permanently sever the declarative
+    // visibility binding below (same trap as forceActiveFocus() vs. `focus:`
+    // bindings, see _returnFocusToList). New matches clear the dismissal.
+    property bool acDismissed: false
+    onAcItemsChanged: { acSel = 0; acDismissed = false; }
+
+    function _applyAcItem(it) {
+        if (!it) return;
+        search.text = it.text;
+        search.cursorPosition = search.text.length;
+    }
+
+    function acAccept() {
+        root._applyAcItem(root.acItems[root.acSel]);
+    }
+
+    // Tab's entire job when the popup isn't already open: a single
+    // candidate completes immediately with no popup ever shown, same as
+    // ordinary shell tab-completion; 2+ reveals the popup so Up/Down can
+    // choose one. Returns whether it found anything to do, so the caller
+    // (which also gives Tab the search<->list focus-toggle meaning) knows
+    // when to fall through to that instead.
+    function _triggerCompletion() {
+        const items = root._acCandidates();
+        if (items.length === 0) return false;
+        if (items.length === 1) {
+            root._applyAcItem(items[0]);
+            return true;
+        }
+        root.acSel = 0;
+        root.acItems = items;
+        return true;
     }
 
     function openCurrent() {
@@ -152,7 +290,7 @@ PanelWindow {
                 search.forceActiveFocus();
                 search.selectAll();
             } else if (k === Qt.Key_Tab) {
-                if (search.activeFocus) keyScope.forceActiveFocus();
+                if (search.activeFocus) root._returnFocusToList();
                 else search.forceActiveFocus();
             } else {
                 return; // don't accept -- let it fall through
@@ -176,6 +314,10 @@ PanelWindow {
             // ---- header ------------------------------------------
             Item {
                 id: header
+                // above tagRow/body (declared later, same default z) so the
+                // autocomplete popup -- taller than the header itself --
+                // isn't painted underneath the article list.
+                z: 10
                 width: parent.width
                 height: 48
 
@@ -205,49 +347,148 @@ PanelWindow {
                     spacing: 8
 
                     // search
-                    Rectangle {
+                    Item {
+                        id: searchWrap
                         width: 240
                         height: 28
-                        radius: Theme.rounding - 4
-                        color: Qt.rgba(1, 1, 1, 0.06)
-                        border.width: search.activeFocus ? 1 : 0
-                        border.color: Theme.cyan
 
-                        Text {
-                            x: 8
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: ""
-                            font.family: Theme.iconFontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            color: Theme.muted
-                        }
-                        TextInput {
-                            id: search
-                            x: 26
-                            width: parent.width - 34
-                            anchors.verticalCenter: parent.verticalCenter
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 1
-                            color: Theme.text
-                            selectionColor: Theme.cyan
-                            selectByMouse: true
-                            clip: true
+                        Rectangle {
+                            id: searchBox
+                            anchors.fill: parent
+                            radius: Theme.rounding - 4
+                            color: Qt.rgba(1, 1, 1, 0.06)
+                            border.width: search.activeFocus ? 1 : 0
+                            border.color: Theme.cyan
+
                             Text {
+                                x: 8
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: "filter…"
+                                text: ""
+                                font.family: Theme.iconFontFamily
+                                font.pixelSize: Theme.fontSize - 2
                                 color: Theme.muted
-                                font: search.font
-                                visible: search.text.length === 0 && !search.activeFocus
                             }
-                            Keys.onPressed: e => {
-                                if (e.key === Qt.Key_Escape) {
-                                    if (search.text.length) search.text = "";
-                                    else keyScope.forceActiveFocus();
-                                    e.accepted = true;
-                                } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter
-                                           || e.key === Qt.Key_Down || e.key === Qt.Key_Up) {
-                                    keyScope.forceActiveFocus();
-                                    e.accepted = true;
+                            TextInput {
+                                id: search
+                                x: 26
+                                width: parent.width - 34
+                                anchors.verticalCenter: parent.verticalCenter
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 1
+                                color: Theme.text
+                                selectionColor: Theme.cyan
+                                selectByMouse: true
+                                clip: true
+                                // Any further typing past a shown popup
+                                // closes it, same as a shell or IDE - Tab
+                                // recomputes it fresh for wherever the
+                                // cursor is now (see _triggerCompletion).
+                                // Also fires (harmlessly, on an
+                                // already-empty acItems) when accepting a
+                                // completion sets this text itself.
+                                onTextChanged: root.acItems = []
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "filter… (/ for DSL)"
+                                    color: Theme.muted
+                                    font: search.font
+                                    visible: search.text.length === 0 && !search.activeFocus
+                                }
+                                Keys.onPressed: e => {
+                                    if (e.key === Qt.Key_Escape) {
+                                        if (ac.visible) root.acDismissed = true;
+                                        else if (search.text.length) search.text = "";
+                                        else root._returnFocusToList();
+                                        e.accepted = true;
+                                    } else if (e.key === Qt.Key_Tab) {
+                                        if (ac.visible) { root.acAccept(); e.accepted = true; }
+                                        else if (root._triggerCompletion()) { e.accepted = true; }
+                                        // else: fall through to keyScope's
+                                        // search<->list Tab toggle.
+                                    } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
+                                        root._returnFocusToList();
+                                        e.accepted = true;
+                                    } else if (e.key === Qt.Key_Down) {
+                                        if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                                        else root._returnFocusToList();
+                                        e.accepted = true;
+                                    } else if (e.key === Qt.Key_Up) {
+                                        if (ac.visible) root.acSel = Math.max(0, root.acSel - 1);
+                                        else root._returnFocusToList();
+                                        e.accepted = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Autocomplete popup (marginalia-style, see
+                        // launcher/AppLauncher.qml): label, long-form alias,
+                        // one-line description.
+                        Rectangle {
+                            id: ac
+                            visible: root.acItems.length > 0 && !root.acDismissed
+                            z: 50
+                            anchors.top: searchBox.bottom
+                            anchors.right: searchBox.right
+                            anchors.topMargin: 4
+                            width: 360
+                            height: visible ? Math.min(root.acItems.length, 7) * 24 + 8 : 0
+                            radius: Theme.rounding - 4
+                            color: Theme.bgAlpha
+                            border.color: Theme.cyan
+                            border.width: 1
+                            clip: true
+
+                            Column {
+                                anchors.fill: parent
+                                padding: 4
+
+                                Repeater {
+                                    model: root.acItems
+                                    Rectangle {
+                                        id: acRow
+                                        required property var modelData
+                                        required property int index
+                                        readonly property bool cur: index === root.acSel
+                                        width: ac.width - 8
+                                        height: 24
+                                        radius: Theme.rounding - 5
+                                        color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
+
+                                        Row {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            x: 10
+                                            spacing: 8
+
+                                            Text {
+                                                id: acLabel
+                                                text: acRow.modelData.label
+                                                font.family: Theme.fontFamily
+                                                font.pixelSize: Theme.fontSize - 2
+                                                color: acRow.cur ? Theme.cyan : Theme.text
+                                            }
+                                            Text {
+                                                visible: !!acRow.modelData.alias
+                                                anchors.baseline: acLabel.baseline
+                                                text: "(" + acRow.modelData.alias + ")"
+                                                font.family: Theme.fontFamily
+                                                font.pixelSize: Theme.fontSize - 3
+                                                color: Theme.muted
+                                            }
+                                            Text {
+                                                anchors.baseline: acLabel.baseline
+                                                text: acRow.modelData.desc
+                                                font.family: Theme.fontFamily
+                                                font.pixelSize: Theme.fontSize - 3
+                                                color: Theme.textDim
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: { root.acSel = acRow.index; root.acAccept(); }
+                                        }
+                                    }
                                 }
                             }
                         }

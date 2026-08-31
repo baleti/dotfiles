@@ -2,31 +2,50 @@
 
 The small query language typed into the search box of every fzf-driven
 picker in this repo, plus winswitch's grid search, the GTK
-clipboard/notification pickers, and the quickshell app launcher. Arrived
-at independently in `window-search.py`, then reused (by hand, not by
-import) in `claude-history` and `focus-picker.py`, then reimplemented in
-Rust for winswitch's `query.rs`, then ported by hand a second time into
-the shared `picker.rs` engine behind clipboard-picker and
-notification-picker, then a third time into JS for the quickshell
-launcher (`QueryDsl.qml`). Stays copy-pasted rather than a shared library
-on purpose - the implementations split across three languages and differ
-enough in what they're searching (ranked scrollback vs. an unranked
-couple-dozen windows) that a shared abstraction was judged not worth it -
-so this doc is what keeps the *semantics* consistent even though the code
-doesn't.
+clipboard/notification pickers, and the quickshell app launcher and RSS
+reader. Arrived at independently in `window-search.py`, then reused (by
+hand, not by import) in `claude-history` and `focus-picker.py`, then
+reimplemented in Rust for winswitch's `query.rs`, then ported by hand a
+second time into the shared `picker.rs` engine behind clipboard-picker
+and notification-picker, then a third time into JS for the quickshell
+launcher (`QueryDsl.qml`), then reused again (same `QueryDsl.qml` import,
+not a fourth port) for the RSS reader. Stays copy-pasted rather than a
+shared library on purpose - the implementations split across three
+languages and differ enough in what they're searching (ranked scrollback
+vs. an unranked couple-dozen windows) that a shared abstraction was judged
+not worth it - so this doc is what keeps the *semantics* consistent even
+though the code doesn't. This table is the complete inventory - if you
+add a new consumer, add its row here too.
 
-| Name | File | Searches |
-|---|---|---|
-| window-search | `~/.config/tmux/scripts/window-search.py` | live tmux pane scrollback, BM25-ranked |
-| claude-history | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
-| focus-picker | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
-| winswitch | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
-| clipboard-picker | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
-| notification-picker | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
-| app-launcher | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML, mod+Super_l) |
+| Name | Keybind | File | Searches |
+|---|---|---|---|
+| window-search | tmux prefix+C-w | `~/.config/tmux/scripts/window-search.py` | live tmux pane scrollback, BM25-ranked |
+| claude-history | tmux prefix+C-c | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
+| focus-picker | tmux prefix+w | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
+| winswitch | Alt+Tab (hold) | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
+| clipboard-picker | mod+v | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
+| notification-picker | (notifyd action) | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
+| app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
+| rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 
 See [tmux.md](tmux.md) for the tmux bindings and [rust-tools.md](rust-tools.md)
 for winswitch and the GTK pickers.
+
+**Completion-UI maturity varies** - the grammar/semantics above are shared
+by every row in that table, but not every picker has caught up on how its
+Tab-completion is *presented* (see Autocompletion, below, for the current
+rule: hidden until Tab, and even then only as a popup when there's more
+than one candidate). winswitch, clipboard-picker, notification-picker,
+app-launcher and rss-reader all follow it; claude-history followed it from
+the start (a nested fzf, since it has no in-layout widget tree to put a
+popup in). focus-picker never shows an overlapping popup at all - it
+prints a quiet `[tab → x]` hint into the header line instead and Tab
+always completes to the first candidate outright, with no way to see or
+choose among the others when there's more than one; window-search has no
+completion assistance at all yet. Both are pre-existing, independent of
+the popup-visibility rule (nothing pops up in either to begin with) -
+worth bringing forward if either picker's DSL usage grows enough to need
+it, but not fixed as part of establishing that rule.
 
 ## The shape of it
 
@@ -363,12 +382,29 @@ above.
 
 ## Autocompletion
 
-Typing `/` alone is enough to discover the whole grammar. All the GTK
-pickers (winswitch, clipboard-picker, notification-picker) grow a
+**The popup is Tab-triggered, never shown just from typing.** Nothing
+pops up on its own as you type `/frag` - typing alone only ever affects
+the row filter/columns/order the same way it always did. Pressing Tab is
+what asks "what could this become": if there's exactly one candidate, it
+completes immediately with no popup ever built or shown at all, the same
+way ordinary shell tab-completion silently completes an unambiguous path;
+only 2+ candidates actually reveal a popup, to choose among them. Typing
+anything further after a popup is showing closes it (the fragment it was
+built from is stale now) - Tab recomputes it fresh for wherever the
+cursor is. This applies uniformly everywhere: the GTK pickers show/hide
+an in-layout `GtkListBox`, the QML consumers an overlay `Rectangle`,
+claude-history spawns/dismisses a nested fzf (see below) - always
+Tab-gated, never live. An always-on popup that repainted on every
+keystroke was tried first and dropped: it read as obtrusive, and once in
+a while it stole a focus/resize cycle at exactly the wrong moment.
+
+Typing `/` then pressing Tab is enough to discover the whole grammar (the
+list just won't appear until you actually press Tab - see above). All the
+GTK pickers (winswitch, clipboard-picker, notification-picker) grow a
 GTK-native completion popup - a plain in-layout `GtkListBox` under the
 search entry, not a `GtkPopover` (gtk-layer-shell's layer surface has no
-xdg_popup positioner to anchor one to); the quickshell app launcher grows
-the equivalent in QML. Stages:
+xdg_popup positioner to anchor one to); the quickshell app launcher and
+RSS reader grow the equivalent in QML. Stages:
 
 1. **Verb** (`/frag`, nothing after it yet): candidates are every short
    verb form whose name contains `frag` as a substring (`/f` -> `/fv`,
@@ -386,11 +422,13 @@ the equivalent in QML. Stages:
 4. **Sort direction** (`/s path frag`, `path` unambiguous): candidates
    are `ascending` / `descending`, narrowed by `frag`.
 
-**An empty fragment lists everything for that stage.** `/` alone is all
-six verbs; `/ft ` / `/at ` / `/rt ` / `/s ` / `/fv ` (verb, one space,
-nothing typed yet) is every type name; `/fv path: ` is every value that
-type has. The popup does not wait for a first character - the whole point
-is that it can be *discovered*, not just narrowed.
+**An empty fragment lists everything for that stage, once Tab asks.** `/`
++ Tab is all six verbs; `/ft ` / `/at ` / `/rt ` / `/s ` / `/fv ` + Tab
+(verb, one space, nothing typed yet) is every type name; `/fv path: ` +
+Tab is every value that type has. Discovery doesn't need a first
+character typed - just Tab, at any point - which is what makes "hidden
+until Tab" (above) fine for discoverability rather than a tradeoff
+against it.
 
 ### Suggestion row anatomy
 
@@ -431,14 +469,54 @@ quickshell launcher reads them from `QueryDsl.qml`'s `verbInfo`):
 | `/s` | `/sort` | order rows by one field, optional asc / desc |
 | `/rv` | `/reverse` | flip the current order |
 
-Shared popup UI: `Tab` accepts the highlighted suggestion; `Ctrl+j` /
-`Ctrl+k` move the highlight (clamped, not wrapped); `Escape` dismisses
-just the popup, never the picker. One bug worth remembering if the popup
-ever silently stops appearing: a `GtkListBox` built with `no-show-all`
-(so the picker's one-time startup `show_all()` doesn't reveal an empty
-popup) also ignores a *later* `show_all()` meant to reveal it - every
-row/label has to be shown explicitly and the list revealed with a direct
-`.show()`.
+Shared popup UI: `Tab` triggers completion when nothing's open yet (see
+above - unique candidate applies directly, 2+ opens the popup), and
+accepts the highlighted suggestion once it *is* open; `Ctrl+j` / `Ctrl+k`
+move the highlight (clamped, not wrapped) - only meaningful while the
+popup is showing; `Escape` dismisses just the popup, never the picker. In
+a picker where Tab already meant something else while nothing's open
+(clipboard-picker/notification-picker's and the RSS reader's search-list
+focus toggle), completion only claims the key when it actually found a
+candidate - a bare Tab with nothing to complete falls through to that
+other meaning unchanged, it doesn't just eat the keypress. One bug worth
+remembering if the popup ever silently stops appearing: a `GtkListBox`
+built with `no-show-all` (so the picker's one-time startup `show_all()`
+doesn't reveal an empty popup) also ignores a *later* `show_all()` meant
+to reveal it - every row/label has to be shown explicitly and the list
+revealed with a direct `.show()`.
+
+**Inline command-validity coloring (recommendation).** As a command is
+typed, the token right after the `/` - the verb, plus any via path glued
+onto it - should be colored to show whether it currently resolves to a
+real command, not left in the query's ordinary text color: one color
+once it's a recognized verb (or verb+via that resolves), a distinctly
+different one while it isn't (an unrecognized verb, or a via path that
+fails to resolve) - the same at-a-glance "is this valid" a shell's own
+syntax highlighting already gives a command name. A recommendation, not
+something every picker already does (see "Completion-UI maturity varies"
+above for the same kind of gap) - this is presentation only and never
+changes matching or resolution; a "wrong" color is exactly what
+`is_verb_prefix`/`Verb::parse` (or a picker's own equivalent) already
+says is unresolved, nothing new to compute, just something new to render
+the answer with.
+
+Never hardcode either color - both have to come from whatever dynamic
+theme source the app already has, since this desktop regenerates its
+whole palette from the wallpaper (`gen-theme.py`); a color baked into a
+picker's source would just go stale the next regeneration, or clash
+outright. Concretely, per implementation family: winswitch already has
+the precedent to follow (`load_theme_palette`, reading
+`~/.local/state/quickshell/scheme.json`'s color roles for its
+`/at`-added-column coloring) - that same file's `primary`/`secondary` (or
+`error`) keys are the natural fit for valid/invalid here; the QML
+consumers already have their own `Theme` singleton fed from the same
+generated palette; the fzf/terminal pickers inherit whatever ANSI palette
+the terminal itself is already themed with (also regenerated by
+`gen-theme.py`, via alacritty's own generated colors), so terminal color
+codes there ride the existing pipeline rather than needing a new one.
+Which specific role name means "valid" vs "invalid" is each app's own
+call - the DSL only cares that the two are visually distinct and both
+move when the theme does, never that they're any particular hex value.
 
 **Per-picker autocomplete scope.** A picker only offers the verbs that do
 something for it. The app launcher shows no columns, so it offers `/fv`,

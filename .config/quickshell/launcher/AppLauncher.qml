@@ -204,15 +204,39 @@ PanelWindow {
         }
         return [];
     }
-    property var acItems: root.open ? _acCandidates() : []
+    // Tab-triggered only (see _triggerCompletion) - never recomputed just
+    // from typing, so this stays a plain property rather than a binding
+    // on query.text; a popup that popped open on every keystroke was
+    // obtrusive and could steal focus at the wrong moment.
+    property var acItems: []
     property int acSel: 0
     onAcItemsChanged: { ac.visible = acItems.length > 0; acSel = 0; }
 
-    function acAccept() {
-        const it = root.acItems[root.acSel];
+    function _applyAcItem(it) {
         if (!it) return;
         query.text = it.text;
         query.cursorPosition = query.text.length;
+    }
+
+    function acAccept() {
+        root._applyAcItem(root.acItems[root.acSel]);
+    }
+
+    // Tab's entire job when the popup isn't already open: a single
+    // candidate completes immediately with no popup ever shown, same as
+    // ordinary shell tab-completion; 2+ reveals the popup (via
+    // onAcItemsChanged) so Up/Down can choose one. Returns whether it
+    // found anything to do.
+    function _triggerCompletion() {
+        const items = root._acCandidates();
+        if (items.length === 0) return false;
+        if (items.length === 1) {
+            root._applyAcItem(items[0]);
+            return true;
+        }
+        root.acSel = 0;
+        root.acItems = items;
+        return true;
     }
 
     // ---- dynamic card width: fit the widest visible name -----------
@@ -310,6 +334,12 @@ PanelWindow {
                 selectionColor: Theme.cyan
                 selectByMouse: true
                 clip: true
+                // Any further typing past a shown popup closes it, same
+                // as a shell or IDE - Tab recomputes it fresh for
+                // wherever the cursor is now (see _triggerCompletion).
+                // Also fires (harmlessly, on an already-empty acItems)
+                // when accepting a completion sets this text itself.
+                onTextChanged: root.acItems = []
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
@@ -329,6 +359,7 @@ PanelWindow {
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
                         if (ac.visible) root.acAccept();
+                        else root._triggerCompletion();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Down
                                || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
