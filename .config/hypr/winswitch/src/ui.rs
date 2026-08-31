@@ -48,11 +48,10 @@ const LABEL_ALLOWANCE: i32 = 54;
 const CELL_H_OVERHEAD: i32 = 24;
 const CELL_V_OVERHEAD: i32 = 24;
 
-/// The grid's baseline shown columns -- exactly what was hardcoded before
-/// column verbs existed, so nothing regresses by default. `class`/`pid`
+/// The grid's baseline shown column -- just the title. `workspace`/`pid`
 /// and any `tmux`/`claude` field stay hidden until `/at` (or a surviving
 /// `/ft`) brings them in.
-const DEFAULT_COLUMNS: [ResolvedField; 2] = [ResolvedField::Flat("workspace"), ResolvedField::Flat("title")];
+const DEFAULT_COLUMNS: [ResolvedField; 1] = [ResolvedField::Flat("title")];
 
 /// The aspect ratio (height/width) most windows in this set share, so
 /// `grid_dims` can shape the grid's cells to match instead of assuming
@@ -129,6 +128,61 @@ fn frame_size(win_w: i32, win_h: i32, budget_w: i32, budget_h: i32) -> (i32, i32
     }
 }
 
+/// A grid label is a one-line caption under a thumbnail, not a text
+/// viewer -- cap how much of any one field's value it will render. Without
+/// this, a field like `claude.contents` (up to 20,000 chars of transcript
+/// text, see `enrich.rs`) landing in the active columns -- whether typed
+/// explicitly or picked up incidentally by an ambiguous substring match
+/// (`/at cla` matches `class` *and* `claude`, and a bare group expands to
+/// every subfield) -- means every window's label markup-escapes and lays
+/// out tens of thousands of characters on *every keystroke*
+/// (`connect_search_changed` re-renders all labels), which is slow enough
+/// on the GTK main thread to look and feel like the whole grid froze.
+const MAX_LABEL_VALUE_CHARS: usize = 80;
+
+fn truncate_for_label(v: &str) -> std::borrow::Cow<'_, str> {
+    if v.chars().count() <= MAX_LABEL_VALUE_CHARS {
+        return std::borrow::Cow::Borrowed(v);
+    }
+    let head: String = v.chars().take(MAX_LABEL_VALUE_CHARS).collect();
+    std::borrow::Cow::Owned(format!("{head}…"))
+}
+
+/// `seriesPalette` out of gen-theme.py's live scheme file -- 8 hues spaced
+/// off the current wallpaper-derived primary color, picked there
+/// specifically "to color distinguishable series (CPU cores, network
+/// interfaces, disk devices)" (see that script's `build_scheme`), which is
+/// exactly the shape this needs: a handful of columns that all need to
+/// read as different things at a glance, recoloring itself with the rest
+/// of the theme rather than a color this crate would have to keep in sync
+/// by hand. Empty (never an error) if the file is missing or malformed --
+/// gen-theme.py hasn't run yet, or this machine has no wallpaper-driven
+/// theme at all -- and every call site below already treats an empty
+/// palette as "render plain," so there's nothing further to fall back to.
+fn load_theme_palette() -> Vec<String> {
+    let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
+    let path = std::path::PathBuf::from(home).join(".local/state/quickshell/scheme.json");
+    let Ok(content) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { return Vec::new() };
+    v.get("seriesPalette")
+        .and_then(|p| p.as_array())
+        .map(|arr| arr.iter().filter_map(|c| c.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Which palette entry a field gets -- a simple string hash of its dotted
+/// key (`"claude.contents"`), not an assignment order, so the same field
+/// keeps the same color across different `/at` combinations and across
+/// relaunches (as long as the palette itself doesn't change). `None` if
+/// the palette is empty.
+fn field_color<'a>(field: ResolvedField, palette: &'a [String]) -> Option<&'a str> {
+    if palette.is_empty() {
+        return None;
+    }
+    let hash = field.key().bytes().fold(5381u32, |h, b| h.wrapping_mul(33).wrapping_add(b as u32));
+    Some(palette[hash as usize % palette.len()].as_str())
+}
+
 /// Builds the markup for a grid cell's label from the currently active
 /// columns, in order -- `workspace` keeps its existing small-muted "#N"
 /// treatment wherever it appears, everything else renders plain, space-
@@ -136,8 +190,18 @@ fn frame_size(win_w: i32, win_h: i32, budget_w: i32, budget_h: i32) -> (i32, i32
 /// long-standing behaviour from before columns were configurable. An empty
 /// value (a `tmux`/`claude` field not yet enriched in, or genuinely blank)
 /// is simply omitted rather than shown as a placeholder, so a still-loading
-/// column doesn't flash empty brackets into the label.
-fn render_label(label: &gtk::Label, win: &Window, meta: &TmuxClaudeMeta, columns: &[ResolvedField]) {
+/// column doesn't flash empty brackets into the label. Long values are
+/// truncated first (see `truncate_for_label`) -- this is a caption, not a
+/// text viewer, and the untruncated value is still what filtering/sorting
+/// compare against.
+///
+/// Any column that isn't one of `DEFAULT_COLUMNS` -- i.e. one the user
+/// brought in with `/at` (or a surviving `/ft`) -- gets colored from
+/// `palette` (see `load_theme_palette`/`field_color`) so several added
+/// types read as visually distinct at a glance instead of one run-on
+/// string; `title` (the only default) and an empty palette both render
+/// plain, same as before this existed.
+fn render_label(label: &gtk::Label, win: &Window, meta: &TmuxClaudeMeta, columns: &[ResolvedField], palette: &[String]) {
     if columns.is_empty() {
         label.set_text("");
         return;
@@ -151,11 +215,17 @@ fn render_label(label: &gtk::Label, win: &Window, meta: &TmuxClaudeMeta, columns
         if v.is_empty() {
             continue;
         }
-        if field == ResolvedField::Flat("workspace") {
-            parts.push(format!("<span size=\"smaller\" alpha=\"55%\">#{}</span>", glib::markup_escape_text(&v)));
-        } else {
-            parts.push(glib::markup_escape_text(&v).to_string());
-        }
+        let v = truncate_for_label(&v);
+        let escaped = glib::markup_escape_text(&v);
+        let color = if DEFAULT_COLUMNS.contains(&field) { None } else { field_color(field, palette) };
+        let is_workspace = field == ResolvedField::Flat("workspace");
+        let text = match (is_workspace, color) {
+            (true, Some(c)) => format!("<span size=\"smaller\" foreground=\"{c}\">#{escaped}</span>"),
+            (true, None) => format!("<span size=\"smaller\" alpha=\"55%\">#{escaped}</span>"),
+            (false, Some(c)) => format!("<span foreground=\"{c}\">{escaped}</span>"),
+            (false, None) => escaped.to_string(),
+        };
+        parts.push(text);
     }
     label.set_markup(&parts.join(" "));
 }
@@ -180,9 +250,15 @@ enum SuggestionKind {
     /// Sort direction. Accepting inserts `<chosen> ` (trailing space,
     /// complete term).
     SortDirection,
-    /// Filter value. Accepting inserts `/fv <field>:<value> ` (re-quoted
-    /// if it contains whitespace), trailing-space "complete term".
+    /// Filter value for `/fv`. Accepting inserts `/fv <field>:<value> `
+    /// (re-quoted if it contains whitespace), trailing-space "complete
+    /// term".
     Value(String),
+    /// Filter value for a field-verb shorthand (`/claude.contents`) -
+    /// same live-value corpus as `Value`, but the verb already named the
+    /// field, so accepting just inserts `<value> ` with no `field:`
+    /// prefix.
+    FieldValue,
 }
 
 struct State {
@@ -209,6 +285,11 @@ struct State {
     suggestion_idx: RefCell<usize>,
     suggestion_start: RefCell<usize>,
     suggestion_kind: RefCell<Option<SuggestionKind>>,
+    /// The current theme's `seriesPalette` (see `load_theme_palette`), read
+    /// once at startup -- immutable for the life of the grid, so every
+    /// `render_label` call site reads it from here rather than threading
+    /// its own copy through each closure.
+    palette: Vec<String>,
 }
 
 /// The window index stashed in a `FlowBoxChild`'s `widget_name` at creation
@@ -235,6 +316,7 @@ fn make_child(
     win: &Window,
     meta: &TmuxClaudeMeta,
     columns: &[ResolvedField],
+    palette: &[String],
     idx: usize,
     cell_w: i32,
     max_h: i32,
@@ -255,7 +337,7 @@ fn make_child(
     vbox.pack_start(&frame, false, false, 0);
 
     let label = gtk::Label::new(None);
-    render_label(&label, win, meta, columns);
+    render_label(&label, win, meta, columns, palette);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     label.set_max_width_chars(1); // let ellipsize kick in early, as in picker.rs
     label.set_lines(2);
@@ -359,7 +441,6 @@ fn verb_meta(short: &str) -> (&'static str, &'static str) {
 fn type_desc(path: &str) -> &'static str {
     match path {
         "title" => "the window title",
-        "class" => "the app id / window class",
         "workspace" => "the Hyprland workspace",
         "pid" => "the process id",
         "tmux" => "tmux session / window on this terminal",
@@ -370,6 +451,7 @@ fn type_desc(path: &str) -> &'static str {
         "claude.title" => "Claude Code session title",
         "claude.path" => "Claude Code working directory",
         "claude.session" => "Claude Code session id",
+        "claude.time" => "how long ago the transcript last changed",
         "claude.contents" => "Claude Code transcript text",
         _ => "",
     }
@@ -463,19 +545,26 @@ fn update_suggestions(query_text: &str, list: &gtk::ListBox, state: &Rc<State>) 
         query::Completion::TypePath { start, verb, .. } => (*start, SuggestionKind::TypePath(*verb)),
         query::Completion::SortDirection { start, .. } => (*start, SuggestionKind::SortDirection),
         query::Completion::Value { start, field, .. } => (*start, SuggestionKind::Value(field.key())),
+        query::Completion::FieldValue { start, .. } => (*start, SuggestionKind::FieldValue),
     };
 
     let rows: Vec<SuggestRow> = items
         .iter()
         .map(|item| match &kind {
             SuggestionKind::Verb => {
+                // Core verbs (fv/ft/...) get a long-form alias from
+                // `verb_meta`; field-verbs (`claude`, `claude.contents`,
+                // ...) have no alias of their own, but reuse the same
+                // per-field description `type_desc` already carries for
+                // the type-path stage.
                 let (alias, desc) = verb_meta(item);
+                let desc = if desc.is_empty() { type_desc(item) } else { desc };
                 SuggestRow { label: format!("/{item}"), alias: alias.into(), desc: desc.into() }
             }
             SuggestionKind::TypePath(_) => {
                 SuggestRow { label: item.clone(), alias: String::new(), desc: type_desc(item).into() }
             }
-            SuggestionKind::SortDirection | SuggestionKind::Value(_) => {
+            SuggestionKind::SortDirection | SuggestionKind::Value(_) | SuggestionKind::FieldValue => {
                 SuggestRow { label: item.clone(), alias: String::new(), desc: String::new() }
             }
         })
@@ -540,6 +629,17 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
                 chosen
             };
             format!("{prefix}{field_key}:{value} ")
+        }
+        SuggestionKind::FieldValue => {
+            // `prefix` already ends in `/claude.contents ` -- the verb
+            // named the field, so just the bare value is spliced back, no
+            // `field:` prefix.
+            let value = if chosen.contains(char::is_whitespace) {
+                format!("\"{chosen}\"")
+            } else {
+                chosen
+            };
+            format!("{prefix}{value} ")
         }
     };
     hide_suggestions(list, state);
@@ -671,6 +771,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         suggestion_idx: RefCell::new(0),
         suggestion_start: RefCell::new(0),
         suggestion_kind: RefCell::new(None),
+        palette: load_theme_palette(),
     });
 
     // The box the grid may claim -- height's fraction raised from the old
@@ -738,7 +839,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         let columns = state.active_columns.borrow();
         for (i, win_entry) in state.windows.iter().enumerate() {
             let meta = state.tmux_claude[i].borrow();
-            let (child, image, label) = make_child(win_entry, &meta, &columns, i, cell_w, max_h);
+            let (child, image, label) = make_child(win_entry, &meta, &columns, &state.palette, i, cell_w, max_h);
             flowbox.add(&child);
             thumb_images.push(image);
             cell_labels.push(label);
@@ -771,6 +872,40 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     vbox.pack_start(&suggestions_list, false, false, 0);
     vbox.pack_start(&scroll, true, true, 0);
     win.add(&vbox);
+
+    // Grows (never shrinks below the original grid layout) the window's
+    // fixed layer-shell height to fit whatever's actually showing:
+    // `search` once search mode locks it in, the autocomplete popup, and
+    // the grid itself -- whose row height isn't fixed either, since
+    // `make_child`'s `set_lines(2)` lets a label wrap onto a second line
+    // once enough `/at` columns are active, which the original
+    // `LABEL_ALLOWANCE` budget (sized for the single-line default) doesn't
+    // reserve room for. Without this, extra columns or the search box just
+    // pushed rows below the surface's fixed height with nothing to scroll
+    // back to them -- confirmed by testing `/at pid /at workspace`, which
+    // grows two of the three joined label parts onto a wrapped second
+    // line. `win_w` never changes -- only height does. Clamped at
+    // `max_win_h`, a bit past the original `avail_h`, so it can't grow
+    // past a usable fraction of the monitor; beyond that the grid's own
+    // `ScrolledWindow` (vertical `Automatic`) takes over as before.
+    let max_win_h = match &monitor {
+        Some(mon) => ((mon.geometry().height() as f64) * 0.92) as i32,
+        None => avail_h,
+    };
+    let resize_to_content: Rc<dyn Fn()> = {
+        let win = win.clone();
+        let search = search.clone();
+        let suggestions_list = suggestions_list.clone();
+        let flowbox = flowbox.clone();
+        let state = state.clone();
+        Rc::new(move || {
+            let search_h = if *state.locked.borrow() { search.preferred_height().1 } else { 0 };
+            let sugg_h = if !state.suggestions.borrow().is_empty() { suggestions_list.preferred_height().1 } else { 0 };
+            let grid_h = flowbox.preferred_height().1;
+            let target = (search_h + sugg_h + grid_h).max(win_h).min(max_win_h);
+            win.set_size_request(win_w, target);
+        })
+    };
 
     flowbox.set_filter_func(Some(Box::new({
         let state = state.clone();
@@ -822,13 +957,14 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         let suggestions_list = suggestions_list.clone();
         let state = state.clone();
         let cell_labels = cell_labels.clone();
+        let resize_to_content = resize_to_content.clone();
         search.connect_search_changed(move |entry| {
             let q = entry.text();
             *state.active_columns.borrow_mut() = crate::query::active_columns(&q, &DEFAULT_COLUMNS);
             *state.sort_actions.borrow_mut() = crate::query::parse_actions(&q);
             for (i, label) in cell_labels.iter().enumerate() {
                 let meta = state.tmux_claude[i].borrow();
-                render_label(label, &state.windows[i], &meta, &state.active_columns.borrow());
+                render_label(label, &state.windows[i], &meta, &state.active_columns.borrow(), &state.palette);
             }
             flowbox.invalidate_filter();
             flowbox.invalidate_sort();
@@ -848,6 +984,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
                 i += 1;
             }
             update_suggestions(&q, &suggestions_list, &state);
+            resize_to_content();
         });
     }
 
@@ -873,6 +1010,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         let search = search.clone();
         let suggestions_list = suggestions_list.clone();
         let state = state.clone();
+        let resize_to_content = resize_to_content.clone();
         win.connect_key_press_event(move |_, ev| {
             use gdk::keys::constants as key;
             let k = ev.keyval();
@@ -1006,6 +1144,12 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
                         search.set_text(&ch.to_string());
                         search.grab_focus();
                         search.set_position(-1);
+                        // `search-changed` (connected above) is rate-limited
+                        // by GTK, so resize right away too -- otherwise the
+                        // entry appearing at all (even before its debounced
+                        // text-changed callback fires) still needs the extra
+                        // row `resize_to_content` accounts for.
+                        resize_to_content();
                         return glib::Propagation::Stop;
                     }
                 }
@@ -1074,6 +1218,18 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     win.set_opacity(1.0);
     select(&flowbox, &state, start_idx);
 
+    // Preferred-height queries against just-realized rows can come back too
+    // small (no size-allocate pass has run yet) -- same gotcha picker.rs's
+    // own `resize_to_content` documents -- so the first accurate measurement
+    // has to happen once the window is actually up.
+    {
+        let resize_to_content = resize_to_content.clone();
+        glib::idle_add_local(move || {
+            resize_to_content();
+            glib::ControlFlow::Break
+        });
+    }
+
     // A few more iterations so the newly-built grid actually gets painted
     // and flushed to the compositor before wayland_capture::start()'s own
     // blocking roundtrips below run.
@@ -1121,7 +1277,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
             cell.borrow_mut().merge(meta);
             if let (Some(label), Some(win)) = (cell_labels_for_enrich.get(index), state_for_enrich.windows.get(index)) {
                 let m = cell.borrow();
-                render_label(label, win, &m, &state_for_enrich.active_columns.borrow());
+                render_label(label, win, &m, &state_for_enrich.active_columns.borrow(), &state_for_enrich.palette);
             }
             flowbox_for_enrich.invalidate_filter();
             flowbox_for_enrich.invalidate_sort();

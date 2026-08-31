@@ -58,9 +58,27 @@ QtObject {
         return null;
     }
 
+    // True if `tok` reads as a (possibly abbreviated) sort direction -
+    // substring-matches "ascending" or "descending". Empty never matches
+    // (a not-yet-typed slot isn't a direction either).
+    function _isDirectionLike(tok) {
+        const d = tok.toLowerCase();
+        if (d.length === 0) return false;
+        return "ascending".indexOf(d) === 0 || "descending".indexOf(d) === 0;
+    }
+
     // Parse into { terms:[{field,value,quoted}|{text}], sort:{field,dir}|null,
     // reverse:bool, cols:[{op,path}] }. Incomplete trailing tokens are dropped
     // (never flash to zero on a valid partial keystroke).
+    //
+    // Every verb has a fixed arity (max argument tokens it will ever take -
+    // see query-dsl.md's Grammar section): 0 for /rv, 1 for /fv /ft /at /rt,
+    // 1-2 for /s (the 2nd, direction, slot only counts as consumed when the
+    // token there actually reads as one). A token past a verb's arity is
+    // never swallowed just because no new /verb intervened - it's left for
+    // the next loop iteration, where a non-verb token becomes its own /fv
+    // term. This is what keeps `/s name blender` from losing `blender` as a
+    // rejected sort direction.
     function parse(text) {
         const toks = root.tokenize(text);
         const res = { terms: [], sort: null, reverse: false, cols: [] };
@@ -75,10 +93,11 @@ QtObject {
                 continue;
             }
             if (verb === "") { k++; continue; } // inert /xyz
-            // gather args up to the next verb
-            const args = [];
             k++;
-            while (k < toks.length && root.canonVerb(toks[k]) === null) {
+            const args = [];
+            const maxArgs = verb === "/rv" ? 0 : (verb === "/s" ? 2 : 1);
+            while (args.length < maxArgs && k < toks.length && root.canonVerb(toks[k]) === null) {
+                if (verb === "/s" && args.length === 1 && !root._isDirectionLike(toks[k].v)) break;
                 args.push(toks[k]);
                 k++;
             }
@@ -96,19 +115,15 @@ QtObject {
             if (colon >= 0) {
                 res.terms.push({
                     field: a0.slice(0, colon).toLowerCase(),
-                    value: (args[0].q ? a0.slice(colon + 1)
-                                      : args.map(a => a.v).join(" ").slice(colon + 1)).toLowerCase(),
+                    value: a0.slice(colon + 1).toLowerCase(),
                     quoted: args[0].q
                 });
             } else {
-                res.terms.push({ text: args.map(a => a.v).join(" ").toLowerCase(), quoted: args[0].q });
+                res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q });
             }
         } else if (verb === "/s") {
-            let dir = "asc";
-            if (args.length > 1) {
-                const d = args[1].v.toLowerCase();
-                if ("descending".indexOf(d) === 0 && d.length > 0) dir = "desc";
-            }
+            const dir = (args.length > 1 && root._isDirectionLike(args[1].v)
+                         && "descending".indexOf(args[1].v.toLowerCase()) === 0) ? "desc" : "asc";
             res.sort = { field: a0.toLowerCase(), dir: dir };
         } else {
             const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");

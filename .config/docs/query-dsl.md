@@ -33,10 +33,10 @@ for winswitch and the GTK pickers.
 Every picker shows a **result set** (windows, panes, clipboard entries,
 scrollback-bearing windows, ...) with, potentially, several named
 **types** per entry - a "type" here is any one field that can be filtered
-on or shown as a column: a flat one (`title`, `class`, `workspace`,
-`pid`; `type`, `date`, `app`) or a subfield of a **group** (winswitch's
-`tmux.session`, `claude.title`, ...). The DSL does three orthogonal
-things to that set, and nothing else:
+on or shown as a column: a flat one (`title`, `workspace`, `pid`; `type`,
+`date`, `app`) or a subfield of a **group** (winswitch's `tmux.session`,
+`claude.title`, ...). The DSL does three orthogonal things to that set,
+and nothing else:
 
 - **filter rows** - which entries survive (`/filter-value`, and bare
   typed text, which is the same thing)
@@ -65,34 +65,96 @@ bareword           anything else - an implicit /filter-value argument
 ```
 
 A command's arguments are the whitespace-separated tokens that follow it,
-up to the next `/verb` (or end of input). `/sort date descending` is one
-command with two args; `/filter-value foo /sort date` is two commands.
+up to the next `/verb`, end of input, or the verb's own fixed **arity**
+(max argument tokens it will ever take) - whichever comes first. Every
+verb has a small fixed arity (see the table below), and it never reaches
+past that many tokens even when nothing else stops it early. A token past
+a verb's arity is not absorbed by that command - it resumes as an
+ordinary token, exactly as if the command had ended right there. Since a
+plain token with no verb in front of it is a bare `/filter-value`, this
+means **`/fv` is the fallback**: any token left over once every other
+verb has taken only the arguments it actually needs becomes a row filter,
+never silently dropped.
+
+`/sort date descending` is one command with both its args inside `/sort`'s
+arity of 2 (path, optional direction). `/filter-value foo /sort date` is
+two commands. `/sort name blender` is *two* things, not one: `/sort`
+takes `name` as its path, then looks at `blender` for a direction - but
+`blender` doesn't substring-match `ascending`/`descending`, so `/sort`
+doesn't consume it, and `blender` falls through to become its own
+`/fv blender` term. Typing `/s nam blen` therefore sorts by name (`nam`
+resolves to `name`) *and* filters down to rows matching `blen` - the two
+verbs never fight over the same token, and a filter word typed after a
+sort's path is never silently swallowed just because it happened to sit
+inside `/sort`'s argument span.
 
 ### Verbs
 
-| Short | Long | Axis | Effect |
-|---|---|---|---|
-| `/fv` | `/filter-value` | rows | keep rows whose value matches the argument; drop the rest |
-| `/ft` | `/filter-type` | columns | keep only the columns whose *name* matches; hide the rest |
-| `/at` | `/add-type` | columns | add the columns whose name matches into view |
-| `/rt` | `/remove-type` | columns | drop the columns whose name matches from view |
-| `/s` | `/sort` | order | order rows by one type, optional direction |
-| `/rv` | `/reverse` | order | reverse whatever order is currently in effect |
+| Short | Long | Axis | Arity | Effect |
+|---|---|---|---|---|
+| `/fv` | `/filter-value` | rows | 1 | keep rows whose value matches the argument; drop the rest |
+| `/ft` | `/filter-type` | columns | 1 | keep only the columns whose *name* matches; hide the rest |
+| `/at` | `/add-type` | columns | 1 | add the columns whose name matches into view |
+| `/rt` | `/remove-type` | columns | 1 | drop the columns whose name matches from view |
+| `/s` | `/sort` | order | 1-2 | order rows by one type, optional direction |
+| `/rv` | `/reverse` | order | 0 | reverse whatever order is currently in effect |
 
-**Verb names are exact-matched**, against exactly the six short forms and
-six long forms above - nothing else, no substring or fuzzy resolution on
-the verb itself. That is the entire reason the grammar moved to verbs:
-the old `/claude.title:value` form made a type name (`claude`) sit in the
-same position a command would, so every new command risked colliding with
-some picker's field list. A closed, exact-matched verb vocabulary up
-front removes that class of ambiguity permanently. An unrecognised
-`/xyz` token is inert (contributes nothing) rather than an error or a
-literal search - same "half-typed stays a no-op" rule the rest of the
-grammar follows.
+**Arity is a ceiling, not a requirement** - it's the most tokens a verb
+will ever reach for, not how many it must have. `/sort`'s second slot is
+additionally *conditional*: it only counts as consumed if the token
+there actually substring-matches `ascending`/`descending`; otherwise the
+verb stops at arity 1 (path only) and the next token is free again. A
+verb with 1 token of arity (`/fv`, `/ft`, `/at`, `/rt`) never looks past
+its single argument, no matter how many bare tokens follow before the
+next `/verb` or end of input - see Grammar, above, for what happens to
+the rest.
 
-Both the short and long form of a verb are always accepted and mean
+**Verb names are exact-matched** against the six short/long forms above
+plus, per picker, any **field-verbs** it defines (below) - nothing else,
+no substring or fuzzy resolution on the verb itself, ever. That's the
+one property every extension has to keep: the old `/claude.title:value`
+form made a type name (`claude`) sit in the same position a command
+would, so every new command risked colliding with some picker's field
+list. Exact-matching the verb *token* - however many verbs exist - keeps
+that ambiguity closed permanently; it's a *typed argument*'s own
+substring resolution (`/at cla` -> every type containing `cla`) that's
+allowed to be fuzzy, precisely because argument position and verb
+position are kept so strictly separate. An unrecognised `/xyz` token is
+inert (contributes nothing) rather than an error or a literal search -
+same "half-typed stays a no-op" rule the rest of the grammar follows.
+
+Both the short and long form of a core verb are always accepted and mean
 exactly the same thing; the short forms are what the autocomplete offers
 first, since the box is typed into far more than it is read.
+
+**Field-verbs.** The six core verbs are fixed and shared by every picker;
+beyond them, a picker may register `group` and `group.sub` themselves as
+additional verbs - exact-matched the same way, one per real group/
+subfield name, never invented or substring-derived. Each is sugar for
+`/fv` scoped to that one field: `/claude.contents value` and
+`/fv claude.contents:value` mean the same thing, and either form with no
+value at all (`/claude.contents`, `/fv claude.contents`) is an existence
+check on that one field instead. A field-verb takes at most one argument
+token (0 = existence, 1 = substring value), and a value glued directly
+onto the verb with a colon (`/claude.contents:value`, no space) is
+tolerated too, for anyone reaching for `/fv`'s own `path:value` habit -
+the colon is just punctuation there, never a path separator, since the
+verb itself already named the field.
+
+A bare `group` field-verb (no `.sub`) defaults to that group's own
+**verb default** - deliberately a *separate* setting from the group's
+general colon-form default (what `/fv group:value` falls back to, see
+Type paths below). winswitch is the reference implementation: `/claude`
+(bare) is sugar for `/claude.contents` specifically - transcript content
+is far more useful to search by default than the title, which is what
+the general `/fv claude:value` colon form still defaults to - while
+`/tmux` keeps `.title`, matching the general default there (tmux has
+nothing more useful to default to). `/claude.title`, `/claude.path`,
+`/claude.time` (a `date`-shaped age bucket, see the comparator section
+below) and `/claude.contents` are each their own exact-matched verb the
+same way; `/tmux.session`, `/tmux.window`, `/tmux.title` mirror it for
+the tmux group. Other pickers are free to add their own field-verbs the
+same way as their own field lists grow.
 
 ### Type paths
 
@@ -174,9 +236,12 @@ a silent no-op.
 
 Defaults per picker:
 
-- **winswitch**: `workspace` and `title` (today's `#N Title` grid label).
-  `class`, `pid`, and every `tmux`/`claude` subfield are hidden until an
-  `/at` (or a surviving `/ft`) brings them in.
+- **winswitch**: `title` alone (today's grid label). `workspace`, `pid`,
+  and every `tmux`/`claude` subfield are hidden until an `/at` (or a
+  surviving `/ft`) brings them in. There is no `class` type at all - it
+  wasn't a useful column or filter key, so it was dropped from the type
+  registry entirely (it still contributes to the free-text haystack
+  alongside `title`, same as always - see `/filter-value`, above).
 - **clipboard-picker / notification-picker**: nothing beyond the entry's
   own preview text or thumbnail. `type`/`date`/`app` appear only once
   added.
@@ -195,9 +260,15 @@ Reorder the survivors; never filter or hide.
 
 - **`/sort path [direction]`** - order rows by the single type `path`
   resolves to (it must resolve to exactly one - `claude.*` is not valid
-  here, a sort key is one field). `direction` substring-matches
-  `ascending` / `descending` (so `asc` / `desc` / `de` all work),
-  defaulting to `ascending`. Only the **last** `/sort` in a query takes
+  here, a sort key is one field). The token after `path`, if there is
+  one, is only taken as `direction` when it substring-matches
+  `ascending` / `descending` (so `asc` / `desc` / `de` all work); if it
+  doesn't match either, `/sort` stops at `path` (direction defaults to
+  `ascending`) and that token is never consumed - it falls through and
+  is parsed from scratch, typically landing as its own `/fv` term (see
+  Grammar). This is what makes `/s name blender` sort by `name` *and*
+  filter to `blender`, instead of `blender` silently vanishing as a
+  rejected direction argument. Only the **last** `/sort` in a query takes
   effect (replace, not stack). Absent entirely, the picker's own default
   order stands (MRU, cliphist recency, winswitch focus-history, BM25
   score). Honoured by winswitch and focus-picker; inert in
@@ -218,8 +289,8 @@ values being compared:
 - **Age buckets** (`date`, from `humanize_ago` - `"30s"`, `"5m"`, `"3h"`,
   `"2d"`): comparing the strings is nonsense across units. Both sides
   match `^\d+[smhd]$` -> convert to seconds and compare that.
-- Otherwise -> lexicographic (correct already for `title` / `class` /
-  `app` / `type`).
+- Otherwise -> lexicographic (correct already for `title` / `app` /
+  `type`).
 
 **The direction trap.** `date`'s stored value is an *age* (seconds ago) -
 smaller means more recent. `/sort date descending` means "newest first"
@@ -357,6 +428,15 @@ predictable, and at these corpus sizes the looseness bought nothing.
 - **Every picker keeps one plain-typing default with no syntax at all.**
   Bare text is always `/filter-value` over the free-text haystack. The
   DSL is additive, never a wall a casual user has to learn first.
+- **`/filter-value` is the universal fallback, not just the no-syntax
+  default.** Every verb has a fixed arity (max tokens it consumes,
+  `/sort`'s direction slot additionally conditional on resolving); a
+  token beyond what the *preceding* verb actually needed is never
+  swallowed into that command just because no new `/verb` intervened -
+  it resumes as an ordinary token and, if nothing else claims it, becomes
+  its own `/fv` term. `/s name blender` sorts by `name` and filters to
+  `blender`, rather than losing `blender` as a discarded sort-direction
+  argument.
 - **Verbs are a closed, exact-matched vocabulary.** This is the point of
   the redesign - a command can never be confused for a type name.
 - **No real regex anywhere.** Every match is substring containment (or,
