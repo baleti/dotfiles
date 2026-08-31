@@ -31,20 +31,22 @@ Rectangle {
     // brand's own 15deg with only saturation scaled toward/away from it by
     // theme warmth -- still read as an outside color forced to blend in,
     // not something that belongs to this theme). Instead: search the
-    // *current* generated scheme's own colors (Theme.seriesPalette +
-    // Theme.intensityRamp -- both come straight from
-    // ~/.local/state/quickshell/scheme.json, gen-theme.py's per-wallpaper
-    // output, see theming.md) for whichever one already sits closest to
-    // orange, and use that swatch exactly as generated. gen-theme.py's own
-    // ramp is documented to trend "toward red-orange" at its hot end, and
-    // seriesPalette spreads 8 hues around the wheel, so there's reliably
-    // something in the ballpark even on a theme whose primary is nowhere
-    // near orange (confirmed on the current blue-primary theme: closest is
-    // seriesPalette's own #eca200, a genuine amber). Theme.orange itself
-    // is deliberately excluded -- it's a fixed hardcoded fallback color
-    // (see Theme.qml), not something generated from the wallpaper, so
-    // using it here would be the same "not actually this theme's own
-    // color" problem in a different disguise.
+    // *current* generated scheme's own colors for whichever one already
+    // sits closest to orange, and use that swatch exactly as generated.
+    // Theme.orange itself is deliberately excluded -- it's a fixed
+    // hardcoded fallback color (see Theme.qml), not something generated
+    // from the wallpaper, so using it here would be the same "not
+    // actually this theme's own color" problem in a different disguise.
+    //
+    // The candidate list originally left out Theme.cyan/Theme.green
+    // (scheme.primary/secondary) -- only searching seriesPalette +
+    // intensityRamp picked seriesPalette's #e8a400 (hue 42, into yellow
+    // territory) on a scheme where scheme.secondary (Theme.green, despite
+    // the name -- it's just whatever hue the generator landed on) was
+    // #ffb693 (hue 19, genuinely orange, reported "too yellow, doesn't
+    // match any theme color" 2026-08-31). Both accents are just as
+    // legitimately theme-generated as the series/ramp swatches, so they
+    // belong in the search too.
     function rgbToHsl(c) {
         const r = c.r, g = c.g, b = c.b;
         const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -65,7 +67,7 @@ Rectangle {
 
     readonly property color logoColor: {
         const targetH = 30; // canonical "orange" reference hue
-        const candidates = Theme.seriesPalette.concat(Theme.intensityRamp);
+        const candidates = Theme.seriesPalette.concat(Theme.intensityRamp, [Theme.cyan, Theme.green]);
         let best = candidates[0], bestDist = 360;
         for (const hex of candidates) {
             const hsl = root.rgbToHsl(Qt.color(hex));
