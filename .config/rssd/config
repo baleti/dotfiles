@@ -26,3 +26,20 @@ timeout = 20
 # forget a seen item after this many days (keeps state file small;
 # a feed that goes quiet for longer then returns may re-notify old items)
 prune_days = 90
+
+# how long the reader's article archive (~/.cache/rssd/items.jsonl) is kept
+archive_days = 30
+
+# per-source favicons, shown as the notification icon (generic rss glyph when
+# a feed has none); re-checked at most this often
+fetch_favicons = true
+favicon_refresh_days = 30
+
+# article lead images:
+#   fetch_images  - download + cache them (for the reader), size-capped and
+#                   validated by magic bytes; a plain GET to the publisher's
+#                   CDN, same host that served the feed
+#   notify_images - also show that image on the notification card
+fetch_images = true
+notify_images = true
+image_max_bytes = 3000000

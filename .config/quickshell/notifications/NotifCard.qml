@@ -21,14 +21,21 @@ Rectangle {
     readonly property int urgency: notification.urgency ?? 1
     readonly property bool critical: urgency === 2
     readonly property bool low: urgency === 0
+    readonly property bool isRss: (notification.app_name ?? "") === "rssd"
     readonly property string defaultAction: notification.default_action ?? ""
     // Buttons for every action except the invisible "default" one.
     readonly property var buttonActions:
         (notification.actions ?? []).filter(a => a.key !== "default")
 
     width: cardWidth
-    implicitHeight: buttons.visible ? buttons.y + buttons.height + 12
-                                    : bodyFlick.y + bodyFlick.height + 12
+    implicitHeight: {
+        let bottom = bodyFlick.y + (bodyFlick.visible ? bodyFlick.height : 0);
+        if (leadImage.visible)
+            bottom = leadImage.y + leadImage.height;
+        if (buttons.visible)
+            bottom = buttons.y + buttons.height;
+        return Math.max(bottom + 12, icon.y + icon.height + 12);
+    }
     radius: Theme.rounding
     color: root.critical ? Qt.rgba(0.11, 0.06, 0.06, 0.94) : Theme.bgAlpha
     border.width: 2
@@ -48,6 +55,19 @@ Rectangle {
         return Quickshell.iconPath(ic, root.critical ? "dialog-warning" : "dialog-information");
     }
 
+    // The card's "large image" (article art). notifyd keeps it separate from
+    // `icon`; skip it when it's the same file the icon already shows.
+    readonly property string imageSource: {
+        const im = (root.notification.image ?? "").toString();
+        if (im.length === 0 || im === (root.notification.icon ?? "").toString())
+            return "";
+        if (im.startsWith("file://"))
+            return im;
+        if (im.startsWith("/"))
+            return "file://" + im;
+        return "";
+    }
+
     Image {
         id: icon
         x: 12
@@ -61,6 +81,28 @@ Rectangle {
         source: root.iconSource
         sourceSize.width: 64
         sourceSize.height: 64
+
+        // rssd cards: source favicon (this Image) + a small RSS badge, so a
+        // glance says "feed item from <source>" before you read the text.
+        Rectangle {
+            visible: root.isRss
+            width: 16
+            height: 16
+            radius: 8
+            color: root.critical ? Qt.rgba(0.11, 0.06, 0.06, 1) : Theme.bg
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.rightMargin: -4
+            anchors.bottomMargin: -4
+
+            Text {
+                anchors.centerIn: parent
+                text: Icons.rss
+                font.family: Theme.iconFontFamily
+                font.pixelSize: 10
+                color: Theme.orange
+            }
+        }
     }
 
     Text {
@@ -104,11 +146,41 @@ Rectangle {
         }
     }
 
+    // Article lead image (rssd, and any app that sends an image hint).
+    Rectangle {
+        id: leadImage
+        x: summary.x
+        y: bodyFlick.y + (bodyFlick.visible ? bodyFlick.height : 0)
+                       + (root.imageSource !== "" ? 8 : 0)
+        width: summary.width
+        height: visible ? 132 : 0
+        radius: Theme.rounding - 4
+        clip: true
+        color: "transparent"
+        visible: root.imageSource !== "" && img.status === Image.Ready
+
+        Image {
+            id: img
+            anchors.fill: parent
+            source: root.imageSource
+            fillMode: Image.PreserveAspectCrop
+            asynchronous: true
+            smooth: true
+            sourceSize.width: 640
+        }
+    }
+
     // Action buttons.
     Row {
         id: buttons
         x: summary.x
-        y: bodyFlick.y + (bodyFlick.visible ? bodyFlick.height + 8 : 0)
+        y: {
+            if (leadImage.visible)
+                return leadImage.y + leadImage.height + 8;
+            if (bodyFlick.visible)
+                return bodyFlick.y + bodyFlick.height + 8;
+            return bodyFlick.y;
+        }
         width: summary.width
         spacing: 6
         visible: root.buttonActions.length > 0

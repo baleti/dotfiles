@@ -23,6 +23,10 @@ pub struct Notification {
     /// path, or a `~/.cache/notifyd/icons/<id>.png` written from an
     /// image-data hint. quickshell renders whichever it is.
     pub icon: String,
+    /// The "large image" for the card (article art, album art, ...), distinct
+    /// from `icon`. main.rs's `resolve_image`: rssd's private x-rssd-image-path
+    /// hint, or the spec's image-path / image-data. "" when there's none.
+    pub image: String,
     /// Flat [key, label, key, label, ...] pairs, exactly as the spec passes
     /// them.
     pub actions: Vec<String>,

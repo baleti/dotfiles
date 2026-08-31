@@ -83,6 +83,7 @@ impl RenderManager {
                         "summary": n.summary,
                         "body": n.body,
                         "icon": n.icon,
+                        "image": n.image,
                         "urgency": n.urgency,
                         "timestamp": n.timestamp,
                         "actions": actions,
