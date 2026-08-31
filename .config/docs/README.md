@@ -45,6 +45,10 @@ version-controlled here and is out of scope for this doc set.
   toolkit supports it.
 - **Shell**: zsh with custom Emacs-style motions; tmux with a custom MRU
   session/window/pane navigation layer and resurrect/continuum wired in.
+- **Personal utility scripts**: `bin/` — tracked here, but deliberately
+  *not* on `$PATH` (invoked by explicit path, e.g. from a keybind or
+  another script), unlike `.local/bin` which holds pip/pipx-installed
+  console scripts and symlinks, not hand-authored tools.
 
 ## Regenerating/updating this doc set
 
