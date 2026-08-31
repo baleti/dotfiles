@@ -7,8 +7,8 @@
 //! that opens a command and consumes the tokens after it as arguments, or
 //! a bare value that is an implicit `/filter-value` term.
 //!
-//! Six *core* verbs, each exact-matched against a short and a long form -
-//! no fuzzy resolution on the verb itself, that is the entire reason the
+//! Six verbs, each exact-matched against a short and a long form - no
+//! fuzzy resolution on the verb itself, that is the entire reason the
 //! grammar is verb-first (a type name can never be mistaken for a
 //! command):
 //!
@@ -19,25 +19,27 @@
 //!   /s  /sort           order rows by one type, optional direction
 //!   /rv /reverse        reverse the current order
 //!
-//! Beyond those six, every `group` and `group.sub` in `GROUPS` is *also* a
-//! recognized verb - a `/fv`-shorthand `resolve_field_verb` exact-matches
-//! (never substring-resolves) against real group/subfield names, so this
-//! is a growing-but-still-closed vocabulary rather than a reopening of the
-//! old ambiguity the verb-first rewrite closed (a *typed argument* like
-//! `/at cla` still only substring-resolves against known names, same as
-//! ever - it's specifically verb *position* that never does fuzzy
-//! matching). `/claude value` and `/claude.contents value` both filter
-//! rows whose `claude.contents` contains `value` (`/claude` bare is sugar
-//! for the group's own `GROUP_VERB_DEFAULT`, distinct field from
-//! `GROUP_DEFAULT_SUB` used by the general `/fv group:value` colon form);
-//! with no value at all, either is an existence check on that one field.
-//! See `resolve_field_verb` and `ParsedVerb`.
+//! Every path-taking verb (all but `/rv`) can carry its type path glued
+//! directly onto the verb with a second `/` instead of as a separate
+//! space-separated argument - `/fv/claude.title foo` means exactly what
+//! `/fv claude.title:foo` already did, no colon involved. `tok_verb`
+//! returns `(Verb, Option<via>)` for this; see query-dsl.md's "Via paths"
+//! for the full reasoning (this replaced an earlier, since-reverted
+//! design that registered `/claude`, `/claude.title` etc. as their own
+//! verbs - `/fv/claude.title` is what that was really reaching for).
+//! `/ft`'s via path additionally falls back to a glob **value** pattern
+//! (`glob_match`) when it doesn't resolve to any known type/group at all
+//! - `/ft/64*` shows whichever column(s) actually have a matching value
+//! right now, a discovery reset rather than a narrow-down (see
+//! `fields_matching_value_pattern`).
 //!
 //! Everything that is *not* a verb - type-path segments, filter values,
 //! sort directions - is matched by case-insensitive substring
 //! containment, with every match unioned for a path segment. No
 //! subsequence, no regex; `*` (as in `claude.*`) is one hand-parsed
-//! reserved segment meaning "every subfield of the group".
+//! reserved segment meaning "every subfield of the group" - except inside
+//! an `/ft` value pattern, where `*` is a real glob wildcard instead (see
+//! `glob_match`).
 //!
 //! Three orthogonal axes, three entry points: `matches_str` (row
 //! filters), `active_columns` (column verbs, left-to-right pipeline over
@@ -60,21 +62,18 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("claude", &["title", "path", "session", "time", "contents"]),
 ];
 
-/// What a bare `group` path resolves its group to for *filtering and
-/// sorting* (a column verb instead takes every subfield - see
-/// `resolve_column_fields`). This is the general `/fv group:value` (colon
-/// form) default - the dedicated `/group` filter-verb shorthand has its
-/// own, separate default, see `GROUP_VERB_DEFAULT`.
-const GROUP_DEFAULT_SUB: &str = "title";
+/// Per-group default subfield for a bare `group` path with no explicit
+/// `.sub` - what `/fv group:value` (or `/fv/group value`) falls back to
+/// for *filtering and sorting* (a column verb instead takes every
+/// subfield - see `resolve_column_fields`). `claude` defaults to
+/// `contents`: transcript text is far more useful to search or sort by
+/// default than the title. `tmux` defaults to `title` - nothing more
+/// useful to default to there.
+const GROUP_DEFAULT_SUB: &[(&str, &str)] = &[("tmux", "title"), ("claude", "contents")];
 
-/// Per-group default field for that group's own bare `/group` filter-verb
-/// shorthand (see `resolve_field_verb`) - deliberately independent of
-/// `GROUP_DEFAULT_SUB`. `/claude` bare is sugar for `/claude.contents`
-/// specifically: transcript content is far more useful to search by
-/// default than the title, which the general colon form still defaults
-/// to. `/tmux` keeps title, matching the general default - tmux has
-/// nothing more useful to default to.
-const GROUP_VERB_DEFAULT: &[(&str, &str)] = &[("claude", "contents"), ("tmux", "title")];
+fn group_default_sub(group: &str) -> &'static str {
+    GROUP_DEFAULT_SUB.iter().find(|(g, _)| *g == group).map(|(_, s)| *s).unwrap_or("")
+}
 
 const DIRECTIONS: &[&str] = &["ascending", "descending"];
 
@@ -121,29 +120,15 @@ const VERB_FORMS: &[&str] = &[
     "reverse",
 ];
 
-/// True if `s` is a non-empty prefix of some verb form (core or
-/// field-verb) - i.e. a `/s...` token that could still become a verb once
-/// more is typed, so it stays inert (mid-typing) rather than being
-/// searched for literally. A `/xyz` that is neither a verb nor a prefix of
-/// one (e.g. `/usr/bin`) is real text and does get searched.
+/// True if `s` is a non-empty prefix of some verb form - i.e. a `/s...`
+/// token that could still become a verb once more is typed, so it stays
+/// inert (mid-typing) rather than being searched for literally. A `/xyz`
+/// that is neither a verb nor a prefix of one (e.g. `/usr/bin`) is real
+/// text and does get searched. Only ever checked against the verb-name
+/// portion of a token - a via path glued on after a second `/` is a
+/// separate concern `tok_verb`/`starts_command` handle themselves.
 fn is_verb_prefix(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-    if VERB_FORMS.iter().any(|v| v.starts_with(s)) {
-        return true;
-    }
-    for (g, subs) in GROUPS {
-        if g.starts_with(s) {
-            return true;
-        }
-        for sub in *subs {
-            if format!("{g}.{sub}").starts_with(s) {
-                return true;
-            }
-        }
-    }
-    false
+    !s.is_empty() && VERB_FORMS.iter().any(|v| v.starts_with(s))
 }
 
 /// Case-insensitive substring containment. Empty needle always matches.
@@ -214,66 +199,6 @@ impl ResolvedField {
     }
 }
 
-/// Resolves a verb-position token's text (after stripping the leading `/`,
-/// already confirmed not one of the six core verbs) to a field-scoped
-/// filter shorthand: bare `group` (that group's `GROUP_VERB_DEFAULT`
-/// subfield) or `group.sub` (that exact subfield), each optionally
-/// followed by `:value` glued directly onto the same token - tolerated
-/// for anyone typing `/claude.contents:value` out of `/fv path:value`
-/// habit, even though the field-verb's own value normally lives in the
-/// *next* token (`/claude.contents value`, no colon needed - see
-/// `parse`). Path resolution is exact-matched against real group/subfield
-/// names only - never substring - so this can never collide with an
-/// in-progress verb the way a type-path *argument*'s substring resolution
-/// can (see this module's doc comment).
-fn resolve_field_verb(rest: &str) -> Option<(ResolvedField, Option<&str>)> {
-    let (path, inline_value) = match rest.split_once(':') {
-        Some((p, v)) => (p, Some(v)),
-        None => (rest, None),
-    };
-    let field = match path.split_once('.') {
-        Some((g, s)) => {
-            let entry = GROUPS.iter().find(|e| e.0 == g)?;
-            let sub = entry.1.iter().copied().find(|&x| x == s)?;
-            ResolvedField::Group(entry.0, sub)
-        }
-        None => {
-            let entry = GROUPS.iter().find(|e| e.0 == path)?;
-            let default = GROUP_VERB_DEFAULT.iter().find(|d| d.0 == entry.0)?;
-            ResolvedField::Group(entry.0, default.1)
-        }
-    };
-    Some((field, inline_value))
-}
-
-/// Every field-verb name beyond the six core verbs - `group` and
-/// `group.sub` for each group in `GROUPS` - as candidates for the
-/// verb-stage popup (substring-narrowed there, same as the core verbs'
-/// short forms; the real per-token resolution in `resolve_field_verb`
-/// above is still an exact match, so this only widens what's *offered*,
-/// never what's *accepted*).
-fn field_verb_names() -> Vec<String> {
-    let mut out = Vec::new();
-    for (g, subs) in GROUPS {
-        out.push(g.to_string());
-        for s in *subs {
-            out.push(format!("{g}.{s}"));
-        }
-    }
-    out
-}
-
-/// A verb-position token, resolved to either one of the six core verbs or
-/// a field-scoped filter shorthand (see `resolve_field_verb`) - the latter
-/// carrying its value too, when one was glued directly onto the token
-/// with a colon (`/claude.contents:value`) rather than living in the next
-/// token.
-#[derive(Clone, PartialEq, Eq, Debug)]
-enum ParsedVerb {
-    Core(Verb),
-    Field(ResolvedField, Option<String>),
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Direction {
     Ascending,
@@ -289,23 +214,20 @@ pub struct Actions {
     pub reverse: bool,
 }
 
-/// A parsed row-filter term (from a bare word, a `/fv` command, or a
-/// field-verb shorthand like `/claude.contents`).
+/// A parsed row-filter term, from a bare word or a `/fv` command (via
+/// path or space form - both funnel through `filter_term`, see `parse`).
 enum FilterTerm {
     /// Substring over the free-text haystack (title + class).
     Free(String),
     /// `path:value` - substring `value` against every type `path`
-    /// resolves to.
+    /// resolves to. Reached either by an actual colon in the argument
+    /// (`/fv path:value`, or bare `path:value`) or by reconstructing this
+    /// same shape from a via path plus a following bare token
+    /// (`/fv/path value` - see `parse`), so both spellings share one
+    /// matching rule.
     Scoped { path: String, value: String },
     /// Colonless `group` that resolved to a group - existence check.
     GroupExists(String),
-    /// A field-verb shorthand (`/claude.contents value`) with its value -
-    /// substring `value` against that one already-resolved field, no path
-    /// resolution needed (the verb itself named the field).
-    FieldValue { field: ResolvedField, value: String },
-    /// A field-verb shorthand with no value (`/claude.title` alone) -
-    /// existence check on that one field.
-    FieldExists(ResolvedField),
 }
 
 /// A column verb and its raw path argument.
@@ -364,29 +286,34 @@ fn tokenize(query: &str) -> Vec<Tok> {
     tokens
 }
 
-/// The verb a token names - core or field-verb - or `None` if it isn't a
-/// `/verb` (or is a quote-led literal).
-fn tok_verb(tok: &Tok) -> Option<ParsedVerb> {
+/// The verb a token names, plus its via path if one was glued on with a
+/// second `/` (`/fv/claude.title` -> `(FilterValue, Some("claude.title"))`
+/// - see query-dsl.md's "Via paths"). `None` if the token isn't a `/verb`
+/// at all (or is a quote-led literal).
+fn tok_verb(tok: &Tok) -> Option<(Verb, Option<&str>)> {
     if tok.lead_quote {
         return None;
     }
     let rest = tok.text.strip_prefix('/')?;
-    if let Some(v) = Verb::parse(rest) {
-        return Some(ParsedVerb::Core(v));
+    match rest.split_once('/') {
+        Some((name, via)) => Verb::parse(name).map(|v| (v, Some(via))),
+        None => Verb::parse(rest).map(|v| (v, None)),
     }
-    resolve_field_verb(rest).map(|(field, val)| ParsedVerb::Field(field, val.map(str::to_string)))
 }
 
 /// True if a token would begin (or continue typing) a command rather than
-/// serve as an argument - a complete `/verb` (core or field-verb) or a
-/// `/prefix` still on its way to being one. A literal `/usr/bin` is
-/// neither, so it *can* be an argument.
+/// serve as an argument - a complete `/verb` (with or without a via path
+/// glued on) or a `/prefix` still on its way to being one. A literal
+/// `/usr/bin` is neither, so it *can* be an argument.
 fn starts_command(tok: &Tok) -> bool {
     if tok.lead_quote {
         return false;
     }
     match tok.text.strip_prefix('/') {
-        Some(rest) => Verb::parse(rest).is_some() || resolve_field_verb(rest).is_some() || is_verb_prefix(rest),
+        Some(rest) => {
+            let name = rest.split_once('/').map(|(n, _)| n).unwrap_or(rest);
+            Verb::parse(name).is_some() || is_verb_prefix(rest)
+        }
         None => false,
     }
 }
@@ -434,7 +361,7 @@ fn resolve_filter_fields(path: &str) -> Vec<ResolvedField> {
         (seg, None) => {
             let mut out: Vec<ResolvedField> =
                 COLUMNS.iter().copied().filter(|c| substr(seg, c)).map(ResolvedField::Flat).collect();
-            out.extend(resolve_groups(seg).into_iter().map(|g| ResolvedField::Group(g, GROUP_DEFAULT_SUB)));
+            out.extend(resolve_groups(seg).into_iter().map(|g| ResolvedField::Group(g, group_default_sub(g))));
             out
         }
     }
@@ -478,7 +405,7 @@ fn resolve_one(path: &str) -> Option<ResolvedField> {
         (seg, None) => {
             let mut c: Vec<ResolvedField> =
                 COLUMNS.iter().copied().filter(|x| substr(seg, x)).map(ResolvedField::Flat).collect();
-            c.extend(resolve_groups(seg).into_iter().map(|g| ResolvedField::Group(g, GROUP_DEFAULT_SUB)));
+            c.extend(resolve_groups(seg).into_iter().map(|g| ResolvedField::Group(g, group_default_sub(g))));
             match c[..] {
                 [only] => Some(only),
                 _ => None,
@@ -493,7 +420,10 @@ fn resolve_one(path: &str) -> Option<ResolvedField> {
 /// recompute per keystroke.
 struct Parsed {
     filters: Vec<FilterTerm>,
-    col_ops: Vec<(ColOp, String)>,
+    /// `(op, path, is_via)` - `is_via` is only ever consulted for
+    /// `ColOp::Filter` (see `active_columns`'s value-pattern fallback);
+    /// `/at`/`/rt` carry it too, for symmetry, but never act on it.
+    col_ops: Vec<(ColOp, String, bool)>,
     sort: Option<(ResolvedField, Direction)>,
     reverse: bool,
 }
@@ -518,7 +448,7 @@ fn parse(query: &str) -> Parsed {
     let mut i = 0;
     while i < toks.len() {
         let tok = &toks[i];
-        let Some(pv) = tok_verb(tok) else {
+        let Some((verb, via)) = tok_verb(tok) else {
             // Not a verb. A `/prefix` still on its way to being one is
             // inert; anything else (a bare value, or a literal `/usr/bin`)
             // is an implicit /fv term.
@@ -532,37 +462,47 @@ fn parse(query: &str) -> Parsed {
         };
         i += 1;
 
-        let verb = match pv {
-            ParsedVerb::Field(field, Some(value)) => {
-                // Value was glued directly onto the verb token itself
-                // (`/claude.contents:value`) - already resolved by
-                // `resolve_field_verb`, nothing more to consume.
-                out.filters.push(FilterTerm::FieldValue { field, value });
-                continue;
-            }
-            ParsedVerb::Field(field, None) => {
-                // No inline value - 0 or 1 following arg: an existence
-                // check, or a substring value from the next token. A
-                // leading `:` there is tolerated and stripped too (e.g.
-                // `/claude.contents :value`, a stray space before the
-                // colon) - the field's already named by the verb itself,
-                // so the colon is just punctuation here either way, never
-                // a path separator.
-                if i < toks.len() && !starts_command(&toks[i]) {
-                    let raw = &toks[i].text;
-                    let value = raw.strip_prefix(':').unwrap_or(raw).to_string();
-                    out.filters.push(FilterTerm::FieldValue { field, value });
-                    i += 1;
-                } else {
-                    out.filters.push(FilterTerm::FieldExists(field));
+        if let Some(via) = via {
+            // Via form: the path lives in the verb token itself (see
+            // query-dsl.md's "Via paths"). Every verb still takes exactly
+            // the same *remaining* arguments it always did - just minus
+            // the path, since via already supplied it.
+            match verb {
+                Verb::FilterValue => {
+                    // No colon in this form - reconstruct the exact
+                    // "path:value" (or colonless "path") shape
+                    // `filter_term` already knows how to read, so both
+                    // spellings share one matching rule.
+                    if i < toks.len() && !starts_command(&toks[i]) {
+                        out.filters.push(filter_term(&format!("{via}:{}", toks[i].text)));
+                        i += 1;
+                    } else {
+                        out.filters.push(filter_term(via));
+                    }
                 }
-                continue;
+                Verb::FilterType => out.col_ops.push((ColOp::Filter, via.to_string(), true)),
+                Verb::AddType => out.col_ops.push((ColOp::Add, via.to_string(), true)),
+                Verb::RemoveType => out.col_ops.push((ColOp::Remove, via.to_string(), true)),
+                Verb::Sort => {
+                    let mut dir = Direction::Ascending;
+                    if i < toks.len() && !starts_command(&toks[i]) {
+                        if let Some(d) = parse_direction(&toks[i].text) {
+                            dir = d;
+                            i += 1;
+                        }
+                    }
+                    if let Some(field) = resolve_one(via) {
+                        out.sort = Some((field, dir));
+                    }
+                }
+                Verb::Reverse => out.reverse = true, // via is meaningless here - ignored, harmless
             }
-            ParsedVerb::Core(verb) => verb,
-        };
+            continue;
+        }
 
-        // Collect this verb's argument tokens: the following tokens that
-        // are not themselves commands, up to each verb's arity.
+        // Space form: collect this verb's argument tokens (the following
+        // tokens that are not themselves commands, up to each verb's
+        // arity).
         let mut args: Vec<String> = Vec::new();
         let max_args = match verb {
             Verb::Reverse => 0,
@@ -587,17 +527,17 @@ fn parse(query: &str) -> Parsed {
             }
             Verb::FilterType => {
                 if let Some(a) = args.first() {
-                    out.col_ops.push((ColOp::Filter, a.clone()));
+                    out.col_ops.push((ColOp::Filter, a.clone(), false));
                 }
             }
             Verb::AddType => {
                 if let Some(a) = args.first() {
-                    out.col_ops.push((ColOp::Add, a.clone()));
+                    out.col_ops.push((ColOp::Add, a.clone(), false));
                 }
             }
             Verb::RemoveType => {
                 if let Some(a) = args.first() {
-                    out.col_ops.push((ColOp::Remove, a.clone()));
+                    out.col_ops.push((ColOp::Remove, a.clone(), false));
                 }
             }
             Verb::Sort => {
@@ -635,8 +575,6 @@ fn term_matches(win: &Window, meta: &TmuxClaudeMeta, term: &FilterTerm) -> bool 
             let groups = resolve_groups(seg);
             !groups.is_empty() && groups.iter().any(|g| group_has_any_value(meta, g))
         }
-        FilterTerm::FieldValue { field, value } => substr(value, &field_value(win, meta, *field)),
-        FilterTerm::FieldExists(field) => !field_value(win, meta, *field).is_empty(),
     }
 }
 
@@ -649,13 +587,100 @@ pub fn matches_str(win: &Window, meta: &TmuxClaudeMeta, query: &str) -> bool {
 
 // --- axis 2: column visibility -----------------------------------------
 
+/// Every known field this picker has at all - every flat `COLUMNS` entry
+/// plus every subfield of every `GROUPS` entry, in declaration order.
+/// What the `/ft/<pattern>` value-fallback (below) searches across, since
+/// discovery has to consider fields that aren't even shown right now.
+fn every_field() -> Vec<ResolvedField> {
+    let mut out: Vec<ResolvedField> = COLUMNS.iter().copied().map(ResolvedField::Flat).collect();
+    for (g, subs) in GROUPS {
+        out.extend(subs.iter().map(|&s| ResolvedField::Group(g, s)));
+    }
+    out
+}
+
+/// Glob-matches `pattern` against `value`, case-insensitively. No `*` at
+/// all in `pattern` is plain substring containment, same as everywhere
+/// else in this DSL; a `*` anywhere switches to real glob anchoring
+/// (`64*` = starts with, `*64` = ends with, `*64*` = contains - same as
+/// plain substring). The one place in the whole grammar `*` means "match
+/// anything here" rather than the reserved "all subfields" path segment -
+/// see query-dsl.md's "/filter-type's via path can also be a value
+/// pattern."
+fn glob_match(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.to_lowercase();
+    let value = value.to_lowercase();
+    if !pattern.contains('*') {
+        return value.contains(&pattern);
+    }
+    let starts_wild = pattern.starts_with('*');
+    let ends_wild = pattern.ends_with('*');
+    let parts: Vec<&str> = pattern.split('*').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return true; // pattern is just "*" (or "**", ...) - matches anything
+    }
+    let mut pos = 0usize;
+    for (idx, part) in parts.iter().enumerate() {
+        let is_first = idx == 0;
+        let is_last = idx == parts.len() - 1;
+        if is_first && !starts_wild {
+            if !value[pos..].starts_with(part) {
+                return false;
+            }
+            pos += part.len();
+        } else if is_last && !ends_wild {
+            if !value[pos..].ends_with(part) {
+                return false;
+            }
+        } else {
+            match value[pos..].find(part) {
+                Some(found) => pos += found + part.len(),
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
+/// The `/ft/<pattern>` fallback: every known field (see `every_field`)
+/// that has at least one row whose value glob-matches `pattern`. A
+/// discovery reset, not a narrowing - the result *replaces* whatever
+/// columns were active before, since the point is "show me whichever
+/// column(s) actually have this value," not intersecting with what
+/// happened to be shown already.
+fn fields_matching_value_pattern(pattern: &str, windows: &[Window], metas: &[TmuxClaudeMeta]) -> Vec<ResolvedField> {
+    let empty = TmuxClaudeMeta::default();
+    every_field()
+        .into_iter()
+        .filter(|&f| {
+            windows.iter().enumerate().any(|(i, w)| {
+                let meta = metas.get(i).unwrap_or(&empty);
+                glob_match(pattern, &field_value(w, meta, f))
+            })
+        })
+        .collect()
+}
+
 /// Applies every column verb in `query`, left to right, to `defaults`.
 /// `/ft` intersects the running set with the matching fields, `/at`
-/// unions them in at the end, `/rt` subtracts them. See query-dsl.md.
-pub fn active_columns(query: &str, defaults: &[ResolvedField]) -> Vec<ResolvedField> {
+/// unions them in at the end, `/rt` subtracts them - unless a `/ft`'s via
+/// path doesn't resolve to any known field at all, in which case it
+/// falls back to the value-pattern discovery reset instead (see
+/// `fields_matching_value_pattern`); `windows`/`metas` are only ever
+/// touched for that one fallback case. See query-dsl.md.
+pub fn active_columns(
+    query: &str,
+    defaults: &[ResolvedField],
+    windows: &[Window],
+    metas: &[TmuxClaudeMeta],
+) -> Vec<ResolvedField> {
     let mut cols: Vec<ResolvedField> = defaults.to_vec();
-    for (op, path) in parse(query).col_ops {
+    for (op, path, is_via) in parse(query).col_ops {
         let fields = resolve_column_fields(&path);
+        if fields.is_empty() && is_via && matches!(op, ColOp::Filter) {
+            cols = fields_matching_value_pattern(&path, windows, metas);
+            continue;
+        }
         match op {
             ColOp::Filter => cols.retain(|c| fields.contains(c)),
             ColOp::Add => {
@@ -776,17 +801,25 @@ fn path_suggestions(fragment: &str) -> Vec<String> {
 pub enum Completion {
     /// `/frag` - a verb is being typed. Candidates are the short forms.
     Verb { start: usize, fragment: String },
-    /// A type path is being typed as `verb`'s argument.
-    TypePath { start: usize, verb: Verb, fragment: String },
-    /// `/fv path:frag`, `path` unambiguous - candidates are that type's
-    /// live values.
+    /// A type path is being typed as `verb`'s argument - either the
+    /// space-form argument, or (`via: true`) a path glued onto the verb
+    /// with a second `/` (`start` already points past that `/`, either
+    /// way). Accepting a via path never appends a colon even for `/fv`
+    /// (see `SuggestionKind::TypePath` in ui.rs) - the via form has no
+    /// colon in it at all.
+    TypePath { start: usize, verb: Verb, fragment: String, via: bool },
+    /// `/fv path:frag` - `path` unambiguous - candidates are that type's
+    /// live values; accepting has to reconstruct the whole `path:value`
+    /// (see `SuggestionKind::Value` in ui.rs), since `frag` here is only
+    /// the value half of one combined token.
     Value { start: usize, field: ResolvedField, fragment: String },
-    /// `/claude.contents frag` (a field-verb shorthand awaiting its value) -
-    /// candidates are that field's live values, same corpus as `Value`
-    /// above; kept as its own variant since accepting one splices back in
-    /// differently - just `value `, not `field:value ` (the verb already
-    /// named the field, see `resolve_field_verb`).
-    FieldValue { start: usize, field: ResolvedField, fragment: String },
+    /// A bare value with nothing to reconstruct on accept - either scoped
+    /// to one field (`/fv/path frag`, the via form already supplied the
+    /// path) or pooled across *every* field when `field` is `None`
+    /// (`/ft/frag` where `frag` doesn't resolve to any known type/group at
+    /// all - the value-pattern fallback, see query-dsl.md - the whole
+    /// point there is discovering *which* field has a match).
+    BareValue { start: usize, field: Option<ResolvedField>, fragment: String },
     /// `/s path frag`, `path` unambiguous - candidates are the directions.
     /// `field` is kept for call sites that want to show the resolved sort
     /// key alongside the direction choices.
@@ -799,11 +832,13 @@ pub enum Completion {
 enum Open {
     /// No command is waiting for more arguments.
     None,
-    /// `verb` has consumed `args` argument(s) and can take more.
+    /// `verb` has consumed `args` argument(s) and can take more. A via
+    /// path (see `tok_verb`) seeds this exactly as if it had already been
+    /// consumed as the first space-form argument - the two spellings are
+    /// indistinguishable from here on, which is what lets `/fv/path frag`
+    /// reach the same `Value` completion stage `/fv path frag` (space
+    /// form, path already typed) already did.
     Verb { verb: Verb, args: Vec<String> },
-    /// A field-verb shorthand (`/claude.contents`) just opened, awaiting
-    /// its one optional value slot.
-    Field(ResolvedField),
 }
 
 fn replay(context: &[Tok]) -> Open {
@@ -813,23 +848,14 @@ fn replay(context: &[Tok]) -> Open {
             match &mut open {
                 Open::None => {
                     match tok_verb(tok) {
-                        Some(ParsedVerb::Core(Verb::Reverse)) => {} // consumes nothing, stays closed
-                        Some(ParsedVerb::Core(v)) => open = Open::Verb { verb: v, args: Vec::new() },
-                        // An inline `:value` already resolved the whole
-                        // command - nothing left open for the next token.
-                        Some(ParsedVerb::Field(_, Some(_))) => {}
-                        Some(ParsedVerb::Field(field, None)) => open = Open::Field(field),
                         None => {} // bare value or inert /... - nothing to track
-                    }
-                    break;
-                }
-                Open::Field(_) => {
-                    // Whatever follows (a value, or the start of a new
-                    // command) closes this slot either way - it's a single
-                    // optional argument, never more.
-                    open = Open::None;
-                    if starts_command(tok) {
-                        continue; // reprocess this token as a fresh command
+                        Some((Verb::Reverse, _)) => {} // consumes nothing (via ignored), stays closed
+                        // FilterType/AddType/RemoveType have no argument
+                        // beyond their one path - a via already supplies
+                        // it, so there's nothing left open.
+                        Some((Verb::FilterType | Verb::AddType | Verb::RemoveType, Some(_))) => {}
+                        Some((v, Some(via))) => open = Open::Verb { verb: v, args: vec![via.to_string()] },
+                        Some((v, None)) => open = Open::Verb { verb: v, args: Vec::new() },
                     }
                     break;
                 }
@@ -882,49 +908,80 @@ pub fn completion_context(query: &str) -> Option<Completion> {
         return None; // a quoted literal offers nothing
     }
 
-    // Typing a verb: `/frag`, no space after it yet.
-    if let Some(verb_frag) = frag.strip_prefix('/') {
-        return Some(Completion::Verb { start, fragment: verb_frag.to_string() });
+    // Typing a verb: `/frag`, no space after it yet - or, if a verb name
+    // is already complete and a second `/` follows, typing *its* via
+    // path instead (`/ft/frag2`). `start` is adjusted past both `/`s so
+    // completion offers just the via path, not the verb name too.
+    if let Some(rest) = frag.strip_prefix('/') {
+        if let Some((name, via_frag)) = rest.split_once('/') {
+            let verb = Verb::parse(name)?;
+            let via_start = start + 1 + name.len() + 1; // "/" + name + "/"
+            if verb == Verb::FilterType && path_suggestions(via_frag).is_empty() {
+                // Doesn't resolve as any known type/group - offer the
+                // value-pattern fallback's own completion instead (see
+                // query-dsl.md).
+                return Some(Completion::BareValue { start: via_start, field: None, fragment: via_frag.to_string() });
+            }
+            return Some(Completion::TypePath { start: via_start, verb, fragment: via_frag.to_string(), via: true });
+        }
+        return Some(Completion::Verb { start, fragment: rest.to_string() });
     }
 
     // Otherwise `frag` is an argument. Which command owns it?
     match replay(context) {
-        Open::Field(field) => Some(Completion::FieldValue { start, field, fragment: frag }),
         Open::Verb { verb, args } if verb.takes_path() => {
             if verb == Verb::Sort && args.len() == 1 {
-                // path already given - `frag` is the direction, if the
-                // path resolved unambiguously; otherwise keep completing
-                // the (ambiguous) path.
+                // path already given (space-form or via) - `frag` is the
+                // direction, if the path resolved unambiguously;
+                // otherwise keep completing the (ambiguous) path.
                 return match resolve_one(&args[0]) {
                     Some(field) => Some(Completion::SortDirection { start, field, fragment: frag }),
-                    None => Some(Completion::TypePath { start, verb, fragment: frag }),
+                    None => Some(Completion::TypePath { start, verb, fragment: frag, via: false }),
                 };
             }
-            // `/fv path:frag` - value stage once a colon is present.
             if verb == Verb::FilterValue {
+                if args.len() == 1 {
+                    // via already supplied the path (`/fv/path `) - `frag`
+                    // is a bare value: same live-value corpus `/fv
+                    // path:frag` (below) draws from, but nothing to
+                    // reconstruct on accept (the path's already in the
+                    // query text, not part of this token).
+                    return match resolve_one(&args[0]) {
+                        Some(field) => Some(Completion::BareValue { start, field: Some(field), fragment: frag }),
+                        None => Some(Completion::TypePath { start, verb, fragment: frag, via: false }),
+                    };
+                }
+                // `/fv path:frag` - value stage once a colon is present.
                 if let Some((path, val_frag)) = frag.split_once(':') {
                     let field = resolve_one(path)?;
                     return Some(Completion::Value { start, field, fragment: val_frag.to_string() });
                 }
             }
-            Some(Completion::TypePath { start, verb, fragment: frag })
+            Some(Completion::TypePath { start, verb, fragment: frag, via: false })
         }
         _ => None, // a bare value, or nothing open after a space
     }
 }
 
 /// Candidate strings for a `Completion`. `windows`/`metas` are only used
-/// for the `Value` stage.
+/// for the `Value` and `BareValue` stages.
 pub fn completion_candidates(completion: &Completion, windows: &[Window], metas: &[TmuxClaudeMeta]) -> Vec<String> {
     match completion {
         Completion::Verb { fragment, .. } => {
-            let mut out: Vec<String> = VERB_SHORTS.iter().filter(|v| substr(fragment, v)).map(|v| v.to_string()).collect();
-            out.extend(field_verb_names().into_iter().filter(|v| substr(fragment, v)));
-            out
+            VERB_SHORTS.iter().filter(|v| substr(fragment, v)).map(|v| v.to_string()).collect()
         }
         Completion::TypePath { fragment, .. } => path_suggestions(fragment),
         Completion::Value { field, fragment, .. } => value_suggestions(windows, metas, *field, fragment),
-        Completion::FieldValue { field, fragment, .. } => value_suggestions(windows, metas, *field, fragment),
+        Completion::BareValue { field: Some(field), fragment, .. } => value_suggestions(windows, metas, *field, fragment),
+        Completion::BareValue { field: None, fragment, .. } => {
+            // Pooled across every field (not just one) - the whole point
+            // is discovering *which* field has a matching value.
+            let mut seen = std::collections::BTreeSet::new();
+            for field in every_field() {
+                seen.extend(value_suggestions(windows, metas, field, fragment));
+            }
+            seen.into_iter().collect()
+        }
         Completion::SortDirection { fragment, .. } => {
             resolve_directions(fragment).iter().map(|d| d.to_string()).collect()
         }
@@ -959,6 +1016,12 @@ mod tests {
 
     fn matches_win(w: &Window, q: &str) -> bool {
         matches_str(w, &no_meta(), q)
+    }
+
+    /// `active_columns` with no windows/metas - for every test that
+    /// doesn't exercise the `/ft/<pattern>` value-fallback.
+    fn cols(query: &str, defaults: &[ResolvedField]) -> Vec<ResolvedField> {
+        active_columns(query, defaults, &[], &[])
     }
 
     #[test]
@@ -1067,50 +1130,78 @@ mod tests {
     }
 
     #[test]
-    fn field_verb_shorthand() {
+    fn via_path_shorthand() {
         let w = win("desk", "c", "1", 100);
         let mut meta = TmuxClaudeMeta::default();
         meta.claude_title = Some("Waybar to quickshell migration".to_string());
         meta.claude_path = Some("/home/user1/dotfiles".to_string());
         meta.claude_contents = Some("discussed sysmond socket reconnect".to_string());
 
-        // `/claude.sub value` - dedicated per-field shorthand, no `/fv`,
-        // no colon needed (the verb itself already names the field).
-        assert!(matches_str(&w, &meta, "/claude.contents sysmond"));
-        assert!(!matches_str(&w, &meta, "/claude.contents quickshell")); // .contents only, not .title
-        assert!(matches_str(&w, &meta, "/claude.title quickshell"));
-        assert!(matches_str(&w, &meta, "/claude.path dotfiles"));
+        // `/fv/path value` - the path glued onto the verb with a 2nd `/`,
+        // no colon needed - means exactly what `/fv path:value` does.
+        assert!(matches_str(&w, &meta, "/fv/claude.contents sysmond"));
+        assert!(!matches_str(&w, &meta, "/fv/claude.contents quickshell")); // .contents only, not .title
+        assert!(matches_str(&w, &meta, "/fv/claude.title quickshell"));
+        assert!(matches_str(&w, &meta, "/fv/claude.path dotfiles"));
+        // same thing, the original colon spelling
+        assert!(matches_str(&w, &meta, "/fv claude.contents:sysmond"));
 
-        // A leading `:` on the value is tolerated (typed out of `/fv
-        // path:value` habit) - the colon isn't a path separator here.
-        assert!(matches_str(&w, &meta, "/claude.contents:sysmond"));
+        // Bare `/fv/claude` defaults to `.contents` specifically
+        // (`GROUP_DEFAULT_SUB`), not `.title` - transcript text is far
+        // more useful to search by default than the title.
+        assert!(matches_str(&w, &meta, "/fv/claude sysmond"));
+        assert!(!matches_str(&w, &meta, "/fv/claude quickshell"));
+        // the colon form honors the same (now-unified) default
+        assert!(matches_str(&w, &meta, "/fv claude:sysmond"));
 
-        // Bare `/claude` is sugar for `/claude.contents` specifically
-        // (`GROUP_VERB_DEFAULT`), not the whole group and not `.title`
-        // (that's the *general* `/fv claude:` default, a separate thing).
-        assert!(matches_str(&w, &meta, "/claude sysmond"));
-        assert!(!matches_str(&w, &meta, "/claude quickshell"));
-
-        // No value at all -> existence check on that one field, not the
-        // whole group.
+        // No value at all, bare group -> existence check across the
+        // *whole* group (`filter_term`'s existing colonless-group rule,
+        // unchanged) - not scoped to the default sub, which only matters
+        // once a value follows. A *dotted* colonless via like
+        // `/fv/claude.title` isn't special-cased there either, same as it
+        // never was for the space form: it degrades to a literal text
+        // search instead, not a per-subfield existence check.
         let mut title_only = TmuxClaudeMeta::default();
         title_only.claude_title = Some("some session".to_string());
-        assert!(matches_str(&w, &title_only, "/claude.title"));
-        assert!(!matches_str(&w, &title_only, "/claude.contents"));
-        assert!(!matches_str(&w, &title_only, "/claude")); // bare -> .contents existence, unset here
+        assert!(matches_str(&w, &title_only, "/fv/claude")); // title alone is enough
+        assert!(!matches_str(&w, &no_meta(), "/fv/claude"));
 
-        // A field-verb term combines with an ordinary bare word, AND'ed
-        // like any other pair of filter terms.
-        assert!(matches_str(&w, &meta, "/claude.contents sysmond desk"));
-        assert!(!matches_str(&w, &meta, "/claude.contents sysmond nope"));
+        // A via term combines with an ordinary bare word, AND'ed like any
+        // other pair of filter terms.
+        assert!(matches_str(&w, &meta, "/fv/claude.contents sysmond desk"));
+        assert!(!matches_str(&w, &meta, "/fv/claude.contents sysmond nope"));
 
-        // `/tmux` gets the same treatment, defaulting to `.title` (same as
-        // the general default there - tmux has nothing more useful to
-        // default to).
+        // Every path-taking verb accepts a via path the same way -
+        // `/s/claude.time`, `/ft/claude`, `/at/claude.*`, `/rt/tmux.session`
+        // all mean exactly what the space form already did (see the
+        // column-verb and sort tests below for those).
         let mut tmux_meta = TmuxClaudeMeta::default();
         tmux_meta.tmux_title = Some("hyprpm build log".to_string());
-        assert!(matches_str(&w, &tmux_meta, "/tmux hyprpm"));
-        assert!(matches_str(&w, &tmux_meta, "/tmux.title hyprpm"));
+        assert!(matches_str(&w, &tmux_meta, "/fv/tmux hyprpm")); // defaults to .title, same as the general default
+        assert!(matches_str(&w, &tmux_meta, "/fv/tmux.title hyprpm"));
+    }
+
+    #[test]
+    fn via_path_works_on_every_path_taking_verb() {
+        let defaults = [ResolvedField::Flat("title")];
+        assert_eq!(cols("/ft/claude", &defaults), Vec::<ResolvedField>::new());
+        assert_eq!(
+            cols("/at/claude.title", &defaults),
+            vec![ResolvedField::Flat("title"), ResolvedField::Group("claude", "title")]
+        );
+        assert_eq!(
+            cols("/at/claude.title /rt/claude.title", &defaults),
+            vec![ResolvedField::Flat("title")]
+        );
+        let a = parse_actions("/s/claude.time");
+        assert_eq!(a.sort, Some((ResolvedField::Group("claude", "time"), Direction::Ascending)));
+        let a = parse_actions("/s/workspace descending");
+        assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Descending)));
+        // a trailing token that isn't a direction falls through as its
+        // own /fv term, same as the space form
+        let w = win("workspace foo", "X", "1", 1);
+        assert!(matches_str(&w, &no_meta(), "/s/title foo"));
+        assert!(!matches_str(&w, &no_meta(), "/s/title bar"));
     }
 
     // --- column verbs --------------------------------------------------
@@ -1118,10 +1209,10 @@ mod tests {
     #[test]
     fn add_and_remove_columns_left_to_right() {
         let defaults = [ResolvedField::Flat("workspace"), ResolvedField::Flat("title")];
-        assert_eq!(active_columns("", &defaults), defaults.to_vec());
-        assert_eq!(active_columns("/rt workspace", &defaults), vec![ResolvedField::Flat("title")]);
+        assert_eq!(cols("", &defaults), defaults.to_vec());
+        assert_eq!(cols("/rt workspace", &defaults), vec![ResolvedField::Flat("title")]);
         assert_eq!(
-            active_columns("/at claude.title", &defaults),
+            cols("/at claude.title", &defaults),
             vec![
                 ResolvedField::Flat("workspace"),
                 ResolvedField::Flat("title"),
@@ -1130,7 +1221,7 @@ mod tests {
         );
         // remove then re-add ends with it back, at the end
         assert_eq!(
-            active_columns("/at claude.title /rt claude.title /at claude.title", &defaults),
+            cols("/at claude.title /rt claude.title /at claude.title", &defaults),
             vec![
                 ResolvedField::Flat("workspace"),
                 ResolvedField::Flat("title"),
@@ -1147,33 +1238,30 @@ mod tests {
             ResolvedField::Flat("pid"),
         ];
         // keep only the columns whose name contains "t" ("workspace"/"pid" have none)
-        assert_eq!(active_columns("/ft t", &defaults), vec![ResolvedField::Flat("title")]);
+        assert_eq!(cols("/ft t", &defaults), vec![ResolvedField::Flat("title")]);
         // "s" keeps workspace only
-        assert_eq!(active_columns("/ft s", &defaults), vec![ResolvedField::Flat("workspace")]);
+        assert_eq!(cols("/ft s", &defaults), vec![ResolvedField::Flat("workspace")]);
         // ft never reveals a hidden column
-        assert_eq!(active_columns("/ft claude", &defaults), Vec::<ResolvedField>::new());
+        assert_eq!(cols("/ft claude", &defaults), Vec::<ResolvedField>::new());
         // ft then at: narrow, then bring one back
         assert_eq!(
-            active_columns("/ft title /at workspace", &defaults),
+            cols("/ft title /at workspace", &defaults),
             vec![ResolvedField::Flat("title"), ResolvedField::Flat("workspace")]
         );
     }
 
     #[test]
     fn add_bare_group_adds_every_subfield() {
-        let cols = active_columns("/at claude", &[]);
-        assert_eq!(
-            cols,
-            vec![
-                ResolvedField::Group("claude", "title"),
-                ResolvedField::Group("claude", "path"),
-                ResolvedField::Group("claude", "session"),
-                ResolvedField::Group("claude", "time"),
-                ResolvedField::Group("claude", "contents"),
-            ]
-        );
-        assert_eq!(active_columns("/at claude.*", &[]), cols);
-        assert_eq!(active_columns("/at claude.title", &[]), vec![ResolvedField::Group("claude", "title")]);
+        let expected = vec![
+            ResolvedField::Group("claude", "title"),
+            ResolvedField::Group("claude", "path"),
+            ResolvedField::Group("claude", "session"),
+            ResolvedField::Group("claude", "time"),
+            ResolvedField::Group("claude", "contents"),
+        ];
+        assert_eq!(cols("/at claude", &[]), expected);
+        assert_eq!(cols("/at claude.*", &[]), expected);
+        assert_eq!(cols("/at claude.title", &[]), vec![ResolvedField::Group("claude", "title")]);
     }
 
     #[test]
@@ -1241,33 +1329,30 @@ mod tests {
 
     #[test]
     fn verb_stage() {
-        // Empty fragment: the six core verbs, then every field-verb name
-        // (group and group.sub, one per GROUPS entry) - see
-        // `field_verb_names`.
         let Some(Completion::Verb { fragment, .. }) = completion_context("/") else { panic!() };
         assert_eq!(fragment, "");
         let cands = completion_candidates(&Completion::Verb { start: 0, fragment }, &[], &[]);
-        assert_eq!(
-            cands,
-            vec![
-                "fv", "ft", "at", "rt", "s", "rv", "tmux", "tmux.session", "tmux.window", "tmux.title", "claude",
-                "claude.title", "claude.path", "claude.session", "claude.time", "claude.contents",
-            ]
-        );
-        // "f" only narrows the core verbs here - no field-verb name
-        // contains an "f".
+        assert_eq!(cands, vec!["fv", "ft", "at", "rt", "s", "rv"]);
         let Some(Completion::Verb { fragment, .. }) = completion_context("/f") else { panic!() };
         let cands = completion_candidates(&Completion::Verb { start: 0, fragment }, &[], &[]);
         assert_eq!(cands, vec!["fv", "ft"]);
-        // "cla" now narrows to just the claude field-verbs - exact-matched
-        // per-token resolution means this offers several candidates
-        // without ever being ambiguous about which one gets accepted.
-        let Some(Completion::Verb { fragment, .. }) = completion_context("/cla") else { panic!() };
-        let cands = completion_candidates(&Completion::Verb { start: 0, fragment }, &[], &[]);
-        assert_eq!(
-            cands,
-            vec!["claude", "claude.title", "claude.path", "claude.session", "claude.time", "claude.contents"]
+    }
+
+    #[test]
+    fn via_path_stage_after_a_verb_and_second_slash() {
+        // `/ft/cla` - verb already complete, now typing its via path
+        // (not the space form) - same TypePath stage the space form
+        // reaches, `via: true`, `start` past both `/`s.
+        let Some(Completion::TypePath { verb, fragment, via, start }) = completion_context("/ft/cla") else {
+            panic!()
+        };
+        assert_eq!((verb, fragment.as_str(), via, start), (Verb::FilterType, "cla", true, 4));
+        let cands = completion_candidates(
+            &Completion::TypePath { start: 0, verb: Verb::FilterType, fragment: "cla".to_string(), via: true },
+            &[],
+            &[],
         );
+        assert_eq!(cands, vec!["claude"]);
     }
 
     #[test]
@@ -1278,7 +1363,7 @@ mod tests {
         let Some(Completion::TypePath { fragment, .. }) = completion_context("/at cla") else { panic!() };
         assert_eq!(fragment, "cla");
         let cands = completion_candidates(
-            &Completion::TypePath { start: 0, verb: Verb::AddType, fragment: "cla".to_string() },
+            &Completion::TypePath { start: 0, verb: Verb::AddType, fragment: "cla".to_string(), via: false },
             &[],
             &[],
         );
@@ -1286,7 +1371,7 @@ mod tests {
         // resolves only to "claude" -- no more accidental double-match.
         assert_eq!(cands, vec!["claude"]);
         let cands = completion_candidates(
-            &Completion::TypePath { start: 0, verb: Verb::AddType, fragment: "tmux.".to_string() },
+            &Completion::TypePath { start: 0, verb: Verb::AddType, fragment: "tmux.".to_string(), via: false },
             &[],
             &[],
         );
@@ -1307,23 +1392,79 @@ mod tests {
     }
 
     #[test]
-    fn field_verb_value_stage() {
-        // `/claude.contents ` (space, no value typed yet) - live value
+    fn via_path_value_stage() {
+        // `/fv/claude.contents ` (space, no value typed yet) - live value
         // completion for that one field, same corpus as `/fv path:`, but
-        // as its own `FieldValue` variant since accepting splices back
-        // differently (see `SuggestionKind::FieldValue` in ui.rs).
-        let Some(Completion::FieldValue { field, fragment, .. }) = completion_context("/claude.contents ") else {
+        // as a `BareValue` (not `Value`) since accepting splices back
+        // differently - no `field:` prefix to reconstruct (see
+        // `SuggestionKind::BareValue` in ui.rs).
+        let Some(Completion::BareValue { field: Some(field), fragment, .. }) =
+            completion_context("/fv/claude.contents ")
+        else {
             panic!()
         };
         assert_eq!((field, fragment.as_str()), (ResolvedField::Group("claude", "contents"), ""));
-        let Some(Completion::FieldValue { field, fragment, .. }) = completion_context("/claude.contents li")
+        let Some(Completion::BareValue { field: Some(field), fragment, .. }) =
+            completion_context("/fv/claude.contents li")
         else {
             panic!()
         };
         assert_eq!((field, fragment.as_str()), (ResolvedField::Group("claude", "contents"), "li"));
-        // bare `/claude` defaults to `.contents` here too
-        let Some(Completion::FieldValue { field, .. }) = completion_context("/claude ") else { panic!() };
+        // bare `/fv/claude` defaults to `.contents` here too
+        let Some(Completion::BareValue { field: Some(field), .. }) = completion_context("/fv/claude ") else {
+            panic!()
+        };
         assert_eq!(field, ResolvedField::Group("claude", "contents"));
+    }
+
+    #[test]
+    fn ft_value_pattern_fallback() {
+        let windows = vec![win("a", "c", "64", 1), win("b", "c", "2", 2)];
+        let metas = vec![no_meta(), no_meta()];
+        let defaults = [ResolvedField::Flat("title")];
+        // "64*" doesn't resolve as any known type/group -> falls back to
+        // matching column *values*: "workspace" is "64" on window a.
+        assert_eq!(
+            active_columns("/ft/64*", &defaults, &windows, &metas),
+            vec![ResolvedField::Flat("workspace")]
+        );
+        // no `*` at all -> plain substring, same result here
+        assert_eq!(
+            active_columns("/ft/64", &defaults, &windows, &metas),
+            vec![ResolvedField::Flat("workspace")]
+        );
+        // a pattern matching nothing -> empty, not the original defaults
+        // (this is a discovery reset, not an intersect)
+        assert_eq!(active_columns("/ft/zzz_no_match", &defaults, &windows, &metas), Vec::<ResolvedField>::new());
+        // a path that *does* resolve as a real type/group never falls
+        // back, even if it happens to contain a "*"-free literal - this
+        // is ordinary /ft-by-name, unchanged
+        assert_eq!(active_columns("/ft/title", &defaults, &windows, &metas), vec![ResolvedField::Flat("title")]);
+
+        // completion offers live values pooled across every field
+        let Some(Completion::BareValue { field: None, fragment, .. }) = completion_context("/ft/6") else {
+            panic!()
+        };
+        assert_eq!(fragment, "6");
+        let cands = completion_candidates(
+            &Completion::BareValue { start: 0, field: None, fragment: "6".to_string() },
+            &windows,
+            &metas,
+        );
+        assert!(cands.contains(&"64".to_string()));
+    }
+
+    #[test]
+    fn glob_match_star_and_no_star() {
+        assert!(glob_match("64", "64"));
+        assert!(glob_match("64", "workspace 64 here")); // no star -> plain substring
+        assert!(glob_match("64*", "64"));
+        assert!(glob_match("64*", "64x"));
+        assert!(!glob_match("64*", "x64"));
+        assert!(glob_match("*64", "x64"));
+        assert!(!glob_match("*64", "64x"));
+        assert!(glob_match("*64*", "x64x"));
+        assert!(glob_match("*", "anything"));
     }
 
     #[test]

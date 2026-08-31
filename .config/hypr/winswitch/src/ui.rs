@@ -242,23 +242,28 @@ enum SuggestionKind {
     /// completion re-triggers at the path stage, or `/rv ` for `/reverse`
     /// which takes no argument.
     Verb,
-    /// A type path being typed as an argument. Accepting a group leaves a
-    /// trailing `.` ready for a subfield (`query::is_group`); a flat type
-    /// or an explicit subfield completes the token, plus a trailing `:`
-    /// when the governing verb is `/fv` (ready for a value).
-    TypePath(query::Verb),
+    /// A type path being typed as an argument (space-form) or as a via
+    /// path glued onto the verb with a second `/` (`bool`). Accepting a
+    /// group leaves a trailing `.` ready for a subfield (`query::is_group`);
+    /// a flat type or an explicit subfield completes the token, plus a
+    /// trailing `:` when the governing verb is `/fv` *and* this isn't a
+    /// via path (the via form has no colon in it at all - see
+    /// query-dsl.md's "Via paths").
+    TypePath(query::Verb, bool),
     /// Sort direction. Accepting inserts `<chosen> ` (trailing space,
     /// complete term).
     SortDirection,
-    /// Filter value for `/fv`. Accepting inserts `/fv <field>:<value> `
-    /// (re-quoted if it contains whitespace), trailing-space "complete
-    /// term".
+    /// `/fv path:frag` - accepting has to reconstruct the whole
+    /// `field:value` (re-quoted if it contains whitespace), since `frag`
+    /// is only the value half of one combined token.
     Value(String),
-    /// Filter value for a field-verb shorthand (`/claude.contents`) -
-    /// same live-value corpus as `Value`, but the verb already named the
-    /// field, so accepting just inserts `<value> ` with no `field:`
-    /// prefix.
-    FieldValue,
+    /// A bare value with nothing to reconstruct on accept - either the
+    /// via form's own value slot (`/fv/path frag` - the path's already in
+    /// the query text, this token is just the value) or the `/ft/<pattern>`
+    /// value-fallback stage (see query-dsl.md), whose candidates are
+    /// pooled across every field with no single one to prefix. Either
+    /// way, accepting just inserts `<value> `.
+    BareValue,
 }
 
 struct State {
@@ -542,29 +547,23 @@ fn update_suggestions(query_text: &str, list: &gtk::ListBox, state: &Rc<State>) 
 
     let (start, kind) = match &completion {
         query::Completion::Verb { start, .. } => (*start, SuggestionKind::Verb),
-        query::Completion::TypePath { start, verb, .. } => (*start, SuggestionKind::TypePath(*verb)),
+        query::Completion::TypePath { start, verb, via, .. } => (*start, SuggestionKind::TypePath(*verb, *via)),
         query::Completion::SortDirection { start, .. } => (*start, SuggestionKind::SortDirection),
         query::Completion::Value { start, field, .. } => (*start, SuggestionKind::Value(field.key())),
-        query::Completion::FieldValue { start, .. } => (*start, SuggestionKind::FieldValue),
+        query::Completion::BareValue { start, .. } => (*start, SuggestionKind::BareValue),
     };
 
     let rows: Vec<SuggestRow> = items
         .iter()
         .map(|item| match &kind {
             SuggestionKind::Verb => {
-                // Core verbs (fv/ft/...) get a long-form alias from
-                // `verb_meta`; field-verbs (`claude`, `claude.contents`,
-                // ...) have no alias of their own, but reuse the same
-                // per-field description `type_desc` already carries for
-                // the type-path stage.
                 let (alias, desc) = verb_meta(item);
-                let desc = if desc.is_empty() { type_desc(item) } else { desc };
                 SuggestRow { label: format!("/{item}"), alias: alias.into(), desc: desc.into() }
             }
-            SuggestionKind::TypePath(_) => {
+            SuggestionKind::TypePath(..) => {
                 SuggestRow { label: item.clone(), alias: String::new(), desc: type_desc(item).into() }
             }
-            SuggestionKind::SortDirection | SuggestionKind::Value(_) | SuggestionKind::FieldValue => {
+            SuggestionKind::SortDirection | SuggestionKind::Value(_) | SuggestionKind::BareValue => {
                 SuggestRow { label: item.clone(), alias: String::new(), desc: String::new() }
             }
         })
@@ -609,11 +608,14 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
             // leave a trailing space to re-trigger path completion.
             format!("{prefix}/{chosen} ")
         }
-        SuggestionKind::TypePath(verb) => {
+        SuggestionKind::TypePath(verb, via) => {
             if query::is_group(&chosen) {
                 // ready for `.sub`, or to stand on its own
                 format!("{prefix}{chosen}")
-            } else if verb == query::Verb::FilterValue {
+            } else if verb == query::Verb::FilterValue && !via {
+                // The colon-argument form only - a via path never gets
+                // one (see query-dsl.md's "Via paths"): the value there
+                // is always a separate bare token.
                 format!("{prefix}{chosen}:")
             } else {
                 format!("{prefix}{chosen} ")
@@ -630,10 +632,11 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
             };
             format!("{prefix}{field_key}:{value} ")
         }
-        SuggestionKind::FieldValue => {
-            // `prefix` already ends in `/claude.contents ` -- the verb
-            // named the field, so just the bare value is spliced back, no
-            // `field:` prefix.
+        SuggestionKind::BareValue => {
+            // `prefix` already ends right where this bare token begins
+            // (the via path, or nothing at all for the pooled /ft/<pattern>
+            // stage, already sits before it in the query text) - just the
+            // value itself is spliced back, no `field:` prefix.
             let value = if chosen.contains(char::is_whitespace) {
                 format!("\"{chosen}\"")
             } else {
@@ -960,7 +963,8 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         let resize_to_content = resize_to_content.clone();
         search.connect_search_changed(move |entry| {
             let q = entry.text();
-            *state.active_columns.borrow_mut() = crate::query::active_columns(&q, &DEFAULT_COLUMNS);
+            let metas = snapshot_metas(&state);
+            *state.active_columns.borrow_mut() = crate::query::active_columns(&q, &DEFAULT_COLUMNS, &state.windows, &metas);
             *state.sort_actions.borrow_mut() = crate::query::parse_actions(&q);
             for (i, label) in cell_labels.iter().enumerate() {
                 let meta = state.tmux_claude[i].borrow();

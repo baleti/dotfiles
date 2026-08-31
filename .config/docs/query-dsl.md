@@ -60,6 +60,7 @@ token is either:
 
 ```
 /verb arg...       a command - verb is exact-matched against the table below
+/verb/path arg...  same command, with its type path glued on via a 2nd / (see Via paths)
 "phrase"           quoted literal - never a command, always row-filter text
 bareword           anything else - an implicit /filter-value argument
 ```
@@ -109,57 +110,98 @@ its single argument, no matter how many bare tokens follow before the
 next `/verb` or end of input - see Grammar, above, for what happens to
 the rest.
 
-**Verb names are exact-matched** against the six short/long forms above
-plus, per picker, any **field-verbs** it defines (below) - nothing else,
-no substring or fuzzy resolution on the verb itself, ever. That's the
-one property every extension has to keep: the old `/claude.title:value`
-form made a type name (`claude`) sit in the same position a command
-would, so every new command risked colliding with some picker's field
-list. Exact-matching the verb *token* - however many verbs exist - keeps
-that ambiguity closed permanently; it's a *typed argument*'s own
-substring resolution (`/at cla` -> every type containing `cla`) that's
-allowed to be fuzzy, precisely because argument position and verb
-position are kept so strictly separate. An unrecognised `/xyz` token is
-inert (contributes nothing) rather than an error or a literal search -
-same "half-typed stays a no-op" rule the rest of the grammar follows.
+**Verb names are exact-matched** against exactly the six short forms and
+six long forms above - nothing else, no substring or fuzzy resolution on
+the verb itself, ever. That's the one property this grammar was built
+around and never gives up, no matter how the rest of it grows: the old
+`/claude.title:value` form (and, briefly, a since-reverted design that
+registered `/claude`, `/claude.title` etc. as their own verbs) both made
+a type name sit in the same position a command would, so every new type
+risked colliding with the verb vocabulary. Exact-matching the verb token
+itself - always these twelve spellings, nothing more - keeps that
+ambiguity closed permanently; it's a *typed argument*'s (or, now, a *via
+path*'s - see below) own substring resolution that's allowed to be fuzzy,
+precisely because argument position and verb position are kept so
+strictly separate. An unrecognised `/xyz` token is inert (contributes
+nothing) rather than an error or a literal search - same "half-typed
+stays a no-op" rule the rest of the grammar follows.
 
-Both the short and long form of a core verb are always accepted and mean
+Both the short and long form of a verb are always accepted and mean
 exactly the same thing; the short forms are what the autocomplete offers
 first, since the box is typed into far more than it is read.
 
-**Field-verbs.** The six core verbs are fixed and shared by every picker;
-beyond them, a picker may register `group` and `group.sub` themselves as
-additional verbs - exact-matched the same way, one per real group/
-subfield name, never invented or substring-derived. Each is sugar for
-`/fv` scoped to that one field: `/claude.contents value` and
-`/fv claude.contents:value` mean the same thing, and either form with no
-value at all (`/claude.contents`, `/fv claude.contents`) is an existence
-check on that one field instead. A field-verb takes at most one argument
-token (0 = existence, 1 = substring value), and a value glued directly
-onto the verb with a colon (`/claude.contents:value`, no space) is
-tolerated too, for anyone reaching for `/fv`'s own `path:value` habit -
-the colon is just punctuation there, never a path separator, since the
-verb itself already named the field.
+### Via paths
 
-A bare `group` field-verb (no `.sub`) defaults to that group's own
-**verb default** - deliberately a *separate* setting from the group's
-general colon-form default (what `/fv group:value` falls back to, see
-Type paths below). winswitch is the reference implementation: `/claude`
-(bare) is sugar for `/claude.contents` specifically - transcript content
-is far more useful to search by default than the title, which is what
-the general `/fv claude:value` colon form still defaults to - while
-`/tmux` keeps `.title`, matching the general default there (tmux has
-nothing more useful to default to). `/claude.title`, `/claude.path`,
-`/claude.time` (a `date`-shaped age bucket, see the comparator section
-below) and `/claude.contents` are each their own exact-matched verb the
-same way; `/tmux.session`, `/tmux.window`, `/tmux.title` mirror it for
-the tmux group. Other pickers are free to add their own field-verbs the
-same way as their own field lists grow.
+A verb's type-path argument (see Type paths, below) can be written two
+ways, meaning exactly the same thing either way - picked based on what
+reads more naturally for a given query:
+
+```
+/fv path:value        path as part of the argument (the original form)
+/fv/path value         path glued onto the verb with a second /, as its own token
+```
+
+The second `/` is a **via operator**: `/fv/claude.title` reads as "filter
+by value, *via* `claude.title`" - it names the scope the very next value
+is measured against, without needing a colon to glue path and value
+together in one token. This is what a whole new command per group and
+subfield (the reverted `/claude`, `/claude.title` design mentioned above)
+was really reaching for: `/claude.title foo` was trying to be its own
+verb when it was always just `/fv`, scoped - `/fv/claude.title foo` says
+that directly. `.` still does what it always did within the path itself
+(the **subset** operator - `claude.title` picks one subfield out of the
+`claude` group, `claude.*` every subfield); `/` is what now introduces
+that path to the verb in the first place - two different jobs, two
+different characters, not to be confused even though both sit between
+name-like segments.
+
+Every path-taking verb accepts a via path the same way: `/ft/claude`,
+`/at/claude.*`, `/rt/tmux.session`, `/s/claude.time` all mean exactly
+what `/ft claude`, `/at claude.*`, `/rt tmux.session`, `/s claude.time`
+already meant - the via form is purely an additional spelling, never a
+replacement, so nothing that already worked stops working. `/fv/path`
+with nothing following is the colonless existence/free-text form
+(`/fv path`'s own rules apply unchanged - see `/filter-value`, below);
+`/fv/path value` is the scoped substring filter (`/fv path:value`'s
+rules, unchanged); no colon is involved in the via form at all, in
+either case. A bare group's *via* default (what `/fv/claude` alone
+resolves to) is the same `GROUP_DEFAULT_SUB` the colon form already
+uses - see Type paths.
+
+**`/filter-type`'s via path can also be a value pattern.** If the via
+path after `/ft/` doesn't resolve to any known type or group at all (by
+the ordinary substring rule), `/ft` falls back to reading it as a
+**glob pattern** against every field's actual *values* across the
+current rows, rather than treating the unresolvable path as a no-op:
+`/ft/64*` means "show me whichever column(s) actually have a value
+starting with `64` right now" - useful when you remember a value but not
+which field it lives in. This is the one place in the whole grammar a
+literal `*` means "match anything here" rather than the reserved
+"all subfields" segment, and the one place matching isn't plain substring
+by default: no `*` anywhere in the pattern still substring-matches, same
+as everywhere else in the DSL (`/ft/64` behaves like `/ft/*64*`); a `*`
+anywhere in the pattern switches to real glob anchoring instead (`64*` =
+starts with, `*64` = ends with, `*64*` = contains, same as plain
+substring).
+Nothing else in this DSL uses a real pattern-matching engine (see Design
+principles) - this one narrow case does, because a value (unlike a type
+or group name) was never expected to have a small, enumerable vocabulary
+to fuzzy-match against, so "discover the column, not just narrow it"
+needs its own mechanism. Matching columns *replace* whatever was shown
+(a discovery reset, not an intersect against the current set) - winswitch
+is the reference implementation; autocomplete for this stage offers live
+values pooled across every field (not just one), narrowed by whatever's
+typed so far, the same corpus `/fv path:` completion already draws from.
+`/at`, `/rt`, and `/s` don't get this fallback - an unresolvable via path
+there stays the existing no-op / narrows-to-nothing behaviour.
 
 ### Type paths
 
 Every verb except `/reverse` takes a **type path**: dot-separated
-segments naming a flat type or a group subfield.
+segments naming a flat type or a group subfield - `.` is the **subset**
+operator, picking one piece out of the group to its left (see Via paths,
+above, for the *other* separator this grammar uses, `/`, and how the two
+differ).
 
 ```
 title              a flat type
