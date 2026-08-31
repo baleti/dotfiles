@@ -9,8 +9,11 @@ import "../services"
 // launches apps: icon + name, nothing else (no descriptions, no
 // run-a-command / calc / window modes). Search box speaks the shared
 // picker DSL (QueryDsl.qml / ~/.config/docs/query-dsl.md): bare text + /fv
-// over name/exec/categories/keywords, /s and /rv for order. The column
-// verbs (/ft /at /rt) are inert here -- there are no columns to toggle.
+// match name + generic name only (short, controlled strings - matching
+// prose Comment= / Keywords= in the free haystack made `ala` hit
+// "scALAble" and "bALAnce"); comment/keywords/exec/categories are
+// searchable but only when named (`/fv comment:vector`). /s and /rv for
+// order. The column verbs (/ft /at /rt) are inert here -- no columns.
 // One instance per monitor; only the focused one is ever shown.
 PanelWindow {
     id: root
@@ -22,11 +25,15 @@ PanelWindow {
     // back into it.
     property bool open: false
 
-    // Type names filterable / sortable via the DSL (comment + genericName
-    // are still in the free-text haystack, just not named scoped fields).
-    readonly property var typeNames: ["name", "exec", "categories", "keywords"]
+    // Type names filterable / sortable via the DSL. `name` and `generic`
+    // are also the free-text (bare / `/fv text`) haystack; the rest are
+    // scoped-only, because substring-matching prose Comment= or a
+    // Keywords= list produces mid-word noise (`ala` in "scalable").
+    readonly property var typeNames: ["name", "generic", "comment", "exec", "categories", "keywords"]
     readonly property var typeDescs: ({
         "name": "the application name",
+        "generic": "the generic name (\"Web Browser\")",
+        "comment": "the freedesktop Comment= description",
         "exec": "the launch command",
         "categories": "freedesktop Categories= entries",
         "keywords": "freedesktop Keywords= entries"
@@ -74,7 +81,7 @@ PanelWindow {
                 exec: e.execString || "",
                 categories: cats,
                 keywords: kws,
-                haystack: [e.name, e.genericName, e.comment, kws.join(" ")]
+                haystack: [e.name, e.genericName]
                     .filter(s => !!s).join(" ").toLowerCase(),
             });
         }
@@ -88,6 +95,8 @@ PanelWindow {
     function _fieldVals(app, field) {
         switch (field) {
         case "name": return [app.name];
+        case "generic": return [app.generic];
+        case "comment": return [app.comment];
         case "exec": return [app.exec];
         case "categories": return app.categories;
         case "keywords": return app.keywords;

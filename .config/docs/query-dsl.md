@@ -250,9 +250,14 @@ Filters which rows survive. Three forms:
 - **`/fv text`** (or just `text` typed bare, no verb) - substring-match
   `text`, case-insensitively, against the picker's always-present
   free-text haystack (window title+class; clipboard preview; pane
-  scrollback; notification app+summary+body). This is the one form every
-  picker guarantees and the one a casual user needs no syntax for.
-  `/fv val` and a bare `val` are identical.
+  scrollback; notification app+summary+body; app name + generic name;
+  article title+feed+tag+body). This is the one form every picker
+  guarantees and the one a casual user needs no syntax for. `/fv val` and
+  a bare `val` are identical. Keep this haystack to short, controlled
+  strings: the app launcher deliberately leaves `.desktop` `Comment=` and
+  `Keywords=` *out* of it (reachable only as scoped `/fv comment:` /
+  `/fv keywords:`), because substring-matching prose mid-word turned
+  `/fv ala` into a hit on "sc**ala**ble" and "b**ala**nce".
 - **`/fv path:value`** - scope: keep rows where a type matching `path`
   has a value containing `value` (substring, case-insensitive).
 - **`/fv path`** (no colon), where `path` resolves to a **group** - an
