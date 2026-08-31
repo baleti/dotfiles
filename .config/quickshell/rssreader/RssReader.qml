@@ -154,6 +154,47 @@ PanelWindow {
     // ---- autocomplete (marginalia-style, mirrors launcher/AppLauncher.qml)
     readonly property var _acVerbs: ["/fv", "/s", "/rv"] // /ft /at /rt are inert here
 
+    // ---- inline command-validity coloring (query-dsl.md) -----------
+    // True if `v` (leading "/" included) is still a genuine prefix of some
+    // real verb form - not wrong yet, just incomplete, so `_commandSpans`
+    // leaves it in the default text color rather than either accent.
+    function _isVerbPrefix(v) {
+        if (v.length <= 1) return false; // just "/" - too early to call wrong
+        const forms = QueryDsl.shortVerbs.concat(Object.keys(QueryDsl.verbAliases));
+        return forms.some(f => f.startsWith(v));
+    }
+
+    // Every `/`-led token in `text` that's unambiguously a command attempt
+    // - {start, end, valid} for each. Ported from winswitch's
+    // query.rs::command_spans (see AppLauncher.qml for the identical copy).
+    function _commandSpans(text) {
+        const spans = [];
+        let i = 0;
+        while (i < text.length) {
+            while (i < text.length && text[i] === " ") i++;
+            if (i >= text.length) break;
+            const start = i;
+            if (text[i] === '"') {
+                const end = text.indexOf('"', i + 1);
+                i = end < 0 ? text.length : end + 1;
+                continue; // quoted literal - never a command
+            }
+            let j = i;
+            while (j < text.length && text[j] !== " ") j++;
+            const tok = text.slice(i, j);
+            i = j;
+            if (tok.length > 1 && tok[0] === "/") {
+                if (QueryDsl.canonVerb({ q: false, v: tok })) {
+                    spans.push({ start, end: start + tok.length, valid: true });
+                } else if (!root._isVerbPrefix(tok)) {
+                    spans.push({ start, end: start + tok.length, valid: false });
+                }
+                // else: still forming - neutral, no span at all
+            }
+        }
+        return spans;
+    }
+
     function _acCandidates() {
         const t = search.text;
 
@@ -394,6 +435,29 @@ PanelWindow {
                                     font: search.font
                                     visible: search.text.length === 0 && !search.activeFocus
                                 }
+
+                                // Inline command-validity coloring
+                                // (query-dsl.md): an underline under each
+                                // `/command` token, not a recolored glyph -
+                                // see AppLauncher.qml's identical copy for
+                                // why (no per-range text styling on
+                                // TextInput, and positionToRectangle stays
+                                // correct under scrolling where a manual
+                                // TextMetrics measurement wouldn't).
+                                Repeater {
+                                    model: search.text.length ? root._commandSpans(search.text) : []
+                                    Rectangle {
+                                        required property var modelData
+                                        x: search.positionToRectangle(modelData.start).x
+                                        y: search.positionToRectangle(modelData.start).y
+                                           + search.positionToRectangle(modelData.start).height - 2
+                                        width: Math.max(1, search.positionToRectangle(modelData.end).x - x)
+                                        height: 2
+                                        radius: 1
+                                        color: modelData.valid ? Theme.cyan : Theme.red
+                                    }
+                                }
+
                                 Keys.onPressed: e => {
                                     if (e.key === Qt.Key_Escape) {
                                         if (ac.visible) root.acDismissed = true;

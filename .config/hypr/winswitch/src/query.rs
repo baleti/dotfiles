@@ -994,6 +994,42 @@ pub fn is_group(candidate: &str) -> bool {
     !candidate.contains('.') && GROUPS.iter().any(|(g, _)| *g == candidate)
 }
 
+// --- inline command-validity spans (see query-dsl.md's "Inline
+// command-validity coloring") -------------------------------------------
+
+/// Every `/`-led token in `query` that's unambiguously a *command*
+/// attempt - `(byte_start, byte_end, is_valid)` for each, in order. Skips
+/// a still-forming prefix of a real verb (e.g. `/f` while typing `/fv`) -
+/// that's not wrong yet, just incomplete, so a caller rendering this
+/// should leave it in the ordinary text color rather than either accent.
+/// Scoped to the verb name only: `/fv/bogus_field` is still "valid" here
+/// even though `bogus_field` won't resolve to anything - a `/ft` via that
+/// doesn't resolve is a *legitimate* value-pattern (see
+/// `fields_matching_value_pattern`), not a mistake, so this doesn't try
+/// to also judge the via/argument, only whether the command itself
+/// exists.
+pub fn command_spans(query: &str) -> Vec<(usize, usize, bool)> {
+    let mut out = Vec::new();
+    for tok in tokenize(query) {
+        if tok.lead_quote {
+            continue;
+        }
+        let Some(rest) = tok.text.strip_prefix('/') else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue; // just "/" typed so far - too early to call wrong
+        }
+        let name = rest.split_once('/').map(|(n, _)| n).unwrap_or(rest);
+        let valid = Verb::parse(name).is_some();
+        if !valid && is_verb_prefix(rest) {
+            continue; // still forming - neutral, not wrong yet
+        }
+        out.push((tok.start, tok.start + tok.text.len(), valid));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1508,5 +1544,47 @@ mod tests {
         assert_eq!(compare_field_values("30s", "5m"), Ordering::Greater);
         assert_eq!(compare_with_direction("5m", "3h", Direction::Descending), Ordering::Less); // newest first
         assert_eq!(compare_with_direction("apple", "banana", Direction::Descending), Ordering::Greater);
+    }
+
+    // --- command-validity spans -------------------------------------
+
+    #[test]
+    fn command_spans_marks_real_verbs_valid() {
+        let q = "/fv foo";
+        assert_eq!(command_spans(q), vec![(0, 3, true)]); // "/fv"
+        let q = "/fv/claude.title foo";
+        assert_eq!(command_spans(q), vec![(0, 16, true)]); // whole "/fv/claude.title" token
+        let q = "foo /sort bar";
+        assert_eq!(command_spans(q), vec![(4, 9, true)]); // "/sort"
+    }
+
+    #[test]
+    fn command_spans_marks_unknown_verbs_invalid() {
+        let q = "/xyz foo";
+        assert_eq!(command_spans(q), vec![(0, 4, false)]);
+        // looks command-shaped (starts with /) but isn't a real verb or a
+        // prefix of one - not silently ignored, flagged
+        let q = "/usr/bin";
+        assert_eq!(command_spans(q), vec![(0, 8, false)]);
+    }
+
+    #[test]
+    fn command_spans_leaves_still_forming_prefixes_neutral() {
+        assert!(command_spans("/f").is_empty());
+        assert!(command_spans("/filter").is_empty());
+        assert!(command_spans("/").is_empty());
+        // a bare word, or a quoted literal, is never a command attempt
+        assert!(command_spans("plain text").is_empty());
+        assert!(command_spans(r#""/fv""#).is_empty());
+    }
+
+    #[test]
+    fn command_spans_multiple_tokens_independent() {
+        let q = "/fv foo /xyz bar /sort baz";
+        let spans = command_spans(q);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0], (0, 3, true)); // /fv
+        assert_eq!(spans[1], (8, 12, false)); // /xyz
+        assert_eq!(spans[2], (17, 22, true)); // /sort
     }
 }

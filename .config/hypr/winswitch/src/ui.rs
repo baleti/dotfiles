@@ -170,6 +170,40 @@ fn load_theme_palette() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Pango's `AttrColor` wants 16-bit channel values; replicate the byte
+/// (`x*257` maps `0..=255` onto `0..=65535` exactly, since `257*255 ==
+/// 65535`) rather than left-shifting, which would leave the low byte zero
+/// and skew every color slightly dark.
+fn hex_to_rgb16(hex: &str) -> Option<(u16, u16, u16)> {
+    let h = hex.strip_prefix('#').unwrap_or(hex);
+    if h.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some((r as u16 * 257, g as u16 * 257, b as u16 * 257))
+}
+
+/// The colors the `/command` token in the search entry should use while
+/// it currently resolves ("primary" - a wallpaper-derived accent) and
+/// while it doesn't ("error" - a distinctly different hue at the same
+/// read) - see query-dsl.md's "Inline command-validity coloring" and
+/// `query::command_spans`. Read from the same scheme.json
+/// `load_theme_palette` already draws `seriesPalette` from; `None` for
+/// either (or both) if the file's missing, malformed, or missing that
+/// key - `apply_command_colors` already treats a missing color as "leave
+/// that span in the default text color," so there's nothing further to
+/// fall back to.
+fn load_command_validity_colors() -> (Option<(u16, u16, u16)>, Option<(u16, u16, u16)>) {
+    let Some(home) = std::env::var_os("HOME") else { return (None, None) };
+    let path = std::path::PathBuf::from(home).join(".local/state/quickshell/scheme.json");
+    let Ok(content) = std::fs::read_to_string(path) else { return (None, None) };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { return (None, None) };
+    let get = |key: &str| v.get(key).and_then(|c| c.as_str()).and_then(hex_to_rgb16);
+    (get("primary"), get("error"))
+}
+
 /// Which palette entry a field gets -- a simple string hash of its dotted
 /// key (`"claude.contents"`), not an assignment order, so the same field
 /// keeps the same color across different `/at` combinations and across
@@ -228,6 +262,29 @@ fn render_label(label: &gtk::Label, win: &Window, meta: &TmuxClaudeMeta, columns
         parts.push(text);
     }
     label.set_markup(&parts.join(" "));
+}
+
+/// Rebuilds `search`'s Pango attributes from `query::command_spans` -
+/// colors each `/command` token by whether it currently resolves, using
+/// whichever colors this theme maps "valid"/"invalid" to (see
+/// `load_command_validity_colors`); every other span (bare words, values,
+/// via paths - anything that isn't the command token itself) is left in
+/// the entry's ordinary text color. Cheap enough to call on every
+/// keystroke - at most a handful of tokens - and always rebuilds the
+/// whole list from scratch rather than diffing, so a shorter or edited
+/// query correctly clears colors a longer one had set. See
+/// query-dsl.md's "Inline command-validity coloring."
+fn apply_command_colors(search: &gtk::SearchEntry, query_text: &str, state: &State) {
+    let attrs = gtk::pango::AttrList::new();
+    for (start, end, valid) in query::command_spans(query_text) {
+        let rgb = if valid { state.command_valid_color } else { state.command_invalid_color };
+        let Some((r, g, b)) = rgb else { continue };
+        let mut attr = gtk::pango::AttrColor::new_foreground(r, g, b);
+        attr.set_start_index(start as u32);
+        attr.set_end_index(end as u32);
+        attrs.insert(attr);
+    }
+    search.set_attributes(&attrs);
 }
 
 /// Which of the four completion stages the popup is currently offering --
@@ -295,6 +352,11 @@ struct State {
     /// `render_label` call site reads it from here rather than threading
     /// its own copy through each closure.
     palette: Vec<String>,
+    /// Valid/invalid colors for the search entry's inline command-token
+    /// coloring (see `load_command_validity_colors`), read once alongside
+    /// `palette` above for the same reason.
+    command_valid_color: Option<(u16, u16, u16)>,
+    command_invalid_color: Option<(u16, u16, u16)>,
 }
 
 /// The window index stashed in a `FlowBoxChild`'s `widget_name` at creation
@@ -799,6 +861,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
     }
 
     let tmux_claude = windows.iter().map(|_| RefCell::new(TmuxClaudeMeta::default())).collect();
+    let (command_valid_color, command_invalid_color) = load_command_validity_colors();
     let state = Rc::new(State {
         windows,
         tmux_claude,
@@ -811,6 +874,8 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         suggestion_start: RefCell::new(0),
         suggestion_kind: RefCell::new(None),
         palette: load_theme_palette(),
+        command_valid_color,
+        command_invalid_color,
     });
 
     // The box the grid may claim -- height's fraction raised from the old
@@ -999,6 +1064,7 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
         let resize_to_content = resize_to_content.clone();
         search.connect_search_changed(move |entry| {
             let q = entry.text();
+            apply_command_colors(entry, &q, &state);
             let metas = snapshot_metas(&state);
             *state.active_columns.borrow_mut() = crate::query::active_columns(&q, &DEFAULT_COLUMNS, &state.windows, &metas);
             *state.sort_actions.borrow_mut() = crate::query::parse_actions(&q);
