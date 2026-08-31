@@ -229,6 +229,11 @@ PanelWindow {
     // visibility binding below (same trap as forceActiveFocus() vs. `focus:`
     // bindings, see _returnFocusToList). New matches clear the dismissal.
     property bool acDismissed: false
+    // Popup shown state as a plain root property -- referenced by the search
+    // key handler and the popup itself, rather than reaching across scopes
+    // for the `ac` id (which QML's id resolution wouldn't see from inside
+    // the search box's nested Keys handler).
+    readonly property bool acOpen: acItems.length > 0 && !acDismissed
     onAcItemsChanged: { acSel = 0; acDismissed = false; }
 
     function _applyAcItem(it) {
@@ -288,11 +293,10 @@ PanelWindow {
         onCleared: root.hide()
     }
 
-    // dim backdrop; click outside closes
-    Rectangle {
+    // transparent backdrop -- no dim (matches the launcher); click outside closes
+    MouseArea {
         anchors.fill: parent
-        color: Qt.rgba(0, 0, 0, 0.35)
-        MouseArea { anchors.fill: parent; onClicked: root.hide() }
+        onClicked: root.hide()
     }
 
     FocusScope {
@@ -460,12 +464,12 @@ PanelWindow {
 
                                 Keys.onPressed: e => {
                                     if (e.key === Qt.Key_Escape) {
-                                        if (ac.visible) root.acDismissed = true;
+                                        if (root.acOpen) root.acDismissed = true;
                                         else if (search.text.length) search.text = "";
                                         else root._returnFocusToList();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Tab) {
-                                        if (ac.visible) { root.acAccept(); e.accepted = true; }
+                                        if (root.acOpen) { root.acAccept(); e.accepted = true; }
                                         else if (root._triggerCompletion()) { e.accepted = true; }
                                         // else: fall through to keyScope's
                                         // search<->list Tab toggle.
@@ -473,11 +477,11 @@ PanelWindow {
                                         root._returnFocusToList();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Down) {
-                                        if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                                        if (root.acOpen) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
                                         else root._returnFocusToList();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Up) {
-                                        if (ac.visible) root.acSel = Math.max(0, root.acSel - 1);
+                                        if (root.acOpen) root.acSel = Math.max(0, root.acSel - 1);
                                         else root._returnFocusToList();
                                         e.accepted = true;
                                     }
@@ -490,7 +494,7 @@ PanelWindow {
                         // one-line description.
                         Rectangle {
                             id: ac
-                            visible: root.acItems.length > 0 && !root.acDismissed
+                            visible: root.acOpen
                             z: 50
                             anchors.top: searchBox.bottom
                             anchors.right: searchBox.right
@@ -514,7 +518,7 @@ PanelWindow {
                                         required property var modelData
                                         required property int index
                                         readonly property bool cur: index === root.acSel
-                                        width: ac.width - 8
+                                        width: 360 - 8
                                         height: 24
                                         radius: Theme.rounding - 5
                                         color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
