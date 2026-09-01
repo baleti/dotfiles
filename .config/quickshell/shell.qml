@@ -9,6 +9,7 @@ import "osd"
 import "notifications"
 import "launcher"
 import "rssreader"
+import "keybinds"
 import "services"
 
 ShellRoot {
@@ -45,6 +46,15 @@ ShellRoot {
         }
     }
 
+    // Keyboard-shortcuts help panel (mod + ?). Same single-top-level-target /
+    // latched-monitor pattern; `toggle` not `show` (collides with `qs ipc show`).
+    IpcHandler {
+        target: "keybindsHelp"
+        function toggle(): void {
+            KeybindsHelpState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
     Variants {
         model: Quickshell.screens
 
@@ -76,6 +86,15 @@ ShellRoot {
         model: Quickshell.screens
 
         RssReader {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        KeybindsHelp {
             required property var modelData
             screen: modelData
         }

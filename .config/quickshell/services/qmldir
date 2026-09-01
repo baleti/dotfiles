@@ -7,4 +7,5 @@ singleton SysmonSvc 1.0 SysmonSvc.qml
 TieredSocket 1.0 TieredSocket.qml
 singleton RssSvc 1.0 RssSvc.qml
 singleton RssReaderState 1.0 RssReaderState.qml
+singleton KeybindsHelpState 1.0 KeybindsHelpState.qml
 singleton ClaudeUsageSvc 1.0 ClaudeUsageSvc.qml

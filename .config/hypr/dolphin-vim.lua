@@ -33,7 +33,7 @@ local function dolphin_or_passthrough(orig_key, dolphin_mods, dolphin_key)
     end
 end
 
-hl.bind("CTRL + j", dolphin_or_passthrough("j", "", "Down"))
-hl.bind("CTRL + k", dolphin_or_passthrough("k", "", "Up"))
-hl.bind("CTRL + l", dolphin_or_passthrough("l", "", "Right"))
-hl.bind("CTRL + h", dolphin_or_passthrough("h", "", "Left"))
+hl.bind("CTRL + j", dolphin_or_passthrough("j", "", "Down"),  { description = "Dolphin: move selection down (vim)" })
+hl.bind("CTRL + k", dolphin_or_passthrough("k", "", "Up"),    { description = "Dolphin: move selection up (vim)" })
+hl.bind("CTRL + l", dolphin_or_passthrough("l", "", "Right"), { description = "Dolphin: expand folder / move right (vim)" })
+hl.bind("CTRL + h", dolphin_or_passthrough("h", "", "Left"),  { description = "Dolphin: collapse folder / move left (vim)" })
