@@ -151,15 +151,28 @@ tiers/backoff above (and keeps updating even mid-backoff).
   to be sized off its own *header word* (plus that suffix), not the
   shorter values it actually holds.
 - **tmux is a grouped column**: session / window / pane, each its own
-  sub-column under one "tmux" group header (underlined, to read as a
-  heading for the 3 sub-columns rather than a 4th independent column),
-  sourced from `sessions/<pid>.json`'s `"tmux"` field
-  (e.g. `"653:@1017.%1828"`) split into 3 plain numbers by the daemon
-  (`TMUX_FIELD_RE`) — `653`, `1017`, `1828`, not tmux's own `@`/`%`-
-  prefixed object-type notation, which is tmux's internal sigil syntax,
-  not meaningful outside a tmux command. Clicking the "tmux" group label
-  sorts by all 3 together (session, then window, then pane) — the 3
-  sub-column headers are plain labels, not individually sortable.
+  sub-column under one "tmux" group header, sourced from
+  `sessions/<pid>.json`'s `"tmux"` field (e.g. `"653:@1017.%1828"`) split
+  into 3 plain numbers by the daemon (`TMUX_FIELD_RE`) — `653`, `1017`,
+  `1828`, not tmux's own `@`/`%`-prefixed object-type notation, which is
+  tmux's internal sigil syntax, not meaningful outside a tmux command.
+  Clicking the "tmux" group label sorts by all 3 together (session, then
+  window, then pane) — the 3 sub-column headers are plain labels, not
+  individually sortable. The group label has a real rule under it spanning
+  the full session+window+pane width (a `Rectangle` child of the "tmux"
+  `Text`, not a `RowLayout` sibling — a plain child doesn't inflate the
+  Text's own size the way a Layout sibling would) — `font.underline: true`
+  was tried first, but that only underlines the 4 glyphs of "tmux" itself,
+  much narrower than the group it's meant to mark.
+- **Both header rows sit shifted up ~16px** (`transform: Translate { y:
+  -16 }` on the `Column` wrapping them) so they visibly overlap the
+  bottom of the "weekly" line above — a deliberate request ("it's okay
+  because they are away from each other": weekly's text is short and
+  left-aligned, the header row's real content starts further right, so
+  in practice the overlap doesn't collide with actual glyphs). A
+  transform, not a layout change — `acctCol` still reserves this block's
+  normal height, so nothing below it (the data rows) shifts to
+  compensate, only the header block's own render position moves.
 - **Every column is independently resizable** — hovering the gap between
   two headers shows a resize cursor (`ColumnResizeHandle.qml`, a small
   reusable `MouseArea` with `cursorShape: Qt.SizeHorCursor`); dragging
@@ -181,21 +194,24 @@ tiers/backoff above (and keeps updating even mid-backoff).
   resized by hand there was no reason for one to auto-absorb space
   anymore, so a trailing filler after "path" soaks up genuine leftover
   row width instead, and title/path both just have their own tuned
-  default (`colDefaults`): title 140, path 100 — title wider and path
-  narrower than their previous values by request. Path had the stretch
-  role in the very first version, on the reasoning that it was the least
-  critical column to keep fully visible, but path is nearly always just
-  `~` in this single-cwd-per-account environment, so giving *it* the
-  stretch just wasted the panel's extra width as blank space while titles
+  default (`colDefaults`): title 280 (90 → 140 → 280 across 3 requests
+  the same day), path 100 (was 160) — title wider and path narrower than
+  their previous values by request. Path had the stretch role in the
+  very first version, on the reasoning that it was the least critical
+  column to keep fully visible, but path is nearly always just `~` in
+  this single-cwd-per-account environment, so giving *it* the stretch
+  just wasted the panel's extra width as blank space while titles
   (routinely 30-40 characters, e.g. "Reddit API automation for unixporn
   posts") sat elided at a fixed 90px — reported "title column is too
   short" 2026-08-31, fixed first by swapping the stretch onto title, then
   superseded entirely by manual resize.
 - **The panel is wider than the other bar panels by default** —
-  `Bar.qml`'s `claudeUsagePanelWidth` (760px cap, vs. the standard 560) —
-  since 9 columns plus a usable title column don't fit the shared width
-  the graph/media panels use. (A "rectangle that doesn't span full panel
-  width" also reported the same day turned out to be a stale compositor-
+  `Bar.qml`'s `claudeUsagePanelWidth` (920px cap, up from 760 the same
+  day — "make the panel wider to give more space to make the title
+  column wider" — vs. the standard 560) — since 9 columns plus a usable
+  title column don't fit the shared width the graph/media panels use.
+  (A "rectangle that doesn't span full panel width" also reported the
+  same day turned out to be a stale compositor-
   side render artifact from rapid `qs kill`/relaunch cycles during
   debugging, not a real layout bug — confirmed gone after one clean
   restart with nothing else changed.)

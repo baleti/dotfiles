@@ -287,8 +287,11 @@ Rectangle {
     // colDefaults on every panel open/close, same as groupExpanded/
     // groupSort -- a manual resize isn't meant to quietly outlive the
     // look at the panel that made it, any more than a fold or a sort is.
+    // title raised again (140 -> 280) alongside Bar.qml's
+    // claudeUsagePanelWidth bump (760 -> 920) -- "make the panel wider to
+    // give more space to make the title column wider" 2026-09-01.
     readonly property var colDefaults: ({
-        status: 52, title: 140, tokens: 60, last: 56,
+        status: 52, title: 280, tokens: 60, last: 56,
         tmuxSession: 54, tmuxWindow: 50, tmuxPane: 40,
         pid: 68, path: 100,
     })
@@ -563,6 +566,21 @@ Rectangle {
                     Item { Layout.fillWidth: true }
                 }
 
+                // Both header rows below sit inside their own Column,
+                // shifted up 16px (roughly one header line) via a
+                // transform -- a plain visual offset, not a layout change
+                // (acctCol still reserves this block's normal height, so
+                // nothing below it shifts to compensate). Deliberately
+                // overlaps the bottom of the "weekly" line above; asked
+                // for explicitly ("it's okay because they are away from
+                // each other" -- horizontally, weekly's text is short and
+                // left-aligned while the header row's content starts
+                // further right, so the overlap in practice doesn't
+                // collide with actual glyphs).
+                Column {
+                    spacing: 1
+                    transform: Translate { y: -16 }
+
                 // Group-header row, once per group -- blank over every
                 // plain column, one "tmux" label (underlined, to read as
                 // a group heading for the session/window/pane sub-columns
@@ -577,7 +595,7 @@ Rectangle {
                 // column-header row below; this row just has to match its
                 // widths.
                 RowLayout {
-                    visible: parent.groupOpen && parent.procs.length > 0
+                    visible: acctCol.groupOpen && acctCol.procs.length > 0
                     width: content.width
                     spacing: 0
 
@@ -594,9 +612,24 @@ Rectangle {
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
-                        font.underline: true
                         horizontalAlignment: Text.AlignHCenter
                         Layout.preferredWidth: root.colTmuxGroupW
+                        // A full-width rule spanning the whole group (all
+                        // 3 sub-columns), not font.underline (tried
+                        // first) -- that only underlines the "tmux" glyphs
+                        // themselves, much narrower than the session/
+                        // window/pane span it's meant to mark as one
+                        // group. A child of the Text, not a RowLayout
+                        // sibling, so it doesn't add its own row -- Items
+                        // don't inflate the size of the Text they're
+                        // parented to.
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 1
+                            color: Theme.border
+                        }
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
@@ -638,7 +671,7 @@ Rectangle {
                 // every panel open/close along with fold state and sort
                 // (root.onExpandedChanged / root.resetColumnWidths()).
                 RowLayout {
-                    visible: parent.groupOpen && parent.procs.length > 0
+                    visible: acctCol.groupOpen && acctCol.procs.length > 0
                     width: content.width
                     spacing: 0
 
@@ -788,6 +821,7 @@ Rectangle {
                     }
                     Item { Layout.fillWidth: true }
                 }
+                } // end header-shift Column
 
                 Repeater {
                     model: parent.visibleProcs

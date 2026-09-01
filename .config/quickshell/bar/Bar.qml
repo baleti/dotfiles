@@ -255,11 +255,12 @@ Item {
     // being open, only from actually running out of screen).
     readonly property real stdPanelWidth: Math.min(560, root.panelAreaWidth)
     readonly property real calPanelWidth: Math.min(root.screen.width / 2, root.panelAreaWidth)
-    // The process table's 7 columns (status/title/tokens/last/tmux/pid/
-    // path) don't fit the standard 560 without squeezing path to
-    // near-nothing -- wider by default, though still well short of the
-    // calendar's half-monitor.
-    readonly property real claudeUsagePanelWidth: Math.min(760, root.panelAreaWidth)
+    // The process table's 9 columns (status/title/tokens/last/session/
+    // window/pane/pid/path) don't fit the standard 560 without squeezing
+    // title down to near-nothing -- wider by default (bumped 760 -> 920
+    // to give title more room, request 2026-09-01), though still well
+    // short of the calendar's half-monitor.
+    readonly property real claudeUsagePanelWidth: Math.min(920, root.panelAreaWidth)
 
     function preferredWidthFor(name: string): real {
         if (name === "calendar")
