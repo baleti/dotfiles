@@ -614,7 +614,20 @@ Rectangle {
     property real colHyprWorkspaceW: colDefaults.hyprWorkspace
     property real colHyprMonitorW: colDefaults.hyprMonitor
     readonly property real colHyprGroupW: colHyprWorkspaceW + colHyprMonitorW + root.handleW
-    property real colPathW: colDefaults.path
+    // Sized off the actual longest visible path, not a flat default --
+    // "almost always just '~' in this environment" (colDefaults' own
+    // comment) meant colDefaults.path (100) was already generous for the
+    // common case, but a genuinely longer cwd used to get truncated even
+    // when the panel had plenty of spare width to just show it (request
+    // 2026-09-02: "shouldn't have to be truncated if it doesn't have to").
+    // Still capped (pathNaturalCapW) and still has `elide` as the real
+    // fallback -- a single pathological cwd shouldn't be able to blow the
+    // panel width out on its own; that's what "may be truncated later if
+    // space gets more scarce" describes.
+    readonly property real pathNaturalCapW: 300
+    readonly property real pathNaturalW: Math.max(colDefaults.path,
+        Math.min(root.pathNaturalCapW, root.pathContentMaxW + 6))
+    property real colPathW: root.pathNaturalW
     // Width of each drag-resize handle between columns (see
     // ColumnResizeHandle.qml) -- also the RowLayout spacing everywhere a
     // handle isn't interactive (the group-header row, data rows), so
@@ -633,7 +646,63 @@ Rectangle {
         root.colHyprWorkspaceW = root.colDefaults.hyprWorkspace;
         root.colHyprMonitorW = root.colDefaults.hyprMonitor;
         root.colPidW = root.colDefaults.pid;
-        root.colPathW = root.colDefaults.path;
+        root.colPathW = root.pathNaturalW;
+    }
+
+    // ---- dynamic panel width: shrink-to-fit between a min and a max ----
+    // panelWidth used to be a flat constant (Bar.qml's claudeUsagePanelWidth,
+    // 1196) regardless of what was actually inside -- wasted space with few/
+    // no processes, and no way to grow past it for a genuinely wide table.
+    // Bar.qml now clamps between minPanelWidth and its own 1196 ceiling
+    // around this natural figure instead (request 2026-09-02: "current
+    // width... was meant to be only a maximum, add a reasonable minimum").
+    //
+    // No process table needs rendering at all if no account has any
+    // sessions right now -- just the mode-line/search box/account-name
+    // lines, which need far less width than the full 12-column table.
+    readonly property bool anyProcsVisible: {
+        for (const a of ClaudeUsageSvc.accounts)
+            if ((ClaudeUsageSvc.sessions[a.account] || []).length > 0)
+                return true;
+        return false;
+    }
+    // Sum of every column + the handle gap between each pair -- the exact
+    // width the process table's header/data rows actually need to render
+    // without their trailing filler Item eating any slack (or, if this
+    // exceeds Bar.qml's max, without something being cut off beyond what
+    // that filler removal already implies).
+    readonly property real tableNaturalWidth: root.colStatusW + root.handleW
+        + root.colTitleW + root.handleW + root.colTokensW + root.handleW
+        + root.colLastW + root.handleW + root.colTmuxGroupW + root.handleW
+        + root.colHyprGroupW + root.handleW + root.colPidW + root.handleW
+        + root.colPathW
+    // Same fallback width the standalone-preview default (panelWidth: 320
+    // above) already used -- reused here as the floor so a near-empty
+    // panel (few/no live processes) doesn't shrink below something that
+    // still comfortably fits the mode-line/search box/account name text.
+    readonly property real minContentWidth: 320
+    readonly property real naturalContentWidth:
+        (root.anyProcsVisible ? Math.max(root.tableNaturalWidth, root.minContentWidth) : root.minContentWidth) + 24
+
+    // Measures path text the same font the "path" column's own Text uses
+    // (Theme.fontFamily @ fontSize-3), for pathNaturalW above. Across
+    // every session, not just currently-visible rows -- simpler than
+    // duplicating each account's own search/sort/row-budget slicing here,
+    // and "+N more" rows tend to share similar cwd patterns anyway.
+    FontMetrics {
+        id: pathFontMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 3
+    }
+    readonly property real pathContentMaxW: {
+        let m = 0;
+        for (const a of ClaudeUsageSvc.accounts) {
+            for (const row of (ClaudeUsageSvc.sessions[a.account] || [])) {
+                const w = pathFontMetrics.advanceWidth(root.shortCwd(row.cwd));
+                if (w > m) m = w;
+            }
+        }
+        return m;
     }
 
     // ---- hyprland-column hover-thumbnail + click-to-focus ------------
