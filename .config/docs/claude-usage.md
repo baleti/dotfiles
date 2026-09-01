@@ -385,3 +385,54 @@ tiers/backoff above (and keeps updating even mid-backoff).
 `CTRL+ALT+c` (`keybinds.lua` → `scripts/bar-toggle.sh toggleClaudeUsage` →
 `Bar.qml`'s per-monitor `IpcHandler`) — free since the calendar panel moved
 off it to `mainMod+CTRL+c`.
+
+## Active-processes hover-thumbnail investigation (2026-09-01)
+
+Before building a hover-preview + click-to-focus feature on the
+active-processes table, benchmarked two candidate capture paths for a
+single on-demand window thumbnail: shelling out to `winswitch`'s existing
+`wayland_capture.rs` (cold connection each call) vs. Quickshell's own
+built-in `ScreencopyView`/`ToplevelManager` (`Quickshell.Wayland`,
+in-process, no new binary).
+
+**Result: they're the same speed** — both hit the same ~20-30ms wall,
+because both go through the compositor's GPU→SHM copy
+(`hyprland-toplevel-export-v1`; Quickshell's plugin also links
+`ext_image_copy_capture_v1`/`zwlr_screencopy`, but the toplevel-export path
+is what's actually used here). winswitch's client-side setup (fresh
+`Connection::connect_to_env()` + 3 roundtrips to bind globals/enumerate/map
+addresses) is only ~1-2ms of its ~21ms; the rest is the compositor, so
+optimizing that setup further wouldn't have mattered. Quickshell skips
+process-spawn + dynamic-link cost (~10-15ms), so it's modestly faster
+end-to-end for a hover-panel use case (~28ms vs ~30-50ms wall for shelling
+out), and can keep a view warm (`live: true`) for free subsequent frames.
+**Decision: use `ScreencopyView` in-process, no separate Rust binary** —
+this reverses the original plan to duplicate winswitch's capture code into
+its own binary; that plan assumed only a separate process could hit
+acceptable latency, which the benchmark disproved.
+
+**False lead worth recording:** the very first attempt at this benchmark
+looked *permission-blocked*, not just slow — `ToplevelManager.toplevels`
+stayed empty and `ScreencopyView` never got a frame, which matches the
+documented behavior that `hl.permission()` grants in `environment.lua`
+require a full Hyprland restart to take effect (not `hyprctl reload`), and
+`/usr/bin/quickshell` has no such grant there. That diagnosis was **wrong**.
+Direct retest on the same running (non-restarted, still-ungranted)
+compositor succeeded once two unrelated bugs in the *test script itself*
+were fixed:
+- **`ScreencopyView` needs a real rendering surface.** The first script
+  used a bare `ShellRoot` with no window — `ScreencopyView` silently never
+  gets a "recording context" without one. A `PanelWindow` (any real
+  layer-shell surface, e.g. `WlrLayershell.layer: WlrLayer.Background`,
+  need not be visible/sized meaningfully) fixes it; the warning to watch
+  for is `Cannot capture frame, as no recording context is ready`.
+- **`ToplevelManager.toplevels` populates asynchronously.** A single
+  fixed-delay check (e.g. one 500ms `Timer`) can read it before Quickshell
+  has synced the compositor's toplevel list and see `length: 0` even
+  though nothing is actually blocked — confirmed by rerunning the identical
+  capture with a short retry loop (`toplevel count: 0` on the first
+  ~300ms poll, `38` on the second). Poll/retry (a repeating `Timer`, not a
+  one-shot) rather than trusting a single fixed delay.
+No `hl.permission()` entry for quickshell was added in the end — screencopy
+via `ScreencopyView` works with quickshell's default (ungranted) permission
+state on this setup.
