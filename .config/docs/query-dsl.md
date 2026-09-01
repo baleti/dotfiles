@@ -130,7 +130,11 @@ verb stops at arity 1 (path only) and the next token is free again. A
 verb with 1 token of arity (`/fv`, `/ft`, `/at`, `/rt`) never looks past
 its single argument, no matter how many bare tokens follow before the
 next `/verb` or end of input - see Grammar, above, for what happens to
-the rest.
+the rest. `/sort`'s arity of "1" for its path slot counts the whole
+`path1/path2/path3` via-chain (see `/sort`'s own section, below) as that
+one slot, however many `/`-separated keys it holds - arity counts
+*space*-separated argument tokens, not the `/`-separated segments glued
+onto a single via-form argument.
 
 **Verb names are exact-matched** against exactly the six short forms and
 six long forms above - nothing else, no substring or fuzzy resolution on
@@ -181,14 +185,33 @@ Every path-taking verb accepts a via path the same way: `/ft/claude`,
 `/at/claude.*`, `/rt/tmux.session`, `/s/claude.time` all mean exactly
 what `/ft claude`, `/at claude.*`, `/rt tmux.session`, `/s claude.time`
 already meant - the via form is purely an additional spelling, never a
-replacement, so nothing that already worked stops working. `/fv/path`
-with nothing following is the colonless existence/free-text form
-(`/fv path`'s own rules apply unchanged - see `/filter-value`, below);
+replacement, so nothing that already worked stops working (`/sort`'s via
+form is the one exception - see its own section, below, for the
+multi-key chaining only it supports).
+
 `/fv/path value` is the scoped substring filter (`/fv path:value`'s
-rules, unchanged); no colon is involved in the via form at all, in
-either case. A bare group's *via* default (what `/fv/claude` alone
-resolves to) is the same `GROUP_DEFAULT_SUB` the colon form already
-uses - see Type paths.
+rules, unchanged) - no colon is involved in the via form at all. `/fv/path`
+with nothing following it *yet* is where the via and space forms finally
+diverge from each other:
+
+- If `path` resolves to a **group**, it's still the same existence filter
+  `/fv path` (colonless) already is - `/fv/claude` narrows to
+  claude-hosting rows before a value is ever typed, via or not. A bare
+  group's *via* default (what `/fv/claude` alone resolves to for a
+  *scoped* filter, once a value does follow) is the same
+  `GROUP_DEFAULT_SUB` the colon form already uses - see Type paths.
+- If `path` resolves only to **flat types**, the via form is a **no-op**
+  while it waits for a value - not the space form's free-text fallback
+  (see `/filter-value`, below, for why the space form still needs that
+  fallback). `/fv/tokens` sitting alone contributes nothing to the query;
+  rows only start narrowing once a value token actually follows
+  (`/fv/tokens 3`). This was a real gap, not a deliberate choice: the
+  "never flash to zero on a valid partial keystroke" principle (Design
+  principles, below) already promises this for a still-forming verb - a
+  chosen-but-not-yet-valued via path is exactly as incomplete, and
+  treating it as free text broke that promise (reported 2026-09-02:
+  typing `/fv/tokens ` mid-query, about to add a value, emptied the
+  whole result set instead of leaving it untouched).
 
 **`/filter-type`'s via path can also be a value pattern.** If the via
 path after `/ft/` doesn't resolve to any known type or group at all (by
@@ -268,7 +291,10 @@ Filters which rows survive. Three forms:
   that group. `/fv claude` narrows to claude-hosting windows before a
   value is ever typed. A colonless path that resolves only to flat types,
   or to nothing, is treated as free text instead (there is no useful
-  "does this row have a title" filter).
+  "does this row have a title" filter) - **space form only**: the via
+  form's `/fv/path` alone is a no-op here instead, not free text, while a
+  value is still pending (see Via paths, above, for why the two forms
+  diverge on exactly this one case).
 
 Multiple `/fv` terms (and multiple bare words) are **AND-ed**, order
 independent: every one must match a surviving row. Bare words are each
@@ -327,34 +353,72 @@ subfields, each its own column - unlike its filter/sort meaning
 
 Reorder the survivors; never filter or hide.
 
-- **`/sort path [direction]`** - order rows by the single type `path`
-  resolves to (it must resolve to exactly one - `claude.*` is not valid
-  here, a sort key is one field). The token after `path`, if there is
-  one, is only taken as `direction` when it substring-matches
-  `ascending` / `descending` (so `asc` / `desc` / `de` all work); if it
-  doesn't match either, `/sort` stops at `path` (direction defaults to
-  `ascending`) and that token is never consumed - it falls through and
-  is parsed from scratch, typically landing as its own `/fv` term (see
-  Grammar). This is what makes `/s name blender` sort by `name` *and*
-  filter to `blender`, instead of `blender` silently vanishing as a
-  rejected direction argument. Only the **last** `/sort` in a query takes
-  effect (replace, not stack). Absent entirely, the picker's own default
-  order stands (MRU, cliphist recency, winswitch focus-history, BM25
-  score). Honoured by winswitch and focus-picker; inert in
-  clipboard-picker / notification-picker (no re-sort machinery) and the
-  BM25 pickers (score *is* the order).
+- **`/sort/path1[/path2/path3/...] [direction]`** (via form, preferred -
+  reads as "sort via these fields, in this order") - order rows by
+  `path1`; rows that tie on `path1` are broken by `path2`, then `path3`,
+  and so on for however many `/`-separated fields are chained. Each
+  segment is its own type path and must resolve to exactly one field
+  each (`claude.*` is not valid at any position - a sort key is one
+  field), same rule as a single-key sort, just applied per segment; a
+  segment that resolves to nothing or ambiguously makes the *whole*
+  `/sort` inert (Type paths, above), not just that one key. `/sort/tokens`
+  alone (one segment) is exactly the single-key sort this always was.
+  This is the one verb whose via form is *not* just an alternate spelling
+  of the space form (see Via paths, above) - chaining only exists here,
+  because it needs the second `/` to *separate* keys, not just to
+  introduce the first one to the verb.
+- **`/sort path [direction]`** (space form) - single-key only, no
+  chaining (use the via form above for more than one key). Order rows by
+  the single type `path` resolves to.
+- **`[direction]`**, on either form: the token right after the path
+  chain, if there is one, is only taken as `direction` when it
+  substring-matches `ascending` / `descending` (so `asc` / `desc` / `de`
+  all work); if it doesn't match either, `/sort` stops at the path chain
+  (direction defaults to `ascending`) and that token is never consumed -
+  it falls through and is parsed from scratch, typically landing as its
+  own `/fv` term (see Grammar). This is what makes `/s name blender` sort
+  by `name` *and* filter to `blender`, instead of `blender` silently
+  vanishing as a rejected direction argument. One direction applies to
+  every key in a chain uniformly - there is no per-key direction syntax;
+  reach for `/reverse` (below) if a chain needs to run backwards as a
+  whole, or drop a key that needs to run the other way into its own
+  second `/sort` and accept the last-wins replacement (see next). Only
+  the **last** `/sort` in a query takes effect (replace, not stack).
+  Absent entirely, the picker's own default order stands (MRU, cliphist
+  recency, winswitch focus-history, BM25 score). Honoured by winswitch
+  and focus-picker; inert in clipboard-picker / notification-picker (no
+  re-sort machinery) and the BM25 pickers (score *is* the order).
 - **`/reverse`** - flips whatever order is in effect (default, or a
-  `/sort`). No arguments. Idempotent: any number of `/reverse` tokens ==
-  one, not a toggle. Useful alone to flip a picker's default order (see
-  the least-recently-used window first) without naming a field.
+  `/sort`, chained or not - reverses the whole ordered sequence, not any
+  one key within it). No arguments. Idempotent: any number of `/reverse`
+  tokens == one, not a toggle. Useful alone to flip a picker's default
+  order (see the least-recently-used window first) without naming a
+  field.
+
+Multi-key chaining was added 2026-09-02, prompted by wanting
+`/sort/tokens/title` - sort by token count, and within an equal count,
+by title - on the claude-usage process table; single-key `/sort` existed
+long before that and is unchanged by it.
 
 **Sort comparison, precisely.** Every type is stored and matched as a
 string, but plain lexicographic comparison is wrong for two shapes the
 pickers already have. The comparator (`compare_field_values`) sniffs both
 values being compared:
 
-- **Plain integers** (`workspace`, `pid`): `"10"` must sort after `"2"`,
-  not before. Both sides parse as non-negative ints -> numeric compare.
+- **Plain integers** (`workspace`, `pid`, a raw token count): `"10"` must
+  sort after `"2"`, not before - both sides parse as non-negative ints ->
+  numeric compare. This applies to the *underlying* value, not a display-
+  formatted one: a token count shown as `"58k"` sorts on the real integer
+  it came from, not that string (formatted-with-a-suffix strings don't
+  parse as plain ints at all, so without this they'd silently fall to the
+  lexicographic case below and sort nonsensically by leading digit).
+  Reported 2026-09-02 for exactly this field, missed in an early
+  implementation's DSL-driven `/sort` path - **any sort UI a picker
+  offers must share this one comparator**, DSL-driven or not (e.g. a
+  clickable column header that also re-sorts the same rows) - two sort
+  entry points disagreeing on `"100"` vs. `"2"` because only one of them
+  got the numeric-sniffing treatment is the bug, not a variant worth
+  keeping.
 - **Age buckets** (`date`, from `humanize_ago` - `"30s"`, `"5m"`, `"3h"`,
   `"2d"`): comparing the strings is nonsense across units. Both sides
   match `^\d+[smhd]$` -> convert to seconds and compare that.
@@ -592,9 +656,10 @@ predictable, and at these corpus sizes the looseness bought nothing.
 ## Design principles
 
 - **Never flash to zero results on a valid-so-far partial keystroke.** A
-  token still being typed (`/`, `/f`, `/ft `, `/ft cla`, `/s date `, an
-  unterminated `"phrase`) is inert - contributes no requirement - rather
-  than searched for literally as typed.
+  token still being typed (`/`, `/f`, `/ft `, `/ft cla`, `/s date `, a
+  flat-type `/fv/path` with no value yet, an unterminated `"phrase`) is
+  inert - contributes no requirement - rather than searched for literally
+  as typed.
 - **Every picker keeps one plain-typing default with no syntax at all.**
   Bare text is always `/filter-value` over the free-text haystack. The
   DSL is additive, never a wall a casual user has to learn first.
