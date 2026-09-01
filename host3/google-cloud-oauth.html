@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Google Cloud OAuth setup (personal automation cli) · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html" aria-current="page">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="google-cloud-oauth-setup-personal-automation-cli">Google Cloud
+OAuth setup (personal automation cli)</h1>
+<p>Definitive reference for a process that turned out to be far more
+convoluted than it should have been. Written 2026-08-30 after actually
+doing it end to end for <code>the personal Gmail account</code>, so the
+next time a new scope or a new project needs this, it's a checklist
+instead of a rediscovery.</p>
+<p>Project: <strong>personal automation cli</strong> — originally
+created for a Google Calendar sync tool, renamed once it became clear
+the same OAuth client is the right vehicle for broader personal Google
+API access, not just Calendar.</p>
+<h2
+id="why-any-of-this-is-necessary-at-all-internal-vs-external-audience">Why
+any of this is necessary at all: Internal vs External audience</h2>
+<p>The root cause of the entire Testing/Production/Branding/Publish
+dance below is a single fork in OAuth consent screen setup:
+<strong>Audience</strong>, a choice between <strong>Internal</strong>
+and <strong>External</strong>.</p>
+<ul>
+<li><strong>Internal</strong> is only offered to a <strong>Google
+Workspace user</strong> (an account that's a member of a
+Workspace-managed domain). Internal apps have no Testing/Production
+distinction, no Branding requirements, no domain hosting, no
+verification, no refresh-token expiry, ever — for any user within that
+Workspace domain.</li>
+<li><strong>External</strong> is everyone else's only option, and it's
+what triggers every step in this doc.</li>
+</ul>
+<p>Confirmed directly from Google's own UI (attempting to select
+Internal on a personal-Gmail-owned project): <em>"Because you're not a
+Google Workspace user, you can only make your app available to external
+(general audience) users."</em></p>
+<p>Critically, <strong>merely holding IAM admin rights on a Cloud
+Resource Manager Organization does not make an account a Workspace
+user</strong> — these are separate axes.
+<code>baleti3266@gmail.com</code> has full Organization Admin rights on
+the Cloud Resource Manager Organization it administers (confirmed via
+IAM), yet Google's consent screen still refuses Internal for it, and the
+account's own <code>myaccount.google.com</code> page shows no "managed
+by an organization" banner (the standard indicator of real Workspace
+membership). A personal Gmail identity cannot be converted into a
+Workspace/domain member after the fact, either — Organizations are
+inherently domain-based; the closest equivalent (Cloud Identity Free
+anchored to a separately-verified custom domain) creates <em>new</em>
+domain-based accounts, not a retroactive upgrade of an existing
+<code>@gmail.com</code> address.</p>
+<h2 id="where-the-credentials-live">Where the credentials live</h2>
+<ul>
+<li><code>~/.config/claude-calendar/accounts/&lt;email&gt;/client_secret.json</code>
+— the OAuth client (type <code>installed</code>/Desktop, redirect
+<code>http://localhost</code>). One client, reusable for any scope
+combination — scope is chosen per authorization request, not baked into
+the client.</li>
+<li><code>~/.config/claude-calendar/accounts/&lt;email&gt;/token-*.json</code>
+— one file per credential <em>purpose</em>, each holding just a
+<code>refresh_token</code> + <code>scope</code> + pointer back to
+<code>client_secret.json</code>. Kept separate per purpose deliberately,
+so e.g. a calendar-display token never carries Cloud-admin-level
+scope.</li>
+<li>Both covered by <code>.config/claude-calendar/accounts/</code> in
+<code>~/.git/info/exclude</code> — this <code>$HOME</code> is a public
+dotfiles repo, and <code>status.showUntrackedFiles=no</code> is set on
+it, which means new files <strong>do not show up in plain
+<code>git status</code> at all</strong>, ignored or not. Any new secret
+file anywhere in <code>$HOME</code> needs an explicit exclude pattern
+added <em>before</em> it's written, not discovered later by review.</li>
+<li><code>~/.config/claude-cloudflare/credentials-&lt;oauth-account&gt;.env</code>
+(<code>CF_ACCOUNT_ID</code>, <code>CF_API_TOKEN</code>) — same
+treatment, covered by <code>.config/claude-cloudflare/</code> in the
+same exclude file.</li>
+</ul>
+<h2 id="why-curl-not-gcloud">Why curl, not <code>gcloud</code></h2>
+<p>The <code>google-cloud-cli</code> AUR package was checked and is
+genuinely safe (205 votes, not out-of-date, <code>PKGBUILD</code> source
+pins straight to <code>dl.google.com</code> with <code>sha256sums</code>
+— same tarball Google ships for apt/yum, nothing AUR-specific to
+distrust). It was skipped anyway because everything needed — OAuth token
+exchange, enabling APIs, calling any Google REST API — is a handful of
+plain <code>curl</code> calls, and a Claude Code agent driving raw HTTP
+is more auditable than a 300+MB SDK wrapper around the same requests.
+<code>gcloud</code> remains a reasonable choice if heavy day-to-day
+interactive use ever justifies it; it just wasn't needed here.</p>
+<h2
+id="testing-vs-production-and-what-each-requirement-actually-gates">Testing
+vs Production, and what each requirement actually gates</h2>
+<p>This is the part that ate the most time, because Google's own UI copy
+("Your app's OAuth configuration is incomplete... visit the Branding
+page") does not say what's actually missing. Empirically confirmed
+facts, in order of discovery:</p>
+<ol type="1">
+<li><p><strong>Testing status is not a blocker for API calls.</strong>
+<code>curl</code>-driven OAuth works fine in Testing, for any account
+listed as a <strong>Test user</strong> (Console → OAuth consent screen /
+Google Auth Platform → Audience → Test users). Forgetting to add the
+account here produces <code>Error 403: access_denied</code> / "can only
+be accessed by developer-approved testers" — nothing to do with domains
+or verification, just the missing test-user entry.</p></li>
+<li><p><strong>Testing status's real cost: refresh tokens expire in 7
+days</strong> (<code>refresh_token_expires_in: 604798</code> in the
+token response, confirmed empirically). Fine for on-demand admin use
+where re-auth is already expected each session; a real problem for
+anything unattended.</p></li>
+<li><p><strong>Moving to Production removes the 7-day expiry</strong>
+(confirmed: the field disappears from the token response entirely
+post-Publish) — this is the actual reason to bother with any of the
+below.</p></li>
+<li><p><strong>The Branding page's real (undocumented in the UI)
+requirement</strong>, confirmed both by Google's own tooltip text on the
+greyed-out Publish button and by other users hitting the identical error
+message (<a
+href="https://discuss.google.dev/t/cannot-publish-due-to-error-message-your-apps-oauth-configuration-is-incomplete-you-must-enter-the-missing-information-to-proceed-please-visit-the-branding-page-to-finish-configuring-your-app-even-though-all-required-fields-are-complete/392229">Google
+Developer forums thread</a>):</p>
+<blockquote>
+<p>"Valid app name, support email, homepage url, and privacy policy url
+are required for switching the app to external production mode."</p>
+</blockquote>
+<p>App name / support email / developer contact email alone (the fields
+with a visible <code>*</code>) are <strong>not</strong> sufficient —
+Application home page and Application privacy policy link are
+<em>also</em> required for Publish, with no asterisk shown, and filling
+them in makes <strong>Authorised domains</strong> become required
+too.</p></li>
+<li><p>Once a domain is added under Authorised Domains and Branding is
+saved, <strong>no separate Search Console verification step was actually
+required</strong> — Publish App became available immediately. (This may
+be specific to using a Public-Suffix-List-registered subdomain like
+<code>workers.dev</code> — see below — which Google may accept without a
+manual ownership check the way it would for an arbitrary custom
+domain.)</p></li>
+<li><p>The <strong>IAP Brands API</strong>
+(<code>iap.googleapis.com/v1/projects/{id}/brands</code>) — the only
+public REST API resource resembling OAuth-consent-screen branding —
+hard-fails with <code>"Project must belong to an organization"</code> on
+both <code>list</code> and <code>create</code>, for any project owned by
+a personal Gmail account (no Workspace org). <strong>This path is
+closed, don't retry it</strong> — Branding has to be set through the
+Console UI.</p></li>
+<li><p><strong>Data access → scopes must be explicitly declared</strong>
+in the Console (Add or remove scopes), separately from whatever scope
+you actually request in the auth URL. Google has no record of what data
+an app touches otherwise. This tab also <strong>only lists scopes from
+APIs already enabled</strong> on the project — enable the underlying API
+first (via Service Usage, see below) if a scope isn't showing up in the
+picker.</p></li>
+</ol>
+<h2 id="hosting-the-required-homepage--privacy-policy-pages">Hosting the
+required Homepage + Privacy Policy pages</h2>
+<p>Needed: two public HTTPS pages, on a domain listed in Authorised
+Domains. Constraints that ruled out the obvious options:</p>
+<ul>
+<li><strong>A real custom domain</strong> (e.g. an existing
+Route53-hosted one) works, but ties the OAuth app to that domain's
+registration lifecycle — not worth it for a page with no real content,
+and not needed (see below).</li>
+<li><strong>GitHub Pages</strong> works technically but means a new
+public repo (or a page bolted onto an existing personal one) sitting on
+the public GitHub profile for a throwaway privacy-policy page —
+undesirable.</li>
+<li><strong>A new deSEC (<code>dedyn.io</code>) subdomain</strong>
+(deSEC credentials already exist at
+<code>~/.local/share/mailserver-migration/secrets/desec.env</code> from
+the mail server migration project) would have worked, but turned out to
+be unnecessary — see next point.</li>
+</ul>
+<p><strong>What was actually used: a Cloudflare Worker on
+<code>*.workers.dev</code>.</strong> <code>workers.dev</code> (and
+<code>pages.dev</code>) are both on the <a
+href="https://raw.githubusercontent.com/publicsuffix/list/master/public_suffix_list.dat">Public
+Suffix List</a> (confirmed by grepping the raw list directly), meaning
+each <code>&lt;name&gt;.workers.dev</code> is treated as its own
+independent registrable domain — same mechanism that makes
+<code>github.io</code> or <code>herokuapp.com</code> subdomains work
+per-user. This sidesteps deSEC, Route53, and DNS entirely: Cloudflare
+<em>is</em> both the domain and the host.</p>
+<p>Deployed with <strong>zero local binaries</strong> (no
+<code>wrangler</code>/<code>npx</code>, by preference — not a technical
+requirement) — a single officially documented REST call:</p>
+<ol type="1">
+<li><p>Free Cloudflare account, no card required for Workers' free
+tier.</p></li>
+<li><p><strong>My Profile → API Tokens → Create Token</strong>, scoped
+to <strong>Account → Workers Scripts → Edit</strong> only.</p></li>
+<li><p>First-ever visit to
+<code>https://dash.cloudflare.com/?to=/:account/workers/workers-and-pages</code>
+auto-provisions the account's <code>*.workers.dev</code> subdomain —
+this one step has no API equivalent and must be done once, in-browser,
+before anything below will work (<code>GET .../workers/subdomain</code>
+404s with <code>"You do not have a workers.dev subdomain"</code> until
+this happens).</p></li>
+<li><p>Deploy the script — single PUT, <code>multipart/form-data</code>,
+two parts: a <code>metadata</code> JSON part
+(<code>{"main_module": "worker.js", "compatibility_date": "&lt;today&gt;"}</code>)
+and a part named after the script file itself,
+<code>Content-Type: application/javascript+module</code>:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> PUT <span class="dt">\</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer </span><span class="va">$CF_API_TOKEN</span><span class="st">&quot;</span> <span class="dt">\</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-F</span> <span class="st">&quot;metadata=@metadata.json;type=application/json&quot;</span> <span class="dt">\</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">-F</span> <span class="st">&quot;worker.js=@/path/to/local/worker.js;filename=worker.js;type=application/javascript+module&quot;</span> <span class="dt">\</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>  <span class="st">&quot;https://api.cloudflare.com/client/v4/accounts/</span><span class="va">$CF_ACCOUNT_ID</span><span class="st">/workers/scripts/</span><span class="va">$SCRIPT_NAME</span><span class="st">&quot;</span></span></code></pre></div>
+<p>Cloudflare matches the module by the multipart
+<strong>filename</strong>, not the form field name — if the local file
+isn't literally named <code>worker.js</code> (e.g. deploying a second,
+differently-named script from a shared scratch dir), this fails with
+<code>Uncaught Error: No such module: worker.js</code> unless
+<code>filename=worker.js</code> is set explicitly, as above.</p>
+<p>The Worker script itself is a plain ES module
+<code>export default { async fetch(request) {...} }</code> returning
+different inline HTML per <code>new URL(request.url).pathname</code> —
+no build step, no dependencies.</p></li>
+<li><p>Enable the public subdomain for that specific script:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer </span><span class="va">$CF_API_TOKEN</span><span class="st">&quot;</span> <span class="dt">\</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="at">-d</span> <span class="st">&#39;{&quot;enabled&quot;: true}&#39;</span> <span class="dt">\</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="st">&quot;https://api.cloudflare.com/client/v4/accounts/</span><span class="va">$CF_ACCOUNT_ID</span><span class="st">/workers/scripts/</span><span class="va">$SCRIPT_NAME</span><span class="st">/subdomain&quot;</span></span></code></pre></div></li>
+<li><p>Final URL:
+<code>https://&lt;script-name&gt;.&lt;account-subdomain&gt;.workers.dev/</code>.</p></li>
+</ol>
+<p>An unofficial, reverse-engineered "Direct Upload" protocol also
+exists for deploying <strong>static assets</strong> (as opposed to a
+Worker script) purely via HTTP, involving BLAKE3-hashed manifests and a
+multi-step JWT exchange — deliberately not used here. It's undocumented
+by Cloudflare and more fragile than just writing 15 lines of JS and
+using the plain, officially documented Worker-script upload endpoint
+above.</p>
+<p>Token sanity check before relying on any of this:
+<code>GET https://api.cloudflare.com/client/v4/user/tokens/verify</code>.</p>
+<h2 id="the-actual-step-by-step-next-time">The actual step-by-step, next
+time</h2>
+<ol type="1">
+<li>Create/select the GCP project, note its numeric project number
+(needed for Service Usage calls —
+<code>cloudresourcemanager.googleapis.com</code>
+<code>.../projects/&lt;project-id&gt;</code> returns it, but only once
+that API itself is enabled).</li>
+<li>Console → APIs &amp; Services → Credentials → Create OAuth client ID
+→ <strong>Desktop app</strong> (gives the loopback
+<code>http://localhost</code> redirect a local script can catch itself —
+a Web-type client needs a registered HTTPS redirect on a real server
+instead).</li>
+<li>Console → OAuth consent screen (Google Auth Platform) → Audience →
+<strong>Test users</strong> → add the authorizing account. Without this,
+every auth attempt 403s regardless of anything else being
+configured.</li>
+<li>Run the curl authorization-code flow (build the
+<code>accounts.google.com/o/oauth2/v2/auth</code> URL with the needed
+<code>scope</code>, <code>access_type=offline</code>,
+<code>prompt=consent</code>; catch the redirect with a one-shot local
+<code>http.server</code> on <code>localhost:&lt;port&gt;</code>;
+exchange the code at the client's <code>token_uri</code>) — this alone
+is enough for on-demand admin use in Testing status, accepting the 7-day
+refresh token lifetime.</li>
+<li>Only if unattended/long-lived access is actually needed: set up
+Branding (App name, support email, developer contact email,
+<strong>plus</strong> Application home page + Application privacy policy
+link — the two undocumented-as-required fields) and Authorised Domains
+(the Cloudflare Worker trick above), <strong>Verify Branding → Publish
+branding</strong>, then Data access → declare every scope actually used
+(enabling the underlying API first via Service Usage if it doesn't
+appear in the picker), then Audience → <strong>Publish
+App</strong>.</li>
+<li>Re-run the same curl auth flow once more post-Publish — same
+"unverified app" click-through as before is expected and fine (we are
+not doing full Google verification review, only Publish) — and confirm
+<code>refresh_token_expires_in</code> is now absent from the
+response.</li>
+</ol>
+<h2 id="useful-raw-rest-calls-once-a-token-exists">Useful raw REST
+calls, once a token exists</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># refresh an access token</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&quot;</span><span class="va">$TOKEN_URI</span><span class="st">&quot;</span> <span class="dt">\</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&quot;refresh_token=</span><span class="va">$REFRESH_TOKEN</span><span class="st">&quot;</span> <span class="at">-d</span> <span class="st">&quot;client_id=</span><span class="va">$CLIENT_ID</span><span class="st">&quot;</span> <span class="dt">\</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&quot;client_secret=</span><span class="va">$CLIENT_SECRET</span><span class="st">&quot;</span> <span class="at">-d</span> <span class="st">&quot;grant_type=refresh_token&quot;</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="co"># enable an API on the project (Service Usage)</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer </span><span class="va">$ACCESS_TOKEN</span><span class="st">&quot;</span> <span class="dt">\</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>  <span class="st">&quot;https://serviceusage.googleapis.com/v1/projects/&lt;project-number&gt;/services/&lt;api&gt;.googleapis.com:enable&quot;</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="co"># confirm project identity/state (Cloud Resource Manager)</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer </span><span class="va">$ACCESS_TOKEN</span><span class="st">&quot;</span> <span class="dt">\</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>  <span class="st">&quot;https://cloudresourcemanager.googleapis.com/v1/projects/&lt;project-id&gt;&quot;</span></span></code></pre></div>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#where-the-credentials-live">Where the credentials live</a></li><li class="lvl2"><a href="#why-curl-not-gcloud">Why curl, not gcloud</a></li><li class="lvl2"><a href="#hosting-the-required-homepage--privacy-policy-pages">Hosting the required Homepage + Privacy Policy pages</a></li><li class="lvl2"><a href="#the-actual-step-by-step-next-time">The actual step-by-step, next time</a></li><li class="lvl2"><a href="#useful-raw-rest-calls-once-a-token-exists">Useful raw REST calls, once a token exists</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

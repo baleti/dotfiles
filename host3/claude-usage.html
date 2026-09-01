@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code usage widget · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html" aria-current="page">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="claude-code-usage-widget">Claude Code usage widget</h1>
+<p>A quickshell bar pill + detail panel (<code>CTRL+ALT+c</code>)
+showing session/weekly rate-limit usage across every Claude Code account
+on this machine (<code>~/.claude</code>, <code>~/.claude2</code>,
+<code>~/.claude3</code>), backed by a standalone poller — same
+headless-daemon-writes-JSON + quickshell-reads-it shape as
+<code>rssd</code>/<code>notifyd</code> (see <a
+href="quickshell-bar.html">quickshell-bar.md</a>).</p>
+<h2 id="the-endpoint">The endpoint</h2>
+<p>There's no separate public "usage API" — the <code>claude</code>
+CLI's own <code>/usage</code> command calls
+<code>GET https://api.anthropic.com/api/oauth/usage</code>, Bearer-
+authenticated with the OAuth access token already sitting in each
+account's <code>.credentials.json</code> (found by inspecting the CLI
+binary's strings, then confirmed with one live call). It isn't published
+in Anthropic's public API docs, so it's not a contract that's guaranteed
+stable across CLI versions, but it's not a special/hidden route either —
+it's the identical authenticated, read-only account-info call the CLI
+itself makes, using credentials the account already holds.</p>
+<p><strong>It does rate-limit, and it's stricter than expected.</strong>
+The first version of this polled every 30s per account with all 3 fired
+back-to-back, and tripped a 429 on all 3 accounts
+<em>simultaneously</em> within about 30 minutes of continuous "active"
+use — evidence the limit is IP-wide, not per-account/ per-token. Treat
+this endpoint as scarce: it's built for an occasional
+<code>/usage</code> check, not continuous polling. See Backoff below for
+how this is now handled, and the interval table for the (now much more
+conservative) tuning that followed.</p>
+<p>Response shape (the field actually used, <code>limits[]</code>):</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;limits&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;kind&quot;</span><span class="fu">:</span> <span class="st">&quot;session&quot;</span><span class="fu">,</span>     <span class="dt">&quot;percent&quot;</span><span class="fu">:</span> <span class="dv">20</span><span class="fu">,</span> <span class="dt">&quot;resets_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2026-08-31T16:59:59Z&quot;</span><span class="fu">,</span> <span class="dt">&quot;severity&quot;</span><span class="fu">:</span> <span class="st">&quot;normal&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;kind&quot;</span><span class="fu">:</span> <span class="st">&quot;weekly_all&quot;</span><span class="fu">,</span>  <span class="dt">&quot;percent&quot;</span><span class="fu">:</span> <span class="dv">10</span><span class="fu">,</span> <span class="dt">&quot;resets_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2026-09-05T21:59:59Z&quot;</span><span class="fu">,</span> <span class="dt">&quot;severity&quot;</span><span class="fu">:</span> <span class="st">&quot;normal&quot;</span> <span class="fu">}</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><code>kind: "session"</code> is the rolling 5-hour window
+<code>/usage</code> calls "current session";
+<code>kind: "weekly_all"</code> is the 7-day window. (The full response
+also carries per-model weekly breakdowns and a spend/credits block —
+unused here.)</p>
+<h2 id="no-token-refresh-here-on-purpose">No token refresh here, on
+purpose</h2>
+<p>Access tokens are short-lived (~8h). Rather than reimplementing
+Anthropic's OAuth refresh flow
+(<code>https://platform.claude.com/v1/oauth/token</code>) — a new place
+to mishandle a refresh token, for no real benefit — the poller just
+re-reads each account's <code>.credentials.json</code> fresh every
+cycle. Each account already has live <code>claude</code> CLI sessions
+keeping that file refreshed through normal use, so by the time the
+poller needs a token it's almost always already fresh; a cycle that hits
+a 401 just skips that account and tries again next cycle rather than
+erroring out.</p>
+<h2 id="adaptive-poll-interval">Adaptive poll interval</h2>
+<p>Checking <code>/usage</code> doesn't need to happen at a fixed
+cadence — nobody's looking at the bar while the screen is off, and
+there's no reason to poll faster than every few minutes if nothing's
+actively running. The daemon re-evaluates which tier it's in every 15s
+and only actually calls the API when a fetch is due for that tier:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Interval</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Any monitor DPMS-off, or the session locked
+(<code>hyprctl -j monitors</code> /
+<code>loginctl … LockedHint</code>)</td>
+<td>1 hour</td>
+</tr>
+<tr>
+<td>A transcript under <code>~/.claude*/projects/*/*.jsonl</code> was
+modified in the last 90s (i.e. <em>something</em> is actively
+generating, anywhere — not just the focused window)</td>
+<td>2 minutes</td>
+</tr>
+<tr>
+<td>Otherwise (screen on, nothing actively generating)</td>
+<td>5 minutes</td>
+</tr>
+</tbody>
+</table>
+<p>(The "active" tier started at 30 seconds and got widened to 2 minutes
+after the 429 above — see Backoff.) Each fetch cycle also staggers the 3
+accounts' requests 5s apart, so they never land as one 3-request
+burst.</p>
+<p>Plain process-existence (<code>pgrep claude</code>) was deliberately
+<strong>not</strong> used for the "active" check — this machine keeps
+dozens of resumed <code>claude</code> sessions alive indefinitely, so a
+process existing is true almost always and says nothing about whether
+anyone's actually watching. Transcript mtime only moves while a session
+is genuinely generating or using a tool.</p>
+<p>There's also no idle/lock daemon actually running here
+(<code>hypridle</code>/ <code>swayidle</code> absent, KDE autolock off),
+so the "locked" check is a live query each cycle rather than a state
+some other daemon maintains.</p>
+<h2 id="backoff-on-429">Backoff on 429</h2>
+<p>A 429 from any one of the 3 accounts suspends fetching for
+<strong>all 3</strong> for at least 10 minutes (longer if the response
+sends a <code>Retry-After</code> header), doubling on each further 429
+hit before the backoff clears, capped at 1 hour. <code>poll_mode</code>
+becomes <code>"backoff"</code> in <code>state.json</code> during this
+window, which the detail panel renders as a live "rate limited —
+retrying in Xm" countdown instead of the usual tier label.</p>
+<p>Critically, a 429 (or any other fetch error) no longer blanks out
+that account's numbers: the daemon carries the last successful reading
+forward into <code>state.json</code>, flagged
+<code>"stale": true</code>, so the bar keeps showing the last-known
+percentages (dimmed) through a rate-limit window instead of going blank
+or red. Only an account that has <em>never</em> had a successful fetch
+shows as <code>--</code>.</p>
+<h2 id="active-processes-per-account">Active processes per account</h2>
+<p>The detail panel also lists each account's live <code>claude</code>
+processes — a per-account sortable table: status, title, context tokens,
+last-active time, tmux (session/window/pane), pid, path. Entirely local,
+no network call, so it runs on its own fixed 30s cadence independent of
+the tiers/backoff above (and keeps updating even mid-backoff).</p>
+<ul>
+<li><strong>Finding them</strong>: each account's
+<code>sessions/&lt;pid&gt;.json</code> (written by the CLI itself) gives
+<code>pid</code>/<code>sessionId</code>/<code>cwd</code>/<code>status</code>/<code>tmux</code>
+directly, keyed by PID — no process-tree guessing needed. A row is only
+kept if <code>/proc/&lt;pid&gt;</code> still exists, so an exited
+session's leftover json file doesn't linger. <code>status</code> is
+<code>"idle"</code> / <code>"waiting"</code> / <code>"busy"</code> —
+<code>"busy"</code> is the CLI's own signal that it's genuinely
+generating right now.</li>
+<li><strong>This machine routinely has 20–40 of these alive per account
+at once</strong> (mostly idle resumed shells, some going back over a
+week). The daemon sends <em>all</em> of them, sorted
+most-recently-active first — capping that list is the quickshell side's
+job, not the daemon's (see below), so the real total is always known
+even when the panel can't show all of it.</li>
+<li><strong>Title</strong> is tmux's own <code>pane_title</code> (set by
+the CLI via terminal escape sequences, e.g.
+<code>"Focused window border accent color"</code>), looked up with one
+batched <code>tmux list-panes -a</code> call per cycle (not one
+subprocess per session) and matched by the globally-unique
+<code>%pane-id</code> embedded in that session's own <code>tmux</code>
+field. <strong>Not</strong> <code>sessions/&lt;pid&gt;.json</code>'s own
+<code>"name"</code> field — that looks like a title but is actually just
+an opaque auto-derived id the CLI assigns internally (e.g.
+<code>"user1-46"</code>), unrelated to what the session is doing; using
+it was the original version's bug, caught by comparing both against the
+same real session. <code>name</code> is kept as the fallback for a
+process tmux can't find a pane for (not running in tmux at all —
+daemon/bg-pty-host processes).</li>
+<li><strong>Token usage</strong> is read from the last
+<code>type: "assistant"</code> entry's <code>usage</code> field in that
+session's own transcript
+(<code>~/.claudeN/projects/&lt;cwd-slug&gt;/&lt;sessionId&gt;.jsonl</code>
+— the same <code>/</code>+<code>.</code>→<code>-</code> slug scheme the
+CLI itself uses for that directory name), found with a tail-window read
+(200KB, escalating to 1.5MB then the whole file only if that's not
+enough), never a full-file parse. It's
+<code>input + cache_creation + cache_read</code> tokens from that one
+call — i.e. roughly how full that session's context window is <em>right
+now</em>, not a lifetime running total across the session's
+history.</li>
+<li><strong>Each process is one line</strong>, columns in this order:
+status (<code>idle</code>/<code>wait</code>/<code>busy</code>,
+abbreviated — <code>waiting</code> alone was wide enough to run into the
+next column with no gap, a real bug the first version had), title,
+context tokens, last-active time, <strong>tmux</strong> (a 3-column
+group — see below), pid, path (cwd, <code>~</code>-shortened). Two
+header rows sit above each account's list instead of repeating column
+words on every row (same fixed column widths as the data rows, shared
+via <code>root.col*W</code>): a group-label row (blank except a centered
+"tmux" spanning its 3 sub-columns) and the column-header row proper.
+That row hit the too-narrow-for-its-own-label bug twice — once on
+<code>"status"</code>, once on <code>"last"</code> after its sort-arrow
+suffix (below) was added — each column had to be sized off its own
+<em>header word</em> (plus that suffix), not the shorter values it
+actually holds.</li>
+<li><strong>tmux is a grouped column</strong>: session / window / pane,
+each its own sub-column under one "tmux" group header, sourced from
+<code>sessions/&lt;pid&gt;.json</code>'s <code>"tmux"</code> field (e.g.
+<code>"653:@1017.%1828"</code>) split into 3 plain numbers by the daemon
+(<code>TMUX_FIELD_RE</code>) — <code>653</code>, <code>1017</code>,
+<code>1828</code>, not tmux's own <code>@</code>/<code>%</code>-prefixed
+object-type notation, which is tmux's internal sigil syntax, not
+meaningful outside a tmux command. Clicking the "tmux" group label sorts
+by all 3 together (session, then window, then pane) — the 3 sub-column
+headers are plain labels, not individually sortable. The group label has
+a real rule under it spanning the full session+window+pane width (a
+<code>Rectangle</code> child of the "tmux" <code>Text</code>, not a
+<code>RowLayout</code> sibling — a plain child doesn't inflate the
+Text's own size the way a Layout sibling would) —
+<code>font.underline: true</code> was tried first, but that only
+underlines the 4 glyphs of "tmux" itself, much narrower than the group
+it's meant to mark.</li>
+<li><strong>Both header rows, and the data rows below them, sit shifted
+up ~16px</strong> (<code>transform: Translate { y: -16 }</code> on two
+separate wrapping <code>Column</code>s — one around the two header rows,
+one around the process-row <code>Repeater</code> + its trailing "+N
+more" line). The header shift is deliberate — it visibly overlaps the
+bottom of the "weekly" line above ("it's okay because they are away from
+each other": weekly's text is short and left-aligned, the header row's
+real content starts further right, so in practice the overlap doesn't
+collide with actual glyphs). The row shift isn't its own separate
+request — it's there because the header shift alone left a 16px gap
+between the (now-higher) headers and the still-normally-positioned data
+rows, reported immediately after the header shift landed. Both are
+transforms, not layout changes — <code>acctCol</code> still reserves
+each block's normal height, nothing shifts to compensate, only render
+position moves; wrapping either block in a new <code>Column</code> moves
+their children one level down, so anything inside that referenced
+<code>parent.X</code> expecting <code>acctCol</code>
+(<code>groupOpen</code>, <code>procs</code>, <code>visibleProcs</code>,
+<code>hiddenProcCount</code>) had to switch to the <code>acctCol</code>
+id directly — missed for the data-row wrapper on the first pass, caught
+as a <code>qs log</code> binding warning
+(<code>Unable to assign [undefined] to bool</code>).</li>
+<li><strong>Every column is independently resizable</strong> — hovering
+the gap between two headers shows a resize cursor
+(<code>ColumnResizeHandle.qml</code>, a small reusable
+<code>MouseArea</code> with <code>cursorShape: Qt.SizeHorCursor</code>);
+dragging adjusts the column immediately to its left, reported back via a
+<code>widthChangeRequested</code> signal rather than the component
+writing the bound <code>colXxxW</code> property directly (a QML property
+binding and a direct write to that same property fight each other
+otherwise). Every row — the tmux group-label row, the column-header row,
+every data row — uses the exact same <code>handleW</code>-wide gap
+between columns (<code>spacing: 0</code> on each <code>RowLayout</code>,
+explicit <code>Item</code>s filling the gaps that aren't the interactive
+column-header row), so all of them stay aligned regardless of a resize.
+Resizes reset to <code>colDefaults</code> on every panel open
+<strong>and</strong> close (<code>resetColumnWidths()</code>, called
+from the same <code>onExpandedChanged</code> that already resets fold
+state and sort), so a manual resize doesn't quietly outlive the look at
+the panel that made it.</li>
+<li><strong>All 9 columns are fixed widths now, none of them
+<code>Layout.fillWidth</code></strong> — title used to be the one column
+absorbing the panel's spare width (path had that job before it, see
+below); once every column could be resized by hand there was no reason
+for one to auto-absorb space anymore, so a trailing filler after "path"
+soaks up genuine leftover row width instead, and title/path both just
+have their own tuned default (<code>colDefaults</code>): title 280 (90 →
+140 → 280 across 3 requests the same day), path 100 (was 160) — title
+wider and path narrower than their previous values by request. Path had
+the stretch role in the very first version, on the reasoning that it was
+the least critical column to keep fully visible, but path is nearly
+always just <code>~</code> in this single-cwd-per-account environment,
+so giving <em>it</em> the stretch just wasted the panel's extra width as
+blank space while titles (routinely 30-40 characters, e.g. "Reddit API
+automation for unixporn posts") sat elided at a fixed 90px — reported
+"title column is too short" 2026-08-31, fixed first by swapping the
+stretch onto title, then superseded entirely by manual resize.</li>
+<li><strong>The panel is wider than the other bar panels by
+default</strong> — <code>Bar.qml</code>'s
+<code>claudeUsagePanelWidth</code> (920px cap, up from 760 the same day
+— "make the panel wider to give more space to make the title column
+wider" — vs. the standard 560) — since 9 columns plus a usable title
+column don't fit the shared width the graph/media panels use. (A
+"rectangle that doesn't span full panel width" also reported the same
+day turned out to be a stale compositor- side render artifact from rapid
+<code>qs kill</code>/relaunch cycles during debugging, not a real layout
+bug — confirmed gone after one clean restart with nothing else
+changed.)</li>
+<li><strong>Last is a plain duration, no "ago"</strong> — the header
+says that once, instead of every row repeating it
+(<code>fmtDuration()</code>, shared with the reset countdowns above). It
+breaks down through seconds → minutes → hours → days → weeks → months →
+years (e.g. <code>2d 3h</code>, <code>3w 1d</code>,
+<code>2mo 1w</code>), not just hours — some of these sessions have been
+alive since Aug 14, and an hours-only version rolling over into
+<code>410h</code> instead of <code>17d 2h</code> was the original bug
+report here. Months/years are 30-/365-day approximations (a coarse
+"roughly how long", not a calendar computation).</li>
+<li><strong>Every column header is clickable</strong> — sorts that
+account's table by that column, a <code>▲</code>/<code>▼</code> marks
+whichever column is currently driving the order, and clicking the
+<em>same</em> header again flips ascending/descending
+(<code>ClaudeUsageExpanded.qml</code>'s <code>groupSort</code>, keyed
+per account — sorting <code>claude</code>'s table doesn't touch
+<code>claude2</code>/<code>claude3</code>'s).</li>
+<li><strong>How many rows actually render</strong> is a fit-estimate
+against <code>ClaudeUsageExpanded.qml</code>'s
+<code>maxPanelHeight</code> (screen-height-derived, same as
+<code>CalendarExpanded</code> — the panel is allowed to grow as tall as
+the monitor allows, not capped to some fixed small height).
+<code>groupRowBudgets</code> water-fills that estimate across whichever
+account groups are currently expanded, smallest-total-first, so a group
+with fewer real processes than an equal split would give it only takes
+what it needs and every leftover row rolls forward to groups that
+actually have more to show — an equal-split version tried first meant
+folding one group could visibly <em>shrink the whole panel</em> even
+while another group still had a "+N more" waiting to grow into the freed
+space, reported 2026-08-31. Whatever still doesn't fit shows as a real
+count, e.g. <code>+13 more</code> — the true remainder from the
+account's full list, never silently dropped. The safety margin in this
+estimate has moved twice in opposite directions: 20px originally, cut to
+4px to reclaim height that was going unused, then raised to 16px after
+4px proved too thin in practice (the last "+N more" line was visibly
+clipped). Separately, <code>acctCol</code>'s own inter-row spacing
+(name/session/weekly/headers/every data row) was tightened 2px → 1px,
+which — compounding across the ~20 rows/headers one account block can
+have — reclaimed enough height that every account's table now typically
+fits with no truncation at all (<code>+0 more</code>) rather than
+needing the water-filling above to matter much in the common case.</li>
+<li><strong>Each account group is collapsible</strong> — a
+<code>▾</code>/<code>▸</code> chevron (sized
+<code>Theme.fontSize + 2</code>, a couple points larger than the body
+text around it so it reads as a clickable affordance rather than
+punctuation) left of the
+<code>claude</code>/<code>claude2</code>/<code>claude3</code> heading
+(click anywhere on the heading) folds/unfolds that account's
+session%/weekly%/process-list section, freeing its vertical share for
+whichever groups stay open (see <code>groupRowBudgets</code>
+above).</li>
+<li><strong>Fold state, sort, and column widths all reset on every panel
+open <em>and</em> close</strong> (<code>onExpandedChanged</code>) — this
+Rectangle instance is never destroyed (only its height collapses to 0
+when the panel itself closes, same pattern as Media/CalendarExpanded),
+so without this a fold, a sort, or a manual column resize from one look
+at the panel would otherwise still be there next time. The first version
+only reset sort and let fold state persist (reasoned, at the time, as
+the more useful default) — reported as inconsistent with the intended
+"clean slate every open" behavior, so all three reset together now.</li>
+</ul>
+<h2 id="files">Files</h2>
+<ul>
+<li><code>~/.config/claude-usage/claude-usage-daemon.py</code> — the
+poller; owns the interval logic, all 3 accounts' requests, and the
+process listing above.</li>
+<li><code>~/.cache/claude-usage/state.json</code> — atomically-written
+combined snapshot
+(<code>{accounts: [...], sessions: {claude: [...], ...}, poll_mode, poll_interval_s, updated_at}</code>);
+the only thing quickshell ever reads.</li>
+<li><code>~/.config/systemd/user/claude-usage.service</code> —
+<code>Type=simple</code>, <code>Restart=always</code>,
+<code>WantedBy=default.target</code> (continuous process, not a timer —
+the daemon self-paces its own interval, so a systemd timer re-invoking
+it on a fixed schedule doesn't fit the way it does for
+<code>rssd</code>).</li>
+</ul>
+<h2 id="quickshell-side">quickshell side</h2>
+<ul>
+<li><p><code>services/ClaudeUsageSvc.qml</code> — singleton
+<code>FileView</code> on <code>state.json</code>
+(<code>watchChanges: true</code>); never touches the network
+itself.</p></li>
+<li><p><code>bar/ClaudeUsagePill.qml</code> — compact per-account
+<strong>session%</strong> only (fixed
+<code>claude</code>/<code>claude2</code>/<code>claude3</code> order,
+e.g. <code>12% 100% 27%</code>), colored via
+<code>Theme.rampColor</code>; a stale (carried-forward-after-an-error)
+reading is dimmed rather than hidden. Weekly% doesn't fit
+3-accounts-wide in a bar pill at a glance, so it's detail-panel-only.
+Click toggles the detail panel. Trailing icon: the real
+<code>claude.ai</code> favicon, extracted once from Brave's own Favicons
+SQLite cache (<code>~/.brave-claude/Default/Favicons</code> — what the
+browser actually downloaded visiting the site, not a redrawn guess) into
+<code>bar/assets/claude-logo.png</code>, then recolored at render time
+via <code>QtQuick.Effects</code>' <code>MultiEffect</code>
+(<code>colorization: 1</code>, which replaces RGB but keeps the source
+alpha shape). The recolor target went through 3 designs before landing
+on the current one:</p>
+<ol type="1">
+<li><p><code>Theme.cyan</code> / <code>Theme.text</code> (the scheme's
+primary accent, or plain neutral foreground) — didn't read as Claude's
+own icon anymore, or was flat low-contrast grey at this icon
+size.</p></li>
+<li><p>Claude's own brand orange (<code>#DA7756</code>, hue 15°) with
+its hue/lightness pinned and only <em>saturation</em> scaled by how
+close the theme's primary hue was to that same orange — still read as an
+outside color forced to blend in, not something that actually belonged
+to the theme, and needed its saturation range raised twice (0.12–0.641 →
+0.58–0.94) because it kept coming out grey-to-faint.</p></li>
+<li><p><strong>Current</strong>: no hardcoded orange at all.
+<code>ClaudeUsagePill.qml</code>'s <code>logoColor</code> searches the
+<em>current</em> generated scheme's own colors for whichever one already
+sits closest to a canonical orange hue, and uses that swatch exactly as
+<code>gen-theme.py</code> generated it. <code>Theme.orange</code> itself
+(a fixed hardcoded fallback, see <code>Theme.qml</code>) is deliberately
+excluded — using it would just be the same "not actually this theme's
+own color" problem again.</p>
+<p>The candidate list is <code>Theme.seriesPalette</code> (8 hues) +
+<code>Theme.intensityRamp</code> (5 stops, documented to trend toward
+red-orange at its hot end) +
+<code>Theme.cyan</code>/<code>Theme.green</code>
+(<code>scheme.primary</code>/ <code>secondary</code> — misleading names,
+they're just whatever hue the generator happened to land on for those 2
+roles this time, not reliably cyan/green). That last pair was added
+after the first version — series+ramp only — landed on
+<code>seriesPalette</code>'s <code>#e8a400</code> (hue 42°, into yellow)
+on a scheme where <code>scheme.secondary</code> happened to be
+<code>#ffb693</code> (hue 19°, genuinely orange) but wasn't in the
+search at all, reported "too yellow, doesn't match any theme color"
+2026-08-31. Both accent roles are just as legitimately theme-generated
+as the series/ramp swatches, so excluding them was the actual bug, not
+the closest-hue approach itself.</p></li>
+</ol></li>
+<li><p><code>bar/ClaudeUsageExpanded.qml</code> — per-account
+session%/weekly% + reset countdown + its own "active processes" table
+(see above), plus the current poll tier/backoff countdown and staleness
+("updated Ns ago"). Wired into <code>Bar.qml</code>'s shared panel-row
+layout system (<code>panelOrder</code> etc. — see quickshell-bar.md) the
+same way <code>CalendarExpanded</code>/<code>MediaExpanded</code> are,
+<strong>including</strong> <code>shell.qml</code>'s
+<code>HyprlandFocusGrab</code>/<code>holdsFocus</code> machinery
+(<code>Bar.qml</code>'s <code>openPanelCount</code> and the
+<code>claudeUsageExpanded</code> instance's
+<code>onExpandedChanged</code> both include it) — first version left
+this out entirely, reasoning nothing here needed arrow-key nav, but
+Escape-to-close was requested and that needs the same real focus grab
+the other panels use. <code>root.Keys.onPressed</code> in
+<code>Bar.qml</code> handles Escape while this is the open panel;
+toggling again (or clicking the pill) still works too.</p>
+<p><strong>Taking that focus grab surfaced a separate, real bug in
+<code>shell.qml</code>'s input mask</strong>, not this panel's own doing
+but only visible once something rendered this tall: the mask used to be
+one rectangle, full monitor <em>width</em> regardless of which panel was
+actually open, sized in height off the tallest currently-open panel
+(<code>bar.panelGridHeight</code>). Media/Calendar's typically-modest
+heights never pushed that rectangle far enough to matter, but
+<code>ClaudeUsageExpanded</code> routinely reaches close to full monitor
+height now (see "How many rows actually render" above) — meaning that
+one rectangle became nearly the <em>entire screen</em>, silently
+swallowing clicks meant for whatever window was underneath, anywhere on
+screen, not just behind the visible panel. Reported "block[s]
+everything" 2026-08-31. Fixed by splitting the mask into two unioned
+rectangles (<code>Region</code>'s default <code>regions</code> list
+combines by default — see <code>Intersection.Combine</code>): the
+always-full-width bar-pill strip (unchanged, just the compact bar
+height), plus a <em>second</em>, narrower rectangle only as wide as
+where an open panel actually renders (<code>Bar.qml</code>'s new
+<code>openPanelsLeftEdge</code> — the leftmost x of any expanded panel's
+own rectangle — to the screen edge).
+<code>bar.totalHeight</code>/<code>overflow</code> (the old
+combined-height figures the single-rectangle mask read) had no remaining
+reader after this split, so they were removed rather than left as dead
+code.</p></li>
+<li><p><code>bar/ColumnResizeHandle.qml</code> — the drag-to-resize
+<code>MouseArea</code> used between every pair of columns in the process
+table's header row (see "Every column is independently resizable"
+above). Standalone, no dependency on <code>ClaudeUsageExpanded</code>
+beyond the <code>targetWidth</code>/ <code>widthChangeRequested</code>
+contract, so it's reusable for any other RowLayout-based table that
+wants the same behavior.</p></li>
+</ul>
+<h2 id="keybind">Keybind</h2>
+<p><code>CTRL+ALT+c</code> (<code>keybinds.lua</code> →
+<code>scripts/bar-toggle.sh toggleClaudeUsage</code> →
+<code>Bar.qml</code>'s per-monitor <code>IpcHandler</code>) — free since
+the calendar panel moved off it to <code>mainMod+CTRL+c</code>.</p>
+<h2
+id="active-processes-hover-thumbnail-investigation-2026-09-01">Active-processes
+hover-thumbnail investigation (2026-09-01)</h2>
+<p>Before building a hover-preview + click-to-focus feature on the
+active-processes table, benchmarked two candidate capture paths for a
+single on-demand window thumbnail: shelling out to
+<code>winswitch</code>'s existing <code>wayland_capture.rs</code> (cold
+connection each call) vs. Quickshell's own built-in
+<code>ScreencopyView</code>/<code>ToplevelManager</code>
+(<code>Quickshell.Wayland</code>, in-process, no new binary).</p>
+<p><strong>Result: they're the same speed</strong> — both hit the same
+~20-30ms wall, because both go through the compositor's GPU→SHM copy
+(<code>hyprland-toplevel-export-v1</code>; Quickshell's plugin also
+links
+<code>ext_image_copy_capture_v1</code>/<code>zwlr_screencopy</code>, but
+the toplevel-export path is what's actually used here). winswitch's
+client-side setup (fresh <code>Connection::connect_to_env()</code> + 3
+roundtrips to bind globals/enumerate/map addresses) is only ~1-2ms of
+its ~21ms; the rest is the compositor, so optimizing that setup further
+wouldn't have mattered. Quickshell skips process-spawn + dynamic-link
+cost (~10-15ms), so it's modestly faster end-to-end for a hover-panel
+use case (~28ms vs ~30-50ms wall for shelling out), and can keep a view
+warm (<code>live: true</code>) for free subsequent frames.</p>
+<p><strong>First conclusion (wrong in practice): use
+<code>ScreencopyView</code> in-process.</strong> Speed-wise this held
+up, but it turned out to be a non-starter on <em>correctness</em> once
+actually wired to real rows: <code>ScreencopyView</code>'s
+<code>captureSource</code> has to be a <code>Toplevel</code> object from
+<code>Quickshell.Wayland</code>'s <code>ToplevelManager</code>, and that
+generic wlr-foreign-toplevel-list-backed type exposes only
+<code>appId</code>/<code>title</code> — no pid, no window address. This
+machine routinely has 30+ Alacritty windows open (one per tmux client),
+and <strong>all of them report the identical
+<code>class</code>/<code>title</code>: plain
+<code>"Alacritty"</code></strong> (confirmed live 2026-09-01 via
+<code>hyprctl -j clients</code>). There is no way to pick the
+<em>specific</em> window a given process row is running in out of 30+
+indistinguishable candidates using only appId/title — so while
+<code>ScreencopyView</code> can capture <em>a</em> window, it can't
+reliably capture <em>the right one</em>. Click-to-focus doesn't have
+this problem (a Hyprland window address is exact, see below), but the
+hover-thumbnail specifically needed a different capture path.</p>
+<p><strong>False lead worth recording:</strong> the very first attempt
+at this benchmark looked <em>permission-blocked</em>, not just slow —
+<code>ToplevelManager.toplevels</code> stayed empty and
+<code>ScreencopyView</code> never got a frame, which matches the
+documented behavior that <code>hl.permission()</code> grants in
+<code>environment.lua</code> require a full Hyprland restart to take
+effect (not <code>hyprctl reload</code>), and
+<code>/usr/bin/quickshell</code> has no such grant there. That diagnosis
+was <strong>wrong</strong>. Direct retest on the same running
+(non-restarted, still-ungranted) compositor succeeded once two unrelated
+bugs in the <em>test script itself</em> were fixed:</p>
+<ul>
+<li><strong><code>ScreencopyView</code> needs a real rendering
+surface.</strong> The first script used a bare <code>ShellRoot</code>
+with no window — <code>ScreencopyView</code> silently never gets a
+"recording context" without one. A <code>PanelWindow</code> (any real
+layer-shell surface, e.g.
+<code>WlrLayershell.layer: WlrLayer.Background</code>, need not be
+visible/sized meaningfully) fixes it; the warning to watch for is
+<code>Cannot capture frame, as no recording context is ready</code>.</li>
+<li><strong><code>ToplevelManager.toplevels</code> populates
+asynchronously.</strong> A single fixed-delay check (e.g. one 500ms
+<code>Timer</code>) can read it before Quickshell has synced the
+compositor's toplevel list and see <code>length: 0</code> even though
+nothing is actually blocked — confirmed by rerunning the identical
+capture with a short retry loop (<code>toplevel count: 0</code> on the
+first ~300ms poll, <code>38</code> on the second). Poll/retry (a
+repeating <code>Timer</code>, not a one-shot) rather than trusting a
+single fixed delay. No <code>hl.permission()</code> entry for quickshell
+was needed in the end — screencopy via <code>ScreencopyView</code> works
+with quickshell's default (ungranted) permission state on this setup; it
+just isn't what the shipped feature ended up using (see below).</li>
+</ul>
+<h2
+id="the-hyprland-column-group-hover-thumbnail-and-click-to-focus-shipped">The
+hyprland column group, hover-thumbnail, and click-to-focus
+(shipped)</h2>
+<p>Each account's process table has a <code>tmux</code> column group
+(session/window/ pane, see below) and now also a <code>hyprland</code>
+group: <strong># / monitor</strong> ("#" is workspace, labeled that
+short because values are almost always a single digit — hover it for a
+"workspace" hint), the real Hyprland window currently showing that row's
+tmux pane, if any. That window's own Hyprland <strong>address</strong>
+(e.g. <code>0x559af4964050</code>) is still resolved and kept on the row
+data — it's what disambiguates one specific window among many
+otherwise-identical ones (see the investigation above), and what the
+hover-thumbnail/click-to-focus below actually key off — but isn't shown
+as its own column: a long opaque hex string had no value as a glanceable
+readout, unlike workspace/monitor (removed 2026-09-02). A row with no
+attached tmux client (a detached session) shows blank hyprland columns —
+there's nothing on screen to preview or focus. The "#" value is
+highlighted in the wallpaper theme's primary color
+(<code>Theme.cyan</code>, same token the bar's own workspace-switcher
+pill uses) when it matches the workspace actually active on this panel's
+own monitor right now.</p>
+<p><strong>Only sub-columns sort, never the group label</strong> —
+clicking "tmux" or "hyprland" itself does nothing (no pointer cursor
+either); clicking "session"/"window"/"pane" or "#"/"monitor" sorts the
+whole table by that one field independently, same
+click-to-sort/click-again-to-reverse behavior as every other column
+(2026-09-02 — the group labels used to sort by a combined
+session→window→pane / workspace→monitor→address key, which nothing asked
+for and looked like the sub-columns should do their own thing
+anyway).</p>
+<p><strong>Resolution
+(<code>claude-usage-daemon.py::hyprland_windows_by_tmux_session</code>,
+every 30s alongside the rest of the session listing):</strong> same
+tty/pid correlation <code>~/.config/hypr/winswitch/src/enrich.rs</code>
+uses to match tmux clients to Hyprland windows — walk each
+<code>hyprctl clients -j</code> window's full descendant-process tree
+(<code>/proc/&lt;pid&gt;/stat</code>'s <code>tty_nr</code>, comm-safe
+parsed past the last <code>)</code>), and match against each tmux
+client's own tty (<code>tmux list-clients</code>'s
+<code>#{client_tty}</code>, <code>os.stat().st_rdev</code>) — both are
+the kernel's packed major/minor <code>dev_t</code> for the same device
+node, so equality is a solid identity check. Feeds
+<code>hypr_address</code>/<code>hypr_class</code>/<code>hypr_title</code>/
+<code>hypr_workspace</code>/<code>hypr_monitor</code> onto each session
+row in <code>state.json</code>.</p>
+<p><strong>Hover-thumbnail:</strong> live only over the hyprland group's
+own 2 sub-columns (not the whole row — asked for explicitly), and shows
+below the cursor as a purely visual cue, not a click target itself.
+Capture goes through a <strong>standalone helper binary</strong>,
+<code>~/.config/claude-usage/thumb-capture/</code> — given a window
+address (already resolved daemon-side) and an output path, it captures
+one frame via <code>hyprland-toplevel-export-v1</code> and saves a PNG,
+~50-90ms end to end (measured live, several different windows). It is a
+<strong>verbatim copy</strong> of
+<code>wayland_capture.rs</code>/<code>protocol.rs</code>/<code>protocols/*.xml</code>
+from <code>~/.config/hypr/winswitch</code> — its own crate, not a
+dependency on or subcommand of that binary, so the claude panel has zero
+runtime coupling to winswitch's build (the explicit ask that started
+this whole investigation: "duplicate its code into its own binary").
+Only the <code>hyprctl::Window</code> struct got trimmed, to just the
+one field this path actually reads (<code>address</code>) — winswitch's
+own copy carries class/title/workspace/pid/size too, needed by its UI
+layer, not by capture. The quickshell side calls it via
+<code>Quickshell.Io</code>'s <code>Process</code>
+(<code>.exec([bin, address, outPath])</code>, one persistent
+<code>Process</code> element, re-invoked per hover) and shows the result
+in a plain <code>Image</code> (<code>cache: false</code>; each capture's
+output filename is a fresh sequence number, which sidesteps Qt's pixmap
+cache without needing a manual cache-bust trick).</p>
+<p><strong>Needs its own <code>hl.permission()</code> entry</strong>
+(<code>environment.lua</code>, <code>mode = "allow"</code>, same as
+winswitch's own binary right above it) — without one, Hyprland doesn't
+silently deny it, it pops an interactive "Permission request" dialog
+instead (screenshotted 2026-09-01: "Unknown application ... is trying to
+capture your screen"). This is actually the on-screen prompt this whole
+investigation went looking for earlier — it's real, it just doesn't help
+here: <code>thumb-capture</code> spawns a <strong>fresh process (a fresh
+Wayland client) on every hover</strong>, so without a static allow entry
+the prompt fires on essentially every hover with nobody there to click
+"Allow" before the 5s timeout gives up, which is exactly what "sometimes
+it breaks... no thumbnail shows up" was. Like every other entry in this
+section, the change needs a Hyprland restart (not
+<code>hyprctl reload</code>) to actually apply.</p>
+<p><strong>Click-to-focus:</strong> clicking a row's hyprland cell (not
+the thumbnail) re-points the tmux client at the exact
+session/window/pane that row is for
+(<code>tmux select-window -t @&lt;id&gt;</code> /
+<code>select-pane -t %&lt;id&gt;</code> — both globally-unique tmux ids,
+no ambiguity) and focuses the Hyprland window. That focus call does
+<strong>not</strong> use
+<code>hyprctl dispatch focuswindow address:...</code> — that syntax
+doesn't work on this Hyprland install (Lua config system;
+<code>hyprctl dispatch</code> isn't valid syntax under it). It's the
+same <code>hyprctl repl</code> +
+<code>hl.dispatch(hl.dsp.focus(...))</code> Lua snippet
+<code>hyprctl.rs::focus_window()</code> already uses, ported to
+QML/<code>Process</code> rather than shared code.</p>
+<h2 id="search-box--shared-picker-query-dsl">Search box (<code>/</code>,
+shared picker query DSL)</h2>
+<p>Same grammar as every other picker in this repo (<a
+href="../query-dsl.html">query-dsl.md</a>) — imports the launcher's
+<code>QueryDsl.qml</code> directly (not a port, per that doc's own "add
+a new consumer, add its row" convention) rather than reimplementing it
+an 8th time. <code>/</code> moves real keyboard focus into the search
+box (wired through <code>Bar.qml</code>'s existing root-level
+<code>Keys.onPressed</code>, alongside Escape); typing filters every
+account's process table at once by title/pid/status/tokens/path/ account
+or a <code>tmux.*</code>/<code>hypr.*</code> field, and
+<code>/s</code>/<code>/rv</code> override each account's own
+column-click sort while a query is active.
+<code>/ft</code>/<code>/at</code>/<code>/rt</code> are inert here (same
+call the RSS reader made) — this is a fixed set of columns per row, not
+a variable column view.</p>
+<p><strong>Tab-autocomplete</strong> (2026-09-02, was a first-cut gap
+noted here previously — every other DSL consumer already has this):
+ported straight from <code>rssreader/RssReader.qml</code>'s identical
+block (itself mirroring <code>launcher/AppLauncher.qml</code>) — verb
+suggestions, field-name/field-value/ sort-direction candidates, the
+marginalia-style popup, and inline <code>/command</code> validity
+coloring (cyan underline = recognized verb, red = not). Same
+hidden-until-Tab rule as the others: never pops open just from typing,
+only on Tab, and only shows the overlapping popup once there's more than
+one candidate (a single match completes inline immediately,
+shell-style).</p>
+<p><strong>The box clears on every close, not just every open</strong>
+(also 2026-09-02): <code>root.searchText = ""</code> alone didn't
+actually clear the visible box — that property only flows <em>out</em>
+of the <code>TextInput</code> (<code>onTextChanged</code>), never back
+in, so the fix is <code>searchInput.text = ""</code> directly
+(<code>onExpandedChanged</code> in
+<code>ClaudeUsageExpanded.qml</code>), which also drives
+<code>searchText</code> via the existing one-way binding. Reported:
+"input remains across invocations".</p>
+<h2 id="panel-width-and-column-tuning-2026-09-01">Panel width and column
+tuning (2026-09-01)</h2>
+<p><code>claudeUsagePanelWidth</code> (<code>Bar.qml</code>) went 920 →
+1196 (a flat 30% bump) to fit the new hyprland group without crowding
+what was already there; <code>title</code> widened 280 → 400 and
+<code>last</code> narrowed 56 → 44 in the same pass
+(<code>colDefaults</code>, <code>ClaudeUsageExpanded.qml</code>).</p>
+<h2
+id="active-workspace-highlight-and-token-color-coding-2026-09-02">Active-workspace
+highlight and token color-coding (2026-09-02)</h2>
+<p>The hyprland group's "#" (workspace) value is drawn in
+<code>Theme.cyan</code> -- the wallpaper-theme's own Material You
+primary color, the same token <code>Workspaces.qml</code>'s
+active-workspace pill in the bar itself uses -- when it matches
+whichever workspace is actually active on <em>this panel's own
+monitor</em> right now, so a session running on the workspace you're
+currently looking at stands out immediately. Needed a live "which
+workspace is active on which monitor" source:
+<code>Quickshell.Hyprland</code>'s
+<code>Hyprland.workspaces.values</code> (same one
+<code>Workspaces.qml</code> already reads), filtered by
+<code>.active &amp;&amp; .monitor.name === screen.name</code> --
+<code>screen</code> itself is new on <code>ClaudeUsageExpanded</code>,
+wired from <code>Bar.qml</code>'s own <code>root.screen</code> (each
+monitor runs its own <code>Bar.qml</code> instance, so "this panel's own
+monitor" is just that instance's <code>screen</code>).</p>
+<p>The <code>tokens</code> column is now colored by the same ramp
+session%/weekly% already use (<code>Theme.rampColor</code>, calm/cool
+low -&gt; vivid/red high, itself wallpaper-recolored) instead of a flat
+dim color -- a context that's getting full reads at a glance the same
+way a rate limit nearing 100% does. Normalized against an assumed
+1,000,000-token ceiling (<code>root.maxContextTokens</code>): checked
+for a <em>real</em> dynamically-discoverable "context window before
+auto-compact" figure first and found none reachable from here -- not in
+the <code>/usage</code> endpoint's response (session/ weekly rate-limit
+percentages only), not in any <code>sessions/&lt;pid&gt;.json</code>,
+not in a transcript's own per-turn <code>usage</code> objects
+(input/cache/output token counts only, no window-size or
+compact-threshold value alongside them) -- so this is a static
+assumption per explicit request, not a measured value, and may need
+revisiting if Anthropic changes the real threshold.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#the-endpoint">The endpoint</a></li><li class="lvl2"><a href="#no-token-refresh-here-on-purpose">No token refresh here, on purpose</a></li><li class="lvl2"><a href="#adaptive-poll-interval">Adaptive poll interval</a></li><li class="lvl2"><a href="#backoff-on-429">Backoff on 429</a></li><li class="lvl2"><a href="#active-processes-per-account">Active processes per account</a></li><li class="lvl2"><a href="#files">Files</a></li><li class="lvl2"><a href="#quickshell-side">quickshell side</a></li><li class="lvl2"><a href="#keybind">Keybind</a></li><li class="lvl2"><a href="#search-box--shared-picker-query-dsl">Search box (/, shared picker query DSL)</a></li><li class="lvl2"><a href="#panel-width-and-column-tuning-2026-09-01">Panel width and column tuning (2026-09-01)</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

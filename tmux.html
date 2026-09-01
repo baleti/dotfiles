@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmux · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="assets/style.css">
+<script>window.SITE_ROOT="";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="index.html" class="on">shared</a><a href="wsl/index.html">wsl</a><a href="host3/index.html">host3</a><a href="host6/index.html">host6</a><a href="qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">Machines</p><ul class="navlist"><li><a href="wsl/index.html">wsl</a></li><li><a href="host3/index.html">host3</a></li><li><a href="host6/index.html">host6</a></li><li><a href="qemu/index.html">qemu</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="tmux.html" aria-current="page">tmux</a></li><li><a href="zsh-and-terminal.html">zsh & terminal</a></li><li><a href="claude-history.html">claude-history</a></li><li><a href="query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    
+    <article class="doc">
+<h1 id="tmux">tmux</h1>
+<p><code>.tmux.conf</code> (prefix remapped
+<code>C-b</code>→<code>C-x</code>, vi copy-mode) plus
+<code>~/.config/tmux/scripts/</code> — a custom session/window/pane
+navigation layer on top of tmux-resurrect/tmux-continuum (installed
+without TPM, self-healing clone+pull at the bottom of the conf).</p>
+<h2 id="mru-navigation-the-core-mechanism">MRU navigation (the core
+mechanism)</h2>
+<p>A single global focus-order log, written by
+<code>focus-track.sh</code>, drives three different navigation surfaces.
+<code>focus-track.sh</code> is invoked <strong>only</strong> from tmux
+hooks tied to real navigation — <code>after-select-pane</code>,
+<code>after-select-window</code>, <code>session-window-changed</code>,
+<code>client-session-changed</code>, and <code>client-focus-in</code>
+(the fifth and most important: tmux has no native visibility into
+window-manager-level focus changes, e.g. alt-tabbing to a different
+terminal window; <code>focus-events on</code> + DEC private mode 1004
+focus reporting from Alacritty is what makes this hook fire at all — see
+<span class="memref" title="internal memory note, outside this doc set">tmux_focus_events_no_hyprland_needed</span> memory). Deliberately never
+fires on a pane merely producing output, so a churning background Claude
+Code session never bumps itself up the MRU list.</p>
+<ul>
+<li><strong><code>prefix+w</code></strong> →
+<code>focus-picker.py</code> — lists windows/panes in actual visit
+order, most-recent first. No scoring, no content search. Its
+<code>+$group[.sub]</code>/<code>-$group[.sub]</code> column-visibility
+DSL and <code>$field:value</code> filter syntax are documented generally
+in <a href="query-dsl.html">query-dsl.md</a>, shared (by convention, not
+by import) with <code>window-search.py</code> and
+<code>claude-history</code> below.</li>
+<li><strong><code>prefix+Tab</code></strong> →
+<code>session-jump.sh</code> — jumps straight to the single
+most-recently-visited <em>other</em> session (reads the same log rather
+than tmux's own single-slot per-client "last session" pointer, via the
+shared <code>session-mru-target.sh</code> lookup).</li>
+<li><strong><code>C-Tab</code> / <code>C-S-Tab</code></strong> (no
+prefix) → <code>session-history-nav.sh</code> — steps back/forward
+through the full session visit history, wrapping — distinct from
+<code>prefix+Tab</code>'s "jump to the one other session". Needs
+<code>set -g extended-keys always</code> (also required for Shift+Enter
+to reach Claude Code — see <span class="memref" title="internal memory note, outside this doc set">tmux_extended_keys_shift_enter</span> memory) or
+<code>C-S-Tab</code> collides with plain <code>C-Tab</code>.</li>
+<li><strong><code>x</code></strong> →
+<code>session-kill-return.sh</code> — kill current session, land on the
+session the MRU log says was actually last visited, not tmux's own
+<code>switch-client -n</code> (roughly creation order).</li>
+</ul>
+<h2 id="full-text-search">Full-text search</h2>
+<ul>
+<li><strong><code>prefix+C-w</code></strong> →
+<code>window-search.py</code> — full-text search over <strong>live pane
+scrollback</strong>, ranked (BM25 + recency, see
+<span class="memref" title="internal memory note, outside this doc set">bm25_score_gate_vs_filter_only_fields</span> memory for a ranking-logic
+gotcha found while building this), across every session. Replaces
+<code>choose-tree -Zw</code>'s title-only <code>/</code> search
+(explicitly restored as <code>prefix+SHIFT+W</code> instead, since
+<code>source-file</code> won't revert a removed override on its
+own).</li>
+<li><strong><code>prefix+C-c</code></strong> →
+<code>~/bin/claude-history</code> — full-text search over Claude Code's
+own <strong>saved conversation transcripts</strong>
+(<code>~/.claude/projects/*/*.jsonl</code>), not live scrollback. See <a
+href="claude-history.html">claude-history.md</a>.</li>
+</ul>
+<p>Both of the above, plus <code>prefix+w</code>, run in a <strong>real
+<code>new-window</code></strong>, not a <code>display-popup</code>. A
+popup was tried first and confirmed by direct testing to break two
+things a real pane doesn't: it computes its size once at creation and
+never follows client resizes, and its environment has <code>$TMUX</code>
+but never <code>$TMUX_PANE</code>. See
+<span class="memref" title="internal memory note, outside this doc set">tmux_popup_no_live_resize_no_tmux_pane</span> memory. The
+<code>|| { printf ...; read; }</code> wrapper on each exists because
+tmux destroys a pane (and, being its only pane, the window) the instant
+its command exits on <em>any</em> exit code — without it, a script
+failure is invisible.</p>
+<h2 id="sessionwindow-management">Session/window management</h2>
+<ul>
+<li><strong><code>prefix+C-.</code></strong> →
+<code>move-window-new-session.sh</code> — move the current window into a
+brand-new session in one step; refuses on the session's last window
+(would destroy the session and, with <code>detach-on-destroy</code> on,
+silently kick the client to a raw shell). <code>prefix+.</code> (tmux's
+own default) is left alone for moving into an <em>existing</em>
+session.</li>
+<li><strong><code>prefix+C-r</code></strong> →
+<code>resurrect-restore.sh</code>, wrapped in
+<code>display-popup -C</code> — overrides tmux-resurrect's own
+<code>prefix+C-r</code> (which always restores from two fixed locations
+with no way to pick an older snapshot).
+<code>resurrect-restore-picker.sh</code> runs <em>inside</em> that popup
+and deliberately avoids any client-context-sensitive calls (no
+<code>switch-client</code>) — that doesn't reliably resolve "the client
+that pressed the key" from inside a nested popup, the same tmux quirk
+<code>window-search.py</code> had to route around. Unlike the search
+bindings above, this one <strong>is</strong> wrapped in a popup —
+<code>restore.sh</code>'s own internal <code>switch-client</code> needs
+a plain (non-popup) <code>run-shell</code> context to resolve the right
+client, so the picker has to be opened <em>by</em>
+<code>resurrect-restore.sh</code>, not around it.</li>
+<li><strong><code>@resurrect-hook-post-save-all</code></strong> →
+<code>resurrect-rotate-pane-contents.sh</code> — tmux-resurrect's
+<code>save.sh</code> overwrites one fixed
+<code>pane_contents.tar.gz</code> every cycle (10-minute
+<code>@continuum-save-interval</code>), so anything older than ~10
+minutes is normally already gone; this hook keeps a thinned timestamped
+history instead.</li>
+<li><strong><code>kill-empty-windows.sh</code></strong> — kills windows
+that never held real content (zero <code>history_size</code> on every
+pane, or equivalent).</li>
+</ul>
+<h2 id="other-bindings-worth-knowing">Other bindings worth knowing</h2>
+<ul>
+<li><code>prefix+u</code> / <code>prefix+C-u</code> — enter
+copy-mode.</li>
+<li><code>C-M-u</code> / <code>C-M-d</code> — synced half-page scroll
+across panes 0-3 (no native "send to all visible panes", so copied
+per-index).</li>
+<li><code>prefix+x</code> — kill session with confirm, MRU-aware return
+(above).</li>
+<li><code>set -s set-clipboard on</code> — OSC 52 passthrough so
+remote-ssh tmux copy-mode can still write to the local clipboard.</li>
+<li><code>source-file -q ~/.config/tmux/theme.conf</code> — status-bar
+colors, generated by <code>gen-theme.py</code>; see <a
+href="host3/theming.html">theming.md</a>. No-ops silently if missing.</li>
+</ul>
+<h2 id="gotchas-recorded-from-building-this">Gotchas recorded from
+building this</h2>
+<ul>
+<li><code>display-popup</code>'s <code>shell-command</code> is never
+format-expanded (unlike <code>run-shell</code>'s) — bridge
+<code>#{client_tty}</code> etc. through <code>run-shell</code> +
+<code>set-environment -g</code> instead, or pass as literal argv from an
+outer <code>run-shell</code>. See <span class="memref" title="internal memory note, outside this doc set">tmux_popup_format_expansion</span>
+memory.</li>
+<li><code>send-keys</code> into "the current pane" assumes an idle shell
+prompt — breaks silently if that pane is running a TUI (Claude Code,
+vim). See <span class="memref" title="internal memory note, outside this doc set">tmux_sendkeys_assumes_idle_shell</span> memory; this is why the
+search/picker bindings above all use <code>new-window</code>
+instead.</li>
+<li><code>bind-key &lt;table&gt; $var</code>-style bareword variable
+interpolation gets eaten by tmux itself, and <code>echo</code> inside a
+binding clobbers <code>$?</code> before it can be used — use
+<code>printf '...%d...' $?</code> as the first statement immediately
+after <code>||</code>. See <span class="memref" title="internal memory note, outside this doc set">tmux_bindkey_dollar_gotchas</span> memory.</li>
+</ul>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#mru-navigation-the-core-mechanism">MRU navigation (the core mechanism)</a></li><li class="lvl2"><a href="#full-text-search">Full-text search</a></li><li class="lvl2"><a href="#sessionwindow-management">Session/window management</a></li><li class="lvl2"><a href="#other-bindings-worth-knowing">Other bindings worth knowing</a></li><li class="lvl2"><a href="#gotchas-recorded-from-building-this">Gotchas recorded from building this</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="assets/search-index.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quickshell bar · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html" aria-current="page">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="quickshell-bar">quickshell bar</h1>
+<p><code>~/.config/quickshell/</code> — a from-scratch QML status bar,
+run as <code>qs -n -d</code> (autostarted in <code>hyprland.lua</code>).
+Replaced caelestia-shell, then replaced waybar (2026-08-27; waybar's own
+autostart line is now commented out — see <a
+href="desktop-apps.html#waybar-legacy">desktop-apps.md</a>). Layout
+deliberately mirrors the old <code>~/.config/waybar/config.jsonc</code>:
+modules-left (workspaces, submap indicator), modules-right (tray, media,
+controls, network/cpu/mem/disk/temp, clock), each its own rounded
+pill/island. No window-title module (removed 2026-08-27).</p>
+<h2 id="structure">Structure</h2>
+<pre><code>quickshell/
+├── shell.qml              entry point (ShellRoot)
+├── background/Background.qml
+├── bar/
+│   ├── Bar.qml             per-monitor bar root
+│   ├── Workspaces.qml, Submap.qml, Tray.qml
+│   ├── Clock.qml, Media.qml, MediaExpanded.qml
+│   ├── BatteryPill.qml, GraphPill.qml, CalendarExpanded.qml
+│   ├── ClaudeUsagePill.qml, ClaudeUsageExpanded.qml, ColumnResizeHandle.qml, assets/claude-logo.png
+├── osd/VolumeOsd.qml       side volume popup (mainMod+F11/F12)
+├── components/             BarIcon, BarText, Graph, Pill (generic building blocks)
+├── services/                BatterySvc, Players, SysmonSvc, TieredSocket, ClaudeUsageSvc
+└── theme/                   Theme, Icons</code></pre>
+<h2 id="shellqml"><code>shell.qml</code></h2>
+<p><code>ShellRoot</code> with one <code>Background {}</code> plus a
+<code>Variants</code> over <code>Quickshell.screens</code> — one
+<code>PanelWindow</code> (top-anchored, <code>exclusiveZone: 38</code>)
+per monitor, each embedding a <code>Bar { screen: ... }</code>.
+<code>implicitHeight: 800</code> is fixed rather than reactively resized
+(resizing the real layer-shell surface caused visible flicker on
+collapse); a <code>mask</code> region tracks
+<code>bar.totalHeight</code> instead so clicks still pass through the
+empty area to windows underneath. The media panel's
+<code>WlrLayershell.keyboardFocus</code> flips
+<code>OnDemand</code>↔︎<code>None</code> with
+<code>mediaPanel.expanded</code>, so <code>mainMod+CTRL+m</code> gets
+real keyboard control (arrow-seek, space play/pause) without ever
+permanently grabbing input — it reverts to <code>None</code> the instant
+the panel closes. (Not plain <code>mainMod+m</code> — that opens the
+memory graph panel instead; see <code>hyprland.md</code>'s keybind list
+for why.)</p>
+<h2 id="background">Background</h2>
+<p><code>background/Background.qml</code> — one plain background-layer
+window per monitor holding a static <code>Image</code>, sourced from the
+fixed path <code>~/.local/state/quickshell/wallpaper.png</code>. No
+wallpaper manager (hyprpaper/swaybg/swww) was ever set up on this system
+before this file — confirmed by inspection (2026-08-26). No picker UI,
+transitions, or audio-reactive effects — deliberately kept minimal.
+<code>scripts/set-wallpaper.sh</code> is the only sanctioned way to
+change the source file; see <a href="theming.html">theming.md</a>.</p>
+<h2 id="bar--hover-panels">Bar / hover panels</h2>
+<p><code>GraphPill.qml</code> — the compact "icon + value" pill that
+expands downward into a <code>Graph</code>
+(<code>components/Graph.qml</code>) on hover, backed by
+<code>sysmond</code>'s rolling history via
+<code>services/SysmonSvc.qml</code>. Visually matches the standalone
+<code>ALT+mainMod+n/t/m</code> <code>sysmon-graph</code> popups (<a
+href="rust-tools.html">rust-tools.md</a>) since both read the same daemon.
+<code>bar-toggle.sh</code> (<code>ALT+n</code>,
+<code>mainMod+t/d/m/p</code>, <code>mainMod+c</code>) toggles these
+panels open/closed per-monitor by talking to each <code>Bar</code>
+instance's own <code>IpcHandler</code> target
+<code>bar-&lt;screen name&gt;</code> — one shared target would collide
+across multi-monitor instances, so the toggle script resolves the
+focused monitor's name first. The graph-widget entry keys also drop into
+a per-widget <code>graph_&lt;name&gt;</code> Hyprland submap
+(<code>keybinds.lua</code>) where bare <code>1</code>-<code>6</code>
+jumps straight to a tier via the new <code>bar-set-tier.sh</code> →
+<code>setXxxTier()</code> functions on that same <code>IpcHandler</code>
+— see <code>hyprland.md</code> for the full submap writeup.</p>
+<p><code>services/TieredSocket.qml</code> — reconnects with a fresh
+<code>"&lt;metric&gt;:&lt;tier&gt;\n"</code> request whenever
+<code>tier</code> changes, since <code>sysmond</code>'s protocol is
+request-once-then-stream, not a live query parameter. Default tier is
+<code>10m</code>; switching to <code>30m/6h/7d/7w/7mo</code> means
+closing and reopening the connection, not sending a second request on
+the same stream.</p>
+<p><strong>Both <code>TieredSocket.qml</code> and
+<code>SysmonSvc.qml</code> run a 2s re-connect
+<code>Timer</code></strong> because quickshell's
+<code>Socket { connected: true }</code> is a constant binding — if
+<code>sysmond</code> restarts or drops, the QML side never reconnects on
+its own and the graphs silently freeze until <code>qs</code> itself
+reloads. Keep this pattern for any new socket consumer.</p>
+<h2 id="panel-width-sizing">Panel width sizing</h2>
+<p>Every popup panel that pops out of the bar —
+<code>CalendarExpanded</code>, <code>MediaExpanded</code>, and all 5
+<code>GraphPill</code> expand panels (net/cpu/mem/disk/ temp) — shares
+<strong>one</strong> dynamic-width layout system in
+<code>Bar.qml</code>, always on a single row, not per-panel hardcoded
+pixel widths or separate positioning math. This used to be two
+independent systems (media/calendar ran a single-row
+<code>stackRight</code> sweep with no left-edge clamp, while the 5 graph
+pills had their own row-<em>wrapping</em> system added 2026-08-29); the
+two disagreeing about a panel's real width/position once panels from
+both groups were open together is what let a panel get pushed off the
+left edge of the screen, and let calendar render directly on top of an
+open graph panel instead of shifting clear of it (both reported
+2026-08-30) — merged into one system rather than patched independently
+again. A row-wrapping version of the merged system was tried next and
+rejected (reported 2026-08-30, unusable) — <strong>there is deliberately
+no second row</strong>: every open panel always shares the one row, and
+width just divides evenly among however many are open, shrinking with no
+floor-triggered fallback. All 8 open at once on a ~1920px monitor
+squeezes every one of them well below its own preferred width; that's
+considered an acceptable, rare edge case (see <code>Bar.qml</code>'s
+comment on <code>openPanels</code> for why spilling onto a neighboring
+monitor's own bar was floated and deliberately skipped — it would need
+real IPC between separate per-monitor <code>Bar.qml</code> instances,
+since each one's layer-shell surface is tied to a single output).</p>
+<p><code>Bar.qml</code>'s <code>panelOrder</code>
+(<code>["media", "net", "cpu", "mem", "disk", "temp", "claudeUsage", "calendar"]</code>,
+bar-visual left-to-right order — calendar's trigger is the clock, the
+rightmost item) is the single ordering the whole system is built on:</p>
+<ul>
+<li><code>openPanels</code>/<code>openCount</code> — which of those 8
+are currently expanded.</li>
+<li><code>rowRightAnchor</code> — the rightmost open panel's own natural
+pill position (not the raw screen edge — see its comment for why that
+overstated available room and ran the leftmost panel off the left
+edge).</li>
+<li><code>panelWidth</code> — one shared width every open panel gets:
+divides <code>panelAreaWidth</code> evenly among <code>openCount</code>,
+clamped only against <code>maxPanelWidth</code> (560px, the
+one-panel-alone case) and a <code>minPanelWidth</code> sanity floor
+(40px, not a legibility target — there's nowhere left to wrap to).</li>
+<li><code>layoutFor(name)</code> — <code>{right}</code> for one open
+panel: panels fill right-to-left within the row, matching the pills' own
+left-to-right order in the bar.</li>
+<li><code>overflowHeightFor(name)</code>/<code>panelYFor(name)</code> —
+each panel's own current expand height
+(<code>GraphPill.overflowHeight</code>, or plain <code>.height</code>
+for <code>MediaExpanded</code>/<code>CalendarExpanded</code>, since
+their <code>implicitHeight</code> already collapses to 0 when not
+expanded); <code>panelYFor</code> is just the shared <code>panelY</code>
+baseline now (kept as a named function, not inlined at each binding
+site, so a future panel kind that genuinely needs to differ has one
+place to change).</li>
+<li><code>panelGridHeight</code> — the tallest currently-open panel's
+own expand height. Also feeds <code>shell.qml</code>'s input mask (see
+claude-usage.md's own writeup on <code>openPanelsLeftEdge</code> for why
+that mask is two separate rectangles, not one sized off this alone — a
+real bug once <code>ClaudeUsageExpanded</code> started routinely
+reaching close to full monitor height).</li>
+</ul>
+<p>Every panel binds to this the same way: <code>GraphPill</code>'s
+<code>expandWidth</code>/ <code>targetRight</code>/<code>targetY</code>
+and <code>CalendarExpanded</code>/<code>MediaExpanded</code>'s own
+<code>panelWidth</code>/<code>x</code>/<code>y</code> all read
+<code>root.panelWidth</code>/<code>root.layoutFor(name).right</code>/
+<code>root.panelYFor(name)</code>. A future single-instance popup panel
+should become a member of this same pool (add its name to
+<code>panelOrder</code>, wire
+<code>panelExpandedFor</code>/<code>naturalRightFor</code>/<code>overflowHeightFor</code>
+for it, bind its width/position the same way) rather than inventing its
+own sizing or positioning — that's exactly the split that caused the bug
+this section describes.</p>
+<p><strong>This is a different problem from winswitch's Alt-Tab grid
+sizing</strong> (<code>~/.config/hypr/winswitch/src/ui.rs</code>'s
+<code>grid_dims</code>/<code>typical_aspect</code>, see <a
+href="rust-tools.html#winswitch">rust-tools.md</a>): that one packs an
+<em>unknown number of items of varying aspect ratio</em> into a grid and
+picks a column count to match their shape. This one shares a fixed,
+screen-relative width pool among a handful of named, fixed-content
+panels, always on one row. A future widget that lays out N
+variable-aspect items in a grid (a dock, a gallery, another picker)
+should port winswitch's algorithm instead of this one.</p>
+<p><strong>Restarting after a structural edit to
+<code>Bar.qml</code>:</strong> quickshell's hot reload only re-binds
+<em>expressions</em>; it doesn't recreate already-running root object
+instances. Renaming or removing a root-level <code>function</code>/
+<code>property</code> (as this system's own refactors did twice,
+2026-08-30) leaves long-running instances' meta-objects stuck with the
+old names — <code>qs log</code> shows
+<code>TypeError: Property 'x' ... is not a function</code> and
+<code>Unable to assign [undefined] to double</code> even though the file
+on disk is correct. Fix: <code>qs kill</code> then relaunch the same way
+<code>hyprland.lua</code> does (<code>qs -n -d</code>) — a plain
+value/expression change never needs this, only a changed
+function/property <em>signature</em>.</p>
+<h2 id="theme">Theme</h2>
+<p><code>theme/Theme.qml</code> (singleton) — a <code>FileView</code> on
+<code>~/.local/state/quickshell/scheme.json</code>
+(<code>watchChanges: true</code>), the Material You scheme
+<code>gen-theme.py</code> writes on every wallpaper change (see <a
+href="theming.html">theming.md</a>). Falls back to hardcoded values
+matching <code>appearance.lua</code>'s cyan→green gradient if that file
+is missing, so the bar still looks right before the theme script has
+ever run. <code>Theme.rampColor(f)</code> maps a metric's 0..1 magnitude
+onto the scheme's 5-stop <code>intensityRamp</code> (calm→hot);
+<code>Bar.qml</code> sets each pill's <code>valueFraction</code> from
+the live metric value, so cpu/mem/net/disk/temp pills recolor by how
+"hot" they currently are. <code>BatteryPill</code> inverts this (low
+charge = hot). <code>Graph.qml</code> draws flat 1px overlay lines, not
+gradient fills (rejected 2026-08-29); a <code>dashed</code> field on a
+series means "de-emphasised twin" (drawn faded-solid at 0.62 alpha, not
+an actual dashed stroke) — used for tx/write/cached counterparts. A
+many-series overlay (e.g. per-core CPU) renders as one faint envelope
+wash, not per-series fills.</p>
+<h2 id="services">Services</h2>
+<ul>
+<li><strong><code>SysmonSvc.qml</code></strong> — bar-side wrapper over
+the <code>sysmond</code> socket (see above); shared data source with the
+standalone <code>sysmon-graph</code> popups.</li>
+<li><strong><code>BatterySvc.qml</code></strong> — feeds
+<code>BatteryPill.qml</code>; only shown while on battery power (see the
+<code>bar+theme</code> commit re-adding it).</li>
+<li><strong><code>Players.qml</code></strong> — MPRIS player state for
+<code>Media.qml</code>/<code>MediaExpanded.qml</code>, including the
+phone bridge (<code>pixel6-mpris-bridge.py</code>, see
+<span class="memref" title="internal memory note, outside this doc set">android_companion_app_and_adb_setup</span> memory).</li>
+<li><strong><code>ClaudeUsageSvc.qml</code></strong> — feeds
+<code>ClaudeUsagePill.qml</code>/ <code>ClaudeUsageExpanded.qml</code>
+(session/weekly rate-limit % across every Claude Code account on this
+machine, <code>CTRL+ALT+c</code>); reads the state
+<code>claude-usage-daemon.py</code> writes, same pattern as
+<code>RssSvc.qml</code>/<code>rssd</code>. See <a
+href="claude-usage.html">claude-usage.md</a> for the full writeup
+(endpoint, the adaptive poll interval, why it skips OAuth-refresh
+entirely).</li>
+</ul>
+<h2 id="related-keybinds">Related keybinds</h2>
+<p>See <a href="hyprland.html#keybinds-keybindslua">hyprland.md</a> for
+the full bind list; the bar-specific ones are <code>ALT+n</code> and
+<code>mainMod+t/d/m/p</code> (per-metric panel toggle +
+<code>graph_&lt;name&gt;</code> tier submap),
+<code>mainMod+CTRL+m</code> (media panel + <code>media_seek</code>
+submap), <code>mainMod+c</code> (calendar panel + keyboard month/ year
+nav and year-picker, no submap needed), <code>CTRL+ALT+c</code> (Claude
+usage panel — see <a href="claude-usage.html">claude-usage.md</a>),
+<code>mainMod+F11/F12</code> (volume, see below), and the calendar/graph
+pills' own click-to-pin behavior (matching each other, added
+2026-08-28/29).</p>
+<h2 id="demo">Demo</h2>
+<!-- Demo video removed 2026-08-31: was hosted on Cloudflare R2, which
+     is being decommissioned. Re-host on B2/own server and re-embed
+     here (see redact-video-ocr.md for the redaction process used on
+     the original recording). -->
+
+<h2 id="volume-osd">Volume OSD</h2>
+<p><code>osd/VolumeOsd.qml</code> — one click-through
+<code>PanelWindow</code> per monitor (own <code>IpcHandler</code> target
+<code>volume-osd-&lt;screen name&gt;</code>, same per-monitor pattern as
+<code>Bar</code>'s), showing an icon/bar/percent card near the right
+edge that auto-hides after 1.2s.
+<code>scripts/playerctl-volume.sh</code> (<code>mainMod+F11/F12</code>)
+adjusts volume — pixel6's MPRIS <code>Volume</code> property when it's
+the current player (<code>playerctl-current</code>), the local sink
+otherwise — then calls <code>display(percent, muted)</code> on whichever
+monitor the <em>active window</em> is on
+(<code>hyprctl activewindow</code>'s monitor, not
+<code>hyprctl monitors</code>' "focused" field, which tracks the mouse
+under this compositor's <code>follow_mouse=1</code>).</p>
+<p><strong>Known issue (2026-08-29, unresolved):</strong> the OSD's
+layer-shell surface only reliably maps on one monitor here (DP-1) —
+confirmed via <code>hyprctl layers</code> independent of anchoring
+style, layer level (<code>Top</code> vs <code>Overlay</code>),
+<code>Variants</code> vs a single hardcoded instance, and a full
+<code>qs</code> process restart. Looks like a Hyprland/wlroots-side
+per-output state issue, not a bug in this file; testing further needs a
+full Hyprland restart (kills every window on the machine), not done
+unilaterally. See the <code>quickshell_panelwindow_ipc_gotchas</code>
+memory for the full investigation.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#structure">Structure</a></li><li class="lvl2"><a href="#shellqml">shell.qml</a></li><li class="lvl2"><a href="#background">Background</a></li><li class="lvl2"><a href="#bar--hover-panels">Bar / hover panels</a></li><li class="lvl2"><a href="#panel-width-sizing">Panel width sizing</a></li><li class="lvl2"><a href="#theme">Theme</a></li><li class="lvl2"><a href="#services">Services</a></li><li class="lvl2"><a href="#related-keybinds">Related keybinds</a></li><li class="lvl2"><a href="#demo">Demo</a></li><li class="lvl2"><a href="#volume-osd">Volume OSD</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

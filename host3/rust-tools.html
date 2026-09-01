@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust tools · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html" aria-current="page">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="rust-tools">Rust tools</h1>
+<p>Four independent Cargo workspaces live under
+<code>~/.config/hypr/</code>, each built to
+<code>target/release/&lt;bin&gt;</code> and invoked directly by path
+from <code>keybinds.lua</code>/<code>hyprland.lua</code> (not installed
+to <code>PATH</code>). <strong>After editing any of these you must
+<code>cargo build --release</code> and restart the running
+process</strong> — stale binaries/daemons are a common source of "my
+change didn't take" confusion here.</p>
+<h2 id="clipboard-picker">clipboard-picker</h2>
+<p><code>~/.config/hypr/clipboard-picker/</code> — GTK3 +
+wlr-layer-shell picker engine, two binaries sharing it:</p>
+<ul>
+<li><strong><code>src/picker.rs</code></strong> — the shared engine: a
+search box over a <code>GtkListBox</code> with a
+<code>$field:value</code> selector DSL (autocompleted, see below),
+keyboard nav, and an activate callback. Extracted from the original
+clipboard picker so other pickers can reuse the same
+window/search/filter machinery. <code>Entry::fields</code> is where a
+caller's named data lives (e.g. clipboard-picker's
+<code>type</code>/<code>date</code>, notification-picker's
+<code>app</code>/<code>date</code>);
+<code>PickerConfig::field_names</code> is what
+<code>$</code>-autocomplete offers. The DSL itself is a by-hand port of
+winswitch's <code>query.rs</code> (quote-aware tokenizing, subsequence
+field/value matching, the same
+<code>trailing_field_fragment</code>/<code>trailing_value_fragment</code>/<code>*_suggestions</code>
+shape) — see <a href="../query-dsl.html">query-dsl.md</a> for the full spec
+and for the one place this diverges from winswitch: bare
+(non-<code>$</code>) free words here join into a single literal phrase
+rather than ANDing independently, the original clipboard-picker
+behaviour, left as-is. Selection also follows a shared convention now:
+the list opens with nothing selected, the first arrow/Tab lands on the
+top visible entry, and <code>Enter</code> with nothing explicitly
+selected still activates it (see query-dsl.md's Design principles). The
+window carries a 1px accent frame (<code>window { border }</code> in the
+<code>CssProvider</code>, colour interpolated from
+<code>scheme.json</code>'s <code>primary</code> via
+<code>load_accent_hex</code> — GTK's <code>@accent_color</code> lives in
+the theme's own provider and won't resolve from here) so every picker
+built on the engine matches the quickshell launcher / rss reader
+cards.</li>
+<li><strong><code>src/bin/clipboard-picker.rs</code></strong> (bound to
+<code>mainMod+V</code>) — cliphist picker on top of the engine; a Rust
+port of the older <code>scripts/clipboard-picker.py</code> that skips
+~140ms of Python/GObject-introspection interpreter startup. Its
+<code>$type:image</code>/<code>$type:text</code> field is derived from
+cliphist's preview text (cliphist itself only distinguishes images, see
+<code>looks_like_image</code>). Its <code>$date:</code> field reads
+<code>~/.local/state/cliphist-expire/timestamps</code>, a log
+<code>cliphist-store-logged.sh</code> (wired into hyprland.lua's
+<code>wl-paste --watch</code>, replacing a direct
+<code>cliphist store</code> call) appends an exact copy-time to on every
+store — cliphist itself keeps none, see that script's own comment for
+how it correlates a log line to the id cliphist just assigned.
+<code>cliphist-expire.sh</code> prunes this log in step with whatever
+entries it expires.</li>
+<li><strong><code>src/bin/notification-picker.rs</code></strong> (bound
+to <code>mainMod+CTRL+n</code>) — browses notifyd's retained
+notification history (<code>notifyctl list</code>) and invokes a chosen
+entry's action. Doesn't need dunst's old "redisplay before invoke"
+workaround since notifyd never discards a notification's actions on
+close. Its <code>$app:</code> field replaces what used to be a bare
+<code>$appname</code> selector; <code>$date:</code> needed no new
+plumbing since <code>notifyctl list</code> already reports a real
+per-notification <code>timestamp</code>.</li>
+</ul>
+<p>Second press of the launching keybind closes the open picker (pidfile
++ SIGTERM convention, shared with sysmon-graph below).</p>
+<h2 id="notifyd">notifyd</h2>
+<p><code>~/.config/hypr/notifyd/</code> — replaces dunst as the
+notification daemon, because dunst invalidates a notification's actions
+the instant it closes (even on timeout), which made
+<code>mainMod+n</code>/<code>mainMod+CTRL+n</code> unable to ever invoke
+an action after the popup left the screen. As of "Phase 10" it owns the
+real <code>org.freedesktop.Notifications</code> bus name (earlier phases
+developed against a throwaway name so dunst kept serving real
+notifications untouched until this was verified).</p>
+<ul>
+<li><strong><code>src/main.rs</code></strong> — D-Bus service. Its
+<code>method_call</code> closures must be <code>Send + Sync</code>
+(gio's binding requirement) even though everything runs on one thread,
+so the D-Bus side only ever touches <code>SharedState</code>
+(<code>Arc&lt;Mutex&lt;..&gt;&gt;</code>) and hands off to the GTK side
+via a <code>glib::MainContext</code> channel — GTK widgets aren't
+<code>Send</code>.</li>
+<li><strong><code>src/state.rs</code></strong> — the single
+<code>Mutex</code>-guarded shared state.</li>
+<li><strong><code>src/popup.rs</code></strong> — GTK3 + gtk-layer-shell
+rendering. One independent layer-shell surface per notification (stacked
+via top-margin), not one tall multi-notification surface like dunst —
+visually near-identical, much simpler.</li>
+<li><strong><code>src/config.rs</code></strong> —
+<code>~/.config/hypr/notifyd/notifyd.toml</code>. Every field's
+<code>Default</code> reproduces the equivalent dunstrc value exactly, so
+an absent/partial config still matches prior tested behaviour. Some
+things are deliberately <em>not</em> config-driven (<code>follow</code>
+is always focused-monitor — a structural choice, not a value).</li>
+<li><strong><code>src/dbus_names.rs</code></strong> — bus/path/interface
+constants shared with <code>notifyctl</code>, kept GTK-free so the CLI
+doesn't link GTK.</li>
+<li><strong><code>src/bin/notifyctl.rs</code></strong> — control CLI
+(<code>invoke-last</code>, <code>list</code>, and four more subcommands
+over <code>org.hypr.notifyd1.Control</code>) — deliberately no
+CLI-parsing crate, plain <code>std::env::args()</code>.</li>
+</ul>
+<p>Windowrule: notifyd's popups use layer-shell namespace
+<code>^notifyd$</code>, matched by <code>windowrules.lua</code>'s
+<code>blur-notifyd</code> rule (layer surfaces don't inherit
+<code>appearance.lua</code>'s blur automatically).</p>
+<h2 id="sysmon">sysmon</h2>
+<p><code>~/.config/hypr/sysmon/</code> — two binaries over a shared
+protocol crate (<code>src/lib.rs</code>), kept dependency-light (no GTK)
+so <code>sysmond</code> never links a GUI toolkit.</p>
+<ul>
+<li><strong><code>src/lib.rs</code></strong> — shared types.
+<code>Tier</code> enum (<code>10m/30m/6h/7d/7w/7mo</code>) — every raw
+1s sample folds into all five tiers at once, each capped at
+<code>TIER_CAPACITY = 600</code> stored points by progressively coarser
+averaging as the tier's span grows. <strong><code>ALL_TIERS</code> array
+order is the persisted history.json index order, not display order — new
+tiers must be appended</strong>, or an existing history.json stops
+loading by position. <code>10m</code> is the default tier everywhere a
+panel first opens.</li>
+<li><strong><code>src/bin/sysmond.rs</code></strong> — background
+sampler, autostarted from <code>hyprland.lua</code>. Serves history over
+a Unix socket (<code>$XDG_RUNTIME_DIR/sysmond.sock</code>); no
+persistence beyond the tiered history file, this is throwaway monitoring
+data plus a bounded history.</li>
+<li><strong><code>src/bin/sysmon-graph.rs</code></strong> — the
+standalone <code>ALT+mainMod+n/t/m</code> popups (net/temp/mem; the
+<code>cpu</code> mode still works but its bind was removed 2026-09-01),
+replacing the old KDE network-graph plasmoid. Reads
+<code>sysmond</code>'s socket rather than sampling itself, so history is
+warm the instant it opens. Same toggle/pidfile/monitor-targeting
+conventions as clipboard-picker.</li>
+</ul>
+<p>The quickshell bar's own hover graphs (<code>GraphPill.qml</code>, <a
+href="quickshell-bar.html">quickshell-bar.md</a>) read the
+<strong>same</strong> <code>sysmond</code> socket via
+<code>TieredSocket.qml</code>/<code>SysmonSvc.qml</code> — one daemon,
+two independent UI surfaces (in-bar vs standalone GTK popup).
+Top-process rows
+(<code>topcpu</code>/<code>topmem</code>/<code>topnet</code>) carry a
+<code>detail</code> field (cmdline tail + <code>~</code>-cwd</p>
+<ul>
+<li>pid) so otherwise-identical rows (e.g. multiple <code>claude</code>
+processes) stay distinguishable.</li>
+</ul>
+<p><strong>Socket reconnect gotcha</strong>: quickshell's
+<code>Socket { connected: true }</code> is a constant binding — if
+<code>sysmond</code> drops, the QML side never reconnects on its own and
+graphs freeze silently until <code>qs</code> reloads.
+<code>TieredSocket.qml</code> and <code>SysmonSvc.qml</code> each run a
+2s <code>Timer</code> that re-asserts <code>connected</code> while
+false; keep that pattern for any future <code>sysmond</code> socket
+consumer.</p>
+<h2 id="winswitch">winswitch</h2>
+<p><code>~/.config/hypr/winswitch/</code> — grid-based Alt-Tab switcher
+with live window thumbnails, bound to
+<code>ALT+Tab</code>/<code>ALT+SHIFT+Tab</code>.</p>
+<ul>
+<li><strong><code>src/main.rs</code></strong> — decides whether this
+invocation opens the grid or (via
+<code>$XDG_RUNTIME_DIR/winswitch.sock</code>) just forwards a cycle
+command to an already-open instance. No pidfile — a successful
+<code>connect()</code> to the socket <strong>is</strong> the "already
+running" check.</li>
+<li><strong><code>src/hyprctl.rs</code></strong> — thin
+<code>hyprctl</code> wrappers: the window list the grid is built from,
+and the one dispatch call that changes focus.</li>
+<li><strong><code>src/query.rs</code></strong> — the
+<code>/field:value</code> filter DSL (v2 — see <a
+href="../query-dsl.html">query-dsl.md</a>, which covers this and every other
+implementation's syntax in full). Quote-aware whitespace-split tokens (a
+<code>"..."</code> run stays one token, letting a field/group name or
+value contain spaces); <code>/field:val</code> and nested
+<code>/group/sub:val</code> fuzzy-match both name and value
+independently (subsequence both ways); bare words substring-match
+title+class (subsequence instead, spanning whitespace, if quoted);
+multiple tokens AND together. Also carries three things that used to be
+elsewhere or didn't exist: <code>active_columns</code>
+(<code>/+path</code>/<code>/-path</code> column visibility, generalized
+here from focus-picker.py's v1-only <code>+$</code>/<code>-$</code>),
+<code>parse_actions</code>/<code>compare_with_direction</code>
+(<code>/sort</code>/<code>/reverse</code>, including the shape-aware
+comparator that handles plain-int and <code>humanize_ago</code>-bucket
+fields correctly — see query-dsl.md's "direction trap"), and
+<code>completion_context</code>/<code>completion_candidates</code>, one
+entry point covering the DSL's full five-stage autocomplete cascade
+(field/ group/action name → visibility path → sort target → sort
+direction → filter value) that <code>ui.rs</code>'s suggestions popup is
+built on.</li>
+<li><strong><code>src/enrich.rs</code></strong> — cross-references an
+open terminal window against the live tmux server and any Claude Code
+session running in it (<code>TmuxClaudeMeta</code>:
+<code>tmux/session</code>, <code>tmux/window</code>,
+<code>tmux/title</code>, <code>claude/title</code>,
+<code>claude/path</code>, <code>claude/session</code>,
+<code>claude/contents</code> — the <code>/group/sub</code> fields
+<code>query.rs</code> filters/sorts/displays on). Runs entirely off the
+main thread, spawned right after the grid's first paint, and streams
+results in via a channel polled every 50ms — the grid has to stay
+instant to open even if tmux is slow or a transcript is large, so
+nothing here is ever on the critical path. A panic inside the enrichment
+thread is caught and optionally logged
+(<code>touch ~/.cache/winswitch-enrich-debug</code>) rather than
+silently vanishing, since an unlogged panic there and "still enriching,
+give it a moment" look identical from the grid's side.</li>
+<li><strong><code>src/ui.rs</code></strong> — the layer-shell
+<code>GtkFlowBox</code> grid. Two-phase key state machine: unlocked =
+Tab/Shift+Tab cycles selection, releasing Alt confirms; any other
+printable key locks into search mode (<code>GtkSearchEntry</code> + the
+<code>query.rs</code> DSL), Alt no longer confirms once locked,
+Enter/Escape confirm/cancel either way. A trailing
+<code>/fragment</code> at any of the DSL's five stages opens the shared
+autocomplete popup (a plain <code>GtkListBox</code> under the search
+entry, not a <code>GtkPopover</code> — gtk-layer-shell has no xdg_popup
+positioner to anchor one to): <code>Ctrl+j</code>/<code>Ctrl+k</code>
+move the highlight, <code>Tab</code> accepts it, <code>Escape</code>
+dismisses just the popup. See <a
+href="../query-dsl.html#autocompletion">query-dsl.md</a>. Each cell's label
+is rebuilt from <code>active_columns</code> on every keystroke
+(<code>render_label</code>) instead of hardcoding workspace+title, so
+<code>/+</code>/<code>/-</code> actually changes what's shown.
+<strong>Worth knowing before touching filtering/sorting/selection
+here</strong>: since <code>/sort</code> can now visually reorder the
+grid, <code>FlowBoxChild::index()</code> (a child's <em>current</em>
+position) can no longer be trusted to mean "this window's index into
+<code>state.windows</code>" the way it always safely did before — every
+lookup from a child back to its window goes through
+<code>child_window_idx</code>, which reads a stable index stashed in the
+child's <code>widget_name</code> at creation instead.
+<code>state.selected</code> itself stays a <em>visual</em> grid position
+(what arrow keys spatially mean), resolved to an actual window only at
+the point of confirming (<code>confirm()</code>). The grid window
+carries the same 1px accent frame as the clipboard-picker engine
+(<code>window { border }</code>, colour from <code>scheme.json</code>'s
+<code>primary</code> via <code>load_accent_hex</code>) to match the
+quickshell launcher / rss reader cards.</li>
+<li><strong><code>src/wayland_capture.rs</code></strong> — live
+thumbnails via <code>hyprland-toplevel-export-v1</code>, on a wholly
+separate low-level <code>wayland-client</code> connection (GDK doesn't
+expose these extension protocols). Enumerates toplevels via
+<code>wlr-foreign-toplevel-management-unstable-v1</code>, resolves each
+to a Hyprland window <code>address</code> via
+<code>hyprland-toplevel-mapping-v1</code> (matched against
+<code>hyprctl clients -j</code>), then captures/streams decoded frames
+into the grid.</li>
+<li><strong><code>src/protocol.rs</code></strong> — generated bindings
+from the vendored XML in <code>protocols/</code> (fetched from
+hyprwm/hyprland-protocols and swaywm/wlr-protocols, plus one staging
+protocol copied from the system's <code>wayland-protocols</code>
+package).</li>
+</ul>
+<p>Needs the <code>screencopy</code> permission grant in
+<code>environment.lua</code> (see <a href="hyprland.html">hyprland.md</a>)
+to capture thumbnails at all.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#clipboard-picker">clipboard-picker</a></li><li class="lvl2"><a href="#notifyd">notifyd</a></li><li class="lvl2"><a href="#sysmon">sysmon</a></li><li class="lvl2"><a href="#winswitch">winswitch</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dotfiles documentation · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html" aria-current="page">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="dotfiles-documentation">dotfiles documentation</h1>
+<p>Official documentation of the currently active projects tracked in
+this <code>$HOME</code> dotfiles git repository. Covers only what
+<code>git ls-files</code> actually tracks today — configs and code that
+were removed via an "archive" commit (e.g. spotifyd, spotify-tui, the
+old doom <code>+magit</code> layer, htop's <code>htoprc</code>) are gone
+from the working tree and gone from these docs too. Where a file is
+still tracked but functionally superseded (waybar), that's called out
+explicitly rather than omitted, since it hasn't been archived.</p>
+<p>Scope: this only documents what lives in the <code>$HOME</code> git
+repo. A large amount of <em>other</em> local infrastructure exists on
+this machine (rclone/restic mount units, the flight-price tracker, the
+AUR security checker, the password-store backup, peer-agent, mail sync)
+that is deliberately <strong>not</strong> version-controlled here and is
+out of scope for this doc set.</p>
+<h2 id="map">Map</h2>
+<table>
+<thead>
+<tr>
+<th>Doc</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="hyprland.html">hyprland.md</a></td>
+<td>Window manager: <code>hl.*</code> Lua config, autostart, keybinds,
+window/layer rules, monitors, input, the RDP focus guard, and the small
+scripts it shells out to</td>
+</tr>
+<tr>
+<td><a href="rust-tools.html">rust-tools.md</a></td>
+<td>The four standalone Rust/Cargo projects under
+<code>~/.config/hypr/</code>: <code>clipboard-picker</code>,
+<code>notifyd</code>, <code>sysmon</code>, <code>winswitch</code></td>
+</tr>
+<tr>
+<td><a href="quickshell-bar.html">quickshell-bar.md</a></td>
+<td>The custom QML status bar (<code>~/.config/quickshell/</code>) that
+replaced waybar</td>
+</tr>
+<tr>
+<td><a href="theming.html">theming.md</a></td>
+<td><code>gen-theme.py</code>'s wallpaper→Material You pipeline and
+every consumer it writes to</td>
+</tr>
+<tr>
+<td><a href="../tmux.html">tmux.md</a></td>
+<td><code>.tmux.conf</code> and the Python/shell scripts behind its
+session/window/pane navigation</td>
+</tr>
+<tr>
+<td><a href="../zsh-and-terminal.html">zsh-and-terminal.md</a></td>
+<td>zsh (<code>motions.zsh</code>,
+<code>.zshrc</code>/<code>.zshenv</code>), Doom Emacs, Alacritty</td>
+</tr>
+<tr>
+<td><a href="desktop-apps.html">desktop-apps.md</a></td>
+<td>rofi, mpv, GTK, nsxiv, fsearch, GnuPG, <code>.desktop</code>
+overrides, and waybar's legacy status</td>
+</tr>
+<tr>
+<td><a href="../claude-history.html">claude-history.md</a></td>
+<td><code>bin/claude-history</code>, the standalone CLI search over
+Claude Code conversation history</td>
+</tr>
+<tr>
+<td><a href="../query-dsl.html">query-dsl.md</a></td>
+<td>The shared (copy-pasted, not imported) query language behind
+<code>window-search.py</code>, <code>focus-picker.py</code>,
+<code>claude-history</code>, and winswitch's grid search — grammar,
+fuzzy-matching rules, and the design principles behind them</td>
+</tr>
+<tr>
+<td><a href="google-cloud-oauth.html">google-cloud-oauth.md</a></td>
+<td>Setting up a Google OAuth client for personal Google API access:
+Testing vs Production, what actually gates Publish, and hosting the
+required Branding pages on a Cloudflare Worker with no local
+binaries</td>
+</tr>
+<tr>
+<td><a href="redact-video-ocr.html">redact-video-ocr.md</a></td>
+<td><code>bin/redact-video-ocr</code>, an OCR-driven tool that blurs
+sensitive on-screen text out of a screen-recording video automatically
+instead of by manual frame review</td>
+</tr>
+</tbody>
+</table>
+<h2 id="architecture-at-a-glance">Architecture at a glance</h2>
+<ul>
+<li><strong>Compositor</strong>: Hyprland, configured in Lua
+(<code>~/.config/hypr/*.lua</code>), not the stock
+<code>hyprland.conf</code> syntax — see <a
+href="hyprland.html">hyprland.md</a>.</li>
+<li><strong>Bar</strong>: a from-scratch quickshell bar (replaced
+caelestia-shell, then waybar, 2026-08-27) — see <a
+href="quickshell-bar.html">quickshell-bar.md</a>.</li>
+<li><strong>System monitoring</strong>: <code>sysmond</code> (Rust
+daemon, Unix socket) feeds both the quickshell bar's hover graphs and
+the standalone <code>sysmon-graph</code> popups.</li>
+<li><strong>Notifications</strong>: <code>notifyd</code> replaced dunst
+so notification actions survive after the popup closes.</li>
+<li><strong>Theming</strong>: wallpaper changes →
+<code>gen-theme.py</code> (Material You/HCT) →
+GTK/Qt/KDE/Hyprland/Alacritty/rofi/tmux/nsxiv, live-reloaded where the
+toolkit supports it.</li>
+<li><strong>Shell</strong>: zsh with custom Emacs-style motions; tmux
+with a custom MRU session/window/pane navigation layer and
+resurrect/continuum wired in.</li>
+<li><strong>Personal utility scripts</strong>: <code>bin/</code> —
+tracked here, but deliberately <em>not</em> on <code>$PATH</code>
+(invoked by explicit path, e.g. from a keybind or another script),
+unlike <code>.local/bin</code> which holds pip/pipx-installed console
+scripts and symlinks, not hand-authored tools.</li>
+</ul>
+<h2 id="regeneratingupdating-this-doc-set">Regenerating/updating this
+doc set</h2>
+<p>These are hand-written, not generated. When a project's
+active/inactive status changes (e.g. waybar gets formally archived, or a
+script gets replaced), update the relevant doc in the same commit as the
+code change where practical, or as a prompt follow-up otherwise.</p>
+<h2 id="website">Website</h2>
+<p>This doc set is published at <a
+href="https://baleti.github.io/dotfiles/">https://baleti.github.io/dotfiles/</a>.
+The repo keeps one long-lived branch per machine, and the site is built
+from <strong>all</strong> of them:</p>
+<table>
+<thead>
+<tr>
+<th>URL</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td>shared docs (<code>SHARED_PAGES</code> in <code>build.py</code>) + a
+machine index</td>
+</tr>
+<tr>
+<td><code>/host3/</code></td>
+<td><code>host3</code> branch's machine-specific pages</td>
+</tr>
+<tr>
+<td><code>/host6/</code></td>
+<td><code>host6</code> branch</td>
+</tr>
+<tr>
+<td><code>/wsl/</code></td>
+<td><code>main</code> branch</td>
+</tr>
+<tr>
+<td><code>/qemu/</code></td>
+<td><code>qemu-claude</code> branch</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>./build.py</code> — reads each branch's
+<code>.config/docs/*.md</code> from a throwaway
+<code>git worktree</code> (<strong>never</strong> a checkout in the live
+<code>$HOME</code> tree), renders with <code>pandoc</code> into
+<code>./site/</code>. Pages in <code>SHARED_PAGES</code> publish once at
+the root; every other page a branch ships becomes that machine's own.
+Rewrites inter-doc links across the tree, builds the sidebar + contents
+rail + a client-side search index. <code>./build.py --serve</code>
+previews on <code>localhost:8000</code>. Branch→slug map and the
+shared/host split are the <code>BRANCHES</code> /
+<code>SHARED_PAGES</code> / <code>CANONICAL_BRANCH</code> constants at
+the top.</li>
+<li><code>./deploy.sh [--if-changed] [--setup]</code> —
+<code>git fetch</code>, <code>build.py</code>, then force-pushes
+<code>./site/</code> to the repo's orphan <code>gh-pages</code> branch
+via a throwaway git repo inside <code>site/</code> (never checks
+<code>gh-pages</code> out in <code>$HOME</code>).
+<code>--if-changed</code> skips the whole run when no doc source changed
+since last time (fingerprint in <code>~/.local/state/</code>) and treats
+"offline" as a no-op; <code>--setup</code> also points the Pages config
+at the branch via <code>gh</code>.</li>
+<li><code>assets/</code> (<code>style.css</code>, <code>site.js</code>)
+is the hand-written theme, taken from whichever branch you run
+<code>build.py</code> on. <code>site/</code> is generated output —
+git-ignored via <code>.git/info/exclude</code>, never committed. Every
+page carries an "AI-generated · &lt;build time&gt;" badge — these docs
+are written by an AI (Claude) from the repo, not hand-maintained.</li>
+</ul>
+<p>Requires <code>pandoc</code> + <code>git</code> (+ <code>gh</code> to
+push). Run <code>./deploy.sh</code> after editing any doc, or let the
+timer below do it.</p>
+<h3 id="scheduled-rebuilds-systemd">Scheduled rebuilds
+(<code>systemd/</code>)</h3>
+<p><code>systemd/</code> holds a user timer that runs
+<code>deploy.sh --if-changed</code> hourly, so committed
+<code>.md</code> edits (on any branch) reach the live site within the
+hour without a manual deploy. On a real build/push error it emails the
+repo's git-author address (<code>OnFailure=</code> →
+<code>deploy-failmail.sh</code>, via the <code>baleti</code> account in
+<code>~/.config/claude-email/</code>); offline runs are silent
+no-ops.</p>
+<p>Install (once, on whichever machine should do the publishing —
+<code>host3</code>):</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">systemctl</span> <span class="at">--user</span> link  ~/.config/docs/systemd/dotfiles-docs-deploy.service <span class="dt">\</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>                       ~/.config/docs/systemd/dotfiles-docs-deploy-failmail.service <span class="dt">\</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>                       ~/.config/docs/systemd/dotfiles-docs-deploy.timer</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="ex">systemctl</span> <span class="at">--user</span> enable <span class="at">--now</span> dotfiles-docs-deploy.timer</span></code></pre></div>
+<p><code>systemctl --user start dotfiles-docs-deploy.service</code> runs
+one now; <code>journalctl --user -u dotfiles-docs-deploy.service</code>
+shows the last run.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#map">Map</a></li><li class="lvl2"><a href="#architecture-at-a-glance">Architecture at a glance</a></li><li class="lvl2"><a href="#regeneratingupdating-this-doc-set">Regenerating/updating this doc set</a></li><li class="lvl2"><a href="#website">Website</a></li><li class="lvl3"><a href="#scheduled-rebuilds-systemd">Scheduled rebuilds (systemd/)</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

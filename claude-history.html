@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-history · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="assets/style.css">
+<script>window.SITE_ROOT="";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="index.html" class="on">shared</a><a href="wsl/index.html">wsl</a><a href="host3/index.html">host3</a><a href="host6/index.html">host6</a><a href="qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">Machines</p><ul class="navlist"><li><a href="wsl/index.html">wsl</a></li><li><a href="host3/index.html">host3</a></li><li><a href="host6/index.html">host6</a></li><li><a href="qemu/index.html">qemu</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="tmux.html">tmux</a></li><li><a href="zsh-and-terminal.html">zsh & terminal</a></li><li><a href="claude-history.html" aria-current="page">claude-history</a></li><li><a href="query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    
+    <article class="doc">
+<h1 id="claude-history">claude-history</h1>
+<p><code>~/bin/claude-history</code> — standalone Python CLI, full-text
+search over every past Claude Code conversation transcript
+(<code>~/.claude/projects/*/*.jsonl</code>). Same query language and
+BM25-ish ranking approach as this repo's tmux
+<code>window-search.py</code> (which searches <em>live pane
+scrollback</em> instead — see <a href="tmux.html">tmux.md</a>), but this
+tool has no tmux dependency: it's a plain CLI, run directly as
+<code>claude-history</code> in any terminal. fzf's own full-screen mode
+already takes over the terminal (the alternate screen buffer) and
+restores it on exit, giving the same "popup" feel
+<code>window-search.py</code> gets from a tmux popup, for free.</p>
+<p>Corpus glob deliberately stays at exactly one directory level —
+<code>*/subagents/agent-*.jsonl</code> files are forked subagent
+transcripts, not resumable top-level sessions, and must never be
+recursed into.</p>
+<h2 id="resolving-a-selection-resolve">Resolving a selection
+(<code>resolve()</code>)</h2>
+<p>One invocation shape, one path through Enter:</p>
+<ul>
+<li><strong>The selected session is currently live</strong> →
+<code>switch-client</code> to it and close the pane
+<code>claude-history</code> was launched from (a scratch launcher pane,
+fair game once its job is done).</li>
+<li><strong>Not live</strong> →
+<code>exec claude --resume &lt;id&gt; --dangerously-skip-permissions</code>
+in place of this process — literally hands the terminal over, the same
+way <code>exec</code> hands a terminal to anything else.</li>
+</ul>
+<p>"Live right now" is answered by Claude Code's own bookkeeping, not
+guessed: every running interactive session maintains
+<code>~/.claude*/sessions/&lt;pid&gt;.json</code> (one such directory
+per <code>CLAUDE_CONFIG_DIR</code> —
+<code>.claude</code>/<code>.claude2</code>/<code>.claude3</code> here
+all share the same underlying <code>~/.claude/projects</code> via
+symlink, but each keeps its own independent <code>sessions/</code>
+directory of currently-running pids), containing <code>sessionId</code>,
+<code>pid</code>, <code>procStart</code> (from
+<code>/proc/&lt;pid&gt;/stat</code> — the same disambiguator the kernel
+itself uses to tell a live pid from a reused one), and, when launched
+inside tmux, a <code>tmux</code> field
+(<code>session_name:@window_id.%pane_id</code>) — a <code>pane_id</code>
+alone is a stable, globally unique tmux target, no further
+window/session lookup needed.</p>
+<h2 id="tmux-integration-opportunistic">tmux integration
+(opportunistic)</h2>
+<p>Detected at runtime from <code>$TMUX</code>/<code>$TMUX_PANE</code>
+(both set by tmux for every real pane already — no bind-key plumbing
+needed):</p>
+<ul>
+<li><strong>Outside tmux</strong> — skip the live/switch dance entirely,
+just exec-resume. There's no meaningful "switch to another pane" without
+tmux, so this only integrates "if available," never pretends to when it
+isn't.</li>
+<li><strong>Inside tmux</strong> — full live-session detection and
+switch-client, as above.</li>
+</ul>
+<p>Bound to <code>prefix+C-c</code> in <code>.tmux.conf</code>, which
+runs it in a <strong>brand-new window</strong>
+(<code>new-window ... claude-history</code>), not <code>send-keys</code>
+into the current pane (broke: that pane might be running anything —
+another Claude Code session, vim — not necessarily an idle shell ready
+for typed input) and not a <code>display-popup</code> either (fixed the
+send-keys problem, but a popup computes its size once at creation and
+never follows client resizes, and its environment has <code>$TMUX</code>
+but never <code>$TMUX_PANE</code>, silently breaking the live-session
+location column since <code>in_tmux()</code> requires both). A real
+<code>new-window</code> sidesteps all three problems at once — see <a
+href="tmux.html#full-text-search">tmux.md</a> and
+<span class="memref" title="internal memory note, outside this doc set">tmux_popup_no_live_resize_no_tmux_pane</span> memory.</p>
+<h2 id="cache-versioning">Cache versioning</h2>
+<p>The tool caches parsed transcript state for speed; see
+<span class="memref" title="internal memory note, outside this doc set">claude_history_cache_version_gap</span> memory — <code>CACHE_VERSION</code>
+must be bumped on any key <em>rename</em> in the cache schema, not just
+new indexing logic, since a rename alone won't trip a naive "is the
+shape still valid" check.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#resolving-a-selection-resolve">Resolving a selection (resolve())</a></li><li class="lvl2"><a href="#tmux-integration-opportunistic">tmux integration (opportunistic)</a></li><li class="lvl2"><a href="#cache-versioning">Cache versioning</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="assets/search-index.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

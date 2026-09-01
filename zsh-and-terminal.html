@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zsh, bash, Doom Emacs, Alacritty · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="assets/style.css">
+<script>window.SITE_ROOT="";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="index.html" class="on">shared</a><a href="wsl/index.html">wsl</a><a href="host3/index.html">host3</a><a href="host6/index.html">host6</a><a href="qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">Machines</p><ul class="navlist"><li><a href="wsl/index.html">wsl</a></li><li><a href="host3/index.html">host3</a></li><li><a href="host6/index.html">host6</a></li><li><a href="qemu/index.html">qemu</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="tmux.html">tmux</a></li><li><a href="zsh-and-terminal.html" aria-current="page">zsh & terminal</a></li><li><a href="claude-history.html">claude-history</a></li><li><a href="query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    
+    <article class="doc">
+<h1 id="zsh-bash-doom-emacs-alacritty">zsh, bash, Doom Emacs,
+Alacritty</h1>
+<h2 id="bash">bash</h2>
+<p><code>.bashrc</code> is a fallback/secondary shell config (zsh,
+above, is primary). Notably: auto-starts (or attaches to) a
+uniquely-named tmux session the instant an interactive bash shell opens
+outside of tmux (<code>auto-$(basename "$SHELL")-$$</code>), then exits
+the shell when tmux exits — so a bare bash login always lands inside
+tmux. Also wraps the <code>pass</code> command: <code>pass open</code>
+(bare, no extra args) auto-closes the password-store coffin after 300s
+by spawning a tagged background sleep
+(<code>_PASS_AUTOCLOSE_TIMER_</code> via <code>exec -a</code>), killing
+any previous still-running timer first — a no-systemd-timer alternative
+to a real auto-lock. <code>EDITOR=emacsclient -t</code>;
+<code>ec</code>/<code>et</code> helpers create-frame/attach-tty an
+emacsclient.</p>
+<h2 id="zsh">zsh</h2>
+<ul>
+<li><strong><code>.zshenv</code></strong> — sourced by every zsh (login,
+interactive, and scripts — including ones spawned by a pre-existing tmux
+server, which <code>.zshrc</code> alone wouldn't cover). Currently just
+<code>XDG_MENU_PREFIX=plasma-</code>, closing the terminal/tmux gap left
+by <code>hypr/environment.lua</code>'s own export of the same var (which
+only covers Hyprland's own children + systemd/dbus activation env) — see
+<a href="host3/hyprland.html#environment-environmentlua">hyprland.md</a> and
+<span class="memref" title="internal memory note, outside this doc set">ksycoca_menu_prefix_poisoning</span> memory for the full KSycoca incident
+this fixes.</li>
+<li><strong><code>.zshrc</code></strong> — vi-ish history handling
+(<code>HIST_IGNORE_ALL_DUPS</code>, <code>SHARE_HISTORY</code>, 99M-line
+<code>HISTFILE</code>), case-insensitive completion, <code>fzf</code>
+widgets (<code>M-x</code> execute, <code>C-r</code> history),
+<code>cd</code> history navigation
+(<code>M-Right</code>/<code>M-Left</code>/<code>M-Up</code> via
+<code>_cd_next_dir</code>/<code>_cd_prev_dir</code>/<code>cd_up</code>),
+emacs-style <code>C-Left</code>/<code>C-Right</code> word motions,
+<code>^Z</code>/<code>^Y</code> undo/redo. Sources
+<code>motions.zsh</code> (below) at line 70.</li>
+<li><strong><code>.config/zsh/motions.zsh</code></strong> — custom
+Emacs-style word-motion widgets that respect quoted strings (so a motion
+doesn't stop in the middle of a quoted path/argument):
+<code>backward_over_quoted_string</code> /
+<code>forward_over_quoted_string</code> (quote-aware cursor stepping,
+handling escaped quotes) build <code>backward-full-word</code> /
+<code>forward-full-word</code> /
+<code>kill-backward-full-word</code>.</li>
+</ul>
+<h2 id="doom-emacs">Doom Emacs</h2>
+<p><code>~/.config/doom/</code> — <code>config.el</code> (theme
+<code>doom-one</code>, <code>initial-major-mode</code>
+<code>org-mode</code>, vertico <code>cycle</code> off),
+<code>init.el</code> (module selection: vertico + corfu completion, evil
+everywhere, magit, tree-sitter, org, dired, undo-tree,
+snippets/file-templates — most language modules deliberately disabled),
+<code>packages.el</code> (two personal packages pulled straight from
+GitHub: <code>baleti/git-branch-off</code> and
+<code>baleti/gitq</code>'s emacs integration).</p>
+<p>Launched via <code>mainMod+SHIFT+e</code>
+(<code>alacritty -e tmux new-session emacsclient --tty</code>, see <a
+href="host3/hyprland.html#keybinds-keybindslua">hyprland.md</a>) or the tracked
+<code>alacritty-emacsclient.desktop</code> entry — see <a
+href="host3/desktop-apps.html">desktop-apps.md</a>. Its former
+<code>+magit/*</code> custom layer and <code>custom.el</code> were
+archived out (moved to a separate git repo — see the
+<code>047f79f</code>/<code>319b775</code> commits); don't expect them in
+the working tree.</p>
+<h2 id="alacritty">Alacritty</h2>
+<p><code>~/.config/alacritty/alacritty.toml</code> —
+<code>JetBrains Mono</code> 10pt, block cursor, 10000-line scrollback,
+<code>live_config_reload = true</code>. Colors are <strong>not</strong>
+inline: <code>[colors]</code> only sets
+<code>draw_bold_text_with_bright_colors</code>, the actual
+<code>[colors.primary/normal/bright]</code> tables live in a separate
+<code>~/.config/alacritty/colors.toml</code> pulled in via
+<code>[general] import</code>. That file is generated by
+<code>gen-theme.py</code> from the wallpaper (see <a
+href="host3/theming.html">theming.md</a>) and deliberately <strong>not tracked
+in git</strong>, so the 15-minute wallpaper rotation never churns this
+file's history.</p>
+<p>Custom keyboard bindings beyond Alacritty's stock defaults, all CSI-u
+sequences needed by tmux's <code>extended-keys always</code> / Claude
+Code to see otherwise-ambiguous key combos:</p>
+<ul>
+<li><code>Shift+Enter</code> → <code>\x1b[13;2u</code>,
+<code>Ctrl+Enter</code> → <code>\x1b[13;5u</code>,
+<code>Ctrl+Shift+Enter</code> → <code>\x1b[13;6u</code></li>
+<li><code>Shift+Space</code> → <code>\x1b[32;2u</code></li>
+<li><code>Ctrl+.</code> → <code>\x1b[46;5u</code></li>
+<li><code>Ctrl+Shift+V</code>/<code>C</code> and
+<code>Ctrl+Alt+V</code>/<code>C</code> → Paste/Copy (both modifier
+combos, since Ctrl+Shift+C/V collide with the terminal's default SIGINT-
+adjacent bindings on some layouts)</li>
+</ul>
+<p>See <span class="memref" title="internal memory note, outside this doc set">tmux_extended_keys_shift_enter</span> memory: Alacritty already
+sends these fine, it was tmux silently reverting
+<code>extended-keys always</code> on some config paths that caused the
+actual bug.</p>
+<h2 id="gnupg">GnuPG</h2>
+<p><code>.gnupg/gpg-agent.conf</code> — <code>enable-ssh-support</code>,
+<code>pinentry-program /usr/bin/pinentry-gtk</code>.
+<code>.gnupg/gpg.conf</code> — <code>use-agent</code>. Ssh-agent duties
+(for git signing / remote auth) are handled by gpg-agent rather than a
+separate <code>ssh-agent</code>.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#bash">bash</a></li><li class="lvl2"><a href="#zsh">zsh</a></li><li class="lvl2"><a href="#doom-emacs">Doom Emacs</a></li><li class="lvl2"><a href="#alacritty">Alacritty</a></li><li class="lvl2"><a href="#gnupg">GnuPG</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="assets/search-index.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

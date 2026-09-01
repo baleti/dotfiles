@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyprland config · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html" aria-current="page">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="hyprland-config">Hyprland config</h1>
+<p><code>~/.config/hypr/</code> — Lua-scriptable Hyprland config (this
+build exposes an <code>hl.*</code> Lua API, not the stock
+<code>hyprland.conf</code> dispatch syntax). Entry point is
+<code>hyprland.lua</code>, which <code>require()</code>s the rest in
+order:</p>
+<pre><code>hyprland.lua
+├── environment.lua   env vars + permissions
+├── monitors.lua      output layout
+├── appearance.lua    borders, decoration, animations, gradients
+├── input.lua         keyboard/touchpad/gestures/per-device
+├── keybinds.lua       all binds
+├── windowrules.lua    window/layer rules
+└── rdp-guard.lua       xfreerdp keybind-passthrough guard</code></pre>
+<p><code>apps.lua</code> is a shared data table (not
+<code>require()</code>d from <code>hyprland.lua</code> directly)
+consumed by three of the above: <code>hyprland.lua</code>
+(autostart-hidden), <code>keybinds.lua</code> (toggle/summon binds), and
+<code>windowrules.lua</code>-adjacent logic.</p>
+<h2 id="autostart-hyprlandlua-hyprlandstart-event">Autostart
+(<code>hyprland.lua</code>, <code>hyprland.start</code> event)</h2>
+<p>Fires once per Hyprland session start (not on every config reload —
+that distinction matters for the pinned-app hide logic, see the file's
+own comments). Starts, in order:</p>
+<ol type="1">
+<li><code>wl-paste --watch scripts/cliphist-store-logged.sh</code> —
+clipboard history, with <code>CLIPBOARD_STATE=sensitive</code>
+deliberately overridden (inside the wrapper script now, not inline here)
+so password-manager copies are still retained (retention is bounded by
+<code>cliphist-expire</code> instead, see below). Wraps a plain
+<code>cliphist store</code> call to also log an exact copy-time per
+entry, since cliphist itself keeps none — see <a
+href="rust-tools.html">rust-tools.md</a>'s clipboard-picker entry for what
+reads that log (<code>$date:</code> in the picker's own query DSL).</li>
+<li><code>notifyd/target/release/notifyd</code> — see <a
+href="rust-tools.html">rust-tools.md</a>.</li>
+<li><code>sysmon/target/release/sysmond</code> — see <a
+href="rust-tools.html">rust-tools.md</a>.</li>
+<li><code>scripts/wallpaper-watch.sh</code> — see <a
+href="theming.html">theming.md</a>.</li>
+<li><code>xrdb -merge ~/.config/nsxiv/xresources</code> (if present) —
+loads nsxiv's X resources into XWayland immediately, since
+wallpaper-watch.sh might not fire again this session.</li>
+<li><code>scripts/wallpaper-rotate.sh</code> — rotates
+<code>~/wallpapers</code> every 6h (moved 2026-08-29 from a 15-min "for
+now" testing cadence). Plain
+<code>hl.exec_cmd</code>/<code>sleep</code>-loop, not a systemd unit —
+see <a href="theming.html">theming.md</a> for why, and what to reconsider
+if it's ever seen crashing.</li>
+<li><code>qs -n -d</code> — the quickshell bar. <strong>waybar's
+autostart line is commented out here</strong> (2026-08-27) in favor of
+this; see <a href="desktop-apps.html#waybar-legacy">desktop-apps.md</a>
+for its current status and the rollback note.</li>
+<li>Every <code>apps.lua</code> entry launches hidden into its own
+<code>special:scratch_&lt;slug&gt;</code> workspace (a one-shot
+class→slug table armed for <code>AUTOSTART_HIDE_GRACE_MS</code> = 120s,
+to avoid swallowing a later manual launch's window — see the file's
+comments for why arming has to happen inside the
+<code>hyprland.start</code> handler, not at file scope).</li>
+</ol>
+<h2 id="pinned-app-launchers-appslua--keybindslua">Pinned app launchers
+(<code>apps.lua</code> + <code>keybinds.lua</code>)</h2>
+<p><code>apps.lua</code> is a flat list of
+<code>{ key, slug, class, cmd }</code>, currently: FSearch (1), Element
+(2), Thunderbird (3), GIMP (4), Signal (5, via flatpak), Inkscape (6),
+Recoll (7). <code>mainMod+&lt;key&gt;</code> toggles each one through
+<code>toggle_app()</code> in <code>keybinds.lua</code>: not-running →
+launch, hidden in scratch → pull to current workspace + focus, on
+another workspace → switch to it (without pulling), focused → hide to
+scratch. Multi-window apps (GIMP dialogs) are treated as one unit so a
+summon/hide never splits the app across workspaces.</p>
+<h2 id="environment-environmentlua">Environment
+(<code>environment.lua</code>)</h2>
+<ul>
+<li><code>XCURSOR_SIZE</code>/<code>HYPRCURSOR_SIZE=24</code>,
+<code>AQ_DRM_DEVICES</code> (multi-GPU: Intel + nvidia + displaylink),
+<code>QT_QPA_PLATFORMTHEME=kde</code>.</li>
+<li><code>LC_TIME=en_GB.UTF-8</code> — a real Plasma session sources
+<code>~/.config/plasma-localerc</code> for this; Hyprland doesn't, so
+it's forced here to keep KDE apps' date columns in day/month order.</li>
+<li><code>XDG_MENU_PREFIX=plasma-</code> — <strong>load-bearing</strong>
+for Dolphin/KIO default-app resolution. Without it,
+<code>kbuildsycoca6</code> builds an incomplete KSycoca cache and
+<code>KApplicationTrader::preferredService()</code> silently returns
+null, so Dolphin falls through to an empty xdg-desktop-portal-kde
+chooser instead of launching the configured default app. Must be present
+in the <em>querying</em> process's own environment, not just baked into
+the cache — see <span class="memref" title="internal memory note, outside this doc set">ksycoca_menu_prefix_poisoning</span> memory for the
+runtime-heal command
+(<code>env XDG_MENU_PREFIX=plasma- kbuildsycoca6</code>).</li>
+<li>Permissions block (<code>hl.permission</code>, requires a full
+Hyprland restart to apply): screencopy allowed for
+<code>grim</code>/hyprshot, xdg-desktop-portal-hyprland,
+<code>wf-recorder</code>, and <code>winswitch</code>'s own binary (it
+captures live window thumbnails via
+<code>hyprland-toplevel-export-v1</code>); <code>plugin</code> allowed
+for <code>hyprpm</code>; <code>keyboard</code> allowed for
+<code>wtype</code>.</li>
+</ul>
+<h2 id="monitors-monitorslua">Monitors (<code>monitors.lua</code>)</h2>
+<p>Laptop panel (<code>eDP-2</code>, 1920x1080@240, scale 1.5 → logical
+1280 wide) on the left, AOC 2470W on HDMI (1920x1080@60) at
+<code>1280x0</code>, Philips 241V8 on USB-C/DP (1920x1080@60) at
+<code>3200x0</code>.</p>
+<h2 id="input-inputlua">Input (<code>input.lua</code>)</h2>
+<p>GB keyboard layout, <code>follow_mouse=1</code>, touchpad
+natural-scroll off, 3-finger horizontal swipe = workspace switch,
+per-device sensitivity override example for
+<code>epic-mouse-v1</code>.</p>
+<h2 id="windowlayer-rules-windowruleslua">Window/layer rules
+(<code>windowrules.lua</code>)</h2>
+<ul>
+<li>Suppress all maximize requests globally.</li>
+<li>Blur <code>notifyd</code>'s layer-shell popup namespace
+(<code>^notifyd$</code>) — layer surfaces don't inherit
+<code>appearance.lua</code>'s decoration blur automatically.</li>
+<li>XWayland drag fix (no-focus for empty-class/title floating XWayland
+windows).</li>
+<li>Float+position the <code>hyprland-run</code> launcher.</li>
+<li>No-focus for <code>ArchitectJobAutomation</code>-classed windows —
+the headed Playwright/Chromium browser used by the job-search automation
+(<code>~/.local/share/architect-job-search/lib/browser.js</code>, not
+part of this repo), so it never steals focus while popping up
+mid-session.</li>
+</ul>
+<h2 id="rdp-focus-guard-rdp-guardlua">RDP focus guard
+(<code>rdp-guard.lua</code>)</h2>
+<p>xfreerdp is an XWayland client (confirmed via
+<code>ldd</code>/<code>hyprctl clients</code>), so its own
+<code>XGrabKeyboard</code> can't stop Hyprland's global binds from
+double-firing while a remote session has focus. The workaround: swap to
+an empty submap (<code>rdp-guard</code>) whenever an
+<code>xfreerdp</code>-classed window becomes active, which replaces the
+whole active bind set rather than adding to it, so <em>every</em> global
+bind — not just known collisions — falls through as raw input.
+<code>Pause</code> toggles the guard on/off (tap-to-release); the choice
+is persisted to <code>~/.local/state/rdp-guard-enabled</code> so it
+survives focus changes and Hyprland restarts. (Right Ctrl was tried
+first to match xfreerdp's own release hotkey and never fired — reported
+upstream as hyprwm/Hyprland#15952.)</p>
+<h2 id="keybinds-keybindslua">Keybinds (<code>keybinds.lua</code>)</h2>
+<p>Full list lives in the file; highlights not covered by their own
+project docs:</p>
+<ul>
+<li><code>mainMod+space/Q/E/R</code> —
+terminal/close/file-manager/menu.</li>
+<li><code>mainMod+arrows</code> / <code>mainMod+hjkl</code> — focus;
+<code>mainMod+SHIFT+hjkl</code> / <code>mainMod+CTRL+hjkl</code> — move
+window in tiling / reflow position.</li>
+<li><code>mainMod+SHIFT+[0-9]</code> — move window to workspace N.</li>
+<li><code>CTRL+ALT+h/l</code> — step to prev/next workspace <em>on this
+monitor</em> (<code>r-1</code>/<code>r+1</code>, monitor-relative so it
+never hops to a workspace shown on another monitor).</li>
+<li><code>mainMod+G</code> / <code>[</code>/<code>]</code> /
+<code>SHIFT+G</code> — window groups (tabs): toggle, prev/next,
+lock-active.</li>
+<li><code>mainMod+f</code> — fullscreen (maximized mode, toggle).</li>
+<li><code>mainMod+A</code> — global-menu prototype: flattens the focused
+window's AT-SPI accessible menu tree into a rofi picker
+(<code>scripts/appmenu-atspi.py</code>). Coverage depends on the app
+exposing a real a11y tree — confirmed with LibreOffice; see <a
+href="desktop-apps.html">desktop-apps.md</a> for the
+<code>--force-renderer-accessibility</code>/<code>GNOME_ACCESSIBILITY=1</code>
+overrides that make Brave/LibreWolf expose theirs.</li>
+<li><code>Print</code> —
+<code>hyprshot -m region -r | satty ...</code>.</li>
+<li>Media/volume/brightness keys —
+<code>wpctl</code>/<code>brightnessctl</code>/<code>playerctl</code>,
+plus a restored-from-KDE 5s seek pair with a "kick" removed as
+unnecessary (see <code>scripts/playerctl-seek.sh</code>'s header —
+confirmed actively harmful for the phone bridge).</li>
+<li><code>mainMod+CTRL+SHIFT+p/x/z</code> and friends — playerctl
+against <code>~/.config/playerctl-current</code>, the "currently
+selected player" file written by the <code>ALT+CTRL+SHIFT+m</code>
+player picker (<code>quickshell/bar/MprisPicker.qml</code>, a themed
+overlay matching the bar's panels — reimplemented from a zenity dialog;
+toggles closed on a second press; also on the media pill's
+middle-click).</li>
+<li><code>mainMod+V</code> / <code>mainMod+CTRL+n</code> —
+clipboard/notification pickers (the Rust binaries; see <a
+href="rust-tools.html">rust-tools.md</a>).</li>
+<li><code>mainMod+n</code> / <code>mainMod+SHIFT+n</code> — invoke last
+notification's default action / open its full action list.</li>
+<li><code>ALT+mainMod+n/t/m</code> — standalone
+<code>sysmon-graph</code> popups (cpu popup removed 2026-09-01; the
+bar's <code>mainMod+p</code> hover panel covers it).</li>
+<li>Bare <code>ALT+n</code> and <code>mainMod+t/s/m/p</code> — toggle
+the quickshell bar's own in-bar hover panels (net stayed on
+<code>ALT</code>; temp/disk/mem/cpu on <code>mainMod</code>; same
+<code>sysmond</code> data as the popups above, different UI surface) via
+<code>scripts/bar-toggle.sh</code>, <strong>and</strong> enter a
+per-widget <code>graph_&lt;name&gt;</code> submap
+(<code>keybinds.lua</code>): while active, bare
+<code>1</code>-<code>6</code> (no modifier) jumps straight to that
+panel's <code>10m/30m/6h/7d/7w/7mo</code> history tier via
+<code>scripts/bar-set-tier.sh</code> → <code>Bar.qml</code>'s
+<code>setXxxTier()</code> IpcHandler functions. <code>Escape</code> or
+the entry key again exits. <code>mainMod+p</code> used to be dwindle
+<code>window.pseudo()</code> — dropped entirely (told to) so CPU could
+move there. <code>mainMod+n</code> is still notify-invoke-last
+(pre-existing, not given up), so net stayed on <code>ALT+n</code> but
+still gained the tier submap.</li>
+<li><code>mainMod+c</code> — toggle the calendar panel (moved
+<code>CTRL+ALT+c</code> → <code>mainMod+CTRL+c</code> →
+<code>mainMod+c</code>). No submap — it gets real keyboard focus instead
+(same mechanism as the media panel below), so bare keys reach it
+directly: <code>Left/Right</code> = prev/next month,
+<code>Up/Down</code> = prev/next year, <code>Tab</code> enters a
+year-picker (a 10-cell grid at one of four spans — 10/20/50/100 years
+total, so 1/2/5/10 years per cell — <code>Left/Right</code> move the
+highlight, <code>Up/Down</code> zoom out/in a level re-centered on it,
+<code>Enter</code> drills into a coarse cell or confirms a single year,
+<code>Escape</code>/<code>Tab</code> cancel back unchanged),
+<code>Escape</code> closes the panel. See
+<code>CalendarExpanded.qml</code>.</li>
+<li><code>CTRL+ALT+c</code> — toggle the Claude Code usage panel
+(session/weekly % for every account on this machine, see <a
+href="claude-usage.html">claude-usage.md</a>). Free since the calendar
+bind above moved off it. No submap and no real keyboard focus grab
+either — the panel has nothing to navigate with arrow keys, so the bind
+(or a click on the pill) is the only way to close it again.</li>
+<li><code>mainMod+CTRL+m</code> — media widget + a
+<code>media_seek</code> submap: bare <code>0</code>-<code>9</code> jumps
+to that decile of the current track
+(<code>playerctl-seek-percent.sh</code>, against whichever player
+<code>~/.config/playerctl-current</code> names). Not plain
+<code>mainMod+m</code> — that's the mem graph panel above; a real
+simultaneous multi-key chord isn't expressible in Hyprland binds, so a
+submap (press the entry combo once, then tap keys freely) is the general
+pattern used for the tier/seek widgets above instead. Calendar doesn't
+need one since it gets real keyboard focus (see above).</li>
+<li><code>mainMod+F11/F12</code> — volume down/up. Routes to pixel6's
+MPRIS <code>Volume</code> property
+(<code>scripts/pixel6-mpris-bridge.py</code>) instead of the local sink
+when <code>playerctl-current</code> names it, and flashes a side OSD
+(<code>quickshell/osd/VolumeOsd.qml</code>) on the <em>active
+window's</em> monitor (not <code>hyprctl</code>'s own "focused" monitor
+— this compositor runs <code>follow_mouse=1</code>, so those can
+differ). The OSD currently only reliably renders on one monitor (DP-1
+here) — a <code>hyprctl layers</code> per-output layer-shell issue that
+survived a full <code>qs</code> restart, not a bug in the QML; see
+<code>quickshell-bar.md</code>.</li>
+<li><code>ALT+Tab</code> / <code>ALT+SHIFT+Tab</code> — winswitch grid
+alt-tab.</li>
+<li><code>mainMod+b</code> — <code>killall -SIGUSR1 waybar</code>
+(legacy — see <a
+href="desktop-apps.html#waybar-legacy">desktop-apps.md</a>).</li>
+</ul>
+<h2 id="scripts-hyprscripts">Scripts (<code>hypr/scripts/</code>)</h2>
+<p>Small, mostly single-purpose bash/python glue invoked by the
+binds/autostart above:</p>
+<table>
+<thead>
+<tr>
+<th>Script</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bar-toggle.sh</code></td>
+<td>Resolves the focused monitor's quickshell <code>Bar</code> instance
+and toggles one of its hover panels via its per-monitor
+<code>IpcHandler</code> target</td>
+</tr>
+<tr>
+<td><code>cliphist-expire.sh</code></td>
+<td>Age-based expiry for cliphist (no timestamps in cliphist's DB, so a
+monotonic-id watermark recorded each run stands in for "older than N
+hours"); driven by
+<code>cliphist-expire.timer</code>/<code>.service</code></td>
+</tr>
+<tr>
+<td><code>notifyd-actions-menu.sh</code></td>
+<td>rofi picker over one notification's actions (replaces
+<code>dunstctl context</code>)</td>
+</tr>
+<tr>
+<td><code>playerctl-seek.sh</code></td>
+<td>5s seek without a pause/play "kick" — confirmed unnecessary and
+harmful for the phone MPRIS bridge</td>
+</tr>
+<tr>
+<td><code>set-wallpaper.sh</code></td>
+<td>The <em>sole</em> sanctioned way to change the wallpaper — see <a
+href="theming.html">theming.md</a></td>
+</tr>
+<tr>
+<td><code>wallpaper-cycle.sh</code> / <code>wallpaper-rotate.sh</code> /
+<code>wallpaper-watch.sh</code></td>
+<td>See <a href="theming.html">theming.md</a></td>
+</tr>
+<tr>
+<td><code>waybar-mpris.sh</code></td>
+<td>waybar's mpris module poller — legacy, see <a
+href="desktop-apps.html#waybar-legacy">desktop-apps.md</a></td>
+</tr>
+<tr>
+<td><code>appmenu-atspi.py</code></td>
+<td>AT-SPI → rofi global menu (<code>mainMod+A</code>)</td>
+</tr>
+<tr>
+<td><code>clipboard-picker.sh</code>,
+<code>clipboard-picker.py</code></td>
+<td>Superseded pickers (wofi-based, then GTK3+layer-shell) —
+<strong>not</strong> what <code>mainMod+V</code> runs today; that binds
+directly to the Rust <code>clipboard-picker</code> binary. Kept in tree,
+not archived.</td>
+</tr>
+<tr>
+<td><code>gen-theme.py</code>, <code>pixel6-mpris-bridge.py</code></td>
+<td>Own docs: <a href="theming.html">theming.md</a>,
+<span class="memref" title="internal memory note, outside this doc set">android_companion_app_and_adb_setup</span> memory</td>
+</tr>
+</tbody>
+</table>
+<h2 id="systemd-units-tracked-in-this-repo">Systemd units tracked in
+this repo</h2>
+<p>A handful of systemd user units live in the git repo (everything else
+under <code>~/.config/systemd/user/</code> — backups, mail sync, the
+flight tracker, peer-agent, rclone/restic mounts — is local-only, not
+tracked):</p>
+<ul>
+<li><code>cliphist-expire.service</code> + <code>.timer</code> — runs
+<code>cliphist-expire.sh</code> every 15 minutes
+(<code>OnCalendar=*:0/15</code>), finer than the 3h expiry window needs
+on its own so no entry can live past ~4h under the watermark
+scheme.</li>
+<li><code>rssd.service</code> + <code>.timer</code> — one-shot
+<code>rssd.py</code> run every 30 minutes; see <a
+href="quickshell-bar.html">quickshell-bar.md</a>.</li>
+<li><code>claude-usage.service</code> — continuous
+(<code>Type=simple</code>, <code>Restart=always</code>), not a timer —
+<code>claude-usage-daemon.py</code> self-paces its own poll interval, so
+a timer re-invoking it on a fixed schedule wouldn't fit. See <a
+href="claude-usage.html">claude-usage.md</a>.</li>
+<li><code>pixel6-mpris-bridge.service</code> — see
+<span class="memref" title="internal memory note, outside this doc set">android_companion_app_and_adb_setup</span> memory; not itself part of this
+repo's Rust/QML projects, it's the desktop-facing half of the PeerAgent
+Companion Android app.</li>
+</ul>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#autostart-hyprlandlua-hyprlandstart-event">Autostart (hyprland.lua, hyprland.start event)</a></li><li class="lvl2"><a href="#pinned-app-launchers-appslua--keybindslua">Pinned app launchers (apps.lua + keybinds.lua)</a></li><li class="lvl2"><a href="#environment-environmentlua">Environment (environment.lua)</a></li><li class="lvl2"><a href="#monitors-monitorslua">Monitors (monitors.lua)</a></li><li class="lvl2"><a href="#input-inputlua">Input (input.lua)</a></li><li class="lvl2"><a href="#windowlayer-rules-windowruleslua">Window/layer rules (windowrules.lua)</a></li><li class="lvl2"><a href="#rdp-focus-guard-rdp-guardlua">RDP focus guard (rdp-guard.lua)</a></li><li class="lvl2"><a href="#keybinds-keybindslua">Keybinds (keybinds.lua)</a></li><li class="lvl2"><a href="#scripts-hyprscripts">Scripts (hypr/scripts/)</a></li><li class="lvl2"><a href="#systemd-units-tracked-in-this-repo">Systemd units tracked in this repo</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

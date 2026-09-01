@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>redact-video-ocr · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html" aria-current="page">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="redact-video-ocr">redact-video-ocr</h1>
+<p><code>~/bin/redact-video-ocr</code> — standalone Python CLI that
+blurs sensitive on-screen text out of a video automatically, driven by
+OCR rather than by manually reviewing footage frame by frame. Built
+after a screen-recording demo turned out to have live, unintended data
+visible on screen that needed blurring before the recording could be
+published (e.g. on this docs site). Reusable for any future recording
+with the same problem.</p>
+<h2 id="why-ocr-instead-of-eyeballing-frames">Why OCR instead of
+eyeballing frames</h2>
+<p>The obvious way to redact a handful of moving, reflowing bits of text
+in a video is to extract frames, look at each one, and hand-tune blur
+coordinates until they line up. That does not scale: it turns into a
+frame-by-frame trial-and-error loop, and every frame you <em>look
+at</em> to verify alignment is expensive when the thing doing the
+looking is an LLM's vision channel rather than a script.</p>
+<p><code>redact-video-ocr</code> replaces the "look at the frame" step
+with Tesseract OCR. Nothing about the pipeline requires a human or a
+model to inspect individual frames — it is plain, repeatable, and just
+as usable for a 30-second clip as for a 30-minute one.</p>
+<h2 id="how-it-works">How it works</h2>
+<ol type="1">
+<li>OpenCV (<code>cv2.VideoCapture</code>) reads frames one at a time,
+in memory — no frames are dumped to disk as intermediate PNGs.</li>
+<li>Each frame is upscaled (<code>--scale</code>, default 3x) before
+OCR, since small UI/terminal-style text at native 1080p is often below
+the size Tesseract reads reliably.</li>
+<li><code>pytesseract.image_to_data</code> runs with <strong>two
+page-segmentation modes</strong> merged (<code>--psm</code>, default
+<code>3,11</code>): mode 3 (fully automatic layout) is better at dense,
+tabular text; mode 11 (sparse text) is better at short, scattered UI
+labels. Neither mode alone catches everything a screen recording tends
+to contain, so both run and their hits are merged.</li>
+<li>OCR word boxes on the same line are grouped and matched against a
+stems list (see below) with three rules, since real on-screen text is
+noisy in three different directions:
+<ul>
+<li>the stem is a clean prefix of the OCR text,</li>
+<li>the stem is embedded inside a longer garbled OCR token (Tesseract
+often fuses adjacent glyphs/decorations into one run-on word), or</li>
+<li>the OCR text is itself a short, <em>truncated</em> prefix of the
+stem — the direction that matters when on-screen text gets cut off with
+an ellipsis (e.g. a name truncated to its first few letters because a
+panel is narrow). Matching only "stem is a prefix of the text" misses
+this entirely; it has to also check "text is a prefix of the stem".</li>
+<li>adjacent OCR words on a line are also tried as 2-4 word windows, so
+a stem phrase that Tesseract splits into multiple words still
+matches.</li>
+</ul></li>
+<li>Matched regions get a Gaussian blur applied directly to the frame
+(kernel size scales with the box), then frames are piped straight into
+an <code>ffmpeg</code> subprocess for the final encode. No
+blurred/unblurred frame ever touches disk as an intermediate file
+either.</li>
+</ol>
+<h3 id="the-stems-file">The stems file</h3>
+<p><code>--words</code> points at a plain text file: one word or phrase
+per line, case-insensitive, <code>#</code> starts a comment, and a
+trailing <code>!</code> marks a stem whole-word-only (useful for a
+short, common-ish stem that would otherwise also match as a prefix of an
+unrelated word). This file is specific to whatever is being redacted in
+a given video — the redaction tool itself has no built-in list of what
+"sensitive" means.</p>
+<h3 id="--debug-dir"><code>--debug-dir</code></h3>
+<p>Writes every frame with red boxes drawn around what would be blurred
+(without actually blurring), so the detection can be reviewed before
+committing to a run. Cheap insurance against both under- and
+over-redaction, and doesn't require re-running OCR to check
+coverage.</p>
+<h2 id="requirements">Requirements</h2>
+<p>A dedicated venv, since the system Python here is externally
+managed:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> venv ~/.cache/video-redact-venv</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">~/.cache/video-redact-venv/bin/pip</span> install opencv-python-headless pytesseract</span></code></pre></div>
+<p>Plus the <code>tesseract</code> binary and <code>ffmpeg</code> on
+<code>PATH</code>. The script's shebang points directly at the venv's
+interpreter, so once the venv exists it runs as a plain executable:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">redact-video-ocr</span> input.mp4 output.mp4 <span class="at">--words</span> stems.txt</span></code></pre></div>
+<h2 id="known-limitation">Known limitation</h2>
+<p>Text the source application itself renders as visually de-emphasized
+— dim/low-contrast styling, especially combined with a strikethrough —
+can still evade OCR even after upscaling, contrast normalization, and
+gamma correction. None of those recovered it in testing. There's no fix
+wired into the tool for this yet, so <strong>always do a final small
+spot-check</strong> (a handful of frames spread across the whole
+timeline, not a frame-by-frame loop) on the actual output before
+treating a redaction as complete, specifically looking for any text the
+source app styles as muted/faded/ struck-through.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#why-ocr-instead-of-eyeballing-frames">Why OCR instead of eyeballing frames</a></li><li class="lvl2"><a href="#how-it-works">How it works</a></li><li class="lvl3"><a href="#the-stems-file">The stems file</a></li><li class="lvl3"><a href="#--debug-dir">--debug-dir</a></li><li class="lvl2"><a href="#requirements">Requirements</a></li><li class="lvl2"><a href="#known-limitation">Known limitation</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

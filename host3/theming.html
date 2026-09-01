@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Theming pipeline · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-01 21:18 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-01 21:18 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html" aria-current="page">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="theming-pipeline">Theming pipeline</h1>
+<p>Wallpaper changes drive a Material You (HCT/tonal-palette) recolor
+across every themeable app on the system, via
+<code>~/.config/hypr/scripts/gen-theme.py</code>.</p>
+<h2 id="trigger-chain">Trigger chain</h2>
+<pre><code>set-wallpaper.sh &lt;image&gt;        &lt;- sole sanctioned way to change the wallpaper
+    │  copies image to the fixed path Background.qml displays
+    ▼
+~/.local/state/quickshell/wallpaper.png changes on disk
+    │
+wallpaper-watch.sh (polls mtime; autostarted in hyprland.lua)
+    │  inotify-tools isn&#39;t installed here and installing it needs an
+    │  interactive sudo password this autostart script can&#39;t provide,
+    │  hence polling instead of inotifywait
+    ▼
+gen-theme.py --image &lt;path&gt;     &lt;- extracts the palette, writes every target below</code></pre>
+<p><code>wallpaper-rotate.sh</code> (autostarted; moved 2026-08-29 from
+a 15-min "for now" testing cadence to a considered 6h one) picks a
+random image from <code>~/wallpapers</code> every 6 hours and hands it
+to <code>set-wallpaper.sh</code>, which is what actually triggers the
+chain above — nothing extra is needed for colors to follow along.
+<code>wallpaper-cycle.sh</code> steps forward/back through
+<code>~/wallpapers</code> (sorted, wrapping) based on wherever
+<code>set-wallpaper.sh</code> last recorded as the source.
+<code>~/wallpapers</code>, not <code>~/pictures</code>, is the rotation
+pool.</p>
+<p>It's a plain <code>hl.exec_cmd</code>-launched
+<code>while true; sleep</code> loop, not a systemd unit — so a crash of
+the script itself won't be restarted until the next Hyprland session
+start (login, or a full compositor restart; <code>hyprctl reload</code>
+does <em>not</em> re-fire <code>hyprland.start</code>). Deliberately
+left this way 2026-08-29: <code>set-wallpaper.sh</code> calls
+<code>qs ipc call background reload</code>, which only works talking to
+the live quickshell instance in the current graphical session, and none
+of this config's other autostart daemons (<code>sysmond</code>,
+<code>notifyd</code>, <code>wallpaper-watch.sh</code>, the
+<code>wl-paste --watch</code> line) are systemd units either — there's
+no environment-import plumbing
+(<code>systemctl --user import-environment ...</code>) set up anywhere
+in <code>hyprland.lua</code> for a <code>--user</code> unit to inherit
+<code>WAYLAND_DISPLAY</code>/the quickshell IPC socket. Converting just
+this one script would be the odd one out for a low-value gain, since a
+stalled rotator only freezes rotation — it doesn't affect
+<code>wallpaper-watch.sh</code>'s re-theming. <strong>Revisit if this
+"minidaemon" is ever actually observed crashing</strong> — at that point
+the right fix is probably systemd-ifying all of the session daemons
+together (a <code>hyprland-session.target</code> + explicit environment
+import in the <code>hyprland.start</code> hook), not just this one in
+isolation.</p>
+<p><code>gen-theme.py</code> can also run seedless (default), deriving
+the scheme from <code>appearance.lua</code>'s existing cyan/green accent
+gradient rather than an image — used for the quickshell bar's fallback
+theme values.</p>
+<h2 id="what-gen-themepy-writes">What <code>gen-theme.py</code>
+writes</h2>
+<p>Every write below is atomic (temp file + rename).</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Consumed by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>~/.local/state/quickshell/scheme.json</code></td>
+<td>quickshell bar (<code>Theme.qml</code>, live <code>FileView</code>).
+Includes <code>seriesPalette</code> (8 hues, per-core/iface lines) and
+<code>intensityRamp</code> (5 calm→hot stops) — see <a
+href="quickshell-bar.html">quickshell-bar.md</a>. Also read directly by
+the GTK Rust tools: <code>winswitch</code> +
+<code>clipboard-picker</code> pull <code>primary</code> for their 1px
+accent window frame (<code>load_accent_hex</code>) and DSL
+command-validity colouring — GTK's own <code>@accent_color</code> isn't
+visible to a per-app <code>CssProvider</code>, so they interpolate the
+hex themselves</td>
+</tr>
+<tr>
+<td><code>~/.config/gtk-{3,4}.0/colors.css</code></td>
+<td>libadwaita <code>@define-color</code> block; <code>gtk.css</code> is
+a static <code>@import "colors.css"</code> shim. GTK3 live-reloads via
+<code>colorreload-gtk-module</code> (GFileMonitor on mtime — no restart,
+no flash). GTK4/libadwaita has no live-reload equivalent.</td>
+</tr>
+<tr>
+<td><code>~/.local/share/color-schemes/MaterialYou.colors</code> +
+<code>kdeglobals</code>
+<code>[Colors:*]</code>/<code>[WM]</code>/<code>[ColorEffects:*]</code></td>
+<td>Breeze widget style reads the scheme. <code>gen-theme.py</code>
+writes the <strong>complete</strong> key set straight into
+<code>kdeglobals</code> (see <a
+href="#qt-widget-style-breeze-not-kvantum">Qt widget style</a>) and
+fires the <code>KGlobalSettings</code> <code>notifyChange</code> D-Bus
+signal — <code>plasma-apply-colorscheme</code> short-circuits once
+<code>MaterialYou</code> is current and won't re-copy changed
+colours</td>
+</tr>
+<tr>
+<td>Hyprland border colors</td>
+<td>via <code>hyprctl eval</code> (Lua binding — <code>keyword</code> is
+refused under the non-legacy parser). <strong>Not</strong> written to
+<code>appearance.lua</code></td>
+</tr>
+<tr>
+<td><code>~/.config/alacritty/colors.toml</code></td>
+<td><code>[colors.primary/normal/bright]</code>, written whole;
+<code>alacritty.toml</code> imports it
+(<code>[general] import = [...]</code>), <code>live_config_reload</code>
+re-reads imports too</td>
+</tr>
+<tr>
+<td><code>~/.config/rofi/materialyou.rasi</code></td>
+<td>auto-<code>@import</code>ed from <code>config.rasi</code></td>
+</tr>
+<tr>
+<td><code>~/.config/tmux/theme.conf</code></td>
+<td>sourced from <code>.tmux.conf</code>; <code>tmux source-file</code>
+is live</td>
+</tr>
+<tr>
+<td><code>~/.config/nsxiv/xresources</code></td>
+<td><code>Nsxiv.*</code> X resources, <code>xrdb -merge</code>d into
+XWayland (nsxiv is X11-only); also merged once at Hyprland login since
+wallpaper-watch may not have fired yet that session</td>
+</tr>
+</tbody>
+</table>
+<h2 id="whats-not-tracked-in-git-2026-08-29">What's <em>not</em> tracked
+in git (2026-08-29)</h2>
+<p>Every pure recolor-output file above is listed in
+<code>.git/info/exclude</code> (not <code>.gitignore</code> — this is a
+public dotfiles repo, see <span class="memref" title="internal memory note, outside this doc set">home_git_repo_public_remote_secrets</span>):
+<code>gtk-{3,4}.0/colors.css</code>, <code>alacritty/colors.toml</code>,
+<code>rofi/materialyou.rasi</code>, <code>tmux/theme.conf</code>,
+<code>nsxiv/xresources</code>,
+<code>color-schemes/MaterialYou.colors</code>, <code>kdeglobals</code>.
+These churned ~8 tracked files on every 15-minute wallpaper rotation
+before being excluded. Still tracked: the importers/shims that reference
+them (<code>gtk.css</code>'s <code>@import</code>,
+<code>config.rasi</code>'s <code>@import</code>,
+<code>.tmux.conf</code>'s <code>source-file -q</code>,
+<code>alacritty.toml</code>'s <code>[general] import</code>) and
+<code>gen-theme.py</code> itself. On a fresh checkout these regenerate
+within ~2s of <code>wallpaper.png</code> existing.</p>
+<h2 id="qt-widget-style-breeze-not-kvantum">Qt widget style: Breeze, not
+Kvantum</h2>
+<p>Qt/KDE apps (Dolphin, Gwenview, Okular, Ark, …) render with the
+<strong>Breeze</strong> widget style so they follow the generated
+<code>MaterialYou</code> scheme. This was <strong>Kvantum</strong>
+(<code>darknord-kvantum</code>) until 2026-08-29 — dropped because
+Kvantum themes hardcode their whole palette
+(<code>[GeneralColors]</code> in the <code>.kvconfig</code> + colours
+baked into the theme SVG) and override the KDE colour scheme wholesale,
+so <code>plasma-apply-colorscheme</code> had no visible effect on any Qt
+app. Kvantum has no stylesheet-overlay mechanism, so it can't be
+recoloured live either. <code>gen-theme.py</code> now pins
+<code>kdeglobals</code> <code>widgetStyle=Breeze</code> each run.</p>
+<p>The screenshot on the left is the <strong>intended post-migration
+look</strong> for Dolphin: flat list (no zebra striping —
+<code>[Colors:View] BackgroundAlternate</code> ==
+<code>BackgroundNormal</code>, see below), a slightly lighter
+breadcrumb/toolbar band for chrome-vs-content separation, warm
+hover/selection tint, and the whole palette tracking the wallpaper.</p>
+<table>
+<thead>
+<tr>
+<th>Breeze + MaterialYou (current, intended)</th>
+<th>Kvantum / darknord (former)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><img src="images/dolphin-breeze-materialyou.png"
+alt="Breeze + MaterialYou" /></td>
+<td><img src="images/dolphin-kvantum-darknord.png"
+alt="Kvantum darknord" /></td>
+</tr>
+<tr>
+<td>flat list, subtle toolbar elevation, follows the wallpaper hue</td>
+<td>flat near-black Nord <code>#14161B</code>, fixed cool palette, blue
+folder icons, filled ▶ tree expanders (from the Kvantum SVG — Breeze
+draws a thin chevron and has no knob for it)</td>
+</tr>
+</tbody>
+</table>
+<p><code>color_sections()</code> in <code>gen-theme.py</code> sets
+<code>view_alt = view_bg</code> so list views don't stripe (the Breeze
+default read as too strong on warm wallpapers; darknord had it off
+entirely). Chrome elevation (View → Window → Button) is still
+interpolated <code>background</code> →
+<code>surfaceContainer</code>.</p>
+<p><code>gen-theme.py</code> writes the <strong>complete</strong> Breeze
+key set into <code>kdeglobals</code> <code>[Colors:*]</code> (every
+section + all <code>Foreground*</code>/<code>Decoration*</code> keys,
+plus <code>[WM]</code> and <code>[ColorEffects:*]</code>) — a partial
+scheme fills its gaps from compiled-in Breeze defaults and renders as an
+incoherent mix. It writes <code>kdeglobals</code> directly (not via
+<code>plasma-apply-colorscheme</code>, which short-circuits when the
+scheme name is unchanged) and fires the <code>KGlobalSettings</code>
+<code>notifyChange</code> signal to refresh running apps.</p>
+<p>The <code>darknord-kvantum</code> theme files are preserved in git
+history at commit <code>02abf2c</code>
+(<code>git show 02abf2c -- .config/Kvantum/</code>). To restore:
+reinstall <code>kvantum</code> + <code>kvantum-qt5</code>, check the
+files out,
+<code>kwriteconfig6 --file kdeglobals --group KDE --key widgetStyle kvantum-dark</code>,
+and drop the <code>widgetStyle</code> pin in <code>gen-theme.py</code>'s
+<code>patch_kdeglobals_inline()</code>.</p>
+<h2 id="live-reload-support-per-toolkit">Live-reload support per
+toolkit</h2>
+<table>
+<thead>
+<tr>
+<th>Toolkit</th>
+<th>Live?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GTK3</td>
+<td>Yes</td>
+<td><code>colorreload-gtk-module</code></td>
+</tr>
+<tr>
+<td>Qt/KDE (Dolphin)</td>
+<td>Yes</td>
+<td>Breeze widget style + <code>KGlobalSettings notifyChange</code>
+after a direct <code>kdeglobals</code> write — see <a
+href="#qt-widget-style-breeze-not-kvantum">Qt widget style</a></td>
+</tr>
+<tr>
+<td>GTK4/libadwaita</td>
+<td>No</td>
+<td>needs restart or a gsettings theme-name bounce</td>
+</tr>
+<tr>
+<td>GIMP 3</td>
+<td>Only if <code>gimprc</code> has <code>(theme "System")</code></td>
+<td>set 2026-08-28; <code>gimprc</code> is <strong>not</strong> in this
+repo</td>
+</tr>
+<tr>
+<td>Inkscape</td>
+<td>Yes</td>
+<td>follows system GTK theme by default</td>
+</tr>
+<tr>
+<td>Thunderbird</td>
+<td>Partial</td>
+<td>Gecko; only GTK-derived chrome bits follow, full theming needs
+<code>userChrome.css</code></td>
+</tr>
+<tr>
+<td>Electron/Chromium/Signal</td>
+<td>No</td>
+<td>never</td>
+</tr>
+</tbody>
+</table>
+<p>See <span class="memref" title="internal memory note, outside this doc set">gtk_theme_white_root_cause</span> memory for a real incident this
+pipeline caused (dconf pointing at an uninstalled
+<code>adw-gtk3-dark</code> → white GTK apps) and its fix.</p>
+<h2
+id="rejected-extra-vibrancy-on-the-focused-window-2026-08-29">Rejected:
+extra vibrancy on the focused window (2026-08-29)</h2>
+<p>Idea: make the currently-focused window's colours punchier / more
+contrasting than the wallpaper-derived base, on top of the Hyprland
+border accent. Abandoned — no clean way to do it:</p>
+<ul>
+<li><strong>App colours are global config.</strong> GTK's
+<code>colors.css</code> and KDE's <code>kdeglobals</code> are single
+files reloaded into <em>every</em> app at once; no toolkit exposes a
+per-window runtime colour override. The one exception is
+<strong>alacritty</strong> (<code>alacritty msg config -w …</code>) — a
+focus-tracking daemon prototype worked but was terminal-only and spawned
+a process per focus event, so it was dropped.</li>
+<li><strong>A compositor-side saturation shader on the active
+window</strong> needs a Hyprland plugin that function-hooks the renderer
+(<code>hypr-darkwindow</code> is a working template). There is
+<strong>no stable plugin API</strong> — plugins compile against an exact
+Hyprland commit and the renderer internals change a few times a year, so
+it's periodic maintenance. Hyprland's only stable shader hook,
+<code>decoration:screen_shader</code>, is whole-screen with no
+per-window info.</li>
+<li><strong><code>decoration:dim_inactive</code></strong> is the only
+stable, config-level "focused window stands out" lever — and it works by
+dimming the <em>others</em>, not by boosting the focused one. Not
+currently enabled.</li>
+</ul>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#trigger-chain">Trigger chain</a></li><li class="lvl2"><a href="#what-gen-themepy-writes">What gen-theme.py writes</a></li><li class="lvl2"><a href="#whats-not-tracked-in-git-2026-08-29">What's not tracked in git (2026-08-29)</a></li><li class="lvl2"><a href="#qt-widget-style-breeze-not-kvantum">Qt widget style: Breeze, not Kvantum</a></li><li class="lvl2"><a href="#live-reload-support-per-toolkit">Live-reload support per toolkit</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>
