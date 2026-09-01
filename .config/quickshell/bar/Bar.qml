@@ -263,14 +263,24 @@ Item {
     // being open, only from actually running out of screen).
     readonly property real stdPanelWidth: Math.min(560, root.panelAreaWidth)
     readonly property real calPanelWidth: Math.min(root.screen.width / 2, root.panelAreaWidth)
-    // The process table's 12 columns (status/title/tokens/last/tmux
-    // session-window-pane/hyprland workspace-monitor-window/pid/path)
-    // don't fit the standard 560 without squeezing title down to near-
-    // nothing -- wider by default (760 -> 920 to give title more room,
-    // request 2026-09-01; then 920 -> 1196, a flat 30% bump, same day,
+    // The process table's columns (status/title/tokens/last/tmux session-
+    // window-pane/hyprland #-monitor/pid/path) don't fit the standard 560
+    // without squeezing title down to near-nothing -- wider by default
+    // (760 -> 920 request 2026-09-01, then 920 -> 1196 the same day
     // alongside adding the hyprland column group), though still well
-    // short of the calendar's half-monitor.
-    readonly property real claudeUsagePanelWidth: Math.min(1196, root.panelAreaWidth)
+    // short of the calendar's half-monitor. 1196 is a ceiling now, not a
+    // flat width -- shrinks to whatever the table actually needs
+    // (claudeUsageExpanded.naturalContentWidth, sum of every column's own
+    // width) down to claudeUsageMinWidth, so a near-empty panel (few/no
+    // live processes) doesn't sit mostly blank at max width, and a
+    // genuinely wide table (many long paths) can still claim more room up
+    // to the ceiling instead of always being clipped at a flat constant
+    // (request 2026-09-02: "current width... was meant to be only a
+    // maximum, add a reasonable minimum").
+    readonly property real claudeUsageMinWidth: 320
+    readonly property real claudeUsagePanelWidth: Math.min(
+        Math.max(claudeUsageExpanded.naturalContentWidth, root.claudeUsageMinWidth),
+        1196, root.panelAreaWidth)
 
     function preferredWidthFor(name: string): real {
         if (name === "calendar")
