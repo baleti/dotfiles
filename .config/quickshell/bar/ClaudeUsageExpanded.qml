@@ -974,6 +974,7 @@ Rectangle {
 
                         MouseArea {
                             anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
                             onClicked: { root.acSel = acRow.index; root.acAccept(); }
                         }
                     }
@@ -1637,7 +1638,7 @@ Rectangle {
                         Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: String(modelData.pid)
-                            color: Theme.text
+                            color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colPidW
