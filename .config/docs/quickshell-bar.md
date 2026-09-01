@@ -58,7 +58,7 @@ is the only sanctioned way to change the source file; see
 `GraphPill.qml` — the compact "icon + value" pill that expands downward
 into a `Graph` (`components/Graph.qml`) on hover, backed by `sysmond`'s
 rolling history via `services/SysmonSvc.qml`. Visually matches the
-standalone `ALT+mainMod+n/p/t/m` `sysmon-graph` popups
+standalone `ALT+mainMod+n/t/m` `sysmon-graph` popups
 ([rust-tools.md](rust-tools.md)) since both read the same daemon.
 `bar-toggle.sh` (`ALT+n`, `mainMod+t/d/m/p`, `mainMod+c`) toggles these
 panels open/closed per-monitor by talking to each `Bar` instance's own

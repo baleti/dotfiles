@@ -209,14 +209,15 @@ hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("~/.config/hypr/clipboard-pick
 hl.bind("CTRL + ALT + z", hl.dsp.exec_cmd("~/.config/hypr/notifyd/target/release/notifyctl close-all"), { description = "Clear all on-screen notification cards" })
 
 -- system monitor popups (~/.config/hypr/sysmon): small graph overlay for the
--- last 10 minutes of network/cpu/temperature/memory, replacing the KDE
+-- last 10 minutes of network/temperature/memory, replacing the KDE
 -- alt+n network widget. sysmond (autostarted in hyprland.lua) samples
 -- continuously so the graph has history the instant the popup opens; a
 -- second press of the same keybind closes it (same pidfile+SIGTERM toggle
 -- as clipboard-picker). "m" for memory added 2026-08-27 alongside the
--- quickshell bar's own hover graphs, which share this same daemon.
+-- quickshell bar's own hover graphs, which share this same daemon. The
+-- cpu popup (ALT+mod+p) was removed 2026-09-01 -- the bar's mod+p hover
+-- panel covers it.
 hl.bind("ALT + " .. mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph net"), { description = "Network graph popup (last 10 min)" })
-hl.bind("ALT + " .. mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph cpu"), { description = "CPU graph popup (last 10 min)" })
 hl.bind("ALT + " .. mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph temp"), { description = "Temperature graph popup (last 10 min)" })
 hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph mem"), { description = "Memory graph popup (last 10 min)" })
 
