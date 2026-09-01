@@ -496,6 +496,20 @@ re-invoked per hover) and shows the result in a plain `Image`
 number, which sidesteps Qt's pixmap cache without needing a manual
 cache-bust trick).
 
+**Needs its own `hl.permission()` entry** (`environment.lua`, `mode =
+"allow"`, same as winswitch's own binary right above it) — without one,
+Hyprland doesn't silently deny it, it pops an interactive "Permission
+request" dialog instead (screenshotted 2026-09-01: "Unknown application
+... is trying to capture your screen"). This is actually the on-screen
+prompt this whole investigation went looking for earlier — it's real, it
+just doesn't help here: `thumb-capture` spawns a **fresh process (a fresh
+Wayland client) on every hover**, so without a static allow entry the
+prompt fires on essentially every hover with nobody there to click
+"Allow" before the 5s timeout gives up, which is exactly what "sometimes
+it breaks... no thumbnail shows up" was. Like every other entry in this
+section, the change needs a Hyprland restart (not `hyprctl reload`) to
+actually apply.
+
 **Click-to-focus:** clicking a row's hyprland cell (not the thumbnail)
 re-points the tmux client at the exact session/window/pane that row is
 for (`tmux select-window -t @<id>` / `select-pane -t %<id>` — both
