@@ -73,3 +73,14 @@ hl.permission({ binary = "/usr/(bin|local/bin)/wtype", type = "keyboard", mode =
 -- winswitch (~/.config/hypr/winswitch): grid alt-tab switcher, captures live
 -- window thumbnails via hyprland-toplevel-export-v1.
 hl.permission({ binary = "/home/user1/.config/hypr/winswitch/target/release/winswitch", type = "screencopy", mode = "allow" })
+
+-- claude-usage's thumb-capture (~/.config/claude-usage/thumb-capture): the
+-- claude-usage bar panel's hover-thumbnail helper, same protocol as
+-- winswitch above. Without this it's not silently denied -- Hyprland pops
+-- an interactive "Permission request" prompt instead, and since a fresh
+-- process (a fresh Wayland client) is spawned per hover, that prompt fires
+-- on essentially every hover with nobody there to click it in time before
+-- thumb-capture's own 5s timeout gives up (reported 2026-09-01: "sometimes
+-- it breaks... no thumbnail shows up"). See claude-usage.md's hover-
+-- thumbnail section.
+hl.permission({ binary = "/home/user1/.config/claude-usage/thumb-capture/target/release/thumb-capture", type = "screencopy", mode = "allow" })
