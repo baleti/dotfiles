@@ -453,14 +453,30 @@ state on this setup; it just isn't what the shipped feature ended up using
 ## The hyprland column group, hover-thumbnail, and click-to-focus (shipped)
 
 Each account's process table has a `tmux` column group (session/window/
-pane, see below) and now also a `hyprland` group: **workspace / monitor /
-window**, the real Hyprland window currently showing that row's tmux pane,
-if any. "window" is that window's own Hyprland **address** (e.g.
-`0x559af4964050`), not a tmux id — deliberately raw/unpretty, because it's
-also the only thing that actually disambiguates one specific window among
-many otherwise-identical ones (see the investigation above). A row with no
+pane, see below) and now also a `hyprland` group: **# / monitor** ("#" is
+workspace, labeled that short because values are almost always a single
+digit — hover it for a "workspace" hint), the real Hyprland window
+currently showing that row's tmux pane, if any. That window's own
+Hyprland **address** (e.g. `0x559af4964050`) is still resolved and kept
+on the row data — it's what disambiguates one specific window among many
+otherwise-identical ones (see the investigation above), and what the
+hover-thumbnail/click-to-focus below actually key off — but isn't shown
+as its own column: a long opaque hex string had no value as a glanceable
+readout, unlike workspace/monitor (removed 2026-09-02). A row with no
 attached tmux client (a detached session) shows blank hyprland columns —
-there's nothing on screen to preview or focus.
+there's nothing on screen to preview or focus. The "#" value is
+highlighted in the wallpaper theme's primary color (`Theme.cyan`, same
+token the bar's own workspace-switcher pill uses) when it matches the
+workspace actually active on this panel's own monitor right now.
+
+**Only sub-columns sort, never the group label** — clicking "tmux" or
+"hyprland" itself does nothing (no pointer cursor either); clicking
+"session"/"window"/"pane" or "#"/"monitor" sorts the whole table by that
+one field independently, same click-to-sort/click-again-to-reverse
+behavior as every other column (2026-09-02 — the group labels used to
+sort by a combined session→window→pane / workspace→monitor→address key,
+which nothing asked for and looked like the sub-columns should do their
+own thing anyway).
 
 **Resolution (`claude-usage-daemon.py::hyprland_windows_by_tmux_session`,
 every 30s alongside the rest of the session listing):** same tty/pid
@@ -473,7 +489,7 @@ kernel's packed major/minor `dev_t` for the same device node, so equality
 is a solid identity check. Feeds `hypr_address`/`hypr_class`/`hypr_title`/
 `hypr_workspace`/`hypr_monitor` onto each session row in `state.json`.
 
-**Hover-thumbnail:** live only over the hyprland group's own 3
+**Hover-thumbnail:** live only over the hyprland group's own 2
 sub-columns (not the whole row — asked for explicitly), and shows below
 the cursor as a purely visual cue, not a click target itself. Capture goes
 through a **standalone helper binary**,
@@ -533,9 +549,25 @@ every account's process table at once by title/pid/status/tokens/path/
 account or a `tmux.*`/`hypr.*` field, and `/s`/`/rv` override each
 account's own column-click sort while a query is active. `/ft`/`/at`/`/rt`
 are inert here (same call the RSS reader made) — this is a fixed set of
-columns per row, not a variable column view. No Tab-autocomplete popup
-yet (every other DSL consumer has one) — first cut only, worth adding if
-this gets real use.
+columns per row, not a variable column view.
+
+**Tab-autocomplete** (2026-09-02, was a first-cut gap noted here
+previously — every other DSL consumer already has this): ported straight
+from `rssreader/RssReader.qml`'s identical block (itself mirroring
+`launcher/AppLauncher.qml`) — verb suggestions, field-name/field-value/
+sort-direction candidates, the marginalia-style popup, and inline
+`/command` validity coloring (cyan underline = recognized verb, red =
+not). Same hidden-until-Tab rule as the others: never pops open just from
+typing, only on Tab, and only shows the overlapping popup once there's
+more than one candidate (a single match completes inline immediately,
+shell-style).
+
+**The box clears on every close, not just every open** (also 2026-09-02):
+`root.searchText = ""` alone didn't actually clear the visible box — that
+property only flows *out* of the `TextInput` (`onTextChanged`), never
+back in, so the fix is `searchInput.text = ""` directly (`onExpandedChanged`
+in `ClaudeUsageExpanded.qml`), which also drives `searchText` via the
+existing one-way binding. Reported: "input remains across invocations".
 
 ## Panel width and column tuning (2026-09-01)
 
@@ -543,3 +575,33 @@ this gets real use.
 fit the new hyprland group without crowding what was already there;
 `title` widened 280 → 400 and `last` narrowed 56 → 44 in the same pass
 (`colDefaults`, `ClaudeUsageExpanded.qml`).
+
+## Active-workspace highlight and token color-coding (2026-09-02)
+
+The hyprland group's "#" (workspace) value is drawn in `Theme.cyan` --
+the wallpaper-theme's own Material You primary color, the same token
+`Workspaces.qml`'s active-workspace pill in the bar itself uses -- when
+it matches whichever workspace is actually active on *this panel's own
+monitor* right now, so a session running on the workspace you're
+currently looking at stands out immediately. Needed a live "which
+workspace is active on which monitor" source: `Quickshell.Hyprland`'s
+`Hyprland.workspaces.values` (same one `Workspaces.qml` already reads),
+filtered by `.active && .monitor.name === screen.name` -- `screen` itself
+is new on `ClaudeUsageExpanded`, wired from `Bar.qml`'s own
+`root.screen` (each monitor runs its own `Bar.qml` instance, so "this
+panel's own monitor" is just that instance's `screen`).
+
+The `tokens` column is now colored by the same ramp session%/weekly%
+already use (`Theme.rampColor`, calm/cool low -> vivid/red high, itself
+wallpaper-recolored) instead of a flat dim color -- a context that's
+getting full reads at a glance the same way a rate limit nearing 100%
+does. Normalized against an assumed 1,000,000-token ceiling
+(`root.maxContextTokens`): checked for a *real* dynamically-discoverable
+"context window before auto-compact" figure first and found none
+reachable from here -- not in the `/usage` endpoint's response (session/
+weekly rate-limit percentages only), not in any `sessions/<pid>.json`,
+not in a transcript's own per-turn `usage` objects (input/cache/output
+token counts only, no window-size or compact-threshold value alongside
+them) -- so this is a static assumption per explicit request, not a
+measured value, and may need revisiting if Anthropic changes the real
+threshold.
