@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 import "../theme"
 import "../services"
 import "../launcher" // QueryDsl -- shared picker DSL, see query-dsl.md
@@ -21,6 +22,17 @@ Rectangle {
     id: root
 
     property bool expanded: false
+    // Set from Bar.qml (root.screen, this bar instance's own monitor) --
+    // used only to find that monitor's own currently-active workspace
+    // (root.activeWorkspaceName), to highlight a matching row in the
+    // hyprland column group's "#" column.
+    property var screen: null
+    readonly property string activeWorkspaceName: {
+        const ws = root.screen
+            ? Hyprland.workspaces.values.find(w => w.active && w.monitor && w.monitor.name === root.screen.name)
+            : null;
+        return ws ? ws.name : "";
+    }
     property real panelWidth: 320
     // Set from Bar.qml (root.maxPanelHeight, screen-height-derived, same
     // as CalendarExpanded); this fallback only matters for a standalone
@@ -142,6 +154,24 @@ Rectangle {
 
     function fmtAgoMs(ms) {
         return ms ? root.fmtAgo(new Date(ms).toISOString()) : qsTr("never");
+    }
+
+    // No dynamically-discoverable "context window before auto-compact"
+    // figure exists anywhere reachable here -- checked the /usage
+    // endpoint's response (session/weekly rate-limit percentages only, no
+    // per-turn context size), each sessions/<pid>.json (no such field),
+    // and real transcripts' own "usage" objects (input/cache/output token
+    // counts only, no window-size or compact-threshold value alongside
+    // them). Static fallback per request 2026-09-02: assume 1,000,000.
+    readonly property real maxContextTokens: 1000000
+    // Same theme-derived ramp session/weekly % already use (Theme.cyan-
+    // to-red, wallpaper-recolored) -- calm/cool low, vivid/red near the
+    // assumed compaction point, so a context that's getting full reads at
+    // a glance the same way a rate limit nearing 100% does.
+    function tokenColor(n) {
+        if (typeof n !== "number")
+            return Theme.textDim;
+        return Theme.rampColor(Theme.norm(n, 0, root.maxContextTokens));
     }
 
     readonly property var statusColors: ({
@@ -268,6 +298,164 @@ Rectangle {
         searchInput.selectAll();
     }
 
+    // ---- search box autocomplete (Tab-triggered, marginalia-style) ----
+    // Ported from rssreader/RssReader.qml's identical block (itself
+    // mirroring launcher/AppLauncher.qml) -- ~/.config/docs/query-dsl.md
+    // says every DSL consumer gets this, and this one didn't yet (gap
+    // reported 2026-09-02). /ft /at /rt excluded from _acVerbs same as
+    // the RSS reader: this is a fixed set of columns per row, not a
+    // variable column view, so those verbs are inert here too.
+    readonly property var searchTypeDescs: ({
+        "title": "process/tmux pane title",
+        "pid": "process id",
+        "status": "busy / wait / idle",
+        "tokens": "context tokens used",
+        "path": "working directory",
+        "account": "claude / claude2 / claude3",
+        "tmux.session": "tmux session id",
+        "tmux.window": "tmux window id",
+        "tmux.pane": "tmux pane id",
+        "hypr.workspace": "hyprland workspace",
+        "hypr.monitor": "hyprland monitor",
+        "hypr.window": "hyprland window address",
+    })
+    readonly property var _acVerbs: ["/fv", "/s", "/rv"]
+
+    function _isVerbPrefix(v) {
+        if (v.length <= 1) return false;
+        const forms = QueryDsl.shortVerbs.concat(Object.keys(QueryDsl.verbAliases));
+        return forms.some(f => f.startsWith(v));
+    }
+
+    // Every `/`-led token in `text` that's unambiguously a command attempt
+    // - {start, end, valid} for each. Same as AppLauncher.qml/RssReader.qml's
+    // identical copies (query.rs::command_spans).
+    function _commandSpans(text) {
+        const spans = [];
+        let i = 0;
+        while (i < text.length) {
+            while (i < text.length && text[i] === " ") i++;
+            if (i >= text.length) break;
+            const start = i;
+            if (text[i] === '"') {
+                const end = text.indexOf('"', i + 1);
+                i = end < 0 ? text.length : end + 1;
+                continue;
+            }
+            let j = i;
+            while (j < text.length && text[j] !== " ") j++;
+            const tok = text.slice(i, j);
+            i = j;
+            if (tok.length > 1 && tok[0] === "/") {
+                if (QueryDsl.canonVerb({ q: false, v: tok })) {
+                    spans.push({ start, end: start + tok.length, valid: true });
+                } else if (!root._isVerbPrefix(tok)) {
+                    spans.push({ start, end: start + tok.length, valid: false });
+                }
+            }
+        }
+        return spans;
+    }
+
+    // Distinct non-empty values a resolved field has across every visible
+    // process right now, substring-narrowed by `frag`, sorted.
+    function _fieldValueCandidates(field, frag) {
+        const fields = QueryDsl.resolvePath(field, root.searchTypeNames);
+        if (fields.length !== 1)
+            return [];
+        const f = fields[0], seen = ({}), out = [];
+        for (const a of ClaudeUsageSvc.accounts) {
+            const account = a.account;
+            for (const row of (ClaudeUsageSvc.sessions[account] || [])) {
+                for (const raw of root._searchFieldVals(row, f, account)) {
+                    const s = String(raw).trim();
+                    const key = s.toLowerCase();
+                    if (!s || seen[key] || (frag && key.indexOf(frag) < 0))
+                        continue;
+                    seen[key] = true;
+                    out.push(s);
+                }
+            }
+        }
+        return out.sort();
+    }
+
+    function _acCandidates() {
+        const t = root.searchText;
+
+        const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
+        if (vm) {
+            const frag = vm[1].slice(1);
+            return root._acVerbs.filter(v => v.indexOf(frag) >= 0).map(v => ({
+                text: v + " ", label: v,
+                alias: QueryDsl.verbInfo[v].long, desc: QueryDsl.verbInfo[v].desc
+            }));
+        }
+
+        const val = t.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
+        if (val) {
+            const field = (val[1] || val[3]).toLowerCase();
+            const frag = (val[2] !== undefined ? val[2] : val[4]).toLowerCase();
+            const base = t.slice(0, t.length - frag.length);
+            return root._fieldValueCandidates(field, frag).slice(0, 40)
+                .map(v => ({ text: base + v, label: v, alias: "", desc: "" }));
+        }
+
+        const dir = t.match(/(?:^|\s)\/(?:s|sort)(?:\/[a-z.]+|\s+[a-z.]+)\s+([a-z]*)$/);
+        if (dir) {
+            const frag = dir[1].toLowerCase();
+            const base = t.slice(0, t.length - frag.length);
+            return ["ascending", "descending"].filter(d => d.indexOf(frag) === 0)
+                .map(d => ({ text: base + d, label: d, alias: "", desc: "" }));
+        }
+
+        const vp = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
+        if (vp) {
+            const frag = vp[2];
+            const base = t.slice(0, t.length - frag.length);
+            return root.searchTypeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
+                text: base + n + " ", label: n, alias: "", desc: root.searchTypeDescs[n] || ""
+            }));
+        }
+
+        const pm = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\s+([a-z.]*)$/);
+        if (pm && pm[2].indexOf(":") < 0) {
+            const frag = pm[2];
+            const head = t.slice(0, t.length - frag.length).replace(/\s+$/, "/");
+            return root.searchTypeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
+                text: head + n + " ", label: n, alias: "", desc: root.searchTypeDescs[n] || ""
+            }));
+        }
+
+        return [];
+    }
+    property var acItems: []
+    property int acSel: 0
+    property bool acDismissed: false
+    readonly property bool acOpen: acItems.length > 0 && !acDismissed
+    onAcItemsChanged: { acSel = 0; acDismissed = false; }
+
+    function _applyAcItem(it) {
+        if (!it) return;
+        root.searchText = it.text;
+        searchInput.text = it.text;
+        searchInput.cursorPosition = searchInput.text.length;
+    }
+    function acAccept() {
+        root._applyAcItem(root.acItems[root.acSel]);
+    }
+    function triggerCompletion() {
+        const items = root._acCandidates();
+        if (items.length === 0) return false;
+        if (items.length === 1) {
+            root._applyAcItem(items[0]);
+            return true;
+        }
+        root.acSel = 0;
+        root.acItems = items;
+        return true;
+    }
+
     // All three view-state pieces reset on every panel open *and* close
     // -- this Rectangle instance is never destroyed (only its height
     // collapses to 0, same "sibling overlay" pattern as Media/
@@ -281,6 +469,11 @@ Rectangle {
     onExpandedChanged: {
         root.groupExpanded = ({});
         root.groupSort = ({});
+        // root.searchText alone doesn't clear the box -- searchInput.text
+        // only flows one way into it (onTextChanged), so the TextInput's
+        // own text needs setting directly too (reported 2026-09-01: box
+        // still had the last query on reopen).
+        searchInput.text = "";
         root.searchText = "";
         root.resetColumnWidths();
     }
@@ -306,21 +499,18 @@ Rectangle {
         case "pid": return (a.pid || 0) - (b.pid || 0);
         case "tokens": return (a.context_tokens ?? -1) - (b.context_tokens ?? -1);
         case "path": return root.shortCwd(a.cwd).localeCompare(root.shortCwd(b.cwd));
-        case "tmux": {
-            const as = Number(a.tmux_session) || 0, bs = Number(b.tmux_session) || 0;
-            if (as !== bs) return as - bs;
-            const aw = Number(a.tmux_window) || 0, bw = Number(b.tmux_window) || 0;
-            if (aw !== bw) return aw - bw;
-            return (Number(a.tmux_pane) || 0) - (Number(b.tmux_pane) || 0);
-        }
+        // tmux/hyprland are *grouped* columns visually, but each
+        // sub-column sorts independently -- only these, never the group
+        // label itself (that has no click action at all, see the header
+        // row below: "there should be no action when user clicks on
+        // [tmux/hyprland]... only subcolumns should be capable of
+        // sorting", 2026-09-02).
+        case "tmuxSession": return (Number(a.tmux_session) || 0) - (Number(b.tmux_session) || 0);
+        case "tmuxWindow": return (Number(a.tmux_window) || 0) - (Number(b.tmux_window) || 0);
+        case "tmuxPane": return (Number(a.tmux_pane) || 0) - (Number(b.tmux_pane) || 0);
         case "active": return (a.updated_at_ms || 0) - (b.updated_at_ms || 0);
-        case "hypr": {
-            const aw = Number(a.hypr_workspace) || 0, bw = Number(b.hypr_workspace) || 0;
-            if (aw !== bw) return aw - bw;
-            const am = a.hypr_monitor || "", bm = b.hypr_monitor || "";
-            if (am !== bm) return am.localeCompare(bm);
-            return (a.hypr_address || "").localeCompare(b.hypr_address || "");
-        }
+        case "hyprWorkspace": return (Number(a.hypr_workspace) || 0) - (Number(b.hypr_workspace) || 0);
+        case "hyprMonitor": return (a.hypr_monitor || "").localeCompare(b.hypr_monitor || "");
         default: return 0;
         }
     }
@@ -344,6 +534,14 @@ Rectangle {
     readonly property int rowH: 17
     readonly property int groupHeaderH: 78
     readonly property int collapsedH: 18
+    // Search box Rectangle (22px) + the one extra `content` Column
+    // spacing gap (10px) it added between the mode-line and the first
+    // account group -- wasn't part of the fixedOverhead estimate below
+    // when that box was added, so every group's row budget stayed
+    // computed as if it didn't exist, silently overshooting by ~32px
+    // (about 2 rows) and clipping the last 2-3 lines of the last group
+    // (reported 2026-09-02).
+    readonly property int searchBoxH: 32
 
     // Shared column widths -- the process-list header row and every data
     // row below it bind to these same values so the two stay aligned
@@ -359,11 +557,11 @@ Rectangle {
     // title widened / last narrowed alongside the panel's own 30% width
     // bump (Bar.qml's claudeUsagePanelWidth, 920 -> 1196) -- "make last
     // narrower and title wider" 2026-09-01, same request that added the
-    // hyprland group (workspace/monitor/window) below.
+    // hyprland group (workspace/monitor, "#"/"monitor" headers) below.
     readonly property var colDefaults: ({
         status: 52, title: 400, tokens: 60, last: 44,
         tmuxSession: 54, tmuxWindow: 50, tmuxPane: 40,
-        hyprWorkspace: 60, hyprMonitor: 56, hyprWindow: 80,
+        hyprWorkspace: 28, hyprMonitor: 56,
         pid: 68, path: 100,
     })
     // Sized for the "status" header label (6 chars) plus its clickable
@@ -404,16 +602,18 @@ Rectangle {
     // hyprland is a *grouped* column like tmux, right after it: which
     // Hyprland window is currently showing this session's tmux pane (see
     // claude-usage-daemon.py's hyprland_windows_by_tmux_session), if any.
-    // "window" holds that window's own Hyprland address, not a tmux id --
-    // it's what the hover-thumbnail/click-to-focus feature on this group
-    // actually keys off (see below), shown here as-is since it's also the
-    // only thing that disambiguates two otherwise-identical windows (this
-    // machine routinely has 30+ Alacritty windows all titled plain
-    // "Alacritty" -- confirmed live 2026-09-01).
+    // Only workspace/monitor are actually shown as columns -- the window's
+    // own Hyprland address (what the hover-thumbnail/click-to-focus
+    // feature on this group keys off, see root.hyprHoverEntered) is kept
+    // on the row data (modelData.hypr_address) but deliberately not
+    // rendered as its own column: it's a long opaque hex string with no
+    // value as a glanceable readout, unlike workspace/monitor. "workspace"
+    // is labeled just "#" (hover for a "workspace" hint, see the header
+    // below) -- narrow on purpose, values here are almost always a single
+    // digit.
     property real colHyprWorkspaceW: colDefaults.hyprWorkspace
     property real colHyprMonitorW: colDefaults.hyprMonitor
-    property real colHyprWindowW: colDefaults.hyprWindow
-    readonly property real colHyprGroupW: colHyprWorkspaceW + colHyprMonitorW + colHyprWindowW + 2 * root.handleW
+    readonly property real colHyprGroupW: colHyprWorkspaceW + colHyprMonitorW + root.handleW
     property real colPathW: colDefaults.path
     // Width of each drag-resize handle between columns (see
     // ColumnResizeHandle.qml) -- also the RowLayout spacing everywhere a
@@ -432,7 +632,6 @@ Rectangle {
         root.colTmuxPaneW = root.colDefaults.tmuxPane;
         root.colHyprWorkspaceW = root.colDefaults.hyprWorkspace;
         root.colHyprMonitorW = root.colDefaults.hyprMonitor;
-        root.colHyprWindowW = root.colDefaults.hyprWindow;
         root.colPidW = root.colDefaults.pid;
         root.colPathW = root.colDefaults.path;
     }
@@ -560,7 +759,7 @@ Rectangle {
         // height, but 4 proved too thin in practice: the last "+N more"
         // line was visibly clipped (reported 2026-08-31). 16 is a
         // middle ground between the two.
-        const fixedOverhead = 40 + 24 + 16
+        const fixedOverhead = 40 + 24 + 16 + root.searchBoxH
             + root.expandedGroupCount * root.groupHeaderH
             + collapsedCount * root.collapsedH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
@@ -623,6 +822,7 @@ Rectangle {
         // real keyboard focus into it, same convention as the RSS reader
         // and app launcher's own search boxes.
         Rectangle {
+            id: searchBox
             width: parent.width
             height: 22
             radius: 4
@@ -640,27 +840,143 @@ Rectangle {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 2
                 clip: true
-                onTextChanged: root.searchText = text
-                // First Escape while searching just clears the query and
-                // stays focused (a non-empty query is the common case worth
-                // a dedicated undo step); a second Escape on an already-
-                // empty box isn't accepted here, so it bubbles up to
-                // Bar.qml's root.Keys.onPressed, which is what actually
-                // closes the whole panel -- no explicit refocus plumbing
-                // needed, that's just normal Qt Quick key-event bubbling.
-                Keys.onPressed: event => {
-                    if (event.key === Qt.Key_Escape && searchInput.text.length > 0) {
-                        searchInput.text = "";
-                        event.accepted = true;
-                    }
-                }
+                // Any further typing past a shown popup closes it, same as
+                // a shell/IDE -- Tab recomputes it fresh for wherever the
+                // cursor is now (root.triggerCompletion). Also fires
+                // (harmlessly, on an already-empty acItems) when accepting
+                // a completion sets this text itself.
+                onTextChanged: { root.searchText = text; root.acItems = []; }
 
                 Text {
                     visible: searchInput.text.length === 0 && !searchInput.activeFocus
-                    text: qsTr("/ to search (query-dsl.md)")
+                    text: qsTr("/ to search")
                     color: Theme.muted
                     font: searchInput.font
                     anchors.verticalCenter: parent.verticalCenter
+                }
+
+                // Inline command-validity coloring (query-dsl.md): an
+                // underline under each `/command` token -- see
+                // AppLauncher.qml/RssReader.qml's identical copies for why
+                // (no per-range text styling on TextInput, and
+                // positionToRectangle stays correct under scrolling where a
+                // manual TextMetrics measurement wouldn't).
+                Repeater {
+                    model: searchInput.text.length ? root._commandSpans(searchInput.text) : []
+                    Rectangle {
+                        required property var modelData
+                        x: searchInput.positionToRectangle(modelData.start).x
+                        y: searchInput.positionToRectangle(modelData.start).y
+                           + searchInput.positionToRectangle(modelData.start).height - 2
+                        width: Math.max(1, searchInput.positionToRectangle(modelData.end).x - x)
+                        height: 2
+                        radius: 1
+                        color: modelData.valid ? Theme.cyan : Theme.red
+                    }
+                }
+
+                // First Escape while searching closes the autocomplete
+                // popup if one's open; otherwise clears the query and
+                // stays focused (a non-empty query is the common case
+                // worth a dedicated undo step). Escape on an already-empty
+                // box with no popup open isn't accepted here, so it
+                // bubbles up to Bar.qml's root.Keys.onPressed, which is
+                // what actually closes the whole panel -- no explicit
+                // refocus plumbing needed, that's just normal Qt Quick
+                // key-event bubbling.
+                Keys.onPressed: event => {
+                    if (event.key === Qt.Key_Escape) {
+                        if (root.acOpen) {
+                            root.acDismissed = true;
+                            event.accepted = true;
+                        } else if (searchInput.text.length > 0) {
+                            searchInput.text = "";
+                            event.accepted = true;
+                        }
+                    } else if (event.key === Qt.Key_Tab) {
+                        if (root.acOpen) { root.acAccept(); event.accepted = true; }
+                        else if (root.triggerCompletion()) { event.accepted = true; }
+                    } else if (event.key === Qt.Key_Down && root.acOpen) {
+                        root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Up && root.acOpen) {
+                        root.acSel = Math.max(0, root.acSel - 1);
+                        event.accepted = true;
+                    }
+                }
+            }
+        }
+
+        // Autocomplete popup (marginalia-style, see launcher/AppLauncher.qml
+        // and rssreader/RssReader.qml's identical copies): label, long-form
+        // alias, one-line description. Tab-triggered only (root.acItems is
+        // never recomputed just from typing) -- a popup that popped open on
+        // every keystroke was obtrusive and could steal focus at the wrong
+        // moment, same reasoning as the other two consumers.
+        Rectangle {
+            id: ac
+            visible: root.acOpen
+            z: 50
+            x: searchBox.x
+            y: searchBox.y + searchBox.height + 4
+            width: Math.min(360, content.width)
+            height: visible ? Math.min(root.acItems.length, 7) * 24 + 8 : 0
+            radius: Theme.rounding - 4
+            color: Theme.bgAlpha
+            border.color: Theme.cyan
+            border.width: 1
+            clip: true
+
+            Column {
+                anchors.fill: parent
+                padding: 4
+
+                Repeater {
+                    model: root.acItems
+                    Rectangle {
+                        id: acRow
+                        required property var modelData
+                        required property int index
+                        readonly property bool cur: index === root.acSel
+                        width: ac.width - 8
+                        height: 24
+                        radius: Theme.rounding - 5
+                        color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
+
+                        Row {
+                            anchors.verticalCenter: parent.verticalCenter
+                            x: 10
+                            spacing: 8
+
+                            Text {
+                                id: acLabel
+                                text: acRow.modelData.label
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                color: acRow.cur ? Theme.cyan : Theme.text
+                            }
+                            Text {
+                                visible: !!acRow.modelData.alias
+                                anchors.baseline: acLabel.baseline
+                                text: "(" + acRow.modelData.alias + ")"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                color: Theme.muted
+                            }
+                            Text {
+                                anchors.baseline: acLabel.baseline
+                                text: acRow.modelData.desc
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                color: Theme.textDim
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: { root.acSel = acRow.index; root.acAccept(); }
+                        }
+                    }
                 }
             }
         }
@@ -874,8 +1190,14 @@ Rectangle {
                     Item { Layout.preferredWidth: root.handleW }
                     Item { Layout.preferredWidth: root.colLastW }
                     Item { Layout.preferredWidth: root.handleW }
+                    // Group labels themselves are plain, non-interactive
+                    // text -- no MouseArea, no cursor change, no sort.
+                    // Only the sub-columns below (session/window/pane,
+                    // #/monitor) sort anything, each independently
+                    // (request 2026-09-02: "there should be no action
+                    // when user clicks on [the group labels]").
                     Text {
-                        text: qsTr("tmux") + root.sortArrow(modelData.account, "tmux")
+                        text: qsTr("tmux")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
@@ -897,15 +1219,10 @@ Rectangle {
                             height: 1
                             color: Theme.border
                         }
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "tmux")
-                        }
                     }
                     Item { Layout.preferredWidth: root.handleW }
                     Text {
-                        text: qsTr("hyprland") + root.sortArrow(modelData.account, "hypr")
+                        text: qsTr("hyprland")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
@@ -917,11 +1234,6 @@ Rectangle {
                             anchors.bottom: parent.bottom
                             height: 1
                             color: Theme.border
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "hypr")
                         }
                     }
                     Item { Layout.preferredWidth: root.handleW }
@@ -1038,11 +1350,16 @@ Rectangle {
                         onWidthChangeRequested: w => root.colLastW = w
                     }
                     Text {
-                        text: qsTr("session")
+                        text: qsTr("session") + root.sortArrow(modelData.account, "tmuxSession")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colTmuxSessionW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "tmuxSession")
+                        }
                     }
                     ColumnResizeHandle {
                         Layout.preferredWidth: root.handleW
@@ -1051,11 +1368,16 @@ Rectangle {
                         onWidthChangeRequested: w => root.colTmuxSessionW = w
                     }
                     Text {
-                        text: qsTr("window")
+                        text: qsTr("window") + root.sortArrow(modelData.account, "tmuxWindow")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colTmuxWindowW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "tmuxWindow")
+                        }
                     }
                     ColumnResizeHandle {
                         Layout.preferredWidth: root.handleW
@@ -1064,11 +1386,16 @@ Rectangle {
                         onWidthChangeRequested: w => root.colTmuxWindowW = w
                     }
                     Text {
-                        text: qsTr("pane")
+                        text: qsTr("pane") + root.sortArrow(modelData.account, "tmuxPane")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colTmuxPaneW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "tmuxPane")
+                        }
                     }
                     ColumnResizeHandle {
                         Layout.preferredWidth: root.handleW
@@ -1077,11 +1404,47 @@ Rectangle {
                         onWidthChangeRequested: w => root.colTmuxPaneW = w
                     }
                     Text {
-                        text: qsTr("workspace")
+                        // Labeled "#" not "workspace" -- values are almost
+                        // always a single digit, so the full word wasted
+                        // most of colHyprWorkspaceW; a hover hint (below)
+                        // keeps it identifiable without spending the
+                        // width permanently (request 2026-09-02).
+                        id: hyprWorkspaceHeader
+                        text: qsTr("#") + root.sortArrow(modelData.account, "hyprWorkspace")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colHyprWorkspaceW
+                        property bool hovering: false
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onEntered: hyprWorkspaceHeader.hovering = true
+                            onExited: hyprWorkspaceHeader.hovering = false
+                            onClicked: root.toggleSort(modelData.account, "hyprWorkspace")
+                        }
+                        Rectangle {
+                            visible: hyprWorkspaceHeader.hovering
+                            anchors.top: parent.bottom
+                            anchors.topMargin: 2
+                            anchors.left: parent.left
+                            z: 50
+                            width: hintText.implicitWidth + 8
+                            height: hintText.implicitHeight + 4
+                            radius: 3
+                            color: Theme.bg
+                            border.color: Theme.border
+                            border.width: 1
+                            Text {
+                                id: hintText
+                                anchors.centerIn: parent
+                                text: qsTr("workspace")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                            }
+                        }
                     }
                     ColumnResizeHandle {
                         Layout.preferredWidth: root.handleW
@@ -1090,31 +1453,22 @@ Rectangle {
                         onWidthChangeRequested: w => root.colHyprWorkspaceW = w
                     }
                     Text {
-                        text: qsTr("monitor")
+                        text: qsTr("monitor") + root.sortArrow(modelData.account, "hyprMonitor")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
                         Layout.preferredWidth: root.colHyprMonitorW
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSort(modelData.account, "hyprMonitor")
+                        }
                     }
                     ColumnResizeHandle {
                         Layout.preferredWidth: root.handleW
                         Layout.fillHeight: true
                         targetWidth: root.colHyprMonitorW
                         onWidthChangeRequested: w => root.colHyprMonitorW = w
-                    }
-                    Text {
-                        text: qsTr("window")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        elide: Text.ElideRight
-                        Layout.preferredWidth: root.colHyprWindowW
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colHyprWindowW
-                        onWidthChangeRequested: w => root.colHyprWindowW = w
                     }
                     Text {
                         text: qsTr("pid") + root.sortArrow(modelData.account, "pid")
@@ -1186,7 +1540,7 @@ Rectangle {
                         Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.fmtTokens(modelData.context_tokens)
-                            color: Theme.textDim
+                            color: root.tokenColor(modelData.context_tokens)
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colTokensW
@@ -1245,7 +1599,17 @@ Rectangle {
                                 spacing: 0
                                 Text {
                                     text: modelData.hypr_workspace || ""
-                                    color: Theme.muted
+                                    // Wallpaper-theme primary color (same
+                                    // token Workspaces.qml's own active-
+                                    // workspace pill uses), only when this
+                                    // is the workspace actually active on
+                                    // this panel's own monitor right now --
+                                    // "highlight the workspace number if
+                                    // it's the one this panel was invoked
+                                    // from" 2026-09-02.
+                                    color: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
+                                        ? Theme.cyan : Theme.muted
+                                    font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
                                     font.family: Theme.fontFamily
                                     font.pixelSize: Theme.fontSize - 3
                                     Layout.preferredWidth: root.colHyprWorkspaceW
@@ -1257,15 +1621,6 @@ Rectangle {
                                     font.family: Theme.fontFamily
                                     font.pixelSize: Theme.fontSize - 3
                                     Layout.preferredWidth: root.colHyprMonitorW
-                                }
-                                Item { Layout.preferredWidth: root.handleW }
-                                Text {
-                                    text: modelData.hypr_address || ""
-                                    color: Theme.muted
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSize - 3
-                                    elide: Text.ElideRight
-                                    Layout.preferredWidth: root.colHyprWindowW
                                 }
                             }
 
