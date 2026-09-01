@@ -109,6 +109,14 @@ Item {
         } else if (claudeUsageExpanded.expanded && event.key === Qt.Key_Escape) {
             claudeUsageExpanded.expanded = false;
             event.accepted = true;
+        } else if (claudeUsageExpanded.expanded && event.key === Qt.Key_Slash) {
+            // Real keyboard focus moves into the search box itself here
+            // (ClaudeUsageExpanded.focusSearch()) -- subsequent keystrokes
+            // (including its own Escape-clears-query handling) go straight
+            // to that TextInput, not back through this handler, the same
+            // way "/" hands off focus in the RSS reader/app launcher.
+            claudeUsageExpanded.focusSearch();
+            event.accepted = true;
         }
     }
 
@@ -255,12 +263,14 @@ Item {
     // being open, only from actually running out of screen).
     readonly property real stdPanelWidth: Math.min(560, root.panelAreaWidth)
     readonly property real calPanelWidth: Math.min(root.screen.width / 2, root.panelAreaWidth)
-    // The process table's 9 columns (status/title/tokens/last/session/
-    // window/pane/pid/path) don't fit the standard 560 without squeezing
-    // title down to near-nothing -- wider by default (bumped 760 -> 920
-    // to give title more room, request 2026-09-01), though still well
+    // The process table's 12 columns (status/title/tokens/last/tmux
+    // session-window-pane/hyprland workspace-monitor-window/pid/path)
+    // don't fit the standard 560 without squeezing title down to near-
+    // nothing -- wider by default (760 -> 920 to give title more room,
+    // request 2026-09-01; then 920 -> 1196, a flat 30% bump, same day,
+    // alongside adding the hyprland column group), though still well
     // short of the calendar's half-monitor.
-    readonly property real claudeUsagePanelWidth: Math.min(920, root.panelAreaWidth)
+    readonly property real claudeUsagePanelWidth: Math.min(1196, root.panelAreaWidth)
 
     function preferredWidthFor(name: string): real {
         if (name === "calendar")

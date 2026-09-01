@@ -65,6 +65,7 @@ the real count this sends rather than silently dropping data.
 State is written atomically to ~/.cache/claude-usage/state.json.
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -299,6 +300,177 @@ def get_tmux_pane_titles() -> dict:
     return titles
 
 
+def _read_proc_stat(pid: int):
+    """(ppid, tty_nr) from /proc/<pid>/stat -- comm-safe (a process name can
+    contain spaces/parens, so split after the last ')' rather than by
+    field position from the start). Field layout after that point, per
+    `man 5 proc`: state ppid pgrp session tty_nr ... -- ppid is index 1,
+    tty_nr is index 4."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    paren = raw.rfind(")")
+    if paren == -1:
+        return None
+    rest = raw[paren + 2:].split()
+    if len(rest) < 5:
+        return None
+    try:
+        return int(rest[1]), int(rest[4])
+    except ValueError:
+        return None
+
+
+def _read_all_proc() -> dict:
+    """pid -> (ppid, tty_nr) for every live process, one /proc sweep --
+    the same shape winswitch's enrich.rs::read_all_proc() builds, used the
+    same way: to walk from a window's own pid down to every descendant's
+    controlling tty."""
+    procs = {}
+    try:
+        pids = (p for p in os.listdir("/proc") if p.isdigit())
+    except OSError:
+        return procs
+    for p in pids:
+        info = _read_proc_stat(int(p))
+        if info:
+            procs[int(p)] = info
+    return procs
+
+
+def _descendant_ttys(procs: dict, root_pid: int) -> set:
+    """tty_nr of root_pid and every process descended from it (BFS over
+    ppid links built from _read_all_proc's sweep)."""
+    children: dict = {}
+    for pid, (ppid, _tty) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+    ttys = set()
+    seen = set()
+    queue = [root_pid]
+    while queue:
+        pid = queue.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        info = procs.get(pid)
+        if info:
+            ttys.add(info[1])
+        queue.extend(children.get(pid, ()))
+    return ttys
+
+
+def _tmux_clients() -> list:
+    """[(client_tty, session_id_no_dollar)] -- which real terminal (tty) is
+    currently attached to and looking at which tmux session, one batched
+    call. tmux's own #{session_id} is "$"-prefixed ("$0"); stripped here
+    since nothing else in this file carries that sigil."""
+    try:
+        out = subprocess.run(
+            ["tmux", "list-clients", "-F", "#{client_tty}\t#{session_id}"],
+            capture_output=True, timeout=3, text=True, check=True,
+        )
+    except Exception:
+        return []
+    clients = []
+    for line in out.stdout.splitlines():
+        tty, _, sess = line.partition("\t")
+        if tty and sess:
+            clients.append((tty, sess.lstrip("$")))
+    return clients
+
+
+def _monitor_names() -> dict:
+    """hyprctl's numeric monitor id -> its name (e.g. "DP-1"), one call --
+    `hyprctl clients` only gives the id, and "monitor 1" means nothing in
+    the UI the way a real output name does."""
+    try:
+        raw = subprocess.run(
+            ["hyprctl", "-j", "monitors"],
+            capture_output=True, timeout=3, text=True, check=True,
+        )
+        return {m.get("id"): m.get("name") for m in json.loads(raw.stdout)}
+    except Exception:
+        return {}
+
+
+def hyprland_windows_by_tmux_session() -> dict:
+    """{tmux session id (no '$'): {"address", "class", "title",
+    "workspace", "monitor"}} for every tmux session that currently has a
+    client attached and displayed in some Hyprland window -- feeds the
+    active-processes table's "hyprland" column group (workspace/monitor/
+    window) and its hover-thumbnail/click-to-focus feature.
+
+    "address" is what actually identifies the window unambiguously
+    (thumb-capture and the focus dispatch both key off it) -- class/title
+    are shown to the user but can't be used to pick a specific window
+    themselves: this machine routinely has 30+ Alacritty windows all
+    titled plain "Alacritty" (confirmed live 2026-09-01), which is
+    exactly why the hover-thumbnail needed its own address-keyed capture
+    helper (thumb-capture, see its own doc comment) instead of
+    Quickshell's built-in ScreencopyView -- that one only exposes appId/
+    title via the generic wlr-foreign-toplevel-list protocol, nowhere
+    near enough to disambiguate this.
+
+    Same tty/pid correlation winswitch's enrich.rs uses to match tmux
+    clients to Hyprland windows (see that file's own doc comment): a
+    tmux client's tty (`#{client_tty}`, the real terminal's pty) and a
+    process's controlling tty (`tty_nr`, field 5 of /proc/<pid>/stat) are
+    both the kernel's packed major/minor dev_t for the same device node,
+    so `os.stat(client_tty).st_rdev == tty_nr` for the process actually
+    sitting on that tty (or any of its descendants) is a solid identity
+    check -- no tty is shared between two different pty devices. Walking
+    every Hyprland window's full descendant-process tree for this is
+    what read_all_proc/_descendant_ttys are for.
+
+    Not every tmux session has an attached client (a detached session has
+    nothing on screen to preview or focus), so this is best-effort and
+    normally returns fewer entries than there are sessions -- callers
+    should treat a missing key as "no window to show", not an error."""
+    clients = _tmux_clients()
+    if not clients:
+        return {}
+    try:
+        raw = subprocess.run(
+            ["hyprctl", "-j", "clients"],
+            capture_output=True, timeout=3, text=True, check=True,
+        )
+        windows = json.loads(raw.stdout)
+    except Exception:
+        return {}
+
+    client_rdevs = []
+    for tty, sess in clients:
+        try:
+            client_rdevs.append((os.stat(tty).st_rdev, sess))
+        except OSError:
+            continue
+    if not client_rdevs:
+        return {}
+
+    monitor_names = _monitor_names()
+    procs = _read_all_proc()
+    result: dict = {}
+    for win in windows:
+        pid = win.get("pid")
+        if not pid or pid < 1:
+            continue
+        ttys = _descendant_ttys(procs, pid)
+        if not ttys:
+            continue
+        for rdev, sess in client_rdevs:
+            if sess not in result and rdev in ttys:
+                ws = win.get("workspace") or {}
+                result[sess] = {
+                    "address": win.get("address") or "",
+                    "class": win.get("class") or "",
+                    "title": win.get("title") or "",
+                    "workspace": ws.get("name") or "",
+                    "monitor": monitor_names.get(win.get("monitor"), ""),
+                }
+    return result
+
+
 PANE_ID_RE = re.compile(r"%\d+")
 # sessions/<pid>.json's "tmux" field, e.g. "653:@1017.%1828" -- session id
 # (no prefix), window id ("@"-prefixed), pane id ("%"-prefixed). Split out
@@ -309,7 +481,7 @@ PANE_ID_RE = re.compile(r"%\d+")
 TMUX_FIELD_RE = re.compile(r"^(\d+):@(\d+)\.%(\d+)$")
 
 
-def list_sessions(base: Path, tmux_titles: dict) -> list:
+def list_sessions(base: Path, tmux_titles: dict, hypr_by_session: dict) -> list:
     sessions_dir = base / "sessions"
     if not sessions_dir.is_dir():
         return []
@@ -346,6 +518,14 @@ def list_sessions(base: Path, tmux_titles: dict) -> list:
             # own opaque auto-id rather than showing nothing.
             title = data.get("name")
 
+        # The Hyprland window currently displaying this session's tmux
+        # pane, if any (see hyprland_windows_by_tmux_session's own
+        # comment) -- feeds the quickshell side's "hyprland" column group
+        # and its hover-thumbnail/click-to-focus feature. All None for a
+        # detached session (no window to preview) or a session not in
+        # tmux at all.
+        hypr = hypr_by_session.get(tmux_session) if tmux_session else None
+
         rows.append({
             "pid": pid,
             "status": data.get("status"),
@@ -357,6 +537,11 @@ def list_sessions(base: Path, tmux_titles: dict) -> list:
             "updated_at_ms": data.get("updatedAt"),
             "context_tokens": context_tokens,
             "last_output_tokens": last_output_tokens,
+            "hypr_address": hypr["address"] if hypr else None,
+            "hypr_class": hypr["class"] if hypr else None,
+            "hypr_title": hypr["title"] if hypr else None,
+            "hypr_workspace": hypr["workspace"] if hypr else None,
+            "hypr_monitor": hypr["monitor"] if hypr else None,
         })
 
     rows.sort(key=lambda s: s.get("updated_at_ms") or 0, reverse=True)
@@ -397,7 +582,8 @@ def main() -> None:
         # during a network backoff window.
         if now >= next_sessions:
             tmux_titles = get_tmux_pane_titles()
-            sessions_data = {name: list_sessions(base, tmux_titles) for name, base in ACCOUNTS}
+            hypr_by_session = hyprland_windows_by_tmux_session()
+            sessions_data = {name: list_sessions(base, tmux_titles, hypr_by_session) for name, base in ACCOUNTS}
             next_sessions = time.time() + SESSIONS_INTERVAL
             dirty = True
 

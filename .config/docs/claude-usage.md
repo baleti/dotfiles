@@ -406,10 +406,22 @@ optimizing that setup further wouldn't have mattered. Quickshell skips
 process-spawn + dynamic-link cost (~10-15ms), so it's modestly faster
 end-to-end for a hover-panel use case (~28ms vs ~30-50ms wall for shelling
 out), and can keep a view warm (`live: true`) for free subsequent frames.
-**Decision: use `ScreencopyView` in-process, no separate Rust binary** —
-this reverses the original plan to duplicate winswitch's capture code into
-its own binary; that plan assumed only a separate process could hit
-acceptable latency, which the benchmark disproved.
+
+**First conclusion (wrong in practice): use `ScreencopyView` in-process.**
+Speed-wise this held up, but it turned out to be a non-starter on
+*correctness* once actually wired to real rows: `ScreencopyView`'s
+`captureSource` has to be a `Toplevel` object from
+`Quickshell.Wayland`'s `ToplevelManager`, and that generic
+wlr-foreign-toplevel-list-backed type exposes only `appId`/`title` — no
+pid, no window address. This machine routinely has 30+ Alacritty windows
+open (one per tmux client), and **all of them report the identical
+`class`/`title`: plain `"Alacritty"`** (confirmed live 2026-09-01 via
+`hyprctl -j clients`). There is no way to pick the *specific* window a
+given process row is running in out of 30+ indistinguishable candidates
+using only appId/title — so while `ScreencopyView` can capture *a*
+window, it can't reliably capture *the right one*. Click-to-focus doesn't
+have this problem (a Hyprland window address is exact, see below), but
+the hover-thumbnail specifically needed a different capture path.
 
 **False lead worth recording:** the very first attempt at this benchmark
 looked *permission-blocked*, not just slow — `ToplevelManager.toplevels`
@@ -433,6 +445,87 @@ were fixed:
   capture with a short retry loop (`toplevel count: 0` on the first
   ~300ms poll, `38` on the second). Poll/retry (a repeating `Timer`, not a
   one-shot) rather than trusting a single fixed delay.
-No `hl.permission()` entry for quickshell was added in the end — screencopy
+No `hl.permission()` entry for quickshell was needed in the end — screencopy
 via `ScreencopyView` works with quickshell's default (ungranted) permission
-state on this setup.
+state on this setup; it just isn't what the shipped feature ended up using
+(see below).
+
+## The hyprland column group, hover-thumbnail, and click-to-focus (shipped)
+
+Each account's process table has a `tmux` column group (session/window/
+pane, see below) and now also a `hyprland` group: **workspace / monitor /
+window**, the real Hyprland window currently showing that row's tmux pane,
+if any. "window" is that window's own Hyprland **address** (e.g.
+`0x559af4964050`), not a tmux id — deliberately raw/unpretty, because it's
+also the only thing that actually disambiguates one specific window among
+many otherwise-identical ones (see the investigation above). A row with no
+attached tmux client (a detached session) shows blank hyprland columns —
+there's nothing on screen to preview or focus.
+
+**Resolution (`claude-usage-daemon.py::hyprland_windows_by_tmux_session`,
+every 30s alongside the rest of the session listing):** same tty/pid
+correlation `~/.config/hypr/winswitch/src/enrich.rs` uses to match tmux
+clients to Hyprland windows — walk each `hyprctl clients -j` window's full
+descendant-process tree (`/proc/<pid>/stat`'s `tty_nr`, comm-safe parsed
+past the last `)`), and match against each tmux client's own tty
+(`tmux list-clients`'s `#{client_tty}`, `os.stat().st_rdev`) — both are the
+kernel's packed major/minor `dev_t` for the same device node, so equality
+is a solid identity check. Feeds `hypr_address`/`hypr_class`/`hypr_title`/
+`hypr_workspace`/`hypr_monitor` onto each session row in `state.json`.
+
+**Hover-thumbnail:** live only over the hyprland group's own 3
+sub-columns (not the whole row — asked for explicitly), and shows below
+the cursor as a purely visual cue, not a click target itself. Capture goes
+through a **standalone helper binary**,
+`~/.config/claude-usage/thumb-capture/` — given a window address (already
+resolved daemon-side) and an output path, it captures one frame via
+`hyprland-toplevel-export-v1` and saves a PNG, ~50-90ms end to end
+(measured live, several different windows). It is a **verbatim copy** of
+`wayland_capture.rs`/`protocol.rs`/`protocols/*.xml` from
+`~/.config/hypr/winswitch` — its own crate, not a dependency on or
+subcommand of that binary, so the claude panel has zero runtime coupling
+to winswitch's build (the explicit ask that started this whole
+investigation: "duplicate its code into its own binary"). Only the
+`hyprctl::Window` struct got trimmed, to just the one field this path
+actually reads (`address`) — winswitch's own copy carries
+class/title/workspace/pid/size too, needed by its UI layer, not by
+capture. The quickshell side calls it via `Quickshell.Io`'s `Process`
+(`.exec([bin, address, outPath])`, one persistent `Process` element,
+re-invoked per hover) and shows the result in a plain `Image`
+(`cache: false`; each capture's output filename is a fresh sequence
+number, which sidesteps Qt's pixmap cache without needing a manual
+cache-bust trick).
+
+**Click-to-focus:** clicking a row's hyprland cell (not the thumbnail)
+re-points the tmux client at the exact session/window/pane that row is
+for (`tmux select-window -t @<id>` / `select-pane -t %<id>` — both
+globally-unique tmux ids, no ambiguity) and focuses the Hyprland window.
+That focus call does **not** use `hyprctl dispatch focuswindow
+address:...` — that syntax doesn't work on this Hyprland install (Lua
+config system; `hyprctl dispatch` isn't valid syntax under it). It's the
+same `hyprctl repl` + `hl.dispatch(hl.dsp.focus(...))` Lua snippet
+`hyprctl.rs::focus_window()` already uses, ported to QML/`Process` rather
+than shared code.
+
+## Search box (`/`, shared picker query DSL)
+
+Same grammar as every other picker in this repo
+([query-dsl.md](query-dsl.md)) — imports the launcher's `QueryDsl.qml`
+directly (not a port, per that doc's own "add a new consumer, add its
+row" convention) rather than reimplementing it an 8th time. `/` moves
+real keyboard focus into the search box (wired through `Bar.qml`'s
+existing root-level `Keys.onPressed`, alongside Escape); typing filters
+every account's process table at once by title/pid/status/tokens/path/
+account or a `tmux.*`/`hypr.*` field, and `/s`/`/rv` override each
+account's own column-click sort while a query is active. `/ft`/`/at`/`/rt`
+are inert here (same call the RSS reader made) — this is a fixed set of
+columns per row, not a variable column view. No Tab-autocomplete popup
+yet (every other DSL consumer has one) — first cut only, worth adding if
+this gets real use.
+
+## Panel width and column tuning (2026-09-01)
+
+`claudeUsagePanelWidth` (`Bar.qml`) went 920 → 1196 (a flat 30% bump) to
+fit the new hyprland group without crowding what was already there;
+`title` widened 280 → 400 and `last` narrowed 56 → 44 in the same pass
+(`colDefaults`, `ClaudeUsageExpanded.qml`).
