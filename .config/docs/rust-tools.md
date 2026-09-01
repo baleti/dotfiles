@@ -109,8 +109,9 @@ GUI toolkit.
   `hyprland.lua`. Serves history over a Unix socket
   (`$XDG_RUNTIME_DIR/sysmond.sock`); no persistence beyond the tiered
   history file, this is throwaway monitoring data plus a bounded history.
-- **`src/bin/sysmon-graph.rs`** — the standalone `ALT+mainMod+n/p/t/m`
-  popups (net/cpu/temp/mem), replacing the old KDE network-graph plasmoid.
+- **`src/bin/sysmon-graph.rs`** — the standalone `ALT+mainMod+n/t/m`
+  popups (net/temp/mem; the `cpu` mode still works but its bind was
+  removed 2026-09-01), replacing the old KDE network-graph plasmoid.
   Reads `sysmond`'s socket rather than sampling itself, so history is warm
   the instant it opens. Same toggle/pidfile/monitor-targeting conventions
   as clipboard-picker.

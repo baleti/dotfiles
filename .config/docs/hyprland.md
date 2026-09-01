@@ -161,7 +161,8 @@ docs:
   binaries; see [rust-tools.md](rust-tools.md)).
 - `mainMod+n` / `mainMod+SHIFT+n` — invoke last notification's default
   action / open its full action list.
-- `ALT+mainMod+n/p/t/m` — standalone `sysmon-graph` popups.
+- `ALT+mainMod+n/t/m` — standalone `sysmon-graph` popups (cpu popup
+  removed 2026-09-01; the bar's `mainMod+p` hover panel covers it).
 - Bare `ALT+n` and `mainMod+t/s/m/p` — toggle the quickshell bar's own
   in-bar hover panels (net stayed on `ALT`; temp/disk/mem/cpu on `mainMod`;
   same `sysmond` data as the popups above, different UI surface) via
