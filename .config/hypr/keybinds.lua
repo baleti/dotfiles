@@ -325,15 +325,9 @@ hl.bind(mainMod .. " + j", hl.dsp.focus({ direction = "down" }),  { description 
 hl.bind(mainMod .. " + k", hl.dsp.focus({ direction = "up" }),    { description = "Focus the window above" })
 hl.bind(mainMod .. " + l", hl.dsp.focus({ direction = "right" }), { description = "Focus the window to the right" })
 
--- app launcher: standalone Rust daemon (~/.config/hypr/applauncher/,
--- started in hyprland.lua) -- a resident GTK layer-shell card, so opening
--- it is a socket byte rather than a property change inside quickshell
--- fighting the bar's per-second graph repaints for the one QML thread. A
--- second tap toggles it closed; Escape also closes. Replaced
--- `qs ipc call launcher toggle`; the quickshell launcher
--- (~/.config/quickshell/launcher/) is still there but no longer bound --
--- flip this line back to re-enable it.
-hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd("~/.config/hypr/applauncher/target/release/applauncher toggle"), { release = true, description = "Open the app launcher" })
+-- app launcher (quickshell, ~/.config/quickshell/launcher/ -- replaced
+-- `rofi -show drun`). A second tap toggles it closed; Escape also closes.
+hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd("qs ipc call launcher toggle"), { release = true, description = "Open the app launcher" })
 
 -- master/stack layout cycling
 -- NOTE: this rebinds mainMod + R, already bound above to launch $menu. Same conflict existed

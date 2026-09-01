@@ -54,13 +54,10 @@ PanelWindow {
             query.text = "";
             root.selected = 0;
             ac.visible = false;
-            // Surface is already mapped and painted (permanent-warm, see the
-            // window block) -- opening only flips the input mask and
-            // keyboardFocus, both of which the compositor applies to a live
-            // surface within a frame, so the keyboard is ours before the
-            // next keystroke. forceActiveFocus still deferred one tick for
-            // the card's visibility to propagate down to the TextInput.
+            focusGrab.active = true;
             Qt.callLater(() => query.forceActiveFocus());
+        } else {
+            focusGrab.active = false;
         }
     }
     function hide() { LauncherState.close(); }
@@ -325,49 +322,26 @@ PanelWindow {
     implicitWidth: root.screen ? root.screen.width : 1920
     implicitHeight: root.screen ? root.screen.height : 1080
     color: "transparent"
-
-    // PERMANENT-WARM: the surface stays mapped and painted from startup
-    // (no `visible: root.open`), the same persistent-transparent-surface /
-    // input-masked-to-live-content approach NotifLayer and the bar use.
-    // Toggling `visible` instead rebuilt an 8MB screen-sized buffer + a
-    // fresh layer-shell configure roundtrip on every open (a whole frame
-    // or more on the 60Hz outputs) with the keyboard grant racing the
-    // still-mapping surface -- that race is what dropped the first
-    // keystrokes after mod+Super_l ("brewolf"). Now the expensive mapping
-    // is done once, up front, and open is just the mask + keyboardFocus
-    // flip below.
-    //
-    // The keyboard genuinely can't be grabbed any *earlier* than this
-    // (e.g. on mod-key press): an Exclusive layer-shell grab suppresses
-    // Hyprland's own mod+<key> binds, so grabbing before the mod tap is
-    // confirmed on release would break every other mod shortcut. Warm
-    // mapping is the earliest safe head start.
+    visible: root.open
     WlrLayershell.layer: WlrLayer.Overlay
-    // Exclusive (not OnDemand): grab the keyboard the instant we open, not
-    // only once the compositor decides to hand it over.
-    WlrLayershell.keyboardFocus: root.open ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+    WlrLayershell.keyboardFocus: root.open ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
     WlrLayershell.namespace: "quickshell-launcher"
     exclusionMode: ExclusionMode.Ignore
 
-    // Click-through while warm; the whole surface catches input once open
-    // so a click anywhere off the card closes it (backdrop MouseArea
-    // below). Replaces HyprlandFocusGrab, which cleared itself the instant
-    // it activated on an already-mapped surface.
-    mask: Region {
-        width: root.open ? root.width : 0
-        height: root.open ? root.height : 0
+    HyprlandFocusGrab {
+        id: focusGrab
+        windows: [root]
+        onCleared: root.hide()
     }
 
     // Transparent backdrop -- no dim. Click outside the card closes.
     MouseArea {
         anchors.fill: parent
-        enabled: root.open
         onClicked: root.hide()
     }
 
     Rectangle {
         id: card
-        visible: root.open
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.verticalCenter: parent.verticalCenter
         width: root.cardWidth
