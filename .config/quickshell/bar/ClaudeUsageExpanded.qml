@@ -823,8 +823,16 @@ Rectangle {
                 }
                 } // end header-shift Column
 
+                // Same -16px shift as the header block above, so the data
+                // rows immediately follow the (visually-shifted) headers
+                // instead of leaving the 16px gap the header shift alone
+                // would open up between them -- reported 2026-09-01.
+                Column {
+                    spacing: 1
+                    transform: Translate { y: -16 }
+
                 Repeater {
-                    model: parent.visibleProcs
+                    model: acctCol.visibleProcs
 
                     delegate: RowLayout {
                         required property var modelData
@@ -916,13 +924,14 @@ Rectangle {
                 // procs.length, the true total the daemon sent, never
                 // silently dropped.
                 Text {
-                    visible: parent.hiddenProcCount > 0
-                    text: qsTr("+%1 more").arg(parent.hiddenProcCount)
+                    visible: acctCol.hiddenProcCount > 0
+                    text: qsTr("+%1 more").arg(acctCol.hiddenProcCount)
                     color: Theme.muted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     topPadding: 1
                 }
+                } // end rows-shift Column
             }
         }
 
