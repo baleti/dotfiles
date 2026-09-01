@@ -164,15 +164,25 @@ tiers/backoff above (and keeps updating even mid-backoff).
   Text's own size the way a Layout sibling would) — `font.underline: true`
   was tried first, but that only underlines the 4 glyphs of "tmux" itself,
   much narrower than the group it's meant to mark.
-- **Both header rows sit shifted up ~16px** (`transform: Translate { y:
-  -16 }` on the `Column` wrapping them) so they visibly overlap the
-  bottom of the "weekly" line above — a deliberate request ("it's okay
+- **Both header rows, and the data rows below them, sit shifted up ~16px**
+  (`transform: Translate { y: -16 }` on two separate wrapping `Column`s —
+  one around the two header rows, one around the process-row `Repeater` +
+  its trailing "+N more" line). The header shift is deliberate — it
+  visibly overlaps the bottom of the "weekly" line above ("it's okay
   because they are away from each other": weekly's text is short and
-  left-aligned, the header row's real content starts further right, so
-  in practice the overlap doesn't collide with actual glyphs). A
-  transform, not a layout change — `acctCol` still reserves this block's
-  normal height, so nothing below it (the data rows) shifts to
-  compensate, only the header block's own render position moves.
+  left-aligned, the header row's real content starts further right, so in
+  practice the overlap doesn't collide with actual glyphs). The row shift
+  isn't its own separate request — it's there because the header shift
+  alone left a 16px gap between the (now-higher) headers and the
+  still-normally-positioned data rows, reported immediately after the
+  header shift landed. Both are transforms, not layout changes —
+  `acctCol` still reserves each block's normal height, nothing shifts to
+  compensate, only render position moves; wrapping either block in a new
+  `Column` moves their children one level down, so anything inside that
+  referenced `parent.X` expecting `acctCol` (`groupOpen`, `procs`,
+  `visibleProcs`, `hiddenProcCount`) had to switch to the `acctCol` id
+  directly — missed for the data-row wrapper on the first pass, caught as
+  a `qs log` binding warning (`Unable to assign [undefined] to bool`).
 - **Every column is independently resizable** — hovering the gap between
   two headers shows a resize cursor (`ColumnResizeHandle.qml`, a small
   reusable `MouseArea` with `cursorShape: Qt.SizeHorCursor`); dragging
