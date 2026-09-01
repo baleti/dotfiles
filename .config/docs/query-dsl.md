@@ -27,6 +27,7 @@ add a new consumer, add its row here too.
 | notification-picker | (notifyd action) | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
+| claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
 
 See [tmux.md](tmux.md) for the tmux bindings and [rust-tools.md](rust-tools.md)
 for winswitch and the GTK pickers.
@@ -45,7 +46,9 @@ choose among the others when there's more than one; window-search has no
 completion assistance at all yet. Both are pre-existing, independent of
 the popup-visibility rule (nothing pops up in either to begin with) -
 worth bringing forward if either picker's DSL usage grows enough to need
-it, but not fixed as part of establishing that rule.
+it, but not fixed as part of establishing that rule. claude-usage
+(2026-09-01) is a newer gap of the same kind - filtering/sorting work, no
+Tab-completion popup wired up yet.
 
 ## The shape of it
 
