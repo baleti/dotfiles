@@ -156,11 +156,14 @@ QtObject {
                         res.terms.push({ field: via, value: toks[k].v.toLowerCase(),
                                          quoted: toks[k].q });
                         k++;
-                    } else {
-                        // colonless via path alone -> free text (matches
-                        // query.rs filter_term(via) for a flat type)
-                        res.terms.push({ text: via, quoted: false });
                     }
+                    // else: via path alone, no value yet -- a no-op, not
+                    // the space form's free-text fallback (query-dsl.md
+                    // "Via paths" -- a chosen-but-not-yet-valued via path
+                    // is exactly as incomplete as any other still-forming
+                    // token; treating it as free text broke "never flash
+                    // to zero on a valid partial keystroke", reported
+                    // 2026-09-02).
                 } else if (verb === "/s") {
                     let dir = "asc";
                     if (k < toks.length && !root.startsCommand(toks[k])
@@ -168,7 +171,11 @@ QtObject {
                         dir = root._dirOf(toks[k].v);
                         k++;
                     }
-                    res.sort = { field: via, dir: dir };
+                    // Multi-key chaining (added 2026-09-02): each
+                    // "/"-separated segment of the via path is its own
+                    // sort key, ties on the first broken by the next, and
+                    // so on. The space form stays single-key only.
+                    res.sort = { fields: via.split("/"), dir: dir };
                 } else if (verb === "/rv") {
                     res.reverse = true; // via meaningless here, harmless
                 } else {
@@ -207,9 +214,11 @@ QtObject {
                 res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q });
             }
         } else if (verb === "/s") {
+            // Space form: single-key only, no chaining (see the via form
+            // above for more than one key).
             const dir = (args.length > 1 && root._isDirectionLike(args[1].v))
                 ? root._dirOf(args[1].v) : "asc";
-            res.sort = { field: a0.toLowerCase(), dir: dir };
+            res.sort = { fields: [a0.toLowerCase()], dir: dir };
         } else {
             const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
             res.cols.push({ op: op, path: a0.toLowerCase() });
@@ -220,5 +229,40 @@ QtObject {
     // type names for this picker.
     function resolvePath(path, known) {
         return known.filter(n => n.indexOf(path) >= 0);
+    }
+
+    function _tryInt(s) {
+        return /^\d+$/.test(s) ? parseInt(s, 10) : null;
+    }
+    function _tryAgeSeconds(s) {
+        const m = /^(\d+)([smhd])$/.exec(s);
+        if (!m) return null;
+        return parseInt(m[1], 10) * ({ s: 1, m: 60, h: 3600, d: 86400 }[m[2]]);
+    }
+
+    // query-dsl.md "Sort comparison, precisely" -- the one comparator
+    // every sort entry point a picker offers (a DSL-driven /sort, or a
+    // clickable column header re-sorting the same rows) must share, so two
+    // of them never disagree on "100" vs "2" the way plain lexicographic
+    // comparison would. Sniffs shape independently on each side: plain
+    // integers compare numerically (on the raw stored value, not a
+    // display-formatted one -- callers must pass that raw value in);
+    // `humanize_ago`-style age buckets ("30s"/"5m"/"3h"/"2d") compare by
+    // seconds, with `dir` inverted for them specifically (the "direction
+    // trap" -- smaller age is more recent, so "descending" == newest
+    // first means *ascending* age); everything else is lexicographic.
+    // `dir` ("asc"/"desc") is applied here too, so callers never need
+    // their own `dir === "desc" ? -c : c` on the result.
+    function compareFieldValues(a, b, dir) {
+        const as = String(a), bs = String(b);
+        const ai = root._tryInt(as), bi = root._tryInt(bs);
+        if (ai !== null && bi !== null)
+            return dir === "desc" ? bi - ai : ai - bi;
+        const aa = root._tryAgeSeconds(as), ba = root._tryAgeSeconds(bs);
+        if (aa !== null && ba !== null)
+            return dir === "desc" ? aa - ba : ba - aa;
+        const al = as.toLowerCase(), bl = bs.toLowerCase();
+        const c = al < bl ? -1 : (al > bl ? 1 : 0);
+        return dir === "desc" ? -c : c;
     }
 }

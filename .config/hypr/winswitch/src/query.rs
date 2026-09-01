@@ -207,10 +207,13 @@ pub enum Direction {
 
 /// `/sort` result plus whether `/reverse` was also typed. Both can apply
 /// at once: `/sort` picks an order, `/reverse` flips whatever order is in
-/// effect.
+/// effect. The field list is the multi-key chain (query-dsl.md's `/sort`
+/// via-form chaining, added 2026-09-02) - one field for the space form or
+/// a single-segment via, more for `/sort/path1/path2/...`; one `Direction`
+/// applies to every key in the chain uniformly.
 #[derive(Clone, Default)]
 pub struct Actions {
-    pub sort: Option<(ResolvedField, Direction)>,
+    pub sort: Option<(Vec<ResolvedField>, Direction)>,
     pub reverse: bool,
 }
 
@@ -424,7 +427,7 @@ struct Parsed {
     /// `ColOp::Filter` (see `active_columns`'s value-pattern fallback);
     /// `/at`/`/rt` carry it too, for symmetry, but never act on it.
     col_ops: Vec<(ColOp, String, bool)>,
-    sort: Option<(ResolvedField, Direction)>,
+    sort: Option<(Vec<ResolvedField>, Direction)>,
     reverse: bool,
 }
 
@@ -470,14 +473,25 @@ fn parse(query: &str) -> Parsed {
             match verb {
                 Verb::FilterValue => {
                     // No colon in this form - reconstruct the exact
-                    // "path:value" (or colonless "path") shape
-                    // `filter_term` already knows how to read, so both
-                    // spellings share one matching rule.
+                    // "path:value" shape `filter_term` already knows how
+                    // to read, so both spellings share one matching rule.
                     if i < toks.len() && !starts_command(&toks[i]) {
                         out.filters.push(filter_term(&format!("{via}:{}", toks[i].text)));
                         i += 1;
-                    } else {
-                        out.filters.push(filter_term(via));
+                    } else if !via.contains('.') && !resolve_groups(via).is_empty() {
+                        // Bare group via path, no value yet - still the
+                        // same existence check the colonless space form
+                        // already gives a group (`filter_term`'s own
+                        // colonless-group rule). A dotted or flat-type via
+                        // path with nothing following it is a no-op
+                        // instead, not the space form's free-text fallback
+                        // (query-dsl.md "Via paths") - a chosen-but-not-
+                        // yet-valued via path is exactly as incomplete as
+                        // any other still-forming token, and treating it
+                        // as free text broke the "never flash to zero on a
+                        // valid partial keystroke" principle (reported
+                        // 2026-09-02).
+                        out.filters.push(FilterTerm::GroupExists(via.to_string()));
                     }
                 }
                 Verb::FilterType => out.col_ops.push((ColOp::Filter, via.to_string(), true)),
@@ -491,8 +505,16 @@ fn parse(query: &str) -> Parsed {
                             i += 1;
                         }
                     }
-                    if let Some(field) = resolve_one(via) {
-                        out.sort = Some((field, dir));
+                    // Multi-key chaining: each "/"-separated segment of
+                    // the via path is its own type path and must resolve
+                    // to exactly one field (`resolve_one`, same rule as a
+                    // single-key sort); any segment that doesn't makes the
+                    // *whole* /sort inert, not just that key - added
+                    // 2026-09-02, see query-dsl.md's "/sort".
+                    if let Some(fields) = via.split('/').map(resolve_one).collect::<Option<Vec<_>>>() {
+                        if !fields.is_empty() {
+                            out.sort = Some((fields, dir));
+                        }
                     }
                 }
                 Verb::Reverse => out.reverse = true, // via is meaningless here - ignored, harmless
@@ -541,9 +563,11 @@ fn parse(query: &str) -> Parsed {
                 }
             }
             Verb::Sort => {
+                // Space form stays single-key only - no chaining (use the
+                // via form for more than one key, see above).
                 if let Some(field) = args.first().and_then(|p| resolve_one(p)) {
                     let dir = args.get(1).and_then(|d| parse_direction(d)).unwrap_or(Direction::Ascending);
-                    out.sort = Some((field, dir));
+                    out.sort = Some((vec![field], dir));
                 }
             }
             Verb::Reverse => out.reverse = true,
@@ -1194,9 +1218,10 @@ mod tests {
         // *whole* group (`filter_term`'s existing colonless-group rule,
         // unchanged) - not scoped to the default sub, which only matters
         // once a value follows. A *dotted* colonless via like
-        // `/fv/claude.title` isn't special-cased there either, same as it
-        // never was for the space form: it degrades to a literal text
-        // search instead, not a per-subfield existence check.
+        // `/fv/claude.title` is a no-op instead (query-dsl.md "Via
+        // paths") - it resolves to one flat subfield, not a group, so
+        // there's no existence check to run and (since 2026-09-02) no
+        // free-text degrade either.
         let mut title_only = TmuxClaudeMeta::default();
         title_only.claude_title = Some("some session".to_string());
         assert!(matches_str(&w, &title_only, "/fv/claude")); // title alone is enough
@@ -1218,6 +1243,26 @@ mod tests {
     }
 
     #[test]
+    fn via_path_flat_type_no_value_yet_is_a_no_op() {
+        // Reported 2026-09-02: "/fv/pid " (about to add a value) was
+        // falling back to a literal free-text search on "pid" itself,
+        // flashing the result set to zero on a valid partial keystroke.
+        // A flat-type via path with nothing following it yet must
+        // contribute nothing instead - contrast with a *group* via path
+        // (`/fv/claude` above), which still runs its existence check.
+        // `w`'s title/class contain none of the via-path text below, so
+        // the old free-text-degrade behaviour would have failed every one
+        // of these; a genuine no-op still matches (contributes nothing).
+        let w = win("desk", "c", "1", 1);
+        assert!(matches_str(&w, &no_meta(), "/fv/pid"));
+        assert!(matches_str(&w, &no_meta(), "/fv/workspace"));
+        // a dotted group-subfield via path, no value yet -> also a no-op,
+        // not an existence check (that's only for a *bare* group) and not
+        // free text either.
+        assert!(matches_str(&w, &no_meta(), "/fv/claude.title"));
+    }
+
+    #[test]
     fn via_path_works_on_every_path_taking_verb() {
         let defaults = [ResolvedField::Flat("title")];
         assert_eq!(cols("/ft/claude", &defaults), Vec::<ResolvedField>::new());
@@ -1230,9 +1275,9 @@ mod tests {
             vec![ResolvedField::Flat("title")]
         );
         let a = parse_actions("/s/claude.time");
-        assert_eq!(a.sort, Some((ResolvedField::Group("claude", "time"), Direction::Ascending)));
+        assert_eq!(a.sort, Some((vec![ResolvedField::Group("claude", "time")], Direction::Ascending)));
         let a = parse_actions("/s/workspace descending");
-        assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Descending)));
+        assert_eq!(a.sort, Some((vec![ResolvedField::Flat("workspace")], Direction::Descending)));
         // a trailing token that isn't a direction falls through as its
         // own /fv term, same as the space form
         let w = win("workspace foo", "X", "1", 1);
@@ -1313,14 +1358,14 @@ mod tests {
     #[test]
     fn sort_resolves_field_and_direction() {
         let a = parse_actions("/sort workspace");
-        assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Ascending)));
+        assert_eq!(a.sort, Some((vec![ResolvedField::Flat("workspace")], Direction::Ascending)));
         let a = parse_actions("/s workspace descending");
-        assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Descending)));
+        assert_eq!(a.sort, Some((vec![ResolvedField::Flat("workspace")], Direction::Descending)));
         let a = parse_actions("/s workspace desc");
-        assert_eq!(a.sort, Some((ResolvedField::Flat("workspace"), Direction::Descending)));
+        assert_eq!(a.sort, Some((vec![ResolvedField::Flat("workspace")], Direction::Descending)));
         // nested group field
         let a = parse_actions("/sort tmux.session asc");
-        assert_eq!(a.sort, Some((ResolvedField::Group("tmux", "session"), Direction::Ascending)));
+        assert_eq!(a.sort, Some((vec![ResolvedField::Group("tmux", "session")], Direction::Ascending)));
     }
 
     #[test]
@@ -1331,7 +1376,7 @@ mod tests {
         assert!(!matches_str(&w, &no_meta(), "/sort title bar"));
         assert_eq!(
             parse_actions("/sort title foo").sort,
-            Some((ResolvedField::Flat("title"), Direction::Ascending))
+            Some((vec![ResolvedField::Flat("title")], Direction::Ascending))
         );
     }
 
@@ -1339,7 +1384,7 @@ mod tests {
     fn last_sort_wins_reverse_idempotent() {
         assert_eq!(
             parse_actions("/sort workspace /sort title").sort,
-            Some((ResolvedField::Flat("title"), Direction::Ascending))
+            Some((vec![ResolvedField::Flat("title")], Direction::Ascending))
         );
         assert!(parse_actions("/reverse").reverse);
         assert!(parse_actions("/rv").reverse);
@@ -1352,6 +1397,44 @@ mod tests {
         assert!(parse_actions("/sort zzz").sort.is_none());
         assert!(parse_actions("/sort").sort.is_none());
         assert!(parse_actions("/sort claude.*").sort.is_none()); // not one field
+    }
+
+    #[test]
+    fn sort_via_form_chains_multiple_keys() {
+        // Added 2026-09-02: `/sort/path1/path2/...` breaks ties on path1
+        // with path2, and so on - the space form stays single-key only.
+        let a = parse_actions("/sort/workspace/title");
+        assert_eq!(
+            a.sort,
+            Some((vec![ResolvedField::Flat("workspace"), ResolvedField::Flat("title")], Direction::Ascending))
+        );
+        // one direction applies to the whole chain
+        let a = parse_actions("/s/workspace/title descending");
+        assert_eq!(
+            a.sort,
+            Some((vec![ResolvedField::Flat("workspace"), ResolvedField::Flat("title")], Direction::Descending))
+        );
+        // three keys, mixing a group subfield in
+        let a = parse_actions("/sort/workspace/tmux.session/title");
+        assert_eq!(
+            a.sort,
+            Some((
+                vec![
+                    ResolvedField::Flat("workspace"),
+                    ResolvedField::Group("tmux", "session"),
+                    ResolvedField::Flat("title")
+                ],
+                Direction::Ascending
+            ))
+        );
+        // single-segment via is exactly the single-key sort this always was
+        let a = parse_actions("/sort/workspace");
+        assert_eq!(a.sort, Some((vec![ResolvedField::Flat("workspace")], Direction::Ascending)));
+        // any one unresolvable/ambiguous segment makes the *whole* chain
+        // inert, not just that key
+        assert!(parse_actions("/sort/workspace/zzz").sort.is_none());
+        assert!(parse_actions("/sort/zzz/workspace").sort.is_none());
+        assert!(parse_actions("/sort/workspace/claude.*").sort.is_none()); // "*" not one field
     }
 
     #[test]

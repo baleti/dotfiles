@@ -147,9 +147,17 @@ def tokenize(text):
 # "Via paths"), no colon involved at all: `/fv/tit foo` searches only
 # title, `/fv/x foo` searches only tmux (field is substring-resolved - any
 # FIELD_NAMES entry whose name *contains* it, unioned - not just a prefix).
-# `/fv/field` alone (no word following) matches every row for that field -
-# there's no group/subfield distinction here (every FIELD_NAMES entry is
-# already flat) so there's nothing to existence-check beyond that. `!/fv/
+# `/fv/field` alone (no word following) is a no-op - there's no group/
+# subfield distinction here (every FIELD_NAMES entry is already flat), so
+# unlike a bare group path elsewhere in this DSL there's no existence
+# check to fall back to either (query-dsl.md "Via paths": a flat-type via
+# path with nothing following it yet contributes nothing, rather than
+# matching or excluding anything). This has to be an explicit no-op, not
+# just "an empty term that happens to always match" - the negated form,
+# `!/fv/field` alone, would otherwise silently exclude every session
+# instead of contributing nothing (reported 2026-09-02 for the sibling
+# QML/Rust implementations' free-text-fallback version of this same bug;
+# this tool's own failure mode was different but just as real). `!/fv/
 # ...` negates. The older `/fv field:word` (space, colon) spelling still
 # works too, unchanged - via is an additional spelling, not a replacement -
 # and an unresolvable field name in *either* spelling (`/fv/qqq foo`,
@@ -216,7 +224,12 @@ def parse_query(query):
         if via_field:
             fields = resolve_fields(via_field)
             if fields:
-                (neg_field_terms if neg else field_terms).append((fields, via_word.lower()))
+                if via_word:
+                    (neg_field_terms if neg else field_terms).append((fields, via_word.lower()))
+                # else: via path alone, no value yet - no-op, deliberately
+                # not appended at all (see the comment above `FIELD_NAMES`
+                # for why an always-true term would be wrong specifically
+                # for the negated form).
                 continue
             # unresolvable field name - fall through to plain bare-word
             # handling on the whole "field word" text (both already

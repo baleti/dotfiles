@@ -112,14 +112,20 @@ PanelWindow {
         }
 
         const s = root.parsed.sort;
-        if (s) {
-            const fields = QueryDsl.resolvePath(s.field, root.typeNames);
-            const f = fields.length === 1 ? fields[0] : (fields[0] || "title");
+        // Each chain segment must resolve to exactly one field (query-dsl.md
+        // "/sort"); any segment that doesn't makes the *whole* /sort inert,
+        // not just that key -- falls through to the default order below.
+        const sortFields = s ? s.fields.map(p => QueryDsl.resolvePath(p, root.typeNames)) : null;
+        if (s && sortFields.every(fl => fl.length === 1)) {
+            const keys = sortFields.map(fl => fl[0]);
             rows = rows.slice().sort((a, b) => {
-                const av = String(root._fieldVals(a, f)[0] || "").toLowerCase();
-                const bv = String(root._fieldVals(b, f)[0] || "").toLowerCase();
-                const c = av < bv ? -1 : (av > bv ? 1 : 0);
-                return s.dir === "desc" ? -c : c;
+                for (const f of keys) {
+                    const av = root._fieldVals(a, f)[0] || "";
+                    const bv = root._fieldVals(b, f)[0] || "";
+                    const c = QueryDsl.compareFieldValues(av, bv, s.dir);
+                    if (c !== 0) return c;
+                }
+                return 0;
             });
         } // else: RssSvc.items' own newest-first order stands
 
