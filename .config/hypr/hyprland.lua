@@ -79,6 +79,11 @@ hl.on("hyprland.start", function()
     -- already claimed this was autostarted here -- it wasn't; this was
     -- only ever running because a dev-session build of it was left up.
     hl.exec_cmd("~/.config/hypr/sysmon/target/release/sysmond")
+    -- Resident app-launcher daemon (~/.config/hypr/applauncher/): builds its
+    -- wlr-layer-shell card once, then just shows/hides it on a socket
+    -- message from `applauncher toggle` (mod+Super_l, see keybinds.lua).
+    -- Replaced the quickshell launcher.
+    hl.exec_cmd("~/.config/hypr/applauncher/target/release/applauncher")
     -- Load the theme's nsxiv colors (Nsxiv.* X resources) into the XWayland
     -- server now -- gen-theme.py also does this on every regen, but the
     -- wallpaper (hence that script) may not have changed yet this session.
