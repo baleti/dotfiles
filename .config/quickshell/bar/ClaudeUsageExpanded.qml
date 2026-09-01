@@ -1093,15 +1093,29 @@ Rectangle {
                 readonly property var sortedProcs: {
                     const base = searchFilteredProcs;
                     const s = root.searchParsed.sort;
+                    // Each chain segment must resolve to exactly one field
+                    // (query-dsl.md "/sort"); any segment that doesn't
+                    // makes the *whole* /sort inert, not just that key.
+                    const sortFields = s ? s.fields.map(p => QueryDsl.resolvePath(p, root.searchTypeNames)) : null;
                     let arr;
-                    if (s) {
-                        const fields = QueryDsl.resolvePath(s.field, root.searchTypeNames);
-                        const f = fields.length === 1 ? fields[0] : (fields[0] || "title");
+                    if (s && sortFields.every(fl => fl.length === 1)) {
+                        const keys = sortFields.map(fl => fl[0]);
                         arr = base.slice().sort((a, b) => {
-                            const av = String(root._searchFieldVals(a, f, modelData.account)[0] || "").toLowerCase();
-                            const bv = String(root._searchFieldVals(b, f, modelData.account)[0] || "").toLowerCase();
-                            const c = av < bv ? -1 : (av > bv ? 1 : 0);
-                            return s.dir === "desc" ? -c : c;
+                            for (const f of keys) {
+                                const av = root._searchFieldVals(a, f, modelData.account)[0] || "";
+                                const bv = root._searchFieldVals(b, f, modelData.account)[0] || "";
+                                // Shared comparator (QueryDsl.compareFieldValues):
+                                // numeric-sniffs plain ints (tokens/pid) so
+                                // "100" sorts after "2" instead of before it,
+                                // same rule this account's own column-header
+                                // click sort (root.compareForSort) already
+                                // applies -- the DSL-driven /sort path was
+                                // missing it (reported 2026-09-02: raw token
+                                // counts sorting lexicographically).
+                                const c = QueryDsl.compareFieldValues(av, bv, s.dir);
+                                if (c !== 0) return c;
+                            }
+                            return 0;
                         });
                     } else if (sortSpec) {
                         arr = base.slice().sort((a, b) => root.compareForSort(a, b, sortSpec.col));

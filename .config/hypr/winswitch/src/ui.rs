@@ -1061,12 +1061,23 @@ pub fn run(listener: UnixListener, initial_cmd: &str) {
             };
             let actions = state.sort_actions.borrow();
             let mut ord = match &actions.sort {
-                Some((field, direction)) => {
+                Some((fields, direction)) => {
                     let meta_a = state.tmux_claude.get(ia).map(|m| m.borrow().clone()).unwrap_or_default();
                     let meta_b = state.tmux_claude.get(ib).map(|m| m.borrow().clone()).unwrap_or_default();
-                    let va = state.windows.get(ia).map(|w| query::sort_field_value(w, &meta_a, *field)).unwrap_or_default();
-                    let vb = state.windows.get(ib).map(|w| query::sort_field_value(w, &meta_b, *field)).unwrap_or_default();
-                    query::compare_with_direction(&va, &vb, *direction)
+                    // Multi-key chain: first field decides, ties broken by
+                    // the next, and so on (query-dsl.md's "/sort").
+                    let mut o = std::cmp::Ordering::Equal;
+                    for &field in fields {
+                        let va =
+                            state.windows.get(ia).map(|w| query::sort_field_value(w, &meta_a, field)).unwrap_or_default();
+                        let vb =
+                            state.windows.get(ib).map(|w| query::sort_field_value(w, &meta_b, field)).unwrap_or_default();
+                        o = query::compare_with_direction(&va, &vb, *direction);
+                        if o != std::cmp::Ordering::Equal {
+                            break;
+                        }
+                    }
+                    o
                 }
                 // No /sort/ typed: keep the grid's own default (recency)
                 // order, i.e. compare by the stable window index itself.
