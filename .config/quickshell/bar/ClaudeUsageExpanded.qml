@@ -1600,142 +1600,167 @@ Rectangle {
                 Repeater {
                     model: acctCol.visibleProcs
 
-                    delegate: RowLayout {
+                    // Wrapping Rectangle purely for the hover highlight --
+                    // the row content is the RowLayout inside it. Uses a
+                    // HoverHandler (not a row-spanning MouseArea) because
+                    // the hyprland cell already has its own child MouseArea
+                    // with hoverEnabled: a passive HoverHandler on this
+                    // ancestor still reports `hovered` while the cursor is
+                    // over that child, where a parent MouseArea's
+                    // containsMouse would drop to false. Highlight tint is
+                    // the wallpaper-theme primary at low alpha, same token/
+                    // approach as the autocomplete popup's selected row.
+                    delegate: Rectangle {
+                        id: procRow
                         required property var modelData
                         width: content.width
-                        spacing: 0
+                        implicitHeight: procRowLayout.implicitHeight
+                        height: implicitHeight
+                        radius: 3
+                        color: procRowHover.hovered
+                            ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
+                            : "transparent"
 
-                        Text {
-                            text: root.statusLabel(modelData.status)
-                            color: root.statusColor(modelData.status)
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: root.colStatusW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: modelData.title || "--"
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            elide: Text.ElideRight
-                            Layout.preferredWidth: root.colTitleW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: root.fmtTokens(modelData.context_tokens)
-                            color: root.tokenColor(modelData.context_tokens)
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: root.colTokensW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
-                            color: Theme.muted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                            horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: root.colLastW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: modelData.tmux_session || ""
-                            color: Theme.muted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                            Layout.preferredWidth: root.colTmuxSessionW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: modelData.tmux_window || ""
-                            color: Theme.muted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                            Layout.preferredWidth: root.colTmuxWindowW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: modelData.tmux_pane || ""
-                            color: Theme.muted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                            Layout.preferredWidth: root.colTmuxPaneW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        // hyprland group cell: which real window is showing
-                        // this session, if any (see root.hyprHoverEntered's
-                        // own comment for why it's address-keyed rather
-                        // than title/appId-matched). One MouseArea over all
-                        // 3 sub-columns (not the whole row -- asked for
-                        // explicitly), inside a fixed-size Item (Layout.
-                        // preferredWidth, not implicit-from-children) so
-                        // adding it doesn't hit the sizing/MouseArea layout
-                        // cycle this file's heading block already ran into
-                        // once (see that block's own comment).
-                        Item {
-                            id: hyprCell
-                            Layout.preferredWidth: root.colHyprGroupW
-                            Layout.fillHeight: true
+                        HoverHandler { id: procRowHover }
 
-                            RowLayout {
-                                anchors.fill: parent
-                                spacing: 0
-                                Text {
-                                    text: modelData.hypr_workspace || ""
-                                    // Wallpaper-theme primary color (same
-                                    // token Workspaces.qml's own active-
-                                    // workspace pill uses), only when this
-                                    // is the workspace actually active on
-                                    // this panel's own monitor right now --
-                                    // "highlight the workspace number if
-                                    // it's the one this panel was invoked
-                                    // from" 2026-09-02.
-                                    color: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
-                                        ? Theme.cyan : Theme.muted
-                                    font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSize - 3
-                                    Layout.preferredWidth: root.colHyprWorkspaceW
+                        RowLayout {
+                            id: procRowLayout
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            spacing: 0
+
+                            Text {
+                                text: root.statusLabel(modelData.status)
+                                color: root.statusColor(modelData.status)
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                Layout.preferredWidth: root.colStatusW
+                            }
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: modelData.title || "--"
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                elide: Text.ElideRight
+                                Layout.preferredWidth: root.colTitleW
+                            }
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: root.fmtTokens(modelData.context_tokens)
+                                color: root.tokenColor(modelData.context_tokens)
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                Layout.preferredWidth: root.colTokensW
+                            }
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                horizontalAlignment: Text.AlignRight
+                                Layout.preferredWidth: root.colLastW
+                            }
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: modelData.tmux_session || ""
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                Layout.preferredWidth: root.colTmuxSessionW
+                            }
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: modelData.tmux_window || ""
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                Layout.preferredWidth: root.colTmuxWindowW
+                            }
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: modelData.tmux_pane || ""
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                Layout.preferredWidth: root.colTmuxPaneW
+                            }
+                            Item { Layout.preferredWidth: root.handleW }
+                            // hyprland group cell: which real window is showing
+                            // this session, if any (see root.hyprHoverEntered's
+                            // own comment for why it's address-keyed rather
+                            // than title/appId-matched). One MouseArea over all
+                            // 3 sub-columns (not the whole row -- asked for
+                            // explicitly), inside a fixed-size Item (Layout.
+                            // preferredWidth, not implicit-from-children) so
+                            // adding it doesn't hit the sizing/MouseArea layout
+                            // cycle this file's heading block already ran into
+                            // once (see that block's own comment).
+                            Item {
+                                id: hyprCell
+                                Layout.preferredWidth: root.colHyprGroupW
+                                Layout.fillHeight: true
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    spacing: 0
+                                    Text {
+                                        text: modelData.hypr_workspace || ""
+                                        // Wallpaper-theme primary color (same
+                                        // token Workspaces.qml's own active-
+                                        // workspace pill uses), only when this
+                                        // is the workspace actually active on
+                                        // this panel's own monitor right now --
+                                        // "highlight the workspace number if
+                                        // it's the one this panel was invoked
+                                        // from" 2026-09-02.
+                                        color: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
+                                            ? Theme.cyan : Theme.muted
+                                        font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontSize - 3
+                                        Layout.preferredWidth: root.colHyprWorkspaceW
+                                    }
+                                    Item { Layout.preferredWidth: root.handleW }
+                                    Text {
+                                        text: modelData.hypr_monitor || ""
+                                        color: Theme.muted
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontSize - 3
+                                        Layout.preferredWidth: root.colHyprMonitorW
+                                    }
                                 }
-                                Item { Layout.preferredWidth: root.handleW }
-                                Text {
-                                    text: modelData.hypr_monitor || ""
-                                    color: Theme.muted
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSize - 3
-                                    Layout.preferredWidth: root.colHyprMonitorW
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    onEntered: root.hyprHoverEntered(modelData.hypr_address)
+                                    onPositionChanged: mouse => root.hyprHoverMoved(hyprCell.mapToItem(root, mouse.x, mouse.y))
+                                    onExited: root.hyprHoverExited()
+                                    onClicked: root.focusHyprWindow(modelData)
                                 }
                             }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onEntered: root.hyprHoverEntered(modelData.hypr_address)
-                                onPositionChanged: mouse => root.hyprHoverMoved(hyprCell.mapToItem(root, mouse.x, mouse.y))
-                                onExited: root.hyprHoverExited()
-                                onClicked: root.focusHyprWindow(modelData)
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: String(modelData.pid)
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                Layout.preferredWidth: root.colPidW
                             }
+                            Item { Layout.preferredWidth: root.handleW }
+                            Text {
+                                text: root.shortCwd(modelData.cwd)
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                elide: Text.ElideRight
+                                Layout.preferredWidth: root.colPathW
+                            }
+                            Item { Layout.fillWidth: true }
                         }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: String(modelData.pid)
-                            color: Theme.muted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: root.colPidW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            text: root.shortCwd(modelData.cwd)
-                            color: Theme.muted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                            elide: Text.ElideRight
-                            Layout.preferredWidth: root.colPathW
-                        }
-                        Item { Layout.fillWidth: true }
                     }
                 }
 
