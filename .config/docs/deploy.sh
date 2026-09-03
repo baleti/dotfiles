@@ -28,6 +28,16 @@ for arg in "$@"; do
   esac
 done
 
+# Serialize deploys: build.py wipes and rebuilds ./site/ from scratch, so a
+# manual run overlapping the hourly timer races rmtree against read_text and
+# crashes mid-build. The timer's --if-changed run bows out; a manual run waits.
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/dotfiles-docs-deploy.lock"
+if [[ "$IF_CHANGED" == 1 ]]; then
+  flock -n 9 || { echo "deploy.sh: another deploy is running - nothing to do"; exit 0; }
+else
+  flock -w 600 9 || { echo "deploy.sh: timed out waiting for another deploy to finish" >&2; exit 1; }
+fi
+
 if ! git fetch -q origin 2>/dev/null; then
   if [[ "$IF_CHANGED" == 1 ]]; then
     echo "deploy.sh: git fetch failed (offline?) - nothing to do"
