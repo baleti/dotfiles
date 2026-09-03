@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
 pixel6-mpris-bridge - registers org.mpris.MediaPlayer2.pixel6 on host3's
-session bus and proxies MPRIS calls to the phone's PeerAgent Companion app,
-via peer-agent's media-* actions over WireGuard.
+session bus and proxies MPRIS calls to the phone's PeerAgent Companion app
+directly over WireGuard (http://10.10.0.5:8788, guarded by the X-Peer-Agent
+header). peer-agent used to sit in front of this on the phone; it was retired
+from the phone since it only held a perimeter the Companion app now carries
+itself - see BridgeHttpServer.kt.
 
 This is what makes playerctl (and the existing mod+ctrl+x/z keybinds, and the
 ALT+CTRL+SHIFT+m zenity player picker, which already read/write
 ~/.config/playerctl-current) able to control playback on the phone: it just
-needed a real MPRIS name on the bus to select. See
-~/.config/peer-agent/peer-agent.md on the phone for the other half.
+needed a real MPRIS name on the bus to select.
 
 No new dependency: dbus-python + PyGObject/GLib are both already installed.
 """
@@ -28,7 +30,7 @@ OBJECT_PATH = "/org/mpris/MediaPlayer2"
 ROOT_IFACE = "org.mpris.MediaPlayer2"
 PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 
-PEER_AGENT_BASE = "http://10.10.0.5:8787/run"
+COMPANION_BASE = "http://10.10.0.5:8788"
 POLL_INTERVAL_S = 4
 HTTP_TIMEOUT_S = 3
 
@@ -54,31 +56,36 @@ def friendly_app_name(pkg):
     return pkg.rsplit(".", 1)[-1]
 
 
-def call_action(name, params=None):
-    """POST to a peer-agent action, return its parsed JSON body or None."""
-    url = f"{PEER_AGENT_BASE}/{name}"
+def _request(method, path, params=None):
+    """Hit the Companion app, return the raw response body (bytes) or None."""
+    url = COMPANION_BASE + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(
         url,
-        method="POST",
+        method=method,
         headers={"X-Peer-Agent": "1"},
     )
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
-            return json.loads(resp.read())
+            return resp.read()
     except (URLError, TimeoutError, OSError, ValueError):
         return None
 
 
+def command(name, params=None):
+    """POST /command/<name> on the Companion app. Reply body is unused."""
+    return _request("POST", f"/command/{name}", params)
+
+
 def fetch_status():
-    """media-status wraps the sidecar app's /status JSON in payload["stdout"]."""
-    payload = call_action("media-status")
-    if not payload or payload.get("status") != "ok":
+    """GET /status on the Companion app - already the bare status JSON."""
+    body = _request("GET", "/status")
+    if body is None:
         return None
     try:
-        return json.loads(payload["stdout"])
-    except (KeyError, ValueError):
+        return json.loads(body)
+    except ValueError:
         return None
 
 
@@ -190,7 +197,7 @@ class Pixel6Player(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE)
     def Next(self):
-        call_action("media-next")
+        command("next")
         # No refresh(force=True) here (or below): that was a second,
         # sequential WireGuard round trip after the action's own, blocking
         # this method that much longer for no real benefit - playerctl
@@ -205,16 +212,16 @@ class Pixel6Player(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE)
     def Previous(self):
-        call_action("media-prev")
+        command("prev")
 
     @dbus.service.method(PLAYER_IFACE)
     def Pause(self):
-        call_action("media-pause")
+        command("pause")
         self._optimistic_state("paused")
 
     @dbus.service.method(PLAYER_IFACE)
     def Play(self):
-        call_action("media-play")
+        command("play")
         self._optimistic_state("playing")
 
     @dbus.service.method(PLAYER_IFACE)
@@ -226,7 +233,7 @@ class Pixel6Player(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE)
     def Stop(self):
-        call_action("media-pause")
+        command("pause")
         self._optimistic_state("paused")
 
     def _optimistic_state(self, state):
@@ -246,7 +253,7 @@ class Pixel6Player(dbus.service.Object):
         target_ms = max(0, int(target_ms))
         if length_ms:
             target_ms = min(target_ms, length_ms)
-        call_action("media-seek-to", {"ms": target_ms})
+        command("seek-to", {"ms": target_ms})
         # Don't refresh(force=True) here: an immediate /status re-fetch
         # racingly reads the phone's PRE-seek position (confirmed live -
         # transportControls.seekTo() returns to the HTTP caller before the
@@ -266,17 +273,17 @@ class Pixel6Player(dbus.service.Object):
         # Android's STREAM_MUSIC is stepped (getStreamMaxVolume(), commonly
         # ~15-25 steps depending on device/output), not a continuous 0.0-1.0
         # knob, so there's no meaningful "set to this exact float" action -
-        # peer-agent only exposes the same up/down nudge the hardware
-        # buttons send (media-volume-up/-down, one adjustStreamVolume() step
+        # the Companion app only exposes the same up/down nudge the hardware
+        # buttons send (/command/volume-up|-down, one adjustStreamVolume() step
         # each). Move one step towards whatever playerctl/the quickshell
         # widget asked for; if it wanted a bigger jump, the next scroll/press
         # will take another step from the corrected real level.
         target = max(0.0, min(1.0, target))
         current = float((self._status or {}).get("volume", 1.0))
         if target > current:
-            call_action("media-volume-up")
+            command("volume-up")
         elif target < current:
-            call_action("media-volume-down")
+            command("volume-down")
         else:
             return
         # Unlike _seek_to_ms, an immediate /status re-fetch here already
@@ -292,14 +299,12 @@ class Pixel6Player(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE, in_signature="x")
     def Seek(self, offset):
-        # media-seek-to (BridgeHttpServer's /command/seek-to, via
-        # BridgeForegroundService.seekTo) carries an absolute ms position -
-        # peer-agent's forward_query passes just that one whitelisted,
-        # digits-only param through. Compute the absolute target from the
-        # last-known interpolated Position plus this relative offset (both
-        # microseconds) so an arbitrary-magnitude Seek (e.g. the quickshell
-        # bar's scrub-bar drag) actually lands where it was dropped, instead
-        # of the old flat 5s media-seek-fwd/back nudge.
+        # /command/seek-to (BridgeHttpServer -> BridgeForegroundService.seekTo)
+        # carries an absolute ms position, validated digits-only in the app.
+        # Compute the absolute target from the last-known interpolated Position
+        # plus this relative offset (both microseconds) so an arbitrary-
+        # magnitude Seek (e.g. the quickshell bar's scrub-bar drag) actually
+        # lands where it was dropped, instead of a flat 5s nudge.
         current_us = int(self._player_props()["Position"])
         self._seek_to_ms((current_us + int(offset)) // 1000)
 
