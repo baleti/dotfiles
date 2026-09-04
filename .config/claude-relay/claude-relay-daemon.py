@@ -376,6 +376,47 @@ def get_live_sessions():
 # Transcript parsing
 # ---------------------------------------------------------------------------
 
+def summarize_tool_use(name, tool_input):
+    """Tool-aware summary, not a raw json.dumps of the input dict.
+
+    json.dumps of a Bash call's {"command": "...multi-line..."} escapes
+    every real newline in the command to the literal two characters
+    backslash-n -- confirmed live (2026-09-05) that this is exactly what
+    was rendering on-device as "...restart claude-relay.service\nsleep
+    2\n..." instead of an actual multi-line command. Pulling the real
+    field out and wrapping it as a fenced ```bash block instead means it
+    flows through the app's own Markdown.kt/SyntaxHighlight.kt pipeline
+    (already built) with real line breaks and syntax coloring, the way
+    Claude Code's own CLI output reads.
+    """
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if name == "Bash":
+        cmd = tool_input.get("command", "")
+        return f"→ Bash\n```bash\n{cmd}\n```"
+    if name in ("Read", "Write", "NotebookEdit"):
+        path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        return f"→ {name}(`{path}`)"
+    if name == "Edit":
+        return f"→ Edit(`{tool_input.get('file_path', '')}`)"
+    if name == "Glob":
+        return f"→ Glob(`{tool_input.get('pattern', '')}`)"
+    if name == "Grep":
+        pattern = tool_input.get("pattern", "")
+        path = tool_input.get("path", "")
+        return f"→ Grep(`{pattern}`" + (f" in `{path}`)" if path else ")")
+    if name in ("WebFetch", "WebSearch"):
+        target = tool_input.get("url") or tool_input.get("query") or ""
+        return f"→ {name}(`{target}`)"
+    if name == "TodoWrite":
+        return "→ TodoWrite(updated task list)"
+    try:
+        arg_str = json.dumps(tool_input, ensure_ascii=False)[:300]
+    except Exception:
+        arg_str = ""
+    return f"→ {name}({arg_str})"
+
+
 def summarize_content_blocks(content):
     if isinstance(content, str):
         return content
@@ -389,20 +430,28 @@ def summarize_content_blocks(content):
         if t == "text":
             parts.append(block.get("text", ""))
         elif t == "tool_use":
-            name = block.get("name", "?")
-            try:
-                arg_str = json.dumps(block.get("input", {}))[:200]
-            except Exception:
-                arg_str = ""
-            parts.append(f"→ {name}({arg_str})")
+            parts.append(summarize_tool_use(block.get("name", "?"), block.get("input", {})))
         elif t == "tool_result":
             c = block.get("content")
             if isinstance(c, str):
                 parts.append(c[:2000])
             elif isinstance(c, list):
                 for cc in c:
-                    if isinstance(cc, dict) and cc.get("type") == "text":
+                    if not isinstance(cc, dict):
+                        continue
+                    ct = cc.get("type")
+                    if ct == "text":
                         parts.append(cc.get("text", "")[:2000])
+                    elif ct == "image":
+                        # A screenshot Read (very common in this workflow)
+                        # returns ONLY an image block, no text -- confirmed
+                        # live (2026-09-05) that these whole exchanges were
+                        # silently vanishing from the app (empty summary ->
+                        # parse_transcript_line drops the line entirely),
+                        # which is exactly what read as "skipping messages".
+                        parts.append("[image]")
+                    elif ct == "tool_reference":
+                        parts.append(f"[{cc.get('tool_name', 'tool')} reference]")
         # "thinking" blocks intentionally omitted (bandwidth + noise)
     return "\n".join(p for p in parts if p)
 
