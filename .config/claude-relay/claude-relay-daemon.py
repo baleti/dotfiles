@@ -629,11 +629,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             since = int((qs.get("since") or ["0"])[0])
             timeout = min(float((qs.get("timeout") or ["25"])[0]), 30.0)
             deadline = time.time() + timeout
+            # Full re-parse from line 0 is the expensive part (a 20k-line
+            # transcript costs real CPU+churn) -- only worth paying once the
+            # file has actually grown, not on every 1s tick of a 25s wait.
+            # Confirmed the naive re-read-every-second version was the
+            # actual cause of daemon RSS climbing toward MemoryMax during
+            # normal ChatActivity polling, not a real leak elsewhere.
+            last_size = -1
             msgs = []
             while time.time() < deadline:
-                msgs = read_messages_since(p, since)
-                if msgs:
+                try:
+                    cur_size = p.stat().st_size
+                except OSError:
                     break
+                if cur_size != last_size:
+                    last_size = cur_size
+                    msgs = read_messages_since(p, since)
+                    if msgs:
+                        break
                 time.sleep(1)
             return self._ok({"messages": msgs})
 
