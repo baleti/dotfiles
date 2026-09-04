@@ -1,0 +1,15 @@
+[Unit]
+Description=Claude Relay: WireGuard-only HTTP bridge for the Android offline client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/claude-relay/claude-relay-daemon.py
+Restart=always
+RestartSec=10
+Nice=5
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target
