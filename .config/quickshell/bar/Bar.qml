@@ -527,24 +527,44 @@ Item {
         const p = Theme.seriesPalette;
         return vendor === "intel" ? p[4 % p.length] : p[2 % p.length];
     }
-    function gpuShadeColor(base, i, n, dashed) {
+    // `role` picks a fixed hue-offset/value/sat recipe instead of the
+    // earlier symmetric i/n interpolation -- utilization/VRAM/power don't
+    // actually need symmetric treatment, they need each PAIR kept apart,
+    // and once VRAM's dashed-alpha compensation (below) pushes its value
+    // toward the ceiling to stay visible at all, it lands right next to
+    // power's own already-near-ceiling value with only ~12-24 degrees of
+    // hue between them -- reported still not distinctive enough
+    // (2026-09-06, this pair specifically) despite utilization now being
+    // clearly darker than both. Power's hue offset is widened to +24
+    // degrees (blue-green) while VRAM's stays close to utilization's own
+    // -18 (yellow-green) -- VRAM and utilization are still easily told
+    // apart because only one of them gets the alpha-compensation boost
+    // (dashed=true), so they end up dark-vs-bright at the *same* hue,
+    // while VRAM and power end up bright-vs-bright at *different* hues.
+    // Verified via direct RGB simulation first: effective on-panel colours
+    // (post alpha-blend over the near-black background) come out as
+    // utilization #55631b (dark), VRAM #7e9813 (medium, yellow-green),
+    // power #37dd23 (vivid, blue-green) -- three genuinely different
+    // greens pairwise, not just "darker/lighter" ones.
+    function gpuShadeColor(base, role, dashed) {
         const c = Qt.color(base);
-        const t = n > 1 ? (i / (n - 1)) - 0.5 : 0; // -0.5 (first) .. 0.5 (last)
-        const hue = (c.hsvHue + t * (24 / 360) + 1) % 1;
-        let value = Math.min(1, Math.max(0.42, c.hsvValue + t * 0.85));
-        let sat = Math.min(1, Math.max(0.55, c.hsvSaturation + Math.abs(t) * 0.6));
+        const recipes = {
+            power: { hueOffsetDeg: 24, value: 0.95, sat: 0.85 },
+            secondary: { hueOffsetDeg: -18, value: 0.62, sat: 0.85 }, // VRAM / iGPU memory
+            primary: { hueOffsetDeg: -18, value: 0.42, sat: 0.75 },   // utilization
+        };
+        const r = recipes[role] ?? recipes.primary;
+        const hue = (c.hsvHue + r.hueOffsetDeg / 360 + 1) % 1;
+        let value = r.value;
+        let sat = r.sat;
         // The dashed (VRAM/memory) line draws at Graph.qml's own
         // "secondary" stroke alpha (0.62) vs a solid line's 0.9 -- once
         // actually blended over the near-black panel background, that
         // ~30% extra transparency alone visibly darkens/desaturates it
-        // relative to its own nominal HSV colour, enough to make it read
-        // as closer to a *different, darker* line in this group than it
-        // actually is (reported still confusable with utilization
-        // specifically -- the darkest solid line -- 2026-09-06, even
-        // though their pre-render HSV values were well apart). Boost by
-        // the inverse of that alpha ratio (0.9/0.62) here so the
-        // *rendered* brightness lines back up with what a solid line at
-        // this `value` would look like.
+        // relative to its own nominal HSV colour. Boost by the inverse of
+        // that alpha ratio (0.9/0.62) here so the *rendered* brightness
+        // lines back up with what a solid line at this `value` would
+        // look like.
         if (dashed) {
             value = Math.min(1, value * (0.9 / 0.62));
             sat = Math.min(1, sat * 1.1);
@@ -563,13 +583,13 @@ Item {
             const memLabel = g.vendor === "intel" ? qsTr("memory") : qsTr("VRAM");
             const group = [];
             if ((g.util_pct?.length ?? 0) > 0)
-                group.push({ data: g.util_pct, dashed: false, name: tag + " " + qsTr("utilization") });
+                group.push({ data: g.util_pct, dashed: false, role: "primary", name: tag + " " + qsTr("utilization") });
             if ((g.vram_pct?.length ?? 0) > 0)
-                group.push({ data: g.vram_pct, dashed: true, name: tag + " " + memLabel });
+                group.push({ data: g.vram_pct, dashed: true, role: "secondary", name: tag + " " + memLabel });
             if ((g.power_pct?.length ?? 0) > 0)
-                group.push({ data: g.power_pct, dashed: false, name: tag + " " + qsTr("power") });
+                group.push({ data: g.power_pct, dashed: false, role: "power", name: tag + " " + qsTr("power") });
             const base = gpuBaseColor(g.vendor);
-            group.forEach((l, i) => out.push(Object.assign(l, { color: gpuShadeColor(base, i, group.length, l.dashed) })));
+            group.forEach(l => out.push(Object.assign(l, { color: gpuShadeColor(base, l.role, l.dashed) })));
         }
         return out;
     }
@@ -902,6 +922,12 @@ Item {
             // muddying wash this pill's already-hard-to-tell-apart lines
             // don't need on top.
             fillOverlay: false
+            // On (request 2026-09-06): dGPU's VRAM (secondary/dashed) and
+            // power (primary) can sit at nearly the same value for long
+            // stretches, and default draw order (secondary under primary)
+            // then means power paints straight over VRAM for that whole
+            // stretch -- see Graph.qml's own comment on this property.
+            secondaryOnTop: true
             maxValue: 100
             valueFraction: root.gpuMaxUtil / 100
             secondaryIcon: isNaN(root.gpuNvVram) ? "" : Icons.memory
