@@ -155,6 +155,8 @@ struct PersistedHistory {
     gpu_util_pct: PersistedSeries,
     #[serde(default)]
     gpu_vram_pct: PersistedSeries,
+    #[serde(default)]
+    gpu_power_pct: PersistedSeries,
     net: HashMap<String, (PersistedSeries, PersistedSeries)>,
     disk: HashMap<String, (PersistedSeries, PersistedSeries)>,
 }
@@ -206,6 +208,7 @@ struct History {
     // `nvidia-smi` subprocess. Stay empty/zero forever if there's no GPU.
     gpu_util_pct: TieredSeries,
     gpu_vram_pct: TieredSeries,
+    gpu_power_pct: TieredSeries,
     gpu: GpuLatest,
     // Per-process GPU use, from `nvidia-smi pmon` (see `gpu_proc_loop`) --
     // graphics *and* compute clients. Ranked by SM utilisation then VRAM;
@@ -245,6 +248,7 @@ impl History {
             swap_used_pct: TieredSeries::new(),
             gpu_util_pct: TieredSeries::new(),
             gpu_vram_pct: TieredSeries::new(),
+            gpu_power_pct: TieredSeries::new(),
             gpu: GpuLatest::default(),
             top_gpu: Vec::new(),
             top_cpu: Vec::new(),
@@ -268,6 +272,7 @@ impl History {
         self.swap_used_pct.load_persisted(&p.swap_used_pct);
         self.gpu_util_pct.load_persisted(&p.gpu_util_pct);
         self.gpu_vram_pct.load_persisted(&p.gpu_vram_pct);
+        self.gpu_power_pct.load_persisted(&p.gpu_power_pct);
         for (core, saved) in self.cpu_cores.iter_mut().zip(p.cpu_cores.iter()) {
             core.load_persisted(saved);
         }
@@ -294,6 +299,7 @@ impl History {
             swap_used_pct: self.swap_used_pct.to_persisted(),
             gpu_util_pct: self.gpu_util_pct.to_persisted(),
             gpu_vram_pct: self.gpu_vram_pct.to_persisted(),
+            gpu_power_pct: self.gpu_power_pct.to_persisted(),
             net: self.net.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
             disk: self.disk.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
         };
@@ -644,12 +650,15 @@ fn nethogs_loop(history: Arc<Mutex<History>>) {
 /// it's respawned after a short delay rather than leaving the graph frozen.
 ///
 /// Fields, in query order: utilization.gpu, memory.used, memory.total,
-/// temperature.gpu, power.draw, power.limit, clocks.sm, clocks.mem,
+/// temperature.gpu, power.draw, enforced.power.limit, clocks.sm, clocks.mem,
 /// fan.speed, utilization.encoder, utilization.decoder, name. `nounits`
 /// keeps them bare; anything nvidia-smi reports as `[N/A]` (mobile parts
-/// commonly do for power.limit / fan.speed) parses to 0.
+/// commonly do for the plain `power.limit` and `fan.speed`) parses to 0.
+/// `enforced.power.limit` is used rather than `power.limit` because the
+/// latter is often `[N/A]` on mobile parts while the former still reports
+/// the TGP -- it's the denominator for the power-draw history line.
 fn gpu_loop(history: Arc<Mutex<History>>) {
-    const QUERY: &str = "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem,fan.speed,utilization.encoder,utilization.decoder,name";
+    const QUERY: &str = "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,enforced.power.limit,clocks.sm,clocks.mem,fan.speed,utilization.encoder,utilization.decoder,name";
 
     let parse_num = |s: &str| -> f64 {
         let t = s.trim();
@@ -684,15 +693,19 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
             let vram_used = parse_num(f[1]);
             let vram_total = parse_num(f[2]);
             let vram_pct = if vram_total > 0.0 { 100.0 * vram_used / vram_total } else { 0.0 };
+            let power_w = parse_num(f[4]);
+            let power_limit_w = parse_num(f[5]);
+            let power_pct = if power_limit_w > 0.0 { 100.0 * power_w / power_limit_w } else { 0.0 };
 
             let mut h = history.lock().unwrap();
             h.gpu_util_pct.push_raw(util);
             h.gpu_vram_pct.push_raw(vram_pct);
+            h.gpu_power_pct.push_raw(power_pct);
             h.gpu = GpuLatest {
                 name: f[11].trim().to_string(),
                 temp_c: parse_num(f[3]),
-                power_w: parse_num(f[4]),
-                power_limit_w: parse_num(f[5]),
+                power_w,
+                power_limit_w,
                 vram_used_mb: vram_used,
                 vram_total_mb: vram_total,
                 sm_clock_mhz: parse_num(f[6]),
@@ -1001,6 +1014,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                 Metric::Gpu => Snapshot::Gpu {
                     util_pct: h.gpu_util_pct.get(tier),
                     vram_pct: h.gpu_vram_pct.get(tier),
+                    power_pct: h.gpu_power_pct.get(tier),
                     name: h.gpu.name.clone(),
                     temp_c: h.gpu.temp_c,
                     power_w: h.gpu.power_w,

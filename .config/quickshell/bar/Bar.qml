@@ -477,18 +477,21 @@ Item {
         return rd + wr;
     }
 
-    // GPU: two overlaid history lines (engine load solid, VRAM occupancy
-    // dashed) -- same shape/gating as memSeriesList. detailRows reads the
-    // point-in-time block in SysmonSvc.gpuInfo; gated on the pill actually
-    // being open so it's not rebuilt every tick while collapsed (see the
-    // comment on netLegend above).
+    // GPU: three overlaid history lines on one 0..100 axis -- engine load
+    // (solid), VRAM occupancy (dashed), board power as % of TGP (solid) --
+    // same shape/gating as memSeriesList. detailRows reads the point-in-time
+    // block in SysmonSvc.gpuInfo; gated on the pill actually being open so
+    // it's not rebuilt every tick while collapsed (see the comment on
+    // netLegend above).
     readonly property var gpuLegend: [
         { name: qsTr("Utilisation"), color: Theme.green },
-        { name: qsTr("VRAM"), color: Theme.cyan }
+        { name: qsTr("VRAM"), color: Theme.cyan },
+        { name: qsTr("Power"), color: Theme.orange }
     ]
     readonly property var gpuSeriesList: gpuPill.expanded ? [
         { data: SysmonSvc.gpuUtilPct, color: Theme.green, dashed: false },
-        { data: SysmonSvc.gpuVramPct, color: Theme.cyan, dashed: true }
+        { data: SysmonSvc.gpuVramPct, color: Theme.cyan, dashed: true },
+        { data: SysmonSvc.gpuPowerPct, color: Theme.orange, dashed: false }
     ] : []
     readonly property var gpuDetailRows: {
         if (!gpuPill.expanded)

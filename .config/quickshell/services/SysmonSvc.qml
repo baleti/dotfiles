@@ -57,15 +57,16 @@ QtObject {
     readonly property list<real> swapUsedPct: memSock.data.swap_used_pct ?? []
 
     // NVIDIA GPU (sysmond's `gpu_loop`, one `nvidia-smi -l 1` subprocess).
-    // `gpuUtilPct`/`gpuVramPct` are the two overlaid history series (engine
-    // load, VRAM occupancy); `gpuInfo` carries the point-in-time detail
-    // block (name/temp_c/power_w/power_limit_w/vram_used_mb/vram_total_mb/
-    // sm_clock_mhz/mem_clock_mhz/enc_pct/dec_pct/fan_pct) for the expanded
-    // panel. `gpuPresent` gates the bar pill entirely -- stays false on a
-    // machine with no NVIDIA GPU (sysmond never fills in `name`), so the
-    // pill just never appears.
+    // `gpuUtilPct`/`gpuVramPct`/`gpuPowerPct` are the three overlaid history
+    // series (engine load, VRAM occupancy, board power as % of TGP);
+    // `gpuInfo` carries the point-in-time detail block (name/temp_c/power_w/
+    // power_limit_w/vram_used_mb/vram_total_mb/sm_clock_mhz/mem_clock_mhz/
+    // enc_pct/dec_pct/fan_pct) for the expanded panel. `gpuPresent` gates
+    // the bar pill entirely -- stays false on a machine with no NVIDIA GPU
+    // (sysmond never fills in `name`), so the pill just never appears.
     readonly property list<real> gpuUtilPct: gpuSock.data.util_pct ?? []
     readonly property list<real> gpuVramPct: gpuSock.data.vram_pct ?? []
+    readonly property list<real> gpuPowerPct: gpuSock.data.power_pct ?? []
     readonly property var gpuInfo: gpuSock.data
     readonly property bool gpuPresent: !!(gpuSock.data.name)
 
