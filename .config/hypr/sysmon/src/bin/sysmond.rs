@@ -870,6 +870,20 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>) {
         let util = (100.0 * total_render / wall_ns).min(100.0);
         let video_pct = (100.0 * total_video / wall_ns).min(100.0);
         let resident_mb = per_pid.values().map(|v| v.1).sum::<f64>() / 1024.0;
+        // The iGPU has no dedicated VRAM -- its buffers are GEM objects in
+        // system RAM -- so its "memory" line is resident bytes as a percent
+        // of MemTotal.
+        let ram_total_mb = fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines().find_map(|l| {
+                    l.strip_prefix("MemTotal:")
+                        .and_then(|r| r.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
+                })
+            })
+            .map(|kb| kb / 1024.0)
+            .unwrap_or(0.0);
+        let mem_pct = if ram_total_mb > 0.0 { 100.0 * resident_mb / ram_total_mb } else { 0.0 };
         let freq = fs::read_to_string("/sys/class/drm/card0/gt_cur_freq_mhz")
             .ok()
             .or_else(|| find_intel_freq())
@@ -904,7 +918,9 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>) {
 
         with_gpu(&history, "intel", |g| {
             g.util.push_raw(util);
+            g.vram.push_raw(mem_pct);
             g.detail.vram_used_mb = resident_mb;
+            g.detail.vram_total_mb = ram_total_mb;
             g.detail.sm_clock_mhz = freq;
             g.detail.dec_pct = video_pct;
             g.top = top;

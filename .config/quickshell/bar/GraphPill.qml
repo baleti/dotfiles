@@ -449,82 +449,75 @@ Rectangle {
                 }
             }
 
-            // Legend (left) and the time-range toggle (hard right) share one
-            // line directly under the graph's x-axis. tierCodes-less pills
-            // (media/calendar) and legend-less ones (cpu/temp) each just
-            // drop their half; the row hides entirely when both are empty.
-            RowLayout {
+            // Legend, wrapping across as many lines as it needs -- directly
+            // under the graph's x-axis.
+            Flow {
                 width: parent.width
                 spacing: 10
-                visible: root.legendItems.length > 0 || root.tierCodes.length > 0
+                visible: root.legendItems.length > 0
 
-                Flow {
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignVCenter
-                    spacing: 10
-                    visible: root.legendItems.length > 0
+                Repeater {
+                    model: root.legendItems
 
-                    Repeater {
-                        model: root.legendItems
+                    Row {
+                        id: legendRow
+                        spacing: 5
+                        required property var modelData
 
-                        Row {
-                            id: legendRow
-                            spacing: 5
-                            required property var modelData
+                        Rectangle {
+                            width: 9
+                            height: 9
+                            radius: 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: legendRow.modelData.color
+                        }
 
-                            Rectangle {
-                                width: 9
-                                height: 9
-                                radius: 2
-                                anchors.verticalCenter: parent.verticalCenter
-                                color: legendRow.modelData.color
-                            }
-
-                            Text {
-                                text: legendRow.modelData.name
-                                color: Theme.textDim
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                            }
+                        Text {
+                            text: legendRow.modelData.name
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
                         }
                     }
                 }
+            }
 
-                Row {
-                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
-                    spacing: 6
-                    layoutDirection: Qt.RightToLeft
-                    visible: root.tierCodes.length > 0
+            // Time-range toggle on its own line below the legend, hard
+            // right, so a long legend never squeezes it.
+            Row {
+                anchors.right: parent.right
+                spacing: 6
+                layoutDirection: Qt.RightToLeft
+                visible: root.tierCodes.length > 0
 
-                    Repeater {
-                        model: root.tierCodes
+                Repeater {
+                    model: root.tierCodes
 
-                        Rectangle {
-                            id: tierBtn
-                            required property string modelData
-                            readonly property bool active: modelData === root.tier
+                    Rectangle {
+                        id: tierBtn
+                        required property string modelData
+                        readonly property bool active: modelData === root.tier
 
-                            width: tierLabel.implicitWidth + 10
-                            height: tierLabel.implicitHeight + 4
-                            radius: Theme.rounding - 4
-                            color: active ? Theme.cyan : "transparent"
-                            border.color: Theme.border
-                            border.width: active ? 0 : 1
+                        width: tierLabel.implicitWidth + 10
+                        height: tierLabel.implicitHeight + 4
+                        radius: Theme.rounding - 4
+                        color: active ? Theme.cyan : "transparent"
+                        border.color: Theme.border
+                        border.width: active ? 0 : 1
 
-                            Text {
-                                id: tierLabel
-                                anchors.centerIn: parent
-                                text: tierBtn.modelData
-                                color: tierBtn.active ? Theme.bg : Theme.textDim
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                            }
+                        Text {
+                            id: tierLabel
+                            anchors.centerIn: parent
+                            text: tierBtn.modelData
+                            color: tierBtn.active ? Theme.bg : Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                        }
 
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.tierRequested(tierBtn.modelData)
-                            }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.tierRequested(tierBtn.modelData)
                         }
                     }
                 }
@@ -567,14 +560,18 @@ Rectangle {
                             width: parent.width
                             height: detailName.implicitHeight
 
+                            // Detail keys (Memory / Frequency / VRAM / ...)
+                            // read at full text colour and the value's size
+                            // so they stand out from the dim "Top processes"
+                            // sub-heading below.
                             Text {
                                 id: detailName
                                 anchors.left: parent.left
                                 anchors.baseline: detailValue.baseline
                                 text: parent.modelData.name
-                                color: Theme.textDim
+                                color: Theme.text
                                 font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
+                                font.pixelSize: Theme.fontSize - 1
                             }
 
                             Text {
@@ -593,8 +590,9 @@ Rectangle {
                         visible: (section.modelData.procs ?? []).length > 0
                         color: Theme.textDim
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 2
-                        topPadding: 3
+                        font.pixelSize: Theme.fontSize - 3
+                        font.italic: true
+                        topPadding: 4
                     }
 
                     Repeater {
@@ -605,6 +603,9 @@ Rectangle {
                             width: parent.width
                             height: sProcName.implicitHeight
 
+                            // Process rows sit a step below the detail keys
+                            // in the hierarchy -- same size as the "Top
+                            // processes" heading itself.
                             Text {
                                 id: sProcName
                                 anchors.left: parent.left
@@ -612,7 +613,7 @@ Rectangle {
                                 text: parent.modelData.name
                                 color: Theme.text
                                 font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 1
+                                font.pixelSize: Theme.fontSize - 3
                             }
 
                             Text {
@@ -625,7 +626,7 @@ Rectangle {
                                 visible: text.length > 0
                                 color: Theme.textDim
                                 font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
+                                font.pixelSize: Theme.fontSize - 4
                                 elide: Text.ElideRight
                             }
 
@@ -635,7 +636,7 @@ Rectangle {
                                 text: parent.modelData.value.toFixed(1) + (section.modelData.procUnit ?? "")
                                 color: Theme.textDim
                                 font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 1
+                                font.pixelSize: Theme.fontSize - 3
                             }
                         }
                     }
