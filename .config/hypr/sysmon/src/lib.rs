@@ -222,6 +222,15 @@ pub struct ProcEntry {
     /// so a client/daemon version mismatch just sees an empty string.
     #[serde(default)]
     pub detail: String,
+    /// GPU only: this process's share of the GPU's engine (sm/render)
+    /// time, 0-100. Zero/unset for cpu/mem/net/disk entries, which have
+    /// no equivalent metric. Used to be folded into `detail` as
+    /// "NN% GPU · ..." text; broken out as its own field (request
+    /// 2026-09-06: "add utilization as its own column") since a client
+    /// wants to display and reason about it as a number, not parse it
+    /// back out of a formatted string.
+    #[serde(default)]
+    pub util_pct: f64,
 }
 
 /// Oldest-first ring-buffer snapshots for whichever tier was requested, up

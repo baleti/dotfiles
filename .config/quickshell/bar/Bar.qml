@@ -488,12 +488,36 @@ Item {
     // process table); gated on the pill being open so it's not rebuilt
     // every tick while collapsed (see the comment on netLegend above).
     function gpuTag(g) { return g.vendor === "intel" ? qsTr("iGPU") : qsTr("dGPU"); }
-    // Stride 3 over the 8-hue palette is a full permutation (gcd(3,8)=1), so
-    // up to 8 lines stay maximally far apart in hue no matter how the theme
-    // regenerates.
-    function gpuLineColor(i) {
+    // Grouped by GPU now (request 2026-09-06: "igpu all blue and dgpu all
+    // green... but still sourcing from... whatever current wallpaper-based
+    // color palette is") -- used to pick colors globally across every
+    // line (stride 3 over the 8-hue seriesPalette), which could land an
+    // iGPU line and a dGPU line right next to each other in hue purely by
+    // index, with nothing tying a GPU's own lines together visually.
+    //
+    // Tried Theme.cyan/Theme.green (the theme's own primary/secondary)
+    // first, on the reasoning that they're literally named for this --
+    // but those two are independently-generated Material You roles, not
+    // guaranteed to be far apart in hue, and for this machine's current
+    // wallpaper they'd both landed on nearly the same warm salmon
+    // (#ffb695 / #ffb4ab, confirmed via scheme.json), i.e. NOT
+    // distinctive (reported live 2026-09-06). seriesPalette's own 8
+    // entries are explicitly *generated* to spread evenly around the
+    // theme's hue wheel (see its own comment above), so indices 4 apart
+    // (half of 8) are the two most-opposite hues that spread ever
+    // produces -- structurally guaranteed distinctive regardless of what
+    // the current wallpaper's primary/secondary happen to be, while still
+    // entirely wallpaper-derived (seriesPalette isn't hardcoded either).
+    function gpuBaseColor(vendor) {
         const p = Theme.seriesPalette;
-        return p[(i * 3) % p.length];
+        return vendor === "intel" ? p[4 % p.length] : p[2 % p.length];
+    }
+    function gpuShadeColor(base, i, n) {
+        const c = Qt.color(base);
+        const t = n > 1 ? i / (n - 1) : 0; // 0 (first line) .. 1 (last line)
+        const value = Math.max(0.55, c.hsvValue - t * 0.35);
+        const sat = Math.max(0.35, c.hsvSaturation - t * 0.25);
+        return Qt.hsva(c.hsvHue, sat, value, 1);
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
     // both the graph series and the legend derive from, so their colours
@@ -505,14 +529,17 @@ Item {
         for (const g of SysmonSvc.gpuList) {
             const tag = gpuTag(g);
             const memLabel = g.vendor === "intel" ? qsTr("memory") : qsTr("VRAM");
+            const group = [];
             if ((g.util_pct?.length ?? 0) > 0)
-                out.push({ data: g.util_pct, dashed: false, name: tag + " " + qsTr("utilization") });
+                group.push({ data: g.util_pct, dashed: false, name: tag + " " + qsTr("utilization") });
             if ((g.vram_pct?.length ?? 0) > 0)
-                out.push({ data: g.vram_pct, dashed: true, name: tag + " " + memLabel });
+                group.push({ data: g.vram_pct, dashed: true, name: tag + " " + memLabel });
             if ((g.power_pct?.length ?? 0) > 0)
-                out.push({ data: g.power_pct, dashed: false, name: tag + " " + qsTr("power") });
+                group.push({ data: g.power_pct, dashed: false, name: tag + " " + qsTr("power") });
+            const base = gpuBaseColor(g.vendor);
+            group.forEach((l, i) => out.push(Object.assign(l, { color: gpuShadeColor(base, i, group.length) })));
         }
-        return out.map((l, i) => Object.assign(l, { color: gpuLineColor(i) }));
+        return out;
     }
     readonly property var gpuLegend: root.gpuLines.map(l => ({ name: l.name, color: l.color }))
     readonly property var gpuSeriesList: gpuPill.expanded
