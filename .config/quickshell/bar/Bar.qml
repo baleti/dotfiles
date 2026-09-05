@@ -694,7 +694,10 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.netTier
             onTierRequested: code => { root.netTier = code; SysmonSvc.setNetTier(code); }
-            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(netPill)
+            onExpandedChanged: {
+                if (expanded) SysmonSvc.refTopNet(); else SysmonSvc.unrefTopNet();
+                if (!expanded) root.reclaimGraphFocus(netPill);
+            }
             groupX: rightRow.x
             groupY: rightRow.y
             targetRight: root.layoutFor("net").right
@@ -719,7 +722,10 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.cpuTier
             onTierRequested: code => { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
-            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(cpuPill)
+            onExpandedChanged: {
+                if (expanded) SysmonSvc.refTopCpu(); else SysmonSvc.unrefTopCpu();
+                if (!expanded) root.reclaimGraphFocus(cpuPill);
+            }
             groupX: rightRow.x
             groupY: rightRow.y
             targetRight: root.layoutFor("cpu").right
@@ -752,7 +758,10 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.memTier
             onTierRequested: code => { root.memTier = code; SysmonSvc.setMemTier(code); }
-            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(memPill)
+            onExpandedChanged: {
+                if (expanded) SysmonSvc.refTopMem(); else SysmonSvc.unrefTopMem();
+                if (!expanded) root.reclaimGraphFocus(memPill);
+            }
             groupX: rightRow.x
             groupY: rightRow.y
             targetRight: root.layoutFor("mem").right
@@ -794,7 +803,10 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.diskTier
             onTierRequested: code => { root.diskTier = code; SysmonSvc.setDiskTier(code); }
-            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(diskPill)
+            onExpandedChanged: {
+                if (expanded) SysmonSvc.refTopDisk(); else SysmonSvc.unrefTopDisk();
+                if (!expanded) root.reclaimGraphFocus(diskPill);
+            }
             groupX: rightRow.x
             groupY: rightRow.y
             targetRight: root.layoutFor("disk").right
@@ -820,7 +832,13 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.tempTier
             onTierRequested: code => { root.tempTier = code; SysmonSvc.setTempTier(code); }
-            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(tempPill)
+            // Temp's "Top processes" is really "Top CPU" as a heat proxy
+            // (topLabel below), reusing SysmonSvc.topCpu -- so it refs the
+            // same topCpu demand cpuPill does, not a separate one.
+            onExpandedChanged: {
+                if (expanded) SysmonSvc.refTopCpu(); else SysmonSvc.unrefTopCpu();
+                if (!expanded) root.reclaimGraphFocus(tempPill);
+            }
             groupX: rightRow.x
             groupY: rightRow.y
             targetRight: root.layoutFor("temp").right
@@ -861,7 +879,10 @@ Item {
             tierLabels: SysmonSvc.tierLabels
             tier: root.gpuTier
             onTierRequested: code => { root.gpuTier = code; SysmonSvc.setGpuTier(code); }
-            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(gpuPill)
+            onExpandedChanged: {
+                if (expanded) SysmonSvc.refGpuProcs(); else SysmonSvc.unrefGpuProcs();
+                if (!expanded) root.reclaimGraphFocus(gpuPill);
+            }
             groupX: rightRow.x
             groupY: rightRow.y
             targetRight: root.layoutFor("gpu").right
