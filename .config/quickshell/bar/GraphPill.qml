@@ -82,6 +82,18 @@ Rectangle {
     // process temperature attribution (the kernel has no such thing).
     property string topLabel: qsTr("Top processes")
 
+    // Shared column widths for every "Top processes" table (both the
+    // `sections`/GPU-per-section shape and the plain `topProcs` shape) --
+    // titled column headers instead of a single generic heading + purely
+    // positional name/detail/value text (request 2026-09-06). "util%" is
+    // only ever populated for GPU rows (ProcEntry::util_pct is 0 for cpu/
+    // mem/net/disk, which have no equivalent per-process metric), so only
+    // the `sections` table includes that column.
+    readonly property real procNameW: 74
+    readonly property real procPidW: 42
+    readonly property real procUtilW: 34
+    readonly property real procValueW: 56
+
     // Time-range toggle row, shown only when tierCodes is non-empty --
     // Bar.qml wires this up for the 5 sysmond-backed metrics (net/cpu/mem/
     // disk/temp); media/calendar leave it empty and get no row.
@@ -265,11 +277,12 @@ Rectangle {
             // compactTextWidth pins a minimum so the pill doesn't jitter on
             // routine value changes, but content wider than it (a byte rate
             // that grew a unit, a GPU hitting 100%) still expands the pill
-            // rather than clipping. Left-aligned (icon now sits to its
-            // left, not its right) so any padding slack falls after the
-            // digits instead of prying them away from the icon.
+            // rather than clipping. Right-aligned so the value sits flush
+            // against the pill's trailing edge -- icon leads on the left
+            // (see above), value trails on the right, any padding slack
+            // falls in between instead of next to either one.
             width: root.compactTextWidth > 0 ? Math.max(root.compactTextWidth, implicitWidth) : implicitWidth
-            horizontalAlignment: Text.AlignLeft
+            horizontalAlignment: Text.AlignRight
             anchors.verticalCenter: parent.verticalCenter
         }
 
@@ -312,6 +325,7 @@ Rectangle {
         id: hoverArea
         anchors.fill: parent
         hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
         onClicked: root.togglePin()
     }
 
@@ -596,53 +610,117 @@ Rectangle {
                         visible: (section.modelData.procs ?? []).length > 0
                         color: Theme.textDim
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
+                        // -2: bigger than before (was -3) so it reads as a
+                        // real sub-heading, still a size below the detail
+                        // labels above (VRAM/Frequency/... at -1) --
+                        // request 2026-09-06.
+                        font.pixelSize: Theme.fontSize - 2
                         font.italic: true
                         topPadding: 4
+                    }
+
+                    // Column headers -- titled instead of relying purely on
+                    // position (request 2026-09-06). "util%" only appears
+                    // here (not on the plain topProcs table below) since
+                    // it's only ever populated for GPU rows.
+                    RowLayout {
+                        width: parent.width
+                        spacing: 6
+                        visible: (section.modelData.procs ?? []).length > 0
+
+                        Text {
+                            text: qsTr("process")
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                            font.italic: true
+                            Layout.preferredWidth: root.procNameW
+                        }
+                        Text {
+                            text: qsTr("detail")
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                            font.italic: true
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            text: qsTr("util%")
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                            font.italic: true
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.procUtilW
+                        }
+                        Text {
+                            text: qsTr("pid")
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                            font.italic: true
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.procPidW
+                        }
+                        Text {
+                            text: (section.modelData.procUnit ?? "").trim()
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                            font.italic: true
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.procValueW
+                        }
                     }
 
                     Repeater {
                         model: section.modelData.procs ?? []
 
-                        Item {
+                        RowLayout {
                             required property var modelData
                             width: parent.width
-                            height: sProcName.implicitHeight
+                            spacing: 6
 
-                            // Process rows sit a step below the detail keys
-                            // in the hierarchy -- same size as the "Top
-                            // processes" heading itself.
                             Text {
-                                id: sProcName
-                                anchors.left: parent.left
-                                anchors.baseline: sProcValue.baseline
                                 text: parent.modelData.name
                                 color: Theme.text
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 3
+                                elide: Text.ElideRight
+                                Layout.preferredWidth: root.procNameW
                             }
-
                             Text {
-                                anchors.left: sProcName.right
-                                anchors.leftMargin: 7
-                                anchors.right: sProcValue.left
-                                anchors.rightMargin: 8
-                                anchors.baseline: sProcValue.baseline
                                 text: parent.modelData.detail ?? ""
                                 visible: text.length > 0
                                 color: Theme.textDim
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 4
                                 elide: Text.ElideRight
+                                Layout.fillWidth: true
                             }
-
                             Text {
-                                id: sProcValue
-                                anchors.right: parent.right
-                                text: parent.modelData.value.toFixed(1) + (section.modelData.procUnit ?? "")
+                                text: parent.modelData.util_pct > 0 ? Math.round(parent.modelData.util_pct) + "%" : "--"
                                 color: Theme.textDim
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 3
+                                horizontalAlignment: Text.AlignRight
+                                Layout.preferredWidth: root.procUtilW
+                            }
+                            Text {
+                                text: String(parent.modelData.pid)
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 4
+                                horizontalAlignment: Text.AlignRight
+                                Layout.preferredWidth: root.procPidW
+                            }
+                            Text {
+                                text: parent.modelData.value.toFixed(1)
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                horizontalAlignment: Text.AlignRight
+                                Layout.preferredWidth: root.procValueW
                             }
                         }
                     }
@@ -744,22 +822,66 @@ Rectangle {
                     topPadding: 3
                 }
 
+                // Column headers -- titled instead of relying purely on
+                // position (request 2026-09-06: "titled column headers
+                // rather than repeating header on each line"). The value
+                // column's unit lives here now instead of being repeated
+                // on every single row.
+                RowLayout {
+                    width: parent.width
+                    spacing: 6
+
+                    Text {
+                        text: qsTr("process")
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        font.italic: true
+                        Layout.preferredWidth: root.procNameW
+                    }
+                    Text {
+                        text: qsTr("detail")
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        font.italic: true
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: qsTr("pid")
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        font.italic: true
+                        horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: root.procPidW
+                    }
+                    Text {
+                        text: root.topUnit.trim()
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        font.italic: true
+                        horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: root.procValueW
+                    }
+                }
+
                 Repeater {
                     model: root.topProcs
 
-                    Item {
+                    RowLayout {
                         required property var modelData
                         width: parent.width
-                        height: procName.implicitHeight
+                        spacing: 6
 
                         Text {
-                            id: procName
-                            anchors.left: parent.left
-                            anchors.baseline: procValue.baseline
                             text: parent.modelData.name
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: root.procNameW
                         }
 
                         // sysmond's per-process hint (cmdline tail + cwd)
@@ -767,27 +889,31 @@ Rectangle {
                         // 10 are claude. Fills the gap between name and
                         // value, elided.
                         Text {
-                            id: procDetail
-                            anchors.left: procName.right
-                            anchors.leftMargin: 7
-                            anchors.right: procValue.left
-                            anchors.rightMargin: 8
-                            anchors.baseline: procValue.baseline
                             text: parent.modelData.detail ?? ""
                             visible: text.length > 0
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             elide: Text.ElideRight
+                            Layout.fillWidth: true
                         }
 
                         Text {
-                            id: procValue
-                            anchors.right: parent.right
-                            text: parent.modelData.value.toFixed(1) + root.topUnit
+                            text: String(parent.modelData.pid)
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.procPidW
+                        }
+
+                        Text {
+                            text: parent.modelData.value.toFixed(1)
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.procValueW
                         }
                     }
                 }

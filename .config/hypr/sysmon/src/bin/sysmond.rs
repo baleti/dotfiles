@@ -551,11 +551,15 @@ fn proc_detail(pid: i32) -> String {
         }
     }
 
-    // Always end with the pid -- the last-resort unique handle when several
-    // processes share a comm AND an identical cmdline/cwd (e.g. several
-    // `claude --dangerously-skip-permissions` all launched from $HOME).
-    bits.push(format!("pid {pid}"));
-
+    // Used to always end with "pid {pid}" here as the last-resort unique
+    // handle when several processes share a comm AND an identical
+    // cmdline/cwd (e.g. several `claude --dangerously-skip-permissions`
+    // all launched from $HOME) -- dropped now that every client renders
+    // pid as its own dedicated column (request 2026-09-06), which makes
+    // that disambiguation redundant here and just clutters the detail
+    // text (confirmed live: multiple bare "alacritty" rows used to each
+    // end in a visually-merged "...pid 2562907" right up against the new
+    // pid column's own "2562907").
     truncate_ellipsis(&bits.join("  \u{b7}  "), MAX)
 }
 
@@ -638,7 +642,7 @@ fn parse_nethogs_line(line: &str) -> Option<ProcEntry> {
         return None; // "unknown TCP/0/0" and raw ip:port/0/0 connection lines
     }
     let name = path.rsplit('/').next().unwrap_or(path).to_string();
-    Some(ProcEntry { pid, name, value: sent + recv, detail: String::new() })
+    Some(ProcEntry { pid, name, value: sent + recv, detail: String::new(), util_pct: 0.0 })
 }
 
 /// Runs `nethogs -t` (trace mode: plain text, one block per ~1s refresh
@@ -926,7 +930,7 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>) {
             .filter(|(_, (busy, res))| *busy > 0.0 || *res > 0.0)
             .map(|(pid, (busy, res))| {
                 let pct = (100.0 * busy / wall_ns).min(100.0);
-                (ProcEntry { pid, name: proc_name(pid), value: res / 1024.0, detail: String::new() }, pct)
+                (ProcEntry { pid, name: proc_name(pid), value: res / 1024.0, detail: String::new(), util_pct: 0.0 }, pct)
             })
             .collect();
         ranked.sort_by(|a, b| {
@@ -937,14 +941,11 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>) {
         ranked.truncate(10);
         let mut top: Vec<ProcEntry> = ranked.iter().map(|(e, _)| e.clone()).collect();
         enrich_details(&mut top);
+        // util_pct is its own field now (request 2026-09-06), not folded
+        // into `detail` text -- `entry.detail` stays just the cmdline/cwd
+        // hint, same shape as every other metric's ProcEntry.
         for (entry, (_, pct)) in top.iter_mut().zip(ranked.iter()) {
-            if *pct >= 0.5 {
-                entry.detail = if entry.detail.is_empty() {
-                    format!("{pct:.0}% GPU")
-                } else {
-                    format!("{pct:.0}% GPU  \u{b7}  {}", entry.detail)
-                };
-            }
+            entry.util_pct = *pct;
         }
 
         with_gpu(&history, "intel", |g| {
@@ -1057,7 +1058,8 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
 /// Ranks the current pmon cycle and stores it on the nvidia GPU: per-process
 /// SM utilisation first (matching the pill's own "utilisation" metric), VRAM
 /// as the tiebreak. `ProcEntry::value` carries the VRAM MiB (what the list
-/// shows); the SM% is folded into `detail` when non-zero.
+/// shows); `util_pct` carries the SM% as its own field (request
+/// 2026-09-06 -- used to be folded into `detail` text).
 fn gpu_flush(cur: &mut HashMap<i32, (ProcEntry, f64)>, history: &Mutex<History>) {
     let mut v: Vec<(ProcEntry, f64)> = cur.drain().map(|(_, e)| e).collect();
     v.sort_by(|a, b| {
@@ -1070,13 +1072,7 @@ fn gpu_flush(cur: &mut HashMap<i32, (ProcEntry, f64)>, history: &Mutex<History>)
     let mut top: Vec<ProcEntry> = v.iter().map(|(e, _)| e.clone()).collect();
     enrich_details(&mut top);
     for (entry, (_, sm)) in top.iter_mut().zip(v.iter()) {
-        if *sm > 0.0 {
-            entry.detail = if entry.detail.is_empty() {
-                format!("{sm:.0}% GPU")
-            } else {
-                format!("{sm:.0}% GPU  \u{b7}  {}", entry.detail)
-            };
-        }
+        entry.util_pct = *sm;
     }
     with_gpu(history, "nvidia", move |g| g.top = top);
 }
@@ -1121,7 +1117,7 @@ fn gpu_proc_loop(history: Arc<Mutex<History>>) {
             if cur.contains_key(&pid) {
                 gpu_flush(&mut cur, &history);
             }
-            cur.insert(pid, (ProcEntry { pid, name, value: fb, detail: String::new() }, sm));
+            cur.insert(pid, (ProcEntry { pid, name, value: fb, detail: String::new(), util_pct: 0.0 }, sm));
         }
 
         eprintln!("sysmond: nvidia-smi pmon stream ended, respawning in 5s");
@@ -1227,7 +1223,7 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
                 let d_ticks = ticks.saturating_sub(*prev_ticks);
                 let pct = 100.0 * (d_ticks as f64 / clk_tck) / elapsed_s;
                 if pct > 0.05 {
-                    top_cpu_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: pct, detail: String::new() });
+                    top_cpu_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: pct, detail: String::new(), util_pct: 0.0 });
                 }
             }
         }
@@ -1240,7 +1236,7 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
         for pid in &pids {
             if let Some(mb) = proc_rss_mb(*pid) {
                 if mb > 0.0 {
-                    top_mem_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: mb, detail: String::new() });
+                    top_mem_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: mb, detail: String::new(), util_pct: 0.0 });
                 }
             }
         }
@@ -1260,7 +1256,7 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
                 let d_write = io.1.saturating_sub(prev_io.1) as f64;
                 let kb_per_s = (d_read + d_write) / 1024.0 / elapsed_s;
                 if kb_per_s > 1.0 {
-                    top_disk_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: kb_per_s, detail: String::new() });
+                    top_disk_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: kb_per_s, detail: String::new(), util_pct: 0.0 });
                 }
             }
         }
