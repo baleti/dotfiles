@@ -1209,6 +1209,19 @@ Rectangle {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 2
                 clip: true
+                // Qt's default TextInput selection is a hardcoded style
+                // blue, unrelated to this wallpaper-generated theme --
+                // reported 2026-09-06 (Ctrl+A here still highlighted in
+                // that stock blue while everything else in the panel
+                // already tracks the theme). Same wallpaper-derived
+                // accent + low-alpha-tint idiom already used for the
+                // process-row hover highlight and the autocomplete
+                // popup's selected row (Theme.cyan at partial alpha over
+                // the box's own background) rather than a solid fill,
+                // so the selected text itself stays legible without
+                // needing a separate selectedTextColor.
+                selectionColor: Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.35)
+                selectedTextColor: Theme.text
                 // Any further typing past a shown popup closes it, same as
                 // a shell/IDE -- Tab recomputes it fresh for wherever the
                 // cursor is now (root.triggerCompletion). Also fires
