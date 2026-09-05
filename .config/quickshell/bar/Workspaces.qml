@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Hyprland
+import Quickshell.Io
 import "../theme"
 
 // hyprland/workspaces equivalent: {name} buttons, click to activate.
@@ -10,6 +11,17 @@ Row {
     required property ShellScreen screen
 
     spacing: 2
+
+    // `Hyprland.dispatch()` sends a raw `dispatch <cmd>` string over the
+    // socket, which this install's Lua-scriptable Hyprland fork doesn't
+    // understand (see hyprland_lua_binding_dispatch_syntax memory) -- has
+    // to go through `hyprctl repl` + `hl.dispatch(hl.dsp.focus(...))`
+    // instead, same as ClaudeUsageExpanded.qml's focusHyprWindow().
+    function switchToWorkspace(id) {
+        switchProc.exec(["hyprctl", "repl", "hl.dispatch(hl.dsp.focus({ workspace = " + id + " }))"]);
+    }
+
+    Process { id: switchProc }
 
     Repeater {
         // ScriptModel (not a plain array) so Repeater diffs by object
@@ -52,7 +64,7 @@ Row {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: Hyprland.dispatch(`workspace ${wsBtn.modelData.name}`)
+                onClicked: root.switchToWorkspace(wsBtn.modelData.id)
             }
         }
     }
