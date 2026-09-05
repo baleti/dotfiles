@@ -47,6 +47,25 @@
 # window merely absent from the cache (a session newer than the daemon's
 # last refresh) falls back the same way, per-window, without affecting any
 # other window's fast-path lookup.
+#
+# --focused-only (2026-09-06, in response to "why is it still polling at
+# 3 second intervals" -- the cache rewrite above made each *window* nearly
+# free, but claude-account-window-name-watch.sh's poll loop still swept
+# every window on the server every pass, still measuring ~1.1s -- a
+# sustained ~35% of a core, continuously, just to backstop one narrow
+# case). Used only by that poll loop, not by the after-new-window/
+# pane-focus-in hooks below (which already only fire on a real event, not
+# continuously, so their per-call cost was never the problem). The poll
+# loop's whole job is catching a command starting in a pane that's
+# already focused and idle -- by definition that only matters for panes
+# someone is *currently looking at*, so it only needs the active pane of
+# the active window in each session that has an attached client, not
+# every window on the server. A window nobody's looking at right now
+# still gets corrected the moment it's actually focused (pane-focus-in
+# fires the full sweep then) -- this flag only narrows the continuous
+# backstop, never the coverage a hook already guarantees.
+FOCUSED_ONLY=0
+[ "$1" = "--focused-only" ] && FOCUSED_ONLY=1
 
 CACHE_STATE="$HOME/.cache/claude-usage/state.json"
 # SESSIONS_INTERVAL in claude-usage-daemon.py is 30s; 90s gives a 3x margin
@@ -110,7 +129,18 @@ load_cache
 # below always came out empty). \x1f isn't whitespace, so empty fields
 # between two separators stay exactly where they are.
 US=$'\x1f'
-tmux list-windows -a -F "#{session_name}:#{window_index}${US}#{pane_pid}${US}#{pane_current_command}${US}#{window_name}${US}#{@claude_autoname}${US}#{@claude_lastset}${US}#{session_name}${US}#{window_id}" |
+FIELDS="#{session_name}:#{window_index}${US}#{pane_pid}${US}#{pane_current_command}${US}#{window_name}${US}#{@claude_autoname}${US}#{@claude_lastset}${US}#{session_name}${US}#{window_id}"
+if [ "$FOCUSED_ONLY" = 1 ]; then
+    # The active pane of the active window, in any session with at least
+    # one attached client -- everything else is either not being looked
+    # at right now (pane-focus-in will fix it the moment it is) or not
+    # the active pane/window (same: fixed on focus, not this loop's job).
+    LIST_CMD=(tmux list-panes -a -f "#{&&:#{&&:#{pane_active},#{window_active}},#{session_attached}}" -F "$FIELDS")
+else
+    LIST_CMD=(tmux list-windows -a -F "$FIELDS")
+fi
+
+"${LIST_CMD[@]}" |
 while IFS=$US read -r target pane_pid cur_cmd win_name marker lastset sess_name win_id; do
     # A manual rename since our last write wins -- stop managing this
     # window, same as tmux's own "manual rename disables automatic-rename"

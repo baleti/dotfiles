@@ -22,7 +22,12 @@ fi
 (
     echo $BASHPID > "$LOCK"
     while true; do
-        "$REFRESH"
+        # --focused-only: this loop only needs to catch a command starting
+        # in a pane that's already focused and idle, so it only checks
+        # currently-viewed panes instead of sweeping every window on the
+        # server each pass (2026-09-06 -- see the flag's own comment in
+        # refresh.sh for why that's still correct coverage-wise).
+        "$REFRESH" --focused-only
         sleep 3
     done
 ) </dev/null >/dev/null 2>&1 &
