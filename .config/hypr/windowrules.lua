@@ -55,3 +55,16 @@ hl.window_rule({
 
     no_focus = true,
 })
+
+-- Reddit architecture-engagement bot (systemd --user timer, 3x/day,
+-- ~/.local/share/reddit-architecture-bot/run.sh -> chromium-automation-profile-2
+-- on CDP port 9223, launched with --class=RedditArchitectureBot). run.sh also
+-- moves it into special:redditbot at the start of every run so it never sits
+-- on a visible workspace, but keep no_focus too in case a window briefly maps
+-- before that move lands.
+hl.window_rule({
+    name  = "reddit-architecture-bot-no-focus",
+    match = { class = "RedditArchitectureBot" },
+
+    no_focus = true,
+})
