@@ -1262,24 +1262,21 @@ Rectangle {
                 }
 
                 // First Escape while searching closes the autocomplete
-                // popup if one's open; next closes it further by clearing
-                // a non-empty query (a common case worth a dedicated undo
-                // step); with both of those already clear, an Escape now
-                // just blurs the search box (root.forceActiveFocus() moves
-                // focus off searchInput back onto this whole panel) rather
-                // than closing the panel outright -- the panel should stay
-                // open, focus just leaves the box (request 2026-09-05).
-                // *That* Escape is accepted here too, so it never reaches
-                // Bar.qml's root.Keys.onPressed; only a further Escape,
-                // pressed once the search box no longer holds focus,
-                // bubbles all the way up and actually closes the panel.
+                // popup if one's open. With no popup, one Escape both
+                // clears a non-empty query AND blurs the search box
+                // (root.forceActiveFocus() moves focus off searchInput
+                // back onto this whole panel) -- not two separate presses
+                // (request 2026-09-05: "make pressing escape both remove
+                // focus and clear its input"). The panel itself stays
+                // open; that needs a further Escape, which -- now that
+                // this one is accepted and the box no longer holds focus
+                // -- bubbles up to Bar.qml's root.Keys.onPressed.
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
                         if (root.acOpen) {
                             root.acDismissed = true;
-                        } else if (searchInput.text.length > 0) {
-                            searchInput.text = "";
                         } else {
+                            searchInput.text = "";
                             root.forceActiveFocus();
                         }
                         event.accepted = true;
