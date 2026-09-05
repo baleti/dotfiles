@@ -194,14 +194,37 @@ QtObject {
     property int topDiskRefs: 0
     property int gpuProcsRefs: 0
 
+    // unref*() clears the corresponding array back to [] once its refcount
+    // hits zero -- topCpu/topMem/topNet/topDisk only ever get *reassigned*
+    // on an incoming socket message (see each socket's onRead below), never
+    // on disconnect, so without this a reopened panel would briefly flash
+    // whatever was last shown before this session's real (or the
+    // placeholder-then-real) data arrives -- reported 2026-09-06: "flash
+    // for a split second, then disappear, then reappear 1-2s later".
     function refTopCpu(): void { root.topCpuRefs++; }
-    function unrefTopCpu(): void { root.topCpuRefs = Math.max(0, root.topCpuRefs - 1); }
+    function unrefTopCpu(): void {
+        root.topCpuRefs = Math.max(0, root.topCpuRefs - 1);
+        if (root.topCpuRefs === 0)
+            root.topCpu = [];
+    }
     function refTopMem(): void { root.topMemRefs++; }
-    function unrefTopMem(): void { root.topMemRefs = Math.max(0, root.topMemRefs - 1); }
+    function unrefTopMem(): void {
+        root.topMemRefs = Math.max(0, root.topMemRefs - 1);
+        if (root.topMemRefs === 0)
+            root.topMem = [];
+    }
     function refTopNet(): void { root.topNetRefs++; }
-    function unrefTopNet(): void { root.topNetRefs = Math.max(0, root.topNetRefs - 1); }
+    function unrefTopNet(): void {
+        root.topNetRefs = Math.max(0, root.topNetRefs - 1);
+        if (root.topNetRefs === 0)
+            root.topNet = [];
+    }
     function refTopDisk(): void { root.topDiskRefs++; }
-    function unrefTopDisk(): void { root.topDiskRefs = Math.max(0, root.topDiskRefs - 1); }
+    function unrefTopDisk(): void {
+        root.topDiskRefs = Math.max(0, root.topDiskRefs - 1);
+        if (root.topDiskRefs === 0)
+            root.topDisk = [];
+    }
     function refGpuProcs(): void { root.gpuProcsRefs++; }
     function unrefGpuProcs(): void { root.gpuProcsRefs = Math.max(0, root.gpuProcsRefs - 1); }
 
