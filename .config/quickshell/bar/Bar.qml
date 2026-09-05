@@ -892,6 +892,16 @@ Item {
             valueLabel: SysmonSvc.gpuList.map(g => root.gpuTag(g) + " " + Math.round(root.last(g.util_pct ?? [])) + "%").join("   ")
             mode: "overlay"
             seriesList: root.gpuSeriesList
+            // Off (request 2026-09-06: "stop filling the area under igpu
+            // utilization" / "this maybe making colors harder to
+            // distinguish") -- 3 primary lines here (iGPU util, dGPU
+            // util, dGPU power) trips Graph.qml's "many" threshold into
+            // one shared envelope wash under whichever line is tallest at
+            // each point, in a single colour unrelated to any of the
+            // actual per-line stroke colours -- exactly the kind of
+            // muddying wash this pill's already-hard-to-tell-apart lines
+            // don't need on top.
+            fillOverlay: false
             maxValue: 100
             valueFraction: root.gpuMaxUtil / 100
             secondaryIcon: isNaN(root.gpuNvVram) ? "" : Icons.memory
