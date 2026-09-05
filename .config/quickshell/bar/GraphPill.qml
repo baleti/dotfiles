@@ -330,7 +330,7 @@ Rectangle {
         }
 
         Rectangle {
-            visible: root.secondaryIcon.length > 0 && root.secondaryDivider
+            visible: root.secondaryText.length > 0 && root.secondaryDivider
             width: 1
             height: parent.height * 0.6
             anchors.verticalCenter: parent.verticalCenter
@@ -340,11 +340,16 @@ Rectangle {
         // Divider suppressed (secondaryDivider: false): keep an equivalent
         // gap so the primary and secondary readings stay visually separated.
         Item {
-            visible: root.secondaryIcon.length > 0 && !root.secondaryDivider
+            visible: root.secondaryText.length > 0 && !root.secondaryDivider
             width: 2
             height: 1
         }
 
+        // Secondary icon is optional: a reading that's genuinely a
+        // different metric (e.g. swap next to memory) gets its own glyph;
+        // one that's just another view of the primary metric (e.g. disk
+        // usage % next to disk I/O) leans on the pill's primary icon
+        // instead and only shows its text here.
         Text {
             visible: root.secondaryIcon.length > 0
             text: root.secondaryIcon
@@ -355,7 +360,7 @@ Rectangle {
         }
 
         Text {
-            visible: root.secondaryIcon.length > 0
+            visible: root.secondaryText.length > 0
             text: root.secondaryText
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize

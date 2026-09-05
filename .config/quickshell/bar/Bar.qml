@@ -609,18 +609,20 @@ Item {
                 return g;
         return null;
     }
-    // "i 15 % · d 32 %" -- i/d prefix so the two GPUs' utilisations are
-    // distinguishable in the compact pill without spelling out iGPU/dGPU.
-    // Single-digit values get a leading space so each "<x> NN %" segment is
-    // a fixed width in the monospace bar font -- the second GPU's letter
-    // then never shifts as the first GPU's number crosses 10. A 100% is
-    // three digits and does push things (an intentional "maxed" cue).
+    // "i 15 % d 32 %" -- i/d prefix so the two GPUs' utilisations are
+    // distinguishable in the compact pill without spelling out iGPU/dGPU,
+    // each with a space before its number (bare "i15"/"d32" read as too
+    // cramped). Single-digit values get a leading space so each number
+    // segment is a fixed width in the monospace bar font -- the second
+    // GPU's letter then never shifts as the first GPU's number crosses 10.
+    // A 100% is three digits and does push things (an intentional "maxed"
+    // cue).
     readonly property string gpuCompactText: SysmonSvc.gpuList
         .map(g => {
             const n = Math.round(root.last(g.util_pct ?? []));
             return (g.vendor === "intel" ? "i " : "d ") + (n < 10 ? " " + n : n) + " %";
         })
-        .join(" · ")
+        .join(" ")
     // Fixed width sized for two-digit values so the pill doesn't jitter as
     // the numbers change; a rare 100% is allowed to push past it (and the
     // resize then reads as "something's maxed"). See gpuCompactMetrics.
@@ -636,7 +638,7 @@ Item {
         id: gpuCompactMetrics
         font.family: Theme.fontFamily
         font.pixelSize: Theme.fontSize
-        text: SysmonSvc.gpuList.map(g => (g.vendor === "intel" ? "i " : "d ") + "88 %").join(" · ")
+        text: SysmonSvc.gpuList.map(g => (g.vendor === "intel" ? "i " : "d ") + "88 %").join(" ")
     }
 
     anchors.fill: parent
@@ -775,16 +777,19 @@ Item {
 
         GraphPill {
             id: diskPill
-            // No primary icon here -- the pill shows one disk glyph total,
-            // moved to the secondary (rightmost) slot below instead of
-            // having one on each side of the divider.
+            // One disk glyph total (not one per side of the divider, like
+            // memPill's mem/swap icons) -- it leads the pill like every
+            // other pill's primary icon, ahead of both readings.
+            icon: Icons.disk
             title: qsTr("Disk")
             compactText: root.fmtRate(root.diskTotalNow)
             // Wider than the typical rendered text ("11 KB/s", "4.5 MB/s")
             // so the right-alignment this reserved width exists for is
             // actually visible as a gap after the icon, not just a couple
-            // of barely-there pixels.
-            compactTextWidth: 90
+            // of barely-there pixels -- but trimmed one space-width
+            // narrower than netPill's 90, since disk's icon sits right
+            // before this box and the full 90 read as an oversized gap.
+            compactTextWidth: 82
             valueLabel: root.fmtRate(root.diskTotalNow) + " total"
             mode: "overlay"
             seriesList: root.diskSeriesList
@@ -793,9 +798,9 @@ Item {
             // Always-visible second reading, same pattern as memPill's
             // swap readout above -- how full the root filesystem is, next
             // to the pill's own I/O-throughput value, without needing to
-            // open the panel.
-            secondaryIcon: Icons.disk
-            secondaryText: (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "% "
+            // open the panel. No icon of its own: it's the same disk the
+            // primary icon already names, just a second reading of it.
+            secondaryText: (isNaN(SysmonSvc.rootUsagePct) ? "--" : Math.round(SysmonSvc.rootUsagePct)) + "%"
             secondaryDivider: false
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
