@@ -114,6 +114,7 @@ pub enum Metric {
     TopMem,
     TopNet,
     TopDisk,
+    TopGpu,
 }
 
 impl Metric {
@@ -125,6 +126,7 @@ impl Metric {
             "mem" => Some(Metric::Mem),
             "disk" => Some(Metric::Disk),
             "gpu" => Some(Metric::Gpu),
+            "topgpu" => Some(Metric::TopGpu),
             "topcpu" => Some(Metric::TopCpu),
             "topmem" => Some(Metric::TopMem),
             "topnet" => Some(Metric::TopNet),

@@ -155,6 +155,7 @@ fn finish_handshake(mut stream: UnixStream, metric: Metric) -> Option<UnixStream
         Metric::TopMem => "topmem\n",
         Metric::TopNet => "topnet\n",
         Metric::TopDisk => "topdisk\n",
+        Metric::TopGpu => "topgpu\n",
         Metric::Disk => "disk\n",
         Metric::Gpu => "gpu\n",
     };
@@ -274,6 +275,7 @@ fn main() {
         Metric::TopMem => ("Top Memory", (0.78, 0.48, 1.0)),
         Metric::TopNet => ("Top Network", (0.31, 0.84, 0.48)),
         Metric::TopDisk => ("Top Disk", (0.31, 0.84, 0.48)),
+        Metric::TopGpu => ("Top GPU", (0.95, 0.45, 0.75)),
         Metric::Disk => ("Disk", (0.31, 0.84, 0.48)),
         Metric::Gpu => ("GPU", (0.95, 0.45, 0.75)),
     };

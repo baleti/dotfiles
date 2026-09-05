@@ -439,32 +439,82 @@ Rectangle {
                 }
             }
 
-            Flow {
+            // Legend (left) and the time-range toggle (hard right) share one
+            // line directly under the graph's x-axis. tierCodes-less pills
+            // (media/calendar) and legend-less ones (cpu/temp) each just
+            // drop their half; the row hides entirely when both are empty.
+            RowLayout {
                 width: parent.width
                 spacing: 10
-                visible: root.legendItems.length > 0
+                visible: root.legendItems.length > 0 || root.tierCodes.length > 0
 
-                Repeater {
-                    model: root.legendItems
+                Flow {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    spacing: 10
+                    visible: root.legendItems.length > 0
 
-                    Row {
-                        id: legendRow
-                        spacing: 5
-                        required property var modelData
+                    Repeater {
+                        model: root.legendItems
+
+                        Row {
+                            id: legendRow
+                            spacing: 5
+                            required property var modelData
+
+                            Rectangle {
+                                width: 9
+                                height: 9
+                                radius: 2
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: legendRow.modelData.color
+                            }
+
+                            Text {
+                                text: legendRow.modelData.name
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                    spacing: 6
+                    layoutDirection: Qt.RightToLeft
+                    visible: root.tierCodes.length > 0
+
+                    Repeater {
+                        model: root.tierCodes
 
                         Rectangle {
-                            width: 9
-                            height: 9
-                            radius: 2
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: legendRow.modelData.color
-                        }
+                            id: tierBtn
+                            required property string modelData
+                            readonly property bool active: modelData === root.tier
 
-                        Text {
-                            text: legendRow.modelData.name
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
+                            width: tierLabel.implicitWidth + 10
+                            height: tierLabel.implicitHeight + 4
+                            radius: Theme.rounding - 4
+                            color: active ? Theme.cyan : "transparent"
+                            border.color: Theme.border
+                            border.width: active ? 0 : 1
+
+                            Text {
+                                id: tierLabel
+                                anchors.centerIn: parent
+                                text: tierBtn.modelData
+                                color: tierBtn.active ? Theme.bg : Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.tierRequested(tierBtn.modelData)
+                            }
                         }
                     }
                 }
@@ -582,44 +632,6 @@ Rectangle {
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 2
                             }
-                        }
-                    }
-                }
-            }
-
-            Row {
-                width: parent.width
-                spacing: 6
-                layoutDirection: Qt.RightToLeft
-                visible: root.tierCodes.length > 0
-
-                Repeater {
-                    model: root.tierCodes
-
-                    Rectangle {
-                        id: tierBtn
-                        required property string modelData
-                        readonly property bool active: modelData === root.tier
-
-                        width: tierLabel.implicitWidth + 10
-                        height: tierLabel.implicitHeight + 4
-                        radius: Theme.rounding - 4
-                        color: active ? Theme.cyan : "transparent"
-                        border.color: Theme.border
-                        border.width: active ? 0 : 1
-
-                        Text {
-                            id: tierLabel
-                            anchors.centerIn: parent
-                            text: tierBtn.modelData
-                            color: tierBtn.active ? Theme.bg : Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: root.tierRequested(tierBtn.modelData)
                         }
                     }
                 }

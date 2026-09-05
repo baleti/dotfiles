@@ -478,10 +478,10 @@ Item {
     }
 
     // GPU: two overlaid history lines (engine load solid, VRAM occupancy
-    // dashed) -- same shape/gating as memSeriesList. detailRows/usageItems
-    // read the point-in-time block in SysmonSvc.gpuInfo; both are gated on
-    // the pill actually being open so they're not rebuilt every tick while
-    // collapsed (see the comment on netLegend above).
+    // dashed) -- same shape/gating as memSeriesList. detailRows reads the
+    // point-in-time block in SysmonSvc.gpuInfo; gated on the pill actually
+    // being open so it's not rebuilt every tick while collapsed (see the
+    // comment on netLegend above).
     readonly property var gpuLegend: [
         { name: qsTr("Utilisation"), color: Theme.green },
         { name: qsTr("VRAM"), color: Theme.cyan }
@@ -497,6 +497,8 @@ Item {
         const rows = [];
         if (g.name)
             rows.push({ name: qsTr("Device"), value: g.name });
+        if ((g.vram_total_mb ?? 0) > 0)
+            rows.push({ name: qsTr("VRAM"), value: Math.round(g.vram_used_mb ?? 0) + " / " + Math.round(g.vram_total_mb) + " MB" });
         rows.push({ name: qsTr("Temperature"), value: Math.round(g.temp_c ?? 0) + "°C" });
         let power = (g.power_w ?? 0).toFixed(1) + " W";
         if ((g.power_limit_w ?? 0) > 0)
@@ -508,23 +510,6 @@ Item {
         if ((g.fan_pct ?? 0) > 0)
             rows.push({ name: qsTr("Fan"), value: Math.round(g.fan_pct) + "%" });
         return rows;
-    }
-    readonly property var gpuUsageItems: {
-        if (!gpuPill.expanded)
-            return [];
-        const g = SysmonSvc.gpuInfo;
-        const items = [];
-        if ((g.vram_total_mb ?? 0) > 0)
-            items.push({
-                name: qsTr("VRAM %1 / %2 MB").arg(Math.round(g.vram_used_mb ?? 0)).arg(Math.round(g.vram_total_mb)),
-                pcent: 100 * (g.vram_used_mb ?? 0) / g.vram_total_mb
-            });
-        if ((g.power_limit_w ?? 0) > 0)
-            items.push({
-                name: qsTr("Power %1 / %2 W").arg(Math.round(g.power_w ?? 0)).arg(Math.round(g.power_limit_w)),
-                pcent: 100 * (g.power_w ?? 0) / g.power_limit_w
-            });
-        return items;
     }
 
     anchors.fill: parent
@@ -735,7 +720,9 @@ Item {
             secondaryValueFraction: root.last(SysmonSvc.gpuVramPct) / 100
             legendItems: root.gpuLegend
             detailRows: root.gpuDetailRows
-            usageItems: root.gpuUsageItems
+            topProcs: SysmonSvc.topGpu
+            topUnit: " MB"
+            topLabel: qsTr("Top VRAM users")
             yAxisFormatter: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
