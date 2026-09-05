@@ -659,7 +659,11 @@ Item {
             icon: Icons.network
             title: qsTr("Network")
             compactText: root.fmtRate(root.netTotalNow)
-            compactTextWidth: 72
+            // Wider than the typical rendered text ("11 KB/s", "4.5 MB/s")
+            // so the right-alignment this reserved width exists for is
+            // actually visible as a gap after the icon, not just a couple
+            // of barely-there pixels.
+            compactTextWidth: 90
             valueLabel: root.fmtRate(root.netTotalNow) + " total"
             mode: "overlay"
             seriesList: root.netSeriesList
@@ -746,7 +750,11 @@ Item {
             // having one on each side of the divider.
             title: qsTr("Disk")
             compactText: root.fmtRate(root.diskTotalNow)
-            compactTextWidth: 72
+            // Wider than the typical rendered text ("11 KB/s", "4.5 MB/s")
+            // so the right-alignment this reserved width exists for is
+            // actually visible as a gap after the icon, not just a couple
+            // of barely-there pixels.
+            compactTextWidth: 90
             valueLabel: root.fmtRate(root.diskTotalNow) + " total"
             mode: "overlay"
             seriesList: root.diskSeriesList
