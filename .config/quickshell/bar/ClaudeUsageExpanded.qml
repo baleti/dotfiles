@@ -1277,6 +1277,14 @@ Rectangle {
                             root.acDismissed = true;
                         } else {
                             searchInput.text = "";
+                            // Clear the field's own focus *before* handing
+                            // it to the panel -- the enclosing FocusScope
+                            // remembers its last-focused child, so a bare
+                            // root.forceActiveFocus() while searchInput
+                            // still holds focus just gets redirected right
+                            // back into it (same trap RssReader.qml calls
+                            // out; was why this took two Escapes).
+                            searchInput.focus = false;
                             root.forceActiveFocus();
                         }
                         event.accepted = true;
