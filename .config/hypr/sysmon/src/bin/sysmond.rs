@@ -207,10 +207,10 @@ struct History {
     gpu_util_pct: TieredSeries,
     gpu_vram_pct: TieredSeries,
     gpu: GpuLatest,
-    // Per-process GPU VRAM use (MiB), from `nvidia-smi -q`'s Processes
-    // section -- graphics *and* compute clients, unlike
-    // --query-compute-apps. Refreshed by `gpu_proc_loop`. `value` is MiB,
-    // same unit convention as `top_mem`.
+    // Per-process GPU use, from `nvidia-smi pmon` (see `gpu_proc_loop`) --
+    // graphics *and* compute clients. Ranked by SM utilisation then VRAM;
+    // `value` is VRAM MiB (same unit convention as `top_mem`), SM% rides in
+    // `detail`.
     top_gpu: Vec<ProcEntry>,
     top_cpu: Vec<ProcEntry>,
     top_mem: Vec<ProcEntry>,
@@ -708,69 +708,79 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
     }
 }
 
-/// Per-process GPU VRAM use, refreshed every 3s from `nvidia-smi -q`'s
-/// `Processes` section (parsed by field name / indentation, not column
-/// position). Covers both graphics (`Type: G` -- compositor, browser, ...)
-/// and compute (`Type: C` -- CUDA) clients, which `--query-compute-apps`
-/// alone would miss. Silent no-op if nvidia-smi is missing (gpu_loop
-/// already logs that once).
+/// Ranks the current pmon cycle and stores it as `top_gpu`: per-process SM
+/// (streaming-multiprocessor) utilisation first -- matching the pill's own
+/// "utilisation" metric -- then VRAM as the tiebreak. `ProcEntry::value`
+/// carries the VRAM MiB (what the list shows); the SM% is folded into
+/// `detail` when non-zero so the ranking is legible.
+fn gpu_flush(cur: &mut HashMap<i32, (ProcEntry, f64)>, history: &Mutex<History>) {
+    let mut v: Vec<(ProcEntry, f64)> = cur.drain().map(|(_, e)| e).collect();
+    v.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.0.value.partial_cmp(&a.0.value).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    v.truncate(10);
+
+    let mut top: Vec<ProcEntry> = v.iter().map(|(e, _)| e.clone()).collect();
+    enrich_details(&mut top);
+    for (entry, (_, sm)) in top.iter_mut().zip(v.iter()) {
+        if *sm > 0.0 {
+            entry.detail = if entry.detail.is_empty() {
+                format!("{sm:.0}% GPU")
+            } else {
+                format!("{sm:.0}% GPU  \u{b7}  {}", entry.detail)
+            };
+        }
+    }
+    history.lock().unwrap().top_gpu = top;
+}
+
+/// Per-process GPU stats from a long-lived `nvidia-smi pmon -s um` stream
+/// (one row per process per second; graphics *and* compute clients). Silent
+/// no-op if nvidia-smi is missing (gpu_loop already logs that once);
+/// respawns if the stream ends.
 fn gpu_proc_loop(history: Arc<Mutex<History>>) {
+    // pmon -s um row layout (driver 5xx):
+    //   gpu(0) pid(1) type(2) sm(3) mem(4) enc(5) dec(6) jpg(7) ofa(8) fb(9) ccpm(10) command(11)
+    let col = |s: &str| -> f64 {
+        if s == "-" { 0.0 } else { s.parse().unwrap_or(0.0) }
+    };
+
     loop {
-        std::thread::sleep(Duration::from_secs(3));
-
-        let Ok(out) = Command::new("nvidia-smi").arg("-q").stderr(Stdio::null()).output() else {
-            return;
+        let child = match Command::new("nvidia-smi")
+            .args(["pmon", "-s", "um"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return,
         };
-        if !out.status.success() {
-            std::thread::sleep(Duration::from_secs(10));
-            continue;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
+        let Some(stdout) = child.stdout else { return };
 
-        let mut procs: Vec<ProcEntry> = Vec::new();
-        let mut in_section = false;
-        let mut cur_pid: Option<i32> = None;
-        let mut cur_name = String::new();
-        for line in text.lines() {
-            let indent = line.len() - line.trim_start().len();
-            let t = line.trim();
-            if t == "Processes" {
-                in_section = true;
+        // pmon has no per-cycle delimiter -- it just re-emits the same pids
+        // every second. A pid reappearing marks the next cycle: flush what
+        // we've accumulated, then start the new cycle with this row.
+        let mut cur: HashMap<i32, (ProcEntry, f64)> = HashMap::new();
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let tok: Vec<&str> = line.split_whitespace().collect();
+            if tok.len() < 12 || tok[0].starts_with('#') {
                 continue;
             }
-            if !in_section {
-                continue;
+            let Ok(pid) = tok[1].parse::<i32>() else { continue };
+            let sm = col(tok[3]);
+            let fb = col(tok[9]);
+            let name = tok[11].to_string();
+
+            if cur.contains_key(&pid) {
+                gpu_flush(&mut cur, &history);
             }
-            // The Processes block's own keys are indented >= 8; the next
-            // top-level section header ("Capabilities", ...) sits at 4.
-            if !t.is_empty() && indent <= 4 {
-                break;
-            }
-            if let Some(rest) = t.strip_prefix("Process ID") {
-                cur_pid = rest.trim_start_matches([':', ' ']).parse().ok();
-                cur_name.clear();
-            } else if let Some(rest) = t.strip_prefix("Name") {
-                cur_name = rest.trim_start_matches([':', ' ']).to_string();
-            } else if let Some(rest) = t.strip_prefix("Used GPU Memory") {
-                let mib: f64 = rest
-                    .trim_start_matches([':', ' '])
-                    .split_whitespace()
-                    .next()
-                    .and_then(|n| n.parse().ok())
-                    .unwrap_or(0.0);
-                if let Some(pid) = cur_pid {
-                    if mib > 0.0 {
-                        let name = cur_name.rsplit('/').next().unwrap_or(&cur_name).to_string();
-                        procs.push(ProcEntry { pid, name, value: mib, detail: String::new() });
-                    }
-                }
-                cur_pid = None;
-            }
+            cur.insert(pid, (ProcEntry { pid, name, value: fb, detail: String::new() }, sm));
         }
 
-        let mut top = top_n(procs, 10);
-        enrich_details(&mut top);
-        history.lock().unwrap().top_gpu = top;
+        eprintln!("sysmond: nvidia-smi pmon stream ended, respawning in 5s");
+        std::thread::sleep(Duration::from_secs(5));
     }
 }
 

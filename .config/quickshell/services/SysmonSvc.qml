@@ -79,9 +79,9 @@ QtObject {
     // /proc/[pid]/io -- excludes any process sysmond can't read (someone
     // else's, or one marked non-dumpable), see sysmond.rs's proc_io_bytes.
     property var topDisk: []
-    // value = per-process VRAM use in MiB (nvidia-smi -q's Processes
-    // section, graphics + compute clients). Empty on a machine with no
-    // NVIDIA GPU.
+    // Per-process GPU use (nvidia-smi pmon, graphics + compute clients),
+    // ranked by SM utilisation then VRAM. value = VRAM MiB; the SM% is in
+    // `detail`. Empty on a machine with no NVIDIA GPU.
     property var topGpu: []
 
     // Whole-disk block devices, same shape as netInterfaces.
