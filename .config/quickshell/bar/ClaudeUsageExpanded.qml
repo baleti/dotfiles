@@ -1105,7 +1105,15 @@ Rectangle {
                         Text {
                             id: acctSummarySession
                             visible: typeof acctSummaryPill.modelData.session_pct === "number"
-                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            // Baseline, not verticalCenter -- these run at
+                            // fontSize-2/-3 next to the bold fontSize-1
+                            // number, and centering different glyph sizes on
+                            // each other leaves their baselines at different
+                            // heights (reported 2026-09-05: "1 2 3 and the
+                            // rest of the line seem misaligned"). Sitting
+                            // every piece on the number's baseline lines the
+                            // text up the way it reads as aligned.
+                            anchors.baseline: acctSummaryName.baseline
                             opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
                             text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.session_pct))
                             color: Theme.rampColor(acctSummaryPill.modelData.session_pct / 100)
@@ -1114,7 +1122,7 @@ Rectangle {
                         }
                         Text {
                             visible: acctSummarySession.visible
-                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            anchors.baseline: acctSummaryName.baseline
                             text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.session_resets_at) : ""
                             color: Theme.textDim
                             font.family: Theme.fontFamily
@@ -1122,7 +1130,7 @@ Rectangle {
                         }
                         Text {
                             visible: acctSummarySession.visible && acctSummaryWeekly.visible
-                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            anchors.baseline: acctSummaryName.baseline
                             text: "/"
                             color: Theme.textDim
                             font.family: Theme.fontFamily
@@ -1131,7 +1139,7 @@ Rectangle {
                         Text {
                             id: acctSummaryWeekly
                             visible: typeof acctSummaryPill.modelData.weekly_pct === "number"
-                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            anchors.baseline: acctSummaryName.baseline
                             opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
                             text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.weekly_pct))
                             color: Theme.rampColor(acctSummaryPill.modelData.weekly_pct / 100)
@@ -1140,7 +1148,7 @@ Rectangle {
                         }
                         Text {
                             visible: acctSummaryWeekly.visible
-                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            anchors.baseline: acctSummaryName.baseline
                             text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.weekly_resets_at) : ""
                             color: Theme.textDim
                             font.family: Theme.fontFamily
