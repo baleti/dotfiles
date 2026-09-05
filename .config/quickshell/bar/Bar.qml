@@ -488,22 +488,29 @@ Item {
     // process table); gated on the pill being open so it's not rebuilt
     // every tick while collapsed (see the comment on netLegend above).
     function gpuTag(g) { return g.vendor === "intel" ? qsTr("iGPU") : qsTr("dGPU"); }
+    // Stride 3 over the 8-hue palette is a full permutation (gcd(3,8)=1), so
+    // up to 8 lines stay maximally far apart in hue no matter how the theme
+    // regenerates.
     function gpuLineColor(i) {
         const p = Theme.seriesPalette;
-        return p[(i * 2) % p.length];
+        return p[(i * 3) % p.length];
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
     // both the graph series and the legend derive from, so their colours
-    // can't drift apart.
+    // can't drift apart. Every line is labelled "<tag> <metric>" in full.
+    // The iGPU's "memory" is shared system RAM (no dedicated VRAM), and it
+    // has no board-power line -- CometLake exposes no RAPL GPU domain.
     readonly property var gpuLines: {
         const out = [];
         for (const g of SysmonSvc.gpuList) {
+            const tag = gpuTag(g);
+            const memLabel = g.vendor === "intel" ? qsTr("memory") : qsTr("VRAM");
             if ((g.util_pct?.length ?? 0) > 0)
-                out.push({ data: g.util_pct, dashed: false, name: gpuTag(g) });
+                out.push({ data: g.util_pct, dashed: false, name: tag + " " + qsTr("utilization") });
             if ((g.vram_pct?.length ?? 0) > 0)
-                out.push({ data: g.vram_pct, dashed: true, name: qsTr("VRAM") });
+                out.push({ data: g.vram_pct, dashed: true, name: tag + " " + memLabel });
             if ((g.power_pct?.length ?? 0) > 0)
-                out.push({ data: g.power_pct, dashed: false, name: qsTr("power") });
+                out.push({ data: g.power_pct, dashed: false, name: tag + " " + qsTr("power") });
         }
         return out.map((l, i) => Object.assign(l, { color: gpuLineColor(i) }));
     }
@@ -518,10 +525,11 @@ Item {
             return [];
         return SysmonSvc.gpuList.map(g => {
             const rows = [];
+            const memName = g.vendor === "intel" ? qsTr("Memory (shared)") : qsTr("VRAM");
             if ((g.vram_total_mb ?? 0) > 0)
-                rows.push({ name: qsTr("VRAM"), value: Math.round(g.vram_used_mb ?? 0) + " / " + Math.round(g.vram_total_mb) + " MB" });
+                rows.push({ name: memName, value: Math.round(g.vram_used_mb ?? 0) + " / " + Math.round(g.vram_total_mb) + " MB" });
             else if ((g.vram_used_mb ?? 0) > 0)
-                rows.push({ name: qsTr("Memory"), value: Math.round(g.vram_used_mb) + " MB" });
+                rows.push({ name: memName, value: Math.round(g.vram_used_mb) + " MB" });
             if ((g.temp_c ?? 0) > 0)
                 rows.push({ name: qsTr("Temperature"), value: Math.round(g.temp_c) + "°C" });
             if ((g.power_w ?? 0) > 0) {
