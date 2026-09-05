@@ -610,34 +610,26 @@ Rectangle {
                         }
                     }
 
-                    Text {
-                        text: qsTr("Top processes")
-                        visible: (section.modelData.procs ?? []).length > 0
-                        color: Theme.textDim
-                        font.family: Theme.fontFamily
-                        // -2: bigger than before (was -3) so it reads as a
-                        // real sub-heading, still a size below the detail
-                        // labels above (VRAM/Frequency/... at -1) --
-                        // request 2026-09-06.
-                        font.pixelSize: Theme.fontSize - 2
-                        font.italic: true
-                        topPadding: 4
-                    }
-
-                    // Column headers -- titled instead of relying purely on
-                    // position (request 2026-09-06). "util%" only appears
-                    // here (not on the plain topProcs table below) since
-                    // it's only ever populated for GPU rows.
+                    // Column headers -- the "Top processes" sub-heading now
+                    // lives in this row's first cell instead of its own
+                    // line above (request 2026-09-05: the process column
+                    // doesn't need its own "exe" label, so the freed cell
+                    // takes the sub-heading text and the whole table shifts
+                    // up by that line). It stays visually distinct from the
+                    // plain column labels beside it by size alone (-2 vs
+                    // -4). "util%" only appears here (not on the plain
+                    // topProcs table below) since it's only ever populated
+                    // for GPU rows.
                     RowLayout {
                         width: parent.width
                         spacing: 6
                         visible: (section.modelData.procs ?? []).length > 0
 
                         Text {
-                            text: qsTr("exe")
+                            text: qsTr("Top processes")
                             color: Theme.textDim
                             font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 4
+                            font.pixelSize: Theme.fontSize - 2
                             font.italic: true
                             Layout.fillWidth: true
                         }
@@ -802,28 +794,22 @@ Rectangle {
                     color: Theme.border
                 }
 
-                Text {
-                    text: root.topLabel
-                    color: Theme.textDim
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 2
-                    topPadding: 3
-                }
-
-                // Column headers -- titled instead of relying purely on
-                // position (request 2026-09-06: "titled column headers
-                // rather than repeating header on each line"). The value
-                // column's unit lives here now instead of being repeated
-                // on every single row.
+                // Column headers -- topLabel ("Top processes" / "top CPU
+                // users") now lives in this row's first cell instead of its
+                // own line above (request 2026-09-05: the process column
+                // doesn't need its own "exe" label, so the freed cell takes
+                // the heading text and the whole table shifts up by that
+                // line). It stays visually distinct from the plain pid/
+                // value labels beside it by size alone (-2 vs -3).
                 RowLayout {
                     width: parent.width
                     spacing: 6
 
                     Text {
-                        text: qsTr("exe")
+                        text: root.topLabel
                         color: Theme.textDim
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
+                        font.pixelSize: Theme.fontSize - 2
                         font.italic: true
                         Layout.fillWidth: true
                     }
