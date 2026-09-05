@@ -491,77 +491,36 @@ Item {
     // Hardcoded per request 2026-09-06: "let's hard code these colors...
     // make igpu colors distinctive shades of blue and dgpu distinctive
     // shades of green independent of what color theme is, otherwise they
-    // keep changing". Every earlier version of this derived the base hue
-    // from Theme.seriesPalette (wallpaper-generated) -- deliberately, so
-    // it stayed "of the theme" -- but that means a GPU's own identity
-    // color drifts every time the wallpaper regenerates the palette,
-    // which is exactly backwards for "this line is always the iGPU,
-    // that one's always the dGPU" at a glance. Fixed hex now, no Theme
-    // involvement at all. "arm" isn't a vendor sysmond reports today
-    // (only "intel"/"nvidia") but reserved here per request, in case
-    // Mali/Adreno support is ever added -- untested against real
-    // hardware, so its exact shades may need retuning once it's real.
-    // nvidia's green is also the fallback for any other/unrecognised
-    // dGPU vendor string.
-    function gpuBaseColor(vendor) {
-        switch (vendor) {
-        case "intel": return "#2f8fef"; // iGPU: blue
-        case "arm": return "#d92b48";   // reserved, untested: red
-        default: return "#86c14a";      // dGPU (nvidia, or any other): green
-        }
-    }
-    // `role` picks a fixed hue-offset/value/sat recipe instead of the
-    // earlier symmetric i/n interpolation -- utilization/VRAM/power don't
-    // actually need symmetric treatment, they need each PAIR kept apart,
-    // and once VRAM's dashed-alpha compensation (below) pushes its value
-    // toward the ceiling to stay visible at all, it lands right next to
-    // power's own already-near-ceiling value with only ~12-24 degrees of
-    // hue between them -- reported still not distinctive enough
-    // (2026-09-06, this pair specifically) despite utilization now being
-    // clearly darker than both. Power's hue offset is widened to +24
-    // degrees (blue-green) while VRAM's stays close to utilization's own
-    // -18 (yellow-green) -- VRAM and utilization are still easily told
-    // apart because only one of them gets the alpha-compensation boost
-    // (dashed=true), so they end up dark-vs-bright at the *same* hue,
-    // while VRAM and power end up bright-vs-bright at *different* hues.
-    // Verified via direct RGB simulation first: effective on-panel colours
-    // (post alpha-blend over the near-black background) come out as
-    // utilization #55631b (dark), VRAM #7e9813 (medium, yellow-green),
-    // power #37dd23 (vivid, blue-green) -- three genuinely different
-    // greens pairwise, not just "darker/lighter" ones.
-    function gpuShadeColor(base, role, dashed) {
-        const c = Qt.color(base);
-        // Role names are just recipe labels now, not tied to one metric
-        // -- gpuLines assigns which metric gets which (request
-        // 2026-09-06 swapped utilization onto the vivid "power" recipe
-        // for both GPUs). "dim" exists specifically for a *dashed* line
-        // that should still end up looking dark despite the alpha-
-        // compensation boost below -- "primary"'s own value (0.42) would
-        // boost to ~0.61, too bright for that, so "dim" starts lower
-        // (0.24 -> boosts to ~0.35).
-        const recipes = {
-            power: { hueOffsetDeg: 24, value: 0.95, sat: 0.85 },     // vivid
-            secondary: { hueOffsetDeg: -18, value: 0.62, sat: 0.85 }, // medium, boosts bright when dashed
-            primary: { hueOffsetDeg: -18, value: 0.42, sat: 0.75 },  // dark, solid only
-            dim: { hueOffsetDeg: -18, value: 0.24, sat: 0.55 },      // dark, dashed only
-        };
-        const r = recipes[role] ?? recipes.primary;
-        const hue = (c.hsvHue + r.hueOffsetDeg / 360 + 1) % 1;
-        let value = r.value;
-        let sat = r.sat;
-        // The dashed (VRAM/memory) line draws at Graph.qml's own
-        // "secondary" stroke alpha (0.62) vs a solid line's 0.9 -- once
-        // actually blended over the near-black panel background, that
-        // ~30% extra transparency alone visibly darkens/desaturates it
-        // relative to its own nominal HSV colour. Boost by the inverse of
-        // that alpha ratio (0.9/0.62) here so the *rendered* brightness
-        // lines back up with what a solid line at this `value` would
-        // look like.
-        if (dashed) {
-            value = Math.min(1, value * (0.9 / 0.62));
-            sat = Math.min(1, sat * 1.1);
-        }
-        return Qt.hsva(hue, sat, value, 1);
+    // keep changing". Deriving the base hue from Theme.seriesPalette
+    // (wallpaper-generated) meant a GPU's own identity color drifted
+    // every time the wallpaper regenerated the palette -- backwards for
+    // "this line is always the iGPU, that one's the dGPU" at a glance.
+    //
+    // Went through several formula-driven passes chasing maximum
+    // distinctiveness (hue rotation, value/sat stepping, both combined,
+    // dashed-alpha compensation boosting a line toward the brightness
+    // ceiling) that ended up "too chaotic" overall (2026-09-06) -- vivid
+    // neon highs next to near-black lows read as a mess of unrelated
+    // colors rather than "shades of blue" / "shades of green". This
+    // version drops the formula entirely: 2-3 literal, hand-picked, muted
+    // hex values per vendor, close enough in hue/saturation to read as
+    // one calm family, spaced only in lightness for legibility. "arm"
+    // isn't a vendor sysmond reports today (only "intel"/"nvidia") but
+    // reserved here per request, in case Mali/Adreno support is ever
+    // added -- untested against real hardware.
+    //
+    // Keyed by role (gpuLines assigns which metric gets which -- request
+    // 2026-09-06 swapped utilization onto the brighter slot for both
+    // GPUs): "power" = brightest, "primary" = medium, "secondary"/"dim" =
+    // darkest (used for whichever metric renders dashed/de-emphasised).
+    readonly property var gpuColors: ({
+        intel: { power: "#5A8DBA", primary: "#4A7699", dim: "#3F6684" },
+        nvidia: { power: "#9DB98C", primary: "#7FA06B", secondary: "#5C7A52" },
+        arm: { power: "#C97B7B", primary: "#B05F5F", secondary: "#8A4747" },
+    })
+    function gpuShadeColor(vendor, role) {
+        const family = root.gpuColors[vendor] ?? root.gpuColors.nvidia;
+        return family[role] ?? family.primary;
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
     // both the graph series and the legend derive from, so their colours
@@ -582,17 +541,14 @@ Item {
             // always the vivid "power" recipe now regardless of vendor;
             // dGPU's own power reading takes the dark "primary" recipe
             // (its old utilization look), and iGPU's memory takes "dim"
-            // (a dark recipe tuned for a *dashed* line, since "primary"
-            // itself renders too bright once dashed-alpha-compensated --
-            // see gpuShadeColor's own comment).
+            // (the darkest shade in that vendor's family, see gpuColors).
             if ((g.util_pct?.length ?? 0) > 0)
                 group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization") });
             if ((g.vram_pct?.length ?? 0) > 0)
                 group.push({ data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel });
             if ((g.power_pct?.length ?? 0) > 0)
                 group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power") });
-            const base = gpuBaseColor(g.vendor);
-            group.forEach(l => out.push(Object.assign(l, { color: gpuShadeColor(base, l.role, l.dashed) })));
+            group.forEach(l => out.push(Object.assign(l, { color: root.gpuShadeColor(g.vendor, l.role) })));
         }
         return out;
     }
