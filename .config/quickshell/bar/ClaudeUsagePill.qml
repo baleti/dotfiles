@@ -85,6 +85,38 @@ Rectangle {
         anchors.centerIn: parent
         spacing: 8
 
+        // The real claude.ai favicon (extracted from Brave's own Favicons
+        // cache -- ~/.brave-claude/Default/Favicons -- i.e. what the
+        // browser actually downloaded visiting the site, not a redrawn
+        // guess). No bundled logo asset exists anywhere else on this
+        // system and there's no Nerd Font glyph for it. Leading, matching
+        // every other bar pill's icon-then-value convention -- the numbers
+        // are still the point, the logo just marks which pill they belong
+        // to. Recolored (MultiEffect's colorization at full strength
+        // replaces RGB but keeps the source alpha shape) to root.logoColor
+        // -- a theme-warmth-scaled orange, not a fixed hardcoded one (see
+        // that property's own comment). Plain Theme.cyan and Theme.text
+        // were both tried first: cyan read as "not actually Claude's icon
+        // anymore", Theme.text as flat low-contrast grey against this
+        // bar's dark background.
+        Image {
+            id: logoSrc
+            source: "assets/claude-logo.png"
+            width: 14
+            height: 14
+            smooth: true
+            visible: false
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        MultiEffect {
+            source: logoSrc
+            anchors.verticalCenter: parent.verticalCenter
+            width: logoSrc.width
+            height: logoSrc.height
+            colorization: 1
+            colorizationColor: root.logoColor
+        }
+
         Repeater {
             model: ClaudeUsageSvc.accounts
 
@@ -116,37 +148,6 @@ Rectangle {
             font.pixelSize: Theme.fontSize
             color: Theme.muted
             anchors.verticalCenter: parent.verticalCenter
-        }
-
-        // The real claude.ai favicon (extracted from Brave's own Favicons
-        // cache -- ~/.brave-claude/Default/Favicons -- i.e. what the
-        // browser actually downloaded visiting the site, not a redrawn
-        // guess). No bundled logo asset exists anywhere else on this
-        // system and there's no Nerd Font glyph for it. Trailing, not
-        // leading -- this is the icon end of the pill, the numbers are the
-        // point. Recolored (MultiEffect's colorization at full strength
-        // replaces RGB but keeps the source alpha shape) to root.logoColor
-        // -- a theme-warmth-scaled orange, not a fixed hardcoded one (see
-        // that property's own comment). Plain Theme.cyan and Theme.text
-        // were both tried first: cyan read as "not actually Claude's icon
-        // anymore", Theme.text as flat low-contrast grey against this
-        // bar's dark background.
-        Image {
-            id: logoSrc
-            source: "assets/claude-logo.png"
-            width: 14
-            height: 14
-            smooth: true
-            visible: false
-            anchors.verticalCenter: parent.verticalCenter
-        }
-        MultiEffect {
-            source: logoSrc
-            anchors.verticalCenter: parent.verticalCenter
-            width: logoSrc.width
-            height: logoSrc.height
-            colorization: 1
-            colorizationColor: root.logoColor
         }
     }
 
