@@ -36,6 +36,10 @@ Rectangle {
     // Overlay mode only -- passthrough to Graph.secondaryOnTop. On for the
     // GPU pill only (request 2026-09-06), off (default) everywhere else.
     property bool secondaryOnTop: false
+    // Overlay mode only -- passthrough to Graph.lineWidth. Thicker for
+    // GPU, thinner for CPU, default (1.0) everywhere else (request
+    // 2026-09-06).
+    property real lineWidth: 1.0
 
     // 0..1 (or NaN to opt out): how "high" this metric currently is. Drives
     // the compact value/icon colour along Theme's calm->hot intensity ramp,
@@ -493,6 +497,7 @@ Rectangle {
                     color1: root.color1
                     fillOverlay: root.fillOverlay
                     secondaryOnTop: root.secondaryOnTop
+                    lineWidth: root.lineWidth
                 }
             }
 
