@@ -1,0 +1,19 @@
+[Unit]
+Description=Claude Agents: WireGuard-only HTTP bridge for the Android client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace with your own WireGuard tunnel address and subnet - the daemon
+# refuses to start without both. See ../README.md.
+Environment=CLAUDE_AGENTS_BIND_IP=10.10.0.2
+Environment=CLAUDE_AGENTS_ALLOWED_SUBNET=10.10.0.0/24
+ExecStart=%h/.config/claude-agents/claude-agents-daemon.py
+Restart=always
+RestartSec=10
+Nice=5
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target
