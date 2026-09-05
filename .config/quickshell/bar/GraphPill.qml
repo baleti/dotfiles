@@ -85,11 +85,16 @@ Rectangle {
     // Shared column widths for every "Top processes" table (both the
     // `sections`/GPU-per-section shape and the plain `topProcs` shape) --
     // titled column headers instead of a single generic heading + purely
-    // positional name/detail/value text (request 2026-09-06). "util%" is
-    // only ever populated for GPU rows (ProcEntry::util_pct is 0 for cpu/
-    // mem/net/disk, which have no equivalent per-process metric), so only
-    // the `sections` table includes that column.
-    readonly property real procNameW: 74
+    // positional text (request 2026-09-06). "executable" (name + sysmond's
+    // cmdline-tail/cwd detail, merged into one string) is Layout.fillWidth
+    // instead of a fixed width -- a separate detail column used to go
+    // `visible: false` when empty, which RowLayout excludes from the row
+    // entirely, shifting pid/value left (reported in the memory panel,
+    // 2026-09-05). Merging avoids that failure mode in every panel instead
+    // of just patching it. "util%" is only ever populated for GPU rows
+    // (ProcEntry::util_pct is 0 for cpu/mem/net/disk, which have no
+    // equivalent per-process metric), so only the `sections` table includes
+    // that column.
     readonly property real procPidW: 42
     readonly property real procUtilW: 34
     readonly property real procValueW: 56
@@ -629,15 +634,7 @@ Rectangle {
                         visible: (section.modelData.procs ?? []).length > 0
 
                         Text {
-                            text: qsTr("process")
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 4
-                            font.italic: true
-                            Layout.preferredWidth: root.procNameW
-                        }
-                        Text {
-                            text: qsTr("detail")
+                            text: qsTr("executable")
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 4
@@ -682,19 +679,10 @@ Rectangle {
                             spacing: 6
 
                             Text {
-                                text: parent.modelData.name
+                                text: parent.modelData.detail ? parent.modelData.name + " " + parent.modelData.detail : parent.modelData.name
                                 color: Theme.text
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 3
-                                elide: Text.ElideRight
-                                Layout.preferredWidth: root.procNameW
-                            }
-                            Text {
-                                text: parent.modelData.detail ?? ""
-                                visible: text.length > 0
-                                color: Theme.textDim
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 4
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
@@ -832,15 +820,7 @@ Rectangle {
                     spacing: 6
 
                     Text {
-                        text: qsTr("process")
-                        color: Theme.textDim
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        font.italic: true
-                        Layout.preferredWidth: root.procNameW
-                    }
-                    Text {
-                        text: qsTr("detail")
+                        text: qsTr("executable")
                         color: Theme.textDim
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
@@ -875,25 +855,18 @@ Rectangle {
                         width: parent.width
                         spacing: 6
 
+                        // Name plus sysmond's per-process hint (cmdline
+                        // tail + cwd) in one column -- "claude" alone is
+                        // useless when 8 of the top 10 are claude. Merged
+                        // into a single fillWidth Text (rather than a
+                        // separate detail column) so an empty detail can't
+                        // make Layout exclude a column and shift pid/value
+                        // left (reported in the memory panel, 2026-09-05).
                         Text {
-                            text: parent.modelData.name
+                            text: parent.modelData.detail ? parent.modelData.name + " " + parent.modelData.detail : parent.modelData.name
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
-                            elide: Text.ElideRight
-                            Layout.preferredWidth: root.procNameW
-                        }
-
-                        // sysmond's per-process hint (cmdline tail + cwd)
-                        // -- "claude" alone is useless when 8 of the top
-                        // 10 are claude. Fills the gap between name and
-                        // value, elided.
-                        Text {
-                            text: parent.modelData.detail ?? ""
-                            visible: text.length > 0
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
