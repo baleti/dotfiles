@@ -1019,44 +1019,11 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
         }
         ticks_since_rescan = (ticks_since_rescan + 1) % GPU_RESCAN_TICKS;
 
-        // client-id -> (render_ns, video_ns, pid, resident_kib)
-        let mut cur: HashMap<u64, (u64, u64, i32, f64)> = HashMap::new();
-        let mut still_alive = Vec::with_capacity(drm_pids.len());
-        for pid in drm_pids.iter().copied() {
-            // Missing fdinfo means the process exited since the last scan --
-            // just drop it, the next scan won't re-add it.
-            let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fdinfo")) else { continue };
-            still_alive.push(pid);
-            for ent in entries.flatten() {
-                let Ok(text) = fs::read_to_string(ent.path()) else { continue };
-                let is_i915 = text.lines().any(|l| {
-                    l.strip_prefix("drm-driver:").map(|v| v.trim() == "i915").unwrap_or(false)
-                });
-                if !is_i915 {
-                    continue;
-                }
-                let mut cid = None;
-                let mut render = 0u64;
-                let mut video = 0u64;
-                let mut resident_kib = 0.0;
-                for l in text.lines() {
-                    if let Some(v) = l.strip_prefix("drm-client-id:") {
-                        cid = v.trim().parse::<u64>().ok();
-                    } else if let Some(v) = l.strip_prefix("drm-engine-render:") {
-                        render = v.split_whitespace().next().and_then(|x| x.parse().ok()).unwrap_or(0);
-                    } else if let Some(v) = l.strip_prefix("drm-engine-video:") {
-                        video = v.split_whitespace().next().and_then(|x| x.parse().ok()).unwrap_or(0);
-                    } else if let Some(v) = l.strip_prefix("drm-resident-system0:") {
-                        resident_kib = parse_kib(v.trim());
-                    }
-                }
-                let Some(cid) = cid else { continue };
-                // Several fds can share one client-id with identical
-                // counters -- keep the first.
-                cur.entry(cid).or_insert((render, video, pid, resident_kib));
-            }
-        }
-        drm_pids = still_alive;
+        // Missing fdinfo means the process exited since the last scan --
+        // drop it from drm_pids, the next rescan won't re-add it unless
+        // it's back.
+        let cur = sample_intel_drm_clients(&drm_pids);
+        drm_pids.retain(|pid| fs::read_dir(format!("/proc/{pid}/fdinfo")).is_ok());
 
         let mut total_render = 0.0;
         let mut total_video = 0.0;
@@ -1144,6 +1111,134 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
             g.top = top;
         });
     }
+}
+
+/// One fdinfo sample across `drm_pids` -- client-id -> (render_ns,
+/// video_ns, pid, resident_kib). Factored out of `intel_gpu_loop` so
+/// `prime_intel_gpu_procs` (below) can take two of these itself,
+/// `PRIME_WINDOW_MS` apart, without touching that loop's own ongoing
+/// per-client-id tracking (which stays entirely local to it -- this
+/// primes only `g.top`, a one-off measurement over a short window, not
+/// the loop's real one-second-resolution state).
+fn sample_intel_drm_clients(drm_pids: &[i32]) -> HashMap<u64, (u64, u64, i32, f64)> {
+    let mut cur = HashMap::new();
+    for &pid in drm_pids {
+        let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fdinfo")) else { continue };
+        for ent in entries.flatten() {
+            let Ok(text) = fs::read_to_string(ent.path()) else { continue };
+            let is_i915 = text
+                .lines()
+                .any(|l| l.strip_prefix("drm-driver:").map(|v| v.trim() == "i915").unwrap_or(false));
+            if !is_i915 {
+                continue;
+            }
+            let mut cid = None;
+            let mut render = 0u64;
+            let mut video = 0u64;
+            let mut resident_kib = 0.0;
+            for l in text.lines() {
+                if let Some(v) = l.strip_prefix("drm-client-id:") {
+                    cid = v.trim().parse::<u64>().ok();
+                } else if let Some(v) = l.strip_prefix("drm-engine-render:") {
+                    render = v.split_whitespace().next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                } else if let Some(v) = l.strip_prefix("drm-engine-video:") {
+                    video = v.split_whitespace().next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                } else if let Some(v) = l.strip_prefix("drm-resident-system0:") {
+                    resident_kib = parse_kib(v.trim());
+                }
+            }
+            let Some(cid) = cid else { continue };
+            cur.entry(cid).or_insert((render, video, pid, resident_kib));
+        }
+    }
+    cur
+}
+
+/// Establishes a real, populated Intel iGPU top-process entry immediately,
+/// synchronously -- same idea as `prime_cpu_baseline`, but self-contained:
+/// two fdinfo samples `PRIME_WINDOW_MS` apart of its own, ranked by busy
+/// time over that short window. Doesn't touch `intel_gpu_loop`'s own
+/// ongoing per-client-id tracking, which is unaffected and picks up its
+/// own independent measurement on its own next regular tick as always.
+fn prime_intel_gpu_procs(history: &Mutex<History>) {
+    let drm_pids = find_drm_pids();
+    let sample0 = sample_intel_drm_clients(&drm_pids);
+    let t0 = Instant::now();
+
+    std::thread::sleep(Duration::from_millis(PRIME_WINDOW_MS));
+
+    let sample1 = sample_intel_drm_clients(&drm_pids);
+    let wall_ns = t0.elapsed().as_nanos() as f64;
+    if wall_ns <= 0.0 {
+        return;
+    }
+
+    let mut per_pid: HashMap<i32, (f64, f64)> = HashMap::new();
+    for (cid, &(render, video, pid, resident_kib)) in &sample1 {
+        let (dr, dv) = match sample0.get(cid) {
+            Some(&(pr, pv, _, _)) => (render.saturating_sub(pr) as f64, video.saturating_sub(pv) as f64),
+            None => (0.0, 0.0),
+        };
+        let e = per_pid.entry(pid).or_insert((0.0, 0.0));
+        e.0 += dr + dv;
+        e.1 += resident_kib;
+    }
+
+    let mut ranked: Vec<(ProcEntry, f64)> = per_pid
+        .into_iter()
+        .filter(|(_, (busy, res))| *busy > 0.0 || *res > 0.0)
+        .map(|(pid, (busy, res))| {
+            let pct = (100.0 * busy / wall_ns).min(100.0);
+            (ProcEntry { pid, name: proc_name(pid), value: res / 1024.0, detail: String::new(), util_pct: 0.0 }, pct)
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.0.value.partial_cmp(&a.0.value).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    ranked.truncate(10);
+    let mut top: Vec<ProcEntry> = ranked.iter().map(|(e, _)| e.clone()).collect();
+    enrich_details(&mut top);
+    for (entry, (_, pct)) in top.iter_mut().zip(ranked.iter()) {
+        entry.util_pct = *pct;
+    }
+
+    with_gpu(history, "intel", |g| g.top = top);
+}
+
+/// Establishes a real (if partial -- VRAM only, no SM% yet) NVIDIA
+/// top-process entry immediately via a fast single-shot query (measured:
+/// ~25ms), instead of waiting on the persistent `nvidia-smi pmon` stream
+/// (spawned by `gpu_procs_ref` alongside this) to complete its own first
+/// full cycle -- pmon has no per-cycle delimiter, so it only flushes on a
+/// pid *reappearing*, meaning its first real data historically took ~2 of
+/// its own cycles to show up. pmon's own regular flushes take over and
+/// fill in util_pct moments later; this is purely the initial preview.
+fn prime_nvidia_gpu_procs(history: &Mutex<History>) {
+    let Ok(out) = Command::new("nvidia-smi")
+        .args(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    if !out.status.success() {
+        return;
+    }
+    let mut entries: Vec<ProcEntry> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split(',').map(str::trim);
+            let pid: i32 = parts.next()?.parse().ok()?;
+            let mb: f64 = parts.next()?.parse().ok()?;
+            Some(ProcEntry { pid, name: proc_name(pid), value: mb, detail: String::new(), util_pct: 0.0 })
+        })
+        .collect();
+    entries.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+    entries.truncate(10);
+    enrich_details(&mut entries);
+    with_gpu(history, "nvidia", |g| g.top = entries);
 }
 
 /// Fallback for the current-frequency read when the Intel card isn't
@@ -1691,7 +1786,15 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
             DemandGuard::Nethogs(demand.nethogs.clone())
         }
         Metric::Gpu if include_procs => {
+            // Checked before, not after, gpu_procs_ref's own increment --
+            // a benign race with another simultaneous connection at worst
+            // means both prime redundantly, never that neither does.
+            let was_off = !gpu_procs_wanted(&demand.gpu_procs);
             gpu_procs_ref(&demand.gpu_procs, history.clone());
+            if was_off {
+                prime_intel_gpu_procs(&history);
+                prime_nvidia_gpu_procs(&history);
+            }
             DemandGuard::GpuProcs(demand.gpu_procs.clone())
         }
         _ => DemandGuard::None,
