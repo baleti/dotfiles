@@ -29,6 +29,13 @@ struct TierBuf {
     buf: VecDeque<f64>,
     accum_sum: f64,
     accum_n: u64,
+    // Total points ever finalized into `buf` over this TierBuf's whole
+    // life, never reset by capacity eviction (unlike buf.len(), which caps
+    // at TIER_CAPACITY) -- lets a delta-streaming client's "I've seen N
+    // points" bookmark be compared against this monotonic counter to know
+    // exactly how many new points to send, even once eviction means buf's
+    // own length stops growing. See TieredSeries::delta_since.
+    total_pushed: u64,
 }
 
 impl TierBuf {
@@ -38,6 +45,7 @@ impl TierBuf {
             buf: VecDeque::with_capacity(TIER_CAPACITY),
             accum_sum: 0.0,
             accum_n: 0,
+            total_pushed: 0,
         }
     }
 
@@ -50,6 +58,7 @@ impl TierBuf {
                 self.buf.pop_front();
             }
             self.buf.push_back(avg);
+            self.total_pushed += 1;
             self.accum_sum = 0.0;
             self.accum_n = 0;
         }
@@ -85,9 +94,27 @@ impl TieredSeries {
         }
     }
 
-    fn get(&self, tier: Tier) -> Vec<f64> {
+    fn total_pushed(&self, tier: Tier) -> u64 {
         let idx = ALL_TIERS.iter().position(|&t| t == tier).unwrap();
-        self.tiers[idx].buf.iter().copied().collect()
+        self.tiers[idx].total_pushed
+    }
+
+    /// Points appended since `since` (a prior `total_pushed()` reading),
+    /// oldest-first, clamped to whatever's still buffered. `since: 0`
+    /// naturally returns the entire current buffer (nothing "missing" is
+    /// ever more than what's stored), so a full send is just this with
+    /// `since = 0` -- same call, no separate code path. Self-correcting by
+    /// construction: whatever comes back is always exactly the true
+    /// current tail for `since`, regardless of what the caller already
+    /// had, so there's no way for a client to accumulate drift from this
+    /// call alone -- the worst case (a caller's `since` so stale the
+    /// missing span exceeds the buffer) just silently degrades to
+    /// returning the whole buffer instead of erroring.
+    fn delta_since(&self, tier: Tier, since: u64) -> Vec<f64> {
+        let idx = ALL_TIERS.iter().position(|&t| t == tier).unwrap();
+        let tb = &self.tiers[idx];
+        let missing = (tb.total_pushed.saturating_sub(since) as usize).min(tb.buf.len());
+        tb.buf.iter().skip(tb.buf.len() - missing).copied().collect()
     }
 
     fn to_persisted(&self) -> PersistedSeries {
@@ -1304,6 +1331,20 @@ fn persist_loop(history: Arc<Mutex<History>>) {
     }
 }
 
+/// How often (in ticks -- each client thread ticks on its own ~1s cadence,
+/// not synchronized with sysmond's sampler threads) a live connection
+/// forces a full resend of its history series even though nothing
+/// structurally changed. `TieredSeries::delta_since` is mathematically
+/// self-correcting on its own (a caller's tracked "since" can only ever be
+/// stale, never wrong -- see its own doc comment), but re-syncing from
+/// scratch on a fixed cadence regardless means any future bug in this
+/// bookkeeping, or a client that silently missed messages without
+/// noticing, can't compound for longer than this window before the wire
+/// re-syncs from the daemon's real buffers. This is the periodic
+/// drift-check for the delta stream, built into the protocol itself
+/// rather than a separate audit job.
+const FULL_RESYNC_TICKS: u64 = 30;
+
 fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone unix stream"));
     let mut request_line = String::new();
@@ -1313,42 +1354,94 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
     let Some(Request { metric, tier }) = Request::parse(&request_line) else { return };
 
     let mut writer = stream;
+
+    // Per-connection delta bookkeeping -- only whichever of these this
+    // connection's own `metric` actually is ever gets touched. Each
+    // "_since" value is a prior `TieredSeries::total_pushed()` reading (see
+    // `delta_since`); tick 0 always goes out full, seeding all of these.
+    let mut cpu_total_since: u64 = 0;
+    let mut cpu_cores_since: Vec<u64> = Vec::new();
+    let mut temp_since: u64 = 0;
+    let mut mem_since: (u64, u64, u64) = (0, 0, 0);
+    let mut net_since: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut disk_since: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut gpu_since: Vec<(u64, u64, u64)> = Vec::new();
+    let mut tick: u64 = 0;
+
     loop {
+        // True on tick 0 (first message on a fresh connection always goes
+        // out full) and then every FULL_RESYNC_TICKS after that.
+        let resync = tick % FULL_RESYNC_TICKS == 0;
         let snapshot = {
             let h = history.lock().unwrap();
             match metric {
-                Metric::Net => Snapshot::Net {
-                    interfaces: h
+                Metric::Net => {
+                    // A name net_since doesn't know about yet (a new
+                    // interface, e.g. a VPN tunnel that just came up) forces
+                    // the whole message full -- simpler and safe, and rare.
+                    let full = resync || h.net.keys().any(|k| !net_since.contains_key(k));
+                    let interfaces: Vec<IfaceHistory> = h
                         .net
                         .iter()
-                        .map(|(name, buf)| IfaceHistory {
-                            name: name.clone(),
-                            rx_bps: buf.a.get(tier),
-                            tx_bps: buf.b.get(tier),
+                        .map(|(name, buf)| {
+                            let (rx_since, tx_since) =
+                                if full { (0, 0) } else { net_since.get(name).copied().unwrap_or((0, 0)) };
+                            IfaceHistory {
+                                name: name.clone(),
+                                rx_bps: buf.a.delta_since(tier, rx_since),
+                                tx_bps: buf.b.delta_since(tier, tx_since),
+                            }
                         })
-                        .collect(),
-                },
-                Metric::Disk => Snapshot::Disk {
-                    devices: h
+                        .collect();
+                    net_since = h
+                        .net
+                        .iter()
+                        .map(|(name, buf)| (name.clone(), (buf.a.total_pushed(tier), buf.b.total_pushed(tier))))
+                        .collect();
+                    Snapshot::Net { full, interfaces }
+                }
+                Metric::Disk => {
+                    let full = resync || h.disk.keys().any(|k| !disk_since.contains_key(k));
+                    let devices: Vec<DiskHistory> = h
                         .disk
                         .iter()
-                        .map(|(name, buf)| DiskHistory {
-                            name: name.clone(),
-                            read_bps: buf.a.get(tier),
-                            write_bps: buf.b.get(tier),
+                        .map(|(name, buf)| {
+                            let (rd_since, wr_since) =
+                                if full { (0, 0) } else { disk_since.get(name).copied().unwrap_or((0, 0)) };
+                            DiskHistory {
+                                name: name.clone(),
+                                read_bps: buf.a.delta_since(tier, rd_since),
+                                write_bps: buf.b.delta_since(tier, wr_since),
+                            }
                         })
-                        .collect(),
-                },
-                Metric::Gpu => Snapshot::Gpu {
-                    gpus: h
+                        .collect();
+                    disk_since = h
+                        .disk
+                        .iter()
+                        .map(|(name, buf)| (name.clone(), (buf.a.total_pushed(tier), buf.b.total_pushed(tier))))
+                        .collect();
+                    Snapshot::Disk { full, devices }
+                }
+                Metric::Gpu => {
+                    // The GPU list itself is fixed after startup (see
+                    // History::gpus), so the only reason this length check
+                    // would ever trip is the very first tick.
+                    let full = resync || gpu_since.len() != h.gpus.len();
+                    if full {
+                        gpu_since = vec![(0, 0, 0); h.gpus.len()];
+                    }
+                    let gpus: Vec<GpuHistory> = h
                         .gpus
                         .iter()
-                        .map(|g| GpuHistory {
+                        .zip(gpu_since.iter())
+                        .map(|(g, &(util_since, vram_since, power_since))| GpuHistory {
                             name: g.name.clone(),
                             vendor: g.vendor.clone(),
-                            util_pct: g.util.get(tier),
-                            vram_pct: g.vram.get(tier),
-                            power_pct: g.power.get(tier),
+                            util_pct: g.util.delta_since(tier, util_since),
+                            vram_pct: g.vram.delta_since(tier, vram_since),
+                            power_pct: g.power.delta_since(tier, power_since),
+                            // Point-in-time already, not a history buffer --
+                            // always sent fresh in full, delta or not.
                             temp_c: g.detail.temp_c,
                             power_w: g.detail.power_w,
                             power_limit_w: g.detail.power_limit_w,
@@ -1361,26 +1454,52 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                             fan_pct: g.detail.fan_pct,
                             procs: g.top.clone(),
                         })
-                        .collect(),
-                },
-                Metric::Cpu => Snapshot::Cpu {
-                    total: h.cpu_total.get(tier),
-                    cores: h.cpu_cores.iter().map(|c| c.get(tier)).collect(),
-                },
-                Metric::Temp => Snapshot::Temp {
-                    celsius: h.temp_c.get(tier),
-                },
-                Metric::Mem => Snapshot::Mem {
-                    used_pct: h.mem_used_pct.get(tier),
-                    cached_pct: h.mem_cached_pct.get(tier),
-                    swap_used_pct: h.swap_used_pct.get(tier),
-                },
+                        .collect();
+                    gpu_since = h
+                        .gpus
+                        .iter()
+                        .map(|g| (g.util.total_pushed(tier), g.vram.total_pushed(tier), g.power.total_pushed(tier)))
+                        .collect();
+                    Snapshot::Gpu { full, gpus }
+                }
+                Metric::Cpu => {
+                    let full = resync || cpu_cores_since.len() != h.cpu_cores.len();
+                    let total_since = if full { 0 } else { cpu_total_since };
+                    let cores_since: Vec<u64> = if full { vec![0; h.cpu_cores.len()] } else { cpu_cores_since.clone() };
+                    let total = h.cpu_total.delta_since(tier, total_since);
+                    let cores: Vec<Vec<f64>> =
+                        h.cpu_cores.iter().zip(cores_since.iter()).map(|(c, &s)| c.delta_since(tier, s)).collect();
+                    cpu_total_since = h.cpu_total.total_pushed(tier);
+                    cpu_cores_since = h.cpu_cores.iter().map(|c| c.total_pushed(tier)).collect();
+                    Snapshot::Cpu { full, total, cores }
+                }
+                Metric::Temp => {
+                    let full = resync;
+                    let since = if full { 0 } else { temp_since };
+                    let celsius = h.temp_c.delta_since(tier, since);
+                    temp_since = h.temp_c.total_pushed(tier);
+                    Snapshot::Temp { full, celsius }
+                }
+                Metric::Mem => {
+                    let full = resync;
+                    let (used_since, cached_since, swap_since) = if full { (0, 0, 0) } else { mem_since };
+                    let used_pct = h.mem_used_pct.delta_since(tier, used_since);
+                    let cached_pct = h.mem_cached_pct.delta_since(tier, cached_since);
+                    let swap_used_pct = h.swap_used_pct.delta_since(tier, swap_since);
+                    mem_since = (
+                        h.mem_used_pct.total_pushed(tier),
+                        h.mem_cached_pct.total_pushed(tier),
+                        h.swap_used_pct.total_pushed(tier),
+                    );
+                    Snapshot::Mem { full, used_pct, cached_pct, swap_used_pct }
+                }
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
                 Metric::TopNet => Snapshot::TopProcs { procs: h.top_net.clone() },
                 Metric::TopDisk => Snapshot::TopProcs { procs: h.top_disk.clone() },
             }
         };
+        tick += 1;
         let Ok(line) = serde_json::to_string(&snapshot) else { return };
         if writer.write_all(line.as_bytes()).is_err() || writer.write_all(b"\n").is_err() {
             return; // client disconnected

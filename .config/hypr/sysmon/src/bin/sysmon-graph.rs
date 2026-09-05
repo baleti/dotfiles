@@ -55,7 +55,132 @@ fn load_theme() -> Option<Theme> {
     Some(Theme { primary, secondary, series })
 }
 
-use sysmon::{socket_path, Metric, Snapshot};
+use sysmon::{socket_path, Metric, Snapshot, TIER_CAPACITY};
+
+/// Appends `extra` to `existing` and drops points off the front past
+/// `TIER_CAPACITY`, mirroring sysmond's own ring-buffer eviction -- the
+/// same append-and-trim contract quickshell's TieredSocket.qml uses on the
+/// other client of this protocol.
+fn append_trim(existing: &mut Vec<f64>, extra: Vec<f64>) {
+    existing.extend(extra);
+    if existing.len() > TIER_CAPACITY {
+        let drop_n = existing.len() - TIER_CAPACITY;
+        existing.drain(0..drop_n);
+    }
+}
+
+/// Merges a delta-streamed `Snapshot` (2026-09-05 protocol rework -- see
+/// lib.rs's own doc comment on `Snapshot`) into whatever this popup already
+/// has buffered. `incoming`'s own `full` flag decides whether to replace
+/// wholesale (a fresh connection, or one of sysmond's periodic resyncs) or
+/// append; GPU's point-in-time fields (detail scalars, procs) always just
+/// take the incoming value since they're never deltas. `existing` is
+/// assumed to be the same `Snapshot` variant as `incoming` when present --
+/// true here since one connection only ever requests one fixed metric.
+fn merge_snapshot(existing: Option<Snapshot>, incoming: Snapshot) -> Snapshot {
+    match incoming {
+        Snapshot::Net { full: true, interfaces } => Snapshot::Net { full: true, interfaces },
+        Snapshot::Net { full: false, interfaces: delta } => {
+            let mut merged = match existing {
+                Some(Snapshot::Net { interfaces, .. }) => interfaces,
+                _ => Vec::new(),
+            };
+            for d in delta {
+                if let Some(cur) = merged.iter_mut().find(|i| i.name == d.name) {
+                    append_trim(&mut cur.rx_bps, d.rx_bps);
+                    append_trim(&mut cur.tx_bps, d.tx_bps);
+                } else {
+                    merged.push(d); // shouldn't happen -- a new interface forces full
+                }
+            }
+            Snapshot::Net { full: true, interfaces: merged }
+        }
+        Snapshot::Disk { full: true, devices } => Snapshot::Disk { full: true, devices },
+        Snapshot::Disk { full: false, devices: delta } => {
+            let mut merged = match existing {
+                Some(Snapshot::Disk { devices, .. }) => devices,
+                _ => Vec::new(),
+            };
+            for d in delta {
+                if let Some(cur) = merged.iter_mut().find(|x| x.name == d.name) {
+                    append_trim(&mut cur.read_bps, d.read_bps);
+                    append_trim(&mut cur.write_bps, d.write_bps);
+                } else {
+                    merged.push(d);
+                }
+            }
+            Snapshot::Disk { full: true, devices: merged }
+        }
+        Snapshot::Cpu { full: true, total, cores } => Snapshot::Cpu { full: true, total, cores },
+        Snapshot::Cpu { full: false, total: d_total, cores: d_cores } => {
+            let (mut total, mut cores) = match existing {
+                Some(Snapshot::Cpu { total, cores, .. }) => (total, cores),
+                _ => (Vec::new(), Vec::new()),
+            };
+            append_trim(&mut total, d_total);
+            if cores.len() != d_cores.len() {
+                cores = vec![Vec::new(); d_cores.len()];
+            }
+            for (c, dc) in cores.iter_mut().zip(d_cores.into_iter()) {
+                append_trim(c, dc);
+            }
+            Snapshot::Cpu { full: true, total, cores }
+        }
+        Snapshot::Temp { full: true, celsius } => Snapshot::Temp { full: true, celsius },
+        Snapshot::Temp { full: false, celsius: delta } => {
+            let mut merged = match existing {
+                Some(Snapshot::Temp { celsius, .. }) => celsius,
+                _ => Vec::new(),
+            };
+            append_trim(&mut merged, delta);
+            Snapshot::Temp { full: true, celsius: merged }
+        }
+        Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct } => {
+            Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct }
+        }
+        Snapshot::Mem { full: false, used_pct: d_used, cached_pct: d_cached, swap_used_pct: d_swap } => {
+            let (mut used_pct, mut cached_pct, mut swap_used_pct) = match existing {
+                Some(Snapshot::Mem { used_pct, cached_pct, swap_used_pct, .. }) => (used_pct, cached_pct, swap_used_pct),
+                _ => (Vec::new(), Vec::new(), Vec::new()),
+            };
+            append_trim(&mut used_pct, d_used);
+            append_trim(&mut cached_pct, d_cached);
+            append_trim(&mut swap_used_pct, d_swap);
+            Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct }
+        }
+        Snapshot::Gpu { full: true, gpus } => Snapshot::Gpu { full: true, gpus },
+        Snapshot::Gpu { full: false, gpus: delta } => {
+            let mut merged = match existing {
+                Some(Snapshot::Gpu { gpus, .. }) => gpus,
+                _ => Vec::new(),
+            };
+            for d in delta {
+                if let Some(cur) = merged.iter_mut().find(|g| g.name == d.name) {
+                    append_trim(&mut cur.util_pct, d.util_pct);
+                    append_trim(&mut cur.vram_pct, d.vram_pct);
+                    append_trim(&mut cur.power_pct, d.power_pct);
+                    cur.vendor = d.vendor;
+                    cur.temp_c = d.temp_c;
+                    cur.power_w = d.power_w;
+                    cur.power_limit_w = d.power_limit_w;
+                    cur.vram_used_mb = d.vram_used_mb;
+                    cur.vram_total_mb = d.vram_total_mb;
+                    cur.sm_clock_mhz = d.sm_clock_mhz;
+                    cur.mem_clock_mhz = d.mem_clock_mhz;
+                    cur.enc_pct = d.enc_pct;
+                    cur.dec_pct = d.dec_pct;
+                    cur.fan_pct = d.fan_pct;
+                    cur.procs = d.procs;
+                } else {
+                    merged.push(d);
+                }
+            }
+            Snapshot::Gpu { full: true, gpus: merged }
+        }
+        // No buffer to merge -- always just the latest point-in-time list.
+        top @ Snapshot::TopProcs { .. } => top,
+    }
+}
 
 fn pidfile(program_name: &str) -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
@@ -249,7 +374,9 @@ fn main() {
                     Ok(0) | Err(_) => return, // daemon gone
                     Ok(_) => {
                         if let Ok(snap) = serde_json::from_str::<Snapshot>(&line) {
-                            *latest.lock().unwrap() = Some(snap);
+                            let mut guard = latest.lock().unwrap();
+                            let existing = guard.take();
+                            *guard = Some(merge_snapshot(existing, snap));
                         }
                     }
                 }
@@ -351,7 +478,7 @@ fn main() {
             let guard = latest.lock().unwrap();
             if let Some(snap) = guard.as_ref() {
                 match snap {
-                    Snapshot::Net { interfaces } => {
+                    Snapshot::Net { interfaces, .. } => {
                         let max = interfaces
                             .iter()
                             .flat_map(|i| i.rx_bps.iter().chain(i.tx_bps.iter()))
@@ -364,12 +491,12 @@ fn main() {
                         }
                     }
                     Snapshot::Cpu { total, .. } => draw_series(cr, w, h, total, 100.0, accent),
-                    Snapshot::Temp { celsius } => {
+                    Snapshot::Temp { celsius, .. } => {
                         let max = celsius.iter().cloned().fold(60.0_f64, f64::max) + 10.0;
                         draw_series(cr, w, h, celsius, max, accent);
                     }
                     Snapshot::Mem { used_pct, .. } => draw_series(cr, w, h, used_pct, 100.0, accent),
-                    Snapshot::Gpu { gpus } => {
+                    Snapshot::Gpu { gpus, .. } => {
                         // One line per GPU's utilisation (this legacy popup
                         // has no per-GPU legend; the bar panel is the real
                         // multi-GPU view).
@@ -379,7 +506,7 @@ fn main() {
                         }
                     }
                     Snapshot::TopProcs { .. } => {} // not drawn as a graph; no popup UI for this yet
-                    Snapshot::Disk { devices } => {
+                    Snapshot::Disk { devices, .. } => {
                         let max = devices
                             .iter()
                             .flat_map(|d| d.read_bps.iter().chain(d.write_bps.iter()))
@@ -404,7 +531,7 @@ fn main() {
         glib::timeout_add_local(Duration::from_millis(300), move || {
             if let Some(snap) = latest.lock().unwrap().as_ref() {
                 let text = match snap {
-                    Snapshot::Net { interfaces } => {
+                    Snapshot::Net { interfaces, .. } => {
                         let mut names: Vec<&sysmon::IfaceHistory> = interfaces.iter().collect();
                         names.sort_by(|a, b| a.name.cmp(&b.name));
                         names
@@ -421,15 +548,15 @@ fn main() {
                             .join("   ")
                     }
                     Snapshot::Cpu { total, .. } => format!("{:.0}%", total.last().copied().unwrap_or(0.0)),
-                    Snapshot::Temp { celsius } => format!("{:.0}\u{b0}C", celsius.last().copied().unwrap_or(0.0)),
+                    Snapshot::Temp { celsius, .. } => format!("{:.0}\u{b0}C", celsius.last().copied().unwrap_or(0.0)),
                     Snapshot::Mem { used_pct, .. } => format!("{:.0}%", used_pct.last().copied().unwrap_or(0.0)),
-                    Snapshot::Gpu { gpus } => gpus
+                    Snapshot::Gpu { gpus, .. } => gpus
                         .iter()
                         .map(|g| format!("{}: {:.0}%", g.name, g.util_pct.last().copied().unwrap_or(0.0)))
                         .collect::<Vec<_>>()
                         .join("   "),
                     Snapshot::TopProcs { procs } => procs.first().map(|p| format!("{} ({:.0})", p.name, p.value)).unwrap_or_default(),
-                    Snapshot::Disk { devices } => {
+                    Snapshot::Disk { devices, .. } => {
                         let mut names: Vec<&sysmon::DiskHistory> = devices.iter().collect();
                         names.sort_by(|a, b| a.name.cmp(&b.name));
                         names
