@@ -681,11 +681,11 @@ fn proc_io_bytes(pid: i32) -> Option<(u64, u64)> {
 /// before re-reading ticks/io-bytes -- short enough that a panel opening
 /// feels instant, long enough for a meaningful (if noisier than the usual
 /// 1s window) delta. clk_tck is USER_HZ (100 on this machine, i.e. 10ms
-/// ticks), so 50ms only resolves ~5 ticks for a busy process -- coarser
-/// than the original 200ms (~20 ticks), but this is only ever the very
-/// first reading a newly-opened panel shows; sample_loop's regular
-/// full-second measurement supersedes it moments later regardless.
-const PRIME_WINDOW_MS: u64 = 50;
+/// ticks), so 200ms still resolves up to ~20 ticks for a busy process.
+/// (Tried 50ms -- too coarse in practice, confirmed live as several
+/// distinct processes all reading exactly the same quantized 20.0%;
+/// reverted back to 200ms 2026-09-06.)
+const PRIME_WINDOW_MS: u64 = 200;
 
 /// Establishes a real, populated top_cpu entry immediately, synchronously
 /// -- called once from serve_client on the 0 -> 1 demand transition (a
