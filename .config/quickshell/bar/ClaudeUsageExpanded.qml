@@ -530,9 +530,13 @@ Rectangle {
     // true` is the actual backstop against a rare 1-2px partial last row
     // now that the margin's thinner, not a promise of zero clipping.
     // Both nudged down 1px from 18/84 to reflect acctCol's spacing
-    // tightening (2 -> 1) above.
+    // tightening (2 -> 1) above. groupHeaderH cut again (78 -> 45) when the
+    // session/weekly lines merged onto the title line (2026-09-04) removed
+    // two whole rows from this block -- estimate, not re-screenshotted yet,
+    // may need the same kind of recalibration pass the figures above went
+    // through if it over/undershoots in practice.
     readonly property int rowH: 17
-    readonly property int groupHeaderH: 78
+    readonly property int groupHeaderH: 45
     readonly property int collapsedH: 18
     // Search box Rectangle (22px) + the one extra `content` Column
     // spacing gap (10px) it added between the mode-line and the first
@@ -1130,34 +1134,99 @@ Rectangle {
                 readonly property var visibleProcs: groupOpen ? sortedProcs.slice(0, rowBudget) : []
                 readonly property int hiddenProcCount: groupOpen ? Math.max(0, searchFilteredProcs.length - rowBudget) : 0
 
+                // Session/weekly rate-limit summaries used to each sit on
+                // their own line below this one (3 lines/account total) --
+                // merged onto the title line itself (request 2026-09-04:
+                // "that will save us some space"). Shown unconditionally
+                // here (not gated on acctCol.groupOpen like the process
+                // table below) -- unlike the table, a two-number summary is
+                // cheap enough to keep visible even while folded, which is
+                // the point: folding no longer hides it.
                 Item {
                     id: heading
-                    width: headingRow.width
-                    height: headingRow.height
+                    width: parent.width
+                    height: headingRow.implicitHeight
 
-                    Row {
+                    RowLayout {
                         id: headingRow
-                        spacing: 6
+                        width: parent.width
+                        spacing: 10
 
-                        Text {
-                            // Folded (collapsed): points right. Unfolded
-                            // (expanded): points down. Plain Unicode
-                            // triangles, not a Nerd Font glyph -- no
-                            // icon-font dependency needed for two shapes
-                            // this simple.
-                            text: acctCol.groupOpen ? "▾" : "▸"
-                            color: Theme.textDim
-                            font.pixelSize: Theme.fontSize + 2
-                            anchors.verticalCenter: nameText.verticalCenter
+                        // Layout.alignment: Qt.AlignVCenter on all three of
+                        // these sibling Rows -- without it, RowLayout top-
+                        // aligns children by default, and this Row is
+                        // taller (the +2px triangle glyph) than the session/
+                        // weekly Rows below, so top-aligning left their text
+                        // baselines visibly offset from the account name's
+                        // (reported 2026-09-04, right after these merged
+                        // onto one line).
+                        Row {
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 6
+                            Text {
+                                // Folded (collapsed): points right.
+                                // Unfolded (expanded): points down. Plain
+                                // Unicode triangles, not a Nerd Font glyph
+                                // -- no icon-font dependency needed for two
+                                // shapes this simple.
+                                text: acctCol.groupOpen ? "▾" : "▸"
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fontSize + 2
+                                anchors.verticalCenter: nameText.verticalCenter
+                            }
+                            Text {
+                                id: nameText
+                                text: acctCol.modelData.account || ""
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize
+                                font.bold: true
+                            }
                         }
-                        Text {
-                            id: nameText
-                            text: acctCol.modelData.account || ""
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize
-                            font.bold: true
+
+                        Row {
+                            Layout.alignment: Qt.AlignVCenter
+                            visible: acctCol.hasSession
+                            opacity: acctCol.modelData.stale ? 0.55 : 1
+                            spacing: 6
+                            Text {
+                                id: sessionPctText
+                                text: qsTr("session %1%").arg(Math.round(acctCol.modelData.session_pct))
+                                color: Theme.rampColor(acctCol.modelData.session_pct / 100)
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 1
+                            }
+                            Text {
+                                text: root.tick >= 0 ? root.fmtResets(acctCol.modelData.session_resets_at) : ""
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                anchors.verticalCenter: sessionPctText.verticalCenter
+                            }
                         }
+
+                        Row {
+                            Layout.alignment: Qt.AlignVCenter
+                            visible: acctCol.hasWeekly
+                            opacity: acctCol.modelData.stale ? 0.55 : 1
+                            spacing: 6
+                            Text {
+                                id: weeklyPctText
+                                text: qsTr("weekly %1%").arg(Math.round(acctCol.modelData.weekly_pct))
+                                color: Theme.rampColor(acctCol.modelData.weekly_pct / 100)
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 1
+                            }
+                            Text {
+                                text: root.tick >= 0 ? root.fmtResets(acctCol.modelData.weekly_resets_at) : ""
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                anchors.verticalCenter: weeklyPctText.verticalCenter
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
                     }
 
                     // MouseArea deliberately lives on this wrapping Item,
@@ -1175,7 +1244,7 @@ Rectangle {
                     }
                 }
 
-                // A stale reading still shows its (dimmed) numbers below --
+                // A stale reading still shows its (dimmed) numbers above --
                 // this is just the "why" note, not a replacement for them.
                 // Only a genuinely never-fetched account has no numbers to
                 // dim, in which case this is the only line shown.
@@ -1191,62 +1260,15 @@ Rectangle {
                     elide: Text.ElideRight
                 }
 
-                RowLayout {
-                    visible: parent.groupOpen && parent.hasSession
-                    opacity: modelData.stale ? 0.55 : 1
-                    width: parent.width
-                    spacing: 10
-
-                    Text {
-                        text: qsTr("session %1%").arg(Math.round(modelData.session_pct))
-                        color: Theme.rampColor(modelData.session_pct / 100)
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 1
-                    }
-                    Text {
-                        text: root.tick >= 0 ? root.fmtResets(modelData.session_resets_at) : ""
-                        color: Theme.textDim
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 2
-                    }
-                    Item { Layout.fillWidth: true }
-                }
-
-                RowLayout {
-                    visible: parent.groupOpen && parent.hasWeekly
-                    opacity: modelData.stale ? 0.55 : 1
-                    width: parent.width
-                    spacing: 10
-
-                    Text {
-                        text: qsTr("weekly %1%").arg(Math.round(modelData.weekly_pct))
-                        color: Theme.rampColor(modelData.weekly_pct / 100)
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 1
-                    }
-                    Text {
-                        text: root.tick >= 0 ? root.fmtResets(modelData.weekly_resets_at) : ""
-                        color: Theme.textDim
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 2
-                    }
-                    Item { Layout.fillWidth: true }
-                }
-
-                // Both header rows below sit inside their own Column,
-                // shifted up 16px (roughly one header line) via a
-                // transform -- a plain visual offset, not a layout change
-                // (acctCol still reserves this block's normal height, so
-                // nothing below it shifts to compensate). Deliberately
-                // overlaps the bottom of the "weekly" line above; asked
-                // for explicitly ("it's okay because they are away from
-                // each other" -- horizontally, weekly's text is short and
-                // left-aligned while the header row's content starts
-                // further right, so the overlap in practice doesn't
-                // collide with actual glyphs).
+                // Both header rows below used to sit inside their own
+                // Column shifted up 16px via a transform, overlapping the
+                // bottom of a "weekly" line that lived directly above them
+                // -- that line moved onto the title row above (2026-09-04),
+                // so there's nothing left to overlap; the transform is
+                // gone and this Column now just renders at its natural
+                // position.
                 Column {
                     spacing: 1
-                    transform: Translate { y: -16 }
 
                 // Group-header row, once per group -- blank over every
                 // plain column, one "tmux" label (underlined, to read as
@@ -1589,13 +1611,16 @@ Rectangle {
                 }
                 } // end header-shift Column
 
-                // Same -16px shift as the header block above, so the data
-                // rows immediately follow the (visually-shifted) headers
-                // instead of leaving the 16px gap the header shift alone
-                // would open up between them -- reported 2026-09-01.
+                // Used to carry the same -16px shift as the header block
+                // above it, to follow that block's own visual shift without
+                // opening a matching 16px gap -- now that neither Column
+                // shifts (the header block's own shift is gone too, see
+                // above), this one's gone as well; leaving just this one in
+                // place was exactly what caused the header/data-row overlap
+                // and the dead gap before the next account's title
+                // (reported 2026-09-04).
                 Column {
                     spacing: 1
-                    transform: Translate { y: -16 }
 
                 Repeater {
                     model: acctCol.visibleProcs
