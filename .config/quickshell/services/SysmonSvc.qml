@@ -56,19 +56,18 @@ QtObject {
     readonly property list<real> memCachedPct: memSock.data.cached_pct ?? []
     readonly property list<real> swapUsedPct: memSock.data.swap_used_pct ?? []
 
-    // NVIDIA GPU (sysmond's `gpu_loop`, one `nvidia-smi -l 1` subprocess).
-    // `gpuUtilPct`/`gpuVramPct`/`gpuPowerPct` are the three overlaid history
-    // series (engine load, VRAM occupancy, board power as % of TGP);
-    // `gpuInfo` carries the point-in-time detail block (name/temp_c/power_w/
-    // power_limit_w/vram_used_mb/vram_total_mb/sm_clock_mhz/mem_clock_mhz/
-    // enc_pct/dec_pct/fan_pct) for the expanded panel. `gpuPresent` gates
-    // the bar pill entirely -- stays false on a machine with no NVIDIA GPU
-    // (sysmond never fills in `name`), so the pill just never appears.
-    readonly property list<real> gpuUtilPct: gpuSock.data.util_pct ?? []
-    readonly property list<real> gpuVramPct: gpuSock.data.vram_pct ?? []
-    readonly property list<real> gpuPowerPct: gpuSock.data.power_pct ?? []
-    readonly property var gpuInfo: gpuSock.data
-    readonly property bool gpuPresent: !!(gpuSock.data.name)
+    // Every GPU on the machine, one object each (iGPU + dGPU on a hybrid
+    // laptop). Per entry: name, vendor ("intel"|"nvidia"), the history
+    // series util_pct / vram_pct / power_pct (vram & power are empty for the
+    // iGPU -- no dedicated VRAM total, no board-power telemetry), the
+    // point-in-time detail scalars (temp_c/power_w/power_limit_w/
+    // vram_used_mb/vram_total_mb/sm_clock_mhz/mem_clock_mhz/enc_pct/dec_pct/
+    // fan_pct), and `procs` (this GPU's top-10, value = memory MiB, util% in
+    // `detail`). Fed by sysmond's `gpu_loop` (nvidia-smi) + `intel_gpu_loop`
+    // (i915 fdinfo). `gpuPresent` gates the bar pill -- false on a machine
+    // with no supported GPU, so the pill never appears.
+    readonly property var gpuList: gpuSock.data.gpus ?? []
+    readonly property bool gpuPresent: (gpuSock.data.gpus?.length ?? 0) > 0
 
     // [{pid, name, value}], value = %CPU of one core, or MB resident.
     property var topCpu: []
@@ -80,10 +79,6 @@ QtObject {
     // /proc/[pid]/io -- excludes any process sysmond can't read (someone
     // else's, or one marked non-dumpable), see sysmond.rs's proc_io_bytes.
     property var topDisk: []
-    // Per-process GPU use (nvidia-smi pmon, graphics + compute clients),
-    // ranked by SM utilisation then VRAM. value = VRAM MiB; the SM% is in
-    // `detail`. Empty on a machine with no NVIDIA GPU.
-    property var topGpu: []
 
     // Whole-disk block devices, same shape as netInterfaces.
     readonly property var diskDevices: diskSock.data.devices ?? []
@@ -221,29 +216,20 @@ QtObject {
         }
     }
 
-    readonly property Socket topGpuSocket: Socket {
-        path: root.socketPath()
-        connected: true
-        onConnectedChanged: if (connected) write("topgpu\n")
-        parser: SplitParser {
-            splitMarker: "\n"
-            onRead: data => { root.topGpu = JSON.parse(data).procs; }
-        }
-    }
-
     // Re-assert each socket if sysmond drops (dev restarts, package
     // upgrades) -- `connected: true` is a constant binding and won't
-    // re-fire on its own. Same fix as TieredSocket.qml's timer.
+    // re-fire on its own. Same fix as TieredSocket.qml's timer. (GPU
+    // per-process lists ride in the `gpu` TieredSocket snapshot now, not
+    // their own socket.)
     readonly property Timer reconnectTimer: Timer {
         interval: 2000
         repeat: true
-        running: !root.topCpuSocket.connected || !root.topMemSocket.connected || !root.topNetSocket.connected || !root.topDiskSocket.connected || !root.topGpuSocket.connected
+        running: !root.topCpuSocket.connected || !root.topMemSocket.connected || !root.topNetSocket.connected || !root.topDiskSocket.connected
         onTriggered: {
             root.topCpuSocket.connected = true;
             root.topMemSocket.connected = true;
             root.topNetSocket.connected = true;
             root.topDiskSocket.connected = true;
-            root.topGpuSocket.connected = true;
         }
     }
 }

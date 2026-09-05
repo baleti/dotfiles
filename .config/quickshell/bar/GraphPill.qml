@@ -63,11 +63,12 @@ Rectangle {
     // time-series metric, so they get their own subsection instead of
     // being folded into legendItems (which is just a color key).
     property var usageItems: []
-    // [{name, value}] -- plain label/value lines (GPU pill: temperature,
-    // core/memory clocks, encoder/decoder load, fan). Unlike usageItems
-    // these aren't percent-of-capacity readings, so they get no bar, just a
-    // right-aligned value string.
-    property var detailRows: []
+    // [{label, rows: [{name, value}]}] -- one or more titled blocks of
+    // plain label/value lines (the GPU pill: one block per GPU, with its
+    // temperature / clocks / power / VRAM). Unlike usageItems these aren't
+    // percent-of-capacity readings, so they get no bar, just a right-
+    // aligned value string.
+    property var detailGroups: []
     // [{name, value}] -- top-10 list shown when non-empty.
     property var topProcs: []
     property string topUnit: ""
@@ -75,6 +76,15 @@ Rectangle {
     // this is really "top CPU users" as a heat proxy, not a real per-
     // process temperature attribution (the kernel has no such thing).
     property string topLabel: qsTr("Top processes")
+    // [{label, unit, procs: [{name, detail, value}]}] -- one or more titled
+    // process tables (the GPU pill: one per GPU). When set it replaces the
+    // single topProcs/topLabel/topUnit table; other pills keep using those.
+    property var procGroups: []
+    readonly property var effectiveProcGroups: procGroups.length > 0
+        ? procGroups
+        : (topProcs.length > 0
+            ? [{ label: topLabel, unit: topUnit, procs: topProcs }]
+            : [])
 
     // Time-range toggle row, shown only when tierCodes is non-empty --
     // Bar.qml wires this up for the 5 sysmond-backed metrics (net/cpu/mem/
@@ -520,44 +530,58 @@ Rectangle {
                 }
             }
 
-            Column {
-                width: parent.width
-                spacing: 3
-                visible: root.detailRows.length > 0
+            Repeater {
+                model: root.detailGroups
 
-                Rectangle {
+                Column {
+                    id: detailGroup
+                    required property var modelData
                     width: parent.width
-                    height: 1
-                    color: Theme.border
-                }
+                    spacing: 3
+                    visible: (modelData.rows ?? []).length > 0
 
-                Repeater {
-                    model: root.detailRows
-
-                    Item {
-                        required property var modelData
+                    Rectangle {
                         width: parent.width
-                        height: detailName.implicitHeight
-                        // topPadding-equivalent gap under the divider for
-                        // the first row.
+                        height: 1
+                        color: Theme.border
+                    }
 
-                        Text {
-                            id: detailName
-                            anchors.left: parent.left
-                            anchors.baseline: detailValue.baseline
-                            text: parent.modelData.name
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                        }
+                    Text {
+                        text: detailGroup.modelData.label ?? ""
+                        visible: text.length > 0
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        font.bold: true
+                        topPadding: 3
+                    }
 
-                        Text {
-                            id: detailValue
-                            anchors.right: parent.right
-                            text: parent.modelData.value
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 1
+                    Repeater {
+                        model: detailGroup.modelData.rows ?? []
+
+                        Item {
+                            required property var modelData
+                            width: parent.width
+                            height: detailName.implicitHeight
+
+                            Text {
+                                id: detailName
+                                anchors.left: parent.left
+                                anchors.baseline: detailValue.baseline
+                                text: parent.modelData.name
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                            }
+
+                            Text {
+                                id: detailValue
+                                anchors.right: parent.right
+                                text: parent.modelData.value
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 1
+                            }
                         }
                     }
                 }
@@ -637,68 +661,76 @@ Rectangle {
                 }
             }
 
-            Column {
-                width: parent.width
-                spacing: 3
-                visible: root.topProcs.length > 0
+            Repeater {
+                model: root.effectiveProcGroups
 
-                Rectangle {
+                Column {
+                    id: procGroup
+                    required property var modelData
                     width: parent.width
-                    height: 1
-                    color: Theme.border
-                }
+                    spacing: 3
+                    visible: (modelData.procs ?? []).length > 0
 
-                Text {
-                    text: root.topLabel
-                    color: Theme.textDim
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 2
-                    topPadding: 3
-                }
-
-                Repeater {
-                    model: root.topProcs
-
-                    Item {
-                        required property var modelData
+                    Rectangle {
                         width: parent.width
-                        height: procName.implicitHeight
+                        height: 1
+                        color: Theme.border
+                    }
 
-                        Text {
-                            id: procName
-                            anchors.left: parent.left
-                            anchors.baseline: procValue.baseline
-                            text: parent.modelData.name
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 1
-                        }
+                    Text {
+                        text: procGroup.modelData.label ?? qsTr("Top processes")
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        font.bold: root.detailGroups.length > 0 || root.procGroups.length > 0
+                        topPadding: 3
+                    }
 
-                        // sysmond's per-process hint (cmdline tail + cwd) --
-                        // "claude" alone is useless when 8 of the top 10 are
-                        // claude. Fills the gap between name and value, elided.
-                        Text {
-                            id: procDetail
-                            anchors.left: procName.right
-                            anchors.leftMargin: 7
-                            anchors.right: procValue.left
-                            anchors.rightMargin: 8
-                            anchors.baseline: procValue.baseline
-                            text: parent.modelData.detail ?? ""
-                            visible: text.length > 0
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            elide: Text.ElideRight
-                        }
+                    Repeater {
+                        model: procGroup.modelData.procs ?? []
 
-                        Text {
-                            id: procValue
-                            anchors.right: parent.right
-                            text: parent.modelData.value.toFixed(1) + root.topUnit
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 1
+                        Item {
+                            required property var modelData
+                            width: parent.width
+                            height: procName.implicitHeight
+
+                            Text {
+                                id: procName
+                                anchors.left: parent.left
+                                anchors.baseline: procValue.baseline
+                                text: parent.modelData.name
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 1
+                            }
+
+                            // sysmond's per-process hint (cmdline tail + cwd)
+                            // -- "claude" alone is useless when 8 of the top
+                            // 10 are claude. Fills the gap between name and
+                            // value, elided.
+                            Text {
+                                id: procDetail
+                                anchors.left: procName.right
+                                anchors.leftMargin: 7
+                                anchors.right: procValue.left
+                                anchors.rightMargin: 8
+                                anchors.baseline: procValue.baseline
+                                text: parent.modelData.detail ?? ""
+                                visible: text.length > 0
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                id: procValue
+                                anchors.right: parent.right
+                                text: parent.modelData.value.toFixed(1) + (procGroup.modelData.unit ?? "")
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 1
+                            }
                         }
                     }
                 }
