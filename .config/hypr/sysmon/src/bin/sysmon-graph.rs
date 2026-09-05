@@ -154,7 +154,9 @@ fn finish_handshake(mut stream: UnixStream, metric: Metric) -> Option<UnixStream
         Metric::TopCpu => "topcpu\n",
         Metric::TopMem => "topmem\n",
         Metric::TopNet => "topnet\n",
+        Metric::TopDisk => "topdisk\n",
         Metric::Disk => "disk\n",
+        Metric::Gpu => "gpu\n",
     };
     stream.write_all(word.as_bytes()).ok()?;
     Some(stream)
@@ -271,7 +273,9 @@ fn main() {
         Metric::TopCpu => ("Top CPU", (0.37, 0.63, 1.0)),
         Metric::TopMem => ("Top Memory", (0.78, 0.48, 1.0)),
         Metric::TopNet => ("Top Network", (0.31, 0.84, 0.48)),
+        Metric::TopDisk => ("Top Disk", (0.31, 0.84, 0.48)),
         Metric::Disk => ("Disk", (0.31, 0.84, 0.48)),
+        Metric::Gpu => ("GPU", (0.95, 0.45, 0.75)),
     };
     let accent = match (&theme, metric) {
         (Some(t), Metric::Temp) => t.secondary,
@@ -365,6 +369,7 @@ fn main() {
                         draw_series(cr, w, h, celsius, max, accent);
                     }
                     Snapshot::Mem { used_pct, .. } => draw_series(cr, w, h, used_pct, 100.0, accent),
+                    Snapshot::Gpu { util_pct, .. } => draw_series(cr, w, h, util_pct, 100.0, accent),
                     Snapshot::TopProcs { .. } => {} // not drawn as a graph; no popup UI for this yet
                     Snapshot::Disk { devices } => {
                         let max = devices
@@ -410,6 +415,11 @@ fn main() {
                     Snapshot::Cpu { total, .. } => format!("{:.0}%", total.last().copied().unwrap_or(0.0)),
                     Snapshot::Temp { celsius } => format!("{:.0}\u{b0}C", celsius.last().copied().unwrap_or(0.0)),
                     Snapshot::Mem { used_pct, .. } => format!("{:.0}%", used_pct.last().copied().unwrap_or(0.0)),
+                    Snapshot::Gpu { util_pct, vram_pct, .. } => format!(
+                        "{:.0}%  ·  VRAM {:.0}%",
+                        util_pct.last().copied().unwrap_or(0.0),
+                        vram_pct.last().copied().unwrap_or(0.0),
+                    ),
                     Snapshot::TopProcs { procs } => procs.first().map(|p| format!("{} ({:.0})", p.name, p.value)).unwrap_or_default(),
                     Snapshot::Disk { devices } => {
                         let mut names: Vec<&sysmon::DiskHistory> = devices.iter().collect();

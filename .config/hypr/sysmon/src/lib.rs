@@ -109,6 +109,7 @@ pub enum Metric {
     Temp,
     Mem,
     Disk,
+    Gpu,
     TopCpu,
     TopMem,
     TopNet,
@@ -123,6 +124,7 @@ impl Metric {
             "temp" => Some(Metric::Temp),
             "mem" => Some(Metric::Mem),
             "disk" => Some(Metric::Disk),
+            "gpu" => Some(Metric::Gpu),
             "topcpu" => Some(Metric::TopCpu),
             "topmem" => Some(Metric::TopMem),
             "topnet" => Some(Metric::TopNet),
@@ -206,6 +208,41 @@ pub enum Snapshot {
     // One entry per whole-disk block device (partitions excluded), same
     // overlay-per-device treatment as Net.
     Disk { devices: Vec<DiskHistory> },
+    // NVIDIA GPU (via a long-lived `nvidia-smi ... -l 1` subprocess -- see
+    // sysmond.rs's `gpu_loop`). `util_pct` (compute/graphics engine load)
+    // and `vram_pct` (VRAM *occupancy*, used/total -- not the memory
+    // controller's bandwidth utilisation) are the two overlaid history
+    // series, same treatment as Mem's used/cached. The rest are
+    // point-in-time detail readings shown in the expanded panel, not
+    // history -- all `#[serde(default)]` so a client/daemon version skew or
+    // a field nvidia-smi reports as `[N/A]` (older/mobile parts often do for
+    // power.limit / fan.speed) degrades to 0 rather than breaking the parse.
+    Gpu {
+        util_pct: Vec<f64>,
+        vram_pct: Vec<f64>,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        temp_c: f64,
+        #[serde(default)]
+        power_w: f64,
+        #[serde(default)]
+        power_limit_w: f64,
+        #[serde(default)]
+        vram_used_mb: f64,
+        #[serde(default)]
+        vram_total_mb: f64,
+        #[serde(default)]
+        sm_clock_mhz: f64,
+        #[serde(default)]
+        mem_clock_mhz: f64,
+        #[serde(default)]
+        enc_pct: f64,
+        #[serde(default)]
+        dec_pct: f64,
+        #[serde(default)]
+        fan_pct: f64,
+    },
     // Point-in-time top-10, refreshed every tick like the history metrics,
     // just not itself a time series.
     TopProcs { procs: Vec<ProcEntry> },

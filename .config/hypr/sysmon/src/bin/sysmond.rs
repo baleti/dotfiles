@@ -148,8 +148,34 @@ struct PersistedHistory {
     // too, not just swap.
     #[serde(default)]
     swap_used_pct: PersistedSeries,
+    // GPU utilisation / VRAM-occupancy history -- `#[serde(default)]` for
+    // the same reason as swap: a history.json from before GPU tracking
+    // still loads every other series.
+    #[serde(default)]
+    gpu_util_pct: PersistedSeries,
+    #[serde(default)]
+    gpu_vram_pct: PersistedSeries,
     net: HashMap<String, (PersistedSeries, PersistedSeries)>,
     disk: HashMap<String, (PersistedSeries, PersistedSeries)>,
+}
+
+/// Point-in-time GPU detail readings (everything except the two history
+/// series) -- refreshed every `nvidia-smi` line by `gpu_loop`, served as-is
+/// in each `Snapshot::Gpu`. All-zero until the first line arrives, or
+/// forever if there's no NVIDIA GPU.
+#[derive(Default, Clone)]
+struct GpuLatest {
+    name: String,
+    temp_c: f64,
+    power_w: f64,
+    power_limit_w: f64,
+    vram_used_mb: f64,
+    vram_total_mb: f64,
+    sm_clock_mhz: f64,
+    mem_clock_mhz: f64,
+    enc_pct: f64,
+    dec_pct: f64,
+    fan_pct: f64,
 }
 
 fn persist_path() -> PathBuf {
@@ -175,6 +201,12 @@ struct History {
     mem_used_pct: TieredSeries,
     mem_cached_pct: TieredSeries,
     swap_used_pct: TieredSeries,
+    // NVIDIA GPU: two overlaid history series (engine load, VRAM occupancy)
+    // plus the point-in-time detail block, all fed by `gpu_loop`'s
+    // `nvidia-smi` subprocess. Stay empty/zero forever if there's no GPU.
+    gpu_util_pct: TieredSeries,
+    gpu_vram_pct: TieredSeries,
+    gpu: GpuLatest,
     top_cpu: Vec<ProcEntry>,
     top_mem: Vec<ProcEntry>,
     // Per-process network attribution needs packet capture (nethogs, via
@@ -206,6 +238,9 @@ impl History {
             mem_used_pct: TieredSeries::new(),
             mem_cached_pct: TieredSeries::new(),
             swap_used_pct: TieredSeries::new(),
+            gpu_util_pct: TieredSeries::new(),
+            gpu_vram_pct: TieredSeries::new(),
+            gpu: GpuLatest::default(),
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
             top_net: Vec::new(),
@@ -225,6 +260,8 @@ impl History {
         self.mem_used_pct.load_persisted(&p.mem_used_pct);
         self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
         self.swap_used_pct.load_persisted(&p.swap_used_pct);
+        self.gpu_util_pct.load_persisted(&p.gpu_util_pct);
+        self.gpu_vram_pct.load_persisted(&p.gpu_vram_pct);
         for (core, saved) in self.cpu_cores.iter_mut().zip(p.cpu_cores.iter()) {
             core.load_persisted(saved);
         }
@@ -249,6 +286,8 @@ impl History {
             mem_used_pct: self.mem_used_pct.to_persisted(),
             mem_cached_pct: self.mem_cached_pct.to_persisted(),
             swap_used_pct: self.swap_used_pct.to_persisted(),
+            gpu_util_pct: self.gpu_util_pct.to_persisted(),
+            gpu_vram_pct: self.gpu_vram_pct.to_persisted(),
             net: self.net.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
             disk: self.disk.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
         };
@@ -587,6 +626,82 @@ fn nethogs_loop(history: Arc<Mutex<History>>) {
     }
 }
 
+/// Streams one CSV line per second from a long-lived
+/// `nvidia-smi --query-gpu=... -l 1` subprocess for the life of sysmond,
+/// pushing GPU engine load and VRAM occupancy into their tiered history and
+/// refreshing the point-in-time detail block (`History::gpu`) each line.
+///
+/// Same "missing sensor just stays empty, never a crash" contract as
+/// `nethogs_loop`: if `nvidia-smi` isn't installed (no NVIDIA GPU) the
+/// thread logs once and returns, and the `gpu` metric serves empty series
+/// forever. If the subprocess exits later (driver reload, suspend/resume)
+/// it's respawned after a short delay rather than leaving the graph frozen.
+///
+/// Fields, in query order: utilization.gpu, memory.used, memory.total,
+/// temperature.gpu, power.draw, power.limit, clocks.sm, clocks.mem,
+/// fan.speed, utilization.encoder, utilization.decoder, name. `nounits`
+/// keeps them bare; anything nvidia-smi reports as `[N/A]` (mobile parts
+/// commonly do for power.limit / fan.speed) parses to 0.
+fn gpu_loop(history: Arc<Mutex<History>>) {
+    const QUERY: &str = "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem,fan.speed,utilization.encoder,utilization.decoder,name";
+
+    let parse_num = |s: &str| -> f64 {
+        let t = s.trim();
+        if t.eq_ignore_ascii_case("[n/a]") || t.eq_ignore_ascii_case("n/a") {
+            0.0
+        } else {
+            t.parse().unwrap_or(0.0)
+        }
+    };
+
+    loop {
+        let child = match Command::new("nvidia-smi")
+            .args([QUERY, "--format=csv,noheader,nounits", "-l", "1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("sysmond: nvidia-smi not available, gpu metric will stay empty");
+                return;
+            }
+        };
+        let Some(stdout) = child.stdout else { return };
+
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let f: Vec<&str> = line.split(',').collect();
+            if f.len() < 12 {
+                continue;
+            }
+            let util = parse_num(f[0]);
+            let vram_used = parse_num(f[1]);
+            let vram_total = parse_num(f[2]);
+            let vram_pct = if vram_total > 0.0 { 100.0 * vram_used / vram_total } else { 0.0 };
+
+            let mut h = history.lock().unwrap();
+            h.gpu_util_pct.push_raw(util);
+            h.gpu_vram_pct.push_raw(vram_pct);
+            h.gpu = GpuLatest {
+                name: f[11].trim().to_string(),
+                temp_c: parse_num(f[3]),
+                power_w: parse_num(f[4]),
+                power_limit_w: parse_num(f[5]),
+                vram_used_mb: vram_used,
+                vram_total_mb: vram_total,
+                sm_clock_mhz: parse_num(f[6]),
+                mem_clock_mhz: parse_num(f[7]),
+                fan_pct: parse_num(f[8]),
+                enc_pct: parse_num(f[9]),
+                dec_pct: parse_num(f[10]),
+            };
+        }
+
+        eprintln!("sysmond: nvidia-smi stream ended, respawning in 5s");
+        std::thread::sleep(Duration::from_secs(5));
+    }
+}
+
 fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
     let thermal_zone = find_cpu_thermal_zone();
     let disk_names = whole_disk_names();
@@ -801,6 +916,21 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                         })
                         .collect(),
                 },
+                Metric::Gpu => Snapshot::Gpu {
+                    util_pct: h.gpu_util_pct.get(tier),
+                    vram_pct: h.gpu_vram_pct.get(tier),
+                    name: h.gpu.name.clone(),
+                    temp_c: h.gpu.temp_c,
+                    power_w: h.gpu.power_w,
+                    power_limit_w: h.gpu.power_limit_w,
+                    vram_used_mb: h.gpu.vram_used_mb,
+                    vram_total_mb: h.gpu.vram_total_mb,
+                    sm_clock_mhz: h.gpu.sm_clock_mhz,
+                    mem_clock_mhz: h.gpu.mem_clock_mhz,
+                    enc_pct: h.gpu.enc_pct,
+                    dec_pct: h.gpu.dec_pct,
+                    fan_pct: h.gpu.fan_pct,
+                },
                 Metric::Cpu => Snapshot::Cpu {
                     total: h.cpu_total.get(tier),
                     cores: h.cpu_cores.iter().map(|c| c.get(tier)).collect(),
@@ -842,6 +972,10 @@ fn main() {
     {
         let history = history.clone();
         std::thread::spawn(move || nethogs_loop(history));
+    }
+    {
+        let history = history.clone();
+        std::thread::spawn(move || gpu_loop(history));
     }
     {
         // Periodic save only, deliberately no SIGTERM/SIGINT handler --
