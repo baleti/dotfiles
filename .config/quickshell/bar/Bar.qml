@@ -488,52 +488,51 @@ Item {
     // process table); gated on the pill being open so it's not rebuilt
     // every tick while collapsed (see the comment on netLegend above).
     function gpuTag(g) { return g.vendor === "intel" ? qsTr("iGPU") : qsTr("dGPU"); }
-    // Grouped by GPU now (request 2026-09-06: "igpu all blue and dgpu all
+    // Grouped by GPU (request 2026-09-06: "igpu all blue and dgpu all
     // green... but still sourcing from... whatever current wallpaper-based
-    // color palette is") -- used to pick colors globally across every
-    // line (stride 3 over the 8-hue seriesPalette), which could land an
-    // iGPU line and a dGPU line right next to each other in hue purely by
-    // index, with nothing tying a GPU's own lines together visually.
+    // color palette is"). Went through several tuning passes on the same
+    // "shades of one derived hue" idea (value/sat stepping, hue-only
+    // rotation, both combined) that all still read as too similar once
+    // actually drawn as thin 1px/0.62-0.9-alpha graph lines -- reported
+    // too similar 3 times running, 2026-09-06. Briefly tried picking
+    // flatly-different seriesPalette entries per line instead (guaranteed
+    // distinctive, since that array is designed for it) -- rejected in
+    // turn ("they still need to stay green though... let's keep different
+    // greens but different enough"): distinctiveness alone isn't the
+    // requirement, staying one hue *family* is too.
     //
-    // Tried Theme.cyan/Theme.green (the theme's own primary/secondary)
-    // first, on the reasoning that they're literally named for this --
-    // but those two are independently-generated Material You roles, not
-    // guaranteed to be far apart in hue, and for this machine's current
-    // wallpaper they'd both landed on nearly the same warm salmon
-    // (#ffb695 / #ffb4ab, confirmed via scheme.json), i.e. NOT
-    // distinctive (reported live 2026-09-06). seriesPalette's own 8
-    // entries are explicitly *generated* to spread evenly around the
-    // theme's hue wheel (see its own comment above), so indices 4 apart
-    // (half of 8) are the two most-opposite hues that spread ever
-    // produces -- structurally guaranteed distinctive regardless of what
-    // the current wallpaper's primary/secondary happen to be, while still
-    // entirely wallpaper-derived (seriesPalette isn't hardcoded either).
+    // This pass keeps the single-derived-hue approach but pushes the
+    // value/saturation spread much further than any previous attempt
+    // (0.42-1.0 value here vs 0.48-1.0 in the last one) while narrowing
+    // the hue spread to +-12 degrees (vs +-15/+-20 before) so it can't
+    // drift out of "green" into yellow or teal at the extremes. Verified
+    // by direct RGB simulation before touching the live file: dGPU's 3
+    // lines sample as a dark olive #4e6b09, the base #86c14a, and a vivid
+    // #5cff15 -- a genuinely large lightness swing, still all recognizably
+    // green (hue 78-102 degrees).
+    //
+    // Base hues: Theme.cyan/Theme.green (the theme's own primary/
+    // secondary) were tried first, on the reasoning that they're
+    // literally named for this -- rejected because those two are
+    // independently-generated Material You roles with no guaranteed hue
+    // separation, and for this wallpaper's current scheme they'd both
+    // landed on nearly the same warm salmon (#ffb695 / #ffb4ab, confirmed
+    // via scheme.json). seriesPalette's own 8 entries are explicitly
+    // *generated* to spread evenly around the theme's hue wheel, so
+    // indices 4 apart (half of 8) are the two most-opposite hues that
+    // spread ever produces -- structurally guaranteed distinctive
+    // regardless of what a wallpaper's primary/secondary happen to be,
+    // while still entirely wallpaper-derived.
     function gpuBaseColor(vendor) {
         const p = Theme.seriesPalette;
         return vendor === "intel" ? p[4 % p.length] : p[2 % p.length];
     }
     function gpuShadeColor(base, i, n) {
         const c = Qt.color(base);
-        // Two earlier versions of this both turned out still too close
-        // live once actually drawn as graph lines, not just sampled as
-        // flat legend swatches -- pure value/sat stepping (v1) compressed
-        // fast and pure ±20deg hue-only rotation (v2, R-channel-only
-        // separation for these greens: #a4c14a/#86c14a/#68c14a) read as
-        // "same green, slightly different" rather than genuinely distinct
-        // colours (reported still too similar both times, 2026-09-06).
-        // Combines a modest hue spread with a much wider VALUE/SATURATION
-        // spread this time -- the earlier value/sat attempt had clamped
-        // value to a 0.6 floor specifically to avoid anything reading as
-        // "too dark/washed out", which is exactly what suppressed its own
-        // separation; letting the darker line actually go dark (and the
-        // lighter one go vivid/near-max) is what makes 3 lines on one hue
-        // family read as clearly different colours (confirmed via direct
-        // RGB simulation first: dGPU's 3 lines now sample as a dark olive
-        // #617b10, the base #86c14a, and a vivid #5aff22).
         const t = n > 1 ? (i / (n - 1)) - 0.5 : 0; // -0.5 (first) .. 0.5 (last)
-        const hue = (c.hsvHue + t * (30 / 360) + 1) % 1;
-        const value = Math.min(1, Math.max(0.35, c.hsvValue + t * 0.55));
-        const sat = Math.min(1, Math.max(0.4, c.hsvSaturation + Math.abs(t) * 0.5));
+        const hue = (c.hsvHue + t * (24 / 360) + 1) % 1;
+        const value = Math.min(1, Math.max(0.42, c.hsvValue + t * 0.85));
+        const sat = Math.min(1, Math.max(0.55, c.hsvSaturation + Math.abs(t) * 0.6));
         return Qt.hsva(hue, sat, value, 1);
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
