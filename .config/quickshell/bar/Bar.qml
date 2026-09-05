@@ -756,6 +756,11 @@ Item {
             valueLabel: compactText
             mode: "overlay"
             seriesList: root.cpuOverlayList
+            // Thinner (request 2026-09-06) -- one line per logical core
+            // (a dozen-plus on this machine), where thin lines were
+            // already the whole point of not stacking per-core fills
+            // into mud (see Graph.qml's own "many" comment).
+            lineWidth: 0.7
             maxValue: 100
             valueFraction: root.last(SysmonSvc.cpuTotal) / 100
             topProcs: SysmonSvc.topCpu
@@ -928,6 +933,12 @@ Item {
             // then means power paints straight over VRAM for that whole
             // stretch -- see Graph.qml's own comment on this property.
             secondaryOnTop: true
+            // Thicker (request 2026-09-06: "as thick as in disk panel",
+            // disk's own overlay lines render at Graph.qml's 1.0
+            // default) -- several already hard-to-tell-apart overlaid
+            // lines read as thin/faint at that same default width disk's
+            // 2 lines use comfortably.
+            lineWidth: 1.5
             maxValue: 100
             valueFraction: root.gpuMaxUtil / 100
             secondaryIcon: isNaN(root.gpuNvVram) ? "" : Icons.memory

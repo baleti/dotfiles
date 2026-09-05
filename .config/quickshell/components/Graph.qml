@@ -48,6 +48,18 @@ Canvas {
     // today's order for every other overlay pill; on for the GPU pill
     // only.
     property bool secondaryOnTop: false
+    // Overlay mode only -- single mode keeps its own hardcoded 1.25.
+    // Used to be a flat 1.0 for every overlay pill regardless of series
+    // count (deliberately unified, see git history: "a 2-series net
+    // graph at 1.25px next to a 12-series cpu graph at 1px read as one's
+    // thinner") -- request 2026-09-06 asks to pull them back apart again
+    // in the other direction: the GPU pill's several overlaid, already
+    // hard-to-tell-apart lines read as thin/faint next to disk's, and
+    // CPU's dozen-ish per-core lines are the one case this file's own
+    // history explicitly called out as needing *thinner* lines to avoid
+    // clutter. Per-pill now instead of a shared constant; default keeps
+    // net/mem/disk exactly as they render today.
+    property real lineWidth: 1.0
     // Full ring-buffer capacity the raw data represents (sysmond's
     // HISTORY_LEN), NOT rawData.length -- see downsample() below for why
     // that distinction is the whole fix.
@@ -58,6 +70,7 @@ Canvas {
     onMaxValueChanged: requestPaint()
     onFillOverlayChanged: requestPaint()
     onSecondaryOnTopChanged: requestPaint()
+    onLineWidthChanged: requestPaint()
 
     // Plots every raw sample at its exact (sub-pixel, unrounded) x position,
     // anchored to a FIXED width/historyLen scale (not width/rawData.length)
@@ -222,13 +235,15 @@ Canvas {
                         fillSeries(ctx, s.data, s.color, 0.22);
             }
 
-            // All overlay lines are 1px regardless of series count -- a
-            // 2-series net graph at 1.25px next to a 12-series cpu graph at
-            // 1px read as "one's thinner". Secondary (tx/write/cached) at
-            // 0.62 alpha, not much below primary's 0.9: lower still and it
-            // looked like a thinner line rather than a quieter one.
-            const strokeSecondary = () => { for (const s of secondary) strokeSeries(ctx, s.data, s.color, 1.0, 0.62); };
-            const strokePrimary = () => { for (const s of primary) strokeSeries(ctx, s.data, s.color, 1.0, 0.9); };
+            // Both passes share one lineWidth (root.lineWidth, per-pill --
+            // see its own comment above) rather than each pass picking
+            // its own, so a pill's primary/secondary lines still read as
+            // the same weight of line, just quieter. Secondary (tx/write/
+            // cached/VRAM) at 0.62 alpha, not much below primary's 0.9:
+            // lower still and it looked like a thinner line rather than a
+            // quieter one.
+            const strokeSecondary = () => { for (const s of secondary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.62); };
+            const strokePrimary = () => { for (const s of primary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.9); };
             if (root.secondaryOnTop) {
                 strokePrimary();
                 strokeSecondary();
