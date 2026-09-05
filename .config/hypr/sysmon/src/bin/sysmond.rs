@@ -661,41 +661,84 @@ fn proc_io_bytes(pid: i32) -> Option<(u64, u64)> {
     Some((read_bytes?, write_bytes?))
 }
 
-/// Establishes a fresh top_cpu delta baseline right now, synchronously --
-/// called once from serve_client on the 0 -> 1 demand transition (a panel
-/// just opened) so sample_loop's very next regular tick already has
-/// something to diff against, instead of that tick having to spend itself
-/// just establishing the baseline sample_loop used to clear-and-rebuild
-/// on-transition. Same per-pid scan sample_loop itself does; this just
-/// moves one occurrence of it to the moment demand starts instead of
-/// waiting for sample_loop's own schedule.
+/// How long the connect-time priming's own quick second sample waits
+/// before re-reading ticks/io-bytes -- short enough that a panel opening
+/// feels instant, long enough for a meaningful (if noisier than the usual
+/// 1s window) delta. clk_tck is USER_HZ (100 on this machine, i.e. 10ms
+/// ticks), so 200ms still resolves up to ~20 ticks for a busy process.
+const PRIME_WINDOW_MS: u64 = 200;
+
+/// Establishes a real, populated top_cpu entry immediately, synchronously
+/// -- called once from serve_client on the 0 -> 1 demand transition (a
+/// panel just opened). A first version of this just planted a baseline
+/// for sample_loop's *next* regular tick to diff against, but that tick's
+/// timing is independent of when the panel actually opened -- it can land
+/// almost a full extra second later depending on the connection's luck
+/// of phase within sample_loop's own 1s cycle, which measured as "still
+/// 2-3s in practice" (2026-09-06) despite that fix. Taking two samples
+/// PRIME_WINDOW_MS apart right here, synchronously, means the very first
+/// response already carries real data -- sample_loop's regular ticks take
+/// over seamlessly from the baseline this leaves behind, refining to the
+/// usual full-second smoothing from there.
 fn prime_cpu_baseline(history: &Mutex<History>) {
     let pids = list_pids();
-    let mut ticks: HashMap<i32, u64> = HashMap::with_capacity(pids.len());
-    for pid in &pids {
-        if let Some(t) = proc_cpu_ticks(*pid) {
-            ticks.insert(*pid, t);
+    let ticks0: HashMap<i32, u64> = pids.iter().filter_map(|&pid| proc_cpu_ticks(pid).map(|t| (pid, t))).collect();
+    let t0 = Instant::now();
+
+    std::thread::sleep(Duration::from_millis(PRIME_WINDOW_MS));
+
+    let elapsed_s = t0.elapsed().as_secs_f64().max(0.001);
+    let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    let mut ticks1: HashMap<i32, u64> = HashMap::with_capacity(ticks0.len());
+    let mut top_cpu_entries = Vec::with_capacity(ticks0.len());
+    for (&pid, &prev) in &ticks0 {
+        let Some(ticks) = proc_cpu_ticks(pid) else { continue };
+        ticks1.insert(pid, ticks);
+        let d_ticks = ticks.saturating_sub(prev);
+        let pct = 100.0 * (d_ticks as f64 / clk_tck) / elapsed_s;
+        if pct > 0.05 {
+            top_cpu_entries.push(ProcEntry { pid, name: proc_name(pid), value: pct, detail: String::new(), util_pct: 0.0 });
         }
     }
+    let mut top_cpu = top_n(top_cpu_entries, 10);
+    enrich_details(&mut top_cpu);
+
     let now = Instant::now();
     let mut h = history.lock().unwrap();
-    h.prev_proc_ticks = ticks;
+    h.prev_proc_ticks = ticks1;
     h.prev_proc_ticks_at = Some(now);
+    h.top_cpu = top_cpu;
 }
 
 /// Disk-I/O counterpart to `prime_cpu_baseline` -- see its own comment.
 fn prime_disk_baseline(history: &Mutex<History>) {
     let pids = list_pids();
-    let mut io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
-    for pid in &pids {
-        if let Some(v) = proc_io_bytes(*pid) {
-            io.insert(*pid, v);
+    let io0: HashMap<i32, (u64, u64)> = pids.iter().filter_map(|&pid| proc_io_bytes(pid).map(|v| (pid, v))).collect();
+    let t0 = Instant::now();
+
+    std::thread::sleep(Duration::from_millis(PRIME_WINDOW_MS));
+
+    let elapsed_s = t0.elapsed().as_secs_f64().max(0.001);
+    let mut io1: HashMap<i32, (u64, u64)> = HashMap::with_capacity(io0.len());
+    let mut top_disk_entries = Vec::with_capacity(io0.len());
+    for (&pid, &(prev_rd, prev_wr)) in &io0 {
+        let Some((rd, wr)) = proc_io_bytes(pid) else { continue };
+        io1.insert(pid, (rd, wr));
+        let d_read = rd.saturating_sub(prev_rd) as f64;
+        let d_write = wr.saturating_sub(prev_wr) as f64;
+        let kb_per_s = (d_read + d_write) / 1024.0 / elapsed_s;
+        if kb_per_s > 1.0 {
+            top_disk_entries.push(ProcEntry { pid, name: proc_name(pid), value: kb_per_s, detail: String::new(), util_pct: 0.0 });
         }
     }
+    let mut top_disk = top_n(top_disk_entries, 10);
+    enrich_details(&mut top_disk);
+
     let now = Instant::now();
     let mut h = history.lock().unwrap();
-    h.prev_proc_io = io;
+    h.prev_proc_io = io1;
     h.prev_proc_io_at = Some(now);
+    h.top_disk = top_disk;
 }
 
 fn top_n(mut entries: Vec<ProcEntry>, n: usize) -> Vec<ProcEntry> {
