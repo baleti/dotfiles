@@ -477,46 +477,43 @@ Item {
         return rd + wr;
     }
 
-    // GPU: every GPU's lines overlaid on one 0..100 axis. Each GPU's
-    // utilisation gets its own colour (iGPU cyan, dGPU green); the dGPU also
-    // contributes a dashed VRAM-occupancy line and a solid amber power line
-    // (% of TGP). The iGPU has neither -- shared system RAM, no board-power
-    // telemetry -- so it's a single line. Legend spells out "<tag> <metric>"
-    // for each. detailGroups / procGroups are one titled block per GPU;
-    // gated on the pill being open so they're not rebuilt every tick while
-    // collapsed (see the comment on netLegend above).
+    // GPU: every GPU's lines overlaid on one 0..100 axis -- each GPU's
+    // utilisation, plus the dGPU's VRAM-occupancy (dashed) and power
+    // (% of TGP) lines. The iGPU has no VRAM/power line (shared system RAM,
+    // no board-power telemetry). Colours are taken from seriesPalette at a
+    // stride of 2 so they stay far apart in hue no matter how the theme is
+    // regenerated (adjacent indices had collided). Legend labels are short
+    // -- "iGPU"/"dGPU" are the util lines, "VRAM"/"power" the dGPU extras.
+    // gpuSections is one titled block per GPU (its detail rows + its own
+    // process table); gated on the pill being open so it's not rebuilt
+    // every tick while collapsed (see the comment on netLegend above).
     function gpuTag(g) { return g.vendor === "intel" ? qsTr("iGPU") : qsTr("dGPU"); }
-    function gpuUtilColor(g) { return g.vendor === "intel" ? Theme.cyan : Theme.green; }
-    readonly property color gpuVramColor: Theme.seriesPalette[3] ?? Theme.cyan
-    readonly property color gpuPowerColor: Theme.orange
-
-    readonly property var gpuLegend: {
-        const out = [];
-        for (const g of SysmonSvc.gpuList) {
-            const tag = gpuTag(g);
-            out.push({ name: tag + " " + qsTr("util"), color: gpuUtilColor(g) });
-            if ((g.vram_pct?.length ?? 0) > 0)
-                out.push({ name: tag + " " + qsTr("VRAM"), color: root.gpuVramColor });
-            if ((g.power_pct?.length ?? 0) > 0)
-                out.push({ name: tag + " " + qsTr("power"), color: root.gpuPowerColor });
-        }
-        return out;
+    function gpuLineColor(i) {
+        const p = Theme.seriesPalette;
+        return p[(i * 2) % p.length];
     }
-    readonly property var gpuSeriesList: {
-        if (!gpuPill.expanded)
-            return [];
+    // [{ data?, color, dashed, name }] in draw order -- the single source
+    // both the graph series and the legend derive from, so their colours
+    // can't drift apart.
+    readonly property var gpuLines: {
         const out = [];
         for (const g of SysmonSvc.gpuList) {
             if ((g.util_pct?.length ?? 0) > 0)
-                out.push({ data: g.util_pct, color: gpuUtilColor(g), dashed: false });
+                out.push({ data: g.util_pct, dashed: false, name: gpuTag(g) });
             if ((g.vram_pct?.length ?? 0) > 0)
-                out.push({ data: g.vram_pct, color: root.gpuVramColor, dashed: true });
+                out.push({ data: g.vram_pct, dashed: true, name: qsTr("VRAM") });
             if ((g.power_pct?.length ?? 0) > 0)
-                out.push({ data: g.power_pct, color: root.gpuPowerColor, dashed: false });
+                out.push({ data: g.power_pct, dashed: false, name: qsTr("power") });
         }
-        return out;
+        return out.map((l, i) => Object.assign(l, { color: gpuLineColor(i) }));
     }
-    readonly property var gpuDetailGroups: {
+    readonly property var gpuLegend: root.gpuLines.map(l => ({ name: l.name, color: l.color }))
+    readonly property var gpuSeriesList: gpuPill.expanded
+        ? root.gpuLines.map(l => ({ data: l.data, color: l.color, dashed: l.dashed }))
+        : []
+    // One section per GPU -- its detail rows and its own "Top processes"
+    // table, under a single heading so the GPU name isn't repeated.
+    readonly property var gpuSections: {
         if (!gpuPill.expanded)
             return [];
         return SysmonSvc.gpuList.map(g => {
@@ -544,12 +541,9 @@ Item {
                                 : Math.round(g.enc_pct ?? 0) + "% / " + Math.round(g.dec_pct ?? 0) + "%" });
             if ((g.fan_pct ?? 0) > 0)
                 rows.push({ name: qsTr("Fan"), value: Math.round(g.fan_pct) + "%" });
-            return { label: g.name, rows: rows };
+            return { label: g.name, rows: rows, procs: g.procs ?? [], procUnit: " MB" };
         });
     }
-    readonly property var gpuProcGroups: gpuPill.expanded
-        ? SysmonSvc.gpuList.map(g => ({ label: g.name, unit: " MB", procs: g.procs ?? [] }))
-        : []
 
     // Compact pill: each GPU's utilisation side by side (iGPU then dGPU),
     // with the dGPU's VRAM occupancy as the divider-less secondary reading.
@@ -559,8 +553,14 @@ Item {
                 return g;
         return null;
     }
+    // "i 15 % · d 32 %" -- i/d prefix so the two GPUs' utilisations are
+    // distinguishable in the compact pill without spelling out iGPU/dGPU.
     readonly property string gpuCompactText: SysmonSvc.gpuList
-        .map(g => Math.round(root.last(g.util_pct ?? [])) + "%").join(" · ")
+        .map(g => (g.vendor === "intel" ? "i " : "d ") + Math.round(root.last(g.util_pct ?? [])) + " %")
+        .join(" · ")
+    // Fixed width sized for two-digit values so the pill doesn't jitter as
+    // the numbers change; a rare 100% is allowed to push past it (and the
+    // resize then reads as "something's maxed"). See gpuCompactMetrics.
     readonly property real gpuMaxUtil: {
         let m = 0;
         for (const g of SysmonSvc.gpuList)
@@ -568,6 +568,13 @@ Item {
         return m;
     }
     readonly property real gpuNvVram: root.gpuNvidia ? root.last(root.gpuNvidia.vram_pct ?? []) : NaN
+
+    TextMetrics {
+        id: gpuCompactMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize
+        text: SysmonSvc.gpuList.map(g => (g.vendor === "intel" ? "i " : "d ") + "88 %").join(" · ")
+    }
 
     anchors.fill: parent
 
@@ -767,9 +774,10 @@ Item {
             // The MDI expansion-card glyph draws small in its em box --
             // bump it to sit at the same visual height as the FA icons on
             // the other pills.
-            iconPixelSize: Theme.fontSize + 4
+            iconPixelSize: Theme.fontSize + 7
             title: qsTr("GPU")
             compactText: root.gpuCompactText
+            compactTextWidth: Math.ceil(gpuCompactMetrics.width) + 2
             valueLabel: SysmonSvc.gpuList.map(g => root.gpuTag(g) + " " + Math.round(root.last(g.util_pct ?? [])) + "%").join("   ")
             mode: "overlay"
             seriesList: root.gpuSeriesList
@@ -780,8 +788,7 @@ Item {
             secondaryDivider: false
             secondaryValueFraction: root.gpuNvVram / 100
             legendItems: root.gpuLegend
-            detailGroups: root.gpuDetailGroups
-            procGroups: root.gpuProcGroups
+            sections: root.gpuSections
             yAxisFormatter: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
