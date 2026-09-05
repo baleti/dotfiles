@@ -34,6 +34,20 @@ Canvas {
     // (net/cpu/mem/disk) keeps its fill -- unaffected by this, defaults
     // true.
     property bool fillOverlay: true
+    // Secondary (dashed=de-emphasised) lines normally draw UNDER primary
+    // ones, so a primary line never gets buried under its own "quieter
+    // twin" -- fine when the two series usually differ (net rx/tx, disk
+    // read/write). The GPU pill's VRAM-vs-power pair, though, can sit at
+    // nearly the same value for long stretches (both roughly flat
+    // percentages), and default draw order then means power (primary)
+    // paints straight over VRAM (secondary) for that entire stretch --
+    // no colour choice fixes a line that's literally occluded (confirmed
+    // 2026-09-06: searched the actual rendered pixels for VRAM's
+    // supposedly-distinct colour and found almost none of it -- power's
+    // colour was sitting on top the whole time). Off (default) preserves
+    // today's order for every other overlay pill; on for the GPU pill
+    // only.
+    property bool secondaryOnTop: false
     // Full ring-buffer capacity the raw data represents (sysmond's
     // HISTORY_LEN), NOT rawData.length -- see downsample() below for why
     // that distinction is the whole fix.
@@ -43,6 +57,7 @@ Canvas {
     onSeriesListChanged: requestPaint()
     onMaxValueChanged: requestPaint()
     onFillOverlayChanged: requestPaint()
+    onSecondaryOnTopChanged: requestPaint()
 
     // Plots every raw sample at its exact (sub-pixel, unrounded) x position,
     // anchored to a FIXED width/historyLen scale (not width/rawData.length)
@@ -212,10 +227,15 @@ Canvas {
             // 1px read as "one's thinner". Secondary (tx/write/cached) at
             // 0.62 alpha, not much below primary's 0.9: lower still and it
             // looked like a thinner line rather than a quieter one.
-            for (const s of secondary)
-                strokeSeries(ctx, s.data, s.color, 1.0, 0.62);
-            for (const s of primary)
-                strokeSeries(ctx, s.data, s.color, 1.0, 0.9);
+            const strokeSecondary = () => { for (const s of secondary) strokeSeries(ctx, s.data, s.color, 1.0, 0.62); };
+            const strokePrimary = () => { for (const s of primary) strokeSeries(ctx, s.data, s.color, 1.0, 0.9); };
+            if (root.secondaryOnTop) {
+                strokePrimary();
+                strokeSecondary();
+            } else {
+                strokeSecondary();
+                strokePrimary();
+            }
         } else {
             fillSeries(ctx, series, color1, 0.24);
             strokeSeries(ctx, series, color1, 1.25, 0.9);

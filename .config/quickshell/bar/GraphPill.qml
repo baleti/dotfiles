@@ -33,6 +33,9 @@ Rectangle {
     // Overlay mode only -- passthrough to Graph.fillOverlay. Off for the
     // GPU pill (request 2026-09-06), on (default) everywhere else.
     property bool fillOverlay: true
+    // Overlay mode only -- passthrough to Graph.secondaryOnTop. On for the
+    // GPU pill only (request 2026-09-06), off (default) everywhere else.
+    property bool secondaryOnTop: false
 
     // 0..1 (or NaN to opt out): how "high" this metric currently is. Drives
     // the compact value/icon colour along Theme's calm->hot intensity ramp,
@@ -489,6 +492,7 @@ Rectangle {
                     maxValue: root.maxValue
                     color1: root.color1
                     fillOverlay: root.fillOverlay
+                    secondaryOnTop: root.secondaryOnTop
                 }
             }
 
