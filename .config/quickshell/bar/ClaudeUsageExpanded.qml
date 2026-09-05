@@ -55,12 +55,76 @@ Rectangle {
 
     readonly property bool hovered: mouseArea.containsMouse
 
+    // A HoverHandler/MouseArea's "hovered" flips true the instant the panel
+    // appears under a cursor that never actually moved (no real move event
+    // needed -- just geometry containment on creation), which made the
+    // process-row hover highlight below light up a row on every open purely
+    // from wherever the mouse happened to be sitting. Gate that highlight on
+    // an explicit "the mouse has genuinely moved since this open" flag
+    // instead.
+    //
+    // Turns out positionChanged isn't the clean "only real input" signal
+    // that first looked like -- reopening the panel (height 0 -> N under a
+    // cursor that never moved) *does* fire a synthetic one too, just like
+    // containsMouse, because Qt re-delivers hover to an existing MouseArea
+    // whenever its geometry changes under the pointer (a fresh initial
+    // creation doesn't go through that path, which is why a true first-ever
+    // open never showed this -- only reopening did, reported 2026-09-05).
+    // So a bare "flag true on the first positionChanged" reintroduces the
+    // exact bug on every reopen.
+    //
+    // Fix: a short one-shot settle timer (no repeating poll -- negligible
+    // CPU) ignores every positionChanged for the first settleMs after open,
+    // long enough for that synthetic reopen event to fire and be dropped.
+    // The moment the timer fires, it snapshots the current hover position
+    // as the reference -- from then on, ANY positionChanged whose position
+    // differs from that reference (even the very first one) counts as real
+    // movement, so genuine motion right after the settle window is
+    // detected immediately (no more requiring a second move like the
+    // previous baseline-diffing version did, reported as "have to really
+    // move the mouse").
+    property bool mouseMovedSinceOpen: false
+    property bool _hoverSettled: false
+    property point _hoverRefPos: Qt.point(0, 0)
+    readonly property int hoverSettleMs: 200
+
+    Timer {
+        id: hoverSettleTimer
+        interval: root.hoverSettleMs
+        repeat: false
+        onTriggered: {
+            root._hoverRefPos = Qt.point(mouseArea.mouseX, mouseArea.mouseY);
+            root._hoverSettled = true;
+        }
+    }
+
     MouseArea {
         id: mouseArea
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.AllButtons
         onWheel: wheel => wheel.accepted = true
+    }
+
+    // Watches mouseX/mouseY directly (their own elemental change signals)
+    // rather than MouseArea's composite positionChanged -- reported still
+    // insensitive to a real first move even after positionChanged was
+    // made maximally eager (flagging on its very first firing, no
+    // baseline/second-event requirement at all), which points at
+    // positionChanged itself not reliably firing promptly here rather than
+    // at any counting/threshold logic. mouseX/mouseYChanged are the more
+    // primitive per-property notifications underneath it and should track
+    // every real pointer update Qt actually receives.
+    function _checkMouseMoved() {
+        if (!root._hoverSettled)
+            return;
+        if (mouseArea.mouseX !== root._hoverRefPos.x || mouseArea.mouseY !== root._hoverRefPos.y)
+            root.mouseMovedSinceOpen = true;
+    }
+    Connections {
+        target: mouseArea
+        function onMouseXChanged() { root._checkMouseMoved(); }
+        function onMouseYChanged() { root._checkMouseMoved(); }
     }
 
     // Coarse "bigUnit smallUnit" for a duration in seconds, e.g. "5m",
@@ -469,6 +533,12 @@ Rectangle {
     onExpandedChanged: {
         root.groupExpanded = ({});
         root.groupSort = ({});
+        root.mouseMovedSinceOpen = false;
+        root._hoverSettled = false;
+        if (root.expanded)
+            hoverSettleTimer.restart();
+        else
+            hoverSettleTimer.stop();
         // root.searchText alone doesn't clear the box -- searchInput.text
         // only flows one way into it (onTextChanged), so the TextInput's
         // own text needs setting directly too (reported 2026-09-01: box
@@ -1185,7 +1255,18 @@ Rectangle {
                         }
 
                         Row {
+                            // -2: Qt.AlignVCenter alone still measured ~2px
+                            // (3 device px @ 1.5x scale) low relative to
+                            // nameText's own baseline -- this Row's tallest
+                            // Text is 2 sizes smaller than nameText
+                            // (fontSize-1 vs fontSize), and bounding-box
+                            // vertical centering doesn't line up two
+                            // different pixelSizes' baselines evenly
+                            // (reported 2026-09-05, confirmed by measuring
+                            // rendered glyph rows: nameText 167-182,
+                            // this Row 170-185).
                             Layout.alignment: Qt.AlignVCenter
+                            Layout.topMargin: -2
                             visible: acctCol.hasSession
                             opacity: acctCol.modelData.stale ? 0.55 : 1
                             spacing: 6
@@ -1206,7 +1287,10 @@ Rectangle {
                         }
 
                         Row {
+                            // -2: same fix, same reasoning as the session
+                            // Row above.
                             Layout.alignment: Qt.AlignVCenter
+                            Layout.topMargin: -2
                             visible: acctCol.hasWeekly
                             opacity: acctCol.modelData.stale ? 0.55 : 1
                             spacing: 6
@@ -1258,6 +1342,25 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 2
                     elide: Text.ElideRight
+                }
+
+                // Negative spacer: pulls the header/table block up ~1-1.5
+                // rows closer to the account title above it (request
+                // 2026-09-05 -- the gap right under the title read as
+                // "pointless" once compared to how tight every other
+                // row-to-row gap in this table already is). A Column
+                // advances by child.height + spacing per child regardless
+                // of sign, so a negative-height Item here subtracts
+                // directly from the cumulative Y of everything below it
+                // without touching acctCol.spacing itself (which still
+                // applies its normal small gap everywhere else, including
+                // around this spacer). Only present when the header row
+                // below it will actually render -- an account with no
+                // processes has nothing to pull closer.
+                Item {
+                    visible: acctCol.groupOpen && acctCol.procs.length > 0
+                    width: 1
+                    height: -20
                 }
 
                 // Both header rows below used to sit inside their own
@@ -1437,7 +1540,7 @@ Rectangle {
                         onWidthChangeRequested: w => root.colTokensW = w
                     }
                     Text {
-                        text: qsTr("last") + root.sortArrow(modelData.account, "active")
+                        text: qsTr("age") + root.sortArrow(modelData.account, "active")
                         color: Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
@@ -1635,6 +1738,12 @@ Rectangle {
                     // containsMouse would drop to false. Highlight tint is
                     // the wallpaper-theme primary at low alpha, same token/
                     // approach as the autocomplete popup's selected row.
+                    // Gated on root.mouseMovedSinceOpen too -- HoverHandler
+                    // reports hovered=true on creation if the cursor already
+                    // happens to be sitting over the row, so without the
+                    // gate whatever row was under the mouse would light up
+                    // on every panel open even with zero mouse movement
+                    // (reported 2026-09-05).
                     delegate: Rectangle {
                         id: procRow
                         required property var modelData
@@ -1642,7 +1751,7 @@ Rectangle {
                         implicitHeight: procRowLayout.implicitHeight
                         height: implicitHeight
                         radius: 3
-                        color: procRowHover.hovered
+                        color: root.mouseMovedSinceOpen && procRowHover.hovered
                             ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
                             : "transparent"
 
