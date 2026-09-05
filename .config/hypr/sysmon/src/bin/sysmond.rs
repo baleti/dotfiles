@@ -207,6 +207,11 @@ struct History {
     gpu_util_pct: TieredSeries,
     gpu_vram_pct: TieredSeries,
     gpu: GpuLatest,
+    // Per-process GPU VRAM use (MiB), from `nvidia-smi -q`'s Processes
+    // section -- graphics *and* compute clients, unlike
+    // --query-compute-apps. Refreshed by `gpu_proc_loop`. `value` is MiB,
+    // same unit convention as `top_mem`.
+    top_gpu: Vec<ProcEntry>,
     top_cpu: Vec<ProcEntry>,
     top_mem: Vec<ProcEntry>,
     // Per-process network attribution needs packet capture (nethogs, via
@@ -241,6 +246,7 @@ impl History {
             gpu_util_pct: TieredSeries::new(),
             gpu_vram_pct: TieredSeries::new(),
             gpu: GpuLatest::default(),
+            top_gpu: Vec::new(),
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
             top_net: Vec::new(),
@@ -702,6 +708,72 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
     }
 }
 
+/// Per-process GPU VRAM use, refreshed every 3s from `nvidia-smi -q`'s
+/// `Processes` section (parsed by field name / indentation, not column
+/// position). Covers both graphics (`Type: G` -- compositor, browser, ...)
+/// and compute (`Type: C` -- CUDA) clients, which `--query-compute-apps`
+/// alone would miss. Silent no-op if nvidia-smi is missing (gpu_loop
+/// already logs that once).
+fn gpu_proc_loop(history: Arc<Mutex<History>>) {
+    loop {
+        std::thread::sleep(Duration::from_secs(3));
+
+        let Ok(out) = Command::new("nvidia-smi").arg("-q").stderr(Stdio::null()).output() else {
+            return;
+        };
+        if !out.status.success() {
+            std::thread::sleep(Duration::from_secs(10));
+            continue;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+
+        let mut procs: Vec<ProcEntry> = Vec::new();
+        let mut in_section = false;
+        let mut cur_pid: Option<i32> = None;
+        let mut cur_name = String::new();
+        for line in text.lines() {
+            let indent = line.len() - line.trim_start().len();
+            let t = line.trim();
+            if t == "Processes" {
+                in_section = true;
+                continue;
+            }
+            if !in_section {
+                continue;
+            }
+            // The Processes block's own keys are indented >= 8; the next
+            // top-level section header ("Capabilities", ...) sits at 4.
+            if !t.is_empty() && indent <= 4 {
+                break;
+            }
+            if let Some(rest) = t.strip_prefix("Process ID") {
+                cur_pid = rest.trim_start_matches([':', ' ']).parse().ok();
+                cur_name.clear();
+            } else if let Some(rest) = t.strip_prefix("Name") {
+                cur_name = rest.trim_start_matches([':', ' ']).to_string();
+            } else if let Some(rest) = t.strip_prefix("Used GPU Memory") {
+                let mib: f64 = rest
+                    .trim_start_matches([':', ' '])
+                    .split_whitespace()
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0.0);
+                if let Some(pid) = cur_pid {
+                    if mib > 0.0 {
+                        let name = cur_name.rsplit('/').next().unwrap_or(&cur_name).to_string();
+                        procs.push(ProcEntry { pid, name, value: mib, detail: String::new() });
+                    }
+                }
+                cur_pid = None;
+            }
+        }
+
+        let mut top = top_n(procs, 10);
+        enrich_details(&mut top);
+        history.lock().unwrap().top_gpu = top;
+    }
+}
+
 fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
     let thermal_zone = find_cpu_thermal_zone();
     let disk_names = whole_disk_names();
@@ -943,6 +1015,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                     cached_pct: h.mem_cached_pct.get(tier),
                     swap_used_pct: h.swap_used_pct.get(tier),
                 },
+                Metric::TopGpu => Snapshot::TopProcs { procs: h.top_gpu.clone() },
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
                 Metric::TopNet => Snapshot::TopProcs { procs: h.top_net.clone() },
@@ -976,6 +1049,10 @@ fn main() {
     {
         let history = history.clone();
         std::thread::spawn(move || gpu_loop(history));
+    }
+    {
+        let history = history.clone();
+        std::thread::spawn(move || gpu_proc_loop(history));
     }
     {
         // Periodic save only, deliberately no SIGTERM/SIGINT handler --

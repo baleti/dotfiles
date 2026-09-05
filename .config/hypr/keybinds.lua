@@ -165,13 +165,11 @@ hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"), { description
 hl.bind("ALT + Tab",         hl.dsp.exec_cmd("~/.config/hypr/winswitch/target/release/winswitch next"), { description = "Window switcher (next)" })
 hl.bind("ALT + SHIFT + Tab", hl.dsp.exec_cmd("~/.config/hypr/winswitch/target/release/winswitch prev"), { description = "Window switcher (previous)" })
 
--- window groups (tabs): toggle a group, then step through it like tabs.
--- confirmed field names/signatures from src/config/lua/bindings/LuaBindingsDispatchers.cpp
--- (hlGroupToggle/hlGroupNext/hlGroupPrev/hlGroupLockActive), all take no required args.
-hl.bind(mainMod .. " + G",         hl.dsp.group.toggle(), { description = "Toggle window group (tabs)" })
-hl.bind(mainMod .. " + bracketleft",  hl.dsp.group.prev(), { description = "Previous window in group" })
-hl.bind(mainMod .. " + bracketright", hl.dsp.group.next(), { description = "Next window in group" })
-hl.bind(mainMod .. " + SHIFT + G", hl.dsp.group.lock_active(), { description = "Lock / unlock the active group" })
+-- window groups (tabs) removed 2026-09-05: never used, and mod+G / mod+g
+-- collide (Hyprland folds keysym case without an explicit SHIFT), so
+-- mod+g is now free for the bar's GPU panel (below). The `group = {}`
+-- styling block stays in appearance.lua -- harmless with no bind to form
+-- a group, and there if grouping is ever wanted back.
 
 -- emacs
 hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("alacritty -e tmux new-session emacsclient --tty"), { description = "Open Emacs (in tmux)" })
@@ -249,8 +247,8 @@ hl.bind(mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh
 hl.bind(mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"), { description = "Toggle the bar's CPU panel" })
 hl.bind(mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"), { description = "Toggle the bar's memory panel" })
 -- mod+g: GPU panel (NVIDIA only -- the pill hides itself on machines
--- without one). mod+g was free; matches the other sysmon widgets on a
--- plain mod chord.
+-- without one). Freed from the window-group toggle above; matches the
+-- other sysmon widgets on a plain mod chord.
 hl.bind(mainMod .. " + g", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleGpu"), { description = "Toggle the bar's GPU panel" })
 -- mod+CTRL+m just toggles the media widget open/closed -- not plain mod+m,
 -- that's the memory graph widget above (caught live before this ever
