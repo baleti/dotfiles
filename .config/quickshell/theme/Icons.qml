@@ -18,9 +18,10 @@ QtObject {
     readonly property string ethernet: ""
 
     readonly property string cpu: ""
-    // nf-md-chip -- a bold IC-with-side-pins glyph, a different shape from
-    // cpu's fa-microchip so the GPU and CPU pills don't read alike.
-    readonly property string gpu: "󰘚"
+    // nf-md-expansion_card_variant -- a PCB card with an edge connector,
+    // i.e. what a graphics card physically looks like; deliberately not a
+    // bare chip (reads as a CPU next to cpu's fa-microchip).
+    readonly property string gpu: "󰾲"
     // fa-memory (RAM stick glyph) -- was fa-reorder ("", a
     // hamburger/list icon with no relation to memory) before 2026-08-29.
     readonly property string memory: ""
