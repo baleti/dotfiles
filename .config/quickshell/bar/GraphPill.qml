@@ -63,6 +63,11 @@ Rectangle {
     // time-series metric, so they get their own subsection instead of
     // being folded into legendItems (which is just a color key).
     property var usageItems: []
+    // [{name, value}] -- plain label/value lines (GPU pill: temperature,
+    // core/memory clocks, encoder/decoder load, fan). Unlike usageItems
+    // these aren't percent-of-capacity readings, so they get no bar, just a
+    // right-aligned value string.
+    property var detailRows: []
     // [{name, value}] -- top-10 list shown when non-empty.
     property var topProcs: []
     property string topUnit: ""
@@ -460,6 +465,49 @@ Rectangle {
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
+                        }
+                    }
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 3
+                visible: root.detailRows.length > 0
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.border
+                }
+
+                Repeater {
+                    model: root.detailRows
+
+                    Item {
+                        required property var modelData
+                        width: parent.width
+                        height: detailName.implicitHeight
+                        // topPadding-equivalent gap under the divider for
+                        // the first row.
+
+                        Text {
+                            id: detailName
+                            anchors.left: parent.left
+                            anchors.baseline: detailValue.baseline
+                            text: parent.modelData.name
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
+
+                        Text {
+                            id: detailValue
+                            anchors.right: parent.right
+                            text: parent.modelData.value
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
                         }
                     }
                 }

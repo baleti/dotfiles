@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# alt+n/p/m/t/d (keybinds.lua): toggle one of the quickshell bar's hover-
+# mod+n/p/m/t/d/g (keybinds.lua): toggle one of the quickshell bar's hover-
 # graph panels open/closed on whichever monitor is currently focused.
 #
 # Each monitor runs its own Bar.qml instance (shell.qml's Variants over

@@ -248,6 +248,10 @@ hl.bind(mainMod .. " + d", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh
 hl.bind(mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleNet"), { description = "Toggle the bar's network panel" })
 hl.bind(mainMod .. " + p", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleCpu"), { description = "Toggle the bar's CPU panel" })
 hl.bind(mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleMem"), { description = "Toggle the bar's memory panel" })
+-- mod+g: GPU panel (NVIDIA only -- the pill hides itself on machines
+-- without one). mod+g was free; matches the other sysmon widgets on a
+-- plain mod chord.
+hl.bind(mainMod .. " + g", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleGpu"), { description = "Toggle the bar's GPU panel" })
 -- mod+CTRL+m just toggles the media widget open/closed -- not plain mod+m,
 -- that's the memory graph widget above (caught live before this ever
 -- shipped wrong). No submap: 0-9 decile-seek used to be a separate

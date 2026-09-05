@@ -18,7 +18,7 @@ Item {
     // keyboard-focus mode from each panel's own open/closed state.
     readonly property alias mediaPanel: mediaExpanded
     readonly property alias calendarPanel: calendarExpanded
-    readonly property bool anyGraphExpanded: netPill.expanded || cpuPill.expanded || memPill.expanded || diskPill.expanded || tempPill.expanded
+    readonly property bool anyGraphExpanded: netPill.expanded || cpuPill.expanded || memPill.expanded || diskPill.expanded || tempPill.expanded || gpuPill.expanded
 
     // shell.qml watches this to tell "a panel just opened" (reclaim window
     // keyboard focus) apart from "a panel closed but others are still open"
@@ -27,7 +27,8 @@ Item {
     // be the one that changed.
     readonly property int openPanelCount: (mediaExpanded.expanded ? 1 : 0) + (calendarExpanded.expanded ? 1 : 0)
         + (netPill.expanded ? 1 : 0) + (cpuPill.expanded ? 1 : 0) + (memPill.expanded ? 1 : 0)
-        + (diskPill.expanded ? 1 : 0) + (tempPill.expanded ? 1 : 0) + (claudeUsageExpanded.expanded ? 1 : 0)
+        + (diskPill.expanded ? 1 : 0) + (tempPill.expanded ? 1 : 0) + (gpuPill.expanded ? 1 : 0)
+        + (claudeUsageExpanded.expanded ? 1 : 0)
 
     // Always focus-eligible -- actual keyboard delivery is already gated at
     // the window level by shell.qml's WlrLayershell.keyboardFocus/
@@ -52,7 +53,7 @@ Item {
     // those keys never reach the calendar -- while h/l, which the pill
     // doesn't handle, still bubble through and work. Reported 2026-08-30.
     function refocusActivePanel(): void {
-        for (const p of [tempPill, diskPill, memPill, cpuPill, netPill]) {
+        for (const p of [gpuPill, tempPill, diskPill, memPill, cpuPill, netPill]) {
             if (p.expanded) {
                 p.forceActiveFocus();
                 return;
@@ -153,7 +154,7 @@ Item {
     // this is that system's bar-visual left-to-right ordering (matching
     // rightRow's child order, with calendar's clock trigger last since
     // it's the rightmost).
-    readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "claudeUsage", "calendar"]
+    readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "gpu", "claudeUsage", "calendar"]
 
     // Which of SysmonSvc's 6 fixed tiers (10m/30m/6h/7d/7w/7mo) each panel is
     // currently viewing -- kept here (not just read off SysmonSvc directly)
@@ -165,11 +166,13 @@ Item {
     property string memTier: "10m"
     property string diskTier: "10m"
     property string tempTier: "10m"
+    property string gpuTier: "10m"
 
     function panelExpandedFor(name: string): bool {
         switch (name) {
         case "calendar": return calendarExpanded.expanded;
         case "claudeUsage": return claudeUsageExpanded.expanded;
+        case "gpu": return gpuPill.expanded;
         case "temp": return tempPill.expanded;
         case "disk": return diskPill.expanded;
         case "mem": return memPill.expanded;
@@ -186,6 +189,7 @@ Item {
         switch (name) {
         case "calendar": return rightRow.x + clockLoader.x + clockLoader.width;
         case "claudeUsage": return rightRow.x + claudeUsagePill.x + claudeUsagePill.width;
+        case "gpu": return rightRow.x + gpuPill.x + gpuPill.width;
         case "temp": return rightRow.x + tempPill.x + tempPill.width;
         case "disk": return rightRow.x + diskPill.x + diskPill.width;
         case "mem": return rightRow.x + memPill.x + memPill.width;
@@ -330,6 +334,7 @@ Item {
         case "mem": return memPill.overflowHeight;
         case "disk": return diskPill.overflowHeight;
         case "temp": return tempPill.overflowHeight;
+        case "gpu": return gpuPill.overflowHeight;
         case "media": return mediaExpanded.height;
         case "calendar": return calendarExpanded.height;
         case "claudeUsage": return claudeUsageExpanded.height;
@@ -470,6 +475,56 @@ Item {
             wr += root.last(dev.write_bps);
         }
         return rd + wr;
+    }
+
+    // GPU: two overlaid history lines (engine load solid, VRAM occupancy
+    // dashed) -- same shape/gating as memSeriesList. detailRows/usageItems
+    // read the point-in-time block in SysmonSvc.gpuInfo; both are gated on
+    // the pill actually being open so they're not rebuilt every tick while
+    // collapsed (see the comment on netLegend above).
+    readonly property var gpuLegend: [
+        { name: qsTr("Utilisation"), color: Theme.green },
+        { name: qsTr("VRAM"), color: Theme.cyan }
+    ]
+    readonly property var gpuSeriesList: gpuPill.expanded ? [
+        { data: SysmonSvc.gpuUtilPct, color: Theme.green, dashed: false },
+        { data: SysmonSvc.gpuVramPct, color: Theme.cyan, dashed: true }
+    ] : []
+    readonly property var gpuDetailRows: {
+        if (!gpuPill.expanded)
+            return [];
+        const g = SysmonSvc.gpuInfo;
+        const rows = [];
+        if (g.name)
+            rows.push({ name: qsTr("Device"), value: g.name });
+        rows.push({ name: qsTr("Temperature"), value: Math.round(g.temp_c ?? 0) + "°C" });
+        let power = (g.power_w ?? 0).toFixed(1) + " W";
+        if ((g.power_limit_w ?? 0) > 0)
+            power += " / " + Math.round(g.power_limit_w) + " W";
+        rows.push({ name: qsTr("Power draw"), value: power });
+        rows.push({ name: qsTr("Core clock"), value: Math.round(g.sm_clock_mhz ?? 0) + " MHz" });
+        rows.push({ name: qsTr("Memory clock"), value: Math.round(g.mem_clock_mhz ?? 0) + " MHz" });
+        rows.push({ name: qsTr("Encode / decode"), value: Math.round(g.enc_pct ?? 0) + "% / " + Math.round(g.dec_pct ?? 0) + "%" });
+        if ((g.fan_pct ?? 0) > 0)
+            rows.push({ name: qsTr("Fan"), value: Math.round(g.fan_pct) + "%" });
+        return rows;
+    }
+    readonly property var gpuUsageItems: {
+        if (!gpuPill.expanded)
+            return [];
+        const g = SysmonSvc.gpuInfo;
+        const items = [];
+        if ((g.vram_total_mb ?? 0) > 0)
+            items.push({
+                name: qsTr("VRAM %1 / %2 MB").arg(Math.round(g.vram_used_mb ?? 0)).arg(Math.round(g.vram_total_mb)),
+                pcent: 100 * (g.vram_used_mb ?? 0) / g.vram_total_mb
+            });
+        if ((g.power_limit_w ?? 0) > 0)
+            items.push({
+                name: qsTr("Power %1 / %2 W").arg(Math.round(g.power_w ?? 0)).arg(Math.round(g.power_limit_w)),
+                pcent: 100 * (g.power_w ?? 0) / g.power_limit_w
+            });
+        return items;
     }
 
     anchors.fill: parent
@@ -657,6 +712,43 @@ Item {
             expandWidth: root.widthFor("temp")
         }
 
+        // NVIDIA GPU -- hidden entirely on a machine with no NVIDIA GPU
+        // (SysmonSvc.gpuPresent stays false, a Row skips invisible
+        // children). Primary reading is engine load; VRAM occupancy rides
+        // along as the always-visible secondary value, same divider-less
+        // layout as diskPill's root-fs fill. mod+g toggles the panel
+        // (keybinds.lua -> bar-toggle.sh toggleGpu).
+        GraphPill {
+            id: gpuPill
+            visible: SysmonSvc.gpuPresent
+            icon: Icons.gpu
+            title: qsTr("GPU")
+            compactText: Math.round(root.last(SysmonSvc.gpuUtilPct)) + "%"
+            valueLabel: qsTr("%1% · %2% VRAM").arg(Math.round(root.last(SysmonSvc.gpuUtilPct))).arg(Math.round(root.last(SysmonSvc.gpuVramPct)))
+            mode: "overlay"
+            seriesList: root.gpuSeriesList
+            maxValue: 100
+            valueFraction: root.last(SysmonSvc.gpuUtilPct) / 100
+            secondaryIcon: Icons.memory
+            secondaryText: Math.round(root.last(SysmonSvc.gpuVramPct)) + "%"
+            secondaryDivider: false
+            secondaryValueFraction: root.last(SysmonSvc.gpuVramPct) / 100
+            legendItems: root.gpuLegend
+            detailRows: root.gpuDetailRows
+            usageItems: root.gpuUsageItems
+            yAxisFormatter: v => Math.round(v) + "%"
+            tierCodes: SysmonSvc.tierCodes
+            tierLabels: SysmonSvc.tierLabels
+            tier: root.gpuTier
+            onTierRequested: code => { root.gpuTier = code; SysmonSvc.setGpuTier(code); }
+            onExpandedChanged: if (!expanded) root.reclaimGraphFocus(gpuPill)
+            groupX: rightRow.x
+            groupY: rightRow.y
+            targetRight: root.layoutFor("gpu").right
+            targetY: root.panelYFor("gpu")
+            expandWidth: root.widthFor("gpu")
+        }
+
         BatteryPill {}
 
         ClaudeUsagePill {
@@ -812,6 +904,7 @@ Item {
         function toggleMem(): void { memPill.togglePin(); }
         function toggleTemp(): void { tempPill.togglePin(); }
         function toggleDisk(): void { diskPill.togglePin(); }
+        function toggleGpu(): void { gpuPill.togglePin(); }
         function toggleMedia(): void { mediaExpanded.expanded = !mediaExpanded.expanded; }
         function toggleCalendar(): void { root.toggleClockPin(); }
         function toggleClaudeUsage(): void { claudeUsageExpanded.expanded = !claudeUsageExpanded.expanded; }
