@@ -141,6 +141,44 @@ Rectangle {
     // style keybind toggles) -- while pinned, hovering off no longer closes
     // the panel; only clicking again (or the keybind again) does.
     property bool pinned: false
+
+    // "Top processes" no longer streams continuously in the background
+    // (2026-09-05 on-demand panel data) -- sysmond only starts collecting
+    // it once this panel actually opens, so there's a real gap (nethogs/
+    // nvidia-smi pmon spawning, or a couple of sample_loop ticks to build
+    // a delta baseline) before the first real batch arrives. Rather than
+    // the whole table popping into existence once that arrives (a layout
+    // jump, reported 2026-09-06: "may get confusing"), it shows up
+    // immediately as 10 placeholder rows (top_n(...) never returns more
+    // than that server-side, so 10 is always a safe reserved size) that
+    // melt into the real, correctly-sized list the instant data lands.
+    // Reset on every fresh open so a reopen shows placeholders again
+    // rather than briefly reusing whatever the panel showed last time.
+    // `sectionsEverArrived` is keyed by section label since the GPU pill's
+    // two sections (iGPU/dGPU) can arrive at very different times --
+    // Intel's is nearly instant (just gates an already-running loop's
+    // ranking step), NVIDIA's waits on nvidia-smi pmon to spawn.
+    property bool topProcsEverArrived: false
+    property var sectionsEverArrived: ({})
+    onExpandedChanged: {
+        if (expanded) {
+            topProcsEverArrived = false;
+            sectionsEverArrived = {};
+        }
+    }
+    onTopProcsChanged: {
+        if (root.topProcs.length > 0)
+            root.topProcsEverArrived = true;
+    }
+    onSectionsChanged: {
+        for (const s of root.sections) {
+            if ((s.procs ?? []).length > 0 && !root.sectionsEverArrived[s.label]) {
+                const updated = Object.assign({}, root.sectionsEverArrived);
+                updated[s.label] = true;
+                root.sectionsEverArrived = updated;
+            }
+        }
+    }
     readonly property bool hovered: hoverArea.containsMouse || expandPanel.hovered
     // Bar.qml reads this to size the window; 0 when collapsed.
     readonly property real overflowHeight: expandPanel.height
@@ -620,8 +658,11 @@ Rectangle {
                         height: 1
                         color: Theme.border
                         opacity: 0.4
-                        visible: (section.modelData.procs ?? []).length > 0
-                            && (section.modelData.rows ?? []).length > 0
+                        // No longer gated on procs.length > 0 -- the table
+                        // below now always reserves its placeholder rows
+                        // once this section is showing at all (see
+                        // topProcsEverArrived's own comment).
+                        visible: (section.modelData.rows ?? []).length > 0
                     }
 
                     // Column headers -- the "Top processes" sub-heading now
@@ -637,7 +678,6 @@ Rectangle {
                     RowLayout {
                         width: parent.width
                         spacing: 6
-                        visible: (section.modelData.procs ?? []).length > 0
 
                         Text {
                             text: qsTr("Top processes")
@@ -677,15 +717,23 @@ Rectangle {
                     }
 
                     Repeater {
-                        model: section.modelData.procs ?? []
+                        id: sectionProcRepeater
+                        readonly property bool everArrived: !!root.sectionsEverArrived[section.modelData.label]
+                        readonly property var procs: section.modelData.procs ?? []
+                        // Placeholder rows (blank) until this section's own
+                        // data has arrived at least once since the panel
+                        // opened, then sized to the real (possibly under
+                        // 10) list from then on.
+                        model: everArrived ? procs.length : 10
 
                         RowLayout {
-                            required property var modelData
+                            required property int index
+                            readonly property var entry: sectionProcRepeater.procs[index]
                             width: parent.width
                             spacing: 6
 
                             Text {
-                                text: parent.modelData.detail ? parent.modelData.name + " " + parent.modelData.detail : parent.modelData.name
+                                text: entry ? (entry.detail ? entry.name + " " + entry.detail : entry.name) : ""
                                 color: Theme.text
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 3
@@ -693,7 +741,7 @@ Rectangle {
                                 Layout.fillWidth: true
                             }
                             Text {
-                                text: parent.modelData.util_pct > 0 ? Math.round(parent.modelData.util_pct) + "%" : "--"
+                                text: entry ? (entry.util_pct > 0 ? Math.round(entry.util_pct) + "%" : "--") : ""
                                 color: Theme.textDim
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 3
@@ -701,7 +749,7 @@ Rectangle {
                                 Layout.preferredWidth: root.procUtilW
                             }
                             Text {
-                                text: String(parent.modelData.pid)
+                                text: entry ? String(entry.pid) : ""
                                 color: Theme.muted
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 4
@@ -709,7 +757,7 @@ Rectangle {
                                 Layout.preferredWidth: root.procPidW
                             }
                             Text {
-                                text: parent.modelData.value.toFixed(1)
+                                text: entry ? entry.value.toFixed(1) : ""
                                 color: Theme.textDim
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 3
@@ -796,11 +844,15 @@ Rectangle {
             }
 
             // Single process table (net/cpu/mem/disk/temp). The GPU pill
-            // uses `sections` above instead.
+            // uses `sections` above instead (root.sections.length === 0
+            // excludes it here, rather than gating on topProcs.length like
+            // before, so this table shows its placeholder rows immediately
+            // on open instead of waiting for topProcs' first real batch --
+            // see topProcsEverArrived's own comment).
             Column {
                 width: parent.width
                 spacing: 3
-                visible: root.topProcs.length > 0
+                visible: root.expanded && root.sections.length === 0
 
                 Rectangle {
                     width: parent.width
@@ -848,10 +900,15 @@ Rectangle {
                 }
 
                 Repeater {
-                    model: root.topProcs
+                    // Placeholder rows (blank) until topProcs' first real
+                    // batch has arrived since the panel opened, then sized
+                    // to the real (possibly under 10) list from then on --
+                    // see topProcsEverArrived's own comment.
+                    model: root.topProcsEverArrived ? root.topProcs.length : 10
 
                     RowLayout {
-                        required property var modelData
+                        required property int index
+                        readonly property var entry: root.topProcs[index]
                         width: parent.width
                         spacing: 6
 
@@ -863,7 +920,7 @@ Rectangle {
                         // make Layout exclude a column and shift pid/value
                         // left (reported in the memory panel, 2026-09-05).
                         Text {
-                            text: parent.modelData.detail ? parent.modelData.name + " " + parent.modelData.detail : parent.modelData.name
+                            text: entry ? (entry.detail ? entry.name + " " + entry.detail : entry.name) : ""
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
@@ -872,7 +929,7 @@ Rectangle {
                         }
 
                         Text {
-                            text: String(parent.modelData.pid)
+                            text: entry ? String(entry.pid) : ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
@@ -881,7 +938,7 @@ Rectangle {
                         }
 
                         Text {
-                            text: parent.modelData.value.toFixed(1)
+                            text: entry ? entry.value.toFixed(1) : ""
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
