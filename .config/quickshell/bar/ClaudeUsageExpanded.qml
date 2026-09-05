@@ -1108,7 +1108,7 @@ Rectangle {
                             // A touch more air after the account number
                             // than the Row's own 4px spacing gives the
                             // rest of the fields (request 2026-09-05).
-                            rightPadding: 5
+                            rightPadding: 4
                         }
                         Text {
                             id: acctSummarySession
