@@ -289,6 +289,20 @@ struct History {
     // No capability/setcap needed (unlike nethogs) since this never reads
     // another user's processes on this single-user machine.
     top_disk: Vec<ProcEntry>,
+    // CPU-ticks and disk-io-bytes baselines for top_cpu/top_disk's delta
+    // calc -- shared (not sample_loop-local) so a connection's very first
+    // request can "prime" a fresh baseline immediately instead of waiting
+    // for sample_loop's own next 1s tick to establish one, halving the
+    // wait for real (non-empty) data from ~2 ticks to ~1 (2026-09-06,
+    // "does take 2-4 seconds ... wondering if there's some way to improve
+    // responsiveness"). The `_at` timestamp lets the delta use real
+    // elapsed wall-clock time instead of assuming exactly one second
+    // passed, since a primed baseline and sample_loop's regular tick don't
+    // land exactly 1s apart.
+    prev_proc_ticks: HashMap<i32, u64>,
+    prev_proc_ticks_at: Option<Instant>,
+    prev_proc_io: HashMap<i32, (u64, u64)>,
+    prev_proc_io_at: Option<Instant>,
 }
 
 impl History {
@@ -307,6 +321,10 @@ impl History {
             top_mem: Vec::new(),
             top_net: Vec::new(),
             top_disk: Vec::new(),
+            prev_proc_ticks: HashMap::new(),
+            prev_proc_ticks_at: None,
+            prev_proc_io: HashMap::new(),
+            prev_proc_io_at: None,
         };
         h.load_from_disk();
         h
@@ -641,6 +659,43 @@ fn proc_io_bytes(pid: i32) -> Option<(u64, u64)> {
         }
     }
     Some((read_bytes?, write_bytes?))
+}
+
+/// Establishes a fresh top_cpu delta baseline right now, synchronously --
+/// called once from serve_client on the 0 -> 1 demand transition (a panel
+/// just opened) so sample_loop's very next regular tick already has
+/// something to diff against, instead of that tick having to spend itself
+/// just establishing the baseline sample_loop used to clear-and-rebuild
+/// on-transition. Same per-pid scan sample_loop itself does; this just
+/// moves one occurrence of it to the moment demand starts instead of
+/// waiting for sample_loop's own schedule.
+fn prime_cpu_baseline(history: &Mutex<History>) {
+    let pids = list_pids();
+    let mut ticks: HashMap<i32, u64> = HashMap::with_capacity(pids.len());
+    for pid in &pids {
+        if let Some(t) = proc_cpu_ticks(*pid) {
+            ticks.insert(*pid, t);
+        }
+    }
+    let now = Instant::now();
+    let mut h = history.lock().unwrap();
+    h.prev_proc_ticks = ticks;
+    h.prev_proc_ticks_at = Some(now);
+}
+
+/// Disk-I/O counterpart to `prime_cpu_baseline` -- see its own comment.
+fn prime_disk_baseline(history: &Mutex<History>) {
+    let pids = list_pids();
+    let mut io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
+    for pid in &pids {
+        if let Some(v) = proc_io_bytes(*pid) {
+            io.insert(*pid, v);
+        }
+    }
+    let now = Instant::now();
+    let mut h = history.lock().unwrap();
+    h.prev_proc_io = io;
+    h.prev_proc_io_at = Some(now);
 }
 
 fn top_n(mut entries: Vec<ProcEntry>, n: usize) -> Vec<ProcEntry> {
@@ -1290,15 +1345,6 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
     let mut prev_cpu_lines = read_all_cpu_lines();
     let mut prev_net: HashMap<String, (u64, u64, Instant)> = HashMap::new();
     let mut prev_disk: HashMap<String, (u64, u64, Instant)> = HashMap::new();
-    let mut prev_proc_ticks: HashMap<i32, u64> = HashMap::new();
-    let mut prev_proc_io: HashMap<i32, (u64, u64)> = HashMap::new();
-    // Tracks last tick's demand so a 0 -> 1 transition (a panel just
-    // opened) clears the relevant prev_* map -- otherwise the first tick
-    // after a long idle gap would compute a delta over however long the
-    // panel was closed instead of over one real second, producing a
-    // briefly bogus reading.
-    let mut cpu_was_wanted = false;
-    let mut disk_was_wanted = false;
 
     loop {
         std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
@@ -1372,7 +1418,6 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
 
         let (mem_used_pct, mem_cached_pct) = read_mem_pcts();
         let swap_used_pct = read_swap_pct();
-        let elapsed_s = SAMPLE_INTERVAL_MS as f64 / 1000.0;
 
         // Each of top_cpu/top_mem/top_disk only matters to whichever
         // panel shows it -- nobody sees them until that panel is expanded
@@ -1385,23 +1430,27 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
         let mem_wanted = demand.top_mem.load(Ordering::Relaxed) > 0;
         let disk_wanted = demand.top_disk.load(Ordering::Relaxed) > 0;
 
-        if cpu_wanted && !cpu_was_wanted {
-            prev_proc_ticks.clear();
-        }
-        cpu_was_wanted = cpu_wanted;
-        if disk_wanted && !disk_was_wanted {
-            prev_proc_io.clear();
-        }
-        disk_was_wanted = disk_wanted;
-
         let pids = if cpu_wanted || mem_wanted || disk_wanted { list_pids() } else { Vec::new() };
 
         // Top-10 by CPU: needs a tick-over-tick delta per pid, same idea as
         // the aggregate/per-core calc above, just keyed by pid instead of
-        // core index. Ticks -> % of one core via clk_tck and the real
-        // elapsed wall time (SAMPLE_INTERVAL_MS, not measured, since the
-        // sleep above is already that fixed interval).
+        // core index. The baseline (prev_proc_ticks/_at) is shared History
+        // state rather than a local, so a connection's first request can
+        // prime it immediately at connect-time (prime_cpu_baseline, called
+        // from serve_client on the 0 -> 1 demand transition) instead of
+        // this tick having to spend itself just establishing one with
+        // nothing to diff against yet -- halves the wait for real data
+        // from ~2 ticks to ~1 (2026-09-06). Real elapsed wall time (not
+        // assumed to be exactly SAMPLE_INTERVAL_MS) since a primed
+        // baseline and this tick don't land exactly one second apart.
         let top_cpu = if cpu_wanted {
+            let (prev_proc_ticks, prev_at) = {
+                let h = history.lock().unwrap();
+                (h.prev_proc_ticks.clone(), h.prev_proc_ticks_at)
+            };
+            let now = Instant::now();
+            let elapsed_s = prev_at.map(|t| now.duration_since(t).as_secs_f64()).unwrap_or(0.0).max(0.001);
+
             let mut cur_proc_ticks: HashMap<i32, u64> = HashMap::with_capacity(pids.len());
             let mut top_cpu_entries = Vec::with_capacity(pids.len());
             for pid in &pids {
@@ -1415,7 +1464,11 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
                     }
                 }
             }
-            prev_proc_ticks = cur_proc_ticks;
+            {
+                let mut h = history.lock().unwrap();
+                h.prev_proc_ticks = cur_proc_ticks;
+                h.prev_proc_ticks_at = Some(now);
+            }
             let mut top_cpu = top_n(top_cpu_entries, 10);
             enrich_details(&mut top_cpu);
             top_cpu
@@ -1440,10 +1493,19 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
             Vec::new()
         };
 
-        // Top-10 by disk I/O: tick-over-tick delta like CPU, keyed by pid,
-        // combined read+write KB/s. Silently excludes any pid proc_io_bytes
-        // can't read (see its own comment) rather than failing the feature.
+        // Top-10 by disk I/O: tick-over-tick delta like CPU (same shared-
+        // baseline/priming/real-elapsed-time treatment, see its comment),
+        // keyed by pid, combined read+write KB/s. Silently excludes any
+        // pid proc_io_bytes can't read (see its own comment) rather than
+        // failing the feature.
         let top_disk = if disk_wanted {
+            let (prev_proc_io, prev_at) = {
+                let h = history.lock().unwrap();
+                (h.prev_proc_io.clone(), h.prev_proc_io_at)
+            };
+            let now = Instant::now();
+            let elapsed_s = prev_at.map(|t| now.duration_since(t).as_secs_f64()).unwrap_or(0.0).max(0.001);
+
             let mut cur_proc_io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
             let mut top_disk_entries = Vec::with_capacity(pids.len());
             for pid in &pids {
@@ -1458,7 +1520,11 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
                     }
                 }
             }
-            prev_proc_io = cur_proc_io;
+            {
+                let mut h = history.lock().unwrap();
+                h.prev_proc_io = cur_proc_io;
+                h.prev_proc_io_at = Some(now);
+            }
             let mut top_disk = top_n(top_disk_entries, 10);
             enrich_details(&mut top_disk);
             top_disk
@@ -1557,7 +1623,14 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
     // this function returns, on any exit path.
     let _guard = match metric {
         Metric::TopCpu => {
-            demand.top_cpu.fetch_add(1, Ordering::Relaxed);
+            // fetch_add returns the value from *before* the add -- 0 means
+            // this connection is the one turning demand on, so prime a
+            // fresh baseline immediately rather than waiting for
+            // sample_loop's own next tick to do it (see
+            // prime_cpu_baseline's own comment).
+            if demand.top_cpu.fetch_add(1, Ordering::Relaxed) == 0 {
+                prime_cpu_baseline(&history);
+            }
             DemandGuard::Counter(demand.top_cpu.clone())
         }
         Metric::TopMem => {
@@ -1565,7 +1638,9 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
             DemandGuard::Counter(demand.top_mem.clone())
         }
         Metric::TopDisk => {
-            demand.top_disk.fetch_add(1, Ordering::Relaxed);
+            if demand.top_disk.fetch_add(1, Ordering::Relaxed) == 0 {
+                prime_disk_baseline(&history);
+            }
             DemandGuard::Counter(demand.top_disk.clone())
         }
         Metric::TopNet => {
