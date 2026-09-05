@@ -488,44 +488,27 @@ Item {
     // process table); gated on the pill being open so it's not rebuilt
     // every tick while collapsed (see the comment on netLegend above).
     function gpuTag(g) { return g.vendor === "intel" ? qsTr("iGPU") : qsTr("dGPU"); }
-    // Grouped by GPU (request 2026-09-06: "igpu all blue and dgpu all
-    // green... but still sourcing from... whatever current wallpaper-based
-    // color palette is"). Went through several tuning passes on the same
-    // "shades of one derived hue" idea (value/sat stepping, hue-only
-    // rotation, both combined) that all still read as too similar once
-    // actually drawn as thin 1px/0.62-0.9-alpha graph lines -- reported
-    // too similar 3 times running, 2026-09-06. Briefly tried picking
-    // flatly-different seriesPalette entries per line instead (guaranteed
-    // distinctive, since that array is designed for it) -- rejected in
-    // turn ("they still need to stay green though... let's keep different
-    // greens but different enough"): distinctiveness alone isn't the
-    // requirement, staying one hue *family* is too.
-    //
-    // This pass keeps the single-derived-hue approach but pushes the
-    // value/saturation spread much further than any previous attempt
-    // (0.42-1.0 value here vs 0.48-1.0 in the last one) while narrowing
-    // the hue spread to +-12 degrees (vs +-15/+-20 before) so it can't
-    // drift out of "green" into yellow or teal at the extremes. Verified
-    // by direct RGB simulation before touching the live file: dGPU's 3
-    // lines sample as a dark olive #4e6b09, the base #86c14a, and a vivid
-    // #5cff15 -- a genuinely large lightness swing, still all recognizably
-    // green (hue 78-102 degrees).
-    //
-    // Base hues: Theme.cyan/Theme.green (the theme's own primary/
-    // secondary) were tried first, on the reasoning that they're
-    // literally named for this -- rejected because those two are
-    // independently-generated Material You roles with no guaranteed hue
-    // separation, and for this wallpaper's current scheme they'd both
-    // landed on nearly the same warm salmon (#ffb695 / #ffb4ab, confirmed
-    // via scheme.json). seriesPalette's own 8 entries are explicitly
-    // *generated* to spread evenly around the theme's hue wheel, so
-    // indices 4 apart (half of 8) are the two most-opposite hues that
-    // spread ever produces -- structurally guaranteed distinctive
-    // regardless of what a wallpaper's primary/secondary happen to be,
-    // while still entirely wallpaper-derived.
+    // Hardcoded per request 2026-09-06: "let's hard code these colors...
+    // make igpu colors distinctive shades of blue and dgpu distinctive
+    // shades of green independent of what color theme is, otherwise they
+    // keep changing". Every earlier version of this derived the base hue
+    // from Theme.seriesPalette (wallpaper-generated) -- deliberately, so
+    // it stayed "of the theme" -- but that means a GPU's own identity
+    // color drifts every time the wallpaper regenerates the palette,
+    // which is exactly backwards for "this line is always the iGPU,
+    // that one's always the dGPU" at a glance. Fixed hex now, no Theme
+    // involvement at all. "arm" isn't a vendor sysmond reports today
+    // (only "intel"/"nvidia") but reserved here per request, in case
+    // Mali/Adreno support is ever added -- untested against real
+    // hardware, so its exact shades may need retuning once it's real.
+    // nvidia's green is also the fallback for any other/unrecognised
+    // dGPU vendor string.
     function gpuBaseColor(vendor) {
-        const p = Theme.seriesPalette;
-        return vendor === "intel" ? p[4 % p.length] : p[2 % p.length];
+        switch (vendor) {
+        case "intel": return "#2f8fef"; // iGPU: blue
+        case "arm": return "#d92b48";   // reserved, untested: red
+        default: return "#86c14a";      // dGPU (nvidia, or any other): green
+        }
     }
     // `role` picks a fixed hue-offset/value/sat recipe instead of the
     // earlier symmetric i/n interpolation -- utilization/VRAM/power don't
@@ -548,10 +531,19 @@ Item {
     // greens pairwise, not just "darker/lighter" ones.
     function gpuShadeColor(base, role, dashed) {
         const c = Qt.color(base);
+        // Role names are just recipe labels now, not tied to one metric
+        // -- gpuLines assigns which metric gets which (request
+        // 2026-09-06 swapped utilization onto the vivid "power" recipe
+        // for both GPUs). "dim" exists specifically for a *dashed* line
+        // that should still end up looking dark despite the alpha-
+        // compensation boost below -- "primary"'s own value (0.42) would
+        // boost to ~0.61, too bright for that, so "dim" starts lower
+        // (0.24 -> boosts to ~0.35).
         const recipes = {
-            power: { hueOffsetDeg: 24, value: 0.95, sat: 0.85 },
-            secondary: { hueOffsetDeg: -18, value: 0.62, sat: 0.85 }, // VRAM / iGPU memory
-            primary: { hueOffsetDeg: -18, value: 0.42, sat: 0.75 },   // utilization
+            power: { hueOffsetDeg: 24, value: 0.95, sat: 0.85 },     // vivid
+            secondary: { hueOffsetDeg: -18, value: 0.62, sat: 0.85 }, // medium, boosts bright when dashed
+            primary: { hueOffsetDeg: -18, value: 0.42, sat: 0.75 },  // dark, solid only
+            dim: { hueOffsetDeg: -18, value: 0.24, sat: 0.55 },      // dark, dashed only
         };
         const r = recipes[role] ?? recipes.primary;
         const hue = (c.hsvHue + r.hueOffsetDeg / 360 + 1) % 1;
@@ -580,14 +572,25 @@ Item {
         const out = [];
         for (const g of SysmonSvc.gpuList) {
             const tag = gpuTag(g);
-            const memLabel = g.vendor === "intel" ? qsTr("memory") : qsTr("VRAM");
+            const isIntel = g.vendor === "intel";
+            const memLabel = isIntel ? qsTr("memory") : qsTr("VRAM");
             const group = [];
+            // Role assignment swapped from the metric's own "natural" one
+            // (request 2026-09-06: "switch colors used for dgpu
+            // utilization and dgpu power as well as swap colors used now
+            // for igpu utilization and igpu memory") -- utilization is
+            // always the vivid "power" recipe now regardless of vendor;
+            // dGPU's own power reading takes the dark "primary" recipe
+            // (its old utilization look), and iGPU's memory takes "dim"
+            // (a dark recipe tuned for a *dashed* line, since "primary"
+            // itself renders too bright once dashed-alpha-compensated --
+            // see gpuShadeColor's own comment).
             if ((g.util_pct?.length ?? 0) > 0)
-                group.push({ data: g.util_pct, dashed: false, role: "primary", name: tag + " " + qsTr("utilization") });
+                group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization") });
             if ((g.vram_pct?.length ?? 0) > 0)
-                group.push({ data: g.vram_pct, dashed: true, role: "secondary", name: tag + " " + memLabel });
+                group.push({ data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel });
             if ((g.power_pct?.length ?? 0) > 0)
-                group.push({ data: g.power_pct, dashed: false, role: "power", name: tag + " " + qsTr("power") });
+                group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power") });
             const base = gpuBaseColor(g.vendor);
             group.forEach(l => out.push(Object.assign(l, { color: gpuShadeColor(base, l.role, l.dashed) })));
         }
