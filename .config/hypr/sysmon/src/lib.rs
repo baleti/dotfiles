@@ -233,40 +233,70 @@ pub struct ProcEntry {
     pub util_pct: f64,
 }
 
-/// Oldest-first ring-buffer snapshots for whichever tier was requested, up
-/// to `TIER_CAPACITY` long (fewer while that tier is still filling its
-/// initial buffer just after startup).
+fn default_full() -> bool {
+    true
+}
+
+/// Ring-buffer snapshots for whichever tier was requested, up to
+/// `TIER_CAPACITY` long (fewer while that tier is still filling its initial
+/// buffer just after startup) -- oldest-first.
+///
+/// Every history-series variant (all but `TopProcs`, which has no buffer to
+/// begin with) carries a `full` flag (2026-09-05, the delta-streaming
+/// rework): `full: true` means every array below is the COMPLETE current
+/// buffer for its tier, same as this protocol always worked; `full: false`
+/// means every array is just the point(s) appended since the previous
+/// message on this connection (usually 0 or 1 -- more only if a client
+/// briefly fell behind), and the receiver is expected to append them to
+/// whatever it already has and drop points off the front past
+/// `TIER_CAPACITY`, mirroring the server's own ring-buffer eviction. A
+/// client that's never held a value for a series yet (freshly connected)
+/// always gets `full: true` first; after that, sysmond re-forces a full
+/// resend periodically (see sysmond.rs's `FULL_RESYNC_TICKS`) purely as a
+/// self-healing measure, independent of any bug -- so the delta stream
+/// can never drift out of sync with the daemon's real buffers for longer
+/// than that window. GPU's `procs` and its point-in-time detail scalars
+/// (temp_c, power_w, ...) are never deltas -- they're small and already
+/// point-in-time, so every message (full or not) carries their current
+/// values directly.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "metric", rename_all = "lowercase")]
 pub enum Snapshot {
     // Every non-loopback interface that's been seen since sysmond started,
     // not just the default route -- so e.g. wg-wsl and wlan0 both show up
     // as separate overlaid series, same as the KDE Plasma network widget
-    // this replaces (2026-08-27).
-    Net { interfaces: Vec<IfaceHistory> },
+    // this replaces (2026-08-27). A newly-seen interface always forces a
+    // `full` message (see sysmond.rs's serve_client) so a delta message's
+    // `interfaces` list is always a subset the client has already seen.
+    Net { #[serde(default = "default_full")] full: bool, interfaces: Vec<IfaceHistory> },
     // `total` is the aggregate line (unchanged shape for old clients);
     // `cores` is one history per logical CPU, for a stacked per-core view.
-    Cpu { total: Vec<f64>, cores: Vec<Vec<f64>> },
-    Temp { celsius: Vec<f64> },
+    Cpu { #[serde(default = "default_full")] full: bool, total: Vec<f64>, cores: Vec<Vec<f64>> },
+    Temp { #[serde(default = "default_full")] full: bool, celsius: Vec<f64> },
     // `used_pct` excludes reclaimable cache (same calc as before, matches
     // MemAvailable); `cached_pct` is Buffers+Cached, overlaid separately so
     // both are visible instead of only the "true" used figure. `swap_used_pct`
     // is a third overlaid line, percent of SwapTotal in use (2026-08-29).
     // `#[serde(default)]` so an old sysmond (pre-swap) doesn't break a
     // rebuilt client expecting this field.
-    Mem { used_pct: Vec<f64>, cached_pct: Vec<f64>, #[serde(default)] swap_used_pct: Vec<f64> },
+    Mem { #[serde(default = "default_full")] full: bool, used_pct: Vec<f64>, cached_pct: Vec<f64>, #[serde(default)] swap_used_pct: Vec<f64> },
     // One entry per whole-disk block device (partitions excluded), same
-    // overlay-per-device treatment as Net.
-    Disk { devices: Vec<DiskHistory> },
+    // overlay-per-device treatment as Net (same new-device-forces-full rule).
+    Disk { #[serde(default = "default_full")] full: bool, devices: Vec<DiskHistory> },
     // Every GPU on the machine, each its own `GpuHistory` (util/vram/power
     // history at the requested tier + a detail block + a top-processes
     // list). One entry on a single-GPU box; iGPU + dGPU both appear on a
     // hybrid laptop. See sysmond.rs's `gpu_loop` (nvidia-smi) and
-    // `intel_gpu_loop` (i915 fdinfo).
+    // `intel_gpu_loop` (i915 fdinfo). The GPU list itself never changes
+    // after sysmond starts, so unlike Net/Disk there's no "new entry"
+    // case to force a full resend for.
     Gpu {
+        #[serde(default = "default_full")]
+        full: bool,
         gpus: Vec<GpuHistory>,
     },
     // Point-in-time top-10, refreshed every tick like the history metrics,
-    // just not itself a time series.
+    // just not itself a time series -- no `full` flag, there's no buffer
+    // here for one to describe.
     TopProcs { procs: Vec<ProcEntry> },
 }
