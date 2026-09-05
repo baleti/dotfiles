@@ -515,9 +515,15 @@ Item {
     function gpuShadeColor(base, i, n) {
         const c = Qt.color(base);
         const t = n > 1 ? i / (n - 1) : 0; // 0 (first line) .. 1 (last line)
-        const value = Math.max(0.55, c.hsvValue - t * 0.35);
-        const sat = Math.max(0.35, c.hsvSaturation - t * 0.25);
-        return Qt.hsva(c.hsvHue, sat, value, 1);
+        // Rotate the hue across the group as well as shifting value/sat --
+        // pure value/sat steps collapsed the 2nd and 3rd dGPU lines (VRAM
+        // vs power) into near-identical muted shades once the base was
+        // already dark (reported 2026-09-06). ~40deg of rotation keeps the
+        // lines a recognisable hue family while making each clearly its own.
+        const hue = (c.hsvHue + t * (40 / 360)) % 1;
+        const sat = Math.min(1, c.hsvSaturation + t * 0.30);
+        const value = Math.max(0.6, c.hsvValue - t * 0.12);
+        return Qt.hsva(hue, sat, value, 1);
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
     // both the graph series and the legend derive from, so their colours
@@ -552,6 +558,8 @@ Item {
             return [];
         return SysmonSvc.gpuList.map(g => {
             const rows = [];
+            if ((g.util_pct?.length ?? 0) > 0)
+                rows.push({ name: qsTr("Utilization"), value: Math.round(root.last(g.util_pct)) + "%" });
             const memName = g.vendor === "intel" ? qsTr("Memory (shared)") : qsTr("VRAM");
             if ((g.vram_total_mb ?? 0) > 0)
                 rows.push({ name: memName, value: Math.round(g.vram_used_mb ?? 0) + " / " + Math.round(g.vram_total_mb) + " MB" });
@@ -565,8 +573,10 @@ Item {
                     p += " / " + Math.round(g.power_limit_w) + " W";
                 rows.push({ name: qsTr("Power draw"), value: p });
             }
-            if ((g.sm_clock_mhz ?? 0) > 0)
-                rows.push({ name: g.vendor === "intel" ? qsTr("Frequency") : qsTr("Core clock"), value: Math.round(g.sm_clock_mhz) + " MHz" });
+            // dGPU only -- the iGPU's clock is dead information next to its
+            // utilisation (shown above instead, request 2026-09-06).
+            if ((g.sm_clock_mhz ?? 0) > 0 && g.vendor !== "intel")
+                rows.push({ name: qsTr("Core clock"), value: Math.round(g.sm_clock_mhz) + " MHz" });
             if ((g.mem_clock_mhz ?? 0) > 0)
                 rows.push({ name: qsTr("Memory clock"), value: Math.round(g.mem_clock_mhz) + " MHz" });
             if ((g.enc_pct ?? 0) > 0 || (g.dec_pct ?? 0) > 0)
