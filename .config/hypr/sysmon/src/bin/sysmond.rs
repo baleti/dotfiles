@@ -125,6 +125,22 @@ impl TieredSeries {
     fn load_persisted(&mut self, p: &PersistedSeries) {
         for (tier_buf, points) in self.tiers.iter_mut().zip(p.tiers.iter()) {
             tier_buf.buf = points.iter().copied().collect();
+            // total_pushed has to come back matching the restored buffer,
+            // not the TierBuf::new() default of 0 -- delta_since(tier, 0)
+            // (what every fresh connection's first "full" send uses)
+            // computes how much to return as `total_pushed.min(buf.len())`,
+            // so leaving this at 0 after a restart made it return nothing
+            // at all despite `buf` genuinely holding the loaded history
+            // (reported 2026-09-06: "gets lost again after restart" --
+            // confirmed live: history.json had a full 600-point 7d tier,
+            // sysmond logged loading it, and a query for that tier right
+            // after restart still came back with 0 points). The true
+            // historical total_pushed count (every point ever pushed,
+            // including ones long since evicted past TIER_CAPACITY) isn't
+            // persisted and doesn't need to be -- nothing before a restart
+            // can still be connected to diff against, so every client's
+            // first message after one is unconditionally full regardless.
+            tier_buf.total_pushed = tier_buf.buf.len() as u64;
         }
     }
 }
