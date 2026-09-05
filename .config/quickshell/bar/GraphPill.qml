@@ -648,7 +648,7 @@ Rectangle {
                             Layout.fillWidth: true
                         }
                         Text {
-                            text: qsTr("util%")
+                            text: qsTr("util")
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 4
