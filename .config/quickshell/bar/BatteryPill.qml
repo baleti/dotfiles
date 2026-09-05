@@ -34,17 +34,17 @@ Rectangle {
         spacing: 4
 
         Text {
-            text: Math.round(BatterySvc.percent) + "%"
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize
-            color: root.batColor
-        }
-
-        Text {
             font.family: Theme.iconFontFamily
             font.pixelSize: Theme.fontSize
             color: root.batColor
             text: Icons.levelIcon(Icons.batteryLevels, BatterySvc.percent / 100)
+        }
+
+        Text {
+            text: Math.round(BatterySvc.percent) + "%"
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSize
+            color: root.batColor
         }
     }
 }

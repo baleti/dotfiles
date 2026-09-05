@@ -250,6 +250,14 @@ Rectangle {
         spacing: 4
 
         Text {
+            text: root.icon
+            font.family: Theme.iconFontFamily
+            font.pixelSize: root.iconPixelSize
+            color: root.gradedColor
+            anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Text {
             text: root.compactText
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize
@@ -257,17 +265,11 @@ Rectangle {
             // compactTextWidth pins a minimum so the pill doesn't jitter on
             // routine value changes, but content wider than it (a byte rate
             // that grew a unit, a GPU hitting 100%) still expands the pill
-            // rather than clipping.
+            // rather than clipping. Left-aligned (icon now sits to its
+            // left, not its right) so any padding slack falls after the
+            // digits instead of prying them away from the icon.
             width: root.compactTextWidth > 0 ? Math.max(root.compactTextWidth, implicitWidth) : implicitWidth
-            horizontalAlignment: Text.AlignRight
-            anchors.verticalCenter: parent.verticalCenter
-        }
-
-        Text {
-            text: root.icon
-            font.family: Theme.iconFontFamily
-            font.pixelSize: root.iconPixelSize
-            color: root.gradedColor
+            horizontalAlignment: Text.AlignLeft
             anchors.verticalCenter: parent.verticalCenter
         }
 
@@ -289,8 +291,8 @@ Rectangle {
 
         Text {
             visible: root.secondaryIcon.length > 0
-            text: root.secondaryText
-            font.family: Theme.fontFamily
+            text: root.secondaryIcon
+            font.family: Theme.iconFontFamily
             font.pixelSize: Theme.fontSize
             color: root.secondaryColor
             anchors.verticalCenter: parent.verticalCenter
@@ -298,8 +300,8 @@ Rectangle {
 
         Text {
             visible: root.secondaryIcon.length > 0
-            text: root.secondaryIcon
-            font.family: Theme.iconFontFamily
+            text: root.secondaryText
+            font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize
             color: root.secondaryColor
             anchors.verticalCenter: parent.verticalCenter
