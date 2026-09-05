@@ -14,12 +14,23 @@ Item {
     required property string metricName
     property string tier: "10m"
     property var data: ({})
+    // GPU only: whether this connection should also carry per-process data
+    // (see sysmond's Request::include_procs) -- the compact pill's own
+    // util/vram/power numbers never need it, only the expanded panel's
+    // "Top processes" list does. Meaningless for every other metricName.
+    property bool includeProcs: false
 
     function socketPath(): string {
         return `${Quickshell.env("XDG_RUNTIME_DIR")}/sysmond.sock`;
     }
 
     onTierChanged: {
+        sock.connected = false;
+        sock.connected = true;
+    }
+    // Toggling includeProcs, like changing tier, means a new request line
+    // -- reconnect rather than trying to change it on a live stream.
+    onIncludeProcsChanged: {
         sock.connected = false;
         sock.connected = true;
     }
@@ -129,7 +140,7 @@ Item {
         id: sock
         path: root.socketPath()
         connected: true
-        onConnectedChanged: if (connected) write(root.metricName + ":" + root.tier + "\n")
+        onConnectedChanged: if (connected) write(root.metricName + ":" + root.tier + (root.includeProcs ? ":procs" : "") + "\n")
         parser: SplitParser {
             splitMarker: "\n"
             onRead: data => { root.data = root._merge(root.data, JSON.parse(data)); }

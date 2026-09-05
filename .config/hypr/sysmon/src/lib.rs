@@ -95,12 +95,11 @@ pub fn socket_path() -> PathBuf {
     base.join("sysmond.sock")
 }
 
-/// A client connects, writes one request line -- `<metric>` or
-/// `<metric>:<tier>` (bare metric defaults to the 10-minute tier; `Top*`
-/// metrics ignore the tier entirely, they're point-in-time, not history) --
-/// then reads one JSON `Snapshot` line per second until it disconnects.
-/// Switching tiers means disconnecting and reconnecting with a new request,
-/// not a second request on the same stream (see quickshell's
+/// A client connects, writes one request line -- `<metric>`, `<metric>:
+/// <tier>`, or (`gpu` only) `gpu:<tier>:procs` -- then reads one JSON
+/// `Snapshot` line per second until it disconnects. Switching tiers (or,
+/// for gpu, toggling `:procs`) means disconnecting and reconnecting with a
+/// new request, not a second request on the same stream (see quickshell's
 /// TieredSocket.qml).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
@@ -138,13 +137,22 @@ impl Metric {
 pub struct Request {
     pub metric: Metric,
     pub tier: Tier,
+    /// `gpu` only: whether this connection also wants per-process data
+    /// (each `GpuHistory::procs`) -- the compact pill's own util/vram/
+    /// power numbers never need it, only the expanded panel's "Top
+    /// processes" list does, so a collapsed pill's connection omits it and
+    /// sysmond can skip the per-process work entirely (2026-09-05, see
+    /// sysmond.rs's `GpuProcManager`). Meaningless for every other metric.
+    pub include_procs: bool,
 }
 
 impl Request {
     pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
-        let (metric_str, tier_str) = s.split_once(':').unwrap_or((s, "10m"));
-        Some(Request { metric: Metric::parse(metric_str)?, tier: Tier::parse(tier_str)? })
+        let mut parts = s.trim().split(':');
+        let metric = Metric::parse(parts.next()?)?;
+        let tier = Tier::parse(parts.next().unwrap_or("10m"))?;
+        let include_procs = parts.next() == Some("procs");
+        Some(Request { metric, tier, include_procs })
     }
 }
 

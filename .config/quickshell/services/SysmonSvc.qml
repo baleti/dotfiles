@@ -32,7 +32,7 @@ QtObject {
     readonly property TieredSocket memSock: TieredSocket { metricName: "mem" }
     readonly property TieredSocket diskSock: TieredSocket { metricName: "disk" }
     readonly property TieredSocket tempSock: TieredSocket { metricName: "temp" }
-    readonly property TieredSocket gpuSock: TieredSocket { metricName: "gpu" }
+    readonly property TieredSocket gpuSock: TieredSocket { metricName: "gpu"; includeProcs: root.gpuProcsRefs > 0 }
 
     function setNetTier(t: string): void { netSock.tier = t; }
     function setCpuTier(t: string): void { cpuSock.tier = t; }
@@ -176,9 +176,38 @@ QtObject {
         return `${Quickshell.env("XDG_RUNTIME_DIR")}/sysmond.sock`;
     }
 
+    // On-demand panel data (2026-09-05: "data that shows up in panels ...
+    // isn't needed until that panel gets opened"). Each of these counts how
+    // many currently-expanded panels want that metric's per-process data --
+    // could be more than one pill across monitors (cpu's list is also
+    // shown by the temp panel as a heat proxy, and either panel on either
+    // monitor's Bar.qml instance can be open at once), so it's a refcount,
+    // not a bool, incremented/decremented by GraphPill's onExpandedChanged
+    // via ref*()/unref*() below. The matching sockets only connect (and
+    // sysmond only does the expensive work behind them -- a full-process
+    // scan for cpu/mem/disk, the nethogs subprocess for net, nvidia-smi
+    // pmon + the intel per-process ranking for gpu) while their count is
+    // above zero; see sysmond.rs's Demand.
+    property int topCpuRefs: 0
+    property int topMemRefs: 0
+    property int topNetRefs: 0
+    property int topDiskRefs: 0
+    property int gpuProcsRefs: 0
+
+    function refTopCpu(): void { root.topCpuRefs++; }
+    function unrefTopCpu(): void { root.topCpuRefs = Math.max(0, root.topCpuRefs - 1); }
+    function refTopMem(): void { root.topMemRefs++; }
+    function unrefTopMem(): void { root.topMemRefs = Math.max(0, root.topMemRefs - 1); }
+    function refTopNet(): void { root.topNetRefs++; }
+    function unrefTopNet(): void { root.topNetRefs = Math.max(0, root.topNetRefs - 1); }
+    function refTopDisk(): void { root.topDiskRefs++; }
+    function unrefTopDisk(): void { root.topDiskRefs = Math.max(0, root.topDiskRefs - 1); }
+    function refGpuProcs(): void { root.gpuProcsRefs++; }
+    function unrefGpuProcs(): void { root.gpuProcsRefs = Math.max(0, root.gpuProcsRefs - 1); }
+
     readonly property Socket topCpuSocket: Socket {
         path: root.socketPath()
-        connected: true
+        connected: root.topCpuRefs > 0
         onConnectedChanged: if (connected) write("topcpu\n")
         parser: SplitParser {
             splitMarker: "\n"
@@ -188,7 +217,7 @@ QtObject {
 
     readonly property Socket topMemSocket: Socket {
         path: root.socketPath()
-        connected: true
+        connected: root.topMemRefs > 0
         onConnectedChanged: if (connected) write("topmem\n")
         parser: SplitParser {
             splitMarker: "\n"
@@ -198,7 +227,7 @@ QtObject {
 
     readonly property Socket topNetSocket: Socket {
         path: root.socketPath()
-        connected: true
+        connected: root.topNetRefs > 0
         onConnectedChanged: if (connected) write("topnet\n")
         parser: SplitParser {
             splitMarker: "\n"
@@ -208,7 +237,7 @@ QtObject {
 
     readonly property Socket topDiskSocket: Socket {
         path: root.socketPath()
-        connected: true
+        connected: root.topDiskRefs > 0
         onConnectedChanged: if (connected) write("topdisk\n")
         parser: SplitParser {
             splitMarker: "\n"
@@ -216,20 +245,29 @@ QtObject {
         }
     }
 
-    // Re-assert each socket if sysmond drops (dev restarts, package
-    // upgrades) -- `connected: true` is a constant binding and won't
-    // re-fire on its own. Same fix as TieredSocket.qml's timer. (GPU
-    // per-process lists ride in the `gpu` TieredSocket snapshot now, not
-    // their own socket.)
+    // Re-assert a socket if sysmond drops it while still wanted (dev
+    // restarts, package upgrades) -- `connected: root.topXxxRefs > 0` only
+    // re-fires when the ref *count* changes, not when the daemon-side
+    // connection silently dies out from under an unchanged true value, so
+    // this timer is still needed as the same fix TieredSocket.qml's own
+    // timer applies. Only touches sockets that are actually wanted right
+    // now -- never force-reconnects one nobody's asked for.
     readonly property Timer reconnectTimer: Timer {
         interval: 2000
         repeat: true
-        running: !root.topCpuSocket.connected || !root.topMemSocket.connected || !root.topNetSocket.connected || !root.topDiskSocket.connected
+        running: (root.topCpuRefs > 0 && !root.topCpuSocket.connected)
+            || (root.topMemRefs > 0 && !root.topMemSocket.connected)
+            || (root.topNetRefs > 0 && !root.topNetSocket.connected)
+            || (root.topDiskRefs > 0 && !root.topDiskSocket.connected)
         onTriggered: {
-            root.topCpuSocket.connected = true;
-            root.topMemSocket.connected = true;
-            root.topNetSocket.connected = true;
-            root.topDiskSocket.connected = true;
+            if (root.topCpuRefs > 0)
+                root.topCpuSocket.connected = true;
+            if (root.topMemRefs > 0)
+                root.topMemSocket.connected = true;
+            if (root.topNetRefs > 0)
+                root.topNetSocket.connected = true;
+            if (root.topDiskRefs > 0)
+                root.topDiskSocket.connected = true;
         }
     }
 }

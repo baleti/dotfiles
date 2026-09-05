@@ -13,6 +13,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -672,24 +673,69 @@ fn parse_nethogs_line(line: &str) -> Option<ProcEntry> {
     Some(ProcEntry { pid, name, value: sent + recv, detail: String::new(), util_pct: 0.0 })
 }
 
-/// Runs `nethogs -t` (trace mode: plain text, one block per ~1s refresh
-/// rather than the interactive ncurses UI) as a subprocess for the life of
-/// sysmond, and keeps `history.top_net` updated with each block's top-10.
-/// A no-op forever (not a crash) if nethogs isn't installed -- this metric
-/// just stays empty, same as any other missing sensor here.
-fn nethogs_loop(history: Arc<Mutex<History>>) {
-    let Ok(child) = Command::new("nethogs")
-        .args(["-t", "-d", "1"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        eprintln!("sysmond: nethogs not available, top-network-processes will stay empty");
-        return;
-    };
-    let Some(stdout) = child.stdout else { return };
-    let reader = BufReader::new(stdout);
+/// `nethogs -t` (packet-capture based per-process network attribution) is
+/// only worth running while at least one client actually wants `top_net`
+/// (i.e. the network pill's panel is open somewhere) -- unlike every other
+/// metric here, it's a full-time subprocess, not a periodic scan, so idling
+/// it is the single biggest win of the on-demand-panel-data change (2026-
+/// 09-05: "collect live data... but data that only shows up in panels ...
+/// isn't needed until that panel gets opened"). `refcount` supports several
+/// simultaneous wanters (e.g. two monitors' net panels both open) without
+/// starting a second nethogs or stopping it while anyone still wants it.
+struct NethogsManager {
+    refcount: usize,
+    child: Option<std::process::Child>,
+}
 
+/// Bumps the refcount and starts nethogs on the 0 -> 1 transition. A
+/// no-op-forever (not a crash) if nethogs isn't installed, same contract
+/// every other missing-sensor path here uses -- the refcount still tracks
+/// correctly, `top_net` just never gets populated.
+fn nethogs_ref(mgr: &Arc<Mutex<NethogsManager>>, history: Arc<Mutex<History>>) {
+    let mut m = mgr.lock().unwrap();
+    m.refcount += 1;
+    if m.refcount != 1 {
+        return; // someone else already has it running
+    }
+    match Command::new("nethogs").args(["-t", "-d", "1"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            let stdout = child.stdout.take();
+            m.child = Some(child);
+            drop(m);
+            if let Some(stdout) = stdout {
+                std::thread::spawn(move || nethogs_reader(stdout, history));
+            }
+        }
+        Err(_) => {
+            eprintln!("sysmond: nethogs not available, top-network-processes will stay empty");
+        }
+    }
+}
+
+/// Drops the refcount and, on the 1 -> 0 transition, kills nethogs --
+/// closing its stdout, which ends `nethogs_reader`'s blocking read loop on
+/// its own (no separate stop signal needed). `wait()`s on it so it doesn't
+/// linger as a zombie.
+fn nethogs_unref(mgr: &Arc<Mutex<NethogsManager>>) {
+    let mut m = mgr.lock().unwrap();
+    m.refcount = m.refcount.saturating_sub(1);
+    if m.refcount != 0 {
+        return;
+    }
+    if let Some(mut child) = m.child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Reads `nethogs -t` trace-mode output (one block per ~1s refresh) until
+/// the child exits -- either it was killed by `nethogs_unref` (demand
+/// dropped to zero) or it crashed on its own, either way this thread just
+/// ends; a fresh `nethogs_ref` call starts a new one from scratch. Clears
+/// `top_net` on exit so a stale list doesn't linger once nobody's running
+/// nethogs to refresh it.
+fn nethogs_reader(stdout: std::process::ChildStdout, history: Arc<Mutex<History>>) {
+    let reader = BufReader::new(stdout);
     let mut current: HashMap<i32, ProcEntry> = HashMap::new();
     for line in reader.lines().map_while(Result::ok) {
         if line.starts_with("Refreshing:") {
@@ -703,6 +749,7 @@ fn nethogs_loop(history: Arc<Mutex<History>>) {
             current.insert(entry.pid, entry);
         }
     }
+    history.lock().unwrap().top_net = Vec::new();
 }
 
 /// Runs `f` against the first GPU of the given vendor, if the machine has
@@ -854,7 +901,7 @@ const GPU_RESCAN_TICKS: u64 = 4;
 /// re-scanned every `GPU_RESCAN_TICKS` samples; every tick in between just
 /// re-reads fdinfo for the pids that last scan found, which stays cheap
 /// since it's scoped to a handful of pids instead of every process.
-fn intel_gpu_loop(history: Arc<Mutex<History>>) {
+fn intel_gpu_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcManager>>) {
     let mut prev: HashMap<u64, (u64, u64)> = HashMap::new(); // client-id -> (render_ns, video_ns)
     let mut last = Instant::now();
     let mut drm_pids: Vec<i32> = find_drm_pids();
@@ -952,28 +999,42 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>) {
             .and_then(|s| s.trim().parse::<f64>().ok())
             .unwrap_or(0.0);
 
-        let mut ranked: Vec<(ProcEntry, f64)> = per_pid
-            .into_iter()
-            .filter(|(_, (busy, res))| *busy > 0.0 || *res > 0.0)
-            .map(|(pid, (busy, res))| {
-                let pct = (100.0 * busy / wall_ns).min(100.0);
-                (ProcEntry { pid, name: proc_name(pid), value: res / 1024.0, detail: String::new(), util_pct: 0.0 }, pct)
-            })
-            .collect();
-        ranked.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.0.value.partial_cmp(&a.0.value).unwrap_or(std::cmp::Ordering::Equal))
-        });
-        ranked.truncate(10);
-        let mut top: Vec<ProcEntry> = ranked.iter().map(|(e, _)| e.clone()).collect();
-        enrich_details(&mut top);
-        // util_pct is its own field now (request 2026-09-06), not folded
-        // into `detail` text -- `entry.detail` stays just the cmdline/cwd
-        // hint, same shape as every other metric's ProcEntry.
-        for (entry, (_, pct)) in top.iter_mut().zip(ranked.iter()) {
-            entry.util_pct = *pct;
-        }
+        // Ranking/enrichment here is the only part of this loop that's
+        // purely for the "Top processes" list -- the totals/mem_pct/freq
+        // above (needed for the always-visible compact pill) already
+        // required reading every DRM client's fdinfo regardless, so this
+        // gate doesn't save that scan, just the sort + per-pid name/detail
+        // lookups on top of it (2026-09-05 on-demand-panel-data change;
+        // see gpu_procs_wanted's own comment for why the bigger win is on
+        // the nvidia side instead).
+        let top = if gpu_procs_wanted(&gpu_procs) {
+            let mut ranked: Vec<(ProcEntry, f64)> = per_pid
+                .into_iter()
+                .filter(|(_, (busy, res))| *busy > 0.0 || *res > 0.0)
+                .map(|(pid, (busy, res))| {
+                    let pct = (100.0 * busy / wall_ns).min(100.0);
+                    (ProcEntry { pid, name: proc_name(pid), value: res / 1024.0, detail: String::new(), util_pct: 0.0 }, pct)
+                })
+                .collect();
+            ranked.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(b.0.value.partial_cmp(&a.0.value).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            ranked.truncate(10);
+            let mut top: Vec<ProcEntry> = ranked.iter().map(|(e, _)| e.clone()).collect();
+            enrich_details(&mut top);
+            // util_pct is its own field now (request 2026-09-06), not
+            // folded into `detail` text -- `entry.detail` stays just the
+            // cmdline/cwd hint, same shape as every other metric's
+            // ProcEntry.
+            for (entry, (_, pct)) in top.iter_mut().zip(ranked.iter()) {
+                entry.util_pct = *pct;
+            }
+            top
+        } else {
+            Vec::new()
+        };
 
         with_gpu(&history, "intel", |g| {
             g.util.push_raw(util);
@@ -1104,55 +1165,126 @@ fn gpu_flush(cur: &mut HashMap<i32, (ProcEntry, f64)>, history: &Mutex<History>)
     with_gpu(history, "nvidia", move |g| g.top = top);
 }
 
-/// Per-process GPU stats from a long-lived `nvidia-smi pmon -s um` stream
-/// (one row per process per second; graphics *and* compute clients). Silent
-/// no-op if nvidia-smi is missing (gpu_loop already logs that once);
-/// respawns if the stream ends.
-fn gpu_proc_loop(history: Arc<Mutex<History>>) {
+/// Manages the on-demand `nvidia-smi pmon` subprocess (per-process GPU
+/// stats) -- only worth running while at least one client actually wants
+/// GPU per-process data (the GPU panel's "Top processes" list; the compact
+/// pill's own util/vram/power numbers come from `gpu_loop`'s separate,
+/// always-on query stream and never need this), same on-demand idea as
+/// `NethogsManager`. This refcount also doubles as the signal
+/// `intel_gpu_loop` polls each tick to decide whether to bother ranking its
+/// own per-process breakdown (see `gpu_procs_wanted`) -- one shared "does
+/// anyone want GPU per-process data" count drives both vendors, since the
+/// GPU panel shows both together in one set of sections.
+struct GpuProcManager {
+    refcount: usize,
+    child: Option<std::process::Child>,
+}
+
+fn gpu_procs_wanted(mgr: &Arc<Mutex<GpuProcManager>>) -> bool {
+    mgr.lock().unwrap().refcount > 0
+}
+
+/// Bumps the refcount and starts `nvidia-smi pmon` on the 0 -> 1
+/// transition. A silent no-op if nvidia-smi is missing -- `gpu_loop`
+/// already logs its absence once, no need to repeat that here.
+fn gpu_procs_ref(mgr: &Arc<Mutex<GpuProcManager>>, history: Arc<Mutex<History>>) {
+    let mut m = mgr.lock().unwrap();
+    m.refcount += 1;
+    if m.refcount != 1 {
+        return; // someone else already has it running
+    }
+    match Command::new("nvidia-smi").args(["pmon", "-s", "um"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            let stdout = child.stdout.take();
+            m.child = Some(child);
+            drop(m);
+            if let Some(stdout) = stdout {
+                std::thread::spawn(move || gpu_proc_reader(stdout, history));
+            }
+        }
+        Err(_) => {}
+    }
+}
+
+/// Drops the refcount and, on the 1 -> 0 transition, kills `nvidia-smi
+/// pmon` -- closing its stdout, which ends `gpu_proc_reader`'s blocking
+/// read loop on its own. `wait()`s on it so it doesn't linger as a zombie.
+fn gpu_procs_unref(mgr: &Arc<Mutex<GpuProcManager>>) {
+    let mut m = mgr.lock().unwrap();
+    m.refcount = m.refcount.saturating_sub(1);
+    if m.refcount != 0 {
+        return;
+    }
+    if let Some(mut child) = m.child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Reads `nvidia-smi pmon -s um` (one row per process per second; graphics
+/// *and* compute clients) until the child exits -- killed by
+/// `gpu_procs_unref` (demand dropped to zero) or died on its own, either
+/// way this thread just ends; a fresh `gpu_procs_ref` call starts a new one
+/// from scratch. Clears the nvidia GPU's `top` on exit so a stale process
+/// list doesn't linger once nobody's running pmon to refresh it.
+fn gpu_proc_reader(stdout: std::process::ChildStdout, history: Arc<Mutex<History>>) {
     // pmon -s um row layout (driver 5xx):
     //   gpu(0) pid(1) type(2) sm(3) mem(4) enc(5) dec(6) jpg(7) ofa(8) fb(9) ccpm(10) command(11)
     let col = |s: &str| -> f64 {
         if s == "-" { 0.0 } else { s.parse().unwrap_or(0.0) }
     };
 
-    loop {
-        let child = match Command::new("nvidia-smi")
-            .args(["pmon", "-s", "um"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let Some(stdout) = child.stdout else { return };
-
-        // pmon has no per-cycle delimiter -- it just re-emits the same pids
-        // every second. A pid reappearing marks the next cycle: flush what
-        // we've accumulated, then start the new cycle with this row.
-        let mut cur: HashMap<i32, (ProcEntry, f64)> = HashMap::new();
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let tok: Vec<&str> = line.split_whitespace().collect();
-            if tok.len() < 12 || tok[0].starts_with('#') {
-                continue;
-            }
-            let Ok(pid) = tok[1].parse::<i32>() else { continue };
-            let sm = col(tok[3]);
-            let fb = col(tok[9]);
-            let name = tok[11].to_string();
-
-            if cur.contains_key(&pid) {
-                gpu_flush(&mut cur, &history);
-            }
-            cur.insert(pid, (ProcEntry { pid, name, value: fb, detail: String::new(), util_pct: 0.0 }, sm));
+    // pmon has no per-cycle delimiter -- it just re-emits the same pids
+    // every second. A pid reappearing marks the next cycle: flush what
+    // we've accumulated, then start the new cycle with this row.
+    let mut cur: HashMap<i32, (ProcEntry, f64)> = HashMap::new();
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let tok: Vec<&str> = line.split_whitespace().collect();
+        if tok.len() < 12 || tok[0].starts_with('#') {
+            continue;
         }
+        let Ok(pid) = tok[1].parse::<i32>() else { continue };
+        let sm = col(tok[3]);
+        let fb = col(tok[9]);
+        let name = tok[11].to_string();
 
-        eprintln!("sysmond: nvidia-smi pmon stream ended, respawning in 5s");
-        std::thread::sleep(Duration::from_secs(5));
+        if cur.contains_key(&pid) {
+            gpu_flush(&mut cur, &history);
+        }
+        cur.insert(pid, (ProcEntry { pid, name, value: fb, detail: String::new(), util_pct: 0.0 }, sm));
+    }
+    with_gpu(&history, "nvidia", |g| g.top = Vec::new());
+}
+
+/// Shared "does anyone actually have this panel open" signals, one per
+/// on-demand metric -- each `serve_client` connection bumps the relevant
+/// counter(s) for its own lifetime (see `DemandGuard`) and the background
+/// loops that do the expensive work (`sample_loop`'s per-process scans,
+/// `NethogsManager`, `GpuProcManager`) check them before bothering. Every
+/// field is an `Arc`, so `#[derive(Clone)]` just clones the handles, not
+/// the underlying counters/managers.
+#[derive(Clone)]
+struct Demand {
+    top_cpu: Arc<AtomicUsize>,
+    top_mem: Arc<AtomicUsize>,
+    top_disk: Arc<AtomicUsize>,
+    nethogs: Arc<Mutex<NethogsManager>>,
+    gpu_procs: Arc<Mutex<GpuProcManager>>,
+}
+
+impl Demand {
+    fn new() -> Self {
+        Demand {
+            top_cpu: Arc::new(AtomicUsize::new(0)),
+            top_mem: Arc::new(AtomicUsize::new(0)),
+            top_disk: Arc::new(AtomicUsize::new(0)),
+            nethogs: Arc::new(Mutex::new(NethogsManager { refcount: 0, child: None })),
+            gpu_procs: Arc::new(Mutex::new(GpuProcManager { refcount: 0, child: None })),
+        }
     }
 }
 
-fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
+fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
     let thermal_zone = find_cpu_thermal_zone();
     let disk_names = whole_disk_names();
     let mut prev_cpu_lines = read_all_cpu_lines();
@@ -1160,6 +1292,13 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
     let mut prev_disk: HashMap<String, (u64, u64, Instant)> = HashMap::new();
     let mut prev_proc_ticks: HashMap<i32, u64> = HashMap::new();
     let mut prev_proc_io: HashMap<i32, (u64, u64)> = HashMap::new();
+    // Tracks last tick's demand so a 0 -> 1 transition (a panel just
+    // opened) clears the relevant prev_* map -- otherwise the first tick
+    // after a long idle gap would compute a delta over however long the
+    // panel was closed instead of over one real second, producing a
+    // briefly bogus reading.
+    let mut cpu_was_wanted = false;
+    let mut disk_was_wanted = false;
 
     loop {
         std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
@@ -1233,63 +1372,99 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64) {
 
         let (mem_used_pct, mem_cached_pct) = read_mem_pcts();
         let swap_used_pct = read_swap_pct();
+        let elapsed_s = SAMPLE_INTERVAL_MS as f64 / 1000.0;
+
+        // Each of top_cpu/top_mem/top_disk only matters to whichever
+        // panel shows it -- nobody sees them until that panel is expanded
+        // (2026-09-05: "data that shows up in panels ... isn't needed
+        // until that panel gets opened"), so the expensive full-process
+        // scan behind each is skipped entirely while its demand count is
+        // zero. `pids` (a full /proc listing) is shared by all three, so
+        // it's skipped too when none of them are wanted.
+        let cpu_wanted = demand.top_cpu.load(Ordering::Relaxed) > 0;
+        let mem_wanted = demand.top_mem.load(Ordering::Relaxed) > 0;
+        let disk_wanted = demand.top_disk.load(Ordering::Relaxed) > 0;
+
+        if cpu_wanted && !cpu_was_wanted {
+            prev_proc_ticks.clear();
+        }
+        cpu_was_wanted = cpu_wanted;
+        if disk_wanted && !disk_was_wanted {
+            prev_proc_io.clear();
+        }
+        disk_was_wanted = disk_wanted;
+
+        let pids = if cpu_wanted || mem_wanted || disk_wanted { list_pids() } else { Vec::new() };
 
         // Top-10 by CPU: needs a tick-over-tick delta per pid, same idea as
         // the aggregate/per-core calc above, just keyed by pid instead of
         // core index. Ticks -> % of one core via clk_tck and the real
         // elapsed wall time (SAMPLE_INTERVAL_MS, not measured, since the
         // sleep above is already that fixed interval).
-        let pids = list_pids();
-        let mut cur_proc_ticks: HashMap<i32, u64> = HashMap::with_capacity(pids.len());
-        let mut top_cpu_entries = Vec::with_capacity(pids.len());
-        let elapsed_s = SAMPLE_INTERVAL_MS as f64 / 1000.0;
-        for pid in &pids {
-            let Some(ticks) = proc_cpu_ticks(*pid) else { continue };
-            cur_proc_ticks.insert(*pid, ticks);
-            if let Some(prev_ticks) = prev_proc_ticks.get(pid) {
-                let d_ticks = ticks.saturating_sub(*prev_ticks);
-                let pct = 100.0 * (d_ticks as f64 / clk_tck) / elapsed_s;
-                if pct > 0.05 {
-                    top_cpu_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: pct, detail: String::new(), util_pct: 0.0 });
+        let top_cpu = if cpu_wanted {
+            let mut cur_proc_ticks: HashMap<i32, u64> = HashMap::with_capacity(pids.len());
+            let mut top_cpu_entries = Vec::with_capacity(pids.len());
+            for pid in &pids {
+                let Some(ticks) = proc_cpu_ticks(*pid) else { continue };
+                cur_proc_ticks.insert(*pid, ticks);
+                if let Some(prev_ticks) = prev_proc_ticks.get(pid) {
+                    let d_ticks = ticks.saturating_sub(*prev_ticks);
+                    let pct = 100.0 * (d_ticks as f64 / clk_tck) / elapsed_s;
+                    if pct > 0.05 {
+                        top_cpu_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: pct, detail: String::new(), util_pct: 0.0 });
+                    }
                 }
             }
-        }
-        prev_proc_ticks = cur_proc_ticks;
-        let mut top_cpu = top_n(top_cpu_entries, 10);
-        enrich_details(&mut top_cpu);
+            prev_proc_ticks = cur_proc_ticks;
+            let mut top_cpu = top_n(top_cpu_entries, 10);
+            enrich_details(&mut top_cpu);
+            top_cpu
+        } else {
+            Vec::new()
+        };
 
         // Top-10 by memory: instantaneous, no delta needed.
-        let mut top_mem_entries = Vec::with_capacity(pids.len());
-        for pid in &pids {
-            if let Some(mb) = proc_rss_mb(*pid) {
-                if mb > 0.0 {
-                    top_mem_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: mb, detail: String::new(), util_pct: 0.0 });
+        let top_mem = if mem_wanted {
+            let mut top_mem_entries = Vec::with_capacity(pids.len());
+            for pid in &pids {
+                if let Some(mb) = proc_rss_mb(*pid) {
+                    if mb > 0.0 {
+                        top_mem_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: mb, detail: String::new(), util_pct: 0.0 });
+                    }
                 }
             }
-        }
-        let mut top_mem = top_n(top_mem_entries, 10);
-        enrich_details(&mut top_mem);
+            let mut top_mem = top_n(top_mem_entries, 10);
+            enrich_details(&mut top_mem);
+            top_mem
+        } else {
+            Vec::new()
+        };
 
         // Top-10 by disk I/O: tick-over-tick delta like CPU, keyed by pid,
         // combined read+write KB/s. Silently excludes any pid proc_io_bytes
         // can't read (see its own comment) rather than failing the feature.
-        let mut cur_proc_io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
-        let mut top_disk_entries = Vec::with_capacity(pids.len());
-        for pid in &pids {
-            let Some(io) = proc_io_bytes(*pid) else { continue };
-            cur_proc_io.insert(*pid, io);
-            if let Some(prev_io) = prev_proc_io.get(pid) {
-                let d_read = io.0.saturating_sub(prev_io.0) as f64;
-                let d_write = io.1.saturating_sub(prev_io.1) as f64;
-                let kb_per_s = (d_read + d_write) / 1024.0 / elapsed_s;
-                if kb_per_s > 1.0 {
-                    top_disk_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: kb_per_s, detail: String::new(), util_pct: 0.0 });
+        let top_disk = if disk_wanted {
+            let mut cur_proc_io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
+            let mut top_disk_entries = Vec::with_capacity(pids.len());
+            for pid in &pids {
+                let Some(io) = proc_io_bytes(*pid) else { continue };
+                cur_proc_io.insert(*pid, io);
+                if let Some(prev_io) = prev_proc_io.get(pid) {
+                    let d_read = io.0.saturating_sub(prev_io.0) as f64;
+                    let d_write = io.1.saturating_sub(prev_io.1) as f64;
+                    let kb_per_s = (d_read + d_write) / 1024.0 / elapsed_s;
+                    if kb_per_s > 1.0 {
+                        top_disk_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: kb_per_s, detail: String::new(), util_pct: 0.0 });
+                    }
                 }
             }
-        }
-        prev_proc_io = cur_proc_io;
-        let mut top_disk = top_n(top_disk_entries, 10);
-        enrich_details(&mut top_disk);
+            prev_proc_io = cur_proc_io;
+            let mut top_disk = top_n(top_disk_entries, 10);
+            enrich_details(&mut top_disk);
+            top_disk
+        } else {
+            Vec::new()
+        };
 
         let mut h = history.lock().unwrap();
         h.cpu_total.push_raw(cpu_total);
@@ -1345,13 +1520,64 @@ fn persist_loop(history: Arc<Mutex<History>>) {
 /// rather than a separate audit job.
 const FULL_RESYNC_TICKS: u64 = 30;
 
-fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
+/// Keeps a metric's demand counter/manager correctly incremented for
+/// exactly the lifetime of one `serve_client` connection, regardless of
+/// which of its several early-return exit paths ends it -- `Drop` runs on
+/// every one of them, so there's no path that can leak a ref.
+enum DemandGuard {
+    None,
+    Counter(Arc<AtomicUsize>),
+    Nethogs(Arc<Mutex<NethogsManager>>),
+    GpuProcs(Arc<Mutex<GpuProcManager>>),
+}
+
+impl Drop for DemandGuard {
+    fn drop(&mut self) {
+        match self {
+            DemandGuard::None => {}
+            DemandGuard::Counter(c) => {
+                c.fetch_sub(1, Ordering::Relaxed);
+            }
+            DemandGuard::Nethogs(m) => nethogs_unref(m),
+            DemandGuard::GpuProcs(m) => gpu_procs_unref(m),
+        }
+    }
+}
+
+fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone unix stream"));
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
         return;
     }
-    let Some(Request { metric, tier }) = Request::parse(&request_line) else { return };
+    let Some(Request { metric, tier, include_procs }) = Request::parse(&request_line) else { return };
+
+    // Registers this connection's demand for whichever on-demand metric it
+    // is (see Demand's own doc comment); dropped -- unregistering -- when
+    // this function returns, on any exit path.
+    let _guard = match metric {
+        Metric::TopCpu => {
+            demand.top_cpu.fetch_add(1, Ordering::Relaxed);
+            DemandGuard::Counter(demand.top_cpu.clone())
+        }
+        Metric::TopMem => {
+            demand.top_mem.fetch_add(1, Ordering::Relaxed);
+            DemandGuard::Counter(demand.top_mem.clone())
+        }
+        Metric::TopDisk => {
+            demand.top_disk.fetch_add(1, Ordering::Relaxed);
+            DemandGuard::Counter(demand.top_disk.clone())
+        }
+        Metric::TopNet => {
+            nethogs_ref(&demand.nethogs, history.clone());
+            DemandGuard::Nethogs(demand.nethogs.clone())
+        }
+        Metric::Gpu if include_procs => {
+            gpu_procs_ref(&demand.gpu_procs, history.clone());
+            DemandGuard::GpuProcs(demand.gpu_procs.clone())
+        }
+        _ => DemandGuard::None,
+    };
 
     let mut writer = stream;
 
@@ -1452,7 +1678,12 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                             enc_pct: g.detail.enc_pct,
                             dec_pct: g.detail.dec_pct,
                             fan_pct: g.detail.fan_pct,
-                            procs: g.top.clone(),
+                            // Only this connection's own request decides
+                            // whether it gets real process data -- not
+                            // just whether demand is globally nonzero --
+                            // so a collapsed pill's connection never sees
+                            // another monitor's expanded panel's data.
+                            procs: if include_procs { g.top.clone() } else { Vec::new() },
                         })
                         .collect();
                     gpu_since = h
@@ -1524,27 +1755,27 @@ fn main() {
         )
     };
 
+    // Shared demand signals for the on-demand-panel-data metrics (2026-09-
+    // 05: nethogs/gpu-pmon/the per-process CPU-mem-disk scans only run
+    // while some client actually wants that panel's data) -- see Demand's
+    // own doc comment. Nothing here starts nethogs or nvidia-smi pmon;
+    // that only happens the first time a client asks for topnet / gpu
+    // procs (nethogs_ref / gpu_procs_ref, called from serve_client).
+    let demand = Demand::new();
+
     {
         let history = history.clone();
-        std::thread::spawn(move || sample_loop(history, clk_tck));
-    }
-    {
-        let history = history.clone();
-        std::thread::spawn(move || nethogs_loop(history));
+        let demand = demand.clone();
+        std::thread::spawn(move || sample_loop(history, clk_tck, demand));
     }
     if has_nvidia {
-        {
-            let history = history.clone();
-            std::thread::spawn(move || gpu_loop(history));
-        }
-        {
-            let history = history.clone();
-            std::thread::spawn(move || gpu_proc_loop(history));
-        }
+        let history = history.clone();
+        std::thread::spawn(move || gpu_loop(history));
     }
     if has_intel {
         let history = history.clone();
-        std::thread::spawn(move || intel_gpu_loop(history));
+        let gpu_procs = demand.gpu_procs.clone();
+        std::thread::spawn(move || intel_gpu_loop(history, gpu_procs));
     }
     {
         // Periodic save only, deliberately no SIGTERM/SIGINT handler --
@@ -1571,6 +1802,7 @@ fn main() {
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let history = history.clone();
-        std::thread::spawn(move || serve_client(stream, history));
+        let demand = demand.clone();
+        std::thread::spawn(move || serve_client(stream, history, demand));
     }
 }
