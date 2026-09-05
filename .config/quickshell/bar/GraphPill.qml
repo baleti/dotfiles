@@ -610,6 +610,20 @@ Rectangle {
                         }
                     }
 
+                    // A faint, stubby, left-aligned rule between this
+                    // section's detail keys and its process table -- lighter
+                    // and much shorter than the full-width divider that
+                    // separates whole sections, so it reads as a minor
+                    // in-section break rather than a new section.
+                    Rectangle {
+                        width: 90
+                        height: 1
+                        color: Theme.border
+                        opacity: 0.4
+                        visible: (section.modelData.procs ?? []).length > 0
+                            && (section.modelData.rows ?? []).length > 0
+                    }
+
                     // Column headers -- the "Top processes" sub-heading now
                     // lives in this row's first cell instead of its own
                     // line above (request 2026-09-05: the process column
