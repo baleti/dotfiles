@@ -515,15 +515,22 @@ Item {
     function gpuShadeColor(base, i, n) {
         const c = Qt.color(base);
         const t = n > 1 ? i / (n - 1) : 0; // 0 (first line) .. 1 (last line)
-        // Rotate the hue across the group as well as shifting value/sat --
-        // pure value/sat steps collapsed the 2nd and 3rd dGPU lines (VRAM
-        // vs power) into near-identical muted shades once the base was
-        // already dark (reported 2026-09-06). ~40deg of rotation keeps the
-        // lines a recognisable hue family while making each clearly its own.
-        const hue = (c.hsvHue + t * (40 / 360)) % 1;
+        // The line's colour is DERIVED from `base` (a seriesPalette entry --
+        // fully wallpaper-generated, changes with the theme), not hardcoded:
+        // rotate the hue and step value/sat across the group so the 2-3
+        // lines pull apart -- pure value/sat steps had collapsed the dGPU's
+        // VRAM and power lines into near-identical muted shades once the
+        // base was already dark (reported 2026-09-06).
+        const hue = (c.hsvHue + t * (40 / 360) + 1) % 1;
         const sat = Math.min(1, c.hsvSaturation + t * 0.30);
         const value = Math.max(0.6, c.hsvValue - t * 0.12);
-        return Qt.hsva(hue, sat, value, 1);
+        const shaded = Qt.hsva(hue, sat, value, 1);
+        // ...then pull it a third of the way back toward the raw palette
+        // colour, so the whole set stays visibly *toned by* the current
+        // wallpaper rather than only structurally related to it. (t=0 is
+        // already exactly `base`, so this is a no-op for each GPU's first
+        // line.)
+        return Qt.tint(shaded, Qt.rgba(c.r, c.g, c.b, t > 0 ? 0.33 : 0));
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
     // both the graph series and the legend derive from, so their colours
