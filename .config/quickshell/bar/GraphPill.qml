@@ -30,6 +30,9 @@ Rectangle {
     property list<real> series: []
     property var seriesList: []
     property real maxValue: 100
+    // Overlay mode only -- passthrough to Graph.fillOverlay. Off for the
+    // GPU pill (request 2026-09-06), on (default) everywhere else.
+    property bool fillOverlay: true
 
     // 0..1 (or NaN to opt out): how "high" this metric currently is. Drives
     // the compact value/icon colour along Theme's calm->hot intensity ramp,
@@ -485,6 +488,7 @@ Rectangle {
                     seriesList: root.mode === "overlay" ? root.seriesList : []
                     maxValue: root.maxValue
                     color1: root.color1
+                    fillOverlay: root.fillOverlay
                 }
             }
 

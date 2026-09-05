@@ -23,6 +23,17 @@ Canvas {
     property color color1: Theme.cyan
     property var seriesList: []
     property real maxValue: 100
+    // Overlay mode only -- single mode (series/color1) always fills.
+    // Off for the GPU pill (request 2026-09-06: "stop filling the area
+    // under igpu utilization"/"this maybe making colors harder to
+    // distinguish") -- with several overlaid lines already hard enough to
+    // tell apart by stroke colour alone, a translucent wash underneath
+    // (individual per-line fills, or with >2 primary lines one shared
+    // envelope wash in a single unrelated colour, see "many" below)
+    // muddies exactly the contrast this needs. Every other overlay pill
+    // (net/cpu/mem/disk) keeps its fill -- unaffected by this, defaults
+    // true.
+    property bool fillOverlay: true
     // Full ring-buffer capacity the raw data represents (sysmond's
     // HISTORY_LEN), NOT rawData.length -- see downsample() below for why
     // that distinction is the whole fix.
@@ -31,6 +42,7 @@ Canvas {
     onSeriesChanged: requestPaint()
     onSeriesListChanged: requestPaint()
     onMaxValueChanged: requestPaint()
+    onFillOverlayChanged: requestPaint()
 
     // Plots every raw sample at its exact (sub-pixel, unrounded) x position,
     // anchored to a FIXED width/historyLen scale (not width/rawData.length)
@@ -187,11 +199,13 @@ Canvas {
             // series there's instead ONE faint wash under their combined
             // envelope and the per-core lines carry the detail. With just
             // a couple (mem used/cached) the individual fills are fine.
-            if (many)
-                fillEnvelope(ctx, primary, color1, 0.14);
-            else
-                for (const s of primary)
-                    fillSeries(ctx, s.data, s.color, 0.22);
+            if (root.fillOverlay) {
+                if (many)
+                    fillEnvelope(ctx, primary, color1, 0.14);
+                else
+                    for (const s of primary)
+                        fillSeries(ctx, s.data, s.color, 0.22);
+            }
 
             // All overlay lines are 1px regardless of series count -- a
             // 2-series net graph at 1.25px next to a 12-series cpu graph at
