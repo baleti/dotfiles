@@ -514,30 +514,27 @@ Item {
     }
     function gpuShadeColor(base, i, n) {
         const c = Qt.color(base);
-        // Even spread across a fixed hue arc CENTERED on the base hue
-        // (not stepping outward from it one direction) -- ±20 degrees,
-        // mild enough that the two GPUs' shifted lines never bump into
-        // each other's hue family (the two bases are 90 degrees apart,
-        // see gpuBaseColor's index-4-of-8 stride), wide enough that 2-3
-        // lines on one GPU actually read as different colours. An
-        // earlier version stepped value/saturation instead of hue and
-        // then blended a third of the way back toward the raw base --
-        // reported still not distinctive enough live (2026-09-06): value/
-        // sat steps compress fast once a colour's already fairly light
-        // (this palette's greens/blues are), so the dGPU's VRAM and power
-        // lines had landed within ~35/11/2 RGB of each other. Hue is the
-        // far more effective lever for the eye at this saturation/value
-        // range.
+        // Two earlier versions of this both turned out still too close
+        // live once actually drawn as graph lines, not just sampled as
+        // flat legend swatches -- pure value/sat stepping (v1) compressed
+        // fast and pure ±20deg hue-only rotation (v2, R-channel-only
+        // separation for these greens: #a4c14a/#86c14a/#68c14a) read as
+        // "same green, slightly different" rather than genuinely distinct
+        // colours (reported still too similar both times, 2026-09-06).
+        // Combines a modest hue spread with a much wider VALUE/SATURATION
+        // spread this time -- the earlier value/sat attempt had clamped
+        // value to a 0.6 floor specifically to avoid anything reading as
+        // "too dark/washed out", which is exactly what suppressed its own
+        // separation; letting the darker line actually go dark (and the
+        // lighter one go vivid/near-max) is what makes 3 lines on one hue
+        // family read as clearly different colours (confirmed via direct
+        // RGB simulation first: dGPU's 3 lines now sample as a dark olive
+        // #617b10, the base #86c14a, and a vivid #5aff22).
         const t = n > 1 ? (i / (n - 1)) - 0.5 : 0; // -0.5 (first) .. 0.5 (last)
-        const hue = (c.hsvHue + t * (40 / 360) + 1) % 1;
-        const shaded = Qt.hsva(hue, c.hsvSaturation, c.hsvValue, 1);
-        // A light blend back toward the group's own base colour (not the
-        // 33% the value/sat version used -- that much would undo most of
-        // the hue separation above) so the family still reads as *toned
-        // by* that one wallpaper-derived colour rather than a bare
-        // rotated hue. The centre line (t=0) is already exactly `base`,
-        // so this only visibly affects the two outer lines.
-        return Qt.tint(shaded, Qt.rgba(c.r, c.g, c.b, 0.15));
+        const hue = (c.hsvHue + t * (30 / 360) + 1) % 1;
+        const value = Math.min(1, Math.max(0.35, c.hsvValue + t * 0.55));
+        const sat = Math.min(1, Math.max(0.4, c.hsvSaturation + Math.abs(t) * 0.5));
+        return Qt.hsva(hue, sat, value, 1);
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
     // both the graph series and the legend derive from, so their colours
