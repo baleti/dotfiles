@@ -514,23 +514,30 @@ Item {
     }
     function gpuShadeColor(base, i, n) {
         const c = Qt.color(base);
-        const t = n > 1 ? i / (n - 1) : 0; // 0 (first line) .. 1 (last line)
-        // The line's colour is DERIVED from `base` (a seriesPalette entry --
-        // fully wallpaper-generated, changes with the theme), not hardcoded:
-        // rotate the hue and step value/sat across the group so the 2-3
-        // lines pull apart -- pure value/sat steps had collapsed the dGPU's
-        // VRAM and power lines into near-identical muted shades once the
-        // base was already dark (reported 2026-09-06).
+        // Even spread across a fixed hue arc CENTERED on the base hue
+        // (not stepping outward from it one direction) -- ±20 degrees,
+        // mild enough that the two GPUs' shifted lines never bump into
+        // each other's hue family (the two bases are 90 degrees apart,
+        // see gpuBaseColor's index-4-of-8 stride), wide enough that 2-3
+        // lines on one GPU actually read as different colours. An
+        // earlier version stepped value/saturation instead of hue and
+        // then blended a third of the way back toward the raw base --
+        // reported still not distinctive enough live (2026-09-06): value/
+        // sat steps compress fast once a colour's already fairly light
+        // (this palette's greens/blues are), so the dGPU's VRAM and power
+        // lines had landed within ~35/11/2 RGB of each other. Hue is the
+        // far more effective lever for the eye at this saturation/value
+        // range.
+        const t = n > 1 ? (i / (n - 1)) - 0.5 : 0; // -0.5 (first) .. 0.5 (last)
         const hue = (c.hsvHue + t * (40 / 360) + 1) % 1;
-        const sat = Math.min(1, c.hsvSaturation + t * 0.30);
-        const value = Math.max(0.6, c.hsvValue - t * 0.12);
-        const shaded = Qt.hsva(hue, sat, value, 1);
-        // ...then pull it a third of the way back toward the raw palette
-        // colour, so the whole set stays visibly *toned by* the current
-        // wallpaper rather than only structurally related to it. (t=0 is
-        // already exactly `base`, so this is a no-op for each GPU's first
-        // line.)
-        return Qt.tint(shaded, Qt.rgba(c.r, c.g, c.b, t > 0 ? 0.33 : 0));
+        const shaded = Qt.hsva(hue, c.hsvSaturation, c.hsvValue, 1);
+        // A light blend back toward the group's own base colour (not the
+        // 33% the value/sat version used -- that much would undo most of
+        // the hue separation above) so the family still reads as *toned
+        // by* that one wallpaper-derived colour rather than a bare
+        // rotated hue. The centre line (t=0) is already exactly `base`,
+        // so this only visibly affects the two outer lines.
+        return Qt.tint(shaded, Qt.rgba(c.r, c.g, c.b, 0.15));
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
     // both the graph series and the legend derive from, so their colours
