@@ -781,6 +781,36 @@ fn parse_kib(s: &str) -> f64 {
     }
 }
 
+/// Full-process scan for DRM clients: checks every pid's open fds for a
+/// `/dev/dri/` symlink. This is the expensive part of `intel_gpu_loop` --
+/// readdir + readlink per fd across every process on the machine -- so it's
+/// only re-run every `GPU_RESCAN_TICKS` samples instead of every tick; see
+/// that constant's doc comment.
+fn find_drm_pids() -> Vec<i32> {
+    let mut out = Vec::new();
+    for pid in list_pids() {
+        let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
+        let is_drm = fds.flatten().any(|fd| {
+            fs::read_link(fd.path())
+                .map(|t| t.to_string_lossy().starts_with("/dev/dri/"))
+                .unwrap_or(false)
+        });
+        if is_drm {
+            out.push(pid);
+        }
+    }
+    out
+}
+
+/// How often, in `intel_gpu_loop` samples (roughly seconds), `find_drm_pids`
+/// re-scans every process on the machine for new DRM clients. A new client
+/// only shows up within one window of this instead of instantly -- an
+/// acceptable trade since GPU-process attribution doesn't need to be
+/// sub-second, and it turns the loop's dominant cost (full-process fd
+/// enumeration, ~1000 pids on this machine) from once a second into once
+/// every few.
+const GPU_RESCAN_TICKS: u64 = 4;
+
 /// Intel iGPU utilisation and per-process breakdown from `/proc/*/fdinfo`
 /// i915 engine counters -- cumulative per-engine nanoseconds, exposed
 /// unprivileged for the caller's own processes (the same source nvtop
@@ -789,11 +819,15 @@ fn parse_kib(s: &str) -> f64 {
 /// total (the iGPU shares system RAM), so only `util` gets a history line
 /// and the resident-memory sum / current frequency go in the detail block.
 ///
-/// A pid is only scanned if one of its open fds points at `/dev/dri/` --
-/// the vast majority of processes have none, so this stays cheap.
+/// Which pids even have a `/dev/dri/` fd open (`find_drm_pids`) is only
+/// re-scanned every `GPU_RESCAN_TICKS` samples; every tick in between just
+/// re-reads fdinfo for the pids that last scan found, which stays cheap
+/// since it's scoped to a handful of pids instead of every process.
 fn intel_gpu_loop(history: Arc<Mutex<History>>) {
     let mut prev: HashMap<u64, (u64, u64)> = HashMap::new(); // client-id -> (render_ns, video_ns)
     let mut last = Instant::now();
+    let mut drm_pids: Vec<i32> = find_drm_pids();
+    let mut ticks_since_rescan: u64 = 0;
 
     loop {
         std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
@@ -804,23 +838,19 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>) {
             continue;
         }
 
+        if ticks_since_rescan == 0 {
+            drm_pids = find_drm_pids();
+        }
+        ticks_since_rescan = (ticks_since_rescan + 1) % GPU_RESCAN_TICKS;
+
         // client-id -> (render_ns, video_ns, pid, resident_kib)
         let mut cur: HashMap<u64, (u64, u64, i32, f64)> = HashMap::new();
-        for pid in list_pids() {
-            let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
-            let mut is_drm = false;
-            for fd in fds.flatten() {
-                if let Ok(target) = fs::read_link(fd.path()) {
-                    if target.to_string_lossy().starts_with("/dev/dri/") {
-                        is_drm = true;
-                        break;
-                    }
-                }
-            }
-            if !is_drm {
-                continue;
-            }
+        let mut still_alive = Vec::with_capacity(drm_pids.len());
+        for pid in drm_pids.iter().copied() {
+            // Missing fdinfo means the process exited since the last scan --
+            // just drop it, the next scan won't re-add it.
             let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fdinfo")) else { continue };
+            still_alive.push(pid);
             for ent in entries.flatten() {
                 let Ok(text) = fs::read_to_string(ent.path()) else { continue };
                 let is_i915 = text.lines().any(|l| {
@@ -850,6 +880,7 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>) {
                 cur.entry(cid).or_insert((render, video, pid, resident_kib));
             }
         }
+        drm_pids = still_alive;
 
         let mut total_render = 0.0;
         let mut total_video = 0.0;
