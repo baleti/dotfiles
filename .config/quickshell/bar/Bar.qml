@@ -527,12 +527,28 @@ Item {
         const p = Theme.seriesPalette;
         return vendor === "intel" ? p[4 % p.length] : p[2 % p.length];
     }
-    function gpuShadeColor(base, i, n) {
+    function gpuShadeColor(base, i, n, dashed) {
         const c = Qt.color(base);
         const t = n > 1 ? (i / (n - 1)) - 0.5 : 0; // -0.5 (first) .. 0.5 (last)
         const hue = (c.hsvHue + t * (24 / 360) + 1) % 1;
-        const value = Math.min(1, Math.max(0.42, c.hsvValue + t * 0.85));
-        const sat = Math.min(1, Math.max(0.55, c.hsvSaturation + Math.abs(t) * 0.6));
+        let value = Math.min(1, Math.max(0.42, c.hsvValue + t * 0.85));
+        let sat = Math.min(1, Math.max(0.55, c.hsvSaturation + Math.abs(t) * 0.6));
+        // The dashed (VRAM/memory) line draws at Graph.qml's own
+        // "secondary" stroke alpha (0.62) vs a solid line's 0.9 -- once
+        // actually blended over the near-black panel background, that
+        // ~30% extra transparency alone visibly darkens/desaturates it
+        // relative to its own nominal HSV colour, enough to make it read
+        // as closer to a *different, darker* line in this group than it
+        // actually is (reported still confusable with utilization
+        // specifically -- the darkest solid line -- 2026-09-06, even
+        // though their pre-render HSV values were well apart). Boost by
+        // the inverse of that alpha ratio (0.9/0.62) here so the
+        // *rendered* brightness lines back up with what a solid line at
+        // this `value` would look like.
+        if (dashed) {
+            value = Math.min(1, value * (0.9 / 0.62));
+            sat = Math.min(1, sat * 1.1);
+        }
         return Qt.hsva(hue, sat, value, 1);
     }
     // [{ data?, color, dashed, name }] in draw order -- the single source
@@ -553,7 +569,7 @@ Item {
             if ((g.power_pct?.length ?? 0) > 0)
                 group.push({ data: g.power_pct, dashed: false, name: tag + " " + qsTr("power") });
             const base = gpuBaseColor(g.vendor);
-            group.forEach((l, i) => out.push(Object.assign(l, { color: gpuShadeColor(base, i, group.length) })));
+            group.forEach((l, i) => out.push(Object.assign(l, { color: gpuShadeColor(base, i, group.length, l.dashed) })));
         }
         return out;
     }
