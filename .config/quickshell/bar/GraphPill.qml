@@ -11,6 +11,12 @@ Rectangle {
     id: root
 
     property string icon: ""
+    // Per-pill override for the compact icon's pixel size -- some glyph sets
+    // (Material Design's expansion-card, say) draw much smaller than Font
+    // Awesome's inside the same em box, so a pill can bump this to match the
+    // others visually. Only the primary icon; the secondary stays at
+    // Theme.fontSize.
+    property real iconPixelSize: Theme.fontSize
     property string compactText: ""
     // > 0 fixes the compact value's width (right-aligned) so widgets whose
     // text length varies with magnitude (byte rates: "8 KB/s" vs "1.2
@@ -260,13 +266,15 @@ Rectangle {
             color: root.gradedColor
             width: root.compactTextWidth > 0 ? root.compactTextWidth : implicitWidth
             horizontalAlignment: Text.AlignRight
+            anchors.verticalCenter: parent.verticalCenter
         }
 
         Text {
             text: root.icon
             font.family: Theme.iconFontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: root.iconPixelSize
             color: root.gradedColor
+            anchors.verticalCenter: parent.verticalCenter
         }
 
         Rectangle {
@@ -291,6 +299,7 @@ Rectangle {
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize
             color: root.secondaryColor
+            anchors.verticalCenter: parent.verticalCenter
         }
 
         Text {
@@ -299,6 +308,7 @@ Rectangle {
             font.family: Theme.iconFontFamily
             font.pixelSize: Theme.fontSize
             color: root.secondaryColor
+            anchors.verticalCenter: parent.verticalCenter
         }
     }
 

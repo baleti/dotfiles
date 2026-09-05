@@ -764,9 +764,12 @@ Item {
             id: gpuPill
             visible: SysmonSvc.gpuPresent
             icon: Icons.gpu
+            // The MDI expansion-card glyph draws small in its em box --
+            // bump it to sit at the same visual height as the FA icons on
+            // the other pills.
+            iconPixelSize: Theme.fontSize + 4
             title: qsTr("GPU")
             compactText: root.gpuCompactText
-            compactTextWidth: 78
             valueLabel: SysmonSvc.gpuList.map(g => root.gpuTag(g) + " " + Math.round(root.last(g.util_pct ?? [])) + "%").join("   ")
             mode: "overlay"
             seriesList: root.gpuSeriesList
