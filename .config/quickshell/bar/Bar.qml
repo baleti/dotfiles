@@ -563,8 +563,15 @@ Item {
     }
     // "i 15 % · d 32 %" -- i/d prefix so the two GPUs' utilisations are
     // distinguishable in the compact pill without spelling out iGPU/dGPU.
+    // Single-digit values get a leading space so each "<x> NN %" segment is
+    // a fixed width in the monospace bar font -- the second GPU's letter
+    // then never shifts as the first GPU's number crosses 10. A 100% is
+    // three digits and does push things (an intentional "maxed" cue).
     readonly property string gpuCompactText: SysmonSvc.gpuList
-        .map(g => (g.vendor === "intel" ? "i " : "d ") + Math.round(root.last(g.util_pct ?? [])) + " %")
+        .map(g => {
+            const n = Math.round(root.last(g.util_pct ?? []));
+            return (g.vendor === "intel" ? "i " : "d ") + (n < 10 ? " " + n : n) + " %";
+        })
         .join(" · ")
     // Fixed width sized for two-digit values so the pill doesn't jitter as
     // the numbers change; a rare 100% is allowed to push past it (and the
