@@ -1105,6 +1105,10 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
                             font.bold: true
+                            // A touch more air after the account number
+                            // than the Row's own 4px spacing gives the
+                            // rest of the fields (request 2026-09-05).
+                            rightPadding: 3
                         }
                         Text {
                             id: acctSummarySession
