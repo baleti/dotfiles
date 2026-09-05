@@ -741,6 +741,28 @@ fn prime_disk_baseline(history: &Mutex<History>) {
     h.top_disk = top_disk;
 }
 
+/// Mem counterpart to `prime_cpu_baseline`/`prime_disk_baseline` -- but
+/// simpler, and reported faster to fix: RSS is instantaneous (no delta,
+/// no baseline, no short sleep to take a second sample), so this is just
+/// sample_loop's own top_mem computation done once, synchronously, at
+/// connect time instead of waiting for that loop's own next tick.
+fn prime_top_mem(history: &Mutex<History>) {
+    let pids = list_pids();
+    let mut top_mem_entries = Vec::with_capacity(pids.len());
+    for pid in &pids {
+        if let Some(mb) = proc_rss_mb(*pid) {
+            if mb > 0.0 {
+                top_mem_entries.push(ProcEntry { pid: *pid, name: proc_name(*pid), value: mb, detail: String::new(), util_pct: 0.0 });
+            }
+        }
+    }
+    let mut top_mem = top_n(top_mem_entries, 10);
+    enrich_details(&mut top_mem);
+
+    let mut h = history.lock().unwrap();
+    h.top_mem = top_mem;
+}
+
 fn top_n(mut entries: Vec<ProcEntry>, n: usize) -> Vec<ProcEntry> {
     entries.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
     entries.truncate(n);
@@ -1772,7 +1794,9 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
             DemandGuard::Counter(demand.top_cpu.clone())
         }
         Metric::TopMem => {
-            demand.top_mem.fetch_add(1, Ordering::Relaxed);
+            if demand.top_mem.fetch_add(1, Ordering::Relaxed) == 0 {
+                prime_top_mem(&history);
+            }
             DemandGuard::Counter(demand.top_mem.clone())
         }
         Metric::TopDisk => {
