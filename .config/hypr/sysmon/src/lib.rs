@@ -114,7 +114,6 @@ pub enum Metric {
     TopMem,
     TopNet,
     TopDisk,
-    TopGpu,
 }
 
 impl Metric {
@@ -126,7 +125,6 @@ impl Metric {
             "mem" => Some(Metric::Mem),
             "disk" => Some(Metric::Disk),
             "gpu" => Some(Metric::Gpu),
-            "topgpu" => Some(Metric::TopGpu),
             "topcpu" => Some(Metric::TopCpu),
             "topmem" => Some(Metric::TopMem),
             "topnet" => Some(Metric::TopNet),
@@ -166,6 +164,47 @@ pub struct DiskHistory {
     pub name: String,
     pub read_bps: Vec<f64>,
     pub write_bps: Vec<f64>,
+}
+
+/// One GPU's history at one tier plus its point-in-time detail block and
+/// its own top-processes list -- so a machine with an iGPU + dGPU serves
+/// both as separate entries in one `Snapshot::Gpu`. `vendor` is `"nvidia"`
+/// (nvidia-smi) or `"intel"` (i915 `/proc/*/fdinfo` engine counters). Every
+/// field except `name`/`vendor`/`util_pct` is `#[serde(default)]` and left
+/// zero/empty where it doesn't apply -- an iGPU has no dedicated VRAM total,
+/// no board-power telemetry, etc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuHistory {
+    pub name: String,
+    pub vendor: String,
+    pub util_pct: Vec<f64>,
+    #[serde(default)]
+    pub vram_pct: Vec<f64>,
+    #[serde(default)]
+    pub power_pct: Vec<f64>,
+    #[serde(default)]
+    pub temp_c: f64,
+    #[serde(default)]
+    pub power_w: f64,
+    #[serde(default)]
+    pub power_limit_w: f64,
+    #[serde(default)]
+    pub vram_used_mb: f64,
+    #[serde(default)]
+    pub vram_total_mb: f64,
+    #[serde(default)]
+    pub sm_clock_mhz: f64,
+    #[serde(default)]
+    pub mem_clock_mhz: f64,
+    #[serde(default)]
+    pub enc_pct: f64,
+    #[serde(default)]
+    pub dec_pct: f64,
+    #[serde(default)]
+    pub fan_pct: f64,
+    /// Per-process use of THIS GPU (top 10), ranked utilisation-then-memory.
+    #[serde(default)]
+    pub procs: Vec<ProcEntry>,
 }
 
 /// One process's ranking entry -- a point-in-time snapshot, not history.
@@ -210,45 +249,13 @@ pub enum Snapshot {
     // One entry per whole-disk block device (partitions excluded), same
     // overlay-per-device treatment as Net.
     Disk { devices: Vec<DiskHistory> },
-    // NVIDIA GPU (via a long-lived `nvidia-smi ... -l 1` subprocess -- see
-    // sysmond.rs's `gpu_loop`). `util_pct` (compute/graphics engine load)
-    // and `vram_pct` (VRAM *occupancy*, used/total -- not the memory
-    // controller's bandwidth utilisation) are the two overlaid history
-    // series, same treatment as Mem's used/cached. The rest are
-    // point-in-time detail readings shown in the expanded panel, not
-    // history -- all `#[serde(default)]` so a client/daemon version skew or
-    // a field nvidia-smi reports as `[N/A]` (older/mobile parts often do for
-    // power.limit / fan.speed) degrades to 0 rather than breaking the parse.
+    // Every GPU on the machine, each its own `GpuHistory` (util/vram/power
+    // history at the requested tier + a detail block + a top-processes
+    // list). One entry on a single-GPU box; iGPU + dGPU both appear on a
+    // hybrid laptop. See sysmond.rs's `gpu_loop` (nvidia-smi) and
+    // `intel_gpu_loop` (i915 fdinfo).
     Gpu {
-        util_pct: Vec<f64>,
-        vram_pct: Vec<f64>,
-        // Board power draw as a percent of the enforced power limit (TGP) --
-        // a third history line on the same 0..100 axis as util/vram. Empty
-        // (not zero-filled) from a daemon that predates it.
-        #[serde(default)]
-        power_pct: Vec<f64>,
-        #[serde(default)]
-        name: String,
-        #[serde(default)]
-        temp_c: f64,
-        #[serde(default)]
-        power_w: f64,
-        #[serde(default)]
-        power_limit_w: f64,
-        #[serde(default)]
-        vram_used_mb: f64,
-        #[serde(default)]
-        vram_total_mb: f64,
-        #[serde(default)]
-        sm_clock_mhz: f64,
-        #[serde(default)]
-        mem_clock_mhz: f64,
-        #[serde(default)]
-        enc_pct: f64,
-        #[serde(default)]
-        dec_pct: f64,
-        #[serde(default)]
-        fan_pct: f64,
+        gpus: Vec<GpuHistory>,
     },
     // Point-in-time top-10, refreshed every tick like the history metrics,
     // just not itself a time series.

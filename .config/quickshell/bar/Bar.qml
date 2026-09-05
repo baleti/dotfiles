@@ -477,43 +477,97 @@ Item {
         return rd + wr;
     }
 
-    // GPU: three overlaid history lines on one 0..100 axis -- engine load
-    // (solid), VRAM occupancy (dashed), board power as % of TGP (solid) --
-    // same shape/gating as memSeriesList. detailRows reads the point-in-time
-    // block in SysmonSvc.gpuInfo; gated on the pill actually being open so
-    // it's not rebuilt every tick while collapsed (see the comment on
-    // netLegend above).
-    readonly property var gpuLegend: [
-        { name: qsTr("Utilisation"), color: Theme.green },
-        { name: qsTr("VRAM"), color: Theme.cyan },
-        { name: qsTr("Power"), color: Theme.orange }
-    ]
-    readonly property var gpuSeriesList: gpuPill.expanded ? [
-        { data: SysmonSvc.gpuUtilPct, color: Theme.green, dashed: false },
-        { data: SysmonSvc.gpuVramPct, color: Theme.cyan, dashed: true },
-        { data: SysmonSvc.gpuPowerPct, color: Theme.orange, dashed: false }
-    ] : []
-    readonly property var gpuDetailRows: {
+    // GPU: every GPU's lines overlaid on one 0..100 axis. Each GPU's
+    // utilisation gets its own colour (iGPU cyan, dGPU green); the dGPU also
+    // contributes a dashed VRAM-occupancy line and a solid amber power line
+    // (% of TGP). The iGPU has neither -- shared system RAM, no board-power
+    // telemetry -- so it's a single line. Legend spells out "<tag> <metric>"
+    // for each. detailGroups / procGroups are one titled block per GPU;
+    // gated on the pill being open so they're not rebuilt every tick while
+    // collapsed (see the comment on netLegend above).
+    function gpuTag(g) { return g.vendor === "intel" ? qsTr("iGPU") : qsTr("dGPU"); }
+    function gpuUtilColor(g) { return g.vendor === "intel" ? Theme.cyan : Theme.green; }
+    readonly property color gpuVramColor: Theme.seriesPalette[3] ?? Theme.cyan
+    readonly property color gpuPowerColor: Theme.orange
+
+    readonly property var gpuLegend: {
+        const out = [];
+        for (const g of SysmonSvc.gpuList) {
+            const tag = gpuTag(g);
+            out.push({ name: tag + " " + qsTr("util"), color: gpuUtilColor(g) });
+            if ((g.vram_pct?.length ?? 0) > 0)
+                out.push({ name: tag + " " + qsTr("VRAM"), color: root.gpuVramColor });
+            if ((g.power_pct?.length ?? 0) > 0)
+                out.push({ name: tag + " " + qsTr("power"), color: root.gpuPowerColor });
+        }
+        return out;
+    }
+    readonly property var gpuSeriesList: {
         if (!gpuPill.expanded)
             return [];
-        const g = SysmonSvc.gpuInfo;
-        const rows = [];
-        if (g.name)
-            rows.push({ name: qsTr("Device"), value: g.name });
-        if ((g.vram_total_mb ?? 0) > 0)
-            rows.push({ name: qsTr("VRAM"), value: Math.round(g.vram_used_mb ?? 0) + " / " + Math.round(g.vram_total_mb) + " MB" });
-        rows.push({ name: qsTr("Temperature"), value: Math.round(g.temp_c ?? 0) + "°C" });
-        let power = (g.power_w ?? 0).toFixed(1) + " W";
-        if ((g.power_limit_w ?? 0) > 0)
-            power += " / " + Math.round(g.power_limit_w) + " W";
-        rows.push({ name: qsTr("Power draw"), value: power });
-        rows.push({ name: qsTr("Core clock"), value: Math.round(g.sm_clock_mhz ?? 0) + " MHz" });
-        rows.push({ name: qsTr("Memory clock"), value: Math.round(g.mem_clock_mhz ?? 0) + " MHz" });
-        rows.push({ name: qsTr("Encode / decode"), value: Math.round(g.enc_pct ?? 0) + "% / " + Math.round(g.dec_pct ?? 0) + "%" });
-        if ((g.fan_pct ?? 0) > 0)
-            rows.push({ name: qsTr("Fan"), value: Math.round(g.fan_pct) + "%" });
-        return rows;
+        const out = [];
+        for (const g of SysmonSvc.gpuList) {
+            if ((g.util_pct?.length ?? 0) > 0)
+                out.push({ data: g.util_pct, color: gpuUtilColor(g), dashed: false });
+            if ((g.vram_pct?.length ?? 0) > 0)
+                out.push({ data: g.vram_pct, color: root.gpuVramColor, dashed: true });
+            if ((g.power_pct?.length ?? 0) > 0)
+                out.push({ data: g.power_pct, color: root.gpuPowerColor, dashed: false });
+        }
+        return out;
     }
+    readonly property var gpuDetailGroups: {
+        if (!gpuPill.expanded)
+            return [];
+        return SysmonSvc.gpuList.map(g => {
+            const rows = [];
+            if ((g.vram_total_mb ?? 0) > 0)
+                rows.push({ name: qsTr("VRAM"), value: Math.round(g.vram_used_mb ?? 0) + " / " + Math.round(g.vram_total_mb) + " MB" });
+            else if ((g.vram_used_mb ?? 0) > 0)
+                rows.push({ name: qsTr("Memory"), value: Math.round(g.vram_used_mb) + " MB" });
+            if ((g.temp_c ?? 0) > 0)
+                rows.push({ name: qsTr("Temperature"), value: Math.round(g.temp_c) + "°C" });
+            if ((g.power_w ?? 0) > 0) {
+                let p = g.power_w.toFixed(1) + " W";
+                if ((g.power_limit_w ?? 0) > 0)
+                    p += " / " + Math.round(g.power_limit_w) + " W";
+                rows.push({ name: qsTr("Power draw"), value: p });
+            }
+            if ((g.sm_clock_mhz ?? 0) > 0)
+                rows.push({ name: g.vendor === "intel" ? qsTr("Frequency") : qsTr("Core clock"), value: Math.round(g.sm_clock_mhz) + " MHz" });
+            if ((g.mem_clock_mhz ?? 0) > 0)
+                rows.push({ name: qsTr("Memory clock"), value: Math.round(g.mem_clock_mhz) + " MHz" });
+            if ((g.enc_pct ?? 0) > 0 || (g.dec_pct ?? 0) > 0)
+                rows.push({ name: g.vendor === "intel" ? qsTr("Video") : qsTr("Encode / decode"),
+                            value: g.vendor === "intel"
+                                ? Math.round(g.dec_pct) + "%"
+                                : Math.round(g.enc_pct ?? 0) + "% / " + Math.round(g.dec_pct ?? 0) + "%" });
+            if ((g.fan_pct ?? 0) > 0)
+                rows.push({ name: qsTr("Fan"), value: Math.round(g.fan_pct) + "%" });
+            return { label: g.name, rows: rows };
+        });
+    }
+    readonly property var gpuProcGroups: gpuPill.expanded
+        ? SysmonSvc.gpuList.map(g => ({ label: g.name, unit: " MB", procs: g.procs ?? [] }))
+        : []
+
+    // Compact pill: each GPU's utilisation side by side (iGPU then dGPU),
+    // with the dGPU's VRAM occupancy as the divider-less secondary reading.
+    readonly property var gpuNvidia: {
+        for (const g of SysmonSvc.gpuList)
+            if (g.vendor === "nvidia")
+                return g;
+        return null;
+    }
+    readonly property string gpuCompactText: SysmonSvc.gpuList
+        .map(g => Math.round(root.last(g.util_pct ?? [])) + "%").join(" · ")
+    readonly property real gpuMaxUtil: {
+        let m = 0;
+        for (const g of SysmonSvc.gpuList)
+            m = Math.max(m, root.last(g.util_pct ?? []));
+        return m;
+    }
+    readonly property real gpuNvVram: root.gpuNvidia ? root.last(root.gpuNvidia.vram_pct ?? []) : NaN
 
     anchors.fill: parent
 
@@ -711,20 +765,20 @@ Item {
             visible: SysmonSvc.gpuPresent
             icon: Icons.gpu
             title: qsTr("GPU")
-            compactText: Math.round(root.last(SysmonSvc.gpuUtilPct)) + "%"
-            valueLabel: qsTr("%1% · %2% VRAM").arg(Math.round(root.last(SysmonSvc.gpuUtilPct))).arg(Math.round(root.last(SysmonSvc.gpuVramPct)))
+            compactText: root.gpuCompactText
+            compactTextWidth: 78
+            valueLabel: SysmonSvc.gpuList.map(g => root.gpuTag(g) + " " + Math.round(root.last(g.util_pct ?? [])) + "%").join("   ")
             mode: "overlay"
             seriesList: root.gpuSeriesList
             maxValue: 100
-            valueFraction: root.last(SysmonSvc.gpuUtilPct) / 100
-            secondaryIcon: Icons.memory
-            secondaryText: Math.round(root.last(SysmonSvc.gpuVramPct)) + "%"
+            valueFraction: root.gpuMaxUtil / 100
+            secondaryIcon: isNaN(root.gpuNvVram) ? "" : Icons.memory
+            secondaryText: isNaN(root.gpuNvVram) ? "" : Math.round(root.gpuNvVram) + "%"
             secondaryDivider: false
-            secondaryValueFraction: root.last(SysmonSvc.gpuVramPct) / 100
+            secondaryValueFraction: root.gpuNvVram / 100
             legendItems: root.gpuLegend
-            detailRows: root.gpuDetailRows
-            topProcs: SysmonSvc.topGpu
-            topUnit: " MB"
+            detailGroups: root.gpuDetailGroups
+            procGroups: root.gpuProcGroups
             yAxisFormatter: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels

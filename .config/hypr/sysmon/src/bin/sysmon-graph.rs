@@ -155,7 +155,6 @@ fn finish_handshake(mut stream: UnixStream, metric: Metric) -> Option<UnixStream
         Metric::TopMem => "topmem\n",
         Metric::TopNet => "topnet\n",
         Metric::TopDisk => "topdisk\n",
-        Metric::TopGpu => "topgpu\n",
         Metric::Disk => "disk\n",
         Metric::Gpu => "gpu\n",
     };
@@ -275,7 +274,6 @@ fn main() {
         Metric::TopMem => ("Top Memory", (0.78, 0.48, 1.0)),
         Metric::TopNet => ("Top Network", (0.31, 0.84, 0.48)),
         Metric::TopDisk => ("Top Disk", (0.31, 0.84, 0.48)),
-        Metric::TopGpu => ("Top GPU", (0.95, 0.45, 0.75)),
         Metric::Disk => ("Disk", (0.31, 0.84, 0.48)),
         Metric::Gpu => ("GPU", (0.95, 0.45, 0.75)),
     };
@@ -371,7 +369,15 @@ fn main() {
                         draw_series(cr, w, h, celsius, max, accent);
                     }
                     Snapshot::Mem { used_pct, .. } => draw_series(cr, w, h, used_pct, 100.0, accent),
-                    Snapshot::Gpu { util_pct, .. } => draw_series(cr, w, h, util_pct, 100.0, accent),
+                    Snapshot::Gpu { gpus } => {
+                        // One line per GPU's utilisation (this legacy popup
+                        // has no per-GPU legend; the bar panel is the real
+                        // multi-GPU view).
+                        for (i, g) in gpus.iter().enumerate() {
+                            let c = iface_color(&format!("gpu{i}"));
+                            draw_series(cr, w, h, &g.util_pct, 100.0, c);
+                        }
+                    }
                     Snapshot::TopProcs { .. } => {} // not drawn as a graph; no popup UI for this yet
                     Snapshot::Disk { devices } => {
                         let max = devices
@@ -417,11 +423,11 @@ fn main() {
                     Snapshot::Cpu { total, .. } => format!("{:.0}%", total.last().copied().unwrap_or(0.0)),
                     Snapshot::Temp { celsius } => format!("{:.0}\u{b0}C", celsius.last().copied().unwrap_or(0.0)),
                     Snapshot::Mem { used_pct, .. } => format!("{:.0}%", used_pct.last().copied().unwrap_or(0.0)),
-                    Snapshot::Gpu { util_pct, vram_pct, .. } => format!(
-                        "{:.0}%  ·  VRAM {:.0}%",
-                        util_pct.last().copied().unwrap_or(0.0),
-                        vram_pct.last().copied().unwrap_or(0.0),
-                    ),
+                    Snapshot::Gpu { gpus } => gpus
+                        .iter()
+                        .map(|g| format!("{}: {:.0}%", g.name, g.util_pct.last().copied().unwrap_or(0.0)))
+                        .collect::<Vec<_>>()
+                        .join("   "),
                     Snapshot::TopProcs { procs } => procs.first().map(|p| format!("{} ({:.0})", p.name, p.value)).unwrap_or_default(),
                     Snapshot::Disk { devices } => {
                         let mut names: Vec<&sysmon::DiskHistory> = devices.iter().collect();

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sysmon::{socket_path, DiskHistory, IfaceHistory, Metric, ProcEntry, Request, Snapshot, Tier, ALL_TIERS, SAMPLE_INTERVAL_MS, TIER_CAPACITY};
+use sysmon::{socket_path, DiskHistory, GpuHistory, IfaceHistory, Metric, ProcEntry, Request, Snapshot, Tier, ALL_TIERS, SAMPLE_INTERVAL_MS, TIER_CAPACITY};
 
 /// One of the five fixed granularities' worth of a single raw metric --
 /// raw 1s samples get averaged together (accum_sum/accum_n) until enough
@@ -148,26 +148,34 @@ struct PersistedHistory {
     // too, not just swap.
     #[serde(default)]
     swap_used_pct: PersistedSeries,
-    // GPU utilisation / VRAM-occupancy history -- `#[serde(default)]` for
-    // the same reason as swap: a history.json from before GPU tracking
-    // still loads every other series.
+    // Per-GPU util/vram/power history, keyed by GPU name. `#[serde(default)]`
+    // for the same reason as swap. The pre-multi-GPU `gpu_util_pct` /
+    // `gpu_vram_pct` / `gpu_power_pct` flat fields are simply dropped on the
+    // upgrade -- throwaway monitoring history, not worth a migration.
     #[serde(default)]
-    gpu_util_pct: PersistedSeries,
-    #[serde(default)]
-    gpu_vram_pct: PersistedSeries,
-    #[serde(default)]
-    gpu_power_pct: PersistedSeries,
+    gpus: Vec<PersistedGpu>,
     net: HashMap<String, (PersistedSeries, PersistedSeries)>,
     disk: HashMap<String, (PersistedSeries, PersistedSeries)>,
 }
 
-/// Point-in-time GPU detail readings (everything except the two history
-/// series) -- refreshed every `nvidia-smi` line by `gpu_loop`, served as-is
-/// in each `Snapshot::Gpu`. All-zero until the first line arrives, or
-/// forever if there's no NVIDIA GPU.
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedGpu {
+    name: String,
+    #[serde(default)]
+    vendor: String,
+    util: PersistedSeries,
+    #[serde(default)]
+    vram: PersistedSeries,
+    #[serde(default)]
+    power: PersistedSeries,
+}
+
+/// Point-in-time GPU detail readings (everything that isn't a history
+/// series) -- refreshed each sample by `gpu_loop` (nvidia-smi) or
+/// `intel_gpu_loop` (i915 fdinfo). Zero/empty where a given GPU doesn't
+/// report that field.
 #[derive(Default, Clone)]
 struct GpuLatest {
-    name: String,
     temp_c: f64,
     power_w: f64,
     power_limit_w: f64,
@@ -178,6 +186,34 @@ struct GpuLatest {
     enc_pct: f64,
     dec_pct: f64,
     fan_pct: f64,
+}
+
+/// One GPU's in-memory history: the three tiered series, its latest detail
+/// block, and its own top-processes list. `History::gpus` is built once at
+/// startup (`enumerate_gpus`) and never resized -- each sampler thread
+/// updates its own vendor's entry in place.
+struct GpuHist {
+    name: String,
+    vendor: String, // "nvidia" | "intel"
+    util: TieredSeries,
+    vram: TieredSeries,
+    power: TieredSeries,
+    detail: GpuLatest,
+    top: Vec<ProcEntry>,
+}
+
+impl GpuHist {
+    fn new(name: String, vendor: String) -> Self {
+        GpuHist {
+            name,
+            vendor,
+            util: TieredSeries::new(),
+            vram: TieredSeries::new(),
+            power: TieredSeries::new(),
+            detail: GpuLatest::default(),
+            top: Vec::new(),
+        }
+    }
 }
 
 fn persist_path() -> PathBuf {
@@ -203,18 +239,10 @@ struct History {
     mem_used_pct: TieredSeries,
     mem_cached_pct: TieredSeries,
     swap_used_pct: TieredSeries,
-    // NVIDIA GPU: two overlaid history series (engine load, VRAM occupancy)
-    // plus the point-in-time detail block, all fed by `gpu_loop`'s
-    // `nvidia-smi` subprocess. Stay empty/zero forever if there's no GPU.
-    gpu_util_pct: TieredSeries,
-    gpu_vram_pct: TieredSeries,
-    gpu_power_pct: TieredSeries,
-    gpu: GpuLatest,
-    // Per-process GPU use, from `nvidia-smi pmon` (see `gpu_proc_loop`) --
-    // graphics *and* compute clients. Ranked by SM utilisation then VRAM;
-    // `value` is VRAM MiB (same unit convention as `top_mem`), SM% rides in
-    // `detail`.
-    top_gpu: Vec<ProcEntry>,
+    // One entry per GPU (iGPU + dGPU on a hybrid laptop), built once by
+    // `enumerate_gpus` and updated in place by `gpu_loop` (nvidia) and
+    // `intel_gpu_loop` (i915). Empty if the machine has no supported GPU.
+    gpus: Vec<GpuHist>,
     top_cpu: Vec<ProcEntry>,
     top_mem: Vec<ProcEntry>,
     // Per-process network attribution needs packet capture (nethogs, via
@@ -246,11 +274,7 @@ impl History {
             mem_used_pct: TieredSeries::new(),
             mem_cached_pct: TieredSeries::new(),
             swap_used_pct: TieredSeries::new(),
-            gpu_util_pct: TieredSeries::new(),
-            gpu_vram_pct: TieredSeries::new(),
-            gpu_power_pct: TieredSeries::new(),
-            gpu: GpuLatest::default(),
-            top_gpu: Vec::new(),
+            gpus: enumerate_gpus(),
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
             top_net: Vec::new(),
@@ -270,9 +294,13 @@ impl History {
         self.mem_used_pct.load_persisted(&p.mem_used_pct);
         self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
         self.swap_used_pct.load_persisted(&p.swap_used_pct);
-        self.gpu_util_pct.load_persisted(&p.gpu_util_pct);
-        self.gpu_vram_pct.load_persisted(&p.gpu_vram_pct);
-        self.gpu_power_pct.load_persisted(&p.gpu_power_pct);
+        for saved in &p.gpus {
+            if let Some(g) = self.gpus.iter_mut().find(|g| g.name == saved.name) {
+                g.util.load_persisted(&saved.util);
+                g.vram.load_persisted(&saved.vram);
+                g.power.load_persisted(&saved.power);
+            }
+        }
         for (core, saved) in self.cpu_cores.iter_mut().zip(p.cpu_cores.iter()) {
             core.load_persisted(saved);
         }
@@ -297,9 +325,17 @@ impl History {
             mem_used_pct: self.mem_used_pct.to_persisted(),
             mem_cached_pct: self.mem_cached_pct.to_persisted(),
             swap_used_pct: self.swap_used_pct.to_persisted(),
-            gpu_util_pct: self.gpu_util_pct.to_persisted(),
-            gpu_vram_pct: self.gpu_vram_pct.to_persisted(),
-            gpu_power_pct: self.gpu_power_pct.to_persisted(),
+            gpus: self
+                .gpus
+                .iter()
+                .map(|g| PersistedGpu {
+                    name: g.name.clone(),
+                    vendor: g.vendor.clone(),
+                    util: g.util.to_persisted(),
+                    vram: g.vram.to_persisted(),
+                    power: g.power.to_persisted(),
+                })
+                .collect(),
             net: self.net.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
             disk: self.disk.iter().map(|(k, v)| (k.clone(), (v.a.to_persisted(), v.b.to_persisted()))).collect(),
         };
@@ -638,25 +674,274 @@ fn nethogs_loop(history: Arc<Mutex<History>>) {
     }
 }
 
+/// Runs `f` against the first GPU of the given vendor, if the machine has
+/// one. `History::gpus` is fixed-size after startup so this is just a short
+/// linear scan under the lock.
+fn with_gpu<F: FnOnce(&mut GpuHist)>(history: &Mutex<History>, vendor: &str, f: F) {
+    let mut h = history.lock().unwrap();
+    if let Some(g) = h.gpus.iter_mut().find(|g| g.vendor == vendor) {
+        f(g);
+    }
+}
+
+/// Enumerates every GPU on the machine, iGPU first. Intel: a DRM card whose
+/// PCI vendor is 0x8086 with a render-capable `gt` node. NVIDIA: one line
+/// per name from `nvidia-smi`. Names here are what the bar shows and what
+/// persisted history is keyed by.
+fn enumerate_gpus() -> Vec<GpuHist> {
+    let mut out = Vec::new();
+
+    if let Ok(cards) = fs::read_dir("/sys/class/drm") {
+        let mut cards: Vec<_> = cards.flatten().map(|e| e.path()).collect();
+        cards.sort();
+        for p in cards {
+            let Some(n) = p.file_name().and_then(|s| s.to_str()) else { continue };
+            if !(n.starts_with("card") && n[4..].chars().all(|c| c.is_ascii_digit())) {
+                continue;
+            }
+            let vendor = fs::read_to_string(p.join("device/vendor")).unwrap_or_default();
+            if vendor.trim() != "0x8086" {
+                continue;
+            }
+            if !p.join("gt_cur_freq_mhz").exists() && !p.join("gt").exists() {
+                continue; // headless / non-render Intel device
+            }
+            let slot = fs::read_link(p.join("device"))
+                .ok()
+                .and_then(|t| t.file_name().map(|s| s.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            out.push(GpuHist::new(intel_gpu_name(&slot), "intel".into()));
+        }
+    }
+
+    if let Ok(o) = Command::new("nvidia-smi")
+        .args(["--query-gpu=name", "--format=csv,noheader"])
+        .stderr(Stdio::null())
+        .output()
+    {
+        if o.status.success() {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                let name = line.trim();
+                if !name.is_empty() {
+                    out.push(GpuHist::new(name.to_string(), "nvidia".into()));
+                }
+            }
+        }
+    }
+
+    if out.is_empty() {
+        eprintln!("sysmond: no GPU detected, gpu metric will stay empty");
+    } else {
+        eprintln!(
+            "sysmond: GPUs: {}",
+            out.iter().map(|g| format!("{} ({})", g.name, g.vendor)).collect::<Vec<_>>().join(", ")
+        );
+    }
+    out
+}
+
+/// A friendly name for the Intel GPU at PCI `slot` (e.g. "0000:00:02.0"),
+/// from `lspci`. `"CometLake-H GT2 [UHD Graphics]"` -> `"Intel UHD
+/// Graphics"`; falls back to `"Intel GPU"`.
+fn intel_gpu_name(slot: &str) -> String {
+    let short = slot.strip_prefix("0000:").unwrap_or(slot);
+    let out = Command::new("lspci")
+        .args(["-mm", "-s", short])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    // lspci -mm: `slot "class" "vendor" "device" ...` -- the device field is
+    // the 4th quoted token (index 5 after splitting on '"').
+    let device = out.split('"').nth(5).unwrap_or("").trim().to_string();
+    let pretty = match (device.find('['), device.find(']')) {
+        (Some(a), Some(b)) if b > a => device[a + 1..b].to_string(),
+        _ => device,
+    };
+    if pretty.is_empty() {
+        "Intel GPU".to_string()
+    } else if pretty.to_lowercase().contains("intel") {
+        pretty
+    } else {
+        format!("Intel {pretty}")
+    }
+}
+
+/// Reads a `key value [unit]` line (i915 fdinfo memory fields) as KiB:
+/// `"28204 KiB"` -> 28204, `"8 MiB"` -> 8192, bare number -> as-is.
+fn parse_kib(s: &str) -> f64 {
+    let mut it = s.split_whitespace();
+    let n: f64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0);
+    match it.next() {
+        Some("MiB") => n * 1024.0,
+        Some("GiB") => n * 1024.0 * 1024.0,
+        _ => n,
+    }
+}
+
+/// Intel iGPU utilisation and per-process breakdown from `/proc/*/fdinfo`
+/// i915 engine counters -- cumulative per-engine nanoseconds, exposed
+/// unprivileged for the caller's own processes (the same source nvtop
+/// uses). Sums the render-engine busy time across all DRM clients for the
+/// total and per-pid for the top-processes list; there's no dedicated VRAM
+/// total (the iGPU shares system RAM), so only `util` gets a history line
+/// and the resident-memory sum / current frequency go in the detail block.
+///
+/// A pid is only scanned if one of its open fds points at `/dev/dri/` --
+/// the vast majority of processes have none, so this stays cheap.
+fn intel_gpu_loop(history: Arc<Mutex<History>>) {
+    let mut prev: HashMap<u64, (u64, u64)> = HashMap::new(); // client-id -> (render_ns, video_ns)
+    let mut last = Instant::now();
+
+    loop {
+        std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
+        let now = Instant::now();
+        let wall_ns = now.duration_since(last).as_nanos() as f64;
+        last = now;
+        if wall_ns <= 0.0 {
+            continue;
+        }
+
+        // client-id -> (render_ns, video_ns, pid, resident_kib)
+        let mut cur: HashMap<u64, (u64, u64, i32, f64)> = HashMap::new();
+        for pid in list_pids() {
+            let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
+            let mut is_drm = false;
+            for fd in fds.flatten() {
+                if let Ok(target) = fs::read_link(fd.path()) {
+                    if target.to_string_lossy().starts_with("/dev/dri/") {
+                        is_drm = true;
+                        break;
+                    }
+                }
+            }
+            if !is_drm {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fdinfo")) else { continue };
+            for ent in entries.flatten() {
+                let Ok(text) = fs::read_to_string(ent.path()) else { continue };
+                let is_i915 = text.lines().any(|l| {
+                    l.strip_prefix("drm-driver:").map(|v| v.trim() == "i915").unwrap_or(false)
+                });
+                if !is_i915 {
+                    continue;
+                }
+                let mut cid = None;
+                let mut render = 0u64;
+                let mut video = 0u64;
+                let mut resident_kib = 0.0;
+                for l in text.lines() {
+                    if let Some(v) = l.strip_prefix("drm-client-id:") {
+                        cid = v.trim().parse::<u64>().ok();
+                    } else if let Some(v) = l.strip_prefix("drm-engine-render:") {
+                        render = v.split_whitespace().next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                    } else if let Some(v) = l.strip_prefix("drm-engine-video:") {
+                        video = v.split_whitespace().next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                    } else if let Some(v) = l.strip_prefix("drm-resident-system0:") {
+                        resident_kib = parse_kib(v.trim());
+                    }
+                }
+                let Some(cid) = cid else { continue };
+                // Several fds can share one client-id with identical
+                // counters -- keep the first.
+                cur.entry(cid).or_insert((render, video, pid, resident_kib));
+            }
+        }
+
+        let mut total_render = 0.0;
+        let mut total_video = 0.0;
+        let mut per_pid: HashMap<i32, (f64, f64)> = HashMap::new(); // pid -> (busy_ns, resident_kib)
+        for (cid, &(render, video, pid, resident_kib)) in &cur {
+            let (dr, dv) = match prev.get(cid) {
+                Some(&(pr, pv)) => (render.saturating_sub(pr) as f64, video.saturating_sub(pv) as f64),
+                None => (0.0, 0.0),
+            };
+            total_render += dr;
+            total_video += dv;
+            let e = per_pid.entry(pid).or_insert((0.0, 0.0));
+            e.0 += dr + dv;
+            e.1 += resident_kib;
+        }
+        prev = cur.iter().map(|(cid, &(r, v, _, _))| (*cid, (r, v))).collect();
+
+        let util = (100.0 * total_render / wall_ns).min(100.0);
+        let video_pct = (100.0 * total_video / wall_ns).min(100.0);
+        let resident_mb = per_pid.values().map(|v| v.1).sum::<f64>() / 1024.0;
+        let freq = fs::read_to_string("/sys/class/drm/card0/gt_cur_freq_mhz")
+            .ok()
+            .or_else(|| find_intel_freq())
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let mut ranked: Vec<(ProcEntry, f64)> = per_pid
+            .into_iter()
+            .filter(|(_, (busy, res))| *busy > 0.0 || *res > 0.0)
+            .map(|(pid, (busy, res))| {
+                let pct = (100.0 * busy / wall_ns).min(100.0);
+                (ProcEntry { pid, name: proc_name(pid), value: res / 1024.0, detail: String::new() }, pct)
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.0.value.partial_cmp(&a.0.value).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        ranked.truncate(10);
+        let mut top: Vec<ProcEntry> = ranked.iter().map(|(e, _)| e.clone()).collect();
+        enrich_details(&mut top);
+        for (entry, (_, pct)) in top.iter_mut().zip(ranked.iter()) {
+            if *pct >= 0.5 {
+                entry.detail = if entry.detail.is_empty() {
+                    format!("{pct:.0}% GPU")
+                } else {
+                    format!("{pct:.0}% GPU  \u{b7}  {}", entry.detail)
+                };
+            }
+        }
+
+        with_gpu(&history, "intel", |g| {
+            g.util.push_raw(util);
+            g.detail.vram_used_mb = resident_mb;
+            g.detail.sm_clock_mhz = freq;
+            g.detail.dec_pct = video_pct;
+            g.top = top;
+        });
+    }
+}
+
+/// Fallback for the current-frequency read when the Intel card isn't
+/// `card0` -- scans for the 0x8086 DRM card's `gt_cur_freq_mhz`.
+fn find_intel_freq() -> Option<String> {
+    let cards = fs::read_dir("/sys/class/drm").ok()?;
+    for c in cards.flatten() {
+        let p = c.path();
+        if fs::read_to_string(p.join("device/vendor")).map(|v| v.trim() == "0x8086").unwrap_or(false) {
+            if let Ok(s) = fs::read_to_string(p.join("gt_cur_freq_mhz")) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
 /// Streams one CSV line per second from a long-lived
-/// `nvidia-smi --query-gpu=... -l 1` subprocess for the life of sysmond,
-/// pushing GPU engine load and VRAM occupancy into their tiered history and
-/// refreshing the point-in-time detail block (`History::gpu`) each line.
+/// `nvidia-smi --query-gpu=... -l 1` subprocess, pushing engine load, VRAM
+/// occupancy and board power (as % of the enforced power limit / TGP) into
+/// the nvidia GPU's tiered history and refreshing its detail block.
 ///
 /// Same "missing sensor just stays empty, never a crash" contract as
-/// `nethogs_loop`: if `nvidia-smi` isn't installed (no NVIDIA GPU) the
-/// thread logs once and returns, and the `gpu` metric serves empty series
-/// forever. If the subprocess exits later (driver reload, suspend/resume)
-/// it's respawned after a short delay rather than leaving the graph frozen.
+/// `nethogs_loop`: if `nvidia-smi` isn't installed the thread logs once and
+/// returns. It respawns the subprocess if it exits (driver reload,
+/// suspend/resume).
 ///
-/// Fields, in query order: utilization.gpu, memory.used, memory.total,
-/// temperature.gpu, power.draw, enforced.power.limit, clocks.sm, clocks.mem,
-/// fan.speed, utilization.encoder, utilization.decoder, name. `nounits`
-/// keeps them bare; anything nvidia-smi reports as `[N/A]` (mobile parts
-/// commonly do for the plain `power.limit` and `fan.speed`) parses to 0.
-/// `enforced.power.limit` is used rather than `power.limit` because the
-/// latter is often `[N/A]` on mobile parts while the former still reports
-/// the TGP -- it's the denominator for the power-draw history line.
+/// Query fields: utilization.gpu, memory.used, memory.total, temperature.gpu,
+/// power.draw, enforced.power.limit, clocks.sm, clocks.mem, fan.speed,
+/// utilization.encoder, utilization.decoder, name. `enforced.power.limit` is
+/// used rather than `power.limit` because the latter is often `[N/A]` on
+/// mobile parts while the former still reports the TGP.
 fn gpu_loop(history: Arc<Mutex<History>>) {
     const QUERY: &str = "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,enforced.power.limit,clocks.sm,clocks.mem,fan.speed,utilization.encoder,utilization.decoder,name";
 
@@ -678,7 +963,7 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
         {
             Ok(c) => c,
             Err(_) => {
-                eprintln!("sysmond: nvidia-smi not available, gpu metric will stay empty");
+                eprintln!("sysmond: nvidia-smi not available, nvidia gpu metric will stay empty");
                 return;
             }
         };
@@ -696,13 +981,7 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
             let power_w = parse_num(f[4]);
             let power_limit_w = parse_num(f[5]);
             let power_pct = if power_limit_w > 0.0 { 100.0 * power_w / power_limit_w } else { 0.0 };
-
-            let mut h = history.lock().unwrap();
-            h.gpu_util_pct.push_raw(util);
-            h.gpu_vram_pct.push_raw(vram_pct);
-            h.gpu_power_pct.push_raw(power_pct);
-            h.gpu = GpuLatest {
-                name: f[11].trim().to_string(),
+            let detail = GpuLatest {
                 temp_c: parse_num(f[3]),
                 power_w,
                 power_limit_w,
@@ -714,6 +993,13 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
                 enc_pct: parse_num(f[9]),
                 dec_pct: parse_num(f[10]),
             };
+
+            with_gpu(&history, "nvidia", |g| {
+                g.util.push_raw(util);
+                g.vram.push_raw(vram_pct);
+                g.power.push_raw(power_pct);
+                g.detail = detail;
+            });
         }
 
         eprintln!("sysmond: nvidia-smi stream ended, respawning in 5s");
@@ -721,11 +1007,10 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
     }
 }
 
-/// Ranks the current pmon cycle and stores it as `top_gpu`: per-process SM
-/// (streaming-multiprocessor) utilisation first -- matching the pill's own
-/// "utilisation" metric -- then VRAM as the tiebreak. `ProcEntry::value`
-/// carries the VRAM MiB (what the list shows); the SM% is folded into
-/// `detail` when non-zero so the ranking is legible.
+/// Ranks the current pmon cycle and stores it on the nvidia GPU: per-process
+/// SM utilisation first (matching the pill's own "utilisation" metric), VRAM
+/// as the tiebreak. `ProcEntry::value` carries the VRAM MiB (what the list
+/// shows); the SM% is folded into `detail` when non-zero.
 fn gpu_flush(cur: &mut HashMap<i32, (ProcEntry, f64)>, history: &Mutex<History>) {
     let mut v: Vec<(ProcEntry, f64)> = cur.drain().map(|(_, e)| e).collect();
     v.sort_by(|a, b| {
@@ -746,7 +1031,7 @@ fn gpu_flush(cur: &mut HashMap<i32, (ProcEntry, f64)>, history: &Mutex<History>)
             };
         }
     }
-    history.lock().unwrap().top_gpu = top;
+    with_gpu(history, "nvidia", move |g| g.top = top);
 }
 
 /// Per-process GPU stats from a long-lived `nvidia-smi pmon -s um` stream
@@ -1012,20 +1297,28 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                         .collect(),
                 },
                 Metric::Gpu => Snapshot::Gpu {
-                    util_pct: h.gpu_util_pct.get(tier),
-                    vram_pct: h.gpu_vram_pct.get(tier),
-                    power_pct: h.gpu_power_pct.get(tier),
-                    name: h.gpu.name.clone(),
-                    temp_c: h.gpu.temp_c,
-                    power_w: h.gpu.power_w,
-                    power_limit_w: h.gpu.power_limit_w,
-                    vram_used_mb: h.gpu.vram_used_mb,
-                    vram_total_mb: h.gpu.vram_total_mb,
-                    sm_clock_mhz: h.gpu.sm_clock_mhz,
-                    mem_clock_mhz: h.gpu.mem_clock_mhz,
-                    enc_pct: h.gpu.enc_pct,
-                    dec_pct: h.gpu.dec_pct,
-                    fan_pct: h.gpu.fan_pct,
+                    gpus: h
+                        .gpus
+                        .iter()
+                        .map(|g| GpuHistory {
+                            name: g.name.clone(),
+                            vendor: g.vendor.clone(),
+                            util_pct: g.util.get(tier),
+                            vram_pct: g.vram.get(tier),
+                            power_pct: g.power.get(tier),
+                            temp_c: g.detail.temp_c,
+                            power_w: g.detail.power_w,
+                            power_limit_w: g.detail.power_limit_w,
+                            vram_used_mb: g.detail.vram_used_mb,
+                            vram_total_mb: g.detail.vram_total_mb,
+                            sm_clock_mhz: g.detail.sm_clock_mhz,
+                            mem_clock_mhz: g.detail.mem_clock_mhz,
+                            enc_pct: g.detail.enc_pct,
+                            dec_pct: g.detail.dec_pct,
+                            fan_pct: g.detail.fan_pct,
+                            procs: g.top.clone(),
+                        })
+                        .collect(),
                 },
                 Metric::Cpu => Snapshot::Cpu {
                     total: h.cpu_total.get(tier),
@@ -1039,7 +1332,6 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>) {
                     cached_pct: h.mem_cached_pct.get(tier),
                     swap_used_pct: h.swap_used_pct.get(tier),
                 },
-                Metric::TopGpu => Snapshot::TopProcs { procs: h.top_gpu.clone() },
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
                 Metric::TopNet => Snapshot::TopProcs { procs: h.top_net.clone() },
@@ -1062,6 +1354,14 @@ fn main() {
     let n_cores = count_cores();
     let history = Arc::new(Mutex::new(History::new(n_cores)));
 
+    let (has_nvidia, has_intel) = {
+        let h = history.lock().unwrap();
+        (
+            h.gpus.iter().any(|g| g.vendor == "nvidia"),
+            h.gpus.iter().any(|g| g.vendor == "intel"),
+        )
+    };
+
     {
         let history = history.clone();
         std::thread::spawn(move || sample_loop(history, clk_tck));
@@ -1070,13 +1370,19 @@ fn main() {
         let history = history.clone();
         std::thread::spawn(move || nethogs_loop(history));
     }
-    {
-        let history = history.clone();
-        std::thread::spawn(move || gpu_loop(history));
+    if has_nvidia {
+        {
+            let history = history.clone();
+            std::thread::spawn(move || gpu_loop(history));
+        }
+        {
+            let history = history.clone();
+            std::thread::spawn(move || gpu_proc_loop(history));
+        }
     }
-    {
+    if has_intel {
         let history = history.clone();
-        std::thread::spawn(move || gpu_proc_loop(history));
+        std::thread::spawn(move || intel_gpu_loop(history));
     }
     {
         // Periodic save only, deliberately no SIGTERM/SIGINT handler --
