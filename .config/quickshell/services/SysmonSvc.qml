@@ -27,12 +27,12 @@ QtObject {
         "7mo": qsTr("last 7 months"),
     })
 
-    readonly property TieredSocket netSock: TieredSocket { metricName: "net" }
-    readonly property TieredSocket cpuSock: TieredSocket { metricName: "cpu" }
-    readonly property TieredSocket memSock: TieredSocket { metricName: "mem" }
-    readonly property TieredSocket diskSock: TieredSocket { metricName: "disk" }
-    readonly property TieredSocket tempSock: TieredSocket { metricName: "temp" }
-    readonly property TieredSocket gpuSock: TieredSocket { metricName: "gpu"; includeProcs: root.gpuProcsRefs > 0 }
+    readonly property TieredSocket netSock: TieredSocket { metricName: "net"; historyWanted: root.netHistRefs > 0 }
+    readonly property TieredSocket cpuSock: TieredSocket { metricName: "cpu"; historyWanted: root.cpuHistRefs > 0 }
+    readonly property TieredSocket memSock: TieredSocket { metricName: "mem"; historyWanted: root.memHistRefs > 0 }
+    readonly property TieredSocket diskSock: TieredSocket { metricName: "disk"; historyWanted: root.diskHistRefs > 0 }
+    readonly property TieredSocket tempSock: TieredSocket { metricName: "temp"; historyWanted: root.tempHistRefs > 0 }
+    readonly property TieredSocket gpuSock: TieredSocket { metricName: "gpu"; includeProcs: root.gpuProcsRefs > 0; historyWanted: root.gpuHistRefs > 0 }
 
     function setNetTier(t: string): void { netSock.tier = t; }
     function setCpuTier(t: string): void { cpuSock.tier = t; }
@@ -157,8 +157,19 @@ QtObject {
         root.diskUsage = out;
     }
 
+    // Wrapped in `timeout` because `df` stats every mount including the
+    // ~10 fuse.rclone / fuse.sshfs remotes here (see disk-usage-mounts.conf
+    // -- `gdrive:` is deliberately one of the surfaced mounts, so they
+    // can't just be `-x`'d out), and a stale remote wedges `df` in
+    // uninterruptible I/O indefinitely. Without the timeout a wedged run
+    // sits at `running: true` forever: disk usage stops updating, and the
+    // 60s timer firing again on top of the stuck child was orphaning
+    // processes under quickshell's spawn path (observed as accumulating
+    // <defunct> children). `-k 2 8`: SIGTERM at 8s, SIGKILL 2s later.
     readonly property Process dfProc: Process {
-        command: ["df", "--output=source,fstype,pcent,target", "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs"]
+        command: ["timeout", "-k", "2", "8",
+                  "df", "--output=source,fstype,pcent,target",
+                  "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs"]
         stdout: StdioCollector {
             onStreamFinished: root._parseDfOutput(text)
         }
@@ -169,7 +180,9 @@ QtObject {
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.dfProc.running = true
+        // Single-flight: never start a second `df` while the previous one
+        // is still going (a slow remote can take longer than the interval).
+        onTriggered: if (!root.dfProc.running) root.dfProc.running = true;
     }
 
     function socketPath(): string {
@@ -193,6 +206,22 @@ QtObject {
     property int topNetRefs: 0
     property int topDiskRefs: 0
     property int gpuProcsRefs: 0
+
+    // Per-metric history demand -- same refcount idea as the top-procs
+    // demand above, incremented/decremented by each GraphPill's
+    // onExpandedChanged (Bar.qml) via refHistory()/unrefHistory(). While a
+    // metric's count is 0 its TieredSocket keeps only the latest sample
+    // instead of the full 600-point rolling buffer (see TieredSocket.qml's
+    // `historyWanted`); the always-visible compact pills only ever need
+    // that latest value, and re-deriving three monitors' worth of bindings
+    // off a fresh 600-point merge every second when nothing is even
+    // graphing it was the bulk of qs's steady-state CPU.
+    property int netHistRefs: 0
+    property int cpuHistRefs: 0
+    property int memHistRefs: 0
+    property int diskHistRefs: 0
+    property int tempHistRefs: 0
+    property int gpuHistRefs: 0
 
     // unref*() clears the corresponding array back to [] once its refcount
     // hits zero -- topCpu/topMem/topNet/topDisk only ever get *reassigned*
@@ -227,6 +256,27 @@ QtObject {
     }
     function refGpuProcs(): void { root.gpuProcsRefs++; }
     function unrefGpuProcs(): void { root.gpuProcsRefs = Math.max(0, root.gpuProcsRefs - 1); }
+
+    function refHistory(metric: string): void {
+        switch (metric) {
+        case "net": root.netHistRefs++; break;
+        case "cpu": root.cpuHistRefs++; break;
+        case "mem": root.memHistRefs++; break;
+        case "disk": root.diskHistRefs++; break;
+        case "temp": root.tempHistRefs++; break;
+        case "gpu": root.gpuHistRefs++; break;
+        }
+    }
+    function unrefHistory(metric: string): void {
+        switch (metric) {
+        case "net": root.netHistRefs = Math.max(0, root.netHistRefs - 1); break;
+        case "cpu": root.cpuHistRefs = Math.max(0, root.cpuHistRefs - 1); break;
+        case "mem": root.memHistRefs = Math.max(0, root.memHistRefs - 1); break;
+        case "disk": root.diskHistRefs = Math.max(0, root.diskHistRefs - 1); break;
+        case "temp": root.tempHistRefs = Math.max(0, root.tempHistRefs - 1); break;
+        case "gpu": root.gpuHistRefs = Math.max(0, root.gpuHistRefs - 1); break;
+        }
+    }
 
     readonly property Socket topCpuSocket: Socket {
         path: root.socketPath()
