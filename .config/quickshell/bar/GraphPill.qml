@@ -254,7 +254,11 @@ Rectangle {
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize
             color: root.gradedColor
-            width: root.compactTextWidth > 0 ? root.compactTextWidth : implicitWidth
+            // compactTextWidth pins a minimum so the pill doesn't jitter on
+            // routine value changes, but content wider than it (a byte rate
+            // that grew a unit, a GPU hitting 100%) still expands the pill
+            // rather than clipping.
+            width: root.compactTextWidth > 0 ? Math.max(root.compactTextWidth, implicitWidth) : implicitWidth
             horizontalAlignment: Text.AlignRight
             anchors.verticalCenter: parent.verticalCenter
         }
