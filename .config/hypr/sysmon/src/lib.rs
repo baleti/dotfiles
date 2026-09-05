@@ -222,6 +222,11 @@ pub enum Snapshot {
     Gpu {
         util_pct: Vec<f64>,
         vram_pct: Vec<f64>,
+        // Board power draw as a percent of the enforced power limit (TGP) --
+        // a third history line on the same 0..100 axis as util/vram. Empty
+        // (not zero-filled) from a daemon that predates it.
+        #[serde(default)]
+        power_pct: Vec<f64>,
         #[serde(default)]
         name: String,
         #[serde(default)]
