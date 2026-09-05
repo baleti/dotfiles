@@ -14,10 +14,11 @@ Usage: cdp.py <command> [args...]
   eval <page_id> <js>          -> print result (read-only introspection only)
   pages                        -> list open pages
 """
-import sys, json, base64, time
+import sys, os, json, base64, time
 import websocket
 
-CDP_HTTP = "http://127.0.0.1:9222"
+CDP_PORT = os.environ.get("CDP_PORT", "9222")
+CDP_HTTP = f"http://127.0.0.1:{CDP_PORT}"
 
 def http(path):
     import urllib.request
