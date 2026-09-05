@@ -634,7 +634,7 @@ Rectangle {
                         visible: (section.modelData.procs ?? []).length > 0
 
                         Text {
-                            text: qsTr("executable")
+                            text: qsTr("exe")
                             color: Theme.textDim
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 4
@@ -820,7 +820,7 @@ Rectangle {
                     spacing: 6
 
                     Text {
-                        text: qsTr("executable")
+                        text: qsTr("exe")
                         color: Theme.textDim
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 3
