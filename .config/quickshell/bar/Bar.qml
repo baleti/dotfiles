@@ -722,7 +722,6 @@ Item {
             detailRows: root.gpuDetailRows
             topProcs: SysmonSvc.topGpu
             topUnit: " MB"
-            topLabel: qsTr("Top VRAM users")
             yAxisFormatter: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
@@ -827,6 +826,7 @@ Item {
     MouseArea {
         id: clockHoverArea
         hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
         x: rightRow.x + clockLoader.x
         y: rightRow.y + clockLoader.y
         width: clockLoader.width
