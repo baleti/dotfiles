@@ -39,8 +39,8 @@ Rectangle {
     // preview. "As tall as the monitor allows" per-request -- no fixed
     // small cap -- but real per-account process counts (20-40 alive here)
     // routinely exceed even that combined across all 3, so
-    // groupRowBudgets below still has to truncate with a "+N more" line
-    // rather than ever actually fitting everything unconditionally.
+    // root.processAreaBudget below still has to truncate with a "+N more"
+    // line rather than ever actually fitting everything unconditionally.
     property real maxPanelHeight: 700
 
     width: panelWidth
@@ -289,33 +289,44 @@ Rectangle {
     }
     property int tick: 0
 
-    // Per-account collapse state, keyed by account name -- missing/absent
-    // means expanded (so a brand new account name defaults open).
-    property var groupExpanded: ({})
-    function isGroupExpanded(name) {
-        return root.groupExpanded[name] !== false;
-    }
-    function toggleGroup(name) {
-        const next = Object.assign({}, root.groupExpanded);
-        next[name] = !root.isGroupExpanded(name);
-        root.groupExpanded = next;
+    // Single flat table across every account (request 2026-09-05: "instead
+    // of 3 separate tables grouped by account, let's have a single table")
+    // with an "acct" column identifying which account each row came from
+    // -- no more per-account fold state, and one sort applies to the whole
+    // table instead of one independent sort per account.
+    property var sort: null
+
+    // 1-based position of `account` in ClaudeUsageSvc.accounts -- the bare
+    // number the "acct" column shows (hover for the real name) and what
+    // its column-sort compares on.
+    function acctIndex(account) {
+        for (let i = 0; i < ClaudeUsageSvc.accounts.length; i++)
+            if (ClaudeUsageSvc.accounts[i].account === account)
+                return i + 1;
+        return 0;
     }
 
-    // Per-account process-table sort, keyed by account name -> {col, asc}.
-    // Independent per account -- each has its own header row, so clicking
-    // claude's "pid" header doesn't touch claude2/claude3's ordering.
-    property var groupSort: ({})
+    // Conversation count + summed context tokens for one account -- the
+    // per-account tally line below the table (request 2026-09-05).
+    function acctTotals(account) {
+        let count = 0, tokens = 0;
+        for (const row of (ClaudeUsageSvc.sessions[account] || [])) {
+            count++;
+            if (typeof row.context_tokens === "number")
+                tokens += row.context_tokens;
+        }
+        return { count: count, tokens: tokens };
+    }
 
     // ---- search box: shared picker query DSL (query-dsl.md / QueryDsl.qml)
     // -- same grammar as the app launcher and RSS reader, "/" to focus, same
     // import (not a port) per that doc's own "stays copy-pasted... add a new
-    // consumer, add its row" convention. A flat list of rows across all 3
-    // account groups here rather than a variable column view, so /ft /at
-    // /rt are inert (same call the RSS reader made for the same reason) --
-    // only /fv (bare text or field:value) and /s /rv actually do anything.
-    // Global across every account's table at once: while searching, its
-    // /s /rv (if present) override that account's own column-click sort
-    // (root.groupSort) for every group, not just one.
+    // consumer, add its row" convention. A flat list of rows (the single
+    // merged table, all 3 accounts) rather than a variable column view, so
+    // /ft /at /rt are inert (same call the RSS reader made for the same
+    // reason) -- only /fv (bare text or field:value) and /s /rv actually
+    // do anything. Its /s /rv, when present, override the table's own
+    // column-click sort (root.sort).
     property string searchText: ""
     readonly property var searchTypeNames: [
         "title", "pid", "status", "tokens", "path", "account",
@@ -360,6 +371,89 @@ Rectangle {
     function focusSearch() {
         searchInput.forceActiveFocus();
         searchInput.selectAll();
+    }
+
+    // ---- single merged process table across every account -------------
+    // Every alive process across every account, tagged with which account
+    // it's from -- what the one flat table is built from now, replacing
+    // the old per-account Repeater-of-Repeaters shape.
+    readonly property var allProcs: {
+        const out = [];
+        for (const a of ClaudeUsageSvc.accounts)
+            for (const row of (ClaudeUsageSvc.sessions[a.account] || []))
+                out.push(Object.assign({ account: a.account }, row));
+        return out;
+    }
+    readonly property var searchFilteredProcs: {
+        root.searchParsed; // dependency
+        const terms = root.searchParsed.terms;
+        if (terms.length === 0)
+            return root.allProcs;
+        return root.allProcs.filter(p => terms.every(t => root._searchMatches(p, t, p.account)));
+    }
+    // Column-header-click sort (root.sort) falls back to a global
+    // most-recent-first sort by age when nothing's been clicked, so rows
+    // from all 3 accounts interleave by actual recency instead of sitting
+    // in account-then-recency-within-account blocks (reported 2026-09-05:
+    // merging the 3 tables into one still showed every account-1 row
+    // before any account-2/3 row -- each account alone had enough
+    // sessions to fill the row budget on its own, since the un-sorted
+    // fallback used to just be root.allProcs's own concatenation order).
+    // The search box's own /s /rv, when present, overrides it (see
+    // root.searchParsed).
+    readonly property var sortedProcs: {
+        const base = root.searchFilteredProcs;
+        const s = root.searchParsed.sort;
+        // Each chain segment must resolve to exactly one field
+        // (query-dsl.md "/sort"); any segment that doesn't makes the
+        // *whole* /sort inert, not just that key.
+        const sortFields = s ? s.fields.map(p => QueryDsl.resolvePath(p, root.searchTypeNames)) : null;
+        let arr;
+        if (s && sortFields.every(fl => fl.length === 1)) {
+            const keys = sortFields.map(fl => fl[0]);
+            arr = base.slice().sort((a, b) => {
+                for (const f of keys) {
+                    const av = root._searchFieldVals(a, f, a.account)[0] || "";
+                    const bv = root._searchFieldVals(b, f, b.account)[0] || "";
+                    // Shared comparator (QueryDsl.compareFieldValues):
+                    // numeric-sniffs plain ints (tokens/pid) so "100" sorts
+                    // after "2" instead of before it, same rule the
+                    // column-header click sort (root.compareForSort)
+                    // already applies.
+                    const c = QueryDsl.compareFieldValues(av, bv, s.dir);
+                    if (c !== 0) return c;
+                }
+                return 0;
+            });
+        } else if (root.sort) {
+            arr = base.slice().sort((a, b) => root.compareForSort(a, b, root.sort.col));
+            if (!root.sort.asc)
+                arr.reverse();
+        } else {
+            // Default: most-recently-active first, i.e. descending age --
+            // compareForSort's "active" case is ascending (oldest first),
+            // so swap the comparator args rather than sort-then-reverse.
+            arr = base.slice().sort((a, b) => root.compareForSort(b, a, "active"));
+        }
+        return root.searchParsed.reverse ? arr.slice().reverse() : arr;
+    }
+
+    // ---- cursor-following hover hint (header abbreviations, acct cells) ----
+    // Shared by every abbreviated column header (wks/sess/win/tkns) and the
+    // "acct" column's per-row value -- follows the cursor like the
+    // hyprland-column thumbnail below rather than sitting at a fixed spot
+    // next to the header, which the cursor itself ended up occluding
+    // (reported 2026-09-05).
+    property string hintText: ""
+    property point hintPos: Qt.point(0, 0)
+    function showHint(text) {
+        root.hintText = text;
+    }
+    function moveHint(rootPos) {
+        root.hintPos = Qt.point(rootPos.x + 12, rootPos.y + 16);
+    }
+    function hideHint() {
+        root.hintText = "";
     }
 
     // ---- search box autocomplete (Tab-triggered, marginalia-style) ----
@@ -520,19 +614,13 @@ Rectangle {
         return true;
     }
 
-    // All three view-state pieces reset on every panel open *and* close
-    // -- this Rectangle instance is never destroyed (only its height
-    // collapses to 0, same "sibling overlay" pattern as Media/
-    // CalendarExpanded), so without this a fold, a sort, or a manual
-    // column resize from one look at the panel would silently still be
-    // there next time. First version only reset groupSort, leaving fold
-    // state to persist (reasoned, at the time, that persisting collapse
-    // felt like the more useful default) -- reported as inconsistent with
-    // the intended "clean slate every open" behavior, so all three reset
-    // together now.
+    // View-state resets on every panel open *and* close -- this Rectangle
+    // instance is never destroyed (only its height collapses to 0, same
+    // "sibling overlay" pattern as Media/CalendarExpanded), so without
+    // this a sort or a manual column resize from one look at the panel
+    // would silently still be there next time.
     onExpandedChanged: {
-        root.groupExpanded = ({});
-        root.groupSort = ({});
+        root.sort = null;
         root.mouseMovedSinceOpen = false;
         root._hoverSettled = false;
         if (root.expanded)
@@ -548,15 +636,13 @@ Rectangle {
         root.resetColumnWidths();
     }
 
-    function toggleSort(account, col) {
-        const cur = root.groupSort[account];
-        const next = Object.assign({}, root.groupSort);
-        next[account] = (cur && cur.col === col) ? { col: col, asc: !cur.asc } : { col: col, asc: true };
-        root.groupSort = next;
+    function toggleSort(col) {
+        root.sort = (root.sort && root.sort.col === col)
+            ? { col: col, asc: !root.sort.asc }
+            : { col: col, asc: true };
     }
-    function sortArrow(account, col) {
-        const s = root.groupSort[account];
-        return (s && s.col === col) ? (s.asc ? " ▲" : " ▼") : "";
+    function sortArrow(col) {
+        return (root.sort && root.sort.col === col) ? (root.sort.asc ? " ▲" : " ▼") : "";
     }
     // undefined/null (context_tokens can be either for a session with no
     // recorded usage yet) sorts as lower than any real number, in both
@@ -564,6 +650,7 @@ Rectangle {
     // scattered wherever 0 would fall.
     function compareForSort(a, b, col) {
         switch (col) {
+        case "acct": return root.acctIndex(a.account) - root.acctIndex(b.account);
         case "status": return (a.status || "").localeCompare(b.status || "");
         case "title": return (a.title || "").localeCompare(b.title || "");
         case "pid": return (a.pid || 0) - (b.pid || 0);
@@ -585,46 +672,38 @@ Rectangle {
         }
     }
 
-    // How many process rows each *expanded* account group gets to show,
-    // derived from the real remaining vertical budget rather than a fixed
-    // count -- so one account open alone gets to show many more than when
-    // all 3 are open together. The header/row heights below are rendered-
-    // size estimates (not measured live -- doing that without a two-pass
-    // layout would mean each group's budget depending on its siblings'
-    // actual process counts, which themselves depend on their own budget:
-    // circular), calibrated against real screenshots rather than guessed
-    // once and left alone -- an earlier, more conservative pass (rowH 20,
-    // groupHeaderH 78, a 20px safety margin) reliably left 10-20% of
-    // maxPanelHeight unused before truncating with "+N more", reported
-    // "it still is using only about 80-90%". Tightened here; `root.clip:
-    // true` is the actual backstop against a rare 1-2px partial last row
-    // now that the margin's thinner, not a promise of zero clipping.
-    // Both nudged down 1px from 18/84 to reflect acctCol's spacing
-    // tightening (2 -> 1) above. groupHeaderH cut again (78 -> 45) when the
-    // session/weekly lines merged onto the title line (2026-09-04) removed
-    // two whole rows from this block -- estimate, not re-screenshotted yet,
-    // may need the same kind of recalibration pass the figures above went
-    // through if it over/undershoots in practice.
+    // Row/header height estimates (not measured live), calibrated against
+    // real screenshots rather than guessed once and left alone -- used to
+    // size the scrollable row-viewport (root.processAreaBudget) and the
+    // scrollbar thumb. `root.clip: true` on the viewport is the actual
+    // backstop against a rare 1-2px partial last row, not a promise of
+    // zero clipping.
     readonly property int rowH: 17
     readonly property int groupHeaderH: 45
-    readonly property int collapsedH: 18
+    // The per-account totals line below the table (request 2026-09-05:
+    // "add total tally of each account conversations, tokens").
+    readonly property int tallyLineH: 18
     // Search box Rectangle (22px) + the one extra `content` Column
-    // spacing gap (10px) it added between the mode-line and the first
-    // account group -- wasn't part of the fixedOverhead estimate below
-    // when that box was added, so every group's row budget stayed
-    // computed as if it didn't exist, silently overshooting by ~32px
-    // (about 2 rows) and clipping the last 2-3 lines of the last group
-    // (reported 2026-09-02).
+    // spacing gap (10px) it added between the mode-line and the table
+    // below it -- wasn't part of the fixedOverhead estimate when that box
+    // was added, so the row budget stayed computed as if it didn't exist,
+    // silently overshooting and clipping the last 2-3 lines (reported
+    // 2026-09-02).
     readonly property int searchBoxH: 32
+    // Width of the row-viewport's own scrollbar (request 2026-09-05:
+    // "scrollable... with a scroller on the right"), plus the small gap
+    // between it and the last data column.
+    readonly property real scrollbarW: 6
+    readonly property real scrollbarGap: 4
 
     // Shared column widths -- the process-list header row and every data
     // row below it bind to these same values so the two stay aligned
     // without hardcoding the same number twice. Mutable (not readonly):
     // each column's own resize handle (see ColumnResizeHandle usages
     // below) drags these directly, and resetColumnWidths() below restores
-    // colDefaults on every panel open/close, same as groupExpanded/
-    // groupSort -- a manual resize isn't meant to quietly outlive the
-    // look at the panel that made it, any more than a fold or a sort is.
+    // colDefaults on every panel open/close, same as root.sort -- a manual
+    // resize isn't meant to quietly outlive the look at the panel that
+    // made it, any more than a sort is.
     // title raised again (140 -> 280) alongside Bar.qml's
     // claudeUsagePanelWidth bump (760 -> 920) -- "make the panel wider to
     // give more space to make the title column wider" 2026-09-01.
@@ -633,16 +712,22 @@ Rectangle {
     // narrower and title wider" 2026-09-01, same request that added the
     // hyprland group (workspace/monitor, "#"/"monitor" headers) below.
     readonly property var colDefaults: ({
-        status: 52, title: 400, tokens: 60, last: 44,
-        tmuxSession: 54, tmuxWindow: 50, tmuxPane: 40,
-        hyprWorkspace: 28, hyprMonitor: 56,
-        pid: 68, path: 100,
+        acct: 30, status: root.statusNaturalW, title: 400, tokens: root.tokensNaturalW, last: 44,
+        tmuxSession: 54, tmuxWindow: root.tmuxWindowNaturalW, tmuxPane: root.tmuxPaneNaturalW,
+        hyprWorkspace: root.hyprWorkspaceNaturalW, hyprMonitor: 56,
+        pid: root.pidNaturalW, path: 100,
     })
-    // Sized for the "status" header label (6 chars) plus its clickable
-    // sort-arrow suffix (" ▲"/" ▼"), not the shorter idle/busy/wait values
-    // it holds -- the header row hit the exact same "wider label
-    // overflows a value-sized column" bug the status *value* column had
-    // before "waiting" got abbreviated to "wait".
+    // New "acct" column (request 2026-09-05, single-table merge) -- just a
+    // bare "1"/"2"/"3" (root.acctIndex), so narrow like "#"/"wks" below;
+    // hover shows the real account name via the shared cursor-following
+    // hint (root.showHint) instead of spending width on the full name.
+    property real colAcctW: colDefaults.acct
+    // Whichever is wider of the "status" header (label + its clickable
+    // sort-arrow suffix) and the actual idle/busy/wait values currently
+    // shown (root.statusNaturalW) -- used to be a flat 52 sized for the
+    // header alone, tightened to shrink-to-fit per-column (request
+    // 2026-09-05: "make status... narrower... resize dynamically based
+    // on displayed contents").
     property real colStatusW: colDefaults.status
     // Title (tmux's own pane_title, e.g. "Reddit API automation for
     // unixporn posts") used to be the one column with Layout.fillWidth,
@@ -710,6 +795,7 @@ Rectangle {
     readonly property real colMinW: 24
 
     function resetColumnWidths() {
+        root.colAcctW = root.colDefaults.acct;
         root.colStatusW = root.colDefaults.status;
         root.colTitleW = root.colDefaults.title;
         root.colTokensW = root.colDefaults.tokens;
@@ -745,11 +831,11 @@ Rectangle {
     // without their trailing filler Item eating any slack (or, if this
     // exceeds Bar.qml's max, without something being cut off beyond what
     // that filler removal already implies).
-    readonly property real tableNaturalWidth: root.colStatusW + root.handleW
+    readonly property real tableNaturalWidth: root.colAcctW + root.handleW + root.colStatusW + root.handleW
         + root.colTitleW + root.handleW + root.colTokensW + root.handleW
         + root.colLastW + root.handleW + root.colTmuxGroupW + root.handleW
         + root.colHyprGroupW + root.handleW + root.colPidW + root.handleW
-        + root.colPathW
+        + root.colPathW + root.scrollbarGap + root.scrollbarW
     // Same fallback width the standalone-preview default (panelWidth: 320
     // above) already used -- reused here as the floor so a near-empty
     // panel (few/no live processes) doesn't shrink below something that
@@ -778,6 +864,55 @@ Rectangle {
         }
         return m;
     }
+
+    // ---- content-driven natural widths: status/tkns/wks/win/pane/pid ----
+    // These 6 columns used to default to hand-picked flat numbers (some
+    // sized for the header label, some for the values, whichever was
+    // wider) -- request 2026-09-05: size each to whatever its own header
+    // + actual current values need, same shrink-to-fit approach path
+    // already used above, instead of a guessed constant. Values render at
+    // fontSize-2 for status/tokens/pid, fontSize-3 (same as every header)
+    // for tmux window/pane and hyprland workspace -- two FontMetrics to
+    // match.
+    FontMetrics {
+        id: valueFontMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 2
+    }
+    function _maxTextWidth(fm, texts) {
+        let m = 0;
+        for (const t of texts) {
+            const w = fm.advanceWidth(t);
+            if (w > m) m = w;
+        }
+        return m;
+    }
+    // +6: a little breathing room past the exact glyph width, same margin
+    // pathNaturalW's own "+ 6" above uses.
+    readonly property real statusNaturalW: Math.max(
+        pathFontMetrics.advanceWidth(qsTr("status") + " ▲"),
+        root._maxTextWidth(valueFontMetrics, root.allProcs.map(r => root.statusLabel(r.status)))
+    ) + 6
+    readonly property real tokensNaturalW: Math.max(
+        pathFontMetrics.advanceWidth(qsTr("tkns") + " ▲"),
+        root._maxTextWidth(valueFontMetrics, root.allProcs.map(r => root.fmtTokens(r.context_tokens)))
+    ) + 6
+    readonly property real pidNaturalW: Math.max(
+        pathFontMetrics.advanceWidth(qsTr("pid") + " ▲"),
+        root._maxTextWidth(valueFontMetrics, root.allProcs.map(r => String(r.pid)))
+    ) + 6
+    readonly property real tmuxWindowNaturalW: Math.max(
+        pathFontMetrics.advanceWidth(qsTr("win") + " ▲"),
+        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_window || ""))
+    ) + 6
+    readonly property real tmuxPaneNaturalW: Math.max(
+        pathFontMetrics.advanceWidth(qsTr("pane") + " ▲"),
+        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_pane || ""))
+    ) + 6
+    readonly property real hyprWorkspaceNaturalW: Math.max(
+        pathFontMetrics.advanceWidth(qsTr("wks") + " ▲"),
+        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.hypr_workspace || ""))
+    ) + 6
 
     // ---- hyprland-column hover-thumbnail + click-to-focus ------------
     //
@@ -885,63 +1020,21 @@ Rectangle {
     Process { id: tmuxSelectProc }
     Process { id: tmuxSelectPaneProc }
 
-    readonly property int expandedGroupCount: {
-        let n = 0;
-        for (const a of ClaudeUsageSvc.accounts)
-            if (root.isGroupExpanded(a.account))
-                n++;
-        return n;
-    }
+    // Single table now -- one header block, not one per (formerly
+    // foldable) account group. The process list itself no longer
+    // truncates with a "+N more" line (request 2026-09-05: "remove ...
+    // at the bottom, scroller size should be enough of an indication") --
+    // it's a fixed-height scrollable viewport instead, holding every row
+    // in root.sortedProcs, so this is now just "how tall should that
+    // viewport be" rather than "how many rows fit before truncating".
     readonly property real processAreaBudget: {
-        const collapsedCount = ClaudeUsageSvc.accounts.length - root.expandedGroupCount;
-        // 40: mode-line text (~14px) + the content Column's own spacing
-        // gaps between its visible top-level children (~30px, varies
-        // slightly with how many groups are visible). 24: root's own
-        // implicitHeight padding (content.implicitHeight + 24). 16: safety
-        // margin -- was cut to 4 from an original 20 to reclaim wasted
-        // height, but 4 proved too thin in practice: the last "+N more"
-        // line was visibly clipped (reported 2026-08-31). 16 is a
-        // middle ground between the two.
-        const fixedOverhead = 40 + 24 + 16 + root.searchBoxH
-            + root.expandedGroupCount * root.groupHeaderH
-            + collapsedCount * root.collapsedH;
+        // 20: the mode-line/summary row. 24: root's own implicitHeight
+        // padding (content.implicitHeight + 24). 16: safety margin.
+        // groupHeaderH: the table's own header block (tmux/hyprland row +
+        // column-header row). tallyLineH: the per-account totals line
+        // below the table.
+        const fixedOverhead = 20 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
-    }
-    // Water-filling row allocation across expanded groups, keyed by
-    // account name -> row count. An equal per-group split (the original
-    // version of this) wastes height whenever some group has fewer real
-    // processes than its equal share: that leftover just sat unused
-    // instead of flowing to a group that actually has more to show,
-    // which is what made the whole panel visibly shrink on folding a
-    // group even while another one still had a "+N more" waiting to grow
-    // into the freed space (reported 2026-08-31). Processing
-    // smallest-total-first and handing each group only what it can use,
-    // with every leftover row rolling forward to the remaining groups,
-    // means the panel only shrinks when there's genuinely nothing left
-    // to show anywhere, not from an uneven split.
-    readonly property var groupRowBudgets: {
-        const totalRows = Math.max(0, Math.floor(root.processAreaBudget / root.rowH));
-        const items = [];
-        for (const a of ClaudeUsageSvc.accounts) {
-            if (root.isGroupExpanded(a.account)) {
-                items.push({ account: a.account, total: (ClaudeUsageSvc.sessions[a.account] || []).length });
-            }
-        }
-        items.sort((x, y) => x.total - y.total);
-
-        let remaining = totalRows;
-        const budgets = {};
-        for (let i = 0; i < items.length; i++) {
-            const groupsLeft = items.length - i;
-            const fairShare = Math.max(1, Math.floor(remaining / groupsLeft));
-            const give = Math.min(items[i].total, fairShare, remaining);
-            budgets[items[i].account] = give;
-            remaining -= give;
-        }
-        return budgets;
-    }
-    function rowBudgetFor(account) {
-        return root.groupRowBudgets[account] || 0;
     }
 
     Column {
@@ -951,13 +1044,134 @@ Rectangle {
         width: parent.width - 24
         spacing: 10
 
-        Text {
+        // Mode-line text + the combined session/weekly summary share one
+        // row now (request 2026-09-05: "put the line ... on the first
+        // line, the same line as 'polling every 2m'... aligned to the
+        // right") -- mode-line gets Layout.fillWidth + elide so it yields
+        // space to the summary instead of the two fighting over width.
+        // Account names shortened to their bare acctIndex (1/2/3) to help
+        // fit, and each percentage's "resets in..." is back to being
+        // printed inline (it was hover-only for one revision, reported
+        // "bring back resets in... we had before").
+        RowLayout {
             width: parent.width
-            text: root.tick >= 0 ? root.modeLine() + " -- " + qsTr("updated %1 ago").arg(root.fmtAgo(ClaudeUsageSvc.updatedAt)) : ""
-            color: Theme.textDim
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize - 2
-            elide: Text.ElideRight
+            spacing: 10
+
+            Text {
+                Layout.fillWidth: true
+                text: root.tick >= 0 ? root.modeLine() + " -- " + qsTr("updated %1 ago").arg(root.fmtAgo(ClaudeUsageSvc.updatedAt)) : ""
+                color: Theme.textDim
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 2
+                elide: Text.ElideRight
+            }
+
+            Repeater {
+                model: ClaudeUsageSvc.accounts
+
+                // Pill/chip background around each account's numbers
+                // (request 2026-09-06: "reads better" -- with 3 accounts'
+                // worth of numbers now sharing one line, a rounded border
+                // per account visually separates them at a glance instead
+                // of relying purely on the "/" and the gap between
+                // groups). radius: height/2 for a true pill (fully
+                // rounded ends), not Theme.rounding's flatter default --
+                // this chip is much shorter than the controls that
+                // constant was tuned for.
+                Rectangle {
+                    id: acctSummaryPill
+                    required property var modelData
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: acctSummary.implicitWidth + 16
+                    implicitHeight: acctSummary.implicitHeight + 6
+                    radius: height / 2
+                    color: Theme.bgAlpha
+                    border.color: Theme.border
+                    border.width: 1
+
+                    Row {
+                        id: acctSummary
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        Text {
+                            id: acctSummaryName
+                            text: String(root.acctIndex(acctSummaryPill.modelData.account))
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
+                            font.bold: true
+                        }
+                        Text {
+                            id: acctSummarySession
+                            visible: typeof acctSummaryPill.modelData.session_pct === "number"
+                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
+                            text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.session_pct))
+                            color: Theme.rampColor(acctSummaryPill.modelData.session_pct / 100)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
+                        Text {
+                            visible: acctSummarySession.visible
+                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.session_resets_at) : ""
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                        }
+                        Text {
+                            visible: acctSummarySession.visible && acctSummaryWeekly.visible
+                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            text: "/"
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
+                        Text {
+                            id: acctSummaryWeekly
+                            visible: typeof acctSummaryPill.modelData.weekly_pct === "number"
+                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
+                            text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.weekly_pct))
+                            color: Theme.rampColor(acctSummaryPill.modelData.weekly_pct / 100)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
+                        Text {
+                            visible: acctSummaryWeekly.visible
+                            anchors.verticalCenter: acctSummaryName.verticalCenter
+                            text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.weekly_resets_at) : ""
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                        }
+                    }
+                }
+            }
+        }
+
+        // A stale reading still shows its (dimmed) numbers above -- this
+        // is just the "why" note, not a replacement for them. Only a
+        // genuinely never-fetched account has no numbers to dim, in which
+        // case this is the only line shown. One line per erroring account,
+        // prefixed with its name now that there's no per-account heading
+        // to sit under (request 2026-09-05).
+        Repeater {
+            model: ClaudeUsageSvc.accounts
+
+            Text {
+                required property var modelData
+                visible: !!modelData.error
+                width: content.width
+                text: (typeof modelData.session_pct === "number" || typeof modelData.weekly_pct === "number")
+                    ? qsTr("%1: %2 -- showing last known values").arg(modelData.account).arg(modelData.error)
+                    : qsTr("%1: error: %2").arg(modelData.account).arg(modelData.error)
+                color: Theme.red
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 2
+                elide: Text.ElideRight
+            }
         }
 
         // Search box: shared picker query DSL (see root.searchParsed's own
@@ -1019,23 +1233,27 @@ Rectangle {
                 }
 
                 // First Escape while searching closes the autocomplete
-                // popup if one's open; otherwise clears the query and
-                // stays focused (a non-empty query is the common case
-                // worth a dedicated undo step). Escape on an already-empty
-                // box with no popup open isn't accepted here, so it
-                // bubbles up to Bar.qml's root.Keys.onPressed, which is
-                // what actually closes the whole panel -- no explicit
-                // refocus plumbing needed, that's just normal Qt Quick
-                // key-event bubbling.
+                // popup if one's open; next closes it further by clearing
+                // a non-empty query (a common case worth a dedicated undo
+                // step); with both of those already clear, an Escape now
+                // just blurs the search box (root.forceActiveFocus() moves
+                // focus off searchInput back onto this whole panel) rather
+                // than closing the panel outright -- the panel should stay
+                // open, focus just leaves the box (request 2026-09-05).
+                // *That* Escape is accepted here too, so it never reaches
+                // Bar.qml's root.Keys.onPressed; only a further Escape,
+                // pressed once the search box no longer holds focus,
+                // bubbles all the way up and actually closes the panel.
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
                         if (root.acOpen) {
                             root.acDismissed = true;
-                            event.accepted = true;
                         } else if (searchInput.text.length > 0) {
                             searchInput.text = "";
-                            event.accepted = true;
+                        } else {
+                            root.forceActiveFocus();
                         }
+                        event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
                         if (root.acOpen) { root.acAccept(); event.accepted = true; }
                         else if (root.triggerCompletion()) { event.accepted = true; }
@@ -1125,795 +1343,642 @@ Rectangle {
             }
         }
 
-        Repeater {
-            model: ClaudeUsageSvc.accounts
+        // Single header block for the merged table (request 2026-09-05:
+        // "instead of 3 separate tables grouped by account, let's have a
+        // single table") -- one "acct" column (root.acctIndex, hover for
+        // the real name) identifies which account each row is from,
+        // replacing the old per-account heading + header-row-per-group
+        // shape entirely. Column headers are individually clickable
+        // (root.toggleSort/sortArrow), one sort for the whole table now
+        // instead of one independent sort per account.
+        Column {
+            width: content.width
+            spacing: 1
+            visible: root.anyProcsVisible
 
-            delegate: Column {
-                id: acctCol
+            // Group-header row: blank over every plain column, "tmux" and
+            // "hyprland" labels (underlined) spanning their own
+            // sub-columns below -- same shape as the old per-account
+            // version, just rendered once now.
+            RowLayout {
                 width: content.width
-                // 2 -> 1: reclaims a little vertical space across the ~20
-                // rows/headers each account block can have, compounding
-                // into a real amount -- reported "there is a lot of empty
-                // space above" the tmux header, asking for the whole
-                // table to sit one line higher.
-                spacing: 1
+                spacing: 0
 
-                required property var modelData
-                readonly property bool hasSession: typeof modelData.session_pct === "number"
-                readonly property bool hasWeekly: typeof modelData.weekly_pct === "number"
-                readonly property bool groupOpen: root.isGroupExpanded(modelData.account)
-                // Every alive process for this account, most-recently-active
-                // first (claude-usage-daemon.py's list_sessions()) -- 20-40
-                // of these routinely exist per account here, almost all idle
-                // resumed shells, so visibleProcs below is what actually
-                // renders; procs.length (the real total) drives "+N more".
-                readonly property var procs: ClaudeUsageSvc.sessions[modelData.account] || []
-                // Search box (root.searchParsed) narrows procs before either
-                // sort applies -- an empty query matches everything (terms
-                // is []), so this is a no-op until something's typed.
-                readonly property var searchFilteredProcs: {
-                    root.searchParsed; // dependency
-                    const terms = root.searchParsed.terms;
-                    if (terms.length === 0)
-                        return procs;
-                    return procs.filter(p => terms.every(t => root._searchMatches(p, t, modelData.account)));
-                }
-                // Column-header-click sort, this account's own (see
-                // root.groupSort) -- falls back to the daemon's own
-                // most-recent-first order when nothing's been clicked. The
-                // search box's own /s /rv, when present, override this for
-                // every group at once (see root.searchParsed's own comment).
-                readonly property var sortSpec: root.groupSort[modelData.account]
-                readonly property var sortedProcs: {
-                    const base = searchFilteredProcs;
-                    const s = root.searchParsed.sort;
-                    // Each chain segment must resolve to exactly one field
-                    // (query-dsl.md "/sort"); any segment that doesn't
-                    // makes the *whole* /sort inert, not just that key.
-                    const sortFields = s ? s.fields.map(p => QueryDsl.resolvePath(p, root.searchTypeNames)) : null;
-                    let arr;
-                    if (s && sortFields.every(fl => fl.length === 1)) {
-                        const keys = sortFields.map(fl => fl[0]);
-                        arr = base.slice().sort((a, b) => {
-                            for (const f of keys) {
-                                const av = root._searchFieldVals(a, f, modelData.account)[0] || "";
-                                const bv = root._searchFieldVals(b, f, modelData.account)[0] || "";
-                                // Shared comparator (QueryDsl.compareFieldValues):
-                                // numeric-sniffs plain ints (tokens/pid) so
-                                // "100" sorts after "2" instead of before it,
-                                // same rule this account's own column-header
-                                // click sort (root.compareForSort) already
-                                // applies -- the DSL-driven /sort path was
-                                // missing it (reported 2026-09-02: raw token
-                                // counts sorting lexicographically).
-                                const c = QueryDsl.compareFieldValues(av, bv, s.dir);
-                                if (c !== 0) return c;
-                            }
-                            return 0;
-                        });
-                    } else if (sortSpec) {
-                        arr = base.slice().sort((a, b) => root.compareForSort(a, b, sortSpec.col));
-                        if (!sortSpec.asc)
-                            arr.reverse();
-                    } else {
-                        arr = base;
-                    }
-                    return root.searchParsed.reverse ? arr.slice().reverse() : arr;
-                }
-                readonly property int rowBudget: root.rowBudgetFor(modelData.account)
-                readonly property var visibleProcs: groupOpen ? sortedProcs.slice(0, rowBudget) : []
-                readonly property int hiddenProcCount: groupOpen ? Math.max(0, searchFilteredProcs.length - rowBudget) : 0
-
-                // Session/weekly rate-limit summaries used to each sit on
-                // their own line below this one (3 lines/account total) --
-                // merged onto the title line itself (request 2026-09-04:
-                // "that will save us some space"). Shown unconditionally
-                // here (not gated on acctCol.groupOpen like the process
-                // table below) -- unlike the table, a two-number summary is
-                // cheap enough to keep visible even while folded, which is
-                // the point: folding no longer hides it.
-                Item {
-                    id: heading
-                    width: parent.width
-                    height: headingRow.implicitHeight
-
-                    RowLayout {
-                        id: headingRow
-                        width: parent.width
-                        spacing: 10
-
-                        // Layout.alignment: Qt.AlignVCenter on all three of
-                        // these sibling Rows -- without it, RowLayout top-
-                        // aligns children by default, and this Row is
-                        // taller (the +2px triangle glyph) than the session/
-                        // weekly Rows below, so top-aligning left their text
-                        // baselines visibly offset from the account name's
-                        // (reported 2026-09-04, right after these merged
-                        // onto one line).
-                        Row {
-                            Layout.alignment: Qt.AlignVCenter
-                            spacing: 6
-                            Text {
-                                // Folded (collapsed): points right.
-                                // Unfolded (expanded): points down. Plain
-                                // Unicode triangles, not a Nerd Font glyph
-                                // -- no icon-font dependency needed for two
-                                // shapes this simple.
-                                text: acctCol.groupOpen ? "▾" : "▸"
-                                color: Theme.textDim
-                                font.pixelSize: Theme.fontSize + 2
-                                anchors.verticalCenter: nameText.verticalCenter
-                            }
-                            Text {
-                                id: nameText
-                                text: acctCol.modelData.account || ""
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize
-                                font.bold: true
-                            }
-                        }
-
-                        Row {
-                            // -2: Qt.AlignVCenter alone still measured ~2px
-                            // (3 device px @ 1.5x scale) low relative to
-                            // nameText's own baseline -- this Row's tallest
-                            // Text is 2 sizes smaller than nameText
-                            // (fontSize-1 vs fontSize), and bounding-box
-                            // vertical centering doesn't line up two
-                            // different pixelSizes' baselines evenly
-                            // (reported 2026-09-05, confirmed by measuring
-                            // rendered glyph rows: nameText 167-182,
-                            // this Row 170-185).
-                            Layout.alignment: Qt.AlignVCenter
-                            Layout.topMargin: -2
-                            visible: acctCol.hasSession
-                            opacity: acctCol.modelData.stale ? 0.55 : 1
-                            spacing: 6
-                            Text {
-                                id: sessionPctText
-                                text: qsTr("session %1%").arg(Math.round(acctCol.modelData.session_pct))
-                                color: Theme.rampColor(acctCol.modelData.session_pct / 100)
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 1
-                            }
-                            Text {
-                                text: root.tick >= 0 ? root.fmtResets(acctCol.modelData.session_resets_at) : ""
-                                color: Theme.textDim
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                anchors.verticalCenter: sessionPctText.verticalCenter
-                            }
-                        }
-
-                        Row {
-                            // -2: same fix, same reasoning as the session
-                            // Row above.
-                            Layout.alignment: Qt.AlignVCenter
-                            Layout.topMargin: -2
-                            visible: acctCol.hasWeekly
-                            opacity: acctCol.modelData.stale ? 0.55 : 1
-                            spacing: 6
-                            Text {
-                                id: weeklyPctText
-                                text: qsTr("weekly %1%").arg(Math.round(acctCol.modelData.weekly_pct))
-                                color: Theme.rampColor(acctCol.modelData.weekly_pct / 100)
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 1
-                            }
-                            Text {
-                                text: root.tick >= 0 ? root.fmtResets(acctCol.modelData.weekly_resets_at) : ""
-                                color: Theme.textDim
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                anchors.verticalCenter: weeklyPctText.verticalCenter
-                            }
-                        }
-
-                        Item { Layout.fillWidth: true }
-                    }
-
-                    // MouseArea deliberately lives on this wrapping Item,
-                    // not inside headingRow itself -- a MouseArea with
-                    // anchors.fill: parent whose parent is the Row it's
-                    // also a child of creates a layout cycle (the Row's
-                    // own size depends on its children, one of which then
-                    // depends back on the Row's size), which silently
-                    // collapsed this whole heading to zero size the first
-                    // time this was written that way.
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.toggleGroup(acctCol.modelData.account)
-                    }
-                }
-
-                // A stale reading still shows its (dimmed) numbers above --
-                // this is just the "why" note, not a replacement for them.
-                // Only a genuinely never-fetched account has no numbers to
-                // dim, in which case this is the only line shown.
+                Item { Layout.preferredWidth: root.colAcctW }
+                Item { Layout.preferredWidth: root.handleW }
+                Item { Layout.preferredWidth: root.colStatusW }
+                Item { Layout.preferredWidth: root.handleW }
+                Item { Layout.preferredWidth: root.colTitleW }
+                Item { Layout.preferredWidth: root.handleW }
+                Item { Layout.preferredWidth: root.colTokensW }
+                Item { Layout.preferredWidth: root.handleW }
+                Item { Layout.preferredWidth: root.colLastW }
+                Item { Layout.preferredWidth: root.handleW }
                 Text {
-                    visible: parent.groupOpen && !!modelData.error
-                    width: parent.width
-                    text: parent.hasSession || parent.hasWeekly
-                        ? qsTr("%1 -- showing last known values").arg(modelData.error)
-                        : qsTr("error: %1").arg(modelData.error)
-                    color: Theme.red
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 2
-                    elide: Text.ElideRight
-                }
-
-                // Negative spacer: pulls the header/table block up ~1-1.5
-                // rows closer to the account title above it (request
-                // 2026-09-05 -- the gap right under the title read as
-                // "pointless" once compared to how tight every other
-                // row-to-row gap in this table already is). A Column
-                // advances by child.height + spacing per child regardless
-                // of sign, so a negative-height Item here subtracts
-                // directly from the cumulative Y of everything below it
-                // without touching acctCol.spacing itself (which still
-                // applies its normal small gap everywhere else, including
-                // around this spacer). Only present when the header row
-                // below it will actually render -- an account with no
-                // processes has nothing to pull closer.
-                Item {
-                    visible: acctCol.groupOpen && acctCol.procs.length > 0
-                    width: 1
-                    height: -20
-                }
-
-                // Both header rows below used to sit inside their own
-                // Column shifted up 16px via a transform, overlapping the
-                // bottom of a "weekly" line that lived directly above them
-                // -- that line moved onto the title row above (2026-09-04),
-                // so there's nothing left to overlap; the transform is
-                // gone and this Column now just renders at its natural
-                // position.
-                Column {
-                    spacing: 1
-
-                // Group-header row, once per group -- blank over every
-                // plain column, one "tmux" label (underlined, to read as
-                // a group heading for the session/window/pane sub-columns
-                // below it rather than a 4th independent column) spanning
-                // the 3 tmux sub-columns. Same column widths as the two
-                // rows below it (root.col*W, gaps all root.handleW) so all
-                // three stay aligned; clicking the "tmux" label sorts by
-                // the group as a whole (session, then window, then pane --
-                // see root.compareForSort), the 3 sub-columns don't get
-                // their own individual sort. Gaps here are plain Items,
-                // not ColumnResizeHandles -- dragging happens on the
-                // column-header row below; this row just has to match its
-                // widths.
-                RowLayout {
-                    visible: acctCol.groupOpen && acctCol.procs.length > 0
-                    width: content.width
-                    spacing: 0
-
-                    Item { Layout.preferredWidth: root.colStatusW }
-                    Item { Layout.preferredWidth: root.handleW }
-                    Item { Layout.preferredWidth: root.colTitleW }
-                    Item { Layout.preferredWidth: root.handleW }
-                    Item { Layout.preferredWidth: root.colTokensW }
-                    Item { Layout.preferredWidth: root.handleW }
-                    Item { Layout.preferredWidth: root.colLastW }
-                    Item { Layout.preferredWidth: root.handleW }
-                    // Group labels themselves are plain, non-interactive
-                    // text -- no MouseArea, no cursor change, no sort.
-                    // Only the sub-columns below (session/window/pane,
-                    // #/monitor) sort anything, each independently
-                    // (request 2026-09-02: "there should be no action
-                    // when user clicks on [the group labels]").
-                    Text {
-                        text: qsTr("tmux")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        horizontalAlignment: Text.AlignHCenter
-                        Layout.preferredWidth: root.colTmuxGroupW
-                        // A full-width rule spanning the whole group (all
-                        // 3 sub-columns), not font.underline (tried
-                        // first) -- that only underlines the "tmux" glyphs
-                        // themselves, much narrower than the session/
-                        // window/pane span it's meant to mark as one
-                        // group. A child of the Text, not a RowLayout
-                        // sibling, so it doesn't add its own row -- Items
-                        // don't inflate the size of the Text they're
-                        // parented to.
-                        Rectangle {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            height: 1
-                            color: Theme.border
-                        }
-                    }
-                    Item { Layout.preferredWidth: root.handleW }
-                    Text {
-                        text: qsTr("hyprland")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        horizontalAlignment: Text.AlignHCenter
-                        Layout.preferredWidth: root.colHyprGroupW
-                        Rectangle {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            height: 1
-                            color: Theme.border
-                        }
-                    }
-                    Item { Layout.preferredWidth: root.handleW }
-                    Item { Layout.preferredWidth: root.colPidW }
-                    Item { Layout.preferredWidth: root.handleW }
-                    Item { Layout.preferredWidth: root.colPathW }
-                    Item { Layout.fillWidth: true }
-                }
-
-                // Column headers, once per group -- shares its widths with
-                // the data row below via root.col*W so the two stay
-                // aligned without repeating "pid"/"tok" on every single
-                // row. Status/title/tokens/last/pid/path are each
-                // individually clickable: sorts this account's table by
-                // that column, a second click on the same one flips
-                // ascending/descending (root.toggleSort), and a ▲/▼ marks
-                // whichever column is currently driving the order (the
-                // tmux group's own arrow lives on its label in the row
-                // above, not here -- session/window/pane are plain labels,
-                // not separately sortable). Sort state resets on every
-                // panel open/close (root.onExpandedChanged), so it never
-                // silently persists into an unrelated later look at the
-                // panel.
-                //
-                // Every gap between two columns is a ColumnResizeHandle
-                // (hover -> resize cursor, drag -> adjusts the column
-                // immediately to its left; see that component's own
-                // comment for why it reports the drag via a signal rather
-                // than writing the bound property directly). All 9
-                // columns are independent fixed widths now, not one
-                // fillWidth column auto-absorbing spare space -- with
-                // manual resize available there's no need for that
-                // anymore, and a trailing filler after "path" soaks up any
-                // genuine leftover row width instead. Resizes reset on
-                // every panel open/close along with fold state and sort
-                // (root.onExpandedChanged / root.resetColumnWidths()).
-                RowLayout {
-                    visible: acctCol.groupOpen && acctCol.procs.length > 0
-                    width: content.width
-                    spacing: 0
-
-                    Text {
-                        text: qsTr("status") + root.sortArrow(modelData.account, "status")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colStatusW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "status")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colStatusW
-                        onWidthChangeRequested: w => root.colStatusW = w
-                    }
-                    Text {
-                        text: qsTr("title") + root.sortArrow(modelData.account, "title")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        elide: Text.ElideRight
-                        Layout.preferredWidth: root.colTitleW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "title")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colTitleW
-                        onWidthChangeRequested: w => root.colTitleW = w
-                    }
-                    Text {
-                        text: qsTr("tokens") + root.sortArrow(modelData.account, "tokens")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colTokensW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "tokens")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colTokensW
-                        onWidthChangeRequested: w => root.colTokensW = w
-                    }
-                    Text {
-                        text: qsTr("age") + root.sortArrow(modelData.account, "active")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        horizontalAlignment: Text.AlignRight
-                        Layout.preferredWidth: root.colLastW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "active")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colLastW
-                        onWidthChangeRequested: w => root.colLastW = w
-                    }
-                    Text {
-                        text: qsTr("session") + root.sortArrow(modelData.account, "tmuxSession")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colTmuxSessionW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "tmuxSession")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colTmuxSessionW
-                        onWidthChangeRequested: w => root.colTmuxSessionW = w
-                    }
-                    Text {
-                        text: qsTr("window") + root.sortArrow(modelData.account, "tmuxWindow")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colTmuxWindowW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "tmuxWindow")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colTmuxWindowW
-                        onWidthChangeRequested: w => root.colTmuxWindowW = w
-                    }
-                    Text {
-                        text: qsTr("pane") + root.sortArrow(modelData.account, "tmuxPane")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colTmuxPaneW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "tmuxPane")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colTmuxPaneW
-                        onWidthChangeRequested: w => root.colTmuxPaneW = w
-                    }
-                    Text {
-                        // Labeled "#" not "workspace" -- values are almost
-                        // always a single digit, so the full word wasted
-                        // most of colHyprWorkspaceW; a hover hint (below)
-                        // keeps it identifiable without spending the
-                        // width permanently (request 2026-09-02).
-                        id: hyprWorkspaceHeader
-                        text: qsTr("#") + root.sortArrow(modelData.account, "hyprWorkspace")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colHyprWorkspaceW
-                        property bool hovering: false
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onEntered: hyprWorkspaceHeader.hovering = true
-                            onExited: hyprWorkspaceHeader.hovering = false
-                            onClicked: root.toggleSort(modelData.account, "hyprWorkspace")
-                        }
-                        Rectangle {
-                            visible: hyprWorkspaceHeader.hovering
-                            anchors.top: parent.bottom
-                            anchors.topMargin: 2
-                            anchors.left: parent.left
-                            z: 50
-                            width: hintText.implicitWidth + 8
-                            height: hintText.implicitHeight + 4
-                            radius: 3
-                            color: Theme.bg
-                            border.color: Theme.border
-                            border.width: 1
-                            Text {
-                                id: hintText
-                                anchors.centerIn: parent
-                                text: qsTr("workspace")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                            }
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colHyprWorkspaceW
-                        onWidthChangeRequested: w => root.colHyprWorkspaceW = w
-                    }
-                    Text {
-                        text: qsTr("monitor") + root.sortArrow(modelData.account, "hyprMonitor")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colHyprMonitorW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "hyprMonitor")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colHyprMonitorW
-                        onWidthChangeRequested: w => root.colHyprMonitorW = w
-                    }
-                    Text {
-                        text: qsTr("pid") + root.sortArrow(modelData.account, "pid")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        Layout.preferredWidth: root.colPidW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "pid")
-                        }
-                    }
-                    ColumnResizeHandle {
-                        Layout.preferredWidth: root.handleW
-                        Layout.fillHeight: true
-                        targetWidth: root.colPidW
-                        onWidthChangeRequested: w => root.colPidW = w
-                    }
-                    Text {
-                        text: qsTr("path") + root.sortArrow(modelData.account, "path")
-                        color: Theme.muted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
-                        elide: Text.ElideRight
-                        Layout.preferredWidth: root.colPathW
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleSort(modelData.account, "path")
-                        }
-                    }
-                    Item { Layout.fillWidth: true }
-                }
-                } // end header-shift Column
-
-                // Used to carry the same -16px shift as the header block
-                // above it, to follow that block's own visual shift without
-                // opening a matching 16px gap -- now that neither Column
-                // shifts (the header block's own shift is gone too, see
-                // above), this one's gone as well; leaving just this one in
-                // place was exactly what caused the header/data-row overlap
-                // and the dead gap before the next account's title
-                // (reported 2026-09-04).
-                Column {
-                    spacing: 1
-
-                Repeater {
-                    model: acctCol.visibleProcs
-
-                    // Wrapping Rectangle purely for the hover highlight --
-                    // the row content is the RowLayout inside it. Uses a
-                    // HoverHandler (not a row-spanning MouseArea) because
-                    // the hyprland cell already has its own child MouseArea
-                    // with hoverEnabled: a passive HoverHandler on this
-                    // ancestor still reports `hovered` while the cursor is
-                    // over that child, where a parent MouseArea's
-                    // containsMouse would drop to false. Highlight tint is
-                    // the wallpaper-theme primary at low alpha, same token/
-                    // approach as the autocomplete popup's selected row.
-                    // Gated on root.mouseMovedSinceOpen too -- HoverHandler
-                    // reports hovered=true on creation if the cursor already
-                    // happens to be sitting over the row, so without the
-                    // gate whatever row was under the mouse would light up
-                    // on every panel open even with zero mouse movement
-                    // (reported 2026-09-05).
-                    delegate: Rectangle {
-                        id: procRow
-                        required property var modelData
-                        width: content.width
-                        implicitHeight: procRowLayout.implicitHeight
-                        height: implicitHeight
-                        radius: 3
-                        color: root.mouseMovedSinceOpen && procRowHover.hovered
-                            ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
-                            : "transparent"
-
-                        HoverHandler { id: procRowHover }
-
-                        RowLayout {
-                            id: procRowLayout
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            spacing: 0
-
-                            Text {
-                                text: root.statusLabel(modelData.status)
-                                color: root.statusColor(modelData.status)
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                Layout.preferredWidth: root.colStatusW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: modelData.title || "--"
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                elide: Text.ElideRight
-                                Layout.preferredWidth: root.colTitleW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: root.fmtTokens(modelData.context_tokens)
-                                color: root.tokenColor(modelData.context_tokens)
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                Layout.preferredWidth: root.colTokensW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
-                                color: Theme.muted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                                horizontalAlignment: Text.AlignRight
-                                Layout.preferredWidth: root.colLastW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: modelData.tmux_session || ""
-                                color: Theme.muted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                                Layout.preferredWidth: root.colTmuxSessionW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: modelData.tmux_window || ""
-                                color: Theme.muted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                                Layout.preferredWidth: root.colTmuxWindowW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: modelData.tmux_pane || ""
-                                color: Theme.muted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                                Layout.preferredWidth: root.colTmuxPaneW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            // hyprland group cell: which real window is showing
-                            // this session, if any (see root.hyprHoverEntered's
-                            // own comment for why it's address-keyed rather
-                            // than title/appId-matched). One MouseArea over all
-                            // 3 sub-columns (not the whole row -- asked for
-                            // explicitly), inside a fixed-size Item (Layout.
-                            // preferredWidth, not implicit-from-children) so
-                            // adding it doesn't hit the sizing/MouseArea layout
-                            // cycle this file's heading block already ran into
-                            // once (see that block's own comment).
-                            Item {
-                                id: hyprCell
-                                Layout.preferredWidth: root.colHyprGroupW
-                                Layout.fillHeight: true
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    spacing: 0
-                                    Text {
-                                        text: modelData.hypr_workspace || ""
-                                        // Wallpaper-theme primary color (same
-                                        // token Workspaces.qml's own active-
-                                        // workspace pill uses), only when this
-                                        // is the workspace actually active on
-                                        // this panel's own monitor right now --
-                                        // "highlight the workspace number if
-                                        // it's the one this panel was invoked
-                                        // from" 2026-09-02.
-                                        color: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
-                                            ? Theme.cyan : Theme.muted
-                                        font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
-                                        font.family: Theme.fontFamily
-                                        font.pixelSize: Theme.fontSize - 3
-                                        Layout.preferredWidth: root.colHyprWorkspaceW
-                                    }
-                                    Item { Layout.preferredWidth: root.handleW }
-                                    Text {
-                                        text: modelData.hypr_monitor || ""
-                                        color: Theme.muted
-                                        font.family: Theme.fontFamily
-                                        font.pixelSize: Theme.fontSize - 3
-                                        Layout.preferredWidth: root.colHyprMonitorW
-                                    }
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                    onEntered: root.hyprHoverEntered(modelData.hypr_address)
-                                    onPositionChanged: mouse => root.hyprHoverMoved(hyprCell.mapToItem(root, mouse.x, mouse.y))
-                                    onExited: root.hyprHoverExited()
-                                    onClicked: root.focusHyprWindow(modelData)
-                                }
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: String(modelData.pid)
-                                color: Theme.muted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                Layout.preferredWidth: root.colPidW
-                            }
-                            Item { Layout.preferredWidth: root.handleW }
-                            Text {
-                                text: root.shortCwd(modelData.cwd)
-                                color: Theme.muted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                                elide: Text.ElideRight
-                                Layout.preferredWidth: root.colPathW
-                            }
-                            Item { Layout.fillWidth: true }
-                        }
-                    }
-                }
-
-                // Real remaining count, not a vague "more" -- rowBudget is
-                // a fit-estimate (see groupRowBudgets' own comment), so
-                // this can be slightly off if a row rendered shorter/
-                // taller than assumed, but it's always derived from
-                // procs.length, the true total the daemon sent, never
-                // silently dropped.
-                Text {
-                    visible: acctCol.hiddenProcCount > 0
-                    text: qsTr("+%1 more").arg(acctCol.hiddenProcCount)
+                    text: qsTr("tmux")
                     color: Theme.muted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
-                    topPadding: 1
+                    horizontalAlignment: Text.AlignHCenter
+                    Layout.preferredWidth: root.colTmuxGroupW
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 1
+                        color: Theme.border
+                    }
                 }
-                } // end rows-shift Column
+                Item { Layout.preferredWidth: root.handleW }
+                Text {
+                    text: qsTr("hyprland")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    horizontalAlignment: Text.AlignHCenter
+                    Layout.preferredWidth: root.colHyprGroupW
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 1
+                        color: Theme.border
+                    }
+                }
+                Item { Layout.preferredWidth: root.handleW }
+                Item { Layout.preferredWidth: root.colPidW }
+                Item { Layout.preferredWidth: root.handleW }
+                Item { Layout.preferredWidth: root.colPathW }
+                Item { Layout.fillWidth: true }
             }
+
+            // Column headers. Four of these are abbreviated with a
+            // cursor-following hover hint for the full word (request
+            // 2026-09-05) -- "tkns" (tokens), "sess" (tmux session), "win"
+            // (tmux window), "wks" (hyprland workspace, renamed from the
+            // old bare "#" which used a static hint the cursor itself
+            // occluded). "pane"/"monitor"/"pid"/"path"/etc. are short
+            // enough already and stay unabbreviated.
+            RowLayout {
+                width: content.width
+                spacing: 0
+
+                Text {
+                    text: qsTr("acct") + root.sortArrow("acct")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colAcctW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("acct")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colAcctW
+                    onWidthChangeRequested: w => root.colAcctW = w
+                }
+                Text {
+                    text: qsTr("status") + root.sortArrow("status")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colStatusW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("status")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colStatusW
+                    onWidthChangeRequested: w => root.colStatusW = w
+                }
+                Text {
+                    text: qsTr("title") + root.sortArrow("title")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    elide: Text.ElideRight
+                    Layout.preferredWidth: root.colTitleW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("title")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colTitleW
+                    onWidthChangeRequested: w => root.colTitleW = w
+                }
+                Text {
+                    id: tokensHeader
+                    text: qsTr("tkns") + root.sortArrow("tokens")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colTokensW
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onEntered: {
+                            root.showHint(qsTr("tokens"));
+                            root.moveHint(tokensHeader.mapToItem(root, mouseX, mouseY));
+                        }
+                        onPositionChanged: mouse => root.moveHint(tokensHeader.mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
+                        onClicked: root.toggleSort("tokens")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colTokensW
+                    onWidthChangeRequested: w => root.colTokensW = w
+                }
+                Text {
+                    text: qsTr("age") + root.sortArrow("active")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    horizontalAlignment: Text.AlignRight
+                    Layout.preferredWidth: root.colLastW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("active")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colLastW
+                    onWidthChangeRequested: w => root.colLastW = w
+                }
+                Text {
+                    id: sessHeader
+                    text: qsTr("sess") + root.sortArrow("tmuxSession")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colTmuxSessionW
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onEntered: {
+                            root.showHint(qsTr("session"));
+                            root.moveHint(sessHeader.mapToItem(root, mouseX, mouseY));
+                        }
+                        onPositionChanged: mouse => root.moveHint(sessHeader.mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
+                        onClicked: root.toggleSort("tmuxSession")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colTmuxSessionW
+                    onWidthChangeRequested: w => root.colTmuxSessionW = w
+                }
+                Text {
+                    id: winHeader
+                    text: qsTr("win") + root.sortArrow("tmuxWindow")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colTmuxWindowW
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onEntered: {
+                            root.showHint(qsTr("window"));
+                            root.moveHint(winHeader.mapToItem(root, mouseX, mouseY));
+                        }
+                        onPositionChanged: mouse => root.moveHint(winHeader.mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
+                        onClicked: root.toggleSort("tmuxWindow")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colTmuxWindowW
+                    onWidthChangeRequested: w => root.colTmuxWindowW = w
+                }
+                Text {
+                    text: qsTr("pane") + root.sortArrow("tmuxPane")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colTmuxPaneW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("tmuxPane")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colTmuxPaneW
+                    onWidthChangeRequested: w => root.colTmuxPaneW = w
+                }
+                Text {
+                    id: wksHeader
+                    text: qsTr("wks") + root.sortArrow("hyprWorkspace")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colHyprWorkspaceW
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onEntered: {
+                            root.showHint(qsTr("workspace"));
+                            root.moveHint(wksHeader.mapToItem(root, mouseX, mouseY));
+                        }
+                        onPositionChanged: mouse => root.moveHint(wksHeader.mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
+                        onClicked: root.toggleSort("hyprWorkspace")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colHyprWorkspaceW
+                    onWidthChangeRequested: w => root.colHyprWorkspaceW = w
+                }
+                Text {
+                    text: qsTr("monitor") + root.sortArrow("hyprMonitor")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colHyprMonitorW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("hyprMonitor")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colHyprMonitorW
+                    onWidthChangeRequested: w => root.colHyprMonitorW = w
+                }
+                Text {
+                    text: qsTr("pid") + root.sortArrow("pid")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colPidW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("pid")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    Layout.fillHeight: true
+                    targetWidth: root.colPidW
+                    onWidthChangeRequested: w => root.colPidW = w
+                }
+                Text {
+                    text: qsTr("path") + root.sortArrow("path")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    elide: Text.ElideRight
+                    Layout.preferredWidth: root.colPathW
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("path")
+                    }
+                }
+                Item { Layout.fillWidth: true }
+            }
+        }
+
+        // Scrollable row viewport (request 2026-09-05: "make the table
+        // scrollable with a scroller on the right and react to... mouse
+        // wheel") -- fixed height (root.processAreaBudget), holding every
+        // row in root.sortedProcs rather than a pre-sliced
+        // root.visibleProcs, so scrolling actually reaches every row
+        // instead of just the ones that used to fit before truncating
+        // with "+N more" (removed: "scroller size should be enough of an
+        // indication").
+        Item {
+            id: tableViewport
+            width: content.width
+            height: root.processAreaBudget
+            clip: true
+            visible: root.anyProcsVisible
+
+            Flickable {
+                id: rowsFlick
+                anchors.fill: parent
+                anchors.rightMargin: root.scrollbarGap + root.scrollbarW
+                contentWidth: width
+                contentHeight: rowsColumn.height
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+
+                // Explicit rather than relying on Flickable's own implicit
+                // wheel handling -- directly requested ("react to...
+                // mousewheel"), so make it deterministic instead of
+                // hoping the platform default covers it. Doesn't steal
+                // clicks/hover from the row delegates below (a
+                // WheelHandler only intercepts wheel events, unlike an
+                // overlapping MouseArea, which would have broken the
+                // per-row hover highlight and every cell's own hover
+                // tooltip).
+                WheelHandler {
+                    onWheel: event => {
+                        rowsFlick.contentY = Math.max(0, Math.min(
+                            Math.max(0, rowsFlick.contentHeight - rowsFlick.height),
+                            rowsFlick.contentY - event.angleDelta.y / 2));
+                    }
+                }
+
+                Column {
+                    id: rowsColumn
+                    width: rowsFlick.width
+                    spacing: 1
+
+            Repeater {
+                model: root.sortedProcs
+
+                // Wrapping Rectangle purely for the hover highlight -- the
+                // row content is the RowLayout inside it. Uses a
+                // HoverHandler (not a row-spanning MouseArea) because the
+                // hyprland cell (and now the acct cell too) already has
+                // its own child MouseArea with hoverEnabled: a passive
+                // HoverHandler on this ancestor still reports `hovered`
+                // while the cursor is over that child, where a parent
+                // MouseArea's containsMouse would drop to false. Highlight
+                // tint is the wallpaper-theme primary at low alpha, same
+                // token/approach as the autocomplete popup's selected row.
+                // Gated on root.mouseMovedSinceOpen too -- HoverHandler
+                // reports hovered=true on creation if the cursor already
+                // happens to be sitting over the row, so without the gate
+                // whatever row was under the mouse would light up on
+                // every panel open even with zero mouse movement.
+                delegate: Rectangle {
+                    id: procRow
+                    required property var modelData
+                    width: rowsColumn.width
+                    implicitHeight: procRowLayout.implicitHeight
+                    height: implicitHeight
+                    radius: 3
+                    color: root.mouseMovedSinceOpen && procRowHover.hovered
+                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
+                        : "transparent"
+
+                    HoverHandler { id: procRowHover }
+
+                    RowLayout {
+                        id: procRowLayout
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        spacing: 0
+
+                        // "acct" column (request 2026-09-05): a bare
+                        // 1/2/3 (root.acctIndex) identifying which
+                        // account this row is from, hover for the real
+                        // name via the shared cursor-following hint.
+                        Text {
+                            id: acctCell
+                            text: String(root.acctIndex(modelData.account))
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: root.colAcctW
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onEntered: {
+                                    root.showHint(modelData.account);
+                                    root.moveHint(acctCell.mapToItem(root, mouseX, mouseY));
+                                }
+                                onPositionChanged: mouse => root.moveHint(acctCell.mapToItem(root, mouse.x, mouse.y))
+                                onExited: root.hideHint()
+                            }
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: root.statusLabel(modelData.status)
+                            color: root.statusColor(modelData.status)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: root.colStatusW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: modelData.title || "--"
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: root.colTitleW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: root.fmtTokens(modelData.context_tokens)
+                            color: root.tokenColor(modelData.context_tokens)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: root.colTokensW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.colLastW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: modelData.tmux_session || ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            Layout.preferredWidth: root.colTmuxSessionW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: modelData.tmux_window || ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            Layout.preferredWidth: root.colTmuxWindowW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: modelData.tmux_pane || ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            Layout.preferredWidth: root.colTmuxPaneW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        // hyprland group cell: which real window is showing
+                        // this session, if any (see root.hyprHoverEntered's
+                        // own comment for why it's address-keyed rather
+                        // than title/appId-matched). One MouseArea over all
+                        // 3 sub-columns (not the whole row -- asked for
+                        // explicitly), inside a fixed-size Item (Layout.
+                        // preferredWidth, not implicit-from-children) so
+                        // adding it doesn't hit the sizing/MouseArea layout
+                        // cycle this file's old heading block once ran
+                        // into (see git history for that comment).
+                        Item {
+                            id: hyprCell
+                            Layout.preferredWidth: root.colHyprGroupW
+                            Layout.fillHeight: true
+
+                            RowLayout {
+                                anchors.fill: parent
+                                spacing: 0
+                                Text {
+                                    text: modelData.hypr_workspace || ""
+                                    // Wallpaper-theme primary color (same
+                                    // token Workspaces.qml's own active-
+                                    // workspace pill uses), only when this
+                                    // is the workspace actually active on
+                                    // this panel's own monitor right now.
+                                    color: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
+                                        ? Theme.cyan : Theme.muted
+                                    font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 3
+                                    Layout.preferredWidth: root.colHyprWorkspaceW
+                                }
+                                Item { Layout.preferredWidth: root.handleW }
+                                Text {
+                                    text: modelData.hypr_monitor || ""
+                                    color: Theme.muted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 3
+                                    Layout.preferredWidth: root.colHyprMonitorW
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onEntered: root.hyprHoverEntered(modelData.hypr_address)
+                                onPositionChanged: mouse => root.hyprHoverMoved(hyprCell.mapToItem(root, mouse.x, mouse.y))
+                                onExited: root.hyprHoverExited()
+                                onClicked: root.focusHyprWindow(modelData)
+                            }
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: String(modelData.pid)
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: root.colPidW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: root.shortCwd(modelData.cwd)
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: root.colPathW
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                }
+            }
+            } // end rowsColumn
+            } // end rowsFlick
+
+            // Scrollbar track + thumb, right edge of the viewport --
+            // thumb size communicates how much is hidden (request
+            // 2026-09-05: "scroller size should be enough of an
+            // indication") in place of the old "+N more" text. Only shown
+            // once there's actually more content than the viewport can
+            // hold; a thumb spanning the full track would be redundant.
+            Rectangle {
+                id: scrollTrack
+                anchors.top: parent.top
+                anchors.right: parent.right
+                width: root.scrollbarW
+                height: parent.height
+                radius: root.scrollbarW / 2
+                color: Theme.bg
+                visible: rowsFlick.contentHeight > rowsFlick.height
+
+                Rectangle {
+                    width: parent.width
+                    radius: parent.radius
+                    color: Theme.muted
+                    y: rowsFlick.contentHeight > 0
+                        ? (rowsFlick.contentY / rowsFlick.contentHeight) * scrollTrack.height
+                        : 0
+                    height: rowsFlick.contentHeight > 0
+                        ? Math.max(16, (rowsFlick.height / rowsFlick.contentHeight) * scrollTrack.height)
+                        : scrollTrack.height
+                }
+            }
+        }
+
+        // Per-account totals -- conversation count + summed context
+        // tokens (request 2026-09-05: "add total tally of each account
+        // conversations, tokens at the bottom"). Same account-index
+        // labeling as the top summary line (root.acctIndex), across
+        // every session the daemon reports, not just the ones currently
+        // scrolled into view.
+        RowLayout {
+            width: content.width
+            spacing: 14
+            visible: root.anyProcsVisible
+
+            Repeater {
+                model: ClaudeUsageSvc.accounts
+
+                Row {
+                    id: tallyRow
+                    required property var modelData
+                    readonly property var totals: root.acctTotals(modelData.account)
+                    Layout.alignment: Qt.AlignVCenter
+                    spacing: 4
+
+                    Text {
+                        text: String(root.acctIndex(tallyRow.modelData.account))
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        font.bold: true
+                    }
+                    Text {
+                        text: qsTr("%1 convos, %2 tokens").arg(tallyRow.totals.count).arg(root.fmtTokens(tallyRow.totals.tokens))
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
         }
 
         Text {
@@ -1954,6 +2019,33 @@ Rectangle {
             asynchronous: true
             cache: false
             source: root.thumbReady ? "file://" + root.thumbImagePath : ""
+        }
+    }
+
+    // Generic cursor-following hover hint -- header abbreviations
+    // (wks/sess/win/tkns) and each row's "acct" cell (root.showHint/
+    // moveHint/hideHint). Same follow-the-cursor shape as thumbPopup above
+    // rather than a fixed spot next to the header, which the cursor itself
+    // ended up sitting on top of and hiding (reported 2026-09-05).
+    Rectangle {
+        id: hintPopup
+        visible: root.hintText.length > 0
+        x: Math.min(root.hintPos.x, root.width - width - 4)
+        y: Math.min(root.hintPos.y, root.height - height - 4)
+        z: 100
+        width: hintPopupText.implicitWidth + 8
+        height: hintPopupText.implicitHeight + 4
+        radius: 3
+        color: Theme.bg
+        border.color: Theme.border
+        border.width: 1
+        Text {
+            id: hintPopupText
+            anchors.centerIn: parent
+            text: root.hintText
+            color: Theme.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSize - 3
         }
     }
 }
