@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.parse
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 HOME = Path.home()
@@ -492,18 +493,77 @@ def first_user_text(path, max_lines=50):
     return "(untitled)"
 
 
-def count_lines(path):
+def parse_iso_ts(ts):
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def scan_transcript_stats(path):
+    """(line_count, last_message_epoch). line_count is every physical line
+    (matches the "since" cursor semantics used elsewhere -- a positional
+    index into the raw file, not just message-producing lines).
+    last_message_epoch is the *last real user/assistant message's own
+    timestamp* field, not the file's mtime -- confirmed live (2026-09-05)
+    that raw mtime is unreliable for "age": an idle, already-finished
+    session can still get its file touched (attach/resume, a bare
+    mode-line write) minutes after the last real exchange, which made
+    long-idle conversations look freshly active and threw off both the
+    AGE column and the whole list's sort order. Falls back to None if no
+    timestamped user/assistant line exists at all (caller falls back to
+    st_mtime in that case)."""
     n = 0
-    with open(path, "rb") as f:
-        for _ in f:
+    last_ts = None
+    with open(path, "r", errors="ignore") as f:
+        for line in f:
             n += 1
-    return n
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("type") in ("user", "assistant"):
+                ts = d.get("timestamp")
+                if ts:
+                    last_ts = ts
+    return n, (parse_iso_ts(last_ts) if last_ts else None)
+
+
+HISTORY_CACHE_PATH = HOME / ".cache" / "claude-history-parse-cache.json"
+_history_titles_cache = {"mtime": 0.0, "titles": {}}
+
+
+def load_history_titles():
+    """session_id -> ai_title, straight from the same cache the `claude-history`
+    picker builds (~/.cache/claude-history-parse-cache.json). This is the
+    real, human-set conversation title (what shows in tmux pane titles /
+    the ctrl+alt+c quickshell panel) -- a first-user-message snippet is
+    just a fallback for anything that tool hasn't indexed yet."""
+    try:
+        st = HISTORY_CACHE_PATH.stat()
+    except OSError:
+        return {}
+    if st.st_mtime != _history_titles_cache["mtime"]:
+        titles = {}
+        try:
+            data = json.loads(HISTORY_CACHE_PATH.read_text())
+            for entry in (data.get("files") or {}).values():
+                idx = entry.get("indexed") or {}
+                sid = idx.get("session_id")
+                title = idx.get("ai_title")
+                if sid and title:
+                    titles[sid] = title
+        except Exception as e:
+            log(f"history-titles: failed to load {HISTORY_CACHE_PATH}: {e}")
+        _history_titles_cache["mtime"] = st.st_mtime
+        _history_titles_cache["titles"] = titles
+    return _history_titles_cache["titles"]
 
 
 _conv_meta_cache = {}  # path -> (mtime, size, meta)
 
 
-def conversation_meta(path):
+def conversation_meta(path, history_titles=None):
     st = path.stat()
     key = str(path)
     cached = _conv_meta_cache.get(key)
@@ -511,11 +571,15 @@ def conversation_meta(path):
         return cached[2]
     owner_uuid = owner_account_uuid_of_jsonl(path)
     account_info = ACCOUNT_MAP.get(owner_uuid) if owner_uuid else None
+    if history_titles is None:
+        history_titles = load_history_titles()
+    title = history_titles.get(path.stem) or first_user_text(path)
+    line_count, last_message_epoch = scan_transcript_stats(path)
     meta = {
         "id": path.stem,
-        "title": first_user_text(path),
-        "mtime": st.st_mtime,
-        "line_count": count_lines(path),
+        "title": title,
+        "mtime": last_message_epoch if last_message_epoch is not None else st.st_mtime,
+        "line_count": line_count,
         "account": account_info["dir_key"] if account_info else "unknown",
         "account_label": account_info["label"] if account_info else "unknown",
     }
@@ -525,6 +589,7 @@ def conversation_meta(path):
 
 def list_conversations(account_filter=None):
     live = get_live_sessions()
+    history_titles = load_history_titles()
     out = []
     if not PROJECTS_DIR.is_dir():
         return out
@@ -533,7 +598,7 @@ def list_conversations(account_filter=None):
             continue
         for f in proj_dir.glob("*.jsonl"):
             try:
-                meta = dict(conversation_meta(f))
+                meta = dict(conversation_meta(f, history_titles))
             except Exception as e:
                 log(f"meta failed for {f}: {e}")
                 continue
