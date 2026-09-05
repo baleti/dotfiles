@@ -685,8 +685,10 @@ Item {
             // Wider than the typical rendered text ("11 KB/s", "4.5 MB/s")
             // so the right-alignment this reserved width exists for is
             // actually visible as a gap after the icon, not just a couple
-            // of barely-there pixels.
-            compactTextWidth: 90
+            // of barely-there pixels -- trimmed one space-width narrower
+            // than a round 90, same as diskPill, since the icon-to-number
+            // gap read as oversized at the full width.
+            compactTextWidth: 82
             valueLabel: root.fmtRate(root.netTotalNow) + " total"
             mode: "overlay"
             seriesList: root.netSeriesList
