@@ -306,16 +306,20 @@ Rectangle {
         return 0;
     }
 
-    // Conversation count + summed context tokens for one account -- the
-    // per-account tally line below the table (request 2026-09-05).
+    // Session count for one account -- the per-account tally pills below
+    // the table (request 2026-09-05; token totals dropped from these
+    // 2026-09-05).
     function acctTotals(account) {
-        let count = 0, tokens = 0;
-        for (const row of (ClaudeUsageSvc.sessions[account] || [])) {
-            count++;
-            if (typeof row.context_tokens === "number")
-                tokens += row.context_tokens;
-        }
-        return { count: count, tokens: tokens };
+        return { count: (ClaudeUsageSvc.sessions[account] || []).length };
+    }
+
+    // Sessions across every account -- the leftmost total pill on the
+    // tally line (request 2026-09-05).
+    readonly property int totalSessionCount: {
+        let n = 0;
+        for (const a of ClaudeUsageSvc.accounts)
+            n += (ClaudeUsageSvc.sessions[a.account] || []).length;
+        return n;
     }
 
     // ---- search box: shared picker query DSL (query-dsl.md / QueryDsl.qml)
@@ -680,9 +684,9 @@ Rectangle {
     // zero clipping.
     readonly property int rowH: 17
     readonly property int groupHeaderH: 45
-    // The per-account totals line below the table (request 2026-09-05:
-    // "add total tally of each account conversations, tokens").
-    readonly property int tallyLineH: 18
+    // The per-account session-tally pill row below the table (request
+    // 2026-09-05: "add total tally...", boxed into pills 2026-09-05).
+    readonly property int tallyLineH: 26
     // Search box Rectangle (22px) + the one extra `content` Column
     // spacing gap (10px) it added between the mode-line and the table
     // below it -- wasn't part of the fixedOverhead estimate when that box
@@ -1950,39 +1954,83 @@ Rectangle {
             }
         }
 
-        // Per-account totals -- conversation count + summed context
-        // tokens (request 2026-09-05: "add total tally of each account
-        // conversations, tokens at the bottom"). Same account-index
-        // labeling as the top summary line (root.acctIndex), across
-        // every session the daemon reports, not just the ones currently
-        // scrolled into view.
+        // Per-account session tally -- pills matching the top summary line
+        // (request 2026-09-05: box these like the ones above, "convos" ->
+        // "sessions", drop the token totals, add a leftmost total pill,
+        // and hoist the repeated word "sessions" out to a single label on
+        // the left). Same account-index labeling and baseline alignment as
+        // the top summary pills; counts every session the daemon reports,
+        // not just the ones scrolled into view.
         RowLayout {
             width: content.width
-            spacing: 14
+            spacing: 6
             visible: root.anyProcsVisible
+
+            Text {
+                text: qsTr("sessions")
+                color: Theme.textDim
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 2
+                Layout.alignment: Qt.AlignVCenter
+                Layout.rightMargin: 2
+            }
+
+            // Total across all accounts.
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: tallyTotalText.implicitWidth + 16
+                implicitHeight: tallyTotalText.implicitHeight + 6
+                radius: height / 2
+                color: Theme.bgAlpha
+                border.color: Theme.border
+                border.width: 1
+
+                Text {
+                    id: tallyTotalText
+                    anchors.centerIn: parent
+                    text: qsTr("Σ %1").arg(root.totalSessionCount)
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 1
+                    font.bold: true
+                }
+            }
 
             Repeater {
                 model: ClaudeUsageSvc.accounts
 
-                Row {
-                    id: tallyRow
+                Rectangle {
+                    id: tallyPill
                     required property var modelData
                     readonly property var totals: root.acctTotals(modelData.account)
                     Layout.alignment: Qt.AlignVCenter
-                    spacing: 4
+                    implicitWidth: tallyPillRow.implicitWidth + 16
+                    implicitHeight: tallyPillRow.implicitHeight + 6
+                    radius: height / 2
+                    color: Theme.bgAlpha
+                    border.color: Theme.border
+                    border.width: 1
 
-                    Text {
-                        text: String(root.acctIndex(tallyRow.modelData.account))
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 2
-                        font.bold: true
-                    }
-                    Text {
-                        text: qsTr("%1 convos, %2 tokens").arg(tallyRow.totals.count).arg(root.fmtTokens(tallyRow.totals.tokens))
-                        color: Theme.textDim
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
+                    Row {
+                        id: tallyPillRow
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        Text {
+                            id: tallyPillName
+                            text: String(root.acctIndex(tallyPill.modelData.account))
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
+                            font.bold: true
+                        }
+                        Text {
+                            anchors.baseline: tallyPillName.baseline
+                            text: String(tallyPill.totals.count)
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
                     }
                 }
             }
