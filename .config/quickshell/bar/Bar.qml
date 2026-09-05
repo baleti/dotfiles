@@ -697,7 +697,8 @@ Item {
             tier: root.netTier
             onTierRequested: code => { root.netTier = code; SysmonSvc.setNetTier(code); }
             onExpandedChanged: {
-                if (expanded) SysmonSvc.refTopNet(); else SysmonSvc.unrefTopNet();
+                if (expanded) { SysmonSvc.refTopNet(); SysmonSvc.refHistory("net"); }
+                else { SysmonSvc.unrefTopNet(); SysmonSvc.unrefHistory("net"); }
                 if (!expanded) root.reclaimGraphFocus(netPill);
             }
             groupX: rightRow.x
@@ -730,7 +731,8 @@ Item {
             tier: root.cpuTier
             onTierRequested: code => { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
             onExpandedChanged: {
-                if (expanded) SysmonSvc.refTopCpu(); else SysmonSvc.unrefTopCpu();
+                if (expanded) { SysmonSvc.refTopCpu(); SysmonSvc.refHistory("cpu"); }
+                else { SysmonSvc.unrefTopCpu(); SysmonSvc.unrefHistory("cpu"); }
                 if (!expanded) root.reclaimGraphFocus(cpuPill);
             }
             groupX: rightRow.x
@@ -766,7 +768,8 @@ Item {
             tier: root.memTier
             onTierRequested: code => { root.memTier = code; SysmonSvc.setMemTier(code); }
             onExpandedChanged: {
-                if (expanded) SysmonSvc.refTopMem(); else SysmonSvc.unrefTopMem();
+                if (expanded) { SysmonSvc.refTopMem(); SysmonSvc.refHistory("mem"); }
+                else { SysmonSvc.unrefTopMem(); SysmonSvc.unrefHistory("mem"); }
                 if (!expanded) root.reclaimGraphFocus(memPill);
             }
             groupX: rightRow.x
@@ -814,7 +817,8 @@ Item {
             tier: root.diskTier
             onTierRequested: code => { root.diskTier = code; SysmonSvc.setDiskTier(code); }
             onExpandedChanged: {
-                if (expanded) SysmonSvc.refTopDisk(); else SysmonSvc.unrefTopDisk();
+                if (expanded) { SysmonSvc.refTopDisk(); SysmonSvc.refHistory("disk"); }
+                else { SysmonSvc.unrefTopDisk(); SysmonSvc.unrefHistory("disk"); }
                 if (!expanded) root.reclaimGraphFocus(diskPill);
             }
             groupX: rightRow.x
@@ -846,7 +850,8 @@ Item {
             // (topLabel below), reusing SysmonSvc.topCpu -- so it refs the
             // same topCpu demand cpuPill does, not a separate one.
             onExpandedChanged: {
-                if (expanded) SysmonSvc.refTopCpu(); else SysmonSvc.unrefTopCpu();
+                if (expanded) { SysmonSvc.refTopCpu(); SysmonSvc.refHistory("temp"); }
+                else { SysmonSvc.unrefTopCpu(); SysmonSvc.unrefHistory("temp"); }
                 if (!expanded) root.reclaimGraphFocus(tempPill);
             }
             groupX: rightRow.x
@@ -912,7 +917,8 @@ Item {
             tier: root.gpuTier
             onTierRequested: code => { root.gpuTier = code; SysmonSvc.setGpuTier(code); }
             onExpandedChanged: {
-                if (expanded) SysmonSvc.refGpuProcs(); else SysmonSvc.unrefGpuProcs();
+                if (expanded) { SysmonSvc.refGpuProcs(); SysmonSvc.refHistory("gpu"); }
+                else { SysmonSvc.unrefGpuProcs(); SysmonSvc.unrefHistory("gpu"); }
                 if (!expanded) root.reclaimGraphFocus(gpuPill);
             }
             groupX: rightRow.x
