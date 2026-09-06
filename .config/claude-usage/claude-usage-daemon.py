@@ -280,6 +280,55 @@ def context_tokens_for(transcript_path: Path):
     return None, None
 
 
+def last_message_ts_ms(transcript_path: Path):
+    """Epoch-ms of the transcript's last record with a "timestamp" field -
+    the real "when was this conversation last actually active" signal,
+    straight from message content. Deliberately NOT the same thing as the
+    CLI's own self-reported sessions/<pid>.json "updatedAt": that field
+    tracks the current PROCESS's lifetime, so a `claude --resume` of a
+    week-old conversation makes updatedAt say "just now" even though
+    nothing in the conversation itself is new - confirmed the hard way
+    2026-09-06, when resuming ~100 crashed sessions in one batch made the
+    usage panel show every single one as freshly started regardless of how
+    old the actual conversation was. Reading the transcript's own last
+    timestamp instead survives any number of resumes/restarts: it only
+    moves forward when a real message is appended, exactly matching what
+    the panel is supposed to mean by "last used"."""
+    try:
+        size = transcript_path.stat().st_size
+    except OSError:
+        return None
+
+    for window in TOKEN_SEARCH_WINDOWS:
+        take = size if window is None else min(window, size)
+        try:
+            with transcript_path.open("rb") as fh:
+                fh.seek(size - take)
+                data = fh.read().decode("utf-8", errors="ignore")
+        except OSError:
+            return None
+
+        for line in reversed(data.split("\n")):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            ts = rec.get("timestamp")
+            if not ts:
+                continue
+            try:
+                return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
+            except ValueError:
+                continue
+
+        if take >= size:
+            break
+    return None
+
+
 def get_tmux_pane_titles() -> dict:
     """{pane_id ("%1828"): pane_title} for every pane on the server, in one
     batched call -- not one `tmux display-message` subprocess per session
@@ -520,9 +569,11 @@ def list_sessions(base: Path, tmux_titles: dict, hypr_by_session: dict) -> list:
         session_id = data.get("sessionId")
         cwd = data.get("cwd") or ""
         context_tokens = last_output_tokens = None
+        transcript_ts = None
         if session_id and cwd:
             transcript = base / "projects" / cwd_to_slug(cwd) / f"{session_id}.jsonl"
             context_tokens, last_output_tokens = context_tokens_for(transcript)
+            transcript_ts = last_message_ts_ms(transcript)
 
         tmux_field = data.get("tmux")
         title = None
@@ -560,7 +611,12 @@ def list_sessions(base: Path, tmux_titles: dict, hypr_by_session: dict) -> list:
             "tmux_session": tmux_session,
             "tmux_window": tmux_window,
             "tmux_pane": tmux_pane,
-            "updated_at_ms": data.get("updatedAt"),
+            # Transcript's own last-message timestamp, not the self-reported
+            # per-process updatedAt (see last_message_ts_ms's docstring for
+            # why: the latter reads "just now" for any --resume regardless
+            # of the conversation's actual age). Falls back to updatedAt
+            # only when the transcript has no parseable timestamp at all.
+            "updated_at_ms": transcript_ts or data.get("updatedAt"),
             "context_tokens": context_tokens,
             "last_output_tokens": last_output_tokens,
             "hypr_address": hypr["address"] if hypr else None,
