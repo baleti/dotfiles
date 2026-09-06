@@ -1,0 +1,32 @@
+[Unit]
+Description=tmux server (user)
+Documentation=man:tmux(1)
+# Ordering hint only - tmux does not need the graphical session, but coming
+# up alongside it means a terminal opened right after login finds a server.
+After=graphical-session.target
+# A manual `systemctl --user stop|restart tmux.service` would take every
+# session with it. Refuse that; a real logout/reboot still stops the unit
+# normally (this only blocks dbus/systemctl stop requests).
+RefuseManualStop=yes
+
+[Service]
+# oneshot + RemainAfterExit, NOT Type=forking: tmux daemonises itself and
+# systemd only needs to guarantee the server exists once, at login. Forking
+# made systemd guess the server PID, and when ExecStart attached to a
+# pre-existing (zsh-created) server instead of making one, systemd saw an
+# empty cgroup, decided the unit had exited, and ran ExecStop. On 2026-09-06
+# that ExecStop was `tmux kill-server` and it wiped 107 live sessions.
+Type=oneshot
+RemainAfterExit=yes
+# .zshrc no longer creates a server (it only joins one that already exists),
+# so this is the sole creator. `new-session -d` also loads ~/.tmux.conf,
+# which sets `exit-empty off` so the server survives with zero sessions.
+ExecStart=/usr/bin/tmux new-session -d
+# Final resurrect snapshot on logout/shutdown (desktop-snapshot writes the
+# periodic ones). Deliberately NOT `tmux kill-server`: stopping the unit
+# already tears the server down via the cgroup, and a standalone kill here
+# is exactly what turned a stray unit-stop into a full-session wipe.
+ExecStop=/home/user1/.config/tmux/plugins/tmux-resurrect/scripts/save.sh
+
+[Install]
+WantedBy=default.target
