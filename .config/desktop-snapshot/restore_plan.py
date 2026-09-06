@@ -197,13 +197,24 @@ def get_monitor_active_workspaces():
     return {m["name"]: m["activeWorkspace"]["id"] for m in d}
 
 
-def build_session_workspace_map(hypr_state):
-    """(session, window_index) -> (workspace_id, monitor_name), from a
-    PRE-CRASH snapshot's hyprland.clients[].tmux_session cross-reference
-    (computed by snapshot.py via tty ownership) joined against
-    hyprland.workspaces[].monitor. A post-crash snapshot has none of
-    this - pass in an old one, not latest.json, once trouble starts."""
+def build_session_workspace_map(hypr_state, tmux_state=None):
+    """(session, window_index) -> (workspace_id, monitor_name, account),
+    from a PRE-CRASH snapshot's hyprland.clients[].tmux_session
+    cross-reference (computed by snapshot.py via tty ownership) joined
+    against hyprland.workspaces[].monitor and, separately,
+    tmux.sessions[].windows[].panes[].claude (account/config_dir) via
+    index_claude_by_session_window() - a completely different part of the
+    same snapshot that this function used to ignore entirely. Without
+    that second join, resolve_resume_uuid()'s file search can't
+    disambiguate which account a session belongs to (~/.claude*/projects/
+    <cwd> is the same inode across all three accounts, so a search across
+    them always matches the first one checked, silently resuming
+    everything as the default account regardless of which one actually
+    owned it - confirmed as a real bug, not a snapshot gap). A post-crash
+    snapshot has none of this - pass in an old one, not latest.json, once
+    trouble starts."""
     ws_by_id = {w["id"]: w for w in hypr_state.get("workspaces", [])}
+    claude_idx = index_claude_by_session_window(tmux_state or {})
     mapping = {}
     for c in hypr_state.get("clients", []):
         ts = c.get("tmux_session")
@@ -214,12 +225,23 @@ def build_session_workspace_map(hypr_state):
         key = ts["session"]
         if key in mapping:
             continue
+        claude_panes = claude_idx.get((key, ts["window_index"]), [])
+        account = claude_panes[0]["account"] if claude_panes else None
+        config_dir = claude_panes[0].get("config_dir") if claude_panes else None
+        # Direct from the CLI's own sessions/<pid>.json, captured at
+        # snapshot time (see snapshot.py's session_id_for_claude_pid) -
+        # the real --resume uuid with no scrollback parsing needed, when
+        # a snapshot recent enough to have it is available.
+        session_id = claude_panes[0].get("session_id") if claude_panes else None
         mapping[key] = {
             "window_index": ts["window_index"],
             "workspace_id": ws.get("id"),
             "monitor": ws_meta.get("monitor"),
+            "session_id": session_id,
             "tile_order": c.get("tile_order", 0),
             "tiled_layout": c.get("tiled_layout") or ws_meta.get("tiledLayout"),
+            "account": account,
+            "config_dir": config_dir,
         }
     return mapping
 
@@ -265,7 +287,7 @@ def apply_tmux(snap, resume=False, pane_contents=None, exclude_session=None, man
 
 def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=None):
     hypr_state = snap.get("hyprland", {})
-    mapping = build_session_workspace_map(hypr_state)
+    mapping = build_session_workspace_map(hypr_state, snap.get("tmux", {}))
     if not mapping:
         print("no tmux_session cross-references in this snapshot - is it pre-crash?", file=sys.stderr)
         sys.exit(1)
@@ -279,16 +301,26 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
               f"(not yet restored via tmux-resurrect?): {', '.join(missing[:10])}"
               f"{' ...' if len(missing) > 10 else ''}", file=sys.stderr)
 
+    # Scrollback parsing is now only the fallback (see build_session_workspace_map's
+    # session_id, sourced straight from the CLI's own sessions/<pid>.json)
+    # - extract lazily, only if some session actually needs it, so --resume
+    # doesn't require --pane-contents at all when every session already
+    # has a direct session_id.
     pane_dir = None
     tmp = None
-    if resume:
-        if not pane_contents:
-            print("--resume requires --pane-contents PATH_TO_TAR_GZ", file=sys.stderr)
-            sys.exit(1)
-        tmp = tempfile.TemporaryDirectory()
-        with tarfile.open(pane_contents) as tf:
-            tf.extractall(tmp.name)
-        pane_dir = Path(tmp.name) / "pane_contents"
+
+    def get_pane_dir():
+        nonlocal pane_dir, tmp
+        if pane_dir is None:
+            if not pane_contents:
+                print("a session has no direct session_id and needs scrollback fallback, "
+                      "but --pane-contents wasn't given", file=sys.stderr)
+                sys.exit(1)
+            tmp = tempfile.TemporaryDirectory()
+            with tarfile.open(pane_contents) as tf:
+                tf.extractall(tmp.name)
+            pane_dir = Path(tmp.name) / "pane_contents"
+        return pane_dir
 
     exclude_jsonl = {exclude_session} if exclude_session else set()
 
@@ -299,7 +331,8 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
     by_workspace = {}
     for sess, m in todo.items():
         by_workspace.setdefault(m["workspace_id"], {"monitor": m["monitor"], "sessions": []})
-        by_workspace[m["workspace_id"]]["sessions"].append((sess, m["window_index"], m["tile_order"]))
+        by_workspace[m["workspace_id"]]["sessions"].append(
+            (sess, m["window_index"], m["tile_order"], m.get("config_dir"), m.get("account"), m.get("session_id")))
 
     for ws_id, info in sorted(by_workspace.items(), key=lambda kv: (kv[0] is None, kv[0])):
         # Spawn in the recorded tile_order (left-to-right, top-to-bottom
@@ -307,13 +340,26 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
         # order alone reproduces which window ends up master vs. stack
         # position, with no pixel coordinates or extra dispatch needed.
         info["sessions"].sort(key=lambda t: t[2])
-        for sess, window_index, _rank in info["sessions"]:
+        for sess, window_index, _rank, config_dir, account, session_id in info["sessions"]:
             if resume:
-                uuid = resolve_resume_uuid(pane_dir, sess, window_index, "0", exclude_jsonl)
+                if session_id:
+                    uuid = session_id
+                    print(f"  session {sess}: session_id known directly from the snapshot (no scrollback parsing needed)")
+                else:
+                    uuid = resolve_resume_uuid(get_pane_dir(), sess, window_index, "0", exclude_jsonl)
                 if uuid:
-                    print(f"  session {sess}: injecting claude --resume {uuid}")
+                    # Every account's project store for a given cwd is the
+                    # same inode (see resolve_resume_uuid's docstring), so
+                    # the uuid search can't tell accounts apart - without
+                    # this prefix every resume silently ran as whichever
+                    # account happened to be checked first (confirmed live:
+                    # sessions captured under claude2/claude3 all came back
+                    # as the default account). config_dir/account come from
+                    # tmux.sessions[].windows[].panes[].claude instead.
+                    prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
+                    print(f"  session {sess}: injecting {prefix}claude --resume {uuid} (account={account or 'claude'})")
                     subprocess.run(["tmux", "send-keys", "-t", f"{sess}:{window_index}",
-                                     f"claude --resume {uuid}", "Enter"])
+                                     f"{prefix}claude --resume {uuid}", "Enter"])
                 else:
                     print(f"  session {sess}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
             cmd = f"alacritty -e tmux attach -t {sess}"
