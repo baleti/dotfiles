@@ -145,6 +145,34 @@ def list_snapshots():
     return out
 
 
+def abort_prompt():
+    """Clean exit for Ctrl+C/Ctrl+D/Escape during any interactive prompt in
+    this module - no traceback, no partial action taken (called before any
+    of these prompts' answers are acted on, only used to gather a
+    decision)."""
+    print("\nAborted.", file=sys.stderr)
+    sys.exit(130)  # 128+SIGINT, the standard convention for a Ctrl+C exit
+
+
+def ask(prompt_text):
+    """input() wrapped so Ctrl+C (KeyboardInterrupt), Ctrl+D/closed stdin
+    (EOFError), or Escape all abort the whole script immediately instead
+    of raising a raw traceback or being silently treated as some other
+    answer. A bare terminal in cooked line mode still hands Escape to
+    input() as a literal \\x1b byte prepended to whatever's typed (it does
+    not submit the line on its own) - checking for a leading ESC here
+    catches "pressed Escape" whether or not Enter followed it, without
+    needing a raw/cbreak terminal reader for what's otherwise plain
+    line-based y/n and numeric prompts."""
+    try:
+        response = input(prompt_text)
+    except (KeyboardInterrupt, EOFError):
+        abort_prompt()
+    if response.startswith("\x1b"):
+        abort_prompt()
+    return response.strip()
+
+
 def choose_snapshot_interactive():
     """Print every available snapshot with enough of a summary to tell
     them apart (workspaces/windows/tmux sessions/claude sessions/other
@@ -164,7 +192,7 @@ def choose_snapshot_interactive():
         print(f"{i+1:>3}  {s['timestamp']:<25} {s['workspaces']:>3} {s['windows']:>4} "
               f"{s['tmux_sessions']:>5} {s['claude_sessions']:>7} {s['other_apps']:>6}  {Path(s['path']).name}")
     while True:
-        choice = input(f"\nSelect snapshot to restore [1-{len(summaries)}]: ").strip()
+        choice = ask(f"\nSelect snapshot to restore [1-{len(summaries)}]: ")
         if choice.isdigit() and 1 <= int(choice) <= len(summaries):
             return summaries[int(choice) - 1]["path"]
         print("invalid choice, try again")
@@ -292,11 +320,11 @@ def choose_apps_interactive(other_clients):
             print("    no cmdline captured - cannot relaunch automatically, skipping")
             continue
         if running:
-            ans = input("    restart this one too (closes the running window, relaunches onto its recorded workspace)? [y/N]: ").strip().lower()
+            ans = ask("    restart this one too (closes the running window, relaunches onto its recorded workspace)? [y/N]: ").lower()
             if ans in ("y", "yes"):
                 decisions.append((c, "restart"))
         else:
-            ans = input("    restore this one? [Y/n]: ").strip().lower()
+            ans = ask("    restore this one? [Y/n]: ").lower()
             if ans not in ("n", "no"):
                 decisions.append((c, "launch"))
     return decisions
