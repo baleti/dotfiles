@@ -252,15 +252,26 @@ def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, ex
     bridgeSessionId matches - its filename (sans .jsonl) is the real
     --resume uuid. See tmux-disaster-recovery.md: cwd+account cannot
     disambiguate concurrent sessions since ~/.claude*/projects/<cwd> is
-    the same inode across accounts."""
+    the same inode across accounts.
+
+    Matches the precise `"bridgeSessionId":"cse_<suffix>"` JSON field, not
+    a bare substring of the URL-style id - confirmed a real false-positive
+    class doing it the naive way: a transcript that happens to mention
+    another session's URL anywhere in its own history (most commonly a
+    git commit's own `Claude-Session: https://claude.ai/code/session_<id>`
+    attribution line, which this codebase's own commits carry) matches on
+    substring alone, misattributing that other session's uuid entirely.
+    The quoted bridgeSessionId field is only ever written by the system
+    establishing that specific session's own bridge, never incidentally
+    produced by conversation content."""
     pane_file = Path(pane_contents_dir) / f"pane-{session}:{window_index}.{pane_index}"
     if not pane_file.exists():
         return None
     text = pane_file.read_text(errors="replace")
-    ids = re.findall(r"session_[A-Za-z0-9]+", text)
+    ids = re.findall(r"session_([A-Za-z0-9]+)", text)
     if not ids:
         return None
-    footer_id = ids[-1]
+    footer_id = f'"bridgeSessionId":"cse_{ids[-1]}"'
     for claude_dir in CLAUDE_DIRS:
         proj = claude_dir / "projects" / "-home-user1"
         if not proj.is_dir():
@@ -342,6 +353,16 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
         info["sessions"].sort(key=lambda t: t[2])
         for sess, window_index, _rank, config_dir, account, session_id in info["sessions"]:
             if resume:
+                current_cmd = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", f"{sess}:{window_index}", "#{pane_current_command}"],
+                    capture_output=True, text=True).stdout.strip()
+                if current_cmd == "claude":
+                    # Already running (e.g. a prior --resume run already
+                    # fixed this one) - typing another `claude --resume`
+                    # into a live TUI doesn't relaunch it, it just sends
+                    # that text as a chat message. Confirmed the hard way.
+                    print(f"  session {sess}: already running claude, skipping resume injection")
+                    continue
                 if session_id:
                     uuid = session_id
                     print(f"  session {sess}: session_id known directly from the snapshot (no scrollback parsing needed)")
