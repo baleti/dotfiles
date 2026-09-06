@@ -188,11 +188,25 @@ def main():
               "default socket), or use --own-server / --server ID instead.", file=sys.stderr)
         sys.exit(1)
 
-    # Stop/restart wraps the WHOLE flow (server acquisition + tmux restore
-    # + Hyprland placement), not just the placement half - the daemon's
-    # periodic resurrect-save can clobber the staged files during either
-    # step. apply_tmux() gets manage_daemon=False below so it doesn't
-    # restart the daemon prematurely between steps.
+    # Every question gets asked FIRST, before anything destructive happens -
+    # default mode's server acquisition is a `systemctl --user restart
+    # tmux.service`, which kills the live server outright with no way back.
+    # Answering prompts is free to back out of (Ctrl+C costs nothing); once
+    # that restart runs, it doesn't. Confirmed backwards before this fix:
+    # the restart used to run BEFORE the snapshot picker even appeared.
+    snapshot_path = args.snapshot or restore_plan.choose_snapshot_interactive()
+    snap = restore_plan.load(snapshot_path)
+
+    app_decisions = []
+    if not args.no_apps:
+        other_clients = restore_plan.get_other_clients(snap.get("hyprland", {}))
+        app_decisions = restore_plan.choose_apps_interactive(other_clients)
+
+    # Stop/restart wraps the WHOLE remaining flow (server acquisition +
+    # tmux restore + Hyprland placement), not just the placement half - the
+    # daemon's periodic resurrect-save can clobber the staged files during
+    # either step. apply_tmux() gets manage_daemon=False below so it
+    # doesn't restart the daemon prematurely between steps.
     was_active = restore_plan.stop_desktop_snapshot()
     try:
         if args.own_server:
@@ -201,13 +215,6 @@ def main():
             socket_path = acquire_named_server(args.server)
         else:
             socket_path = acquire_default_server()
-
-        # Snapshot choice drives both the tmux placement and the app-restore
-        # step below, so it's picked once, up front, before restore.sh runs -
-        # not because restore.sh needs it, but so a mistaken pick doesn't
-        # mean restoring tmux twice.
-        snapshot_path = args.snapshot or restore_plan.choose_snapshot_interactive()
-        snap = restore_plan.load(snapshot_path)
 
         # Repoint tmux-resurrect's own 'last'/pane_contents.tar.gz to match
         # the CHOSEN snapshot's moment, not whatever resurrect save happens
@@ -232,11 +239,8 @@ def main():
         restore_plan.apply_tmux(snap, resume=args.resume, pane_contents=args.pane_contents,
                                  exclude_session=args.exclude_session, manage_daemon=False)
 
-        if not args.no_apps:
-            other_clients = restore_plan.get_other_clients(snap.get("hyprland", {}))
-            decisions = restore_plan.choose_apps_interactive(other_clients)
-            if decisions:
-                restore_plan.apply_selected(decisions)
+        if app_decisions:
+            restore_plan.apply_selected(app_decisions)
     finally:
         if was_active:
             restore_plan.start_desktop_snapshot()
