@@ -45,6 +45,7 @@ Usage:
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -167,6 +168,91 @@ def choose_snapshot_interactive():
         if choice.isdigit() and 1 <= int(choice) <= len(summaries):
             return summaries[int(choice) - 1]["path"]
         print("invalid choice, try again")
+
+
+def _nearest_at_or_before(paths_by_ts, target_ts):
+    """paths_by_ts: {fixed-width timestamp string -> Path}. Returns the
+    Path whose timestamp is the largest one <= target_ts, or None -
+    fixed-width resurrect timestamps sort lexicographically, so a plain
+    string compare works (same trick resurrect-restore.sh uses)."""
+    best = None
+    for ts in sorted(paths_by_ts):
+        if ts <= target_ts:
+            best = ts
+        else:
+            break
+    return paths_by_ts.get(best) if best else None
+
+
+def sync_resurrect_to_snapshot(snapshot_timestamp_iso, socket_path=None):
+    """Repoint ~/.tmux/resurrect/last and pane_contents.tar.gz to whatever
+    tmux-resurrect actually had at-or-before the CHOSEN desktop-snapshot's
+    own timestamp - the same "nearest at-or-before" match
+    ~/.config/tmux/scripts/resurrect-restore.sh already does for the
+    interactive prefix+C-r picker.
+
+    Without this, restore_tmux() always restores whatever `last` currently
+    points to (tmux-resurrect's own most recent save) regardless of which
+    snapshot the user picked from choose_snapshot_interactive() - confirmed
+    a real gap 2026-09-06: picking a near-empty snapshot captured right
+    after a restart still went ahead and restored the full pre-reboot
+    session count, because `last` had never been repointed to match the
+    chosen snapshot's moment. The two ARE captured on the same timer
+    (snapshot.py's daemon drives both from one loop - see its module
+    docstring) so a matching resurrect layout genuinely exists for most
+    snapshots; this just makes the restore actually use that pairing
+    instead of always reaching for the newest save.
+
+    Queries @resurrect-dir from socket_path (the server about to be
+    restored into) rather than hardcoding ~/.tmux/resurrect, same
+    reasoning as resolve_restore_sh's server-side lookup - falls back to
+    the documented default if the option isn't set for any reason."""
+    resurrect_dir = None
+    if socket_path:
+        r = subprocess.run(["tmux", "-S", socket_path, "show-options", "-gqv", "@resurrect-dir"],
+                            capture_output=True, text=True)
+        if r.stdout.strip():
+            resurrect_dir = Path(r.stdout.strip().replace("~", str(Path.home()), 1))
+    resurrect_dir = resurrect_dir or (Path.home() / ".tmux" / "resurrect")
+    hist_dir = resurrect_dir / "pane_contents_history"
+
+    # "2026-09-06T21:22:10+0100" -> "20260906T212210" (resurrect's own
+    # filename timestamp format).
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})", snapshot_timestamp_iso or "")
+    if not m:
+        print(f"could not parse snapshot timestamp {snapshot_timestamp_iso!r} - "
+              f"leaving tmux-resurrect's 'last' pointer as-is", file=sys.stderr)
+        return
+    target_ts = f"{m.group(1)}{m.group(2)}{m.group(3)}T{m.group(4)}{m.group(5)}{m.group(6)}"
+
+    layouts = {p.stem.removeprefix("tmux_resurrect_"): p for p in resurrect_dir.glob("tmux_resurrect_*.txt")}
+    layout = _nearest_at_or_before(layouts, target_ts)
+    if layout is None:
+        print(f"no tmux-resurrect layout at or before {target_ts} - leaving 'last' as-is", file=sys.stderr)
+        return
+    layout_ts = layout.stem.removeprefix("tmux_resurrect_")
+    print(f"tmux-resurrect: repointing 'last' -> {layout.name} (matches chosen snapshot's {target_ts})")
+    last_link = resurrect_dir / "last"
+    last_link.unlink(missing_ok=True)
+    last_link.symlink_to(layout.name)
+
+    archives = ({p.stem.removeprefix("pane_contents_"): p for p in hist_dir.glob("pane_contents_*.tar.gz")}
+                if hist_dir.is_dir() else {})
+    archive = _nearest_at_or_before(archives, layout_ts)
+    if archive is None:
+        print(f"no pane_contents archive at or before {layout_ts} - pane scrollback won't be restored",
+              file=sys.stderr)
+        return
+    current = resurrect_dir / "pane_contents.tar.gz"
+    if current.is_file():
+        # Fold whatever's live right now into history first, under its own
+        # "now" timestamp, so swapping to an older archive never discards
+        # it - same reasoning as resurrect-restore.sh's own swap.
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        now_ts = time.strftime("%Y%m%dT%H%M%S")
+        shutil.copy2(current, hist_dir / f"pane_contents_{now_ts}.tar.gz")
+    shutil.copy2(archive, current)
+    print(f"tmux-resurrect: repointed pane_contents.tar.gz -> {archive.name}")
 
 
 def get_other_clients(hypr_state):

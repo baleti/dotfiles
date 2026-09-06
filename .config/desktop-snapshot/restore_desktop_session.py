@@ -209,6 +209,13 @@ def main():
         snapshot_path = args.snapshot or restore_plan.choose_snapshot_interactive()
         snap = restore_plan.load(snapshot_path)
 
+        # Repoint tmux-resurrect's own 'last'/pane_contents.tar.gz to match
+        # the CHOSEN snapshot's moment, not whatever resurrect save happens
+        # to be newest right now - see sync_resurrect_to_snapshot's
+        # docstring for the gap this closes (picking an old/near-empty
+        # snapshot used to still restore the newest tmux state regardless).
+        restore_plan.sync_resurrect_to_snapshot(snap.get("timestamp"), socket_path)
+
         restore_tmux(socket_path)
 
         if args.no_place:
