@@ -57,6 +57,11 @@ DEFAULT = Path.home() / ".cache" / "desktop-snapshot" / "latest.json"
 SNAPSHOTS_DIR = Path.home() / ".cache" / "desktop-snapshot" / "snapshots"
 CLAUDE_DIRS = [Path.home() / ".claude", Path.home() / ".claude2", Path.home() / ".claude3"]
 
+# Every tmux call inject_resume() makes uses this - see its use there for
+# why (a single hung `tmux send-keys` wedged an entire ~100-pane resume
+# batch with no way forward short of killing the child process by hand).
+RESUME_SUBPROCESS_TIMEOUT = 10
+
 
 def load(path):
     return json.loads(Path(path).read_text())
@@ -502,16 +507,6 @@ def hypr_eval(lua):
     return r.stdout.strip()
 
 
-def get_activewindow_pid():
-    d = json.loads(subprocess.run(["hyprctl", "-j", "activewindow"], capture_output=True, text=True).stdout or "{}")
-    return d.get("pid")
-
-
-def get_monitor_active_workspaces():
-    d = json.loads(subprocess.run(["hyprctl", "-j", "monitors"], capture_output=True, text=True).stdout or "[]")
-    return {m["name"]: m["activeWorkspace"]["id"] for m in d}
-
-
 def build_session_workspace_map(hypr_state, tmux_state=None):
     """(session, window_index) -> (workspace_id, monitor_name, account),
     from a PRE-CRASH snapshot's hyprland.clients[].tmux_session
@@ -662,9 +657,21 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         # ".claude2" but account left as the "claude" default).
         account = account_for_config_dir(config_dir)
     target = f"{sess}:{window_index}.{pane_index}"
-    current_cmd = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
-        capture_output=True, text=True).stdout.strip()
+    try:
+        current_cmd = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
+            capture_output=True, text=True, timeout=RESUME_SUBPROCESS_TIMEOUT).stdout.strip()
+    except subprocess.TimeoutExpired:
+        # Confirmed live 2026-09-06: a single `tmux send-keys` to one
+        # specific pane hung indefinitely (poll_s, tmux server otherwise
+        # fully responsive to every other command) mid-batch, wedging the
+        # whole ~100-pane resume loop on it with no way forward short of
+        # killing the child by hand. Every tmux call in this function gets
+        # a timeout for exactly this: one bad pane must never be able to
+        # block the rest of the batch again.
+        print(f"  {target}: tmux display-message timed out after {RESUME_SUBPROCESS_TIMEOUT}s - "
+              f"skipping this pane, check it manually", file=sys.stderr)
+        return
     if current_cmd == "claude":
         # Already running (e.g. a prior --resume run already fixed this
         # one) - typing another `claude --resume` into a live TUI doesn't
@@ -687,8 +694,12 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         # tmux.sessions[].windows[].panes[].claude instead.
         prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
         print(f"  {target}: injecting {prefix}claude --resume {uuid} (account={account or 'claude'})")
-        subprocess.run(["tmux", "send-keys", "-t", target,
-                         f"{prefix}claude --resume {uuid}", "Enter"])
+        try:
+            subprocess.run(["tmux", "send-keys", "-t", target,
+                             f"{prefix}claude --resume {uuid}", "Enter"], timeout=RESUME_SUBPROCESS_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print(f"  {target}: tmux send-keys timed out after {RESUME_SUBPROCESS_TIMEOUT}s - "
+                  f"may not have been delivered, check/resume this pane manually", file=sys.stderr)
     else:
         print(f"  {target}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
 
@@ -740,10 +751,6 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
         return pane_dir
 
     exclude_jsonl = {exclude_session} if exclude_session else set()
-
-    baseline_pid = get_activewindow_pid()
-    baseline_ws = get_monitor_active_workspaces()
-    print(f"baseline: activewindow pid={baseline_pid}, per-monitor active workspaces={baseline_ws}")
 
     by_workspace = {}
     for sess, m in todo.items():
@@ -821,15 +828,6 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
 
     if tmp:
         tmp.cleanup()
-
-    now_pid = get_activewindow_pid()
-    now_ws = get_monitor_active_workspaces()
-    if now_pid != baseline_pid or now_ws != baseline_ws:
-        print(f"WARNING: focus or a monitor's visible workspace changed during apply-tmux "
-              f"(pid {baseline_pid} -> {now_pid}, workspaces {baseline_ws} -> {now_ws}). "
-              f"This should not happen - investigate before trusting this run.", file=sys.stderr)
-    else:
-        print("verified: no focus/visible-workspace change occurred during placement.")
 
 
 def apply(snap):

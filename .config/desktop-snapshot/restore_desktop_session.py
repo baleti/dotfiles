@@ -226,22 +226,27 @@ def main():
     args = p.parse_args()
 
     # Default mode restarts tmux.service, which kills every pane on that
-    # server - including this script's own, if it's running inside one of
-    # them. That's fatal partway through: the restart's own save.sh has
-    # already clobbered last/pane_contents.tar.gz by the time the kill
-    # lands, and the repair step right after never gets to run. Detect and
-    # refuse rather than silently corrupt the staging.
+    # server outright - including this script's own, if it's running
+    # inside one of them, mid-restore. Detect and refuse rather than let
+    # that happen.
     running_inside_this_server = (
         not args.own_server and not args.server
         and os.environ.get("TMUX", "").split(",")[0] == str(TMUX_SOCKET_DIR / "default")
     )
     if running_inside_this_server:
+        client_pid = subprocess.run(["tmux", "display-message", "-p", "#{client_pid}"],
+                                     capture_output=True, text=True).stdout.strip()
         print("Refusing: this script is running inside a pane on the default tmux server, "
               "and default mode restarts that exact server - it would kill this script's own "
-              "process mid-restore, right after the restart's save.sh has already overwritten "
-              "your staged pane_contents.tar.gz/last, before the repair step can run.\n"
+              "process mid-restore.\n"
               "Run this from outside tmux (a plain TTY/VT, or a terminal not attached to the "
-              "default socket), or use --own-server / --server ID instead.", file=sys.stderr)
+              "default socket), or use --own-server / --server ID instead.\n"
+              + (f"Tip: to detach from tmux right here without leaving your terminal, kill just "
+                 f"this client (not the server): kill -9 {client_pid}"
+                 if client_pid else
+                 "Tip: to detach from tmux right here without leaving your terminal, kill just "
+                 "this client (not the server): kill -9 $(tmux display-message -p '#{client_pid}')"),
+              file=sys.stderr)
         sys.exit(1)
 
     # Every question gets asked FIRST, before anything destructive happens -
