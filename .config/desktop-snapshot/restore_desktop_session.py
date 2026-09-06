@@ -65,6 +65,7 @@ Usage:
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -148,12 +149,47 @@ def resolve_restore_sh(socket_path):
     return path if path else str(RESURRECT_RESTORE_SH)
 
 
+# restore.sh's own active-pane/window-cursor restoration
+# (restore_active_pane_for_each_window, restore_active_and_alternate_windows
+# et al, in whichever tmux-resurrect checkout @resurrect-restore-script-path
+# resolves to) calls `tmux switch-client` unconditionally per window/pane -
+# which needs an attached client to "switch", and a headless restore onto a
+# server nobody's attached to yet never has one. Confirmed harmless: pane/
+# window/content creation all use fully-qualified session:window.pane
+# targets that don't need a client, so this only ever drops the "which
+# pane looks active" cosmetic, never actual content. Matched conservatively
+# - "can't find pane: <purely numeric>" is this known case (a bare pane
+# index that needed a "current window" to resolve against); a NON-numeric
+# target here (a window title, say) would mean the stale-checkout field-
+# order bug is back and must stay visible, not get suppressed.
+KNOWN_BENIGN_RESTORE_NOISE = (
+    re.compile(r"^no current client$"),
+    re.compile(r"^can't find pane: \d+$"),
+)
+
+
 def restore_tmux(socket_path):
     fake_tmux = f"{socket_path},0,0"
     restore_sh = resolve_restore_sh(socket_path)
     print(f"restoring onto socket {socket_path} (restore.sh: {restore_sh})")
-    r = run(["bash", restore_sh], env={**os.environ, "TMUX": fake_tmux})
-    if r.returncode != 0:
+    print(f"+ bash {restore_sh}")
+    proc = subprocess.Popen(
+        ["bash", restore_sh], env={**os.environ, "TMUX": fake_tmux},
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    suppressed = 0
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        if any(p.match(line) for p in KNOWN_BENIGN_RESTORE_NOISE):
+            suppressed += 1
+            continue
+        print(line)
+    proc.wait()
+    if suppressed:
+        print(f"({suppressed} 'no current client'/'can't find pane: <index>' messages suppressed - "
+              f"known-harmless active-pane/window cursor restoration noise from restoring onto a "
+              f"server with no attached client yet; doesn't affect pane/content restoration)")
+    if proc.returncode != 0:
         print("restore.sh exited non-zero - check output above before continuing", file=sys.stderr)
         sys.exit(1)
 
