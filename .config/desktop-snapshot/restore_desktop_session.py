@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import restore_plan  # noqa: E402
 
 RESURRECT_RESTORE_SH = Path.home() / ".tmux" / "plugins" / "tmux-resurrect" / "scripts" / "restore.sh"
+RESURRECT_DIR = Path.home() / ".tmux" / "resurrect"
 TMUX_SOCKET_DIR = Path(f"/tmp/tmux-{os.getuid()}")
 
 
@@ -59,11 +60,41 @@ def run(cmd, **kw):
     return subprocess.run(cmd, **kw)
 
 
+def preserve_resurrect_staging():
+    """Snapshot what `last` and pane_contents.tar.gz currently point to,
+    so a restart's ExecStop=save.sh (which saves *live* state - whatever
+    was just running, not what you staged) can be undone afterward. Its
+    own save is never lost either way: resurrect-rotate-pane-contents.sh
+    already folds it into pane_contents_history/ with its own timestamp -
+    this only re-points last/pane_contents.tar.gz back to what you had
+    chosen before the restart touched them."""
+    last_target = os.readlink(RESURRECT_DIR / "last") if (RESURRECT_DIR / "last").is_symlink() else None
+    pane_contents_path = RESURRECT_DIR / "pane_contents.tar.gz"
+    saved_bytes = pane_contents_path.read_bytes() if pane_contents_path.exists() else None
+    return last_target, saved_bytes
+
+
+def restore_resurrect_staging(saved):
+    last_target, saved_bytes = saved
+    if last_target is not None:
+        (RESURRECT_DIR / "last").unlink(missing_ok=True)
+        (RESURRECT_DIR / "last").symlink_to(last_target)
+        print(f"re-pinned last -> {last_target} (restart's own save is preserved in pane_contents_history/)")
+    if saved_bytes is not None:
+        (RESURRECT_DIR / "pane_contents.tar.gz").write_bytes(saved_bytes)
+        print("re-pinned pane_contents.tar.gz to what it was before the restart")
+
+
 def acquire_default_server():
-    """Restart the systemd unit: ExecStop saves current state, ExecStart
-    brings up a fresh, empty server on the normal default socket."""
+    """Restart the systemd unit: ExecStop saves current (live, not
+    necessarily what you want restored) state, ExecStart brings up a
+    fresh, empty server on the normal default socket. Preserve/restore
+    the resurrect staging around the restart so that save doesn't clobber
+    a deliberately-staged pre-crash snapshot."""
+    saved = preserve_resurrect_staging()
     run(["systemctl", "--user", "restart", "tmux.service"], check=True)
     time.sleep(1)
+    restore_resurrect_staging(saved)
     return str(TMUX_SOCKET_DIR / "default")
 
 
