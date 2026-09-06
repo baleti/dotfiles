@@ -322,6 +322,27 @@ def _read_proc_stat(pid: int):
         return None
 
 
+def _read_proc_state(pid: int):
+    """Single-char /proc/<pid>/stat state ('R' running, 'S' sleeping, 'T'
+    stopped by a job-control signal (Ctrl+Z / SIGTSTP) or SIGSTOP, 'Z'
+    zombie, ...). A stopped process can't update its own sessions/<pid>.json
+    "status" field - reading this directly is the only way to tell a
+    deliberately job-control-backgrounded session apart from one that's
+    merely idle, confirmed live: CPU time is provably frozen (checked via
+    `ps time` across a 5s window) while state is 'T', and a plain `fg` in
+    its pane fully restores it - no different from any other shell
+    background job."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    paren = raw.rfind(")")
+    if paren == -1:
+        return None
+    rest = raw[paren + 2:].split()
+    return rest[0] if rest else None
+
+
 def _read_all_proc() -> dict:
     """pid -> (ppid, tty_nr) for every live process, one /proc sweep --
     the same shape winswitch's enrich.rs::read_all_proc() builds, used the
@@ -526,9 +547,14 @@ def list_sessions(base: Path, tmux_titles: dict, hypr_by_session: dict) -> list:
         # tmux at all.
         hypr = hypr_by_session.get(tmux_session) if tmux_session else None
 
+        # Live process state takes precedence over the CLI's own
+        # self-reported "status" - a stopped process can't write to its
+        # own session file to say so (see _read_proc_state's docstring).
+        status = "stopped" if _read_proc_state(pid) == "T" else data.get("status")
+
         rows.append({
             "pid": pid,
-            "status": data.get("status"),
+            "status": status,
             "title": title,
             "cwd": cwd,
             "tmux_session": tmux_session,
