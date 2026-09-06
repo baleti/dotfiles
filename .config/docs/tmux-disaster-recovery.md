@@ -94,6 +94,63 @@ lsof's rendering of a leading NUL) address instead of a real path is the
 tell. `TMUX="" tmux -S "" list-sessions` reconnects to it directly if you
 need to inspect or `kill-server` it.
 
+## Gotcha: a stale layout file can predate a plugin re-clone, in a format vanilla restore.sh can't read
+
+`~/.tmux/plugins/tmux-resurrect` is a self-healing git clone
+(`[ -f resurrect.tmux ] || git clone ...` in `.tmux.conf`) - if the
+directory is ever missing, it silently re-clones vanilla upstream. If
+this system's `save.sh`/`restore.sh` were ever locally patched (this one
+was, to add a `pane_title` field used for `select-pane -T` window-title
+restoration) and the directory later got wiped and re-cloned, that patch
+is gone with no warning - but old `tmux_resurrect_*.txt` files saved
+*before* the re-clone still use the old format.
+
+Symptom: `restore.sh` runs clean (exit 0, sessions/panes get created at
+roughly the right count) but almost every pane comes back **empty**, and
+every run spams `can't find pane: <a full window title>` /
+`can't find window: <title>`. That message is the tell - it means some
+`restore.sh` function parsed a field meant to be a small pane index and
+got a whole title string instead, because the file has one extra field
+(or one in a different position) than what's currently installed expects.
+
+Diagnose precisely with `awk -F'\t' '$1=="pane" && $2=="<session>"{for(i=1;i<=NF;i++) print i": ["$i"]"}' <file>`
+and compare the field count/order against the *currently installed*
+`save.sh`'s own `pane_format()`/`window_format()` (`grep -n
+"^pane_format\|^window_format" -A 20 scripts/save.sh`). A mismatch here
+- not the pane_contents.tar.gz archive itself, which is just raw bytes
+keyed by pane-id filename and was never the problem - is what breaks
+`pane_contents_file_exists()`: it builds a lookup path from the
+(garbled) pane_index, which can never match a real extracted file.
+
+**Fix the data, not the plugin.** Patching the vendored `restore.sh` to
+read the old format works but doesn't survive the next re-clone, and
+the currently-installed `save.sh` already writes vanilla-format files
+going forward - only old, already-saved files are affected. Convert them
+once instead: `~/.config/desktop-snapshot/convert_legacy_resurrect_format.py
+OLD.txt NEW.txt` reorders old-format pane/window lines into whatever the
+currently-installed vanilla scripts expect, leaving everything else
+(state lines, the harmless multi-process `pane_full_command()` artifacts
+that don't start with `pane`/`window`) passed through untouched. Point
+`last` at the converted file and run stock, untouched `restore.sh`.
+
+## Known, deferred limitation: pane content can still collapse if replay size doesn't match capture size
+
+Pane content is captured with real cursor-positioning/clear-region ANSI
+escape sequences at whatever size the terminal actually was
+(`#{window_layout}`'s `WxH`). Replaying those into a session/window
+created at a different size can make the escapes land wrong and wipe
+most of the scrollback - confirmed directly on one pane: 87 lines of
+history survive replay at its original 80x24, only 13 at a mismatched
+220x60. `restore.sh` has always used one global `default-size` for every
+window it creates, regardless of what size each was actually captured
+at, so this is a pre-existing vanilla limitation, not something recovery
+work introduced. Not fixed as of this writing - deliberately deferred,
+see the session for why. If chasing this later, a per-window `-x`/`-y`
+at creation time (sessions support this directly; windows within an
+already-open session would need `resize-window` immediately after
+creation) is the shape of the fix, sourced from each window's own
+recorded `WxH` rather than a single shared value.
+
 ## Mapping a restored tmux pane back to its exact `claude --resume` UUID
 
 `account_for_config_dir()` in `snapshot.py` labels a pane's Claude
@@ -193,25 +250,30 @@ computed by `snapshot.py`'s tty-ownership matching) joined against
 so keep/back up the last few pre-crash snapshots rather than relying on
 `latest.json` once trouble starts.
 
-## Recovery order (validated end to end for a single workspace)
+## Recovery order (validated end to end - 107 sessions, 117/151 panes with real content, using stock unmodified tmux-resurrect)
 
 1. `systemctl --user stop desktop-snapshot.service`
 2. Stage the pre-crash `pane_contents.tar.gz` + `last` symlink (see
    above), backing up the live ones first.
-3. `export TMUX="/tmp/tmux-$(id -u)/default,0,0"; bash
-   .../tmux-resurrect/scripts/restore.sh` - restores all sessions/panes
-   with pre-crash scrollback onto the real server.
-4. Build the session -> workspace -> monitor table from a pre-crash
+3. Sanity-check the layout file's field format against the currently
+   installed `save.sh` (see the gotcha above) - if it's stale/mismatched,
+   run `convert_legacy_resurrect_format.py` on it first and point `last`
+   at the converted copy instead.
+4. `export TMUX="/tmp/tmux-$(id -u)/default,0,0"; bash
+   .../tmux-resurrect/scripts/restore.sh` - stock, unmodified script -
+   restores all sessions/panes with pre-crash scrollback onto the real
+   server.
+5. Build the session -> workspace -> monitor table from a pre-crash
    `desktop-snapshot` JSON.
-5. Per workspace: spawn `alacritty -e tmux attach -t <session>` for
+6. Per workspace: spawn `alacritty -e tmux attach -t <session>` for
    every session mapped to it (`[workspace N silent]`, no monitor
    bracket), then pin the workspace's monitor once via
    `hl.dsp.workspace.move`.
-6. Only for sessions where the actual Claude conversation (not just the
+7. Only for sessions where the actual Claude conversation (not just the
    tmux pane) needs resuming: resolve the `--resume` UUID via the
    pane-contents OSC-8 footer method above, then run `claude --resume
    <uuid>` inside the now-attached pane.
-7. Restart `desktop-snapshot.service` once fully verified.
+8. Restart `desktop-snapshot.service` once fully verified.
 
 Test this on one workspace before batching all of them - confirm
 `activewindow`/`activeWorkspace` are unaffected on your own machine's
