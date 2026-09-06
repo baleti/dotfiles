@@ -27,10 +27,18 @@ client_tty="${1:?client_tty required}"
 
 # tmux-resurrect itself publishes this once loaded (resurrect.tmux:
 # set_script_path_options), pointing at wherever its own scripts/restore.sh
-# actually lives - manual checkout here, but this keeps the script working
-# unmodified on a TPM-managed install (~/.tmux/plugins/tmux-resurrect) too.
+# actually lives - this should always be set by the time C-r is pressed
+# (the option is set when .tmux.conf's `run` line loads the plugin at
+# server start), so the fallback below is only a last resort. Point it at
+# the actual checkout .tmux.conf's `run` line clones
+# (~/.config/tmux/plugins/tmux-resurrect), not a TPM-default location -
+# confirmed 2026-09-06 that a *different*, stale ~/.tmux/plugins/
+# tmux-resurrect checkout existed with an incompatible pane-line field
+# order, and a hardcoded reference to it elsewhere (restore_desktop_session.py)
+# silently used it instead of this option, corrupting every restored
+# window's target. That stale checkout has since been removed entirely.
 restore_sh="$(tmux show-options -gqv @resurrect-restore-script-path 2>/dev/null || true)"
-restore_sh="${restore_sh:-$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh}"
+restore_sh="${restore_sh:-$HOME/.config/tmux/plugins/tmux-resurrect/scripts/restore.sh}"
 restore_sh="${restore_sh/#\~/$HOME}"
 picker_sh=~/.config/tmux/scripts/resurrect-restore-picker.sh
 
