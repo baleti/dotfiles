@@ -1,0 +1,15 @@
+[Unit]
+Description=Snapshot Hyprland window layout + tmux/claude state + drive tmux-resurrect saves, for disaster recovery
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.config/desktop-snapshot/snapshot.py daemon --interval 300 --resurrect-interval 300
+Restart=always
+RestartSec=10
+Nice=15
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

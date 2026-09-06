@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
-"""Session/window state snapshot daemon.
+"""Desktop session/window state snapshot daemon.
 
 Captures, on an interval, everything needed to reconstruct "what was running
-and where" on this desktop: Hyprland window positions/workspaces, tmux
-sessions/windows/panes, and which Claude account (CLAUDE_CONFIG_DIR) each
-claude pane was running under. Pane *contents*/scrollback and pane *layout*
-restore are already handled by tmux-resurrect/continuum (~/.tmux/resurrect,
-wired in ~/.tmux.conf) - this daemon deliberately does not duplicate that.
-What it adds is the piece nothing else here captures: the Hyprland-level
-window geometry/workspace for every app (terminals and non-terminals alike),
-and an explicit cross-reference tying each terminal window to the tmux
-session/window/claude-account it was showing, resolved the same way
-claude-account-window-rename-hook.sh does (pgrep -x -P <pane_pid> claude,
-then /proc/<pid>/environ for CLAUDE_CONFIG_DIR) rather than trusting the
-window name, which can be stale under a manual rename.
+and where" on this desktop:
 
-Read-only. Never touches tmux, Hyprland, or any other process - only
-hyprctl -j, tmux list-*, and /proc reads.
+1. A metadata snapshot (JSON, in ~/.cache/desktop-snapshot/): Hyprland window
+   positions/workspaces for every app, tmux sessions/windows/panes, and which
+   Claude account (CLAUDE_CONFIG_DIR) each claude pane runs under -- plus an
+   explicit cross-reference tying each terminal window to the tmux
+   session/window it shows, resolved the same way
+   claude-account-window-rename-hook.sh does (pgrep -x -P <pane_pid> claude,
+   then /proc/<pid>/environ) rather than trusting the (rename-stale) window
+   name. This part is pure reads: hyprctl -j, tmux list-*, /proc.
+
+2. The tmux-resurrect save (pane layout + scrollback into ~/.tmux/resurrect/).
+   This used to be driven by the tmux-continuum plugin, dropped 2026-09-06:
+   continuum has no timer of its own, it just wedges `#(continuum_save.sh)`
+   into status-right, so tmux re-ran it once per attached client per status
+   redraw -- ~48 clients here meant a burst of 15-20 bash+tmux subprocesses
+   every ~10s just to check "time to save yet?" (almost always no). This
+   daemon calls tmux-resurrect's save.sh directly on a clean timer instead
+   (see save_tmux_resurrect / --resurrect-interval). tmux-resurrect itself
+   stays -- it still owns save.sh/restore.sh and the prefix+C-r restore
+   binding; only continuum's scheduler is gone.
+
+The resurrect save runs `tmux capture-pane` under the hood but never mutates
+live tmux/Hyprland state (no new windows, no kills, no relaunches) -- exactly
+the same safe path continuum exercised every 10 minutes.
 """
 import argparse
 import json
@@ -27,12 +37,27 @@ import sys
 import time
 from pathlib import Path
 
-CACHE_DIR = Path.home() / ".cache" / "system-snapshot"
+CACHE_DIR = Path.home() / ".cache" / "desktop-snapshot"
 SNAP_DIR = CACHE_DIR / "snapshots"
 LATEST = CACHE_DIR / "latest.json"
 US = "\x1f"  # field separator, matches claude-account-window-rename-hook.sh's convention
 
 RETENTION_DAYS = 14
+
+# tmux-resurrect's save script (see the module docstring for why this daemon
+# drives it now instead of tmux-continuum). Path is where resurrect.tmux's
+# self-healing checkout in ~/.tmux.conf clones it.
+RESURRECT_SAVE_SCRIPT = (
+    Path.home() / ".config" / "tmux" / "plugins" / "tmux-resurrect" / "scripts" / "save.sh"
+)
+# save.sh with @resurrect-capture-pane-contents on + ~150 panes takes ~10s
+# wall; give it generous headroom before treating it as wedged.
+RESURRECT_SAVE_TIMEOUT = 180
+# Default seconds between resurrect saves. Independent of the metadata
+# snapshot interval: the metadata capture is ~0.5s and fine to run often,
+# the resurrect save is ~10s wall and there's little point doing it more
+# than every few minutes. 0 (or --no-resurrect) disables it entirely.
+DEFAULT_RESURRECT_INTERVAL = 300
 
 
 def run(cmd):
@@ -316,13 +341,47 @@ def rotate(retention_days=RETENTION_DAYS):
             seen_buckets.add(bucket)
 
 
-def do_capture():
+def tmux_running():
+    return bool(run(["tmux", "list-sessions"]).strip())
+
+
+def save_tmux_resurrect():
+    """Fire one tmux-resurrect save (layout .txt + pane_contents.tar.gz +
+    the @resurrect-hook-post-save-all rotation hook). Returns True on
+    success. Skips silently if tmux isn't up; logs and returns False on a
+    missing script or a timeout/error."""
+    if not RESURRECT_SAVE_SCRIPT.is_file():
+        print(f"resurrect save: {RESURRECT_SAVE_SCRIPT} not found -- is tmux-resurrect checked out?",
+              file=sys.stderr)
+        return False
+    if not tmux_running():
+        return False
+    try:
+        r = subprocess.run(
+            ["bash", str(RESURRECT_SAVE_SCRIPT), "quiet"],
+            capture_output=True, text=True, timeout=RESURRECT_SAVE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"resurrect save: timed out after {RESURRECT_SAVE_TIMEOUT}s", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"resurrect save: {e}", file=sys.stderr)
+        return False
+    if r.returncode != 0:
+        print(f"resurrect save: exit {r.returncode} {r.stderr.strip()[:200]}", file=sys.stderr)
+        return False
+    return True
+
+
+def do_capture(resurrect=False):
     path = write_snapshot(capture())
     rotate()
+    if resurrect:
+        save_tmux_resurrect()
     return path
 
 
-def daemon(interval):
+def daemon(interval, resurrect_interval):
     running = True
 
     def stop(signum, frame):
@@ -332,11 +391,16 @@ def daemon(interval):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
+    last_resurrect = 0.0
     while running:
+        now = time.monotonic()
+        due = resurrect_interval > 0 and (now - last_resurrect) >= resurrect_interval
         try:
-            do_capture()
+            do_capture(resurrect=due)
         except Exception as e:
             print(f"snapshot failed: {e}", file=sys.stderr)
+        if due:
+            last_resurrect = now
         for _ in range(interval):
             if not running:
                 break
@@ -346,16 +410,25 @@ def daemon(interval):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("capture", help="take one snapshot now and exit")
+    cp = sub.add_parser("capture", help="take one metadata snapshot now and exit")
+    cp.add_argument("--resurrect", action="store_true",
+                    help="also fire a tmux-resurrect save (off by default for a manual capture)")
     dp = sub.add_parser("daemon", help="loop, capturing on an interval")
-    dp.add_argument("--interval", type=int, default=300, help="seconds between snapshots (default 300)")
+    dp.add_argument("--interval", type=int, default=300,
+                    help="seconds between metadata snapshots (default 300)")
+    dp.add_argument("--resurrect-interval", type=int, default=DEFAULT_RESURRECT_INTERVAL,
+                    help=f"seconds between tmux-resurrect saves (default {DEFAULT_RESURRECT_INTERVAL}); "
+                         "0 disables")
+    dp.add_argument("--no-resurrect", action="store_true",
+                    help="don't drive tmux-resurrect saves at all")
     args = p.parse_args()
 
     if args.cmd == "capture":
-        path = do_capture()
+        path = do_capture(resurrect=args.resurrect)
         print(path)
     elif args.cmd == "daemon":
-        daemon(args.interval)
+        ri = 0 if args.no_resurrect else args.resurrect_interval
+        daemon(args.interval, ri)
 
 
 if __name__ == "__main__":
