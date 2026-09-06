@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn a system-snapshot JSON (see snapshot.py) into a recovery plan.
+"""Turn a desktop-snapshot JSON (see snapshot.py) into a recovery plan.
 
 Two modes:
   plan   (default) - read-only. Prints what was running, where, and under
@@ -17,7 +17,7 @@ Two modes:
                       go in with eyes open before ever passing --yes.
 
 Usage:
-  restore_plan.py [snapshot.json]            # default: ~/.cache/system-snapshot/latest.json
+  restore_plan.py [snapshot.json]            # default: ~/.cache/desktop-snapshot/latest.json
   restore_plan.py [snapshot.json] --apply --yes
 """
 import argparse
@@ -27,7 +27,7 @@ import sys
 import time
 from pathlib import Path
 
-DEFAULT = Path.home() / ".cache" / "system-snapshot" / "latest.json"
+DEFAULT = Path.home() / ".cache" / "desktop-snapshot" / "latest.json"
 
 
 def load(path):
