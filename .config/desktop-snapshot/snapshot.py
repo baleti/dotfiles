@@ -277,6 +277,24 @@ def get_hyprland_state(children, pid_info, tmux_clients):
                     break
         clients.append(entry)
 
+    # Relative tiling order, not absolute position: for the "master"
+    # layout in use here, a fresh spawn becomes master if the workspace
+    # was empty, else joins the stack - so replaying spawns in the same
+    # relative order reproduces the layout without needing pixel
+    # coordinates (which don't survive a monitor/resolution change
+    # anyway). Sort each workspace's windows left-to-right, top-to-bottom
+    # (master conventionally occupies the leftmost/largest area, stack
+    # members are ordered top-to-bottom to its right) and store that rank.
+    by_workspace = {}
+    for entry in clients:
+        ws_id = (entry.get("workspace") or {}).get("id")
+        by_workspace.setdefault(ws_id, []).append(entry)
+    for ws_clients in by_workspace.values():
+        for rank, entry in enumerate(
+            sorted(ws_clients, key=lambda e: tuple(e.get("at") or (0, 0)))
+        ):
+            entry["tile_order"] = rank
+
     return {
         "monitors": monitors,
         "workspaces": workspaces,
