@@ -91,6 +91,158 @@ def find_best_snapshot():
     return str(best) if tmux_workspace_mapping_count(best) > 0 else str(DEFAULT)
 
 
+def summarize_snapshot(path):
+    """One line of `#windows/#tmux-sessions/#claude-sessions/#other-apps`
+    per candidate, so a human picking a snapshot (see
+    choose_snapshot_interactive) can tell a rich pre-crash capture from
+    the near-empty one the daemon writes right after the crash/restart
+    itself - the exact ambiguity that burned a restore earlier (latest.json
+    was the freshly-started, almost-empty state, not the one anyone wanted)."""
+    try:
+        snap = load(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    hypr = snap.get("hyprland", {})
+    tmux = snap.get("tmux", {})
+    clients = hypr.get("clients", [])
+    ws_ids = {c["workspace"]["id"] for c in clients if c.get("workspace") and c["workspace"].get("id")}
+    claude_idx = index_claude_by_session_window(tmux)
+    return {
+        "path": str(path),
+        "timestamp": snap.get("timestamp") or "?",
+        "workspaces": len(ws_ids),
+        "windows": len(clients),
+        "tmux_sessions": len(tmux.get("sessions", [])),
+        "claude_sessions": sum(len(v) for v in claude_idx.values()),
+        "other_apps": sum(1 for c in clients if not c.get("tmux_session")),
+    }
+
+
+def list_snapshots():
+    """All distinct snapshots (latest.json plus every snapshots/*.json),
+    newest first, deduplicated by resolved path (latest.json is often a
+    copy of the newest snapshots/ entry)."""
+    candidates = [DEFAULT] + sorted(SNAPSHOTS_DIR.glob("snapshot_*.json"), reverse=True)
+    seen = set()
+    out = []
+    for p in candidates:
+        if not Path(p).is_file():
+            continue
+        rp = str(Path(p).resolve())
+        if rp in seen:
+            continue
+        seen.add(rp)
+        s = summarize_snapshot(p)
+        if s:
+            out.append(s)
+    return out
+
+
+def choose_snapshot_interactive():
+    """Print every available snapshot with enough of a summary to tell
+    them apart (workspaces/windows/tmux sessions/claude sessions/other
+    apps), and make the human pick one explicitly - no auto-picking
+    "most recent", since most recent is exactly what a fresh, nearly-empty
+    daemon capture after a restart/reboot looks like."""
+    summaries = list_snapshots()
+    if not summaries:
+        print("no snapshots found under ~/.cache/desktop-snapshot", file=sys.stderr)
+        sys.exit(1)
+    print(f"\n{'#':>3}  {'captured':<20} {'ws':>3} {'win':>4} {'tmux':>5} {'claude':>7} {'other':>6}  file")
+    for i, s in enumerate(summaries):
+        print(f"{i+1:>3}  {s['timestamp']:<20} {s['workspaces']:>3} {s['windows']:>4} "
+              f"{s['tmux_sessions']:>5} {s['claude_sessions']:>7} {s['other_apps']:>6}  {Path(s['path']).name}")
+    while True:
+        choice = input(f"\nSelect snapshot to restore [1-{len(summaries)}]: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(summaries):
+            return summaries[int(choice) - 1]["path"]
+        print("invalid choice, try again")
+
+
+def get_other_clients(hypr_state):
+    """Hyprland windows this snapshot recorded that are NOT a tmux client
+    (i.e. not something apply_tmux's Alacritty-attach path already
+    handles) - the general "any other application" set apply()/
+    choose_apps_interactive() work from."""
+    return [c for c in hypr_state.get("clients", []) if not c.get("tmux_session")]
+
+
+def choose_apps_interactive(other_clients):
+    """Per-app prompt instead of silently launching everything: show
+    class/title/workspace and whether a window of that class is already
+    running, then ask. Already-running apps default to "leave alone" (a
+    restart closes the existing window first, so it must be opt-in); apps
+    that aren't running default to "restore". Bare Alacritty windows with
+    no tmux cross-reference are skipped here - relaunching an empty
+    terminal restores nothing meaningful; apply_tmux already owns every
+    Alacritty window that actually hosts a tmux session."""
+    current = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
+    running_classes = {c.get("class") for c in current}
+    real = [c for c in other_clients if c.get("class") != "Alacritty"]
+    decisions = []
+    if not real:
+        print("\nno other (non-Alacritty) application windows recorded in this snapshot.")
+        return decisions
+    print(f"\n{len(real)} other application window(s) recorded in this snapshot:")
+    for c in real:
+        running = c.get("class") in running_classes
+        status = "already running" if running else "not running"
+        ws = (c.get("workspace") or {}).get("name")
+        cmd = " ".join(c.get("cmdline") or []) or None
+        print(f"\n  {c.get('class')} - '{c.get('title')}'  (ws {ws}, {status})")
+        if cmd:
+            print(f"    cmd: {cmd}")
+        else:
+            print("    no cmdline captured - cannot relaunch automatically, skipping")
+            continue
+        if running:
+            ans = input("    restart this one too (closes the running window, relaunches onto its recorded workspace)? [y/N]: ").strip().lower()
+            if ans in ("y", "yes"):
+                decisions.append((c, "restart"))
+        else:
+            ans = input("    restore this one? [Y/n]: ").strip().lower()
+            if ans not in ("n", "no"):
+                decisions.append((c, "launch"))
+    return decisions
+
+
+def apply_selected(decisions):
+    """Launch (or restart-then-launch) exactly the (client, action) pairs
+    choose_apps_interactive picked, positioning each new window onto its
+    recorded workspace/position/size. Same "diff clients before/after to
+    find the new address" approach as apply(), just driven by an explicit
+    per-app decision list instead of a blanket running-class skip."""
+    for c, action in decisions:
+        cmdline = c.get("cmdline")
+        cmd = " ".join(cmdline)
+        if action == "restart":
+            before_close = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
+            for w in before_close:
+                if w.get("class") == c.get("class"):
+                    subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{w['address']}"])
+            time.sleep(1)
+        before = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
+        before_addrs = {w.get("address") for w in before}
+        print(f"exec: {cmd}")
+        subprocess.run(["hyprctl", "dispatch", "exec", "--", cmd])
+        time.sleep(1.5)
+        ws = (c.get("workspace") or {}).get("name")
+        at = c.get("at")
+        size = c.get("size")
+        newest = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
+        candidates = [w for w in newest if w.get("class") == c.get("class") and w.get("address") not in before_addrs]
+        if not candidates:
+            print(f"  warning: could not identify the new window for [{c.get('class')}] to reposition it", file=sys.stderr)
+            continue
+        addr = candidates[0]["address"]
+        if ws:
+            subprocess.run(["hyprctl", "dispatch", "movetoworkspacesilent", f"{ws},address:{addr}"])
+        if at:
+            subprocess.run(["hyprctl", "dispatch", "movewindowpixel", f"exact {at[0]} {at[1]},address:{addr}"])
+        if size:
+            subprocess.run(["hyprctl", "dispatch", "resizewindowpixel", f"exact {size[0]} {size[1]},address:{addr}"])
+
+
 def index_claude_by_session_window(tmux_state):
     idx = {}
     for sess in tmux_state.get("sessions", []):
@@ -134,7 +286,7 @@ def print_plan(snap):
     print("HYPRLAND WINDOWS")
     print("=" * 70)
     terminal_clients = [c for c in hypr_state.get("clients", []) if c.get("tmux_session")]
-    other_clients = [c for c in hypr_state.get("clients", []) if not c.get("tmux_session")]
+    other_clients = get_other_clients(hypr_state)
 
     print(f"\n  {len(terminal_clients)} window(s) hosting a tmux client (position only - content via tmux-resurrect):")
     for c in terminal_clients:
@@ -503,39 +655,26 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
 
 
 def apply(snap):
-    hypr_state = snap.get("hyprland", {})
-    other_clients = [c for c in hypr_state.get("clients", []) if not c.get("tmux_session")]
+    """Non-interactive path for the plain `restore_plan.py --apply --yes`
+    CLI: launch every other-app the snapshot recorded, skipping (not
+    restarting) any whose class already has a window open. The
+    interactive per-app prompt (restart-or-leave, shown running/not) lives
+    in choose_apps_interactive + apply_selected instead - that's what
+    restore_desktop_session.py's default flow uses."""
+    other_clients = get_other_clients(snap.get("hyprland", {}))
     current = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
     running_classes = {c.get("class") for c in current}
 
+    decisions = []
     for c in other_clients:
-        cmdline = c.get("cmdline")
-        if not cmdline:
+        if not c.get("cmdline"):
             print(f"skip [{c.get('class')}]: no cmdline captured", file=sys.stderr)
             continue
         if c.get("class") in running_classes:
             print(f"skip [{c.get('class')}]: a window of this class is already running (not matching instances)")
             continue
-        cmd = " ".join(cmdline)
-        print(f"exec: {cmd}")
-        subprocess.run(["hyprctl", "dispatch", "exec", "--", cmd])
-        time.sleep(1.5)
-        ws = c.get("workspace", {}).get("name")
-        at = c.get("at")
-        size = c.get("size")
-        newest = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
-        candidates = [w for w in newest if w.get("class") == c.get("class") and w.get("address") not in
-                      {x.get("address") for x in current}]
-        if not candidates:
-            print(f"  warning: could not identify the new window for [{c.get('class')}] to reposition it", file=sys.stderr)
-            continue
-        addr = candidates[0]["address"]
-        if ws:
-            subprocess.run(["hyprctl", "dispatch", "movetoworkspacesilent", f"{ws},address:{addr}"])
-        if at:
-            subprocess.run(["hyprctl", "dispatch", "movewindowpixel", f"exact {at[0]} {at[1]},address:{addr}"])
-        if size:
-            subprocess.run(["hyprctl", "dispatch", "resizewindowpixel", f"exact {size[0]} {size[1]},address:{addr}"])
+        decisions.append((c, "launch"))
+    apply_selected(decisions)
 
 
 def main():
