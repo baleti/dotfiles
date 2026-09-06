@@ -153,21 +153,52 @@ recorded `WxH` rather than a single shared value.
 
 ## Mapping a restored tmux pane back to its exact `claude --resume` UUID
 
-`account_for_config_dir()` in `snapshot.py` labels a pane's Claude
-account (`claude`/`claude2`/`claude3`) from `CLAUDE_CONFIG_DIR`, but
-**the `-home-user1` project directory is the same inode under all three
-`~/.claude*/projects/`** (verified via `stat -c %i`) - all accounts
-share one transcript pool for a given cwd. Since most panes share
-`cwd=/home/user1`, account + cwd cannot disambiguate which of several
-concurrently-open sessions in that directory belongs to which pane.
+### Preferred: read it straight from the CLI's own session file
 
-The reliable source instead: `~/.tmux/resurrect/pane_contents_history/*.tar.gz`
-captures each pane's actual on-screen scrollback, and Claude Code's
-footer renders an OSC-8 hyperlink to
-`https://claude.ai/code/session_<id>` for the active conversation. That
-same `<id>` appears verbatim in the session's own jsonl transcript as
-`"bridgeSessionId":"cse_<id>"`, sitting next to `"sessionId":"<uuid>"` -
-the UUID `claude --resume` actually takes. So:
+While a `claude` process is alive, the CLI itself maintains
+`<config_dir>/sessions/<pid>.json` (`{"sessionId": ..., "cwd": ...,
+"tmux": "sess:@win.%pane", ...}`) - `claude-usage-daemon.py` (behind the
+CTRL+ALT+c usage panel) already reads these for its own session list.
+`snapshot.py`'s `session_id_for_claude_pid()` reads the same file at
+snapshot time and stores the exact `sessionId` directly on
+`tmux.sessions[].windows[].panes[].claude.session_id` - a real
+`--resume` uuid straight from the source, captured proactively, with no
+after-the-crash archaeology needed for any session a recent-enough
+snapshot covers. `restore_plan.py`'s `apply_tmux(--resume)` uses this
+whenever it's present and only falls back to scrollback-parsing (below)
+when it's missing - e.g. a snapshot taken before this field existed, or
+`sessions/<pid>.json` already cleaned up by the time a snapshot ran.
+
+**The account mismatch this fixed**: `account_for_config_dir()` labels a
+pane's account (`claude`/`claude2`/`claude3`) from `CLAUDE_CONFIG_DIR`
+correctly, but the *first* version of the `--resume` injection code
+never actually threaded that account through to the injected command -
+it resolved a real uuid via the scrollback method below, then ran bare
+`claude --resume <uuid>` with no `CLAUDE_CONFIG_DIR` prefix at all. Since
+**the `-home-user1` project directory is the same inode under all three
+`~/.claude*/projects/`** (verified via `stat -c %i`), the uuid itself
+still resolved correctly - but every single resumed session silently
+launched under the default account regardless of which one actually
+owned it. Confirmed live: sessions captured under `claude2`/`claude3`
+all came back running as plain `claude`. Fixed by joining
+`tmux.sessions[].windows[].panes[].claude` (account + config_dir) into
+`build_session_workspace_map()`'s per-session mapping - a completely
+separate part of the same snapshot the mapping function used to ignore
+entirely - and prefixing the injected command with
+`CLAUDE_CONFIG_DIR=<config_dir>` whenever it's set. The account itself
+was never missing from the snapshot; the injection code just never
+looked at it.
+
+### Fallback: scrollback OSC-8 footer + jsonl match
+
+For sessions with no `session_id` available (older snapshots, or a dead
+process whose `sessions/<pid>.json` is long gone):
+`~/.tmux/resurrect/pane_contents_history/*.tar.gz` captures each pane's
+actual on-screen scrollback, and Claude Code's footer renders an OSC-8
+hyperlink to `https://claude.ai/code/session_<id>` for the active
+conversation. That same `<id>` appears verbatim in the session's own
+jsonl transcript as `"bridgeSessionId":"cse_<id>"`, sitting next to
+`"sessionId":"<uuid>"` - the UUID `claude --resume` actually takes. So:
 
 ```sh
 tar -xzf pane_contents_<ts>.tar.gz -C /tmp/x ./pane_contents/pane-<session>:<window>.<pane>
@@ -175,11 +206,14 @@ grep -o 'session_[A-Za-z0-9]*' /tmp/x/pane_contents/pane-<session>:<window>.<pan
 grep -rl '<that-id>' ~/.claude3/projects/-home-user1/*.jsonl   # -> the real --resume uuid is the filename
 ```
 
-This is exact, not inferred from timing/cwd - safe to script. One caveat
-if scripting a *live* investigation this way: grepping for an ID you
-just read out loud in the same Claude Code session will also match that
-session's own transcript file (it now contains the ID as tool-output
-text) - exclude the current session's own jsonl from candidate matches.
+This is exact, not inferred from timing/cwd - safe to script. It cannot
+tell accounts apart on its own (same inode issue above) - always pair it
+with the `tmux.sessions[]...claude` join for the account/config_dir, per
+the fix above. One caveat if scripting a *live* investigation this way:
+grepping for an ID you just read out loud in the same Claude Code
+session will also match that session's own transcript file (it now
+contains the ID as tool-output text) - exclude the current session's own
+jsonl from candidate matches.
 
 ## Placing Alacritty windows on the right workspace/monitor without stealing focus
 

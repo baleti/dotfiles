@@ -147,6 +147,25 @@ def account_for_config_dir(cfg_dir):
     return "claude"
 
 
+def session_id_for_claude_pid(claude_pid, cfg_dir):
+    """The CLI writes its own <config_dir>/sessions/<pid>.json while
+    running (claude-usage-daemon.py already reads these for the usage
+    panel) - {"sessionId": ..., "cwd": ..., "tmux": "sess:@win.%pane", ...}.
+    Capturing sessionId here, proactively, at snapshot time is a real
+    --resume uuid straight from the source: no after-the-crash scrollback
+    archaeology (grepping pane_contents_history for an OSC-8 footer, then
+    matching it back to a jsonl transcript) needed for any session this
+    was captured for. That archaeology remains the only option for
+    sessions from before this field existed, or whose sessions/<pid>.json
+    already got cleaned up by the time a snapshot ran."""
+    base = Path(cfg_dir) if cfg_dir else Path.home() / ".claude"
+    try:
+        data = json.loads((base / "sessions" / f"{claude_pid}.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return data.get("sessionId")
+
+
 def resolve_claude_account(pane_pid, children, pid_info):
     """Mirrors claude-account-window-rename-hook.sh's resolution exactly,
     but reuses the single global ps sweep instead of spawning pgrep."""
@@ -161,6 +180,7 @@ def resolve_claude_account(pane_pid, children, pid_info):
         "claude_pid": claude_pid,
         "config_dir": cfg_dir or None,
         "account": account_for_config_dir(cfg_dir),
+        "session_id": session_id_for_claude_pid(claude_pid, cfg_dir),
     }
 
 
