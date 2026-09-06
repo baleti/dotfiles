@@ -92,6 +92,45 @@ def find_best_snapshot():
     return str(best) if tmux_workspace_mapping_count(best) > 0 else str(DEFAULT)
 
 
+def restore_active_windows_and_panes(snap, socket_path):
+    """Set each session's current window and each window's active pane
+    using fully-qualified targets (`select-window`/`select-pane -t
+    "session:window[.pane]"`) - unlike restore.sh's own attempt at this
+    same job (restore_active_pane_for_each_window /
+    restore_active_and_alternate_windows, both built on `tmux
+    switch-client`), these work correctly with no attached client.
+    Verified directly: a fully-qualified select-pane against an
+    unattached headless server exits 0 and flips pane_active as expected,
+    while switch-client on the same server fails with "no current
+    client" every time - not a client-vs-session distinction restore.sh
+    happened to get wrong for no reason, switch-client is *for* changing
+    what a client is looking at, so of course it needs one; select-window/
+    select-pane operate on session/window state directly and don't.
+
+    This is a real fidelity gap, not cosmetic: without it, any multi-pane
+    window's active pane silently defaults to pane 0 (whatever tmux
+    creates first) regardless of which pane was actually focused
+    pre-crash, and a session's current window similarly defaults to
+    whichever tmux-resurrect happened to create last. Redone here
+    headlessly, from the same window/pane "active" flags snapshot.py
+    already captures - no dependency on restore.sh's own (broken in this
+    context) mechanism for it."""
+    live = set(subprocess.run(["tmux", "-S", socket_path, "list-sessions", "-F", "#{session_name}"],
+                               capture_output=True, text=True).stdout.split())
+    for sess in snap.get("tmux", {}).get("sessions", []):
+        name = sess["name"]
+        if name not in live:
+            continue
+        for win in sess.get("windows", []):
+            widx = win["index"]
+            for pane in win.get("panes", []):
+                if pane.get("active"):
+                    subprocess.run(["tmux", "-S", socket_path, "select-pane",
+                                     "-t", f"{name}:{widx}.{pane['pane_index']}"])
+            if win.get("active"):
+                subprocess.run(["tmux", "-S", socket_path, "select-window", "-t", f"{name}:{widx}"])
+
+
 def summarize_snapshot(path):
     """One line of `#windows/#tmux-sessions/#claude-sessions/#other-apps`
     per candidate, so a human picking a snapshot (see

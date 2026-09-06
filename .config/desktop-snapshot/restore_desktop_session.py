@@ -154,14 +154,21 @@ def resolve_restore_sh(socket_path):
 # et al, in whichever tmux-resurrect checkout @resurrect-restore-script-path
 # resolves to) calls `tmux switch-client` unconditionally per window/pane -
 # which needs an attached client to "switch", and a headless restore onto a
-# server nobody's attached to yet never has one. Confirmed harmless: pane/
-# window/content creation all use fully-qualified session:window.pane
-# targets that don't need a client, so this only ever drops the "which
-# pane looks active" cosmetic, never actual content. Matched conservatively
-# - "can't find pane: <purely numeric>" is this known case (a bare pane
-# index that needed a "current window" to resolve against); a NON-numeric
-# target here (a window title, say) would mean the stale-checkout field-
-# order bug is back and must stay visible, not get suppressed.
+# server nobody's attached to yet never has one, so this always fails here.
+# That failure is a real (if minor) fidelity loss on its own - a multi-pane
+# window's active pane would silently default to pane 0 instead of whatever
+# was really focused pre-crash - which is why restore_desktop_session.py's
+# main() calls restore_plan.restore_active_windows_and_panes() right after
+# restore_tmux() to redo the job correctly, headlessly, using fully-
+# qualified targets that don't need a client. With that in place, this
+# specific failure is genuinely inert (restore.sh's own broken attempt at
+# it is immediately superseded, not just tolerated), so it's safe to drop
+# from the output entirely rather than repeat once per window/pane.
+# Matched conservatively: "can't find pane: <purely numeric>" is this known
+# case (a bare pane index that needed a "current window" to resolve
+# against); a NON-numeric target here (a window title, say) would mean the
+# stale-checkout field-order bug is back and must stay visible, not get
+# suppressed.
 KNOWN_BENIGN_RESTORE_NOISE = (
     re.compile(r"^no current client$"),
     re.compile(r"^can't find pane: \d+$"),
@@ -273,6 +280,12 @@ def main():
         restore_plan.sync_resurrect_to_snapshot(snap.get("timestamp"), socket_path)
 
         restore_tmux(socket_path)
+
+        # restore.sh's own attempt at this (switch-client-based) fails
+        # outright with no attached client - see
+        # restore_active_windows_and_panes's docstring for why this redoes
+        # it headlessly instead of accepting the fidelity loss.
+        restore_plan.restore_active_windows_and_panes(snap, socket_path)
 
         if args.no_place:
             print("--no-place given: tmux sessions restored, skipping Hyprland placement.")
