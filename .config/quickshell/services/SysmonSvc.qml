@@ -148,11 +148,34 @@ QtObject {
             bySourceOrTarget[d.source] = d;
             bySourceOrTarget[d.target] = d;
         }
+        // Merge into the existing reading rather than replacing it outright:
+        // a wanted mount missing from *this* run's output stays at its last
+        // known value instead of dropping to "--%" (2026-09-06, root cause
+        // of a briefly-blank disk-pill percentage report -- `timeout -k 2 8`
+        // above only kills a wedged df call, it can't make it flush any of
+        // its already-computed, still fully-buffered stdout first: a stale
+        // FUSE remote further down df's mount list can SIGKILL the whole
+        // run, discarding root's own reading too even though it was
+        // computed and would've been printed first, well before df ever
+        // got stuck. Confirmed real df output here lists local mounts,
+        // including "/", ahead of every fuse.rclone/fuse.sshfs remote, so
+        // this is exactly that ordering, not a rare edge case).
+        // Positional, not name-keyed: `wanted` can be an rclone remote name
+        // ("gdrive:") that doesn't match the resolved entry's own name
+        // (its mount target, e.g. "/home/user1/gdrive-rclone"), so the only
+        // reliable link back to a previous run's entry for the same wanted
+        // mount is which _wantedMounts slot produced it -- true as long as
+        // the config file didn't change in between, which is the only case
+        // this can misalign, and only for one cycle.
+        const prev = root.diskUsage;
         const out = [];
-        for (const wanted of root._wantedMounts) {
+        for (let i = 0; i < root._wantedMounts.length; i++) {
+            const wanted = root._wantedMounts[i];
             const d = bySourceOrTarget[wanted];
             if (d)
                 out.push({ name: d.target, pcent: d.pcent });
+            else if (prev[i])
+                out.push(prev[i]);
         }
         root.diskUsage = out;
     }
