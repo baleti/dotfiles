@@ -120,21 +120,27 @@ def summarize_snapshot(path):
 
 def list_snapshots():
     """All distinct snapshots (latest.json plus every snapshots/*.json),
-    newest first, deduplicated by resolved path (latest.json is often a
-    copy of the newest snapshots/ entry)."""
-    candidates = [DEFAULT] + sorted(SNAPSHOTS_DIR.glob("snapshot_*.json"), reverse=True)
-    seen = set()
+    newest first, deduplicated by the snapshot's own timestamp field -
+    latest.json is a separate on-disk copy of whatever the daemon captured
+    most recently (not a symlink), so a resolved-path dedup doesn't catch
+    it; two rows with the same timestamp are the same capture written
+    twice. The snapshots/ copy wins the slot (it's the durable, uniquely-
+    named one) and latest.json is dropped whenever it duplicates one."""
+    # snapshots/ entries checked before DEFAULT (latest.json) so the
+    # durable, uniquely-named file wins the slot on a timestamp match.
+    candidates = sorted(SNAPSHOTS_DIR.glob("snapshot_*.json"), reverse=True) + [DEFAULT]
+    seen_ts = set()
     out = []
     for p in candidates:
         if not Path(p).is_file():
             continue
-        rp = str(Path(p).resolve())
-        if rp in seen:
-            continue
-        seen.add(rp)
         s = summarize_snapshot(p)
-        if s:
-            out.append(s)
+        if not s:
+            continue
+        if s["timestamp"] in seen_ts:
+            continue
+        seen_ts.add(s["timestamp"])
+        out.append(s)
     return out
 
 
@@ -148,9 +154,13 @@ def choose_snapshot_interactive():
     if not summaries:
         print("no snapshots found under ~/.cache/desktop-snapshot", file=sys.stderr)
         sys.exit(1)
-    print(f"\n{'#':>3}  {'captured':<20} {'ws':>3} {'win':>4} {'tmux':>5} {'claude':>7} {'other':>6}  file")
+    # 25 wide, not 20: an ISO timestamp with a numeric timezone offset
+    # ("2026-09-06T21:27:34+0100") is 24 characters - a 20-wide field let
+    # it overflow and shift every column after it out of alignment with
+    # the header, confirmed from a real run's misaligned output.
+    print(f"\n{'#':>3}  {'captured':<25} {'ws':>3} {'win':>4} {'tmux':>5} {'claude':>7} {'other':>6}  file")
     for i, s in enumerate(summaries):
-        print(f"{i+1:>3}  {s['timestamp']:<20} {s['workspaces']:>3} {s['windows']:>4} "
+        print(f"{i+1:>3}  {s['timestamp']:<25} {s['workspaces']:>3} {s['windows']:>4} "
               f"{s['tmux_sessions']:>5} {s['claude_sessions']:>7} {s['other_apps']:>6}  {Path(s['path']).name}")
     while True:
         choice = input(f"\nSelect snapshot to restore [1-{len(summaries)}]: ").strip()

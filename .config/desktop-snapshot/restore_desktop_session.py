@@ -70,7 +70,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import restore_plan  # noqa: E402
 
-RESURRECT_RESTORE_SH = Path.home() / ".tmux" / "plugins" / "tmux-resurrect" / "scripts" / "restore.sh"
+# ~/.config/tmux/plugins/, NOT ~/.tmux/plugins/ - .tmux.conf's own
+# self-healing checkout line (`run '~/.config/tmux/plugins/tmux-resurrect/
+# resurrect.tmux'`) clones there, and that's the copy paired with
+# snapshot.py's RESURRECT_SAVE_SCRIPT. A stale ~/.tmux/plugins/tmux-resurrect/
+# checkout (2021-dated, unreferenced by any config) sat alongside it with an
+# INCOMPATIBLE pane-line field order (pane_title vs window_name in
+# different slots) - this constant pointed at that stale one, so restore.sh
+# misread window titles as pane indices, producing exactly the "no current
+# client" / "can't find pane: <window title>" garbage seen 2026-09-06
+# (confirmed by diffing both checkouts' save.sh/restore.sh field orders
+# directly - restore_pane_processes.sh's switch-client+select-pane pair,
+# called once per window, was receiving a window title string instead of a
+# numeric pane index).
+RESURRECT_RESTORE_SH = Path.home() / ".config" / "tmux" / "plugins" / "tmux-resurrect" / "scripts" / "restore.sh"
 TMUX_SOCKET_DIR = Path(f"/tmp/tmux-{os.getuid()}")
 
 
@@ -114,10 +127,28 @@ def acquire_named_server(server_id):
     return sock
 
 
+def resolve_restore_sh(socket_path):
+    """Same resolution ~/.config/tmux/scripts/resurrect-restore.sh uses for
+    the real prefix+C-r binding: ask the *target* server's own
+    @resurrect-restore-script-path (set by resurrect.tmux's
+    set_script_path_options when .tmux.conf's `run` line loads the plugin
+    on that server), falling back to RESURRECT_RESTORE_SH only if the
+    option is somehow unset. Querying the server instead of hardcoding a
+    second path means this can't independently drift from wherever
+    .tmux.conf's own self-healing checkout line points, the way the
+    previous hardcoded ~/.tmux/plugins/... constant silently did - see
+    RESURRECT_RESTORE_SH's docstring for the incident that caught it."""
+    r = subprocess.run(["tmux", "-S", socket_path, "show-options", "-gqv", "@resurrect-restore-script-path"],
+                        capture_output=True, text=True)
+    path = r.stdout.strip()
+    return path if path else str(RESURRECT_RESTORE_SH)
+
+
 def restore_tmux(socket_path):
     fake_tmux = f"{socket_path},0,0"
-    print(f"restoring onto socket {socket_path}")
-    r = run(["bash", str(RESURRECT_RESTORE_SH)], env={**os.environ, "TMUX": fake_tmux})
+    restore_sh = resolve_restore_sh(socket_path)
+    print(f"restoring onto socket {socket_path} (restore.sh: {restore_sh})")
+    r = run(["bash", restore_sh], env={**os.environ, "TMUX": fake_tmux})
     if r.returncode != 0:
         print("restore.sh exited non-zero - check output above before continuing", file=sys.stderr)
         sys.exit(1)
