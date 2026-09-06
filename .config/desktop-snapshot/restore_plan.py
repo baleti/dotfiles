@@ -233,11 +233,13 @@ def build_session_workspace_map(hypr_state, tmux_state=None):
         # the real --resume uuid with no scrollback parsing needed, when
         # a snapshot recent enough to have it is available.
         session_id = claude_panes[0].get("session_id") if claude_panes else None
+        cwd = claude_panes[0].get("cwd") if claude_panes else None
         mapping[key] = {
             "window_index": ts["window_index"],
             "workspace_id": ws.get("id"),
             "monitor": ws_meta.get("monitor"),
             "session_id": session_id,
+            "cwd": cwd,
             "tile_order": c.get("tile_order", 0),
             "tiled_layout": c.get("tiled_layout") or ws_meta.get("tiledLayout"),
             "account": account,
@@ -246,13 +248,13 @@ def build_session_workspace_map(hypr_state, tmux_state=None):
     return mapping
 
 
-def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, exclude_jsonl=()):
+def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, exclude_jsonl=(), cwd=None):
     """Extract the claude.ai/code/session_<id> OSC-8 footer from a
     pane's saved scrollback, then find the jsonl transcript whose
     bridgeSessionId matches - its filename (sans .jsonl) is the real
     --resume uuid. See tmux-disaster-recovery.md: cwd+account cannot
     disambiguate concurrent sessions since ~/.claude*/projects/<cwd> is
-    the same inode across accounts.
+    the same inode across accounts *for a given cwd*.
 
     Matches the precise `"bridgeSessionId":"cse_<suffix>"` JSON field, not
     a bare substring of the URL-style id - confirmed a real false-positive
@@ -263,7 +265,15 @@ def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, ex
     substring alone, misattributing that other session's uuid entirely.
     The quoted bridgeSessionId field is only ever written by the system
     establishing that specific session's own bridge, never incidentally
-    produced by conversation content."""
+    produced by conversation content.
+
+    `cwd`, when given, picks the right project directory
+    (`~/.claude*/projects/<cwd with every "/" replaced by "-">`) instead
+    of the hardcoded "-home-user1" this used to always search - confirmed
+    a real bug: any pane whose cwd wasn't the home directory (e.g. a
+    project checked out under a mounted drive) silently never resolved,
+    since the search was looking in the wrong project dir entirely. Falls
+    back to "-home-user1" when cwd is unknown, for backward compat."""
     pane_file = Path(pane_contents_dir) / f"pane-{session}:{window_index}.{pane_index}"
     if not pane_file.exists():
         return None
@@ -272,8 +282,9 @@ def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, ex
     if not ids:
         return None
     footer_id = f'"bridgeSessionId":"cse_{ids[-1]}"'
+    proj_name = cwd.replace("/", "-") if cwd else "-home-user1"
     for claude_dir in CLAUDE_DIRS:
-        proj = claude_dir / "projects" / "-home-user1"
+        proj = claude_dir / "projects" / proj_name
         if not proj.is_dir():
             continue
         for jf in proj.glob("*.jsonl"):
@@ -285,6 +296,111 @@ def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, ex
             except OSError:
                 continue
     return None
+
+
+def account_for_config_dir(cfg_dir):
+    """Mirrors snapshot.py's own account_for_config_dir() - kept as a
+    small local copy rather than importing that module, since nothing
+    else here needs it."""
+    if cfg_dir.endswith("/.claude2"):
+        return "claude2"
+    if cfg_dir.endswith("/.claude3"):
+        return "claude3"
+    return "claude"
+
+
+def sanitize_config_dir(config_dir):
+    """Some panes' captured CLAUDE_CONFIG_DIR carries literal quote
+    characters (e.g. "'/home/user1/.claude'") or placeholder junk (e.g.
+    "<account>") - artifacts of how a stale capture read that process's
+    environment, not a real path. Strip surrounding quotes; reject
+    anything that still doesn't look like an absolute path rather than
+    inject garbage into a live shell command."""
+    if not config_dir:
+        return None
+    cleaned = config_dir.strip().strip("'\"")
+    return cleaned if cleaned.startswith("/") else None
+
+
+def inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_pane_dir, exclude_jsonl):
+    """Resolve and type `claude --resume <uuid>` into one pane. Shared by
+    both the attached (has a Hyprland placement) and detached (tmux
+    session with no client ever attached to it, so nothing to place -
+    tmux-resurrect restores its content unconditionally regardless of
+    attachment, but the Hyprland placement step only ever saw sessions
+    with a client cross-reference) code paths - this is tmux-side only
+    (`tmux send-keys`), so it works identically for both."""
+    config_dir = sanitize_config_dir(config_dir)
+    if config_dir:
+        # config_dir is the ground truth; a separately-stored account
+        # field can be stale (confirmed: some captures have a corrupted
+        # config_dir - fixed by sanitize_config_dir above - alongside an
+        # account field that was already wrongly derived from the
+        # corrupted value at capture time, e.g. config_dir clearly
+        # ".claude2" but account left as the "claude" default).
+        account = account_for_config_dir(config_dir)
+    current_cmd = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", f"{sess}:{window_index}", "#{pane_current_command}"],
+        capture_output=True, text=True).stdout.strip()
+    if current_cmd == "claude":
+        # Already running (e.g. a prior --resume run already fixed this
+        # one) - typing another `claude --resume` into a live TUI doesn't
+        # relaunch it, it just sends that text as a chat message.
+        # Confirmed the hard way.
+        print(f"  session {sess}: already running claude, skipping resume injection")
+        return
+    if session_id:
+        uuid = session_id
+        print(f"  session {sess}: session_id known directly from the snapshot (no scrollback parsing needed)")
+    else:
+        uuid = resolve_resume_uuid(get_pane_dir(), sess, window_index, "0", exclude_jsonl, cwd=cwd)
+    if uuid:
+        # Every account's project store for a given cwd is the same inode
+        # (see resolve_resume_uuid's docstring), so the uuid search can't
+        # tell accounts apart - without this prefix every resume silently
+        # ran as whichever account happened to be checked first (confirmed
+        # live: sessions captured under claude2/claude3 all came back as
+        # the default account). config_dir/account come from
+        # tmux.sessions[].windows[].panes[].claude instead.
+        prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
+        print(f"  session {sess}: injecting {prefix}claude --resume {uuid} (account={account or 'claude'})")
+        subprocess.run(["tmux", "send-keys", "-t", f"{sess}:{window_index}",
+                         f"{prefix}claude --resume {uuid}", "Enter"])
+    else:
+        print(f"  session {sess}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
+
+
+def find_uncovered_claude_windows(tmux_state, covered_pairs):
+    """Every (session, window) with a known claude pane
+    (tmux.sessions[].windows[].panes[].claude) that isn't already covered
+    by the Hyprland-attached placement loop - covers two distinct gaps:
+
+    1. A tmux session nobody ever opened a terminal window on still gets
+       its content restored unconditionally by tmux-resurrect, but the
+       placement step only ever sees sessions with a
+       hyprland.clients[].tmux_session cross-reference, so it was
+       entirely invisible to --resume too, even though resuming needs no
+       window at all (tmux send-keys works identically whether a client
+       is attached or not).
+    2. A tmux SESSION can have multiple WINDOWS, each running its own
+       claude conversation, but the Hyprland cross-reference only ever
+       points at the one window a client happened to attach to -
+       confirmed live (session 33: window 0 was claude3, window 4 was a
+       completely different claude2 conversation, only window 4 had a
+       Hyprland placement). Keying by (session, window) throughout
+       instead of session name alone is what makes both cases fall out
+       of the same pass: `covered_pairs` is exactly the (session, window)
+       pairs the placement loop already handled, so anything left here -
+       whether an entire detached session or one extra window in an
+       otherwise-attached one - genuinely still needs a resume attempt."""
+    claude_idx = index_claude_by_session_window(tmux_state)
+    out = []
+    for (sess, window_index), panes in claude_idx.items():
+        if (sess, window_index) in covered_pairs:
+            continue
+        p = panes[0]
+        out.append((sess, window_index, p.get("config_dir"), p.get("account"), p.get("session_id"), p.get("cwd")))
+    return out
 
 
 def apply_tmux(snap, resume=False, pane_contents=None, exclude_session=None, manage_daemon=True):
@@ -343,7 +459,8 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
     for sess, m in todo.items():
         by_workspace.setdefault(m["workspace_id"], {"monitor": m["monitor"], "sessions": []})
         by_workspace[m["workspace_id"]]["sessions"].append(
-            (sess, m["window_index"], m["tile_order"], m.get("config_dir"), m.get("account"), m.get("session_id")))
+            (sess, m["window_index"], m["tile_order"], m.get("config_dir"), m.get("account"),
+             m.get("session_id"), m.get("cwd")))
 
     for ws_id, info in sorted(by_workspace.items(), key=lambda kv: (kv[0] is None, kv[0])):
         # Spawn in the recorded tile_order (left-to-right, top-to-bottom
@@ -351,38 +468,9 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
         # order alone reproduces which window ends up master vs. stack
         # position, with no pixel coordinates or extra dispatch needed.
         info["sessions"].sort(key=lambda t: t[2])
-        for sess, window_index, _rank, config_dir, account, session_id in info["sessions"]:
+        for sess, window_index, _rank, config_dir, account, session_id, cwd in info["sessions"]:
             if resume:
-                current_cmd = subprocess.run(
-                    ["tmux", "display-message", "-p", "-t", f"{sess}:{window_index}", "#{pane_current_command}"],
-                    capture_output=True, text=True).stdout.strip()
-                if current_cmd == "claude":
-                    # Already running (e.g. a prior --resume run already
-                    # fixed this one) - typing another `claude --resume`
-                    # into a live TUI doesn't relaunch it, it just sends
-                    # that text as a chat message. Confirmed the hard way.
-                    print(f"  session {sess}: already running claude, skipping resume injection")
-                    continue
-                if session_id:
-                    uuid = session_id
-                    print(f"  session {sess}: session_id known directly from the snapshot (no scrollback parsing needed)")
-                else:
-                    uuid = resolve_resume_uuid(get_pane_dir(), sess, window_index, "0", exclude_jsonl)
-                if uuid:
-                    # Every account's project store for a given cwd is the
-                    # same inode (see resolve_resume_uuid's docstring), so
-                    # the uuid search can't tell accounts apart - without
-                    # this prefix every resume silently ran as whichever
-                    # account happened to be checked first (confirmed live:
-                    # sessions captured under claude2/claude3 all came back
-                    # as the default account). config_dir/account come from
-                    # tmux.sessions[].windows[].panes[].claude instead.
-                    prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
-                    print(f"  session {sess}: injecting {prefix}claude --resume {uuid} (account={account or 'claude'})")
-                    subprocess.run(["tmux", "send-keys", "-t", f"{sess}:{window_index}",
-                                     f"{prefix}claude --resume {uuid}", "Enter"])
-                else:
-                    print(f"  session {sess}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
+                inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_pane_dir, exclude_jsonl)
             cmd = f"alacritty -e tmux attach -t {sess}"
             lua = f'hl.dispatch(hl.dsp.exec_cmd("[workspace {ws_id} silent] {cmd}"))'
             hypr_eval(lua)
@@ -394,6 +482,20 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
         if info["monitor"]:
             lua = f'hl.dispatch(hl.dsp.workspace.move({{ workspace = {ws_id}, monitor = "{info["monitor"]}" }}))'
             hypr_eval(lua)
+
+    if resume:
+        # Everything the placement loop above just handled, keyed by the
+        # same (session, window) granularity - see find_uncovered_claude_windows.
+        covered_pairs = {(sess, window_index)
+                         for info in by_workspace.values()
+                         for sess, window_index, *_ in info["sessions"]}
+        uncovered = find_uncovered_claude_windows(snap.get("tmux", {}), covered_pairs)
+        live_uncovered = [d for d in uncovered if d[0] in live]
+        if live_uncovered:
+            print(f"{len(live_uncovered)} additional claude window(s) with no Hyprland placement "
+                  f"(extra window in an attached session, or an entirely detached one) - resume only:")
+        for sess, window_index, config_dir, account, session_id, cwd in live_uncovered:
+            inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_pane_dir, exclude_jsonl)
 
     if tmp:
         tmp.cleanup()
