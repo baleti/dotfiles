@@ -42,7 +42,10 @@ SNAP_DIR = CACHE_DIR / "snapshots"
 LATEST = CACHE_DIR / "latest.json"
 US = "\x1f"  # field separator, matches claude-account-window-rename-hook.sh's convention
 
-RETENTION_DAYS = 14
+# Matches resurrect-rotate-pane-contents.sh's own default
+# (@resurrect-delete-backup-after, unset here so it's 30) - see rotate()'s
+# docstring for why these two schedules need to agree.
+RETENTION_DAYS = 30
 
 # tmux-resurrect's save script (see the module docstring for why this daemon
 # drives it now instead of tmux-continuum). Path is where resurrect.tmux's
@@ -334,9 +337,18 @@ def write_snapshot(data):
 def rotate(retention_days=RETENTION_DAYS):
     """Generational thinning, bucketed on wall-clock boundaries (not
     age-at-check-time) so repeated runs converge instead of re-deciding
-    which file "wins" a bucket differently each time: keep everything from
-    the last 2h, 1-per-30min out to 1d, 1-per-4h out to 7d, 1-per-day out
-    to retention_days, delete beyond that."""
+    which file "wins" a bucket differently each time.
+
+    Mirrors resurrect-rotate-pane-contents.sh's own bucket schedule
+    exactly (full resolution <=1h, 20min buckets to 3h, 1h buckets to
+    18h, daily buckets beyond, out to a 30-day cutoff) instead of an
+    independent one. A resurrect layout/content pair and the
+    desktop-snapshot from that same moment should survive or age out
+    together - confirmed a real disaster-recovery gap 2026-09-06 where a
+    good resurrect pair survived its own thinning while the matching
+    desktop-snapshot had already been thinned out under a different
+    (2h/30min/4h) schedule, leaving no Hyprland placement data for an
+    otherwise-perfectly-restorable tmux session."""
     if not SNAP_DIR.is_dir():
         return
     now = time.time()
@@ -349,9 +361,9 @@ def rotate(retention_days=RETENTION_DAYS):
             f.unlink(missing_ok=True)
             continue
         age = now - mtime
-        if age <= 2 * 3600:
+        if age <= 3600:
             continue
-        granularity = 1800 if age <= 86400 else 4 * 3600 if age <= 7 * 86400 else 86400
+        granularity = 20 * 60 if age <= 3 * 3600 else 3600 if age <= 18 * 3600 else 86400
         bucket = (granularity, int(mtime // granularity))
         if bucket in seen_buckets:
             f.unlink(missing_ok=True)

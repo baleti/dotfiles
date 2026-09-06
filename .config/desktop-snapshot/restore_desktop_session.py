@@ -13,13 +13,18 @@ Two steps, always in this order:
 
 Server acquisition modes (mutually exclusive):
   (default)        systemctl --user restart tmux.service - kills whatever
-                    is currently on the default socket (ExecStop runs
-                    save.sh first, so current state isn't lost) and starts
-                    a genuinely empty server. This is the important part:
-                    restore.sh is NOT idempotent against a server that
-                    already has the sessions (see kill_duplicate_panes.py
-                    and the doc) - starting fresh sidesteps that bug
-                    entirely instead of working around it after the fact.
+                    is currently on the default socket and starts a
+                    genuinely empty one. tmux.service has no ExecStop
+                    anymore, so nothing auto-saves the outgoing state first
+                    - if that ever matters, save deliberately before
+                    running this. This is the important part: restore.sh
+                    is NOT idempotent against a server that already has
+                    the sessions (see kill_duplicate_panes.py and the doc)
+                    - starting fresh sidesteps that bug entirely instead
+                    of working around it after the fact.
+                    Refuses to run in this mode if $TMUX already points at
+                    this exact socket - the restart would kill the pane
+                    running this script along with everything else, mid-run.
   --own-server      spin up an isolated, throwaway tmux server on a
                     private socket instead of touching the systemd-managed
                     default one. For testing this script without any risk
@@ -51,7 +56,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import restore_plan  # noqa: E402
 
 RESURRECT_RESTORE_SH = Path.home() / ".tmux" / "plugins" / "tmux-resurrect" / "scripts" / "restore.sh"
-RESURRECT_DIR = Path.home() / ".tmux" / "resurrect"
 TMUX_SOCKET_DIR = Path(f"/tmp/tmux-{os.getuid()}")
 
 
@@ -60,41 +64,18 @@ def run(cmd, **kw):
     return subprocess.run(cmd, **kw)
 
 
-def preserve_resurrect_staging():
-    """Snapshot what `last` and pane_contents.tar.gz currently point to,
-    so a restart's ExecStop=save.sh (which saves *live* state - whatever
-    was just running, not what you staged) can be undone afterward. Its
-    own save is never lost either way: resurrect-rotate-pane-contents.sh
-    already folds it into pane_contents_history/ with its own timestamp -
-    this only re-points last/pane_contents.tar.gz back to what you had
-    chosen before the restart touched them."""
-    last_target = os.readlink(RESURRECT_DIR / "last") if (RESURRECT_DIR / "last").is_symlink() else None
-    pane_contents_path = RESURRECT_DIR / "pane_contents.tar.gz"
-    saved_bytes = pane_contents_path.read_bytes() if pane_contents_path.exists() else None
-    return last_target, saved_bytes
-
-
-def restore_resurrect_staging(saved):
-    last_target, saved_bytes = saved
-    if last_target is not None:
-        (RESURRECT_DIR / "last").unlink(missing_ok=True)
-        (RESURRECT_DIR / "last").symlink_to(last_target)
-        print(f"re-pinned last -> {last_target} (restart's own save is preserved in pane_contents_history/)")
-    if saved_bytes is not None:
-        (RESURRECT_DIR / "pane_contents.tar.gz").write_bytes(saved_bytes)
-        print("re-pinned pane_contents.tar.gz to what it was before the restart")
-
-
 def acquire_default_server():
-    """Restart the systemd unit: ExecStop saves current (live, not
-    necessarily what you want restored) state, ExecStart brings up a
-    fresh, empty server on the normal default socket. Preserve/restore
-    the resurrect staging around the restart so that save doesn't clobber
-    a deliberately-staged pre-crash snapshot."""
-    saved = preserve_resurrect_staging()
+    """Restart the systemd unit: no ExecStop hook anymore (tmux.service
+    dropped it - it existed only to snapshot live state on the way down,
+    which flashed "Saving..." on every attached client and, worse, raced
+    this script's own repointing of last/pane_contents.tar.gz whenever the
+    script itself ran from a pane on the server being restarted). The
+    restart is now just a plain stop+start: kills the server, then
+    ExecStart brings up a genuinely fresh, empty one on the normal default
+    socket. Trade-off: nothing auto-saves current live state before the
+    kill anymore - if that ever matters, save deliberately first."""
     run(["systemctl", "--user", "restart", "tmux.service"], check=True)
     time.sleep(1)
-    restore_resurrect_staging(saved)
     return str(TMUX_SOCKET_DIR / "default")
 
 
@@ -132,14 +113,34 @@ def main():
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--own-server", action="store_true", help="use a private throwaway tmux server")
     mode.add_argument("--server", metavar="ID", help="restore into an existing running server named ID (tmux -L ID)")
-    p.add_argument("--snapshot", default=str(restore_plan.DEFAULT),
+    p.add_argument("--snapshot", default=None,
                     help="desktop-snapshot JSON to source the workspace/monitor mapping from "
-                         "(default: %(default)s - use a pre-crash one if this is stale/empty)")
+                         "(default: auto - latest.json if it has tmux sessions, else the newest "
+                         "snapshots/*.json that does)")
     p.add_argument("--no-place", action="store_true", help="only restore tmux sessions, skip the Hyprland placement step")
     p.add_argument("--resume", action="store_true", help="see restore_plan.py --resume")
     p.add_argument("--pane-contents", metavar="PATH", help="see restore_plan.py --pane-contents (required with --resume)")
     p.add_argument("--exclude-session", metavar="JSONL_STEM", help="see restore_plan.py --exclude-session")
     args = p.parse_args()
+
+    # Default mode restarts tmux.service, which kills every pane on that
+    # server - including this script's own, if it's running inside one of
+    # them. That's fatal partway through: the restart's own save.sh has
+    # already clobbered last/pane_contents.tar.gz by the time the kill
+    # lands, and the repair step right after never gets to run. Detect and
+    # refuse rather than silently corrupt the staging.
+    running_inside_this_server = (
+        not args.own_server and not args.server
+        and os.environ.get("TMUX", "").split(",")[0] == str(TMUX_SOCKET_DIR / "default")
+    )
+    if running_inside_this_server:
+        print("Refusing: this script is running inside a pane on the default tmux server, "
+              "and default mode restarts that exact server - it would kill this script's own "
+              "process mid-restore, right after the restart's save.sh has already overwritten "
+              "your staged pane_contents.tar.gz/last, before the repair step can run.\n"
+              "Run this from outside tmux (a plain TTY/VT, or a terminal not attached to the "
+              "default socket), or use --own-server / --server ID instead.", file=sys.stderr)
+        sys.exit(1)
 
     # Stop/restart wraps the WHOLE flow (server acquisition + tmux restore
     # + Hyprland placement), not just the placement half - the daemon's
@@ -168,7 +169,10 @@ def main():
                   f"`alacritty -e tmux -S {socket_path} attach -t <session>`.", file=sys.stderr)
             return
 
-        snap = restore_plan.load(args.snapshot)
+        snapshot_path = args.snapshot or restore_plan.find_best_snapshot()
+        if args.snapshot is None and snapshot_path != str(restore_plan.DEFAULT):
+            print(f"latest.json has no tmux sessions - using {snapshot_path} instead")
+        snap = restore_plan.load(snapshot_path)
         restore_plan.apply_tmux(snap, resume=args.resume, pane_contents=args.pane_contents,
                                  exclude_session=args.exclude_session, manage_daemon=False)
     finally:

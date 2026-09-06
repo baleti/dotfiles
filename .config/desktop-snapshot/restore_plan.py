@@ -53,11 +53,42 @@ import time
 from pathlib import Path
 
 DEFAULT = Path.home() / ".cache" / "desktop-snapshot" / "latest.json"
+SNAPSHOTS_DIR = Path.home() / ".cache" / "desktop-snapshot" / "snapshots"
 CLAUDE_DIRS = [Path.home() / ".claude", Path.home() / ".claude2", Path.home() / ".claude3"]
 
 
 def load(path):
     return json.loads(Path(path).read_text())
+
+
+def tmux_workspace_mapping_count(snapshot_path):
+    """How many Hyprland clients this snapshot cross-references to a tmux
+    session (hyprland.clients[].tmux_session) - the thing
+    build_session_workspace_map() actually consumes. A snapshot can have
+    plenty of tmux sessions recorded and still ~0 of these (e.g. captured
+    right after a tmux-only restore, before any Alacritty window existed
+    to attach to them yet), so tmux.sessions alone is misleading."""
+    try:
+        snap = load(snapshot_path)
+    except (OSError, json.JSONDecodeError):
+        return 0
+    clients = snap.get("hyprland", {}).get("clients", [])
+    return sum(1 for c in clients if c.get("tmux_session"))
+
+
+def find_best_snapshot():
+    """`latest.json` is whatever the daemon most recently wrote - right
+    after a crash+reboot that's an empty just-started snapshot, not the
+    rich pre-crash one a restore actually wants. "Most recent with any
+    mapping" isn't the right fallback either: the sparsest moment right
+    after a crash (a handful of clients reconnecting) is more recent than
+    the rich pre-crash state, but far less useful. Pick whichever
+    candidate - latest.json or any snapshots/*.json - has the most
+    tmux<->Hyprland cross-references, not just the newest non-empty one.
+    Still returns DEFAULT if nothing beats it, so this only ever helps."""
+    candidates = [DEFAULT] + list(SNAPSHOTS_DIR.glob("snapshot_*.json"))
+    best = max(candidates, key=tmux_workspace_mapping_count, default=DEFAULT)
+    return str(best) if tmux_workspace_mapping_count(best) > 0 else str(DEFAULT)
 
 
 def index_claude_by_session_window(tmux_state):
@@ -347,7 +378,9 @@ def apply(snap):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("snapshot", nargs="?", default=str(DEFAULT))
+    p.add_argument("snapshot", nargs="?", default=None,
+                    help="desktop-snapshot JSON (default: auto - latest.json if it has tmux "
+                         "sessions, else the newest snapshots/*.json that does)")
     p.add_argument("--apply", action="store_true", help="relaunch+reposition non-tmux GUI apps (unexercised - see module docstring)")
     p.add_argument("--apply-tmux", action="store_true",
                    help="attach an Alacritty window per restored tmux session onto its pre-crash workspace/monitor")
@@ -361,7 +394,10 @@ def main():
                         "- use this session's own id to avoid self-matching")
     args = p.parse_args()
 
-    snap = load(args.snapshot)
+    snapshot_path = args.snapshot or find_best_snapshot()
+    if args.snapshot is None and snapshot_path != str(DEFAULT):
+        print(f"latest.json has no tmux sessions - using {snapshot_path} instead", file=sys.stderr)
+    snap = load(snapshot_path)
 
     if args.apply and args.apply_tmux:
         print("--apply and --apply-tmux are separate passes - run one at a time.", file=sys.stderr)
