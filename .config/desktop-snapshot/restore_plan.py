@@ -229,11 +229,18 @@ def build_session_workspace_map(hypr_state, tmux_state=None):
         account = claude_panes[0]["account"] if claude_panes else None
         config_dir = claude_panes[0].get("config_dir") if claude_panes else None
         # Direct from the CLI's own sessions/<pid>.json, captured at
-        # snapshot time (see snapshot.py's session_id_for_claude_pid) -
-        # the real --resume uuid with no scrollback parsing needed, when
-        # a snapshot recent enough to have it is available.
+        # snapshot time (see snapshot.py's claude_self_reported) - the
+        # real --resume uuid with no scrollback parsing needed, when a
+        # snapshot recent enough to have it is available.
         session_id = claude_panes[0].get("session_id") if claude_panes else None
-        cwd = claude_panes[0].get("cwd") if claude_panes else None
+        # claude_cwd (CLI self-reported, from the same sessions/<pid>.json)
+        # takes precedence over the pane-level cwd (from /proc/<pid>/cwd) -
+        # confirmed a real incident where the latter was silently
+        # corrupted for a pane on an rclone FUSE mount, reproduced
+        # identically by tmux's own capture, so reading /proc more
+        # carefully wouldn't have helped; the CLI's own report doesn't
+        # route through that same symlink resolution.
+        cwd = (claude_panes[0].get("claude_cwd") or claude_panes[0].get("cwd")) if claude_panes else None
         mapping[key] = {
             "window_index": ts["window_index"],
             "workspace_id": ws.get("id"),
@@ -322,7 +329,7 @@ def sanitize_config_dir(config_dir):
     return cleaned if cleaned.startswith("/") else None
 
 
-def inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_pane_dir, exclude_jsonl):
+def inject_resume(sess, window_index, pane_index, config_dir, account, session_id, cwd, get_pane_dir, exclude_jsonl):
     """Resolve and type `claude --resume <uuid>` into one pane. Shared by
     both the attached (has a Hyprland placement) and detached (tmux
     session with no client ever attached to it, so nothing to place -
@@ -339,21 +346,22 @@ def inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_
         # corrupted value at capture time, e.g. config_dir clearly
         # ".claude2" but account left as the "claude" default).
         account = account_for_config_dir(config_dir)
+    target = f"{sess}:{window_index}.{pane_index}"
     current_cmd = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", f"{sess}:{window_index}", "#{pane_current_command}"],
+        ["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
         capture_output=True, text=True).stdout.strip()
     if current_cmd == "claude":
         # Already running (e.g. a prior --resume run already fixed this
         # one) - typing another `claude --resume` into a live TUI doesn't
         # relaunch it, it just sends that text as a chat message.
         # Confirmed the hard way.
-        print(f"  session {sess}: already running claude, skipping resume injection")
+        print(f"  {target}: already running claude, skipping resume injection")
         return
     if session_id:
         uuid = session_id
-        print(f"  session {sess}: session_id known directly from the snapshot (no scrollback parsing needed)")
+        print(f"  {target}: session_id known directly from the snapshot (no scrollback parsing needed)")
     else:
-        uuid = resolve_resume_uuid(get_pane_dir(), sess, window_index, "0", exclude_jsonl, cwd=cwd)
+        uuid = resolve_resume_uuid(get_pane_dir(), sess, window_index, pane_index, exclude_jsonl, cwd=cwd)
     if uuid:
         # Every account's project store for a given cwd is the same inode
         # (see resolve_resume_uuid's docstring), so the uuid search can't
@@ -363,44 +371,11 @@ def inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_
         # the default account). config_dir/account come from
         # tmux.sessions[].windows[].panes[].claude instead.
         prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
-        print(f"  session {sess}: injecting {prefix}claude --resume {uuid} (account={account or 'claude'})")
-        subprocess.run(["tmux", "send-keys", "-t", f"{sess}:{window_index}",
+        print(f"  {target}: injecting {prefix}claude --resume {uuid} (account={account or 'claude'})")
+        subprocess.run(["tmux", "send-keys", "-t", target,
                          f"{prefix}claude --resume {uuid}", "Enter"])
     else:
-        print(f"  session {sess}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
-
-
-def find_uncovered_claude_windows(tmux_state, covered_pairs):
-    """Every (session, window) with a known claude pane
-    (tmux.sessions[].windows[].panes[].claude) that isn't already covered
-    by the Hyprland-attached placement loop - covers two distinct gaps:
-
-    1. A tmux session nobody ever opened a terminal window on still gets
-       its content restored unconditionally by tmux-resurrect, but the
-       placement step only ever sees sessions with a
-       hyprland.clients[].tmux_session cross-reference, so it was
-       entirely invisible to --resume too, even though resuming needs no
-       window at all (tmux send-keys works identically whether a client
-       is attached or not).
-    2. A tmux SESSION can have multiple WINDOWS, each running its own
-       claude conversation, but the Hyprland cross-reference only ever
-       points at the one window a client happened to attach to -
-       confirmed live (session 33: window 0 was claude3, window 4 was a
-       completely different claude2 conversation, only window 4 had a
-       Hyprland placement). Keying by (session, window) throughout
-       instead of session name alone is what makes both cases fall out
-       of the same pass: `covered_pairs` is exactly the (session, window)
-       pairs the placement loop already handled, so anything left here -
-       whether an entire detached session or one extra window in an
-       otherwise-attached one - genuinely still needs a resume attempt."""
-    claude_idx = index_claude_by_session_window(tmux_state)
-    out = []
-    for (sess, window_index), panes in claude_idx.items():
-        if (sess, window_index) in covered_pairs:
-            continue
-        p = panes[0]
-        out.append((sess, window_index, p.get("config_dir"), p.get("account"), p.get("session_id"), p.get("cwd")))
-    return out
+        print(f"  {target}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
 
 
 def apply_tmux(snap, resume=False, pane_contents=None, exclude_session=None, manage_daemon=True):
@@ -469,8 +444,6 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
         # position, with no pixel coordinates or extra dispatch needed.
         info["sessions"].sort(key=lambda t: t[2])
         for sess, window_index, _rank, config_dir, account, session_id, cwd in info["sessions"]:
-            if resume:
-                inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_pane_dir, exclude_jsonl)
             cmd = f"alacritty -e tmux attach -t {sess}"
             lua = f'hl.dispatch(hl.dsp.exec_cmd("[workspace {ws_id} silent] {cmd}"))'
             hypr_eval(lua)
@@ -484,18 +457,37 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
             hypr_eval(lua)
 
     if resume:
-        # Everything the placement loop above just handled, keyed by the
-        # same (session, window) granularity - see find_uncovered_claude_windows.
-        covered_pairs = {(sess, window_index)
-                         for info in by_workspace.values()
-                         for sess, window_index, *_ in info["sessions"]}
-        uncovered = find_uncovered_claude_windows(snap.get("tmux", {}), covered_pairs)
-        live_uncovered = [d for d in uncovered if d[0] in live]
-        if live_uncovered:
-            print(f"{len(live_uncovered)} additional claude window(s) with no Hyprland placement "
-                  f"(extra window in an attached session, or an entirely detached one) - resume only:")
-        for sess, window_index, config_dir, account, session_id, cwd in live_uncovered:
-            inject_resume(sess, window_index, config_dir, account, session_id, cwd, get_pane_dir, exclude_jsonl)
+        # Deliberately decoupled from the placement loop above: resume is
+        # purely tmux-side (`tmux send-keys`), so it works identically
+        # whether a pane has a Hyprland window watching it or not. One
+        # pass over every (session, window, pane) with a known claude
+        # record - from index_claude_by_session_window(), not filtered
+        # through the Hyprland-attached mapping at all - covers every gap
+        # that mapping can't see: a session nobody ever opened a window on
+        # (tmux-resurrect restores its content unconditionally regardless
+        # of attachment), an extra window in an otherwise-attached session
+        # (confirmed live: session 33's window 0 was claude3, window 4 a
+        # completely different claude2 conversation - Hyprland only ever
+        # cross-referenced window 4), and an extra pane within one window
+        # (confirmed live: window 3:2's pane 0 was untouched zsh while
+        # pane 1 ran claude - `tmux send-keys -t session:window` with no
+        # .pane targets whichever pane happens to be active, silently
+        # skipping siblings). The "already running" check inside
+        # inject_resume makes this safe to run over everything rather
+        # than needing to track what the placement loop already covered.
+        claude_idx = index_claude_by_session_window(snap.get("tmux", {}))
+        for (sess, window_index), panes in claude_idx.items():
+            if sess not in live:
+                continue
+            for p in panes:
+                cwd = p.get("claude_cwd") or p.get("cwd")  # see build_session_workspace_map's comment
+                inject_resume(sess, window_index, p["pane_index"], p.get("config_dir"), p.get("account"),
+                              p.get("session_id"), cwd, get_pane_dir, exclude_jsonl)
+                # Launching 100+ claude processes back-to-back with no
+                # gap is real load (confirmed: taxed the system enough to
+                # crash several already-launched sessions earlier in this
+                # same incident) - pace it instead of firing all at once.
+                time.sleep(1.5)
 
     if tmp:
         tmp.cleanup()

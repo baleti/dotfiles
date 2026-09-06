@@ -147,23 +147,35 @@ def account_for_config_dir(cfg_dir):
     return "claude"
 
 
-def session_id_for_claude_pid(claude_pid, cfg_dir):
+def claude_self_reported(claude_pid, cfg_dir):
     """The CLI writes its own <config_dir>/sessions/<pid>.json while
     running (claude-usage-daemon.py already reads these for the usage
     panel) - {"sessionId": ..., "cwd": ..., "tmux": "sess:@win.%pane", ...}.
     Capturing sessionId here, proactively, at snapshot time is a real
     --resume uuid straight from the source: no after-the-crash scrollback
     archaeology (grepping pane_contents_history for an OSC-8 footer, then
-    matching it back to a jsonl transcript) needed for any session this
-    was captured for. That archaeology remains the only option for
-    sessions from before this field existed, or whose sessions/<pid>.json
-    already got cleaned up by the time a snapshot ran."""
+    matching it back to a jsonl transcript, then still not knowing the
+    account for certain - a real incident, recovered the hard way once
+    already) needed for any session this was captured for. That
+    archaeology remains the only option for sessions from before this
+    field existed, or whose sessions/<pid>.json already got cleaned up by
+    the time a snapshot ran.
+
+    Also returns the CLI's own self-reported cwd, which does NOT go
+    through /proc/<pid>/cwd's symlink resolution - confirmed a real gap
+    the hard way: a pane whose cwd was under an rclone FUSE mount had a
+    truncated, wrong value from /proc (missing its real prefix entirely),
+    reproduced identically by tmux's own #{pane_current_path} capture -
+    a kernel/FUSE-mount quirk affecting both, not fixable by reading
+    /proc more carefully. The CLI's own process.cwd()-style self-report
+    doesn't route through that same symlink resolution, so prefer it over
+    the pane-level cwd (from read_proc_cwd) whenever both are present."""
     base = Path(cfg_dir) if cfg_dir else Path.home() / ".claude"
     try:
         data = json.loads((base / "sessions" / f"{claude_pid}.json").read_text())
     except (OSError, ValueError):
-        return None
-    return data.get("sessionId")
+        return None, None
+    return data.get("sessionId"), data.get("cwd")
 
 
 def resolve_claude_account(pane_pid, children, pid_info):
@@ -176,11 +188,13 @@ def resolve_claude_account(pane_pid, children, pid_info):
     if claude_pid is None:
         return None
     cfg_dir = read_proc_environ(claude_pid).get("CLAUDE_CONFIG_DIR", "")
+    session_id, claude_cwd = claude_self_reported(claude_pid, cfg_dir)
     return {
         "claude_pid": claude_pid,
         "config_dir": cfg_dir or None,
         "account": account_for_config_dir(cfg_dir),
-        "session_id": session_id_for_claude_pid(claude_pid, cfg_dir),
+        "session_id": session_id,
+        "claude_cwd": claude_cwd,  # see claude_self_reported's docstring - prefer this over pane["cwd"] when set
     }
 
 

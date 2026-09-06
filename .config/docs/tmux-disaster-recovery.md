@@ -159,8 +159,8 @@ While a `claude` process is alive, the CLI itself maintains
 `<config_dir>/sessions/<pid>.json` (`{"sessionId": ..., "cwd": ...,
 "tmux": "sess:@win.%pane", ...}`) - `claude-usage-daemon.py` (behind the
 CTRL+ALT+c usage panel) already reads these for its own session list.
-`snapshot.py`'s `session_id_for_claude_pid()` reads the same file at
-snapshot time and stores the exact `sessionId` directly on
+`snapshot.py`'s `claude_self_reported()` reads the same file at snapshot
+time and stores the exact `sessionId` directly on
 `tmux.sessions[].windows[].panes[].claude.session_id` - a real
 `--resume` uuid straight from the source, captured proactively, with no
 after-the-crash archaeology needed for any session a recent-enough
@@ -168,6 +168,16 @@ snapshot covers. `restore_plan.py`'s `apply_tmux(--resume)` uses this
 whenever it's present and only falls back to scrollback-parsing (below)
 when it's missing - e.g. a snapshot taken before this field existed, or
 `sessions/<pid>.json` already cleaned up by the time a snapshot ran.
+
+The same file's own `cwd` is stored too, as `claude.claude_cwd`, and
+takes precedence over the pane-level `cwd` (from `/proc/<pid>/cwd`) when
+both are present: confirmed a real incident where the `/proc`-based
+value was silently corrupted for a pane on an rclone FUSE mount (missing
+its real path prefix entirely) - reproduced identically by tmux's own
+`#{pane_current_path}` capture, so it's a kernel/FUSE-mount quirk
+affecting both, not something reading `/proc` more carefully would have
+fixed. The CLI's own self-report doesn't route through that same symlink
+resolution.
 
 **The account mismatch this fixed**: `account_for_config_dir()` labels a
 pane's account (`claude`/`claude2`/`claude3`) from `CLAUDE_CONFIG_DIR`
@@ -214,6 +224,50 @@ grepping for an ID you just read out loud in the same Claude Code
 session will also match that session's own transcript file (it now
 contains the ID as tool-output text) - exclude the current session's own
 jsonl from candidate matches.
+
+### Last resort: content cross-reference (no footer at all)
+
+Some panes' saved scrollback has no OSC-8 footer anywhere in it - `tmux
+capture-pane` only saves a limited area, and if that slice happened to
+catch the pane mid-scroll or between redraws, the footer simply isn't
+in what got saved (real, confirmed cause in one incident: nothing to do
+with pane width, that was a dead end chased for too long before
+realizing it didn't actually explain most cases). If the pane still has
+substantial real conversation content, cross-reference it against every
+account's jsonl transcripts directly instead of giving up:
+
+1. Pull the CLI's own **recap line** if the tail shows one (`※ recap:
+   ...` - an LLM-generated one-sentence summary, close to verbatim in
+   the transcript) or, failing that, a **distinctive sentence** from the
+   visible conversation - the user's own last message works well since
+   it's stored close to verbatim.
+2. **Don't use whole rendered terminal lines** as the search string -
+   they're word-wrapped to the pane's width and syntax-highlighted;
+   the jsonl stores the original unwrapped markdown source, so a wrapped
+   line frequently won't appear as a contiguous substring even in its
+   own session's transcript. Use a shorter phrase (a clause, not a
+   paragraph) that's unlikely to span a wrap boundary.
+3. **Never use generic file paths or repo-wide terms as the sole
+   probe** - confirmed a real failure mode: a config file path
+   referenced across dozens of unrelated sessions on the same dotfiles
+   repo matched 50+ candidates, useless for disambiguation. Prefer
+   specific values (an IP:port, an exact function/variable name, a
+   quoted error message, a proper noun from the actual conversation).
+4. Require the probe to match **exactly one** jsonl file across *all
+   three* accounts' full project trees (not just `-home-user1` - use
+   whatever cwd applies), deduplicated by inode (same reasoning as the
+   OSC-8 method - `.claude`/`.claude2`/`.claude3` alias the same
+   physical file for a shared cwd) and excluding your own current
+   session's jsonl (same self-reference risk as above, worse here since
+   you've likely been pasting these panes' raw text into your own tool
+   output while investigating). Two or more independent probes agreeing
+   on the same file is strong confirmation; a single short probe with
+   many hits is not trustworthy on its own - confirmed two real
+   false-positive collisions from single-line probes matching an
+   unrelated session that happened to discuss something similar,
+   caught only by cross-checking against UUIDs already resolved via the
+   exact footer method. Don't inject a match you haven't cross-checked
+   this way.
 
 ## Placing Alacritty windows on the right workspace/monitor without stealing focus
 
