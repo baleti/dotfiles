@@ -9,7 +9,10 @@ Two steps, always in this order:
      first if you want a specific pre-crash snapshot instead of whatever
      they currently point to - see ~/.config/docs/tmux-disaster-recovery.md).
   2. Attach an Alacritty window per restored session onto its recorded
-     workspace/monitor (restore_plan.py's apply_tmux, imported directly).
+     workspace/monitor, and (on by default - see --no-resume) resolve and
+     type `claude --resume <uuid>` into every pane that had a claude
+     conversation running, under the right account (restore_plan.py's
+     apply_tmux, imported directly).
   3. Interactively restore other (non-Alacritty) application windows the
      chosen snapshot recorded: per app, show its class/title/workspace and
      whether a window of that class is already running, and ask before
@@ -50,14 +53,15 @@ Server acquisition modes (mutually exclusive):
                     run kill_duplicate_panes.py afterwards if so.
 
 Usage:
-  restore_desktop_session.py                       # default: restart + restore + place
+  restore_desktop_session.py                       # default: restart + restore + place + resume claude
   restore_desktop_session.py --own-server
   restore_desktop_session.py --server mytest
   restore_desktop_session.py --snapshot PATH.json  # skip the snapshot-picker prompt
   restore_desktop_session.py --no-place            # skip Hyprland placement (tmux restore only)
   restore_desktop_session.py --no-apps             # skip the other-application restore prompt
-  restore_desktop_session.py --resume              # also inject claude --resume via tmux send-keys
-                                                    # (needs --pane-contents, see restore_plan.py)
+  restore_desktop_session.py --no-resume           # skip claude --resume injection
+  restore_desktop_session.py --pane-contents PATH  # fallback uuid source for panes with no
+                                                    # proactively-captured session_id (see restore_plan.py)
 """
 import argparse
 import os
@@ -164,8 +168,17 @@ def main():
                          "(default: prompt interactively - see restore_plan.choose_snapshot_interactive)")
     p.add_argument("--no-place", action="store_true", help="only restore tmux sessions, skip the Hyprland placement step")
     p.add_argument("--no-apps", action="store_true", help="skip the other-application (non-Alacritty) restore prompt")
-    p.add_argument("--resume", action="store_true", help="see restore_plan.py --resume")
-    p.add_argument("--pane-contents", metavar="PATH", help="see restore_plan.py --pane-contents (required with --resume)")
+    p.add_argument("--no-resume", action="store_true",
+                    help="skip injecting claude --resume - just restore tmux content/placement. "
+                         "On by default: resuming the actual claude conversations has always been "
+                         "the point of this script, and an easy-to-forget opt-in flag here meant a "
+                         "real post-reboot restore silently skipped every claude session while "
+                         "correctly restoring everything else - confirmed 2026-09-07.")
+    p.add_argument("--pane-contents", metavar="PATH",
+                    help="see restore_plan.py --pane-contents - a pane_contents_<ts>.tar.gz to fall back "
+                         "to for panes whose snapshot lacks a proactively-captured session_id (older "
+                         "snapshots, or ones from before that field existed). Not needed for a snapshot "
+                         "where every claude pane already has session_id - most recent ones do.")
     p.add_argument("--exclude-session", metavar="JSONL_STEM", help="see restore_plan.py --exclude-session")
     args = p.parse_args()
 
@@ -236,7 +249,7 @@ def main():
                   f"`alacritty -e tmux -S {socket_path} attach -t <session>`.", file=sys.stderr)
             return
 
-        restore_plan.apply_tmux(snap, resume=args.resume, pane_contents=args.pane_contents,
+        restore_plan.apply_tmux(snap, resume=not args.no_resume, pane_contents=args.pane_contents,
                                  exclude_session=args.exclude_session, manage_daemon=False)
 
         if app_decisions:

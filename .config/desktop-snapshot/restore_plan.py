@@ -713,6 +713,17 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
             (sess, m["window_index"], m["tile_order"], m.get("config_dir"), m.get("account"),
              m.get("session_id"), m.get("cwd")))
 
+    # A session with an already-attached client already has a window
+    # showing it, whether from an earlier run of this same function or
+    # anything else - spawning another `alacritty -e tmux attach` for it
+    # duplicates the window instead of placing it. Confirmed a real gap
+    # 2026-09-07: this loop had no such check at all, making a second call
+    # (e.g. to redo just the --resume pass below after a placement-only
+    # run) spawn a duplicate window per already-placed session.
+    already_attached = set(subprocess.run(
+        ["tmux", "list-clients", "-F", "#{client_session}"],
+        capture_output=True, text=True).stdout.split())
+
     for ws_id, info in sorted(by_workspace.items(), key=lambda kv: (kv[0] is None, kv[0])):
         # Spawn in the recorded tile_order (left-to-right, top-to-bottom
         # from the pre-crash layout): for the "master" layout, spawn
@@ -720,10 +731,14 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
         # position, with no pixel coordinates or extra dispatch needed.
         info["sessions"].sort(key=lambda t: t[2])
         for sess, window_index, _rank, config_dir, account, session_id, cwd in info["sessions"]:
+            if sess in already_attached:
+                print(f"  {sess}: already has an attached client, skipping placement")
+                continue
             cmd = f"alacritty -e tmux attach -t {sess}"
             lua = f'hl.dispatch(hl.dsp.exec_cmd("[workspace {ws_id} silent] {cmd}"))'
             hypr_eval(lua)
             time.sleep(0.4)
+            already_attached.add(sess)
         # Pin the monitor only after real windows exist in it - Hyprland
         # destroys an empty non-persistent workspace the instant its last
         # window closes, silently undoing any earlier pin. Do this once
