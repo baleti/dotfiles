@@ -62,6 +62,16 @@ RESURRECT_SAVE_TIMEOUT = 180
 # than every few minutes. 0 (or --no-resurrect) disables it entirely.
 DEFAULT_RESURRECT_INTERVAL = 300
 
+# The daemon is in default.target.wants, so it starts moments after login/
+# Hyprland comes up - meaning "capture immediately" (the old behavior) means
+# a user who reboots specifically TO restore a prior session sees the
+# picker's #1 entry be the near-empty state they just logged into, not the
+# rich one they actually want. Confirmed confusing in practice 2026-09-06.
+# Withholding the first capture for this long after the daemon starts means
+# a restore attempted soon after login still finds the previous session's
+# richer snapshots ranked above today's near-empty one by recency.
+DEFAULT_STARTUP_GRACE = 600
+
 
 def run(cmd):
     try:
@@ -451,7 +461,7 @@ def do_capture(resurrect=False):
     return path
 
 
-def daemon(interval, resurrect_interval):
+def daemon(interval, resurrect_interval, startup_grace=DEFAULT_STARTUP_GRACE):
     running = True
 
     def stop(signum, frame):
@@ -460,6 +470,15 @@ def daemon(interval, resurrect_interval):
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+
+    # Withhold the very first capture (and so the very first resurrect save
+    # too) until startup_grace has elapsed since this process started - see
+    # DEFAULT_STARTUP_GRACE's comment. Chunked into 1s sleeps, same as the
+    # main loop below, so a stop signal during the wait still exits promptly
+    # instead of blocking for the rest of the grace period.
+    grace_start = time.monotonic()
+    while running and (time.monotonic() - grace_start) < startup_grace:
+        time.sleep(1)
 
     last_resurrect = 0.0
     while running:
@@ -491,6 +510,9 @@ def main():
                          "0 disables")
     dp.add_argument("--no-resurrect", action="store_true",
                     help="don't drive tmux-resurrect saves at all")
+    dp.add_argument("--startup-grace", type=int, default=DEFAULT_STARTUP_GRACE,
+                    help=f"seconds after the daemon starts before its first capture/resurrect "
+                         f"save (default {DEFAULT_STARTUP_GRACE}); 0 captures immediately")
     args = p.parse_args()
 
     if args.cmd == "capture":
@@ -498,7 +520,7 @@ def main():
         print(path)
     elif args.cmd == "daemon":
         ri = 0 if args.no_resurrect else args.resurrect_interval
-        daemon(args.interval, ri)
+        daemon(args.interval, ri, args.startup_grace)
 
 
 if __name__ == "__main__":
