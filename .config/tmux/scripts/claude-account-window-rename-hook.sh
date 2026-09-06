@@ -1,18 +1,15 @@
 #!/bin/bash
-# Fired by:
-#  - a per-window `window-renamed` hook (registered by
-#    claude-account-window-hook-setup.sh -- once per window at creation, and
-#    once for every already-existing window at tmux server start / `tmux
-#    source-file` reload) whenever that window's name changes: tmux's own
-#    automatic-rename detecting the pane's foreground command changed, or
-#    our own rename-window call below, which also fires this same hook --
-#    the checks below are what stop that from recursing further.
-#  - a global `pane-focus-in` hook (~/.tmux.conf), passing just the pane
-#    that was actually focused -- see the pid-tracking note below for why
-#    this second trigger is needed at all.
+# Fired by a per-window `window-renamed` hook (registered by
+# claude-account-window-hook-setup.sh) whenever a window's name changes:
+# either tmux's own automatic-rename noticing the pane's foreground
+# command became "claude", or our own rename-window call a few lines
+# down, which fires this same hook too -- the "already correct" check at
+# the bottom is what stops that from looping any further than one harmless
+# extra self-check.
 #
-# Resolves which Claude account a `claude` pane is using by reading
-# CLAUDE_CONFIG_DIR from its own /proc/<pid>/environ -- the binary is
+# Renames a window to whichever Claude Code account (claude/claude2/
+# claude3) its "claude" pane is running, by reading CLAUDE_CONFIG_DIR
+# straight from that process's own /proc/<pid>/environ -- the binary is
 # invoked exactly one of three ways on this machine:
 #   claude --dangerously-skip-permissions            -> claude
 #   CLAUDE_CONFIG_DIR=~/.claude2 claude ...           -> claude2
@@ -21,90 +18,91 @@
 # pane_current_command already resolves to the bare comm name ("claude")
 # either way, so the path used to invoke it never matters.
 #
-# No polling, no cache, no daemon dependency (2026-09-06 rewrite -- see
-# git history ee2ed70..b01c482 for the poll-loop + claude-usage-daemon
-# cache design this replaces, and why: that design assumed tmux had no way
-# to detect a pane's command changing without polling, which turned out to
-# be wrong, confirmed by direct testing -- tmux's own automatic-rename
-# already does that detection natively, in well under a second, including
-# for detached sessions).
+# ---------------------------------------------------------------------
+# Known, accepted limitation, deliberately NOT patched over with a poll
+# (2026-09-06, confirmed against tmux(1) 3.7c itself -- the actual
+# installed version, man page regenerated fresh and diffed against a
+# cached copy to rule out stale docs -- not just empirical testing):
 #
-# Manual-rename-wins, and why pid tracking (not just command-name
-# tracking) is needed for it -- both found by direct testing of earlier
-# cuts of this script:
-#  - Any rename-window call, including our own, permanently flips that
-#    window's automatic-rename off as a side effect, and turning it back
-#    on to re-arm detection immediately blanks the name back to the raw
-#    command name instead of leaving our custom label alone (re-confirmed
-#    on this tmux, 3.7c, before trusting it -- the same landmine the
-#    daemon-era script's own comments described). So window-renamed alone
-#    only reliably catches a window's *first* claude launch; a second
-#    claude launch reusing the same already-labeled window (exit claude,
-#    later start a different account's claude in that same pane) produces
-#    no further automatic-rename event at all. pane-focus-in is the
-#    backstop for that: a direct recheck of just the pane you switched to,
-#    triggered only by real focus activity, never a sweep.
-#  - A manual rename while claude is STILL the same running process must
-#    NOT be immediately fought back to the resolved account name just
-#    because cur_cmd == "claude" is still true. But cur_cmd alone can't
-#    tell "the same still-running claude, user just renamed it, leave it"
-#    apart from "a different claude process now, label it" -- both read as
-#    the literal string "claude" either way. @claude_last_pid records the
-#    actual resolved claude pid (not just the command name) from the
-#    *previous* invocation so that distinction can be made on pid
-#    identity instead: a pid change (including none -> some) always
-#    (re-)labels, even across a prior override, since that override
-#    applied to whatever was running before, not to this new process; the
-#    same pid persisting respects a standing override and stays hands-off.
+# Once THIS hook renames a window, tmux permanently disables that
+# window's automatic-rename as a side effect of the rename-window call --
+# straight from the manual: "This flag is automatically disabled for an
+# individual window when a name is specified... later with
+# rename-window." rename-window is the only command in the entire
+# manual that can set a window's real name, so there's no alternative
+# way to label it that doesn't also disable tracking.
+#
+# The one path that DOESN'T call rename-window -- automatic-rename-format's
+# #() shell-out -- doesn't get around this either, for a separate,
+# equally documented reason: "tmux does not wait for #() commands to
+# finish; instead, the previous result from running the same command is
+# used, or a placeholder if the command has not been run before." That's
+# an inherently async, cached-by-exact-command-string job model,
+# structurally unable to synchronously reflect which account a pane just
+# switched to, no matter how fast the underlying script is -- retested
+# directly against this exact resolve logic and it reproduced exactly
+# that: permanently one step behind, never catching up.
+#
+# Net effect: once a window has been labeled by this hook, tmux stops
+# noticing any further command change in it on its own -- exiting claude
+# and running something else, or launching a different account's claude
+# in that same window, won't rename it again. There is no tmux hook or
+# event left to react to for that; the only way to close the gap would
+# be a background poll checking pane_current_command on a schedule,
+# which is exactly the CPU/heat problem this whole redesign (see git
+# history around commit b01c482 and the daemon-era design before it)
+# was to get rid of.
+#
+# Decided (2026-09-06) to accept the gap outright instead: this label is
+# purely cosmetic (which account a pane WAS running, at a glance in the
+# status line and in tools like winswitch that key off window_name) --
+# nothing here depends on it staying live-accurate for the rest of that
+# window's life. A window's account label going stale after its first
+# claude session is a fair trade against reintroducing any kind of
+# polling, however narrow. No daemon, no cache, no loop -- purely this
+# one event hook, reacting only to a window's first claude launch.
+# ---------------------------------------------------------------------
 
 target="$1"
 
-US=$'\x1f'
-info=$(tmux display-message -t "$target" -p "#{pane_pid}${US}#{pane_current_command}${US}#{window_name}${US}#{@claude_autoname}${US}#{@claude_lastset}${US}#{@claude_last_pid}")
-IFS=$US read -r pane_pid cur_cmd win_name marker lastset prev_pid <<< "$info"
+cur_cmd=$(tmux display-message -t "$target" -p '#{pane_current_command}')
+
+marker=$(tmux display-message -t "$target" -p '#{@claude_autoname}')
+lastset=$(tmux display-message -t "$target" -p '#{@claude_lastset}')
+win_name=$(tmux display-message -t "$target" -p '#{window_name}')
 
 # A manual rename since our last write wins -- stop managing this window
-# (until a different claude process appears) same as tmux's own "manual
-# rename disables automatic-rename" contract.
+# for good (there's no later re-arming here, per the note above: we're
+# not trying to catch a second claude launch reusing the same window
+# anyway). Same "manual rename disables automatic-rename" contract tmux's
+# own engine has, applied to our own tracking.
 if [ "$marker" = "1" ] && [ "$win_name" != "$lastset" ]; then
     tmux set-window-option -t "$target" -u "@claude_autoname"
     tmux set-window-option -t "$target" -u "@claude_lastset"
-    marker=""
+    exit 0
 fi
 
-claude_pid=""
-account=""
-if [ "$cur_cmd" = "claude" ]; then
-    # Direct child of the pane's own process, not a recursive descendant
-    # search: a claude process spawning further "claude"-comm children
-    # (subagents) would otherwise be mistaken for the top-level session
-    # this pane is actually running.
-    claude_pid=$(pgrep -x -P "$pane_pid" claude | head -n1)
-    cfg_dir=""
-    if [ -n "$claude_pid" ] && [ -r "/proc/$claude_pid/environ" ]; then
-        cfg_dir=$(tr '\0' '\n' < "/proc/$claude_pid/environ" | sed -n 's/^CLAUDE_CONFIG_DIR=//p')
-    fi
-    case "$cfg_dir" in
-        */.claude2) account="claude2" ;;
-        */.claude3) account="claude3" ;;
-        *) account="claude" ;;
-    esac
+[ "$cur_cmd" = "claude" ] || exit 0
+
+pane_pid=$(tmux display-message -t "$target" -p '#{pane_pid}')
+
+# Direct child of the pane's own process, not a recursive descendant
+# search: a claude process spawning further "claude"-comm children
+# (subagents) would otherwise be mistaken for the top-level session this
+# pane is actually running.
+claude_pid=$(pgrep -x -P "$pane_pid" claude | head -n1)
+cfg_dir=""
+if [ -n "$claude_pid" ] && [ -r "/proc/$claude_pid/environ" ]; then
+    cfg_dir=$(tr '\0' '\n' < "/proc/$claude_pid/environ" | sed -n 's/^CLAUDE_CONFIG_DIR=//p')
 fi
+case "$cfg_dir" in
+    */.claude2) desired="claude2" ;;
+    */.claude3) desired="claude3" ;;
+    *) desired="claude" ;;
+esac
 
-fresh=0
-[ -n "$claude_pid" ] && [ "$claude_pid" != "$prev_pid" ] && fresh=1
-
-desired=""
-if [ -n "$account" ] && { [ "$marker" = "1" ] || [ "$fresh" = 1 ]; }; then
-    desired="$account"
-elif [ "$cur_cmd" != "claude" ] && [ "$marker" = "1" ]; then
-    desired="$cur_cmd"
-fi
-
-if [ -n "$desired" ] && [ "$win_name" != "$desired" ]; then
+if [ "$win_name" != "$desired" ]; then
     tmux rename-window -t "$target" "$desired"
     tmux set-window-option -t "$target" "@claude_autoname" 1
     tmux set-window-option -t "$target" "@claude_lastset" "$desired"
 fi
-
-tmux set-window-option -t "$target" "@claude_last_pid" "$claude_pid"
