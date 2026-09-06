@@ -18,6 +18,8 @@ RefuseManualStop=yes
 # that ExecStop was `tmux kill-server` and it wiped 107 live sessions.
 Type=oneshot
 RemainAfterExit=yes
+# Share a cgroup with tmux-claude-account-command-watch.service (see tmux.slice).
+Slice=tmux.slice
 # .zshrc no longer creates a server (it only joins one that already exists),
 # so this is the sole creator. `new-session -d` also loads ~/.tmux.conf,
 # which sets `exit-empty off` so the server survives with zero sessions.

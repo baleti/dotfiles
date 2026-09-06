@@ -1,0 +1,10 @@
+[Unit]
+Description=tmux server and its helpers
+Documentation=man:tmux(1)
+# Groups tmux.service (the server) with tmux-claude-account-command-watch.service
+# (the window-relabel watcher) under one cgroup, so they sit together in
+# systemd-cgls / systemd-cgtop and share a cgroup path (htop: add the CGROUP
+# column, or sort by it, to see them clustered). They stay independent units -
+# each starts, stops and restarts on its own; this only nests them.
+
+[Slice]

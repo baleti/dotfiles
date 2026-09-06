@@ -17,6 +17,9 @@ PartOf=tmux.service
 
 [Service]
 Type=simple
+# Sit in the same cgroup as the tmux server (see tmux.slice) so this shows
+# up next to it in systemd-cgls / systemd-cgtop instead of free-floating.
+Slice=tmux.slice
 ExecStart=%h/.config/tmux/scripts/tmux-claude-account-command-watch.sh
 Restart=always
 RestartSec=2
