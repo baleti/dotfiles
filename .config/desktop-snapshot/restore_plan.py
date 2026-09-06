@@ -219,6 +219,7 @@ def build_session_workspace_map(hypr_state):
             "workspace_id": ws.get("id"),
             "monitor": ws_meta.get("monitor"),
             "tile_order": c.get("tile_order", 0),
+            "tiled_layout": c.get("tiled_layout") or ws_meta.get("tiledLayout"),
         }
     return mapping
 
