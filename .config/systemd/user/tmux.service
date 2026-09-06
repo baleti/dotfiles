@@ -27,11 +27,6 @@ ExecStart=/usr/bin/tmux new-session -d
 # already tears the server down via the cgroup, and a standalone kill here
 # is exactly what turned a stray unit-stop into a full-session wipe.
 ExecStop=/home/user1/.config/tmux/plugins/tmux-resurrect/scripts/save.sh
-# Under memory pressure the kernel should kill almost anything before the
-# tmux server (losing it takes every session and detached client with it).
-# The forked server inherits this from the ExecStart process; panes spawned
-# later live in their own tmux-spawn-*.scope and are unaffected.
-OOMScoreAdjust=-100
 
 [Install]
 WantedBy=default.target
