@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Convert a tmux-resurrect layout file saved by this system's old,
-locally-patched save.sh (pane lines carry a pane_title field, window
-lines carry an extra window_name + trailing flag) into the vanilla
-upstream format the currently-installed restore.sh actually expects.
+"""Convert a tmux-resurrect layout file from one pane-line field order to
+another between two DIFFERENT checkouts this system had at the time
+(pane_title in one, window_name in the other - see field layouts below).
 
-Why this exists instead of patching restore.sh: the plugin directory
-(~/.tmux/plugins/tmux-resurrect) is a self-healing git clone that
-re-clones vanilla upstream if ever missing - the currently-installed
-save.sh already produces vanilla-format files going forward, so this
-mismatch only affects old files saved before some earlier re-clone wiped
-whatever local patch used to add pane_title. Converting the (few) old
-files once, rather than patching the vendored script, means nothing here
-depends on surviving a future re-clone.
+CORRECTION 2026-09-06 (after this script had already done its one-time
+job): the "vanilla upstream restore.sh" this docstring originally meant
+was actually ~/.tmux/plugins/tmux-resurrect/ - a stale, unreferenced 2021
+checkout, since deleted. The checkout .tmux.conf actually loads
+(~/.config/tmux/plugins/tmux-resurrect/) uses the OTHER format (pane_title,
+not window_name) for both its save.sh and restore.sh - they were never
+mismatched with each other, only restore_desktop_session.py's hardcoded
+reference to the wrong checkout was. So "old/legacy" vs "vanilla/current"
+above described which checkout THIS SCRIPT was targeting at the time, not
+which one was actually live. Left as historical record; this script
+already converted the one old backup file it was written for and isn't
+part of the ongoing pipeline - the live save.sh/restore.sh pair has agreed
+with each other the whole time.
 
 Old pane line (11 tab fields):
   pane, session, window, window_active, window_flags, pane_index,
