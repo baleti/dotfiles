@@ -591,6 +591,8 @@ def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, ex
     project checked out under a mounted drive) silently never resolved,
     since the search was looking in the wrong project dir entirely. Falls
     back to "-home-user1" when cwd is unknown, for backward compat."""
+    if pane_contents_dir is None:
+        return None  # --pane-contents wasn't given - see get_pane_dir()
     pane_file = Path(pane_contents_dir) / f"pane-{session}:{window_index}.{pane_index}"
     if not pane_file.exists():
         return None
@@ -613,6 +615,26 @@ def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, ex
             except OSError:
                 continue
     return None
+
+
+def transcript_exists(config_dir, session_id, cwd):
+    """Does <config_dir or ~/.claude>/projects/<cwd-slug>/<session_id>.jsonl
+    actually exist on disk? snapshot.py captures session_id straight from
+    the CLI's own self-reported sessions/<pid>.json - normally a real
+    --resume uuid needing no archaeology at all, but that self-report can
+    outrun the transcript actually being persisted: a session someone
+    launched and left sitting at the welcome screen (no message ever sent)
+    gets a sessionId immediately, with no backing jsonl ever written for
+    it. Resuming such a uuid fails outright with "No conversation found
+    with session ID: ..." - confirmed live 2026-09-07 for exactly the four
+    panes this incident manually launched-but-never-used earlier. Checking
+    existence first means inject_resume can fall back to a plain launch
+    instead of typing a --resume that's guaranteed to fail."""
+    if not session_id:
+        return False
+    proj_name = cwd.replace("/", "-") if cwd else "-home-user1"
+    base = Path(config_dir) if config_dir else Path.home() / ".claude"
+    return (base / "projects" / proj_name / f"{session_id}.jsonl").is_file()
 
 
 def account_for_config_dir(cfg_dir):
@@ -679,11 +701,31 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         # Confirmed the hard way.
         print(f"  {target}: already running claude, skipping resume injection")
         return
+    if session_id and not transcript_exists(config_dir, session_id, cwd):
+        # A session_id captured straight from the CLI's own self-report can
+        # outrun the transcript actually being persisted (see
+        # transcript_exists's docstring) - confirmed live 2026-09-07 for
+        # four panes that got launched-but-never-used earlier in this same
+        # incident. Don't fall through to scrollback archaeology here: a
+        # session with no persisted transcript at all also has no real
+        # conversation content to have left an OSC-8 footer in, so
+        # archaeology would only ever fail too, at the cost of needing
+        # --pane-contents just to find that out. Go straight to "nothing to
+        # resume, launch plain" instead.
+        print(f"  {target}: snapshot's session_id {session_id} has no transcript on disk "
+              f"(likely never got past the welcome screen) - nothing to resume", file=sys.stderr)
+        session_id = None
+        no_transcript = True
+    else:
+        no_transcript = False
+
     if session_id:
         uuid = session_id
         print(f"  {target}: session_id known directly from the snapshot (no scrollback parsing needed)")
-    else:
+    elif not no_transcript:
         uuid = resolve_resume_uuid(get_pane_dir(), sess, window_index, pane_index, exclude_jsonl, cwd=cwd)
+    else:
+        uuid = None
     if uuid:
         # Every account's project store for a given cwd is the same inode
         # (see resolve_resume_uuid's docstring), so the uuid search can't
@@ -700,6 +742,17 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         except subprocess.TimeoutExpired:
             print(f"  {target}: tmux send-keys timed out after {RESUME_SUBPROCESS_TIMEOUT}s - "
                   f"may not have been delivered, check/resume this pane manually", file=sys.stderr)
+    elif no_transcript:
+        # Genuinely nothing to resume - launch plain claude under the
+        # right account instead of leaving the pane at a bare shell.
+        prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
+        print(f"  {target}: launching plain {prefix}claude (no conversation to resume)")
+        try:
+            subprocess.run(["tmux", "send-keys", "-t", target, f"{prefix}claude", "Enter"],
+                            timeout=RESUME_SUBPROCESS_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print(f"  {target}: tmux send-keys timed out after {RESUME_SUBPROCESS_TIMEOUT}s - "
+                  f"may not have been delivered, check this pane manually", file=sys.stderr)
     else:
         print(f"  {target}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
 
@@ -738,12 +791,16 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
     tmp = None
 
     def get_pane_dir():
+        # Returns None (not a hard exit) when --pane-contents wasn't given -
+        # this is called per-pane inside a ~100+ pane loop, and one pane
+        # needing scrollback fallback that isn't available must skip just
+        # that pane, not abort the entire batch. resolve_resume_uuid
+        # tolerates a None dir by returning no match, same as any other
+        # unresolvable pane.
         nonlocal pane_dir, tmp
         if pane_dir is None:
             if not pane_contents:
-                print("a session has no direct session_id and needs scrollback fallback, "
-                      "but --pane-contents wasn't given", file=sys.stderr)
-                sys.exit(1)
+                return None
             tmp = tempfile.TemporaryDirectory()
             with tarfile.open(pane_contents) as tf:
                 tf.extractall(tmp.name)
