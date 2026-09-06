@@ -288,9 +288,15 @@ def get_hyprland_state(children, pid_info, tmux_clients):
     # anyway). Sort each workspace's windows left-to-right, top-to-bottom
     # (master conventionally occupies the leftmost/largest area, stack
     # members are ordered top-to-bottom to its right) and store that rank.
+    # tiledLayout (the "master"/"dwindle" algorithm) lives only in the
+    # separate workspaces[] list from hyprctl - stamp it onto each client
+    # too so anything consuming per-session data (restore_plan.py's
+    # session->workspace map, say) has it without a manual join.
+    tiled_layout_by_ws = {w["id"]: w.get("tiledLayout") for w in workspaces}
     by_workspace = {}
     for entry in clients:
         ws_id = (entry.get("workspace") or {}).get("id")
+        entry["tiled_layout"] = tiled_layout_by_ws.get(ws_id)
         by_workspace.setdefault(ws_id, []).append(entry)
     for ws_clients in by_workspace.values():
         for rank, entry in enumerate(
