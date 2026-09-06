@@ -2,8 +2,16 @@
 
 `.tmux.conf` (prefix remapped `C-b`→`C-x`, vi copy-mode) plus
 `~/.config/tmux/scripts/` — a custom session/window/pane navigation layer on
-top of tmux-resurrect/tmux-continuum (installed without TPM, self-healing
-clone+pull at the bottom of the conf).
+top of tmux-resurrect (installed without TPM, self-healing clone+pull at the
+bottom of the conf). tmux-continuum was dropped 2026-09-06 — its only
+mechanism was a `#(continuum_save.sh)` wedged into `status-right`, which ran
+once per attached client per redraw (a fork storm at any real client count).
+Periodic resurrect saves are now driven by the `desktop-snapshot` daemon's
+own timer instead (`snapshot.py daemon --resurrect-interval 300`); the
+tmux server itself is a systemd user unit (`tmux.service`) rather than
+something `.zshrc` creates — see
+[tmux-disaster-recovery.md](tmux-disaster-recovery.md) for the recovery
+mechanics and the incident that drove both of these changes.
 
 ## MRU navigation (the core mechanism)
 
@@ -81,9 +89,11 @@ on *any* exit code — without it, a script failure is invisible.
   opened *by* `resurrect-restore.sh`, not around it.
 - **`@resurrect-hook-post-save-all`** → `resurrect-rotate-pane-contents.sh`
   — tmux-resurrect's `save.sh` overwrites one fixed `pane_contents.tar.gz`
-  every cycle (10-minute `@continuum-save-interval`), so anything older than
-  ~10 minutes is normally already gone; this hook keeps a thinned
-  timestamped history instead.
+  every cycle (5-minute `--resurrect-interval`, driven by the
+  `desktop-snapshot` daemon), so anything older than ~5 minutes is normally
+  already gone; this hook keeps a thinned timestamped history instead. That
+  history is exactly what a post-crash recovery restores from — see
+  [tmux-disaster-recovery.md](tmux-disaster-recovery.md).
 - **`kill-empty-windows.sh`** — kills windows that never held real content
   (zero `history_size` on every pane, or equivalent).
 
