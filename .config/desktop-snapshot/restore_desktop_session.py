@@ -10,6 +10,20 @@ Two steps, always in this order:
      they currently point to - see ~/.config/docs/tmux-disaster-recovery.md).
   2. Attach an Alacritty window per restored session onto its recorded
      workspace/monitor (restore_plan.py's apply_tmux, imported directly).
+  3. Interactively restore other (non-Alacritty) application windows the
+     chosen snapshot recorded: per app, show its class/title/workspace and
+     whether a window of that class is already running, and ask before
+     touching anything - an already-running app defaults to "leave alone"
+     (restarting it closes the running window first, so that's opt-in);
+     one that isn't running defaults to "restore". See
+     restore_plan.choose_apps_interactive/apply_selected.
+
+Which snapshot to use is also interactive by default (restore_plan.
+choose_snapshot_interactive): every candidate under ~/.cache/desktop-snapshot
+is listed with its workspace/window/tmux-session/claude-session/other-app
+counts so a human can tell a rich pre-crash capture apart from the
+near-empty one the daemon writes right after this very script's own
+tmux.service restart. Pass --snapshot to skip the prompt.
 
 Server acquisition modes (mutually exclusive):
   (default)        systemctl --user restart tmux.service - kills whatever
@@ -39,8 +53,9 @@ Usage:
   restore_desktop_session.py                       # default: restart + restore + place
   restore_desktop_session.py --own-server
   restore_desktop_session.py --server mytest
-  restore_desktop_session.py --snapshot PATH.json  # hyprland mapping source (default: latest.json)
-  restore_desktop_session.py --no-place            # steps 1 only, skip Hyprland placement
+  restore_desktop_session.py --snapshot PATH.json  # skip the snapshot-picker prompt
+  restore_desktop_session.py --no-place            # skip Hyprland placement (tmux restore only)
+  restore_desktop_session.py --no-apps             # skip the other-application restore prompt
   restore_desktop_session.py --resume              # also inject claude --resume via tmux send-keys
                                                     # (needs --pane-contents, see restore_plan.py)
 """
@@ -115,9 +130,9 @@ def main():
     mode.add_argument("--server", metavar="ID", help="restore into an existing running server named ID (tmux -L ID)")
     p.add_argument("--snapshot", default=None,
                     help="desktop-snapshot JSON to source the workspace/monitor mapping from "
-                         "(default: auto - latest.json if it has tmux sessions, else the newest "
-                         "snapshots/*.json that does)")
+                         "(default: prompt interactively - see restore_plan.choose_snapshot_interactive)")
     p.add_argument("--no-place", action="store_true", help="only restore tmux sessions, skip the Hyprland placement step")
+    p.add_argument("--no-apps", action="store_true", help="skip the other-application (non-Alacritty) restore prompt")
     p.add_argument("--resume", action="store_true", help="see restore_plan.py --resume")
     p.add_argument("--pane-contents", metavar="PATH", help="see restore_plan.py --pane-contents (required with --resume)")
     p.add_argument("--exclude-session", metavar="JSONL_STEM", help="see restore_plan.py --exclude-session")
@@ -156,6 +171,13 @@ def main():
         else:
             socket_path = acquire_default_server()
 
+        # Snapshot choice drives both the tmux placement and the app-restore
+        # step below, so it's picked once, up front, before restore.sh runs -
+        # not because restore.sh needs it, but so a mistaken pick doesn't
+        # mean restoring tmux twice.
+        snapshot_path = args.snapshot or restore_plan.choose_snapshot_interactive()
+        snap = restore_plan.load(snapshot_path)
+
         restore_tmux(socket_path)
 
         if args.no_place:
@@ -169,12 +191,14 @@ def main():
                   f"`alacritty -e tmux -S {socket_path} attach -t <session>`.", file=sys.stderr)
             return
 
-        snapshot_path = args.snapshot or restore_plan.find_best_snapshot()
-        if args.snapshot is None and snapshot_path != str(restore_plan.DEFAULT):
-            print(f"latest.json has no tmux sessions - using {snapshot_path} instead")
-        snap = restore_plan.load(snapshot_path)
         restore_plan.apply_tmux(snap, resume=args.resume, pane_contents=args.pane_contents,
                                  exclude_session=args.exclude_session, manage_daemon=False)
+
+        if not args.no_apps:
+            other_clients = restore_plan.get_other_clients(snap.get("hyprland", {}))
+            decisions = restore_plan.choose_apps_interactive(other_clients)
+            if decisions:
+                restore_plan.apply_selected(decisions)
     finally:
         if was_active:
             restore_plan.start_desktop_snapshot()
