@@ -1,10 +1,25 @@
 #!/bin/bash
-# What this is: a small background loop, started once by ~/.tmux.conf,
-# that exists only to notice when the command running in your CURRENTLY
-# FOCUSED pane changes -- e.g. you exit `claude` (any account) and either
-# run a plain command or start a different account's claude in that same
-# window. When it sees that, it re-runs claude-account-window-rename-hook.sh
-# for that one window, same as tmux's own window-renamed hook does.
+# What this is: a small loop, managed as a systemd --user service
+# (tmux-claude-account-command-watch.service, After=tmux.service,
+# Restart=always), that exists only to notice when the command running in
+# your CURRENTLY FOCUSED pane changes -- e.g. you exit `claude` (any
+# account) and either run a plain command or start a different account's
+# claude in that same window. When it sees that, it re-runs
+# claude-account-window-rename-hook.sh for that one window, same as
+# tmux's own window-renamed hook does.
+#
+# Runs in the foreground (no self-backgrounding/disown, no lock file) --
+# systemd is what supervises this now (2026-09-06: "put it in systemd
+# unit so systemd manages it and starts on boot after tmux and restarts
+# if it dies"), replacing the run-shell + pidfile-lock dance this used to
+# do to keep exactly one instance alive across ~/.tmux.conf reloads. If
+# this process dies, systemd restarts it directly; it is ordered
+# After=tmux.service and follows its lifecycle (Wants=/PartOf=tmux.service),
+# which is safe now that tmux.service is a systemd-tracked oneshot with
+# RefuseManualStop (2026-09-06: an earlier version of that same coupling,
+# against an *untracked* server whose unit had ExecStop=kill-server,
+# propagated a unit pull-in into a 107-session wipe). If the server isn't
+# up the loop below just idles harmlessly until it is.
 #
 # Why this exists at all (requested 2026-09-06: "i think we should still
 # have that hook act even if previously manual renaming happend - we
@@ -24,9 +39,15 @@
 # automatic-rename, but doesn't help either: "tmux does not wait for #()
 # commands to finish; instead, the previous result... is used", so it's
 # always one step behind and never catches up -- confirmed by direct
-# testing against this exact resolve script, not just the docs).
+# testing against this exact resolve script, not just the docs. Nor does
+# wedging a static #() job into status-right, the way tmux-continuum used
+# to drive its own periodic save -- confirmed against continuum's real
+# source 2026-09-06: tmux re-evaluates a status-line job once PER
+# ATTACHED CLIENT, and this system routinely has dozens attached, which
+# is exactly why continuum itself was dropped here -- see the
+# tmux-resurrect/tmux-continuum note in ~/.tmux.conf).
 #
-# Given that, the only way left to catch "claude2 exited, claude3
+# Given all that, the only way left to catch "claude2 exited, claude3
 # started, same window" is to check periodically -- so this is a
 # deliberate, narrow exception to the "no polling" design used
 # everywhere else in this file, not an oversight. Kept as cheap as
@@ -50,33 +71,22 @@
 # 3s. This loop's shape is fundamentally different -- its cost doesn't
 # grow with how many windows exist on the server, only with how many
 # panes are actually focused across attached clients right now (normally
-# 1).
+# 1). Measured live at 0.0% CPU over several minutes when this ran as a
+# plain background loop, before being moved under systemd.
 
 HOOK="$HOME/.config/tmux/scripts/claude-account-window-rename-hook.sh"
-LOCK_DIR="$HOME/.cache/tmux"
-LOCK="$LOCK_DIR/claude-account-command-watch.pid"
+US=$'\x1f'
+declare -A last_cmd
 
-mkdir -p "$LOCK_DIR"
-
-if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
-    exit 0
-fi
-
-(
-    echo $BASHPID > "$LOCK"
-    US=$'\x1f'
-    declare -A last_cmd
-    while true; do
-        while IFS=$US read -r target cur_cmd; do
-            [ -n "$target" ] || continue
-            if [ "${last_cmd[$target]}" != "$cur_cmd" ]; then
-                last_cmd["$target"]="$cur_cmd"
-                "$HOOK" "$target"
-            fi
-        done < <(tmux list-panes -a \
-                      -f "#{&&:#{&&:#{pane_active},#{window_active}},#{session_attached}}" \
-                      -F "#{session_name}:#{window_index}${US}#{pane_current_command}" 2>/dev/null)
-        sleep 2
-    done
-) </dev/null >/dev/null 2>&1 &
-disown
+while true; do
+    while IFS=$US read -r target cur_cmd; do
+        [ -n "$target" ] || continue
+        if [ "${last_cmd[$target]}" != "$cur_cmd" ]; then
+            last_cmd["$target"]="$cur_cmd"
+            "$HOOK" "$target"
+        fi
+    done < <(tmux list-panes -a \
+                  -f "#{&&:#{&&:#{pane_active},#{window_active}},#{session_attached}}" \
+                  -F "#{session_name}:#{window_index}${US}#{pane_current_command}" 2>/dev/null)
+    sleep 2
+done

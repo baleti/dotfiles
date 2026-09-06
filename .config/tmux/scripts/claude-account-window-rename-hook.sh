@@ -7,7 +7,7 @@
 #    own rename-window call further down, which fires this same hook too
 #    -- the "already correct" check at the bottom is what stops that from
 #    looping any further than one harmless extra self-check.
-#  - claude-account-command-watch.sh, a narrow background loop (see its
+#  - tmux-claude-account-command-watch.sh, a narrow background loop (see its
 #    own header comment) that notices a command change in the currently
 #    focused, attached pane and calls this script directly with that
 #    pane's target -- needed because of the automatic-rename limitation
@@ -31,7 +31,7 @@
 # for any later, non-claude command too, exactly like vanilla
 # automatic-rename would, not just claude<->claude account switches. See
 # the limitation this is working around below for why that hand-off has
-# to happen at all, and claude-account-command-watch.sh's own header
+# to happen at all, and tmux-claude-account-command-watch.sh's own header
 # comment for how tmux exposes pane_current_command in the first place
 # (a cheap ioctl(fd, TIOCGPGRP) poll on the pty master it already holds,
 # confirmed directly via strace 2026-09-06 -- not a kernel push
@@ -67,7 +67,7 @@
 # Net effect: once this script labels a window, tmux's own engine goes
 # fully silent on it -- no window-renamed will ever fire for it again on
 # tmux's own initiative, for ANY command change, claude-related or not.
-# claude-account-command-watch.sh's poll (scoped to just the currently
+# tmux-claude-account-command-watch.sh's poll (scoped to just the currently
 # focused, attached pane -- see its own comment) is what re-invokes this
 # script when that happens instead, which is why the branch below tracks
 # the plain command name too, not just "claude" -- once we've taken over

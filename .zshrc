@@ -69,7 +69,21 @@ export LC_COLLATE=C
 # bindings to ctrl shift arrow keys and ctrl alt backspace
 source $HOME/.config/zsh/motions.zsh
 
-[[ -z $TMUX ]] && tmux new-session && exit
+# Starting the tmux server is systemd's job, not this shell's:
+# ~/.config/systemd/user/tmux.service (Type=oneshot) creates it once at
+# login. Here we only JOIN a server that is already up -- we never create
+# one, so there is never a tmux server running outside systemd's knowledge.
+#
+# Why (2026-09-06): the server had always been started by this line. Then a
+# new systemd unit was added with Wants=tmux.service on it; `systemctl
+# --user enable --now` on that unit pulled in tmux.service, systemd (which
+# had never tracked the zsh-started server) thought tmux.service was
+# inactive, "started" it, and immediately ran its ExecStop -- `tmux
+# kill-server` -- destroying all 107 live sessions. Keeping server creation
+# solely in systemd's hands is what stops that from being possible again.
+#
+# `tmux info` exits non-zero when no server is running.
+[[ -z $TMUX ]] && tmux info &>/dev/null && { tmux new-session && exit; }
 
 # self-healing fzf-tab checkout: clone on first run (e.g. fresh machine),
 # keep it updated in the background so shell startup never blocks on git
