@@ -11,3 +11,18 @@
 # exports this for its own children + the systemd/dbus activation env; this line
 # closes the terminal/tmux gap. See commit 31d6c4a.
 export XDG_MENU_PREFIX=plasma-
+
+# User-owned locate index scoped to $HOME only (no sudo, no system db
+# involved -- see ~/.config/updatedb/home.conf and the "locate" systemd
+# --user timer that refreshes it). LOCATE_PATH is *appended* after
+# plocate's default db, never replaces it, so this is additive.
+export LOCATE_PATH="$HOME/.cache/locate/home.db"
+
+# PATH lives here, not in .zshrc: the tmux server is started by systemd
+# (tmux.service -> `tmux new-session -d`) with a bare systemd --user PATH,
+# and `prefix + C-c` runs `~/bin/claude-history` via a NON-interactive shell
+# that never sources .zshrc. That left ~/.local/bin off PATH, so claude-history's
+# `os.execvp("claude", ...)` died with FileNotFoundError. `typeset -U` keeps this
+# idempotent across nested shells.
+typeset -U path PATH
+path=("$HOME/.config/emacs/bin" $path "$HOME/.local/bin")
