@@ -12,7 +12,10 @@ Two steps, always in this order:
      workspace/monitor, and (on by default - see --no-resume) resolve and
      type `claude --resume <uuid>` into every pane that had a claude
      conversation running, under the right account (restore_plan.py's
-     apply_tmux, imported directly).
+     apply_tmux, imported directly). Then a follow-up pass (see
+     --no-confirm-full-resume) selects "Resume full session as-is" on
+     claude's resume-from-summary menu wherever a big/old session raised it,
+     so the restore doesn't stall at that screen pane by pane.
   3. Interactively restore other (non-Alacritty) application windows the
      chosen snapshot recorded: per app, show its class/title/workspace and
      whether a window of that class is already running, and ask before
@@ -60,6 +63,8 @@ Usage:
   restore_desktop_session.py --no-place            # skip Hyprland placement (tmux restore only)
   restore_desktop_session.py --no-apps             # skip the other-application restore prompt
   restore_desktop_session.py --no-resume           # skip claude --resume injection
+  restore_desktop_session.py --no-confirm-full-resume  # inject --resume, but don't auto-pick
+                                                    # "Resume full session as-is" on the menu
   restore_desktop_session.py --pane-contents PATH  # fallback uuid source for panes with no
                                                     # proactively-captured session_id (see restore_plan.py)
 """
@@ -217,6 +222,11 @@ def main():
                          "the point of this script, and an easy-to-forget opt-in flag here meant a "
                          "real post-reboot restore silently skipped every claude session while "
                          "correctly restoring everything else - confirmed 2026-09-07.")
+    p.add_argument("--no-confirm-full-resume", action="store_true",
+                    help="after injecting claude --resume, don't do the follow-up pass that "
+                         "selects 'Resume full session as-is' (option 2) on claude's "
+                         "resume-from-summary menu. On by default - a big/old session left "
+                         "sitting at that menu stalls its pane until answered by hand.")
     p.add_argument("--pane-contents", metavar="PATH",
                     help="see restore_plan.py --pane-contents - a pane_contents_<ts>.tar.gz to fall back "
                          "to for panes whose snapshot lacks a proactively-captured session_id (older "
@@ -304,7 +314,8 @@ def main():
             return
 
         restore_plan.apply_tmux(snap, resume=not args.no_resume, pane_contents=args.pane_contents,
-                                 exclude_session=args.exclude_session, manage_daemon=False)
+                                 exclude_session=args.exclude_session, manage_daemon=False,
+                                 confirm_full_resume=not args.no_confirm_full_resume)
 
         if app_decisions:
             restore_plan.apply_selected(app_decisions)
