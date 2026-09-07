@@ -41,10 +41,7 @@ setopt SHARE_HISTORY
 # inline comments
 setopt interactive_comments
 
-export PATH="$HOME/.config/emacs/bin:$PATH"
 export EDITOR="emacsclient -t"
-
-export PATH="$PATH:/home/user1/.local/bin"
 
 # xfreerdp hardcodes /dev/dri/renderD128 (our Nvidia dGPU, no VAAPI driver
 # installed) for hardware H264 decode; renderD129 is the Intel iGPU, which
