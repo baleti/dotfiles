@@ -45,6 +45,7 @@ Usage:
 import argparse
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -217,24 +218,76 @@ def ask(prompt_text):
     return response.strip()
 
 
+# 25 wide, not 20: an ISO timestamp with a numeric timezone offset
+# ("2026-09-06T21:27:34+0100") is 24 characters - a 20-wide field let it
+# overflow and shift every column after it out of alignment with the
+# header, confirmed from a real run's misaligned output.
+_SNAPSHOT_COLS_HEADER = (f"{'#':>3}  {'captured':<25} {'ws':>3} {'win':>4} "
+                         f"{'tmux':>5} {'claude':>7} {'other':>6}  file")
+
+
+def _snapshot_display(i, s):
+    return (f"{i+1:>3}  {s['timestamp']:<25} {s['workspaces']:>3} {s['windows']:>4} "
+            f"{s['tmux_sessions']:>5} {s['claude_sessions']:>7} {s['other_apps']:>6}  "
+            f"{Path(s['path']).name}")
+
+
 def choose_snapshot_interactive():
-    """Print every available snapshot with enough of a summary to tell
-    them apart (workspaces/windows/tmux sessions/claude sessions/other
-    apps), and make the human pick one explicitly - no auto-picking
-    "most recent", since most recent is exactly what a fresh, nearly-empty
-    daemon capture after a restart/reboot looks like."""
+    """Let the human pick one snapshot explicitly - no auto-picking "most
+    recent", since most recent is exactly what a fresh, nearly-empty daemon
+    capture after a restart/reboot looks like.
+
+    Runs the picker in fzf (its own alt-screen, full-redraw UI) rather than
+    a plain scrollback list + line-mode input() prompt. The old prompt
+    corrupted itself on a terminal resize mid-prompt - readline reflowed
+    the already-printed multi-line table against the new width and could
+    wedge hard enough that even Ctrl-C didn't land (confirmed 2026-09-07:
+    started small, maximised, table smeared across wrapped lines and the
+    prompt stopped taking input). fzf repaints on SIGWINCH and owns the
+    tty in raw mode, so resize is a non-event and Esc/Ctrl-C always abort.
+    Falls back to the text prompt only if fzf isn't on PATH."""
     summaries = list_snapshots()
     if not summaries:
         print("no snapshots found under ~/.cache/desktop-snapshot", file=sys.stderr)
         sys.exit(1)
-    # 25 wide, not 20: an ISO timestamp with a numeric timezone offset
-    # ("2026-09-06T21:27:34+0100") is 24 characters - a 20-wide field let
-    # it overflow and shift every column after it out of alignment with
-    # the header, confirmed from a real run's misaligned output.
-    print(f"\n{'#':>3}  {'captured':<25} {'ws':>3} {'win':>4} {'tmux':>5} {'claude':>7} {'other':>6}  file")
+
+    # field 1 (tab-delimited) = full path, consumed by --with-nth=2.. /
+    # {1}; the rest is the aligned display row.
+    feed = "".join(f"{s['path']}\t{_snapshot_display(i, s)}\n"
+                    for i, s in enumerate(summaries))
+    preview = (f"{shlex.quote(sys.executable)} "
+               f"{shlex.quote(str(Path(__file__).resolve()))} {{1}}")
+    try:
+        r = subprocess.run(
+            ["fzf", "--no-multi", "--layout=reverse", "--delimiter", "\t",
+             "--with-nth", "2..", "--prompt", "restore snapshot > ",
+             "--header", _SNAPSHOT_COLS_HEADER
+             + "     (Enter restores, Esc/Ctrl-C aborts, preview = full plan)",
+             "--preview", preview,
+             "--preview-window", "down,65%,border-top,wrap"],
+            input=feed, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return _choose_snapshot_textmode(summaries)
+    if r.returncode == 130 or (r.returncode == 0 and not r.stdout.strip()):
+        abort_prompt()
+    if r.returncode not in (0, 1):
+        print(f"fzf exited {r.returncode} - falling back to text picker",
+              file=sys.stderr)
+        return _choose_snapshot_textmode(summaries)
+    picked = r.stdout.split("\t", 1)[0].strip()
+    if not picked:
+        abort_prompt()
+    return picked
+
+
+def _choose_snapshot_textmode(summaries):
+    """Plain scrollback + numbered input() prompt - the pre-fzf picker,
+    kept only as the no-fzf-on-PATH fallback (see choose_snapshot_
+    interactive for why fzf is the default now)."""
+    print(f"\n{_SNAPSHOT_COLS_HEADER}")
     for i, s in enumerate(summaries):
-        print(f"{i+1:>3}  {s['timestamp']:<25} {s['workspaces']:>3} {s['windows']:>4} "
-              f"{s['tmux_sessions']:>5} {s['claude_sessions']:>7} {s['other_apps']:>6}  {Path(s['path']).name}")
+        print(_snapshot_display(i, s))
     while True:
         choice = ask(f"\nSelect snapshot to restore [1-{len(summaries)}]: ")
         if choice.isdigit() and 1 <= int(choice) <= len(summaries):
