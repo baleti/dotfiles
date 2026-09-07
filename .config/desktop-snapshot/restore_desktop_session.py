@@ -16,12 +16,11 @@ Two steps, always in this order:
      --no-confirm-full-resume) selects "Resume full session as-is" on
      claude's resume-from-summary menu wherever a big/old session raised it,
      so the restore doesn't stall at that screen pane by pane.
-  3. Interactively restore other (non-Alacritty) application windows the
-     chosen snapshot recorded: per app, show its class/title/workspace and
-     whether a window of that class is already running, and ask before
-     touching anything - an already-running app defaults to "leave alone"
-     (restarting it closes the running window first, so that's opt-in);
-     one that isn't running defaults to "restore". See
+  3. Offer the other (non-Alacritty) application windows the chosen
+     snapshot recorded as an fzf multi-select, nothing ticked by default:
+     Tab/Space to tick the ones you want back, Enter once to confirm
+     (pressing Enter straight away restarts none of them). A ticked row
+     whose class is already running gets that window closed first. See
      restore_plan.choose_apps_interactive/apply_selected.
 
 Which snapshot to use is also interactive by default (restore_plan.
