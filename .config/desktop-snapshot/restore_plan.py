@@ -63,6 +63,29 @@ CLAUDE_DIRS = [Path.home() / ".claude", Path.home() / ".claude2", Path.home() / 
 # batch with no way forward short of killing the child process by hand).
 RESUME_SUBPROCESS_TIMEOUT = 10
 
+# After inject_resume() has typed `claude --resume <uuid>` into every pane,
+# a session large/old enough trips claude's "resume from summary" gate:
+#
+#     This session is 1d 6h old and 392.7k tokens.
+#     Resuming the full session will consume a substantial portion of your
+#     usage limits. We recommend resuming from a summary.
+#       > 1. Resume from summary (recommended)
+#         2. Resume full session as-is
+#         3. Don't ask me again
+#
+# inject_resume() types the command + Enter and moves on, so an affected pane
+# just sits at this menu forever. The restore always wants option 2 (getting
+# the real conversations back, not their summaries, is the whole point), so
+# confirm_full_session_resume() walks the panes again and presses Down,Enter
+# wherever it sees this menu. Matched on both option labels together so it
+# can only ever fire on this exact prompt.
+FULL_RESUME_PROMPT_MARKERS = ("Resume from summary", "Resume full session as-is")
+# claude instances launched back-to-back reach the menu at different times;
+# re-scan a few times rather than assuming a single pass catches them all.
+CONFIRM_RESUME_SETTLE_S = 6
+CONFIRM_RESUME_PASSES = 4
+CONFIRM_RESUME_PASS_INTERVAL_S = 8
+
 
 def load(path):
     return json.loads(Path(path).read_text())
@@ -810,16 +833,82 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         print(f"  {target}: could not resolve a --resume uuid, leaving pane as-is", file=sys.stderr)
 
 
-def apply_tmux(snap, resume=False, pane_contents=None, exclude_session=None, manage_daemon=True):
+def _capture_pane(target):
+    try:
+        return subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", target],
+            capture_output=True, text=True, timeout=RESUME_SUBPROCESS_TIMEOUT).stdout
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return ""
+
+
+def _showing_full_resume_prompt(text):
+    return all(m in text for m in FULL_RESUME_PROMPT_MARKERS)
+
+
+def confirm_full_session_resume(claude_idx, live):
+    """Second pass over the claude panes: wherever claude's 'resume from
+    summary' menu is waiting for a keypress, select option 2 ('Resume full
+    session as-is') with Down,Enter. See FULL_RESUME_PROMPT_MARKERS for the
+    what and why. Bounded: a fixed number of re-scans with a settle delay,
+    so panes that never show the menu (small sessions that resume straight
+    away) just cost a few capture-pane calls, not an open-ended poll."""
+    targets = [
+        f"{sess}:{window_index}.{p['pane_index']}"
+        for (sess, window_index), panes in claude_idx.items() if sess in live
+        for p in panes
+    ]
+    if not targets:
+        return
+    print(f"confirm-full-resume: watching {len(targets)} claude pane(s) for the "
+          f"'resume from summary' menu")
+    time.sleep(CONFIRM_RESUME_SETTLE_S)
+    handled = set()
+    for i in range(CONFIRM_RESUME_PASSES):
+        for target in targets:
+            if target in handled:
+                continue
+            if not _showing_full_resume_prompt(_capture_pane(target)):
+                continue
+            try:
+                # Down moves the selection 1 -> 2, Enter confirms. Two sends
+                # with a beat between, not a combined "Down Enter": on a slow
+                # redraw a single send has confirmed before the move landed,
+                # selecting option 1 (resume from summary) instead.
+                subprocess.run(["tmux", "send-keys", "-t", target, "Down"],
+                                timeout=RESUME_SUBPROCESS_TIMEOUT)
+                time.sleep(0.3)
+                subprocess.run(["tmux", "send-keys", "-t", target, "Enter"],
+                                timeout=RESUME_SUBPROCESS_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                print(f"  {target}: send-keys timed out selecting 'Resume full session "
+                      f"as-is' - check this pane manually", file=sys.stderr)
+                handled.add(target)  # wedged pane: don't keep retrying it
+                continue
+            handled.add(target)
+            print(f"  {target}: selected 'Resume full session as-is'")
+        if len(handled) == len(targets) or i == CONFIRM_RESUME_PASSES - 1:
+            break
+        time.sleep(CONFIRM_RESUME_PASS_INTERVAL_S)
+    if handled:
+        print(f"  confirmed full-session resume in {len(handled)} pane(s)")
+    else:
+        print("  no 'resume from summary' menu appeared in any pane")
+
+
+def apply_tmux(snap, resume=False, pane_contents=None, exclude_session=None, manage_daemon=True,
+               confirm_full_resume=True):
     was_active = stop_desktop_snapshot() if manage_daemon else False
     try:
-        _apply_tmux_body(snap, resume=resume, pane_contents=pane_contents, exclude_session=exclude_session)
+        _apply_tmux_body(snap, resume=resume, pane_contents=pane_contents,
+                         exclude_session=exclude_session, confirm_full_resume=confirm_full_resume)
     finally:
         if manage_daemon and was_active:
             start_desktop_snapshot()
 
 
-def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=None):
+def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=None,
+                     confirm_full_resume=True):
     hypr_state = snap.get("hyprland", {})
     mapping = build_session_workspace_map(hypr_state, snap.get("tmux", {}))
     if not mapping:
@@ -936,6 +1025,12 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
                 # same incident) - pace it instead of firing all at once.
                 time.sleep(1.5)
 
+        # Now that every pane has `claude --resume` typed into it, clear the
+        # "resume from summary" menu (option 2) anywhere it came up, so the
+        # restore doesn't silently stall at that screen in the big sessions.
+        if confirm_full_resume:
+            confirm_full_session_resume(claude_idx, live)
+
     if tmp:
         tmp.cleanup()
 
@@ -979,6 +1074,10 @@ def main():
     p.add_argument("--exclude-session", metavar="JSONL_STEM",
                    help="skip this jsonl file (by stem/uuid) when matching --resume uuids "
                         "- use this session's own id to avoid self-matching")
+    p.add_argument("--no-confirm-full-resume", action="store_true",
+                   help="with --resume: don't do the follow-up pass that selects 'Resume full "
+                        "session as-is' (option 2) on claude's resume-from-summary menu. On by "
+                        "default - a big session left at that menu stalls the whole restore.")
     args = p.parse_args()
 
     snapshot_path = args.snapshot or find_best_snapshot()
@@ -999,7 +1098,8 @@ def main():
         if not args.yes:
             print("--apply-tmux requires --yes (this launches processes and moves workspaces).", file=sys.stderr)
             sys.exit(1)
-        apply_tmux(snap, resume=args.resume, pane_contents=args.pane_contents, exclude_session=args.exclude_session)
+        apply_tmux(snap, resume=args.resume, pane_contents=args.pane_contents, exclude_session=args.exclude_session,
+                   confirm_full_resume=not args.no_confirm_full_resume)
     else:
         print_plan(snap)
 
