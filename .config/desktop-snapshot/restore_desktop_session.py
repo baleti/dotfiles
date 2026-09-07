@@ -243,18 +243,13 @@ def main():
         and os.environ.get("TMUX", "").split(",")[0] == str(TMUX_SOCKET_DIR / "default")
     )
     if running_inside_this_server:
-        client_pid = subprocess.run(["tmux", "display-message", "-p", "#{client_pid}"],
-                                     capture_output=True, text=True).stdout.strip()
         print("Refusing: this script is running inside a pane on the default tmux server, "
               "and default mode restarts that exact server - it would kill this script's own "
               "process mid-restore.\n"
               "Run this from outside tmux (a plain TTY/VT, or a terminal not attached to the "
               "default socket), or use --own-server / --server ID instead.\n"
-              + (f"Tip: to detach from tmux right here without leaving your terminal, kill just "
-                 f"this client (not the server): kill -9 {client_pid}"
-                 if client_pid else
-                 "Tip: to detach from tmux right here without leaving your terminal, kill just "
-                 "this client (not the server): kill -9 $(tmux display-message -p '#{client_pid}')"),
+              "Tip: to detach from tmux right here without leaving your terminal, kill just "
+              "this client (not the server): kill -9 $(tmux display-message -p '#{client_pid}')",
               file=sys.stderr)
         sys.exit(1)
 
