@@ -412,41 +412,107 @@ def get_other_clients(hypr_state):
 
 
 def choose_apps_interactive(other_clients):
-    """Per-app prompt instead of silently launching everything: show
-    class/title/workspace and whether a window of that class is already
-    running, then ask. Already-running apps default to "leave alone" (a
-    restart closes the existing window first, so it must be opt-in); apps
-    that aren't running default to "restore". Bare Alacritty windows with
-    no tmux cross-reference are skipped here - relaunching an empty
-    terminal restores nothing meaningful; apply_tmux already owns every
-    Alacritty window that actually hosts a tmux session."""
+    """fzf multi-select of which recorded non-tmux app windows to relaunch.
+    Nothing is ticked by default: the usual restore is "bring my terminals
+    and claude sessions back, not the browser / PDF viewer / image editor I
+    had open", so the top row is a "restart none of these" sentinel and
+    pressing Enter straight away restores none of them. Tab or Space ticks a
+    row, Enter confirms, Esc / Ctrl-C aborts the whole restore.
+
+    Replaces a per-app input() y/N loop that shared the resize-fragility the
+    snapshot picker had (confirmed 2026-09-07: maximising the window
+    mid-prompt smeared the already-printed list across wrapped lines, input
+    stopped registering, and Ctrl-C wouldn't land - had to kill the
+    terminal). fzf owns the tty in raw mode and repaints on SIGWINCH, so a
+    resize is a non-event.
+
+    Bare Alacritty windows with no tmux cross-reference are left out
+    (relaunching an empty terminal restores nothing; apply_tmux owns the
+    Alacritty windows that host a real session). Windows with no captured
+    cmdline can't be relaunched - reported, not offered. Returns
+    [(client, "restart"|"launch")] for apply_selected: "restart" when a
+    window of that class is live now (apply_selected closes it first),
+    "launch" otherwise. Falls back to a per-app y/N prompt if fzf isn't on
+    PATH."""
     current = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
     running_classes = {c.get("class") for c in current}
-    real = [c for c in other_clients if c.get("class") != "Alacritty"]
-    decisions = []
+
+    real, no_cmd = [], []
+    for c in other_clients:
+        if c.get("class") == "Alacritty":
+            continue
+        (real if (c.get("cmdline") or []) else no_cmd).append(c)
+    for c in no_cmd:
+        print(f"  {c.get('class')} - '{c.get('title')}': no cmdline captured, can't relaunch, skipping",
+              file=sys.stderr)
     if not real:
-        print("\nno other (non-Alacritty) application windows recorded in this snapshot.")
-        return decisions
-    print(f"\n{len(real)} other application window(s) recorded in this snapshot:")
+        print("\nno relaunchable non-Alacritty application windows recorded in this snapshot.")
+        return []
+
+    try:
+        return _choose_apps_fzf(real, running_classes)
+    except FileNotFoundError:
+        return _choose_apps_textmode(real, running_classes)
+
+
+def _app_row(i, c, running_classes):
+    running = c.get("class") in running_classes
+    ws = (c.get("workspace") or {}).get("name") or "?"
+    action = "restart" if running else "launch "
+    title = (c.get("title") or "").replace("\t", " ")
+    if len(title) > 54:
+        title = title[:53] + "…"
+    cmd = " ".join(c.get("cmdline") or []).replace("\t", " ")
+    if len(cmd) > 90:
+        cmd = cmd[:89] + "…"
+    return (f"{i}\t{action}  {(c.get('class') or '?'):<22}  ws {ws:<5}  "
+            f"{title:<54}  [{cmd}]")
+
+
+def _choose_apps_fzf(real, running_classes):
+    sentinel = "none\t(leave everything as-is - restart none of these)"
+    feed = sentinel + "\n" + "".join(
+        _app_row(i, c, running_classes) + "\n" for i, c in enumerate(real))
+    r = subprocess.run(
+        ["fzf", "--multi", "--no-sort", "--layout=reverse", "--cycle",
+         "--delimiter", "\t", "--with-nth", "2..",
+         "--bind", "space:toggle",
+         "--marker", "* ", "--pointer", ">",
+         "--prompt", "restart apps > ",
+         "--header",
+         f"{len(real)} recorded app window(s). Tab/Space ticks, Enter confirms "
+         f"(top row = restart none), Esc aborts. 'restart' rows close the live window first."],
+        input=feed, capture_output=True, text=True,
+    )
+    if r.returncode == 130:
+        abort_prompt()
+    if r.returncode not in (0, 1):
+        print(f"fzf exited {r.returncode} - falling back to text prompt", file=sys.stderr)
+        return _choose_apps_textmode(real, running_classes)
+    keys = [ln.split("\t", 1)[0] for ln in r.stdout.splitlines() if ln.strip()]
+    picked = [real[int(k)] for k in keys if k != "none"]
+    if not picked:
+        print("no apps ticked - restarting none.")
+        return []
+    decisions = [(c, "restart" if c.get("class") in running_classes else "launch")
+                 for c in picked]
+    for c, action in decisions:
+        print(f"  will {action}: {c.get('class')} - '{c.get('title')}'")
+    return decisions
+
+
+def _choose_apps_textmode(real, running_classes):
+    """No-fzf fallback: per-app y/N, everything defaulting to skip (matches
+    the fzf picker - nothing restarts unless you say so)."""
+    print(f"\n{len(real)} recorded app window(s). y = restart/launch, anything else = skip:")
+    decisions = []
     for c in real:
         running = c.get("class") in running_classes
-        status = "already running" if running else "not running"
         ws = (c.get("workspace") or {}).get("name")
-        cmd = " ".join(c.get("cmdline") or []) or None
-        print(f"\n  {c.get('class')} - '{c.get('title')}'  (ws {ws}, {status})")
-        if cmd:
-            print(f"    cmd: {cmd}")
-        else:
-            print("    no cmdline captured - cannot relaunch automatically, skipping")
-            continue
-        if running:
-            ans = ask("    restart this one too (closes the running window, relaunches onto its recorded workspace)? [y/N]: ").lower()
-            if ans in ("y", "yes"):
-                decisions.append((c, "restart"))
-        else:
-            ans = ask("    restore this one? [Y/n]: ").lower()
-            if ans not in ("n", "no"):
-                decisions.append((c, "launch"))
+        tag = "restart, closes the running window" if running else "launch"
+        ans = ask(f"  {c.get('class')} - '{c.get('title')}' (ws {ws}) - {tag}? [y/N]: ").lower()
+        if ans in ("y", "yes"):
+            decisions.append((c, "restart" if running else "launch"))
     return decisions
 
 
@@ -1038,9 +1104,9 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
 def apply(snap):
     """Non-interactive path for the plain `restore_plan.py --apply --yes`
     CLI: launch every other-app the snapshot recorded, skipping (not
-    restarting) any whose class already has a window open. The
-    interactive per-app prompt (restart-or-leave, shown running/not) lives
-    in choose_apps_interactive + apply_selected instead - that's what
+    restarting) any whose class already has a window open. The interactive
+    fzf multi-select (nothing ticked by default) lives in
+    choose_apps_interactive + apply_selected instead - that's what
     restore_desktop_session.py's default flow uses."""
     other_clients = get_other_clients(snap.get("hyprland", {}))
     current = json.loads(subprocess.run(["hyprctl", "-j", "clients"], capture_output=True, text=True).stdout or "[]")
