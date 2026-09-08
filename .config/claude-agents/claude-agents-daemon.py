@@ -371,6 +371,17 @@ def send_to_pane(pane_target, text):
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane_target, "-l", "--", text],
                         check=True, timeout=5)
+        # A longer/multi-line paste needs a beat before Enter, or Claude
+        # Code's TUI treats it as still-mid-paste and swallows the Enter
+        # entirely (confirmed live 2026-09-08: a several-hundred-word
+        # digest-plus-question prompt sat in the input box as "[Pasted
+        # text #1]" indefinitely - a second, manually-sent Enter a few
+        # seconds later submitted it immediately, so this is purely a
+        # paste-settle race, not a delivery failure). A short message sent
+        # with no delay before never showed this - only text long/complex
+        # enough to trigger the TUI's own bracketed-paste placeholder does.
+        if len(text) > 200 or "\n" in text:
+            time.sleep(0.4)
         subprocess.run(["tmux", "send-keys", "-t", pane_target, "Enter"], check=True, timeout=5)
         return True
     except Exception as e:
