@@ -515,7 +515,17 @@ Item {
     // darkest (used for whichever metric renders dashed/de-emphasised).
     readonly property var gpuColors: ({
         intel: { power: "#5A8DBA", primary: "#4A7699", dim: "#3F6684" },
-        nvidia: { power: "#9DB98C", primary: "#7FA06B", secondary: "#5C7A52" },
+        // Widened 2026-09-08 ("hard to distinguish dGPU utilization/VRAM/
+        // power"): the three prior sage-green shades (#9DB98C/#7FA06B/
+        // #5C7A52) only varied in lightness at near-identical hue/
+        // saturation, so utilization and power (both solid, 0.9-alpha
+        // lines) read as barely-different greens. Now spread across hue
+        // too -- yellow-green (VRAM) / pure green (utilization) / deep
+        // blue-green (power) -- while staying in the "shades of green"
+        // family per the 2026-09-06 hardcode. VRAM's shade also runs
+        // lighter than before despite being the dashed/lower-alpha line,
+        // so it doesn't recede into the background on top of being dimmed.
+        nvidia: { power: "#6FBF73", primary: "#2F6B47", secondary: "#A8C97F" },
         arm: { power: "#C97B7B", primary: "#B05F5F", secondary: "#8A4747" },
     })
     function gpuShadeColor(vendor, role) {
