@@ -450,6 +450,42 @@ def _tmux_clients() -> list:
     return clients
 
 
+def _hyprctl_env() -> dict:
+    """os.environ, with HYPRLAND_INSTANCE_SIGNATURE filled in if missing.
+
+    This runs as a systemd --user service (claude-usage.service), which
+    starts independently of Hyprland's own exec-once and never inherits
+    its session env -- confirmed live 2026-09-08: the running daemon's
+    /proc/<pid>/environ has XDG_RUNTIME_DIR but no
+    HYPRLAND_INSTANCE_SIGNATURE or WAYLAND_DISPLAY at all, which silently
+    failed every `hyprctl -j clients`/`monitors` call inside the broad
+    `except Exception: return {}` guards below -- the exact reason the
+    quickshell panel's whole hyprland column (workspace/monitor) always
+    read empty, not any bug in the matching logic itself.
+
+    Rediscovered fresh on every call (not cached at import time) rather
+    than fixed once at startup, so this keeps working across a Hyprland
+    restart without needing this service restarted too -- the signature
+    is a new random string each Hyprland run, but it's always the sole
+    entry under $XDG_RUNTIME_DIR/hypr/ on this single-session machine."""
+    env = dict(os.environ)
+    if env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return env
+    runtime_dir = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    hypr_dir = Path(runtime_dir) / "hypr"
+    try:
+        sigs = [p.name for p in hypr_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return env
+    if not sigs:
+        return env
+    # Newest first if somehow more than one -- there's normally exactly
+    # one on this machine.
+    sigs.sort(key=lambda n: (hypr_dir / n).stat().st_mtime, reverse=True)
+    env["HYPRLAND_INSTANCE_SIGNATURE"] = sigs[0]
+    return env
+
+
 def _monitor_names() -> dict:
     """hyprctl's numeric monitor id -> its name (e.g. "DP-1"), one call --
     `hyprctl clients` only gives the id, and "monitor 1" means nothing in
@@ -457,7 +493,7 @@ def _monitor_names() -> dict:
     try:
         raw = subprocess.run(
             ["hyprctl", "-j", "monitors"],
-            capture_output=True, timeout=3, text=True, check=True,
+            capture_output=True, timeout=3, text=True, check=True, env=_hyprctl_env(),
         )
         return {m.get("id"): m.get("name") for m in json.loads(raw.stdout)}
     except Exception:
@@ -503,7 +539,7 @@ def hyprland_windows_by_tmux_session() -> dict:
     try:
         raw = subprocess.run(
             ["hyprctl", "-j", "clients"],
-            capture_output=True, timeout=3, text=True, check=True,
+            capture_output=True, timeout=3, text=True, check=True, env=_hyprctl_env(),
         )
         windows = json.loads(raw.stdout)
     except Exception:

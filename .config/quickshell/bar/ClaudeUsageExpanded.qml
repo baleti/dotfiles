@@ -660,18 +660,16 @@ Rectangle {
         case "pid": return (a.pid || 0) - (b.pid || 0);
         case "tokens": return (a.context_tokens ?? -1) - (b.context_tokens ?? -1);
         case "path": return root.shortCwd(a.cwd).localeCompare(root.shortCwd(b.cwd));
-        // tmux/hyprland are *grouped* columns visually, but each
-        // sub-column sorts independently -- only these, never the group
-        // label itself (that has no click action at all, see the header
-        // row below: "there should be no action when user clicks on
-        // [tmux/hyprland]... only subcolumns should be capable of
-        // sorting", 2026-09-02).
+        // tmux is a *grouped* column visually, but each sub-column sorts
+        // independently -- only these, never the group label itself (that
+        // has no click action at all, see the header row below: "there
+        // should be no action when user clicks on [tmux/hyprland]... only
+        // subcolumns should be capable of sorting", 2026-09-02).
         case "tmuxSession": return (Number(a.tmux_session) || 0) - (Number(b.tmux_session) || 0);
         case "tmuxWindow": return (Number(a.tmux_window) || 0) - (Number(b.tmux_window) || 0);
         case "tmuxPane": return (Number(a.tmux_pane) || 0) - (Number(b.tmux_pane) || 0);
         case "active": return (a.updated_at_ms || 0) - (b.updated_at_ms || 0);
         case "hyprWorkspace": return (Number(a.hypr_workspace) || 0) - (Number(b.hypr_workspace) || 0);
-        case "hyprMonitor": return (a.hypr_monitor || "").localeCompare(b.hypr_monitor || "");
         default: return 0;
         }
     }
@@ -714,11 +712,12 @@ Rectangle {
     // title widened / last narrowed alongside the panel's own 30% width
     // bump (Bar.qml's claudeUsagePanelWidth, 920 -> 1196) -- "make last
     // narrower and title wider" 2026-09-01, same request that added the
-    // hyprland group (workspace/monitor, "#"/"monitor" headers) below.
+    // hyprland "wks" column below (originally a grouped workspace+monitor
+    // pair; monitor dropped 2026-09-08).
     readonly property var colDefaults: ({
         acct: 30, status: root.statusNaturalW, title: 400, tokens: root.tokensNaturalW, last: 44,
         tmuxSession: 54, tmuxWindow: root.tmuxWindowNaturalW, tmuxPane: root.tmuxPaneNaturalW,
-        hyprWorkspace: root.hyprWorkspaceNaturalW, hyprMonitor: 56,
+        hyprWorkspace: root.hyprWorkspaceNaturalW,
         pid: root.pidNaturalW, path: 100,
     })
     // New "acct" column (request 2026-09-05, single-table merge) -- just a
@@ -762,21 +761,21 @@ Rectangle {
     // Derived, not resized directly -- follows its 3 sub-columns
     // automatically as they're dragged.
     readonly property real colTmuxGroupW: colTmuxSessionW + colTmuxWindowW + colTmuxPaneW + 2 * root.handleW
-    // hyprland is a *grouped* column like tmux, right after it: which
-    // Hyprland window is currently showing this session's tmux pane (see
-    // claude-usage-daemon.py's hyprland_windows_by_tmux_session), if any.
-    // Only workspace/monitor are actually shown as columns -- the window's
-    // own Hyprland address (what the hover-thumbnail/click-to-focus
-    // feature on this group keys off, see root.hyprHoverEntered) is kept
-    // on the row data (modelData.hypr_address) but deliberately not
-    // rendered as its own column: it's a long opaque hex string with no
-    // value as a glanceable readout, unlike workspace/monitor. "workspace"
-    // is labeled just "#" (hover for a "workspace" hint, see the header
-    // below) -- narrow on purpose, values here are almost always a single
-    // digit.
+    // hyprland: which Hyprland window is currently showing this session's
+    // tmux pane (see claude-usage-daemon.py's
+    // hyprland_windows_by_tmux_session), if any -- a single "wks" column
+    // right after tmux (originally grouped with a "monitor" column under
+    // its own "hyprland" group header; both dropped 2026-09-08, monitor
+    // wasn't worth the width and the group header was redundant once it
+    // was the only sub-column left). The window's own Hyprland address
+    // (what the hover-thumbnail/click-to-focus feature on this cell keys
+    // off, see root.hyprHoverEntered) is kept on the row data
+    // (modelData.hypr_address) but deliberately not rendered as its own
+    // column: it's a long opaque hex string with no value as a glanceable
+    // readout, unlike workspace. Labeled "wks" (hover for a "hyprland
+    // workspace" hint, see the header below) -- narrow on purpose, values
+    // here are almost always a single digit.
     property real colHyprWorkspaceW: colDefaults.hyprWorkspace
-    property real colHyprMonitorW: colDefaults.hyprMonitor
-    readonly property real colHyprGroupW: colHyprWorkspaceW + colHyprMonitorW + root.handleW
     // Sized off the actual longest visible path, not a flat default --
     // "almost always just '~' in this environment" (colDefaults' own
     // comment) meant colDefaults.path (100) was already generous for the
@@ -808,7 +807,6 @@ Rectangle {
         root.colTmuxWindowW = root.colDefaults.tmuxWindow;
         root.colTmuxPaneW = root.colDefaults.tmuxPane;
         root.colHyprWorkspaceW = root.colDefaults.hyprWorkspace;
-        root.colHyprMonitorW = root.colDefaults.hyprMonitor;
         root.colPidW = root.colDefaults.pid;
         root.colPathW = root.pathNaturalW;
     }
@@ -838,7 +836,7 @@ Rectangle {
     readonly property real tableNaturalWidth: root.colAcctW + root.handleW + root.colStatusW + root.handleW
         + root.colTitleW + root.handleW + root.colTokensW + root.handleW
         + root.colLastW + root.handleW + root.colTmuxGroupW + root.handleW
-        + root.colHyprGroupW + root.handleW + root.colPidW + root.handleW
+        + root.colHyprWorkspaceW + root.handleW + root.colPidW + root.handleW
         + root.colPathW + root.scrollbarGap + root.scrollbarW
     // Same fallback width the standalone-preview default (panelWidth: 320
     // above) already used -- reused here as the floor so a near-empty
@@ -1390,10 +1388,14 @@ Rectangle {
             spacing: 1
             visible: root.anyProcsVisible
 
-            // Group-header row: blank over every plain column, "tmux" and
-            // "hyprland" labels (underlined) spanning their own
-            // sub-columns below -- same shape as the old per-account
-            // version, just rendered once now.
+            // Group-header row: blank over every plain column, "tmux"
+            // label (underlined) spanning its own sub-columns below --
+            // same shape as the old per-account version, just rendered
+            // once now. Hyprland used to get the same grouped-label
+            // treatment over workspace+monitor, but the monitor
+            // sub-column was dropped and "wks" alone reads fine as a
+            // plain column with no group label above it (request
+            // 2026-09-08).
             RowLayout {
                 width: content.width
                 spacing: 0
@@ -1424,21 +1426,7 @@ Rectangle {
                     }
                 }
                 Item { Layout.preferredWidth: root.handleW }
-                Text {
-                    text: qsTr("hyprland")
-                    color: Theme.muted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 3
-                    horizontalAlignment: Text.AlignHCenter
-                    Layout.preferredWidth: root.colHyprGroupW
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        height: 1
-                        color: Theme.border
-                    }
-                }
+                Item { Layout.preferredWidth: root.colHyprWorkspaceW }
                 Item { Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colPidW }
                 Item { Layout.preferredWidth: root.handleW }
@@ -1449,10 +1437,10 @@ Rectangle {
             // Column headers. Four of these are abbreviated with a
             // cursor-following hover hint for the full word (request
             // 2026-09-05) -- "tkns" (tokens), "sess" (tmux session), "win"
-            // (tmux window), "wks" (hyprland workspace, renamed from the
-            // old bare "#" which used a static hint the cursor itself
-            // occluded). "pane"/"monitor"/"pid"/"path"/etc. are short
-            // enough already and stay unabbreviated.
+            // (tmux window), "wks" (-> "hyprland workspace", renamed from
+            // the old bare "#" which used a static hint the cursor itself
+            // occluded). "pane"/"pid"/"path"/etc. are short enough already
+            // and stay unabbreviated.
             RowLayout {
                 width: content.width
                 spacing: 0
@@ -1639,7 +1627,7 @@ Rectangle {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onEntered: {
-                            root.showHint(qsTr("workspace"));
+                            root.showHint(qsTr("hyprland workspace"));
                             root.moveHint(wksHeader.mapToItem(root, mouseX, mouseY));
                         }
                         onPositionChanged: mouse => root.moveHint(wksHeader.mapToItem(root, mouse.x, mouse.y))
@@ -1652,24 +1640,6 @@ Rectangle {
                     Layout.fillHeight: true
                     targetWidth: root.colHyprWorkspaceW
                     onWidthChangeRequested: w => root.colHyprWorkspaceW = w
-                }
-                Text {
-                    text: qsTr("monitor") + root.sortArrow("hyprMonitor")
-                    color: Theme.muted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 3
-                    Layout.preferredWidth: root.colHyprMonitorW
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.toggleSort("hyprMonitor")
-                    }
-                }
-                ColumnResizeHandle {
-                    Layout.preferredWidth: root.handleW
-                    Layout.fillHeight: true
-                    targetWidth: root.colHyprMonitorW
-                    onWidthChangeRequested: w => root.colHyprMonitorW = w
                 }
                 Text {
                     text: qsTr("pid") + root.sortArrow("pid")
@@ -1870,46 +1840,34 @@ Rectangle {
                             Layout.preferredWidth: root.colTmuxPaneW
                         }
                         Item { Layout.preferredWidth: root.handleW }
-                        // hyprland group cell: which real window is showing
-                        // this session, if any (see root.hyprHoverEntered's
-                        // own comment for why it's address-keyed rather
-                        // than title/appId-matched). One MouseArea over all
-                        // 3 sub-columns (not the whole row -- asked for
-                        // explicitly), inside a fixed-size Item (Layout.
-                        // preferredWidth, not implicit-from-children) so
-                        // adding it doesn't hit the sizing/MouseArea layout
-                        // cycle this file's old heading block once ran
-                        // into (see git history for that comment).
+                        // hyprland cell: which real window is showing this
+                        // session, if any (see root.hyprHoverEntered's own
+                        // comment for why it's address-keyed rather than
+                        // title/appId-matched). Just the "wks" column now
+                        // (monitor dropped, request 2026-09-08) -- still a
+                        // fixed-size Item (Layout.preferredWidth, not
+                        // implicit-from-children) so the MouseArea below
+                        // doesn't hit the sizing/MouseArea layout cycle
+                        // this file's old heading block once ran into (see
+                        // git history for that comment).
                         Item {
                             id: hyprCell
-                            Layout.preferredWidth: root.colHyprGroupW
+                            Layout.preferredWidth: root.colHyprWorkspaceW
                             Layout.fillHeight: true
 
-                            RowLayout {
+                            Text {
                                 anchors.fill: parent
-                                spacing: 0
-                                Text {
-                                    text: modelData.hypr_workspace || ""
-                                    // Wallpaper-theme primary color (same
-                                    // token Workspaces.qml's own active-
-                                    // workspace pill uses), only when this
-                                    // is the workspace actually active on
-                                    // this panel's own monitor right now.
-                                    color: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
-                                        ? Theme.cyan : Theme.muted
-                                    font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSize - 3
-                                    Layout.preferredWidth: root.colHyprWorkspaceW
-                                }
-                                Item { Layout.preferredWidth: root.handleW }
-                                Text {
-                                    text: modelData.hypr_monitor || ""
-                                    color: Theme.muted
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSize - 3
-                                    Layout.preferredWidth: root.colHyprMonitorW
-                                }
+                                text: modelData.hypr_workspace || ""
+                                // Wallpaper-theme primary color (same
+                                // token Workspaces.qml's own active-
+                                // workspace pill uses), only when this
+                                // is the workspace actually active on
+                                // this panel's own monitor right now.
+                                color: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
+                                    ? Theme.cyan : Theme.muted
+                                font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
                             }
 
                             MouseArea {
