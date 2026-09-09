@@ -877,10 +877,12 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         # the default account). config_dir/account come from
         # tmux.sessions[].windows[].panes[].claude instead.
         prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
-        print(f"  {target}: injecting {prefix}claude --resume {uuid} (account={account or 'claude'})")
+        print(f"  {target}: injecting {prefix}claude --resume {uuid} --dangerously-skip-permissions "
+              f"(account={account or 'claude'})")
         try:
             subprocess.run(["tmux", "send-keys", "-t", target,
-                             f"{prefix}claude --resume {uuid}", "Enter"], timeout=RESUME_SUBPROCESS_TIMEOUT)
+                             f"{prefix}claude --resume {uuid} --dangerously-skip-permissions", "Enter"],
+                            timeout=RESUME_SUBPROCESS_TIMEOUT)
         except subprocess.TimeoutExpired:
             print(f"  {target}: tmux send-keys timed out after {RESUME_SUBPROCESS_TIMEOUT}s - "
                   f"may not have been delivered, check/resume this pane manually", file=sys.stderr)
@@ -888,9 +890,11 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         # Genuinely nothing to resume - launch plain claude under the
         # right account instead of leaving the pane at a bare shell.
         prefix = f"CLAUDE_CONFIG_DIR={config_dir} " if config_dir else ""
-        print(f"  {target}: launching plain {prefix}claude (no conversation to resume)")
+        print(f"  {target}: launching plain {prefix}claude --dangerously-skip-permissions "
+              f"(no conversation to resume)")
         try:
-            subprocess.run(["tmux", "send-keys", "-t", target, f"{prefix}claude", "Enter"],
+            subprocess.run(["tmux", "send-keys", "-t", target,
+                             f"{prefix}claude --dangerously-skip-permissions", "Enter"],
                             timeout=RESUME_SUBPROCESS_TIMEOUT)
         except subprocess.TimeoutExpired:
             print(f"  {target}: tmux send-keys timed out after {RESUME_SUBPROCESS_TIMEOUT}s - "
