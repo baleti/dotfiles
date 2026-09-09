@@ -30,7 +30,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hyprctl::Window;
@@ -40,19 +40,27 @@ use crate::hyprctl::Window;
 /// pasted-file conversation can't blow up per-keystroke matching cost.
 const CLAUDE_CONTENTS_BUDGET: usize = 20_000;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize)]
 pub struct TmuxClaudeMeta {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tmux_session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tmux_window: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tmux_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_session: Option<String>,
     /// "5m"/"3h"/"2d"-style age bucket of the transcript file's mtime --
     /// cheap (one `stat`), so filled in alongside the other cheap claude
     /// fields rather than waiting on the deferred contents read below.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_time: Option<String>,
     /// Filled in last, by its own deferred thread -- see module doc.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_contents: Option<String>,
 }
 
@@ -74,17 +82,12 @@ impl TmuxClaudeMeta {
 }
 
 /// Kicks off background enrichment for `windows` (indices match the caller's
-/// own window list) and delivers each partial result via `on_meta(index,
-/// partial)` on the GTK main loop -- mirrors `wayland_capture::start`'s
-/// `on_thumbnail(index, pixbuf)` shape, the same "fire and forget, results
-/// land later into the running grid" pattern already used for thumbnails.
-///
-/// Polled on a 50ms timeout rather than an idle source: an idle source would
-/// spin continuously (burning CPU) for as long as the channel might still
-/// receive something, which for the Phase B contents threads can be however
-/// long a transcript read takes. 50ms is imperceptible for a search-result
-/// update and costs nothing between ticks.
-pub fn start(windows: &[Window], on_meta: impl Fn(usize, TmuxClaudeMeta) + 'static) {
+/// own window list) and returns the receiving end of the channel each
+/// partial result streams in on -- mirrors `wayland_capture::start`'s shape,
+/// the same "fire and forget, results land later" pattern used for
+/// thumbnails. The caller drains it however suits it (`main.rs` prints an
+/// NDJSON line per message).
+pub fn start(windows: &[Window]) -> mpsc::Receiver<(usize, TmuxClaudeMeta)> {
     let win_specs: Vec<(usize, i32)> = windows.iter().enumerate().map(|(i, w)| (i, w.pid)).collect();
     let (tx, rx) = mpsc::channel::<(usize, TmuxClaudeMeta)>();
     std::thread::spawn(move || {
@@ -107,14 +110,7 @@ pub fn start(windows: &[Window], on_meta: impl Fn(usize, TmuxClaudeMeta) + 'stat
             drop(tx_for_panic_log);
         }
     });
-
-    glib::source::timeout_add_local(Duration::from_millis(50), move || loop {
-        match rx.try_recv() {
-            Ok((idx, meta)) => on_meta(idx, meta),
-            Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-            Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
-        }
-    });
+    rx
 }
 
 /// Same opt-in convention `window-search.py`'s `_DEBUG`/`_dbg` already uses:

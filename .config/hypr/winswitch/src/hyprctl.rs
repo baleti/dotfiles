@@ -3,7 +3,7 @@
 
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 struct WorkspaceInfo {
@@ -23,6 +23,7 @@ struct RawClient {
     size: (i32, i32),
 }
 
+#[derive(Clone, Serialize)]
 pub struct Window {
     pub address: String,
     pub class: String,
