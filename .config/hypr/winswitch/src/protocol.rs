@@ -5,7 +5,11 @@
 //! wayland-protocols package -- needed only because
 //! hyprland-toplevel-mapping-v1.xml's `get_window_for_toplevel` request
 //! references its handle type, even though we only ever call the `_wlr`
-//! sibling request).
+//! sibling request -- and linux-dmabuf-v1, also copied from this system's
+//! wayland-protocols package, for wrapping a client-allocated GBM buffer as
+//! a `wl_buffer` so `hyprland-toplevel-export-v1` can capture straight into
+//! GPU memory instead of a `wl_shm` CPU buffer -- see wayland_capture.rs's
+//! module doc).
 //!
 //! The `wayland_protocol_client!` macro below (and the two-step
 //! generate_interfaces!-then-generate_client_code! dance inside it) is
@@ -63,4 +67,8 @@ pub mod hyprland_toplevel_export_v1 {
         "./protocols/hyprland-toplevel-export-v1.xml",
         [crate::protocol::wlr_foreign_toplevel_management_unstable_v1]
     );
+}
+
+pub mod linux_dmabuf_v1 {
+    wayland_protocol_client!("./protocols/linux-dmabuf-v1.xml", []);
 }

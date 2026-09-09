@@ -10,6 +10,7 @@ import "notifications"
 import "launcher"
 import "rssreader"
 import "keybinds"
+import "winswitch"
 import "services"
 
 ShellRoot {
@@ -55,6 +56,19 @@ ShellRoot {
         }
     }
 
+    // Alt-tab grid (ALT+Tab / ALT+SHIFT+Tab), replacing the old standalone
+    // GTK winswitch binary. Same single-top-level-target / latched-monitor
+    // pattern; `cycle` (not `toggle`) since Hyprland re-fires the same bind
+    // on every Tab press while held -- WinSwitchState.cycle is reentrant
+    // (see its own doc) so this is safe to call on every press, not just
+    // the one that opens the grid.
+    IpcHandler {
+        target: "winswitch"
+        function cycle(direction: string): void {
+            WinSwitchState.cycle(direction, Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
     Variants {
         model: Quickshell.screens
 
@@ -95,6 +109,15 @@ ShellRoot {
         model: Quickshell.screens
 
         KeybindsHelp {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        WinSwitch {
             required property var modelData
             screen: modelData
         }

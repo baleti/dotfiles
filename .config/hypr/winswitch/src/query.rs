@@ -120,15 +120,16 @@ const VERB_FORMS: &[&str] = &[
     "reverse",
 ];
 
-/// True if `s` is a non-empty prefix of some verb form - i.e. a `/s...`
-/// token that could still become a verb once more is typed, so it stays
-/// inert (mid-typing) rather than being searched for literally. A `/xyz`
-/// that is neither a verb nor a prefix of one (e.g. `/usr/bin`) is real
-/// text and does get searched. Only ever checked against the verb-name
-/// portion of a token - a via path glued on after a second `/` is a
-/// separate concern `tok_verb`/`starts_command` handle themselves.
+/// True if `s` is a prefix of some verb form - i.e. a `/s...` token (down
+/// to a bare `/` itself, `s == ""`, every verb form's trivial prefix) that
+/// could still become a verb once more is typed, so it stays inert
+/// (mid-typing) rather than being searched for literally. A `/xyz` that is
+/// neither a verb nor a prefix of one (e.g. `/usr/bin`) is real text and
+/// does get searched. Only ever checked against the verb-name portion of a
+/// token - a via path glued on after a second `/` is a separate concern
+/// `tok_verb`/`starts_command` handle themselves.
 fn is_verb_prefix(s: &str) -> bool {
-    !s.is_empty() && VERB_FORMS.iter().any(|v| v.starts_with(s))
+    VERB_FORMS.iter().any(|v| v.starts_with(s))
 }
 
 /// Case-insensitive substring containment. Empty needle always matches.
@@ -1154,6 +1155,16 @@ mod tests {
         // "/f" could still become /fv or /ft -> inert, matches everything
         assert!(matches_win(&w, "/f"));
         assert!(matches_win(&w, "/filter"));
+    }
+
+    #[test]
+    fn bare_slash_is_inert_not_a_literal_search_for_slash() {
+        // Regression: typing just "/" used to be treated as a real /fv term
+        // for the literal character "/", clearing the grid on the very
+        // first keystroke of any command instead of staying inert like
+        // "/f" already did (`is_verb_prefix("")` was explicitly excluded).
+        let w = win("alacritty", "Alacritty", "1", 1);
+        assert!(matches_win(&w, "/"));
     }
 
     #[test]
