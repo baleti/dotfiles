@@ -113,6 +113,14 @@ pub enum Metric {
     TopMem,
     TopNet,
     TopDisk,
+    /// Tiered top-process *history* for one sub-metric -- the request line is
+    /// `prochist:<sub>:<tier>` where `<sub>` is `cpu` | `mem` | `net` | `disk`
+    /// | `gpu:<name>`. Unlike TopCpu/TopMem/... (a single point-in-time list)
+    /// this streams the per-tier-bucket snapshot ring so a client can show
+    /// "what was running" at any point along a historic graph. Always-on
+    /// server-side (see sysmond.rs's `proc_hist_loop`), so a hover works even
+    /// for periods no panel was open.
+    ProcHist,
 }
 
 impl Metric {
@@ -128,12 +136,13 @@ impl Metric {
             "topmem" => Some(Metric::TopMem),
             "topnet" => Some(Metric::TopNet),
             "topdisk" => Some(Metric::TopDisk),
+            "prochist" => Some(Metric::ProcHist),
             _ => None,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub metric: Metric,
     pub tier: Tier,
@@ -144,15 +153,37 @@ pub struct Request {
     /// sysmond can skip the per-process work entirely (2026-09-05, see
     /// sysmond.rs's `GpuProcManager`). Meaningless for every other metric.
     pub include_procs: bool,
+    /// `prochist` only: which sub-metric's snapshot ring is wanted --
+    /// `cpu` | `mem` | `net` | `disk` | `gpu:<name>`. Empty for every other
+    /// metric.
+    pub proc_sub: String,
 }
 
 impl Request {
     pub fn parse(s: &str) -> Option<Self> {
         let mut parts = s.trim().split(':');
         let metric = Metric::parse(parts.next()?)?;
+        // prochist puts the sub-metric where every other request has the
+        // tier, then the tier after it: `prochist:<sub>:<tier>`. `<sub>` can
+        // itself be `gpu:<name>` (a colon), so take everything up to the
+        // final segment as the sub and the last as the tier.
+        if metric == Metric::ProcHist {
+            let rest: Vec<&str> = parts.collect();
+            let (tier_str, sub_parts) = rest.split_last()?;
+            if sub_parts.is_empty() {
+                return None;
+            }
+            let tier = Tier::parse(tier_str)?;
+            return Some(Request {
+                metric,
+                tier,
+                include_procs: false,
+                proc_sub: sub_parts.join(":"),
+            });
+        }
         let tier = Tier::parse(parts.next().unwrap_or("10m"))?;
         let include_procs = parts.next() == Some("procs");
-        Some(Request { metric, tier, include_procs })
+        Some(Request { metric, tier, include_procs, proc_sub: String::new() })
     }
 }
 
@@ -324,4 +355,33 @@ pub enum Snapshot {
     // just not itself a time series -- no `full` flag, there's no buffer
     // here for one to describe.
     TopProcs { procs: Vec<ProcEntry> },
+    // Tiered top-process history for one sub-metric (`cpu` | `mem` | `net` |
+    // `disk` | `gpu:<name>`), streamed like the series metrics: `full` (tick
+    // 0, then every FULL_RESYNC_TICKS) carries the whole current ring for the
+    // requested tier, otherwise just the bucket(s) that finalized since the
+    // previous message. `base` is the absolute bucket index of `snaps[0]`
+    // (the tier's total finalized count minus `snaps.len()` at a full send)
+    // so a delta client can append without drift, same idea as the series
+    // deltas' `total_pushed` bookkeeping. Each `ProcSnapshot::secs_ago` is
+    // relative to send time.
+    ProcHist {
+        #[serde(default = "default_full")]
+        full: bool,
+        sub: String,
+        #[serde(default)]
+        base: u64,
+        snaps: Vec<ProcSnapshot>,
+    },
+}
+
+/// One tier bucket's top-process attribution: the process list captured at
+/// the single highest-value raw second within that bucket (the spike worth
+/// explaining), plus that peak value. `secs_ago` is how long before this
+/// message was sent the bucket's midpoint was, so the client can line it up
+/// with the graph's own time axis without any clock coordination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcSnapshot {
+    pub secs_ago: u64,
+    pub value: f64,
+    pub procs: Vec<ProcEntry>,
 }

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sysmon::{socket_path, DiskHistory, GpuHistory, IfaceHistory, Metric, ProcEntry, Request, Snapshot, Tier, ALL_TIERS, SAMPLE_INTERVAL_MS, TIER_CAPACITY};
+use sysmon::{socket_path, DiskHistory, GpuHistory, IfaceHistory, Metric, ProcEntry, ProcSnapshot, Request, Snapshot, Tier, ALL_TIERS, SAMPLE_INTERVAL_MS, TIER_CAPACITY};
 
 /// One of the five fixed granularities' worth of a single raw metric --
 /// raw 1s samples get averaged together (accum_sum/accum_n) until enough
@@ -143,6 +143,203 @@ impl TieredSeries {
             tier_buf.total_pushed = tier_buf.buf.len() as u64;
         }
     }
+}
+
+/// How many entries each stored history snapshot keeps -- the live panel
+/// tables show up to 10, but a hover tooltip is smaller and the persisted
+/// file size scales directly with this, so history snapshots keep the top 6.
+const SNAP_TOP_N: usize = 6;
+
+/// How often the always-on `proc_hist_loop` walks `/proc` for the snapshot
+/// top lists. Slower than `sample_loop`'s 1s so the continuous cost of
+/// having "what was running" history at all stays low -- the snapshot a
+/// bucket keeps can be up to this stale relative to its true peak second,
+/// which is well within tolerance for explaining a graph spike.
+const PROC_HIST_INTERVAL_MS: u64 = 3000;
+
+/// How often the snapshot history is written to its sidecar file. Coarser
+/// than `history.json`'s 60s -- the persisted tiers are all 6h+, whose
+/// buckets finalize minutes apart, so little is lost on an unclean stop.
+const PROC_PERSIST_INTERVAL_S: u64 = 300;
+
+/// The `TieredSeries` counterpart for top-process snapshots: one finalized
+/// bucket's worth of process attribution per tier point, kept in lockstep
+/// with the matching metric series (same tier intervals, one `observe` per
+/// second from `sample_loop`). Each bucket keeps the snapshot from its
+/// single highest-value second -- a hover wants the spike explained, not the
+/// bucket average.
+struct SnapTier {
+    interval: u64,
+    // (peak metric value, top-N processes at that peak second), oldest-first.
+    snaps: VecDeque<(f64, Vec<ProcEntry>)>,
+    accum_n: u64,
+    have_peak: bool,
+    peak_val: f64,
+    peak_snap: Vec<ProcEntry>,
+    // Monotonic count of every bucket ever finalized (never reset by
+    // capacity eviction) -- same role as `TierBuf::total_pushed`, lets a
+    // delta client's bookmark be diffed against it.
+    total_pushed: u64,
+}
+
+impl SnapTier {
+    fn new(tier: Tier) -> Self {
+        SnapTier {
+            interval: tier.raw_samples_per_point(),
+            snaps: VecDeque::with_capacity(TIER_CAPACITY),
+            accum_n: 0,
+            have_peak: false,
+            peak_val: 0.0,
+            peak_snap: Vec::new(),
+            total_pushed: 0,
+        }
+    }
+
+    fn observe(&mut self, v: f64, snap: &[ProcEntry]) {
+        if !self.have_peak || v > self.peak_val {
+            self.have_peak = true;
+            self.peak_val = v;
+            self.peak_snap = snap.iter().take(SNAP_TOP_N).cloned().collect();
+        }
+        self.accum_n += 1;
+        if self.accum_n >= self.interval {
+            if self.snaps.len() == TIER_CAPACITY {
+                self.snaps.pop_front();
+            }
+            self.snaps.push_back((self.peak_val, std::mem::take(&mut self.peak_snap)));
+            self.total_pushed += 1;
+            self.accum_n = 0;
+            self.have_peak = false;
+            self.peak_val = 0.0;
+        }
+    }
+
+    /// Buckets finalized since `since` (a prior `total_pushed` reading),
+    /// oldest-first, clamped to what's still buffered -- mirrors
+    /// `TieredSeries::delta_since`, plus the absolute index of the first one
+    /// returned so a delta client can append without drift.
+    fn delta_since(&self, since: u64) -> (u64, Vec<&(f64, Vec<ProcEntry>)>) {
+        let missing = (self.total_pushed.saturating_sub(since) as usize).min(self.snaps.len());
+        let base = self.total_pushed - missing as u64;
+        (base, self.snaps.iter().skip(self.snaps.len() - missing).collect())
+    }
+}
+
+struct SnapSeries {
+    tiers: [SnapTier; ALL_TIERS.len()],
+}
+
+impl SnapSeries {
+    fn new() -> Self {
+        SnapSeries { tiers: ALL_TIERS.map(SnapTier::new) }
+    }
+
+    fn observe(&mut self, v: f64, snap: &[ProcEntry]) {
+        for t in &mut self.tiers {
+            t.observe(v, snap);
+        }
+    }
+
+    fn tier(&self, tier: Tier) -> &SnapTier {
+        let idx = ALL_TIERS.iter().position(|&t| t == tier).unwrap();
+        &self.tiers[idx]
+    }
+
+    fn to_persisted(&self, interner: &mut Interner) -> Vec<(String, Vec<PersistedSnap>)> {
+        ALL_TIERS
+            .iter()
+            .zip(self.tiers.iter())
+            .filter(|(t, _)| tier_is_persisted(**t))
+            .map(|(t, st)| {
+                let ring = st
+                    .snaps
+                    .iter()
+                    .map(|(v, procs)| PersistedSnap {
+                        v: *v,
+                        p: procs.iter().map(|e| (interner.intern(e), e.pid, e.value, e.util_pct as f32)).collect(),
+                    })
+                    .collect();
+                (t.code().to_string(), ring)
+            })
+            .collect()
+    }
+
+    fn load_persisted(&mut self, per_tier: &HashMap<String, Vec<PersistedSnap>>, names: &[String]) {
+        for (t, st) in ALL_TIERS.iter().zip(self.tiers.iter_mut()) {
+            let Some(ring) = per_tier.get(t.code()) else { continue };
+            st.snaps = ring
+                .iter()
+                .map(|ps| {
+                    let procs = ps
+                        .p
+                        .iter()
+                        .map(|(idx, pid, value, util)| {
+                            let full = names.get(*idx as usize).cloned().unwrap_or_default();
+                            let (name, detail) = match full.split_once('\u{1}') {
+                                Some((n, d)) => (n.to_string(), d.to_string()),
+                                None => (full, String::new()),
+                            };
+                            ProcEntry { pid: *pid, name, value: *value, detail, util_pct: *util as f64 }
+                        })
+                        .collect();
+                    (ps.v, procs)
+                })
+                .collect();
+            // Same reasoning as TieredSeries::load_persisted: total_pushed
+            // has to come back matching the restored ring or delta_since(0)
+            // returns nothing.
+            st.total_pushed = st.snaps.len() as u64;
+        }
+    }
+}
+
+/// Only the coarse "historic" tiers are persisted -- 10m/30m refill within
+/// their own span on a restart and aren't what "explain a spike from last
+/// week" needs, and they're the bulk of the snapshot count.
+fn tier_is_persisted(t: Tier) -> bool {
+    matches!(t.code(), "6h" | "7d" | "7w" | "7mo")
+}
+
+/// name+detail string interning for the persisted snapshot file -- the same
+/// handful of process identities repeat across thousands of snapshots.
+#[derive(Default)]
+struct Interner {
+    names: Vec<String>,
+    index: HashMap<String, u32>,
+}
+
+impl Interner {
+    fn intern(&mut self, e: &ProcEntry) -> u32 {
+        let key = if e.detail.is_empty() { e.name.clone() } else { format!("{}\u{1}{}", e.name, e.detail) };
+        if let Some(&i) = self.index.get(&key) {
+            return i;
+        }
+        let i = self.names.len() as u32;
+        self.names.push(key.clone());
+        self.index.insert(key, i);
+        i
+    }
+}
+
+/// Persisted form of the whole snapshot history -- its own sidecar file so
+/// `history.json` stays small and fast. A missing/corrupt/shape-mismatched
+/// file just starts the snapshot rings empty, same contract as
+/// `History::load_from_disk`.
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedProcs {
+    // Interned "name" or "name\u{1}detail"; `PersistedSnap` entries index this.
+    names: Vec<String>,
+    // "<sub>/<tier code>" -> that tier's snap ring, oldest-first. `<sub>` is
+    // `cpu` | `mem` | `net` | `disk` | `gpu:<name>`.
+    rings: HashMap<String, Vec<PersistedSnap>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedSnap {
+    // Peak metric value for the bucket.
+    v: f64,
+    // [name_idx, pid, value, util_pct] per process.
+    p: Vec<(u32, i32, f64, f32)>,
 }
 
 /// Percent of swap space in use (SwapTotal - SwapFree over SwapTotal),
@@ -270,6 +467,10 @@ struct GpuHist {
     power: TieredSeries,
     detail: GpuLatest,
     top: Vec<ProcEntry>,
+    // Most recent raw utilisation %, kept so `sample_loop` can pick the
+    // peak second for this GPU's snapshot ring without reaching into the
+    // `util` TieredSeries (which only exposes averaged points).
+    last_util: f64,
 }
 
 impl GpuHist {
@@ -282,6 +483,7 @@ impl GpuHist {
             power: TieredSeries::new(),
             detail: GpuLatest::default(),
             top: Vec::new(),
+            last_util: 0.0,
         }
     }
 }
@@ -291,6 +493,10 @@ fn persist_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"));
     base.join("sysmond/history.json")
+}
+
+fn persist_procs_path() -> PathBuf {
+    persist_path().with_file_name("procs-history.json")
 }
 
 struct History {
@@ -348,10 +554,33 @@ struct History {
     prev_proc_ticks_at: Option<Instant>,
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_proc_io_at: Option<Instant>,
+
+    // Always-on top lists for the snapshot history, refreshed every
+    // PROC_HIST_INTERVAL_MS by `proc_hist_loop` regardless of whether any
+    // panel is open -- distinct from `top_cpu`/`top_mem`/`top_disk` above,
+    // which are the 1s-fresh lists a live panel shows and stay empty while
+    // no panel wants them. `sample_loop` feeds these into the snap rings.
+    // (net's snapshot source is `top_net` directly -- nethogs is always on
+    // now -- and each GPU's is its own `GpuHist::top`.)
+    hist_top_cpu: Vec<ProcEntry>,
+    hist_top_mem: Vec<ProcEntry>,
+    hist_top_disk: Vec<ProcEntry>,
+
+    // Tiered top-process snapshot rings, one observation per second from
+    // `sample_loop`, kept in lockstep with the matching metric series so a
+    // hover on a graph point can look up "what was running" then. `snap_gpu`
+    // is parallel to `gpus`.
+    snap_cpu: SnapSeries,
+    snap_mem: SnapSeries,
+    snap_net: SnapSeries,
+    snap_disk: SnapSeries,
+    snap_gpu: Vec<SnapSeries>,
 }
 
 impl History {
     fn new(n_cores: usize) -> Self {
+        let gpus = enumerate_gpus();
+        let n_gpus = gpus.len();
         let mut h = History {
             net: HashMap::new(),
             disk: HashMap::new(),
@@ -363,7 +592,7 @@ impl History {
             swap_used_pct: TieredSeries::new(),
             swap_in_bps: TieredSeries::new(),
             swap_out_bps: TieredSeries::new(),
-            gpus: enumerate_gpus(),
+            gpus,
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
             top_net: Vec::new(),
@@ -372,8 +601,17 @@ impl History {
             prev_proc_ticks_at: None,
             prev_proc_io: HashMap::new(),
             prev_proc_io_at: None,
+            hist_top_cpu: Vec::new(),
+            hist_top_mem: Vec::new(),
+            hist_top_disk: Vec::new(),
+            snap_cpu: SnapSeries::new(),
+            snap_mem: SnapSeries::new(),
+            snap_net: SnapSeries::new(),
+            snap_disk: SnapSeries::new(),
+            snap_gpu: (0..n_gpus).map(|_| SnapSeries::new()).collect(),
         };
         h.load_from_disk();
+        h.load_procs_from_disk();
         h
     }
 
@@ -445,6 +683,66 @@ impl History {
         // half-written file if sysmond is killed mid-save (this file can
         // get into the hundreds of KB with several interfaces/disks/cores
         // all at 5 tiers x 600 points each).
+        let tmp = path.with_extension("json.tmp");
+        if fs::write(&tmp, text).is_ok() {
+            let _ = fs::rename(&tmp, &path);
+        }
+    }
+
+    /// Best-effort, same contract as `load_from_disk` -- a missing or
+    /// shape-mismatched sidecar just leaves every snapshot ring empty.
+    fn load_procs_from_disk(&mut self) {
+        let Ok(text) = fs::read_to_string(persist_procs_path()) else { return };
+        let Ok(p) = serde_json::from_str::<PersistedProcs>(&text) else { return };
+        // Group the flat "<sub>/<tier>" map back into per-sub tier maps.
+        let mut by_sub: HashMap<String, HashMap<String, Vec<PersistedSnap>>> = HashMap::new();
+        for (key, ring) in p.rings {
+            let Some((sub, tier)) = key.rsplit_once('/') else { continue };
+            by_sub.entry(sub.to_string()).or_default().insert(tier.to_string(), ring);
+        }
+        for (sub, per_tier) in &by_sub {
+            match sub.as_str() {
+                "cpu" => self.snap_cpu.load_persisted(per_tier, &p.names),
+                "mem" => self.snap_mem.load_persisted(per_tier, &p.names),
+                "net" => self.snap_net.load_persisted(per_tier, &p.names),
+                "disk" => self.snap_disk.load_persisted(per_tier, &p.names),
+                _ => {
+                    if let Some(name) = sub.strip_prefix("gpu:") {
+                        if let Some(i) = self.gpus.iter().position(|g| g.name == name) {
+                            if let Some(s) = self.snap_gpu.get_mut(i) {
+                                s.load_persisted(per_tier, &p.names);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("sysmond: loaded persisted snapshot history from {}", persist_procs_path().display());
+    }
+
+    fn save_procs_to_disk(&self) {
+        let mut interner = Interner::default();
+        let mut rings: HashMap<String, Vec<PersistedSnap>> = HashMap::new();
+        let mut add = |sub: &str, series: &SnapSeries, interner: &mut Interner| {
+            for (tier_code, ring) in series.to_persisted(interner) {
+                rings.insert(format!("{sub}/{tier_code}"), ring);
+            }
+        };
+        add("cpu", &self.snap_cpu, &mut interner);
+        add("mem", &self.snap_mem, &mut interner);
+        add("net", &self.snap_net, &mut interner);
+        add("disk", &self.snap_disk, &mut interner);
+        for (i, g) in self.gpus.iter().enumerate() {
+            if let Some(s) = self.snap_gpu.get(i) {
+                add(&format!("gpu:{}", g.name), s, &mut interner);
+            }
+        }
+        let p = PersistedProcs { names: interner.names, rings };
+        let Ok(text) = serde_json::to_string(&p) else { return };
+        let path = persist_procs_path();
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
         let tmp = path.with_extension("json.tmp");
         if fs::write(&tmp, text).is_ok() {
             let _ = fs::rename(&tmp, &path);
@@ -1075,7 +1373,7 @@ const GPU_RESCAN_TICKS: u64 = 4;
 /// re-scanned every `GPU_RESCAN_TICKS` samples; every tick in between just
 /// re-reads fdinfo for the pids that last scan found, which stays cheap
 /// since it's scoped to a handful of pids instead of every process.
-fn intel_gpu_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcManager>>) {
+fn intel_gpu_loop(history: Arc<Mutex<History>>) {
     let mut prev: HashMap<u64, (u64, u64)> = HashMap::new(); // client-id -> (render_ns, video_ns)
     let mut last = Instant::now();
     let mut drm_pids: Vec<i32> = find_drm_pids();
@@ -1140,15 +1438,11 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
             .and_then(|s| s.trim().parse::<f64>().ok())
             .unwrap_or(0.0);
 
-        // Ranking/enrichment here is the only part of this loop that's
-        // purely for the "Top processes" list -- the totals/mem_pct/freq
-        // above (needed for the always-visible compact pill) already
-        // required reading every DRM client's fdinfo regardless, so this
-        // gate doesn't save that scan, just the sort + per-pid name/detail
-        // lookups on top of it (2026-09-05 on-demand-panel-data change;
-        // see gpu_procs_wanted's own comment for why the bigger win is on
-        // the nvidia side instead).
-        let top = if gpu_procs_wanted(&gpu_procs) {
+        // Rank the per-process breakdown every tick now (not just while a
+        // panel is open) -- the snapshot history needs it continuously, and
+        // this is only a sort + name/detail lookups over ~10 pids on top of
+        // the fdinfo scan the totals above already required.
+        let top = {
             let mut ranked: Vec<(ProcEntry, f64)> = per_pid
                 .into_iter()
                 .filter(|(_, (busy, res))| *busy > 0.0 || *res > 0.0)
@@ -1173,11 +1467,10 @@ fn intel_gpu_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
                 entry.util_pct = *pct;
             }
             top
-        } else {
-            Vec::new()
         };
 
         with_gpu(&history, "intel", |g| {
+            g.last_util = util;
             g.util.push_raw(util);
             g.vram.push_raw(mem_pct);
             g.detail.vram_used_mb = resident_mb;
@@ -1292,27 +1585,10 @@ fn prime_intel_gpu_procs(history: &Mutex<History>) {
 /// its own cycles to show up. pmon's own regular flushes take over and
 /// fill in util_pct moments later; this is purely the initial preview.
 fn prime_nvidia_gpu_procs(history: &Mutex<History>) {
-    let Ok(out) = Command::new("nvidia-smi")
-        .args(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"])
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return;
-    };
-    if !out.status.success() {
+    let mut entries = nvidia_compute_apps(10);
+    if entries.is_empty() {
         return;
     }
-    let mut entries: Vec<ProcEntry> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split(',').map(str::trim);
-            let pid: i32 = parts.next()?.parse().ok()?;
-            let mb: f64 = parts.next()?.parse().ok()?;
-            Some(ProcEntry { pid, name: proc_name(pid), value: mb, detail: String::new(), util_pct: 0.0 })
-        })
-        .collect();
-    entries.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
-    entries.truncate(10);
     enrich_details(&mut entries);
     with_gpu(history, "nvidia", |g| g.top = entries);
 }
@@ -1400,6 +1676,7 @@ fn gpu_loop(history: Arc<Mutex<History>>) {
             };
 
             with_gpu(&history, "nvidia", |g| {
+                g.last_util = util;
                 g.util.push_raw(util);
                 g.vram.push_raw(vram_pct);
                 g.power.push_raw(power_pct);
@@ -1550,6 +1827,125 @@ impl Demand {
             nethogs: Arc::new(Mutex::new(NethogsManager { refcount: 0, child: None })),
             gpu_procs: Arc::new(Mutex::new(GpuProcManager { refcount: 0, child: None })),
         }
+    }
+}
+
+/// Cheap single-shot per-process VRAM on the nvidia GPU (~25ms), top `n` by
+/// used memory. No SM% (that needs the `nvidia-smi pmon` stream). Used by
+/// `proc_hist_loop` for the snapshot history, and by `prime_nvidia_gpu_procs`
+/// for the first paint of an opening panel.
+fn nvidia_compute_apps(n: usize) -> Vec<ProcEntry> {
+    let Ok(out) = Command::new("nvidia-smi")
+        .args(["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut entries: Vec<ProcEntry> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split(',').map(str::trim);
+            let pid: i32 = parts.next()?.parse().ok()?;
+            let mb: f64 = parts.next()?.parse().ok()?;
+            Some(ProcEntry { pid, name: proc_name(pid), value: mb, detail: String::new(), util_pct: 0.0 })
+        })
+        .collect();
+    entries.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+    entries.truncate(n);
+    entries
+}
+
+/// Always-on top-process sampler feeding the snapshot history rings. Runs
+/// regardless of whether any panel is open -- that is the whole point: a
+/// spike showing up later in a historic graph can still be explained -- just
+/// on a slower cadence than `sample_loop` (PROC_HIST_INTERVAL_MS) so the
+/// steady cost of keeping that history is small. Writes
+/// `History::hist_top_{cpu,mem,disk}` (which `sample_loop` folds into the
+/// snap rings) and, when `nvidia-smi pmon` isn't already running for an open
+/// GPU panel, the nvidia GPU's `top` via the cheap VRAM-only query.
+fn proc_hist_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcManager>>, clk_tck: f64) {
+    let has_nvidia = history.lock().unwrap().gpus.iter().any(|g| g.vendor == "nvidia");
+    let mut prev_ticks: HashMap<i32, u64> = HashMap::new();
+    let mut prev_io: HashMap<i32, (u64, u64)> = HashMap::new();
+    let mut prev_at: Option<Instant> = None;
+
+    loop {
+        std::thread::sleep(Duration::from_millis(PROC_HIST_INTERVAL_MS));
+        let now = Instant::now();
+        let elapsed_s = prev_at.map(|t| now.duration_since(t).as_secs_f64()).unwrap_or(0.0).max(0.001);
+        prev_at = Some(now);
+
+        let pids = list_pids();
+        let mut cur_ticks: HashMap<i32, u64> = HashMap::with_capacity(pids.len());
+        let mut cur_io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
+        let mut cpu_e: Vec<ProcEntry> = Vec::new();
+        let mut mem_e: Vec<ProcEntry> = Vec::new();
+        let mut disk_e: Vec<ProcEntry> = Vec::new();
+
+        for &pid in &pids {
+            if let Some(t) = proc_cpu_ticks(pid) {
+                cur_ticks.insert(pid, t);
+                if let Some(&p) = prev_ticks.get(&pid) {
+                    let pct = 100.0 * (t.saturating_sub(p) as f64 / clk_tck) / elapsed_s;
+                    if pct > 0.05 {
+                        cpu_e.push(ProcEntry { pid, name: proc_name(pid), value: pct, detail: String::new(), util_pct: 0.0 });
+                    }
+                }
+            }
+            if let Some(mb) = proc_rss_mb(pid) {
+                if mb > 0.0 {
+                    mem_e.push(ProcEntry { pid, name: proc_name(pid), value: mb, detail: String::new(), util_pct: 0.0 });
+                }
+            }
+            if let Some(io) = proc_io_bytes(pid) {
+                cur_io.insert(pid, io);
+                if let Some(&(pr, pw)) = prev_io.get(&pid) {
+                    let kb = (io.0.saturating_sub(pr) as f64 + io.1.saturating_sub(pw) as f64) / 1024.0 / elapsed_s;
+                    if kb > 1.0 {
+                        disk_e.push(ProcEntry { pid, name: proc_name(pid), value: kb, detail: String::new(), util_pct: 0.0 });
+                    }
+                }
+            }
+        }
+        prev_ticks = cur_ticks;
+        prev_io = cur_io;
+
+        let mut top_cpu = top_n(cpu_e, SNAP_TOP_N);
+        let mut top_mem = top_n(mem_e, SNAP_TOP_N);
+        let mut top_disk = top_n(disk_e, SNAP_TOP_N);
+        enrich_details(&mut top_cpu);
+        enrich_details(&mut top_mem);
+        enrich_details(&mut top_disk);
+
+        let nvidia_top = if has_nvidia && !gpu_procs_wanted(&gpu_procs) {
+            let mut v = nvidia_compute_apps(SNAP_TOP_N);
+            enrich_details(&mut v);
+            Some(v)
+        } else {
+            None
+        };
+
+        let mut h = history.lock().unwrap();
+        h.hist_top_cpu = top_cpu;
+        h.hist_top_mem = top_mem;
+        h.hist_top_disk = top_disk;
+        if let Some(nv) = nvidia_top {
+            if let Some(g) = h.gpus.iter_mut().find(|g| g.vendor == "nvidia") {
+                g.top = nv;
+            }
+        }
+    }
+}
+
+/// Sidecar-file counterpart to `persist_loop` for the snapshot history.
+fn proc_persist_loop(history: Arc<Mutex<History>>) {
+    loop {
+        std::thread::sleep(Duration::from_secs(PROC_PERSIST_INTERVAL_S));
+        history.lock().unwrap().save_procs_to_disk();
     }
 }
 
@@ -1761,6 +2157,13 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
             Vec::new()
         };
 
+        // Peak instantaneous rate across interfaces / disks this tick --
+        // used only to pick which second within a tier bucket the kept
+        // snapshot comes from (the top net/disk process lists are
+        // machine-wide, not per-device).
+        let net_peak = rates.iter().map(|(_, rx, tx)| rx + tx).fold(0.0_f64, f64::max);
+        let disk_peak = disk_rates.iter().map(|(_, rd, wr)| rd + wr).fold(0.0_f64, f64::max);
+
         let mut h = history.lock().unwrap();
         h.cpu_total.push_raw(cpu_total);
         h.temp_c.push_raw(temp_c);
@@ -1787,6 +2190,26 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
         h.top_cpu = top_cpu;
         h.top_mem = top_mem;
         h.top_disk = top_disk;
+
+        // Feed the tiered snapshot rings, one observation per second in
+        // lockstep with the series pushes above. Source: the live 1s panel
+        // list when a panel populated it this tick, otherwise
+        // proc_hist_loop's always-on (~3s) list. temp shares cpu's.
+        let cpu_src = if !h.top_cpu.is_empty() { h.top_cpu.clone() } else { h.hist_top_cpu.clone() };
+        let mem_src = if !h.top_mem.is_empty() { h.top_mem.clone() } else { h.hist_top_mem.clone() };
+        let disk_src = if !h.top_disk.is_empty() { h.top_disk.clone() } else { h.hist_top_disk.clone() };
+        let net_src = h.top_net.clone();
+        h.snap_cpu.observe(cpu_total, &cpu_src);
+        h.snap_mem.observe(mem_used_pct, &mem_src);
+        h.snap_net.observe(net_peak, &net_src);
+        h.snap_disk.observe(disk_peak, &disk_src);
+        for i in 0..h.gpus.len() {
+            let util = h.gpus[i].last_util;
+            let gtop = h.gpus[i].top.clone();
+            if let Some(s) = h.snap_gpu.get_mut(i) {
+                s.observe(util, &gtop);
+            }
+        }
     }
 }
 
@@ -1847,7 +2270,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
     if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
         return;
     }
-    let Some(Request { metric, tier, include_procs }) = Request::parse(&request_line) else { return };
+    let Some(Request { metric, tier, include_procs, proc_sub }) = Request::parse(&request_line) else { return };
 
     // Registers this connection's demand for whichever on-demand metric it
     // is (see Demand's own doc comment); dropped -- unregistering -- when
@@ -1908,6 +2331,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
     let mut net_since: HashMap<String, (u64, u64)> = HashMap::new();
     let mut disk_since: HashMap<String, (u64, u64)> = HashMap::new();
     let mut gpu_since: Vec<(u64, u64, u64)> = Vec::new();
+    let mut prochist_since: u64 = 0;
     let mut tick: u64 = 0;
 
     loop {
@@ -2049,6 +2473,43 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
                 Metric::TopNet => Snapshot::TopProcs { procs: h.top_net.clone() },
                 Metric::TopDisk => Snapshot::TopProcs { procs: h.top_disk.clone() },
+                Metric::ProcHist => {
+                    let series: Option<&SnapSeries> = match proc_sub.as_str() {
+                        "cpu" | "temp" => Some(&h.snap_cpu),
+                        "mem" => Some(&h.snap_mem),
+                        "net" => Some(&h.snap_net),
+                        "disk" => Some(&h.snap_disk),
+                        other => other
+                            .strip_prefix("gpu:")
+                            .and_then(|name| h.gpus.iter().position(|g| g.name == name))
+                            .and_then(|i| h.snap_gpu.get(i)),
+                    };
+                    match series {
+                        None => Snapshot::ProcHist { full: true, sub: proc_sub.clone(), base: 0, snaps: Vec::new() },
+                        Some(series) => {
+                            let st = series.tier(tier);
+                            let full = resync;
+                            let since = if full { 0 } else { prochist_since };
+                            let (base, buckets) = st.delta_since(since);
+                            prochist_since = st.total_pushed;
+                            let per_point = tier.raw_samples_per_point();
+                            let last_abs = st.total_pushed.saturating_sub(1);
+                            let snaps: Vec<ProcSnapshot> = buckets
+                                .into_iter()
+                                .enumerate()
+                                .map(|(k, (peak_val, procs))| {
+                                    let abs = base + k as u64;
+                                    ProcSnapshot {
+                                        secs_ago: st.accum_n + last_abs.saturating_sub(abs) * per_point,
+                                        value: *peak_val,
+                                        procs: procs.clone(),
+                                    }
+                                })
+                                .collect();
+                            Snapshot::ProcHist { full, sub: proc_sub.clone(), base, snaps }
+                        }
+                    }
+                }
             }
         };
         tick += 1;
@@ -2095,8 +2556,27 @@ fn main() {
     }
     if has_intel {
         let history = history.clone();
+        std::thread::spawn(move || intel_gpu_loop(history));
+    }
+    {
+        // Always-on top-process sampler for the snapshot history (a spike
+        // in a historic graph is explainable even if no panel was open at
+        // the time) -- slow cadence so its steady cost stays ~1%.
+        let history = history.clone();
         let gpu_procs = demand.gpu_procs.clone();
-        std::thread::spawn(move || intel_gpu_loop(history, gpu_procs));
+        std::thread::spawn(move || proc_hist_loop(history, gpu_procs, clk_tck));
+    }
+    {
+        // Snapshot history needs nethogs running continuously, not just
+        // while the net panel is open -- take one permanent ref that's
+        // never dropped. serve_client's own topnet refs stack on top of
+        // this harmlessly.
+        let history = history.clone();
+        nethogs_ref(&demand.nethogs, history);
+    }
+    {
+        let history = history.clone();
+        std::thread::spawn(move || proc_persist_loop(history));
     }
     {
         // Periodic save only, deliberately no SIGTERM/SIGINT handler --
