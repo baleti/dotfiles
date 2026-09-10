@@ -1070,11 +1070,16 @@ Rectangle {
             z: 50
             width: 250
             height: hoverTipCol.implicitHeight + 16
-            // Anchored just past the cursor, mapped from the Graph's own
-            // coordinates into this panel's, then clamped inside it.
+            // To the right of the cursor and vertically centred on it
+            // (mapping the Graph's own coords into this panel's), flipping
+            // to the left when it would overflow the panel's right edge,
+            // and clamped inside the panel either way.
             readonly property point cursorInPanel: graph.mapToItem(expandPanel, graph.hoveredPixelX, graph.hoveredPixelY)
-            x: Math.max(4, Math.min(parent.width - width - 4, cursorInPanel.x + 16))
-            y: Math.max(4, Math.min(parent.height - height - 4, cursorInPanel.y + 16))
+            readonly property real _gap: 16
+            readonly property bool _flipLeft: cursorInPanel.x + _gap + width > parent.width - 4
+            x: _flipLeft ? Math.max(4, cursorInPanel.x - _gap - width)
+                         : Math.min(parent.width - width - 4, cursorInPanel.x + _gap)
+            y: Math.max(4, Math.min(parent.height - height - 4, cursorInPanel.y - height / 2))
             color: Theme.bg
             border.color: Theme.border
             border.width: 1
