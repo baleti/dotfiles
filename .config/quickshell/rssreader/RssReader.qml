@@ -484,14 +484,15 @@ PanelWindow {
                                 selectionColor: Theme.cyan
                                 selectByMouse: true
                                 clip: true
-                                // Any further typing past a shown popup
-                                // closes it, same as a shell or IDE - Tab
-                                // recomputes it fresh for wherever the
-                                // cursor is now (see _triggerCompletion).
-                                // Also fires (harmlessly, on an
-                                // already-empty acItems) when accepting a
-                                // completion sets this text itself.
-                                onTextChanged: root.acItems = []
+                                // Once the popup is already open, keep
+                                // recomputing candidates from the new text
+                                // instead of clearing - narrows the list as
+                                // you type rather than closing and forcing
+                                // another Tab press. `wasOpen` is read
+                                // before this fires (root.acOpen depends on
+                                // acItems, which this handler is about to
+                                // reassign).
+                                onTextChanged: root.acItems = root.acOpen ? root._acCandidates() : []
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: "filter… (/ for DSL)"

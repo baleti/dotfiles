@@ -837,6 +837,23 @@ fn trigger_completion(query: &str, search: &gtk::SearchEntry, list: &gtk::ListBo
     true
 }
 
+/// Recomputes the popup's rows from `query` and re-renders in place -
+/// called only while the popup is already open (see `connect_changed`), so
+/// unlike `trigger_completion` above it never auto-accepts a unique
+/// candidate: narrowing down to exactly one entry by typing should still
+/// show that one row, not silently apply it. Narrowing to zero closes the
+/// popup, same as an unresolvable complete path narrows a filter to
+/// nothing elsewhere in this grammar.
+fn refresh_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>) {
+    match compute_candidates(query, state) {
+        Some((start, items, kind)) => {
+            set_completion_state(state, start, items, kind);
+            show_suggestions_popup(list, state);
+        }
+        None => hide_suggestions(list, state),
+    }
+}
+
 /// Replaces the trailing fragment the suggestions were built from with the
 /// chosen completion - `/<verb> ` for a verb, `<field>:` for a field name
 /// (the `/fv ` prefix is already in `query[..start]`), or `<field>:<value>
@@ -1036,12 +1053,16 @@ pub fn run(
                     listbox.select_row(None::<&gtk::ListBoxRow>);
                 }
             }
-            // The autocomplete popup is Tab-triggered only (see
-            // trigger_completion) - it never opens itself as you type, so
-            // any further typing past a shown popup just closes it, same
-            // as it would in a shell or IDE; pressing Tab again recomputes
-            // it fresh for wherever the cursor is now.
-            hide_suggestions(&suggestions_list, &state);
+            // The autocomplete popup is Tab-triggered to *open* (see
+            // trigger_completion) - typing alone never opens it from
+            // nothing. Once it's already open, keep narrowing it against
+            // the new text instead of closing it (refresh_suggestions);
+            // narrowing to zero candidates closes it on its own.
+            if state.suggestions.borrow().is_empty() {
+                hide_suggestions(&suggestions_list, &state);
+            } else {
+                refresh_suggestions(text.as_str(), &suggestions_list, &state);
+            }
             resize_to_content();
         });
     }

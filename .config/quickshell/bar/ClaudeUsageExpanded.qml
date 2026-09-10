@@ -1233,7 +1233,18 @@ Rectangle {
                 // cursor is now (root.triggerCompletion). Also fires
                 // (harmlessly, on an already-empty acItems) when accepting
                 // a completion sets this text itself.
-                onTextChanged: { root.searchText = text; root.acItems = []; }
+                onTextChanged: {
+                    // Once the popup is already open, keep recomputing
+                    // candidates from the new text instead of clearing --
+                    // narrows the list as you type (e.g. `/fv/` + Tab shows
+                    // every field, typing `p` narrows to path/pid/...)
+                    // rather than closing and forcing another Tab press.
+                    // `wasOpen` is read before reassigning searchText/
+                    // acItems, since root.acOpen depends on both.
+                    const wasOpen = root.acOpen;
+                    root.searchText = text;
+                    root.acItems = wasOpen ? root._acCandidates() : [];
+                }
 
                 Text {
                     visible: searchInput.text.length === 0 && !searchInput.activeFocus

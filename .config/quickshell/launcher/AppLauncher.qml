@@ -261,10 +261,13 @@ PanelWindow {
         }
         return [];
     }
-    // Tab-triggered only (see _triggerCompletion) - never recomputed just
-    // from typing, so this stays a plain property rather than a binding
-    // on query.text; a popup that popped open on every keystroke was
-    // obtrusive and could steal focus at the wrong moment.
+    // Tab-triggered to *open* (see _triggerCompletion) - typing alone
+    // never opens it from nothing, only narrows it once it's already open
+    // (query's onTextChanged) - a popup that popped open on every
+    // keystroke was obtrusive and could steal focus at the wrong moment.
+    // A plain property rather than a binding on query.text since it needs
+    // to stay whatever it last was (open or closed) across keystrokes,
+    // not recompute unconditionally on every one.
     property var acItems: []
     property int acSel: 0
     onAcItemsChanged: { ac.visible = acItems.length > 0; acSel = 0; }
@@ -391,12 +394,17 @@ PanelWindow {
                 selectionColor: Theme.cyan
                 selectByMouse: true
                 clip: true
-                // Any further typing past a shown popup closes it, same
-                // as a shell or IDE - Tab recomputes it fresh for
-                // wherever the cursor is now (see _triggerCompletion).
-                // Also fires (harmlessly, on an already-empty acItems)
-                // when accepting a completion sets this text itself.
-                onTextChanged: root.acItems = []
+                // Once the popup is already open, keep recomputing
+                // candidates from the new text instead of clearing --
+                // narrows the list as you type (e.g. `/` + Tab shows every
+                // verb, typing `f` narrows to /fv) rather than closing and
+                // forcing another Tab press. Typing while nothing's open
+                // still doesn't spontaneously show anything (`ac.visible`
+                // check below), matching "Tab-triggered, never live".
+                // Also fires (harmlessly) when accepting a completion sets
+                // this text itself, on an already-open (fine, recomputes
+                // to the same thing) or already-closed (no-op) popup.
+                onTextChanged: root.acItems = ac.visible ? root._acCandidates() : []
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
