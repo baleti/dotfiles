@@ -66,45 +66,8 @@ pub fn list_windows() -> Vec<Window> {
         .collect()
 }
 
-/// True if either Alt key is currently physically held, per Hyprland's own
-/// real-seat key-state tracking (not whatever our own process's keyboard
-/// focus has or hasn't seen -- that's the whole point, see the focus-in
-/// handler in `ui.rs` that calls this).
-pub fn is_alt_down() -> bool {
-    // Lets manual/synthetic testing (wtype can't hold a real key in a way
-    // Hyprland's own key-state tracking sees, so it can't otherwise
-    // exercise the "still held" path at all) force this without editing
-    // source -- inert for every real invocation, since Hyprland's binds
-    // never set this.
-    if std::env::var_os("WINSWITCH_DEBUG_FORCE_HELD").is_some() {
-        return true;
-    }
-    let out = Command::new("hyprctl")
-        .args([
-            "repl",
-            r#"return tostring(hl.is_key_down("Alt_L") or hl.is_key_down("Alt_R"))"#,
-        ])
-        .output();
-    matches!(out, Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "true")
-}
-
-/// `hyprctl dispatch focuswindow address:...` doesn't work on this build:
-/// this Hyprland install uses the native Lua config system, under which
-/// `hyprctl dispatch <name> <args>` is routed through string-concatenated
-/// `hl.dispatch(<name> <args>)`, which isn't valid Lua for traditional
-/// hyprctl dispatcher syntax. `hl.get_windows({address = ...})` also doesn't
-/// filter by address (confirmed empirically -- it silently returns the full
-/// unfiltered list), so the address match has to happen window-side in the
-/// Lua snippet itself, then dispatch through `hl.dsp.focus`.
-pub fn focus_window(address: &str) {
-    let script = format!(
-        r#"local ws = hl.get_windows({{}})
-for i, w in ipairs(ws) do
-    if tostring(w.address) == "{address}" then
-        hl.dispatch(hl.dsp.focus({{ window = w }}))
-        break
-    end
-end"#
-    );
-    let _ = Command::new("hyprctl").args(["repl", &script]).status();
-}
+// Alt-state checking and focus dispatch (`hl.is_key_down`, `hl.dsp.focus`
+// via `hyprctl repl`) moved to WinSwitch.qml (2026-09-10) -- see main.rs's
+// own module doc. Both now happen entirely in the already-running
+// Quickshell process, ahead of ever spawning this binary, so this crate no
+// longer needs its own copies.

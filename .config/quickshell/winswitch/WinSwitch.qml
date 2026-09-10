@@ -29,22 +29,51 @@ PanelWindow {
     // `screen` is PanelWindow's own property, set from shell.qml's Variants
     // (do NOT redeclare it -- see AppLauncher.qml's identical note).
     //
-    // `open` only ever flips true once the backend's `windows` line
-    // actually arrives -- the surface is never mapped at all for what
-    // turns out to be a tap. An earlier version of this grabbed keyboard
-    // input *immediately* on every press, before knowing tap vs. hold, to
-    // avoid missing a quick Alt release; that traded one problem for three
-    // worse ones (a visible flicker on every press regardless of
-    // opacity/size tricks, a noisy single-instant `is_alt_down()` read, and
-    // occasionally a grab that hadn't finished establishing by the time
-    // Alt was released, leaving the grid stuck open needing Enter/Escape --
-    // all reported 2026-09-09). The real fix was moving the debounce into
-    // the backend instead (`main.rs`'s `TAP_HOLD_DEBOUNCE`): by the time a
-    // `windows` line can possibly arrive, the backend has already spent
-    // that debounce plus enumeration confirming Alt was still down, which
-    // gives the compositor's focus grab handshake ample headroom to finish
-    // before a human can react and release -- so this is back to the
-    // simple "never do anything until we're sure" shape.
+    // `open` only ever flips true once a hold is confirmed (see
+    // `_beginTapHoldCheck`/`_onTapHoldDetermined` below) -- the surface is
+    // never mapped at all for what turns out to be a tap. An earlier
+    // version of this grabbed keyboard input *immediately* on every press,
+    // before knowing tap vs. hold, to avoid missing a quick Alt release;
+    // that traded one problem for three worse ones (a visible flicker on
+    // every press regardless of opacity/size tricks, a noisy
+    // single-instant Alt-state read, and occasionally a grab that hadn't
+    // finished establishing by the time Alt was released, leaving the grid
+    // stuck open needing Enter/Escape -- all reported 2026-09-09). The
+    // fix -- still true here -- is a debounce before ever deciding to show
+    // anything, so a genuine tap has already released Alt by the time the
+    // check runs and a genuine hold is comfortably still down; by the time
+    // this *does* grab keyboard input the compositor has had that debounce
+    // as headroom to be ready for it.
+    //
+    // What moved (2026-09-10): the debounce, the Alt-state check, AND the
+    // window list itself all now happen right here in QML instead of in a
+    // freshly-spawned backend process. `windows` used to only exist once a
+    // NDJSON `windows` line arrived from that process -- which meant
+    // *nothing* could appear, not even an empty placeholder grid, until a
+    // fresh `winswitch` binary had been forked, linked, slept through its
+    // own debounce, and shelled out to `hyprctl` twice in sequence. Each
+    // of those steps individually measured fast (tens of ms), but chained
+    // together and paid on every single open, they added up to a
+    // consistently-reported ~1-2s lag before anything visible appeared --
+    // even after two earlier rounds of fixes for a related but distinct
+    // complaint (a restart-loop under keyboard auto-repeat, see
+    // `_autoRepeatGuardMs`'s own doc below, which is a different bug from
+    // this one and stays fixed independently of this change).
+    //
+    // Quickshell already keeps a live window list in-process via
+    // `Hyprland.toplevels` (`_liveWindows()` below), fed by Hyprland's own
+    // IPC event stream with no subprocess involved at all -- exactly how
+    // AppLauncher.qml's grid already opens instantly off data it already
+    // has in memory. The one thing that still can't happen in-process is
+    // the Alt-state read itself (Quickshell has no seat/keyboard-modifier
+    // API, only `Hyprland.toplevels` for window state), so that's still
+    // one `hyprctl repl` subprocess call (`_altCheckProc` below) -- but
+    // now it's the *only* subprocess on the path to `open` becoming true,
+    // down from three sequential ones. The backend process
+    // (`backendProc`) still gets spawned on every hold, but purely for
+    // live thumbnail capture and tmux/Claude enrichment -- work that
+    // genuinely needs native Wayland access QML doesn't have -- and no
+    // longer gates `open` at all; see `_onTapHoldDetermined`.
     property bool open: false
     // The direction that *started* the current determination, captured at
     // spawn time -- read back once `windows` arrives to seed `selected` at
@@ -56,9 +85,9 @@ PanelWindow {
     // "nothing happened" (reported 2026-09-09).
     property string _initialDirection: "next"
 
-    property var windows: [] // raw backend order -- index into this is each window's stable identity
-    property var thumbnails: ({}) // index -> {path, width, height}
-    property var enrichMeta: ({}) // index -> merged tmux/claude fields
+    property var windows: [] // built from Hyprland.toplevels at open time -- index into this is each window's stable identity for this session
+    property var thumbnails: ({}) // address -> {path, width, height}
+    property var enrichMeta: ({}) // address -> merged tmux/claude fields
     // `selected` is a *window index* (stable identity into `windows`), not
     // a visual grid position -- the same distinction ui.rs's own doc
     // documents at length: once `/s` can reorder the grid, "visual
@@ -112,17 +141,19 @@ PanelWindow {
         //    as long as it lasts. Restarting on every one of them -- which
         //    is what this used to do, added for case 3 below -- meant a
         //    determination could never actually finish while the key kept
-        //    auto-repeating: each restart threw away the in-flight backend
-        //    and began the ~40-70ms debounce/enumeration cycle over again,
-        //    so the grid only ever got a chance to complete once the user
+        //    auto-repeating: each restart threw away the in-flight
+        //    determination (at the time, a freshly-spawned backend
+        //    process; still true of today's in-process debounce +
+        //    `_altCheckProc`, just faster) and began it over again, so the
+        //    grid only ever got a chance to complete once the user
         //    *released* the key and the repeats stopped. For a natural
         //    "hold Alt+Tab while scanning for a window" gesture lasting a
         //    couple of seconds, that's a couple of seconds of
         //    restart-looping before anything ever appears -- exactly the
         //    "2-3 second" delay reported 2026-09-10 (confirmed by
-        //    measuring directly: a single trigger resolves in ~350-450ms,
-        //    matching the backend's own timing, but a burst of triggers
-        //    close together never resolved at all within a 5s window).
+        //    measuring directly: a single trigger resolved in ~350-450ms
+        //    at the time, but a burst of triggers close together never
+        //    resolved at all within a 5s window).
         //
         // 3. Still undetermined, but this call landed *after*
         //    `_autoRepeatGuardMs` since the previous one -- restart fresh.
@@ -166,13 +197,21 @@ PanelWindow {
         WinSwitchState.close();
     }
 
+    // Bumped on every `_startSession()` -- captured by `_beginTapHoldCheck`
+    // and checked when its debounced result comes back, so a determination
+    // a newer session has already superseded (rare, but possible right at
+    // the `_autoRepeatGuardMs` boundary) gets silently dropped instead of
+    // acting on stale intent.
+    property int _sessionGen: 0
+
     function _startSession() {
+        root._sessionGen++;
         root.windows = [];
         root.thumbnails = ({});
         root.enrichMeta = ({});
         // Drop anything a just-killed previous session's still-in-flight
         // batch had accumulated -- otherwise a stale flush lands on top of
-        // this new session's own (unrelated) window indices.
+        // this new session's own (unrelated) windows.
         root._pendingThumbnails = ({});
         root._pendingEnrich = ({});
         flushTimer.stop();
@@ -183,21 +222,106 @@ PanelWindow {
         root._hideSuggestions();
         root._initialDirection = WinSwitchState.pendingDirection;
         // Unconditional stop first (a harmless no-op if nothing was
-        // running): a repeat tap arriving before the previous invocation
-        // resolved means that previous backend's *output* is now stale and
-        // about to be replaced above, but the process itself would
-        // otherwise keep running to completion in the background --
-        // pointless work, and its trailing NDJSON lines would otherwise
-        // still land in `_handleLine` and corrupt the new session's state.
-        // (The old backend's own tap-path side effect, if it had already
-        // gotten far enough to run `hyprctl::focus_window` before being
-        // killed, already happened independently by that point -- nothing
-        // here can or needs to undo that.)
+        // running): a repeat tap arriving before the previous determination
+        // resolved means that previous backend's *output*, if it was even
+        // spawned yet, is now stale -- otherwise it'd keep running to
+        // completion in the background for nothing, and its trailing
+        // NDJSON lines would land in `_handleLine` and corrupt this new
+        // session's state.
         backendProc.running = false;
-        backendProc.command = [
-            Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch",
-            WinSwitchState.pendingDirection,
-        ];
+        tapHoldTimer.stop();
+        root._beginTapHoldCheck();
+    }
+
+    // ---- tap/hold determination (in-process, 2026-09-10) --------------
+    // See `open`'s own doc for why this moved out of the backend. Same
+    // shape as before, just relocated: sleep a short debounce beat, then
+    // read whether Alt is still physically down.
+    readonly property int tapHoldDebounceMs: 35
+    Timer {
+        id: tapHoldTimer
+        interval: root.tapHoldDebounceMs
+        repeat: false
+        onTriggered: root._runAltCheck()
+    }
+    function _beginTapHoldCheck() {
+        tapHoldTimer.restart();
+    }
+    property Process _altCheckProc: Process {
+        id: altCheckProc
+        property int forGen: -1
+        command: ["hyprctl", "repl", 'return tostring(hl.is_key_down("Alt_L") or hl.is_key_down("Alt_R"))']
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (altCheckProc.forGen !== root._sessionGen)
+                    return; // superseded by a newer session -- see `_sessionGen`'s doc
+                root._onTapHoldDetermined(text.trim() === "true");
+            }
+        }
+    }
+    function _runAltCheck() {
+        altCheckProc.forGen = root._sessionGen;
+        altCheckProc.running = false;
+        altCheckProc.running = true;
+    }
+
+    // Builds the window list straight from Quickshell's own live
+    // `Hyprland.toplevels` model -- no subprocess, no wait. Mirrors
+    // `hyprctl.rs::list_windows()`'s exact filtering/sort/shape (mapped
+    // only, no special-workspace scratchpads, ascending focusHistoryID so
+    // index 0 is the currently-focused window) so the rest of this file
+    // (results/metas/grid) doesn't need to know or care where the list
+    // came from.
+    function _liveWindows() {
+        const raw = Hyprland.toplevels.values;
+        const rows = [];
+        for (const t of raw) {
+            const ipc = t.lastIpcObject || {};
+            if (ipc.mapped === false) continue;
+            const wsName = (ipc.workspace && ipc.workspace.name) || "";
+            if (wsName.startsWith("special:")) continue;
+            const size = ipc.size || [0, 0];
+            rows.push({
+                address: ipc.address || t.address || "",
+                class: ipc.class || "",
+                title: ipc.title || t.title || "",
+                workspace: wsName,
+                pid: ipc.pid || 0,
+                width: size[0] || 0,
+                height: size[1] || 0,
+                _focusHistoryID: ipc.focusHistoryID ?? 999999,
+            });
+        }
+        rows.sort((a, b) => a._focusHistoryID - b._focusHistoryID);
+        return rows.map((w, index) => ({
+            index, address: w.address, class: w.class, title: w.title,
+            workspace: w.workspace, pid: w.pid, width: w.width, height: w.height,
+        }));
+    }
+
+    function _onTapHoldDetermined(held) {
+        const list = root._liveWindows();
+        if (list.length === 0)
+            return; // nothing to switch to or show -- matches the old backend's own no-op here
+        if (!held) {
+            // Tap: a fast press-release already completed before we got a
+            // chance to check -- do the classic single quick-switch
+            // directly, no grid ever shown.
+            const idx = root._initialDirection === "prev" ? list.length - 1 : Math.min(1, list.length - 1);
+            root._focusAddress(list[idx].address);
+            root.hide();
+            return;
+        }
+        // Hold: show the grid right now, thumbnail-less -- see `open`'s doc.
+        root.windows = list;
+        const n = list.length;
+        root.selected = root._initialDirection === "prev" ? n - 1 : Math.min(1, n - 1);
+        root.open = true;
+        // Now kick off the backend purely for thumbnails/enrichment -- it
+        // no longer decides tap vs. hold or owns the window list, see
+        // main.rs's own module doc.
+        backendProc.running = false;
+        backendProc.command = [Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"];
         backendProc.running = true;
     }
 
@@ -207,7 +331,7 @@ PanelWindow {
     // not per keystroke, since every matcher/sorter call below takes
     // "the meta for this window" as a same-index array (mirrors query.rs's
     // own `&[TmuxClaudeMeta]` shape).
-    readonly property var metas: root.windows.map(w => root.enrichMeta[w.index] || {})
+    readonly property var metas: root.windows.map(w => root.enrichMeta[w.address] || {})
     readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.queryText, WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
 
     readonly property var results: {
@@ -275,20 +399,27 @@ PanelWindow {
         root.selected = root.results[next].index;
     }
 
+    // hyprctl repl + a Lua snippet, not `hyprctl dispatch focuswindow:...`
+    // -- this Hyprland build is Lua-scriptable (hl.* API) rather than
+    // stock-dispatch. Shared by both the grid's own confirm (Enter/click/
+    // Alt-release) and the tap path's instant single-switch
+    // (`_onTapHoldDetermined`) -- previously duplicated between here and
+    // `hyprctl.rs::focus_window`, which no longer exists (see main.rs's
+    // own module doc for why focus dispatch moved here too).
+    function _focusAddress(address) {
+        focusProc.command = ["hyprctl", "repl",
+            `local ws = hl.get_windows({})\nfor i, win in ipairs(ws) do\n    if tostring(win.address) == "${address}" then\n        hl.dispatch(hl.dsp.focus({ window = win }))\n        break\n    end\nend`];
+        focusProc.running = true;
+    }
+
     function confirm(i) {
         const w = root.windows[i];
         if (!w) return;
-        // hyprctl repl + a Lua snippet, not `hyprctl dispatch
-        // focuswindow:...` -- this Hyprland build is Lua-scriptable
-        // (hl.* API) rather than stock-dispatch, mirrors
-        // ~/.config/hypr/winswitch/src/hyprctl.rs::focus_window exactly.
-        focusProc.command = ["hyprctl", "repl",
-            `local ws = hl.get_windows({})\nfor i, win in ipairs(ws) do\n    if tostring(win.address) == "${w.address}" then\n        hl.dispatch(hl.dsp.focus({ window = win }))\n        break\n    end\nend`];
-        focusProc.running = true;
+        root._focusAddress(w.address);
         root.hide();
     }
 
-    // ---- backend process --------------------------------------------
+    // ---- backend process (thumbnails/enrichment only, see `open`'s doc) ----
     readonly property Process backendProc: Process {
         stdout: SplitParser {
             onRead: line => root._handleLine(line)
@@ -304,29 +435,12 @@ PanelWindow {
             return; // a partial/garbled line -- ignore, never crash the panel over it
         }
         switch (msg.type) {
-        case "tap":
-            // The backend already dispatched the focus switch itself, and
-            // (see `open`'s doc) no surface was ever mapped for this
-            // determination -- just tell WinSwitchState the session's done.
-            root.hide();
-            break;
-        case "windows": {
-            root.windows = msg.list;
-            const n = msg.list.length;
-            // index 0 is always the currently-focused window (see
-            // `_initialDirection`'s doc) -- classic alt-tab starts the
-            // selection on the *previous* one instead, same as the old
-            // GTK version's own `start_idx`.
-            root.selected = n > 0 ? (root._initialDirection === "prev" ? n - 1 : Math.min(1, n - 1)) : 0;
-            root.open = true; // first time the surface actually maps -- see `open`'s doc
-            break;
-        }
         case "thumbnail":
-            root._pendingThumbnails[msg.index] = { path: msg.path, width: msg.width, height: msg.height };
+            root._pendingThumbnails[msg.address] = { path: msg.path, width: msg.width, height: msg.height };
             root._scheduleFlush();
             break;
         case "enrich":
-            root._pendingEnrich[msg.index] = Object.assign({}, root._pendingEnrich[msg.index] || {}, msg.meta);
+            root._pendingEnrich[msg.address] = Object.assign({}, root._pendingEnrich[msg.address] || {}, msg.meta);
             root._scheduleFlush();
             break;
         }
@@ -784,10 +898,10 @@ PanelWindow {
                         width: grid.cellWidth
                         height: grid.cellHeight
 
-                        readonly property var thumb: root.thumbnails[modelData.index]
+                        readonly property var thumb: root.thumbnails[modelData.address]
                         readonly property bool isSelected: modelData.index === root.selected
                         readonly property var frameDims: root.frameSize(modelData.width, modelData.height, root.cellW, root.maxH)
-                        readonly property var meta: root.enrichMeta[modelData.index] || {}
+                        readonly property var meta: root.enrichMeta[modelData.address] || {}
                         readonly property string label: {
                             if (root.activeColumns.length === 0) return "";
                             const parts = [];
