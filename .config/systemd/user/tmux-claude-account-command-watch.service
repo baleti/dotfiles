@@ -1,14 +1,18 @@
 [Unit]
 Description=Watch the focused tmux pane's command to relabel claude-account windows
 # tmux.service is now a proper oneshot+RemainAfterExit unit that systemd
-# tracks, and it has RefuseManualStop=yes, so these can no longer misfire
-# the way the old setup did (an untracked server + a Wants= pull-in +
+# tracks, with no ExecStop directive at all (RefuseManualStop was tried
+# and then dropped once the restore path was exercised end to end - see
+# tmux.service's own history), so these can no longer misfire the way the
+# old setup did (an untracked, forking server + a Wants= pull-in +
 # ExecStop=kill-server wiped 107 sessions on 2026-09-06):
 #   Wants=  - start tmux.service too if it somehow isn't up. A "start" on
 #             the oneshot unit only ever runs ExecStart (tmux new-session
-#             -d), never ExecStop, so this is safe now.
-#   PartOf= - follow tmux.service's lifecycle: stop/restart with it. With
-#             RefuseManualStop that only ever happens at logout/shutdown.
+#             -d), never anything destructive.
+#   PartOf= - follow tmux.service's lifecycle: stop/restart with it. Since
+#             tmux.service has no ExecStop, a stop -- manual or propagated
+#             from here -- is pure systemd bookkeeping, never touching the
+#             actual server process.
 # BindsTo= is deliberately NOT used (too aggressive - a transient tmux
 # hiccup should not kill the watcher).
 After=tmux.service

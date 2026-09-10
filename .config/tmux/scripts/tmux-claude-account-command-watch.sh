@@ -15,10 +15,12 @@
 # do to keep exactly one instance alive across ~/.tmux.conf reloads. If
 # this process dies, systemd restarts it directly; it is ordered
 # After=tmux.service and follows its lifecycle (Wants=/PartOf=tmux.service),
-# which is safe now that tmux.service is a systemd-tracked oneshot with
-# RefuseManualStop (2026-09-06: an earlier version of that same coupling,
-# against an *untracked* server whose unit had ExecStop=kill-server,
-# propagated a unit pull-in into a 107-session wipe). If the server isn't
+# which is safe now that tmux.service is a systemd-tracked oneshot with no
+# ExecStop directive at all (2026-09-06: an earlier version of that same
+# coupling, against an *untracked, forking* server whose unit had
+# ExecStop=kill-server, propagated a unit pull-in into a 107-session
+# wipe -- see tmux.service's own history for the full fix, including why
+# RefuseManualStop was tried first and then dropped). If the server isn't
 # up the loop below just idles harmlessly until it is.
 #
 # Why this exists at all (requested 2026-09-06: "i think we should still
