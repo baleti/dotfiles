@@ -296,6 +296,16 @@ Rectangle {
     // table instead of one independent sort per account.
     property var sort: null
 
+    // ---- keyboard row selection (routed in from Bar.qml's
+    // root.Keys.onPressed via handleKey(), same shape as
+    // CalendarExpanded.handleKey) -- Up/Down walk the visible rows
+    // starting from the top, Space/Enter focuses the selected row's
+    // window (identical to clicking the row). selActive gates the
+    // highlight + left-side thumbnail so a freshly-opened panel shows
+    // neither until the user actually starts navigating.
+    property int selIndex: 0
+    property bool selActive: false
+
     // 1-based position of `account` in ClaudeUsageSvc.accounts -- the bare
     // number the "acct" column shows (hover for the real name) and what
     // its column-sort compares on.
@@ -373,6 +383,11 @@ Rectangle {
         return false;
     }
     function focusSearch() {
+        // Moving focus into the search box is a mode switch away from row
+        // navigation -- drop the keyboard selection state so its highlight
+        // and the left-side thumbnail don't linger over the table.
+        root.selActive = false;
+        root.thumbKeyboardActive = false;
         searchInput.forceActiveFocus();
         searchInput.selectAll();
     }
@@ -440,6 +455,13 @@ Rectangle {
             arr = base.slice().sort((a, b) => root.compareForSort(b, a, "active"));
         }
         return root.searchParsed.reverse ? arr.slice().reverse() : arr;
+    }
+
+    // Keep the keyboard selection in range as the daemon's row set (or a
+    // search filter) shrinks under it.
+    onSortedProcsChanged: {
+        if (root.selIndex > root.sortedProcs.length - 1)
+            root.selIndex = Math.max(0, root.sortedProcs.length - 1);
     }
 
     // ---- cursor-following hover hint (header abbreviations, acct cells) ----
@@ -629,6 +651,11 @@ Rectangle {
     // would silently still be there next time.
     onExpandedChanged: {
         root.sort = null;
+        root.selIndex = 0;
+        root.selActive = false;
+        root.thumbKeyboardActive = false;
+        root.thumbHovering = false;
+        root.thumbReady = false;
         root.mouseMovedSinceOpen = false;
         root._hoverSettled = false;
         if (root.expanded)
@@ -975,10 +1002,19 @@ Rectangle {
     property string thumbImagePath: ""
     property bool thumbReady: false
     property bool thumbHovering: false
-    property point thumbPos: Qt.point(0, 0)
+    // Set while the keyboard selection (not the pointer) is driving the
+    // thumbnail -- thumbPopup.visible is the OR of the two.
+    property bool thumbKeyboardActive: false
+    // Y (in root's own coordinate space) of the top of the row the
+    // thumbnail is for -- the popup pins its own top here rather than
+    // following the cursor (request: "on the left of the panel ... top
+    // aligned to the top of any selected entry").
+    property real thumbAnchorY: 0
 
-    function hyprHoverEntered(address) {
-        root.thumbHovering = true;
+    // Kick off an async capture of `address` into a fresh PNG (thumbProc's
+    // onExited flips thumbReady once it lands). Shared by the "wks"-cell
+    // hover path and the keyboard-selection path.
+    function startThumbCapture(address) {
         if (!address) {
             root.thumbReady = false;
             return;
@@ -995,10 +1031,11 @@ Rectangle {
     }
     property string _pendingOutPath: ""
     property string _pendingAddress: ""
-    function hyprHoverMoved(rootPos) {
-        // A little below-right of the cursor, not centered on it, so the
-        // cursor itself isn't hidden under the image it's pointing at.
-        root.thumbPos = Qt.point(rootPos.x + 14, rootPos.y + 14);
+
+    function hyprHoverEntered(address, rowTopY) {
+        root.thumbHovering = true;
+        root.thumbAnchorY = rowTopY;
+        root.startThumbCapture(address);
     }
     function hyprHoverExited() {
         root.thumbHovering = false;
@@ -1020,6 +1057,77 @@ Rectangle {
             + "    end\n"
             + "end";
         focusProc.exec(["hyprctl", "repl", script]);
+    }
+
+    // ---- keyboard row navigation --------------------------------------
+    // The delegate Rectangle for the current selIndex. The Repeater
+    // builds every row up front (not virtualised like a ListView), so
+    // itemAt is always populated for an in-range index.
+    function _selDelegate() {
+        return (root.selIndex >= 0 && root.selIndex < root.sortedProcs.length)
+            ? rowsRepeater.itemAt(root.selIndex) : null;
+    }
+    // Scroll the selected row fully into the fixed-height viewport.
+    function _ensureSelVisible() {
+        const item = root._selDelegate();
+        if (!item)
+            return;
+        if (item.y < rowsFlick.contentY)
+            rowsFlick.contentY = item.y;
+        else if (item.y + item.height > rowsFlick.contentY + rowsFlick.height)
+            rowsFlick.contentY = item.y + item.height - rowsFlick.height;
+    }
+    // Point the left-side thumbnail at the current keyboard selection:
+    // capture that row's window (if it maps to one) and pin the popup's
+    // top to the row's top -- the same thing hovering the "wks" cell
+    // does, just driven by selIndex instead of the pointer.
+    function _syncKeyboardThumb() {
+        root._ensureSelVisible();
+        const item = root._selDelegate();
+        if (item)
+            root.thumbAnchorY = item.mapToItem(root, 0, 0).y;
+        const row = root.sortedProcs[root.selIndex];
+        if (row && row.hypr_address) {
+            root.thumbKeyboardActive = true;
+            root.startThumbCapture(row.hypr_address);
+        } else {
+            root.thumbKeyboardActive = false;
+        }
+    }
+    // Up/Down move the selection (first press lands on the top row);
+    // Space/Enter focuses the selected row's window, identical to
+    // clicking it. Escape and "/" are handled upstream in Bar.qml before
+    // this is reached.
+    function handleKey(event) {
+        const n = root.sortedProcs.length;
+        if (n === 0)
+            return;
+        if (event.key === Qt.Key_Down) {
+            root.selIndex = root.selActive ? Math.min(n - 1, root.selIndex + 1) : 0;
+            root.selActive = true;
+            root._syncKeyboardThumb();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Up) {
+            root.selIndex = root.selActive ? Math.max(0, root.selIndex - 1) : 0;
+            root.selActive = true;
+            root._syncKeyboardThumb();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Home) {
+            root.selIndex = 0;
+            root.selActive = true;
+            root._syncKeyboardThumb();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_End) {
+            root.selIndex = n - 1;
+            root.selActive = true;
+            root._syncKeyboardThumb();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            const row = root.sortedProcs[root.selActive ? root.selIndex : 0];
+            if (row)
+                root.focusHyprWindow(row);
+            event.accepted = true;
+        }
     }
 
     Process {
@@ -1835,6 +1943,7 @@ Rectangle {
                     spacing: 1
 
             Repeater {
+                id: rowsRepeater
                 model: root.sortedProcs
 
                 // Wrapping Rectangle purely for the hover highlight -- the
@@ -1855,15 +1964,34 @@ Rectangle {
                 delegate: Rectangle {
                     id: procRow
                     required property var modelData
+                    required property int index
                     width: rowsColumn.width
                     implicitHeight: procRowLayout.implicitHeight
                     height: implicitHeight
                     radius: 3
-                    color: root.mouseMovedSinceOpen && procRowHover.hovered
-                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
-                        : "transparent"
+                    // Keyboard selection wins over the hover highlight (a
+                    // touch stronger tint so it reads as "picked", not just
+                    // "pointed at").
+                    color: (root.selActive && procRow.index === root.selIndex)
+                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.22)
+                        : (root.mouseMovedSinceOpen && procRowHover.hovered
+                            ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
+                            : "transparent")
 
                     HoverHandler { id: procRowHover }
+
+                    // Click anywhere on the row focuses that session's
+                    // window (request: "clicking anywhere in any row
+                    // switches focus ... not just on its value in workspace
+                    // column"). Sits below the RowLayout, so the "wks"/
+                    // "acct" cells' own MouseAreas (hover tooltips, the
+                    // thumbnail) still get their own areas first; every
+                    // plain-text cell falls through to here.
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: procRow.modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: root.focusHyprWindow(procRow.modelData)
+                    }
 
                     RowLayout {
                         id: procRowLayout
@@ -1885,12 +2013,17 @@ Rectangle {
                             MouseArea {
                                 anchors.fill: parent
                                 hoverEnabled: true
+                                cursorShape: procRow.modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onEntered: {
                                     root.showHint(modelData.account);
                                     root.moveHint(acctCell.mapToItem(root, mouseX, mouseY));
                                 }
                                 onPositionChanged: mouse => root.moveHint(acctCell.mapToItem(root, mouse.x, mouse.y))
                                 onExited: root.hideHint()
+                                // This cell's MouseArea would otherwise
+                                // swallow the click before it reached the
+                                // row-level handler above.
+                                onClicked: root.focusHyprWindow(procRow.modelData)
                             }
                         }
                         Item { Layout.preferredWidth: root.handleW }
@@ -1986,8 +2119,10 @@ Rectangle {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onEntered: root.hyprHoverEntered(modelData.hypr_address)
-                                onPositionChanged: mouse => root.hyprHoverMoved(hyprCell.mapToItem(root, mouse.x, mouse.y))
+                                onEntered: root.hyprHoverEntered(modelData.hypr_address, procRow.mapToItem(root, 0, 0).y)
+                                // Row can shift under the cursor as the
+                                // table scrolls -- keep the anchor current.
+                                onPositionChanged: root.thumbAnchorY = procRow.mapToItem(root, 0, 0).y
                                 onExited: root.hyprHoverExited()
                                 onClicked: root.focusHyprWindow(modelData)
                             }
@@ -2139,18 +2274,18 @@ Rectangle {
         }
     }
 
-    // Hover-thumbnail popup: a purely visual cue that follows the cursor
-    // while hovering a row's hyprland-group cell (root.hyprHoverEntered/
-    // Moved/Exited below) -- not a click target itself, clicking is on the
-    // row (see focusHyprWindow), asked for explicitly. Positioned in
-    // root's own coordinate space (root.thumbPos, set via mapToItem from
-    // whichever row's MouseArea is hovered) so it can sit "below the
-    // cursor" regardless of which account group/row that is.
+    // Thumbnail popup: a purely visual cue for the row currently being
+    // hovered (its "wks" cell) or keyboard-selected -- not a click target
+    // itself, focusing is on the row (see focusHyprWindow). Pinned to the
+    // panel's left edge with its top at that row's top (request: "on the
+    // left of the panel rather than under the cursor ... top aligned to
+    // the top of any selected entry", and the same for Up/Down selection),
+    // clamped so a row near the bottom doesn't push the image off-panel.
     Rectangle {
         id: thumbPopup
-        visible: root.thumbHovering && root.thumbReady
-        x: Math.min(root.thumbPos.x, root.width - width - 4)
-        y: Math.min(root.thumbPos.y, root.height - height - 4)
+        visible: (root.thumbHovering || root.thumbKeyboardActive) && root.thumbReady && root.thumbAddress !== ""
+        x: 12
+        y: Math.max(4, Math.min(root.thumbAnchorY, root.height - height - 4))
         z: 100
         width: thumbImg.implicitWidth > 0 ? Math.min(280, thumbImg.implicitWidth) + 4 : 4
         height: thumbImg.implicitHeight > 0 ? (width - 4) * (thumbImg.implicitHeight / thumbImg.implicitWidth) + 4 : 4
