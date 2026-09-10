@@ -97,6 +97,38 @@ Rectangle {
     // process temperature attribution (the kernel has no such thing).
     property string topLabel: qsTr("Top processes")
 
+    // Graph-hover top-process tooltip. `procHistSub` ("" disables it) names
+    // the SysmonSvc.procHistSnaps() sub-metric; `procHistSnaps` is that
+    // ring, bound in Bar.qml. `procHistValueFmt` formats a raw per-process
+    // ProcEntry value for the tooltip (cpu %, mem MB, net/disk byte rate,
+    // gpu VRAM MB). The graph point under the cursor comes from Graph.qml's
+    // own hover hit-testing (`graph.hoveredIndex`, -1 when off the graph).
+    property string procHistSub: ""
+    property var procHistSnaps: []
+    property var procHistValueFmt: v => v.toFixed(1)
+
+    readonly property bool hoverTipActive: root.expanded && root.procHistSub !== "" && graph.hoveredIndex >= 0
+
+    // The snapshot lined up with the graph point under the cursor -- the
+    // snapshot ring and the graph series for a tier finalize a bucket
+    // together server-side, so both are tail-aligned (newest last); index
+    // by distance from the end. Tolerates a small length mismatch at the
+    // moving edge.
+    readonly property var hoverSnap: {
+        const s = root.procHistSnaps;
+        if (!root.hoverTipActive || !s || s.length === 0)
+            return null;
+        const idx = s.length - graph._pointCount() + graph.hoveredIndex;
+        return (idx >= 0 && idx < s.length) ? s[idx] : null;
+    }
+
+    function _fmtAgo(secs) {
+        if (secs < 60) return Math.round(secs) + "s ago";
+        if (secs < 3600) return Math.round(secs / 60) + "m ago";
+        if (secs < 86400) return (secs / 3600).toFixed(1) + "h ago";
+        return (secs / 86400).toFixed(1) + "d ago";
+    }
+
     // Shared column widths for every "Top processes" table (both the
     // `sections`/GPU-per-section shape and the plain `topProcs` shape) --
     // titled column headers instead of a single generic heading + purely
@@ -1019,6 +1051,76 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 1
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: root.procValueW
+                        }
+                    }
+                }
+            }
+        }
+
+        // Graph-hover tooltip -- the top processes at the graph point under
+        // the cursor (see `hoverSnap`, driven by Graph.qml's hoveredIndex).
+        // A later sibling of `content` so it paints on top; clipped to the
+        // panel like everything else in here, which is fine since the
+        // cursor (and so this) is always over the graph area near the
+        // panel's top.
+        Rectangle {
+            id: hoverTip
+            visible: root.hoverTipActive && !!root.hoverSnap
+                     && (root.hoverSnap.procs ? root.hoverSnap.procs.length : 0) > 0
+            z: 50
+            width: 250
+            height: hoverTipCol.implicitHeight + 16
+            // Anchored just past the cursor, mapped from the Graph's own
+            // coordinates into this panel's, then clamped inside it.
+            readonly property point cursorInPanel: graph.mapToItem(expandPanel, graph.hoveredPixelX, graph.hoveredPixelY)
+            x: Math.max(4, Math.min(parent.width - width - 4, cursorInPanel.x + 16))
+            y: Math.max(4, Math.min(parent.height - height - 4, cursorInPanel.y + 16))
+            color: Theme.bg
+            border.color: Theme.border
+            border.width: 1
+            radius: Theme.rounding
+
+            Column {
+                id: hoverTipCol
+                x: 8
+                y: 8
+                width: parent.width - 16
+                spacing: 3
+
+                Text {
+                    width: parent.width
+                    text: root.hoverSnap
+                          ? (root._fmtAgo(root.hoverSnap.secs_ago) + "  ·  peak " + root.yAxisFormatter(root.hoverSnap.value))
+                          : ""
+                    color: Theme.textDim
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    font.italic: true
+                }
+
+                Repeater {
+                    model: root.hoverSnap ? (root.hoverSnap.procs ?? []) : []
+
+                    RowLayout {
+                        required property var modelData
+                        width: hoverTipCol.width
+                        spacing: 6
+
+                        Text {
+                            text: modelData.detail ? modelData.name + " " + modelData.detail : modelData.name
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            text: root.procHistValueFmt(modelData.value)
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: 64
                         }
                     }
                 }

@@ -34,6 +34,65 @@ QtObject {
     readonly property TieredSocket tempSock: TieredSocket { metricName: "temp"; historyWanted: root.tempHistRefs > 0 }
     readonly property TieredSocket gpuSock: TieredSocket { metricName: "gpu"; includeProcs: root.gpuProcsRefs > 0; historyWanted: root.gpuHistRefs > 0 }
 
+    // Graph-hover top-process history, one socket per sub-metric (see
+    // ProcHistSocket.qml). `tier` tracks the matching series socket's tier
+    // so a hover tooltip lines its snapshots up with what the graph shows;
+    // `wanted` is a refcount (a panel refs on expand, unrefs on collapse)
+    // so the socket only streams while some panel is open. The GPU one
+    // follows the dGPU (nvidia) if present, else the first GPU -- the
+    // per-GPU rings are all collected server-side regardless.
+    readonly property string _hoverGpuName: {
+        for (const g of root.gpuList)
+            if (g.vendor === "nvidia")
+                return g.name;
+        return root.gpuList[0]?.name ?? "";
+    }
+    readonly property ProcHistSocket procHistCpu: ProcHistSocket { sub: "cpu"; tier: root.cpuSock.tier; wanted: root.procHistCpuRefs > 0 }
+    readonly property ProcHistSocket procHistMem: ProcHistSocket { sub: "mem"; tier: root.memSock.tier; wanted: root.procHistMemRefs > 0 }
+    readonly property ProcHistSocket procHistNet: ProcHistSocket { sub: "net"; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 }
+    readonly property ProcHistSocket procHistDisk: ProcHistSocket { sub: "disk"; tier: root.diskSock.tier; wanted: root.procHistDiskRefs > 0 }
+    readonly property ProcHistSocket procHistGpu: ProcHistSocket {
+        sub: root._hoverGpuName.length > 0 ? "gpu:" + root._hoverGpuName : ""
+        tier: root.gpuSock.tier
+        wanted: root.procHistGpuRefs > 0 && root._hoverGpuName.length > 0
+    }
+
+    property int procHistCpuRefs: 0
+    property int procHistMemRefs: 0
+    property int procHistNetRefs: 0
+    property int procHistDiskRefs: 0
+    property int procHistGpuRefs: 0
+
+    // Snapshot ring for `metric`'s graph-hover tooltip (temp shares cpu's).
+    function procHistSnaps(metric: string): var {
+        switch (metric) {
+        case "cpu": case "temp": return root.procHistCpu.snaps;
+        case "mem": return root.procHistMem.snaps;
+        case "net": return root.procHistNet.snaps;
+        case "disk": return root.procHistDisk.snaps;
+        case "gpu": return root.procHistGpu.snaps;
+        }
+        return [];
+    }
+    function refProcHist(metric: string): void {
+        switch (metric) {
+        case "cpu": case "temp": root.procHistCpuRefs++; break;
+        case "mem": root.procHistMemRefs++; break;
+        case "net": root.procHistNetRefs++; break;
+        case "disk": root.procHistDiskRefs++; break;
+        case "gpu": root.procHistGpuRefs++; break;
+        }
+    }
+    function unrefProcHist(metric: string): void {
+        switch (metric) {
+        case "cpu": case "temp": root.procHistCpuRefs = Math.max(0, root.procHistCpuRefs - 1); break;
+        case "mem": root.procHistMemRefs = Math.max(0, root.procHistMemRefs - 1); break;
+        case "net": root.procHistNetRefs = Math.max(0, root.procHistNetRefs - 1); break;
+        case "disk": root.procHistDiskRefs = Math.max(0, root.procHistDiskRefs - 1); break;
+        case "gpu": root.procHistGpuRefs = Math.max(0, root.procHistGpuRefs - 1); break;
+        }
+    }
+
     function setNetTier(t: string): void { netSock.tier = t; }
     function setCpuTier(t: string): void { cpuSock.tier = t; }
     function setMemTier(t: string): void { memSock.tier = t; }

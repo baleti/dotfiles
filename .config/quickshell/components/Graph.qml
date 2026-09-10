@@ -83,6 +83,22 @@ Canvas {
     // _singleSentinel to a consumer that doesn't know about it).
     readonly property string hoveredLegendName: hoveredName === _singleSentinel ? "" : hoveredName
 
+    // Data index (0-based, oldest..newest) of the graph point under the
+    // cursor, or -1 when the cursor is off the graph -- for GraphPill's
+    // top-process hover tooltip. Set from the cursor x alone (unlike
+    // hoveredName, which needs the cursor near an actual line): the tooltip
+    // answers "what was running at this *time*", so anywhere over the graph
+    // counts. hoveredPixelX/Y are the raw cursor position for placing it.
+    property int hoveredIndex: -1
+    property real hoveredPixelX: 0
+    property real hoveredPixelY: 0
+
+    function _pointCount() {
+        if (root.seriesList.length > 0)
+            return root.seriesList[0] && root.seriesList[0].data ? root.seriesList[0].data.length : 0;
+        return root.series.length;
+    }
+
     onSeriesChanged: requestPaint()
     onSeriesListChanged: requestPaint()
     onMaxValueChanged: requestPaint()
@@ -202,6 +218,17 @@ Canvas {
             }
         }
         root.hoveredName = bestName;
+
+        const n = root._pointCount();
+        if (n >= 1 && mx >= 0 && mx <= width) {
+            const pxPerSample = width / root.historyLen;
+            const slotFromRight = Math.round((width - mx) / pxPerSample);
+            root.hoveredIndex = Math.max(0, Math.min(n - 1, n - 1 - slotFromRight));
+            root.hoveredPixelX = mx;
+            root.hoveredPixelY = my;
+        } else {
+            root.hoveredIndex = -1;
+        }
     }
 
     MouseArea {
@@ -210,7 +237,10 @@ Canvas {
         hoverEnabled: true
         acceptedButtons: Qt.NoButton
         onPositionChanged: mouse => root._updateHover(mouse.x, mouse.y)
-        onExited: root.hoveredName = ""
+        onExited: {
+            root.hoveredName = "";
+            root.hoveredIndex = -1;
+        }
     }
 
     // seriesList's per-entry `color` field comes from Theme.seriesPalette,

@@ -190,6 +190,10 @@ fn merge_snapshot(existing: Option<Snapshot>, incoming: Snapshot) -> Snapshot {
         }
         // No buffer to merge -- always just the latest point-in-time list.
         top @ Snapshot::TopProcs { .. } => top,
+        // sysmon-graph never requests prochist (that's the quickshell
+        // panels' hover feature) -- just pass whatever came in straight
+        // through so the match stays exhaustive.
+        ph @ Snapshot::ProcHist { .. } => ph,
     }
 }
 
@@ -293,6 +297,7 @@ fn finish_handshake(mut stream: UnixStream, metric: Metric) -> Option<UnixStream
         Metric::TopDisk => "topdisk\n",
         Metric::Disk => "disk\n",
         Metric::Gpu => "gpu\n",
+        Metric::ProcHist => return None, // never a CLI target for this popup
     };
     stream.write_all(word.as_bytes()).ok()?;
     Some(stream)
@@ -414,6 +419,9 @@ fn main() {
         Metric::TopDisk => ("Top Disk", (0.31, 0.84, 0.48)),
         Metric::Disk => ("Disk", (0.31, 0.84, 0.48)),
         Metric::Gpu => ("GPU", (0.95, 0.45, 0.75)),
+        // Not a valid CLI target for this popup (quickshell-panel-only
+        // hover feature) -- arm present just for exhaustiveness.
+        Metric::ProcHist => ("Process history", (0.95, 0.45, 0.75)),
     };
     let accent = match (&theme, metric) {
         (Some(t), Metric::Temp) => t.secondary,
@@ -517,6 +525,7 @@ fn main() {
                         }
                     }
                     Snapshot::TopProcs { .. } => {} // not drawn as a graph; no popup UI for this yet
+                    Snapshot::ProcHist { .. } => {} // quickshell-panel-only; never requested here
                     Snapshot::Disk { devices, .. } => {
                         let max = devices
                             .iter()
@@ -567,6 +576,7 @@ fn main() {
                         .collect::<Vec<_>>()
                         .join("   "),
                     Snapshot::TopProcs { procs } => procs.first().map(|p| format!("{} ({:.0})", p.name, p.value)).unwrap_or_default(),
+                    Snapshot::ProcHist { .. } => String::new(),
                     Snapshot::Disk { devices, .. } => {
                         let mut names: Vec<&sysmon::DiskHistory> = devices.iter().collect();
                         names.sort_by(|a, b| a.name.cmp(&b.name));

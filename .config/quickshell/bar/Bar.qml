@@ -731,13 +731,16 @@ Item {
             topProcs: SysmonSvc.topNet
             topUnit: " KB/s"
             yAxisFormatter: v => root.fmtRate(v)
+            procHistSub: "net"
+            procHistSnaps: SysmonSvc.procHistSnaps("net")
+            procHistValueFmt: v => root.fmtRate(v * 1024)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.netTier
             onTierRequested: code => { root.netTier = code; SysmonSvc.setNetTier(code); }
             onExpandedChanged: {
-                if (expanded) { SysmonSvc.refTopNet(); SysmonSvc.refHistory("net"); }
-                else { SysmonSvc.unrefTopNet(); SysmonSvc.unrefHistory("net"); }
+                if (expanded) { SysmonSvc.refTopNet(); SysmonSvc.refHistory("net"); SysmonSvc.refProcHist("net"); }
+                else { SysmonSvc.unrefTopNet(); SysmonSvc.unrefHistory("net"); SysmonSvc.unrefProcHist("net"); }
                 if (!expanded) root.reclaimGraphFocus(netPill);
             }
             groupX: rightRow.x
@@ -765,13 +768,16 @@ Item {
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             yAxisFormatter: v => Math.round(v) + "%"
+            procHistSub: "cpu"
+            procHistSnaps: SysmonSvc.procHistSnaps("cpu")
+            procHistValueFmt: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.cpuTier
             onTierRequested: code => { root.cpuTier = code; SysmonSvc.setCpuTier(code); }
             onExpandedChanged: {
-                if (expanded) { SysmonSvc.refTopCpu(); SysmonSvc.refHistory("cpu"); }
-                else { SysmonSvc.unrefTopCpu(); SysmonSvc.unrefHistory("cpu"); }
+                if (expanded) { SysmonSvc.refTopCpu(); SysmonSvc.refHistory("cpu"); SysmonSvc.refProcHist("cpu"); }
+                else { SysmonSvc.unrefTopCpu(); SysmonSvc.unrefHistory("cpu"); SysmonSvc.unrefProcHist("cpu"); }
                 if (!expanded) root.reclaimGraphFocus(cpuPill);
             }
             groupX: rightRow.x
@@ -815,13 +821,16 @@ Item {
             topProcs: SysmonSvc.topMem
             topUnit: " MB"
             yAxisFormatter: v => Math.round(v) + "%"
+            procHistSub: "mem"
+            procHistSnaps: SysmonSvc.procHistSnaps("mem")
+            procHistValueFmt: v => Math.round(v) + " MB"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.memTier
             onTierRequested: code => { root.memTier = code; SysmonSvc.setMemTier(code); }
             onExpandedChanged: {
-                if (expanded) { SysmonSvc.refTopMem(); SysmonSvc.refHistory("mem"); }
-                else { SysmonSvc.unrefTopMem(); SysmonSvc.unrefHistory("mem"); }
+                if (expanded) { SysmonSvc.refTopMem(); SysmonSvc.refHistory("mem"); SysmonSvc.refProcHist("mem"); }
+                else { SysmonSvc.unrefTopMem(); SysmonSvc.unrefHistory("mem"); SysmonSvc.unrefProcHist("mem"); }
                 if (!expanded) root.reclaimGraphFocus(memPill);
             }
             groupX: rightRow.x
@@ -864,13 +873,16 @@ Item {
             topProcs: SysmonSvc.topDisk.map(e => ({ pid: e.pid, name: e.name, detail: e.detail, util_pct: e.util_pct, value: e.value / 1024 }))
             topUnit: " MB/s"
             yAxisFormatter: v => root.fmtRate(v)
+            procHistSub: "disk"
+            procHistSnaps: SysmonSvc.procHistSnaps("disk")
+            procHistValueFmt: v => root.fmtRate(v * 1024)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.diskTier
             onTierRequested: code => { root.diskTier = code; SysmonSvc.setDiskTier(code); }
             onExpandedChanged: {
-                if (expanded) { SysmonSvc.refTopDisk(); SysmonSvc.refHistory("disk"); }
-                else { SysmonSvc.unrefTopDisk(); SysmonSvc.unrefHistory("disk"); }
+                if (expanded) { SysmonSvc.refTopDisk(); SysmonSvc.refHistory("disk"); SysmonSvc.refProcHist("disk"); }
+                else { SysmonSvc.unrefTopDisk(); SysmonSvc.unrefHistory("disk"); SysmonSvc.unrefProcHist("disk"); }
                 if (!expanded) root.reclaimGraphFocus(diskPill);
             }
             groupX: rightRow.x
@@ -894,6 +906,11 @@ Item {
             topUnit: "%"
             topLabel: qsTr("Top CPU (heat proxy)")
             yAxisFormatter: v => Math.round(v) + "°C"
+            // Heat proxy again -- the hover tooltip shows the CPU snapshot
+            // (there is no per-process temperature).
+            procHistSub: "temp"
+            procHistSnaps: SysmonSvc.procHistSnaps("temp")
+            procHistValueFmt: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.tempTier
@@ -902,8 +919,8 @@ Item {
             // (topLabel below), reusing SysmonSvc.topCpu -- so it refs the
             // same topCpu demand cpuPill does, not a separate one.
             onExpandedChanged: {
-                if (expanded) { SysmonSvc.refTopCpu(); SysmonSvc.refHistory("temp"); }
-                else { SysmonSvc.unrefTopCpu(); SysmonSvc.unrefHistory("temp"); }
+                if (expanded) { SysmonSvc.refTopCpu(); SysmonSvc.refHistory("temp"); SysmonSvc.refProcHist("temp"); }
+                else { SysmonSvc.unrefTopCpu(); SysmonSvc.unrefHistory("temp"); SysmonSvc.unrefProcHist("temp"); }
                 if (!expanded) root.reclaimGraphFocus(tempPill);
             }
             groupX: rightRow.x
@@ -964,13 +981,19 @@ Item {
             legendItems: root.gpuLegend
             sections: root.gpuSections
             yAxisFormatter: v => Math.round(v) + "%"
+            // Hover tooltip follows the dGPU (nvidia) if present, else the
+            // first GPU -- its rows are VRAM MiB per process, like the
+            // panel's own GPU section.
+            procHistSub: "gpu"
+            procHistSnaps: SysmonSvc.procHistSnaps("gpu")
+            procHistValueFmt: v => Math.round(v) + " MB"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
             tier: root.gpuTier
             onTierRequested: code => { root.gpuTier = code; SysmonSvc.setGpuTier(code); }
             onExpandedChanged: {
-                if (expanded) { SysmonSvc.refGpuProcs(); SysmonSvc.refHistory("gpu"); }
-                else { SysmonSvc.unrefGpuProcs(); SysmonSvc.unrefHistory("gpu"); }
+                if (expanded) { SysmonSvc.refGpuProcs(); SysmonSvc.refHistory("gpu"); SysmonSvc.refProcHist("gpu"); }
+                else { SysmonSvc.unrefGpuProcs(); SysmonSvc.unrefHistory("gpu"); SysmonSvc.unrefProcHist("gpu"); }
                 if (!expanded) root.reclaimGraphFocus(gpuPill);
             }
             groupX: rightRow.x
