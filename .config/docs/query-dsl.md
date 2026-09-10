@@ -28,6 +28,7 @@ add a new consumer, add its row here too.
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 | claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
+| claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s`, `/rv` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone) and always completes to whichever form (colon or via) is already being typed, never steers to via the way rss-reader/claude-history do |
 
 See [tmux.md](tmux.md) for the tmux bindings and [rust-tools.md](rust-tools.md)
 for winswitch and the GTK pickers.
@@ -37,18 +38,16 @@ by every row in that table, but not every picker has caught up on how its
 Tab-completion is *presented* (see Autocompletion, below, for the current
 rule: hidden until Tab, and even then only as a popup when there's more
 than one candidate). winswitch, clipboard-picker, notification-picker,
-app-launcher and rss-reader all follow it; claude-history followed it from
-the start (a nested fzf, since it has no in-layout widget tree to put a
-popup in). focus-picker never shows an overlapping popup at all - it
-prints a quiet `[tab → x]` hint into the header line instead and Tab
-always completes to the first candidate outright, with no way to see or
-choose among the others when there's more than one; window-search has no
-completion assistance at all yet. Both are pre-existing, independent of
+app-launcher, rss-reader and claude-usage all follow it; claude-history
+followed it from the start (a nested fzf, since it has no in-layout widget
+tree to put a popup in). focus-picker never shows an overlapping popup at
+all - it prints a quiet `[tab → x]` hint into the header line instead and
+Tab always completes to the first candidate outright, with no way to see
+or choose among the others when there's more than one; window-search has
+no completion assistance at all yet. Both are pre-existing, independent of
 the popup-visibility rule (nothing pops up in either to begin with) -
 worth bringing forward if either picker's DSL usage grows enough to need
-it, but not fixed as part of establishing that rule. claude-usage
-(2026-09-01) is a newer gap of the same kind - filtering/sorting work, no
-Tab-completion popup wired up yet.
+it, but not fixed as part of establishing that rule.
 
 ## The shape of it
 
@@ -548,10 +547,33 @@ quickshell launcher reads them from `QueryDsl.qml`'s `verbInfo`):
 | `/rv` | `/reverse` | flip the current order |
 
 Shared popup UI: `Tab` triggers completion when nothing's open yet (see
-above - unique candidate applies directly, 2+ opens the popup), and
-accepts the highlighted suggestion once it *is* open; `Ctrl+j` / `Ctrl+k`
-move the highlight (clamped, not wrapped) - only meaningful while the
-popup is showing; `Escape` dismisses just the popup, never the picker. In
+above - unique candidate applies directly, 2+ opens the popup). Once the
+popup *is* open, `Tab`'s meaning splits by implementation family:
+
+- **QML pickers** (app-launcher, rss-reader, claude-usage, winswitch):
+  `Tab` / `Shift+Tab` cycle the highlight, wrapping around both ends;
+  `Down`/`Up` (and, in app-launcher/winswitch, `Ctrl+j`/`Ctrl+k`) move it
+  too, clamped instead of wrapped. Highlighting alone never accepts -
+  `Enter` or `Space` does (reported 2026-09-09 against winswitch's
+  original pattern: accepting on every `Tab` press without ever letting
+  you cycle through options was confusing, so `Tab` was changed to move
+  the highlight like `Down` and a dedicated accept key was kept instead;
+  the same fix landed in app-launcher and rss-reader immediately after,
+  and in claude-usage on 2026-09-10 once it was noticed to have missed
+  the fix).
+- **GTK pickers** (clipboard-picker, notification-picker, sharing
+  `picker.rs`): `Tab` itself accepts the highlighted suggestion outright,
+  same as `Enter` would; `Ctrl+j`/`Ctrl+k` move the highlight (clamped,
+  not wrapped) without accepting.
+
+`Space` accepts the highlighted suggestion everywhere the popup is open,
+in both families, alongside whichever of `Tab`/`Enter` already did
+(added 2026-09-10 - the AutoCAD convention of the spacebar confirming the
+current command/entry). It's consumed only while the popup is showing;
+with no popup open, `Space` types a literal space into the query exactly
+as it always did.
+
+`Escape` dismisses just the popup, never the picker. In
 a picker where Tab already meant something else while nothing's open
 (clipboard-picker/notification-picker's and the RSS reader's search-list
 focus toggle), completion only claims the key when it actually found a

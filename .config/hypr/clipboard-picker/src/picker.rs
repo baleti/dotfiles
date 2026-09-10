@@ -1119,6 +1119,15 @@ pub fn run(
                     resize_to_content();
                     return glib::Propagation::Stop;
                 }
+                // Space also accepts the highlighted suggestion, same as
+                // Tab above -- AutoCAD's spacebar-confirms convention,
+                // added 2026-09-10 alongside the QML pickers' identical
+                // Space handling once a candidate is highlighted.
+                if k == key::space {
+                    accept_suggestion(&search, &suggestions_list, &state);
+                    resize_to_content();
+                    return glib::Propagation::Stop;
+                }
                 if k == key::Escape {
                     hide_suggestions(&suggestions_list, &state);
                     resize_to_content();
