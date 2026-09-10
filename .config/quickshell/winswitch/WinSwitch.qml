@@ -1,362 +1,111 @@
 import QtQuick
 import Quickshell
-import Quickshell.Io
 import Quickshell.Wayland
 import Quickshell.Hyprland
 import "../theme"
 import "../services"
 
-// Alt-tab grid (ALT+Tab / ALT+SHIFT+Tab) -- replaces the old standalone GTK
-// winswitch binary (~/.config/hypr/winswitch). That binary is now a headless
-// backend only: it still does the real work (window enumeration, live
-// thumbnail capture via wayland-toplevel-export/dmabuf, tmux/Claude
-// correlation -- see its own src/wayland_capture.rs and enrich.rs, both
-// unchanged by this rewrite) and streams NDJSON to stdout instead of
-// drawing a GTK grid itself. This file is the presentation layer only.
+// Alt-tab grid (ALT+Tab / ALT+SHIFT+Tab). One instance per monitor; only the
+// one on WinSwitchState.monitor is ever shown.
 //
-// PHASE 2 (2026-09-09): search/filter DSL (WinSwitchQueryDsl.qml, a port of
-// query.rs the same way QueryDsl.qml ports the launcher's grammar) plus the
-// aspect-ratio-tuned grid layout ui.rs originally used (`typicalAspect`/
-// `gridDims`/`cellSize`/`frameSize` below), replacing phase 1's simpler
-// fixed-cell GridView and fixing the overflow that caused (reported
-// 2026-09-09).
+// This is a view: keys, window order, selection, tap-vs-hold and confirming
+// all live in services/WinSwitchState.qml (fed by ~/.config/hypr/winswitch.lua
+// over Hyprland's event socket). What stays here is layout, the search/DSL
+// mode (WinSwitchQueryDsl.qml) and its autocomplete, and mouse handling.
 //
-// One instance per monitor; only the one WinSwitchState latched is ever
-// shown (see WinSwitchState.qml's own doc for why `cycle` is reentrant).
+// Thumbnails come from the Rust backend (~/.config/hypr/winswitch), which
+// WinSwitchState spawns once the grid is actually shown; cells render a
+// placeholder frame sized to the window's aspect ratio until one arrives.
 PanelWindow {
     id: root
 
     // `screen` is PanelWindow's own property, set from shell.qml's Variants
     // (do NOT redeclare it -- see AppLauncher.qml's identical note).
-    //
-    // `open` only ever flips true once a hold is confirmed (see
-    // `_beginTapHoldCheck`/`_onTapHoldDetermined` below) -- the surface is
-    // never mapped at all for what turns out to be a tap. An earlier
-    // version of this grabbed keyboard input *immediately* on every press,
-    // before knowing tap vs. hold, to avoid missing a quick Alt release;
-    // that traded one problem for three worse ones (a visible flicker on
-    // every press regardless of opacity/size tricks, a noisy
-    // single-instant Alt-state read, and occasionally a grab that hadn't
-    // finished establishing by the time Alt was released, leaving the grid
-    // stuck open needing Enter/Escape -- all reported 2026-09-09). The
-    // fix -- still true here -- is a debounce before ever deciding to show
-    // anything, so a genuine tap has already released Alt by the time the
-    // check runs and a genuine hold is comfortably still down; by the time
-    // this *does* grab keyboard input the compositor has had that debounce
-    // as headroom to be ready for it.
-    //
-    // What moved (2026-09-10): the debounce, the Alt-state check, AND the
-    // window list itself all now happen right here in QML instead of in a
-    // freshly-spawned backend process. `windows` used to only exist once a
-    // NDJSON `windows` line arrived from that process -- which meant
-    // *nothing* could appear, not even an empty placeholder grid, until a
-    // fresh `winswitch` binary had been forked, linked, slept through its
-    // own debounce, and shelled out to `hyprctl` twice in sequence. Each
-    // of those steps individually measured fast (tens of ms), but chained
-    // together and paid on every single open, they added up to a
-    // consistently-reported ~1-2s lag before anything visible appeared --
-    // even after two earlier rounds of fixes for a related but distinct
-    // complaint (a restart-loop under keyboard auto-repeat, see
-    // `_autoRepeatGuardMs`'s own doc below, which is a different bug from
-    // this one and stays fixed independently of this change).
-    //
-    // Quickshell already keeps a live window list in-process via
-    // `Hyprland.toplevels` (`_liveWindows()` below), fed by Hyprland's own
-    // IPC event stream with no subprocess involved at all -- exactly how
-    // AppLauncher.qml's grid already opens instantly off data it already
-    // has in memory. The one thing that still can't happen in-process is
-    // the Alt-state read itself (Quickshell has no seat/keyboard-modifier
-    // API, only `Hyprland.toplevels` for window state), so that's still
-    // one `hyprctl repl` subprocess call (`_altCheckProc` below) -- but
-    // now it's the *only* subprocess on the path to `open` becoming true,
-    // down from three sequential ones. The backend process
-    // (`backendProc`) still gets spawned on every hold, but purely for
-    // live thumbnail capture and tmux/Claude enrichment -- work that
-    // genuinely needs native Wayland access QML doesn't have -- and no
-    // longer gates `open` at all; see `_onTapHoldDetermined`.
+    // Set imperatively, not bound: `visible`/`keyboardFocus` follow it and
+    // mapping the surface feeds back into `screen`, which a binding here
+    // reads -- a binding loop (same reason as AppLauncher.qml's `open`).
     property bool open: false
-    // The direction that *started* the current determination, captured at
-    // spawn time -- read back once `windows` arrives to seed `selected` at
-    // index 1 (or the last index for "prev"), not 0. index 0 is always the
-    // *currently* focused window (see hyprctl.rs::list_windows's own doc);
-    // classic alt-tab releases onto the *previously* active one on a single
-    // tap, so leaving `selected` at its default 0 made a release-to-confirm
-    // silently re-focus the already-focused window -- looked exactly like
-    // "nothing happened" (reported 2026-09-09).
-    property string _initialDirection: "next"
-
-    property var windows: [] // built from Hyprland.toplevels at open time -- index into this is each window's stable identity for this session
-    property var thumbnails: ({}) // address -> {path, width, height}
-    property var enrichMeta: ({}) // address -> merged tmux/claude fields
-    // `selected` is a *window index* (stable identity into `windows`), not
-    // a visual grid position -- the same distinction ui.rs's own doc
-    // documents at length: once `/s` can reorder the grid, "visual
-    // position" and "windows[]'s own index" stop being the same number.
-    // `visualSelected` below is the derived visual position `_advance`
-    // and the GridView actually need.
-    property int selected: 0
-
     function _recompute() {
-        const wantsSession = WinSwitchState.active && WinSwitchState.monitor === root.screen.name;
-        if (!wantsSession)
-            root.open = false;
+        root.open = WinSwitchState.active && WinSwitchState.shown && WinSwitchState.monitor === root.screen.name;
     }
     Component.onCompleted: root._recompute()
-    // Updated on *every* cycle() call (not just session starts) -- the gap
-    // checked below is between consecutive calls, not "how long has the
-    // current session been running." Measuring against session-start was a
-    // real bug (caught in review, 2026-09-10): if a single determination
-    // ever took longer than the guard window -- plausible under the very
-    // load a fast auto-repeat burst itself creates, spawning many
-    // overlapping `qs`/backend processes -- a *later* auto-repeat firing
-    // would incorrectly clear the guard and restart again, right back into
-    // the same loop this was meant to fix. Measuring the inter-call gap
-    // instead keeps swallowing repeats for as long as they keep arriving
-    // fast, however long the key stays down, regardless of how slow any
-    // individual determination happens to be.
-    property real _lastCycleAt: 0
-    // Below this gap (ms) since the previous cycle() call, a repeat call
-    // while still undetermined is treated as OS keyboard auto-repeat, not
-    // a genuine second press -- see `onCycleSeqChanged`. Comfortably above
-    // typical auto-repeat intervals (often 20-50ms once repeating) and
-    // comfortably below a genuine fast human double-tap's own gap.
-    readonly property int _autoRepeatGuardMs: 150
-    Connections {
-        target: WinSwitchState
-        function onActiveChanged() { root._recompute(); }
-        function onMonitorChanged() { root._recompute(); }
-        // Fires for *every* cycle() call, including the one that opens a
-        // session. Three cases, not two:
-        //
-        // 1. A confirmed grid already showing (`open`) just gets its
-        //    selection advanced in place -- the whole point of `cycle`
-        //    being reentrant, see WinSwitchState's own doc.
-        //
-        // 2. Still undetermined (`open` false) and this call landed within
-        //    `_autoRepeatGuardMs` of the *previous* call -- ignore it.
-        //    Hyprland's "ALT + Tab" bind re-fires on the compositor's own
-        //    keyboard auto-repeat for as long as Tab stays physically
-        //    down, not just on the initial press, so a *sustained* hold
-        //    generates a steady stream of these calls (every 20-50ms) for
-        //    as long as it lasts. Restarting on every one of them -- which
-        //    is what this used to do, added for case 3 below -- meant a
-        //    determination could never actually finish while the key kept
-        //    auto-repeating: each restart threw away the in-flight
-        //    determination (at the time, a freshly-spawned backend
-        //    process; still true of today's in-process debounce +
-        //    `_altCheckProc`, just faster) and began it over again, so the
-        //    grid only ever got a chance to complete once the user
-        //    *released* the key and the repeats stopped. For a natural
-        //    "hold Alt+Tab while scanning for a window" gesture lasting a
-        //    couple of seconds, that's a couple of seconds of
-        //    restart-looping before anything ever appears -- exactly the
-        //    "2-3 second" delay reported 2026-09-10 (confirmed by
-        //    measuring directly: a single trigger resolved in ~350-450ms
-        //    at the time, but a burst of triggers close together never
-        //    resolved at all within a 5s window).
-        //
-        // 3. Still undetermined, but this call landed *after*
-        //    `_autoRepeatGuardMs` since the previous one -- restart fresh.
-        //    This is what makes a genuine rapid double/triple *tap*
-        //    (release between presses, each its own fresh keybind fire,
-        //    reported 2026-09-09) still resolve against the latest press
-        //    instead of getting stuck waiting on a stale one: a real
-        //    second press is comfortably slower than auto-repeat's own
-        //    interval, so it clears the guard and is treated as new intent.
-        function onCycleSeqChanged() {
-            if (WinSwitchState.monitor !== root.screen.name)
-                return;
-            const now = Date.now();
-            const gapSincePrevCall = now - root._lastCycleAt;
-            root._lastCycleAt = now;
-            if (root.open) {
-                root._advance(WinSwitchState.pendingDirection);
-            } else if (gapSincePrevCall < root._autoRepeatGuardMs) {
-                // likely auto-repeat -- do nothing, let the in-flight session finish
-            } else {
-                root._startSession();
-            }
-        }
-    }
+    readonly property var windows: WinSwitchState.windows
+    readonly property int selected: WinSwitchState.selected
+    readonly property bool locked: WinSwitchState.locked
+
+    // Session that activated this view's focus grab, so a `cleared` arriving
+    // late from a previous session can't close a newer one.
+    property int _grabSession: -1
 
     onOpenChanged: {
         if (root.open) {
+            root.queryText = "";
+            root._hideSuggestions();
+            root._hoverOrigin = null;
+            root._hoverArmed = false;
+            root._grabSession = WinSwitchState.sessionId;
             focusGrab.active = true;
-            // `card` (an Item), not the PanelWindow root itself, is what
-            // needs `focus`/`forceActiveFocus()` -- same reason
-            // AppLauncher.qml focuses its inner TextInput rather than
-            // itself. Deferred a tick, matching AppLauncher's own
-            // `Qt.callLater` -- requesting focus before the surface has
-            // actually mapped doesn't stick.
+            // Deferred a tick, matching AppLauncher: requesting focus before
+            // the surface has mapped doesn't stick.
             Qt.callLater(() => card.forceActiveFocus());
         } else {
             focusGrab.active = false;
         }
     }
+
     function hide() {
         WinSwitchState.close();
     }
-
-    // Bumped on every `_startSession()` -- captured by `_beginTapHoldCheck`
-    // and checked when its debounced result comes back, so a determination
-    // a newer session has already superseded (rare, but possible right at
-    // the `_autoRepeatGuardMs` boundary) gets silently dropped instead of
-    // acting on stale intent.
-    property int _sessionGen: 0
-
-    function _startSession() {
-        root._sessionGen++;
-        root.windows = [];
-        root.thumbnails = ({});
-        root.enrichMeta = ({});
-        // Drop anything a just-killed previous session's still-in-flight
-        // batch had accumulated -- otherwise a stale flush lands on top of
-        // this new session's own (unrelated) windows.
-        root._pendingThumbnails = ({});
-        root._pendingEnrich = ({});
-        flushTimer.stop();
-        root._flushScheduled = false;
-        root.selected = 0;
-        root.queryText = "";
-        root.locked = false;
-        root._hideSuggestions();
-        root._initialDirection = WinSwitchState.pendingDirection;
-        // Unconditional stop first (a harmless no-op if nothing was
-        // running): a repeat tap arriving before the previous determination
-        // resolved means that previous backend's *output*, if it was even
-        // spawned yet, is now stale -- otherwise it'd keep running to
-        // completion in the background for nothing, and its trailing
-        // NDJSON lines would land in `_handleLine` and corrupt this new
-        // session's state.
-        backendProc.running = false;
-        tapHoldTimer.stop();
-        root._beginTapHoldCheck();
+    function confirm(i) {
+        WinSwitchState.confirm(i);
     }
 
-    // ---- tap/hold determination (in-process, 2026-09-10) --------------
-    // See `open`'s own doc for why this moved out of the backend. Same
-    // shape as before, just relocated: sleep a short debounce beat, then
-    // read whether Alt is still physically down.
-    readonly property int tapHoldDebounceMs: 35
-    Timer {
-        id: tapHoldTimer
-        interval: root.tapHoldDebounceMs
-        repeat: false
-        onTriggered: root._runAltCheck()
-    }
-    function _beginTapHoldCheck() {
-        tapHoldTimer.restart();
-    }
-    property Process _altCheckProc: Process {
-        id: altCheckProc
-        property int forGen: -1
-        command: ["hyprctl", "repl", 'return tostring(hl.is_key_down("Alt_L") or hl.is_key_down("Alt_R"))']
-        stdout: StdioCollector {
-            onStreamFinished: {
-                if (altCheckProc.forGen !== root._sessionGen)
-                    return; // superseded by a newer session -- see `_sessionGen`'s doc
-                root._onTapHoldDetermined(text.trim() === "true");
-            }
+    Connections {
+        target: WinSwitchState
+        function onActiveChanged() { root._recompute(); }
+        function onShownChanged() { root._recompute(); }
+        function onMonitorChanged() { root._recompute(); }
+        // ALT+Tab while locked into search mode cycles autocomplete, same as
+        // a plain Tab in the search box (Tab never reaches Qt while Alt is
+        // held: the compositor bind eats it).
+        function onLockedTab(direction) {
+            if (root.open)
+                root._completionTab(direction);
         }
     }
-    function _runAltCheck() {
-        altCheckProc.forGen = root._sessionGen;
-        altCheckProc.running = false;
-        altCheckProc.running = true;
-    }
 
-    // Builds the window list straight from Quickshell's own live
-    // `Hyprland.toplevels` model -- no subprocess, no wait. Mirrors
-    // `hyprctl.rs::list_windows()`'s exact filtering/sort/shape (mapped
-    // only, no special-workspace scratchpads, ascending focusHistoryID so
-    // index 0 is the currently-focused window) so the rest of this file
-    // (results/metas/grid) doesn't need to know or care where the list
-    // came from.
-    function _liveWindows() {
-        const raw = Hyprland.toplevels.values;
-        const rows = [];
-        for (const t of raw) {
-            const ipc = t.lastIpcObject || {};
-            if (ipc.mapped === false) continue;
-            const wsName = (ipc.workspace && ipc.workspace.name) || "";
-            if (wsName.startsWith("special:")) continue;
-            const size = ipc.size || [0, 0];
-            rows.push({
-                address: ipc.address || t.address || "",
-                class: ipc.class || "",
-                title: ipc.title || t.title || "",
-                workspace: wsName,
-                pid: ipc.pid || 0,
-                width: size[0] || 0,
-                height: size[1] || 0,
-                _focusHistoryID: ipc.focusHistoryID ?? 999999,
-            });
+    // ---- hover selection --------------------------------------------------
+    // The grid maps under a stationary pointer (follow_mouse puts it on the
+    // pointer's monitor), and hover-enter on whatever cell appears under the
+    // cursor used to silently steal the selection, so releasing Alt focused
+    // that window instead of the tabbed one. Hover only selects once the
+    // pointer has genuinely moved since the grid opened.
+    property var _hoverOrigin: null
+    property bool _hoverArmed: false
+    function _pointerMoved(item, mouse) {
+        if (root._hoverArmed)
+            return true;
+        const p = item.mapToItem(null, mouse.x, mouse.y);
+        if (!root._hoverOrigin) {
+            root._hoverOrigin = p;
+            return false;
         }
-        rows.sort((a, b) => a._focusHistoryID - b._focusHistoryID);
-        return rows.map((w, index) => ({
-            index, address: w.address, class: w.class, title: w.title,
-            workspace: w.workspace, pid: w.pid, width: w.width, height: w.height,
-        }));
-    }
-
-    function _onTapHoldDetermined(held) {
-        const list = root._liveWindows();
-        if (list.length === 0)
-            return; // nothing to switch to or show -- matches the old backend's own no-op here
-        if (!held) {
-            // Tap: a fast press-release already completed before we got a
-            // chance to check -- do the classic single quick-switch
-            // directly, no grid ever shown.
-            const idx = root._initialDirection === "prev" ? list.length - 1 : Math.min(1, list.length - 1);
-            root._focusAddress(list[idx].address);
-            root.hide();
-            return;
-        }
-        // Hold: show the grid right now, thumbnail-less -- see `open`'s doc.
-        root.windows = list;
-        const n = list.length;
-        root.selected = root._initialDirection === "prev" ? n - 1 : Math.min(1, n - 1);
-        root.open = true;
-        // Now kick off the backend purely for thumbnails/enrichment -- it
-        // no longer decides tap vs. hold or owns the window list, see
-        // main.rs's own module doc.
-        backendProc.running = false;
-        backendProc.command = [Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"];
-        backendProc.running = true;
+        if (Math.abs(p.x - root._hoverOrigin.x) + Math.abs(p.y - root._hoverOrigin.y) > 8)
+            root._hoverArmed = true;
+        return root._hoverArmed;
     }
 
     // ---- filtering / sorting (query DSL) -----------------------------
     readonly property var parsedQuery: WinSwitchQueryDsl.parse(root.queryText)
-    // Parallel to `windows` -- built once per windows/enrichMeta change,
-    // not per keystroke, since every matcher/sorter call below takes
-    // "the meta for this window" as a same-index array (mirrors query.rs's
-    // own `&[TmuxClaudeMeta]` shape).
-    readonly property var metas: root.windows.map(w => root.enrichMeta[w.address] || {})
+    // Parallel to `windows` (same index), built once per windows/enrichMeta
+    // change, not per keystroke.
+    readonly property var metas: root.windows.map(w => WinSwitchState.enrichMeta[w.address] || {})
     readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.queryText, WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
 
     readonly property var results: {
-        // Fast path, and *reference-stable*: with nothing typed and no
-        // /s /rv active (the common state right after opening, before the
-        // user has done anything), just hand back `windows` itself rather
-        // than a freshly `.filter()`ed copy. This isn't only about the
-        // per-keystroke cost query.rs's own filtering was already fine
-        // with -- `enrichMeta` (tmux/Claude data) streams in as dozens of
-        // separate NDJSON lines right after the grid opens, and each one
-        // was retriggering this whole binding (it reads `metas`, which
-        // reads `enrichMeta`). `.filter()`/`.slice()` always allocate a
-        // *new* array even when the resulting contents are unchanged, and
-        // GridView has no way to know a reassigned `model` array is
-        // content-identical to the last one -- it just rebuilds every
-        // delegate. Fifty-plus of those rebuilds landing in the first
-        // second after opening is a very plausible read on "the grid takes
-        // 2-3 seconds to settle" (reported 2026-09-10; investigated at
-        // length but couldn't get reliable QML-side timing instrumentation
-        // working to confirm precisely -- this is the strongest concrete
-        // lead from reasoning through the binding graph instead). Returning
-        // the *same* `windows` reference here means GridView's model
-        // doesn't change identity at all while this fast path holds, no
-        // matter how many enrich lines arrive.
-        if (root.queryText.length === 0 && !root.parsedQuery.sort && !root.parsedQuery.reverse)
+        // Reference-stable fast path: with no query, hand back `windows`
+        // itself so enrichment updates don't rebuild every grid delegate.
+        if (root.queryText.length === 0)
             return root.windows;
 
         let rows = root.windows.filter(w => WinSwitchQueryDsl.matchesStr(w, root.metas[w.index] || {}, root.queryText));
@@ -371,129 +120,39 @@ PanelWindow {
                 }
                 return 0;
             });
-        } else {
-            rows = rows.slice(); // stable "recency" order (backend's own) -- already sorted that way
         }
         if (root.parsedQuery.reverse)
             rows = rows.slice().reverse();
         return rows;
     }
-    readonly property int visualSelected: {
-        const k = root.results.findIndex(w => w.index === root.selected);
-        return k >= 0 ? k : 0;
-    }
+    // Visual position of the selection in `results`, -1 if not visible.
+    readonly property int visualSelected: root.results.findIndex(w => w.index === root.selected)
     onResultsChanged: {
-        // Keep `selected` pointing at something visible -- if the current
-        // selection just got filtered out, land on the first visible
-        // result instead (matches ui.rs's own connect_search_changed
-        // behavior: move to the first visually-positioned match).
-        if (root.results.length > 0 && root.visualSelected === 0 && root.results[0].index !== root.selected)
-            root.selected = root.results[0].index;
+        // A search that filters out the selection moves it to the first match.
+        if (root.queryText.length > 0 && root.results.length > 0 && root.visualSelected < 0)
+            WinSwitchState.selected = root.results[0].index;
     }
 
     function _advance(direction) {
         const n = root.results.length;
         if (n === 0) return;
         const cur = root.visualSelected;
-        const next = direction === "prev" ? (cur - 1 + n) % n : (cur + 1) % n;
-        root.selected = root.results[next].index;
+        let next;
+        if (cur < 0)
+            next = direction === "prev" ? n - 1 : 0;
+        else
+            next = direction === "prev" ? (cur - 1 + n) % n : (cur + 1) % n;
+        WinSwitchState.selected = root.results[next].index;
+    }
+    function _advanceRow(delta) {
+        const n = root.results.length;
+        if (n === 0) return;
+        const k = Math.max(0, Math.min(n - 1, Math.max(0, root.visualSelected) + delta));
+        WinSwitchState.selected = root.results[k].index;
     }
 
-    // hyprctl repl + a Lua snippet, not `hyprctl dispatch focuswindow:...`
-    // -- this Hyprland build is Lua-scriptable (hl.* API) rather than
-    // stock-dispatch. Shared by both the grid's own confirm (Enter/click/
-    // Alt-release) and the tap path's instant single-switch
-    // (`_onTapHoldDetermined`) -- previously duplicated between here and
-    // `hyprctl.rs::focus_window`, which no longer exists (see main.rs's
-    // own module doc for why focus dispatch moved here too).
-    function _focusAddress(address) {
-        focusProc.command = ["hyprctl", "repl",
-            `local ws = hl.get_windows({})\nfor i, win in ipairs(ws) do\n    if tostring(win.address) == "${address}" then\n        hl.dispatch(hl.dsp.focus({ window = win }))\n        break\n    end\nend`];
-        focusProc.running = true;
-    }
-
-    function confirm(i) {
-        const w = root.windows[i];
-        if (!w) return;
-        root._focusAddress(w.address);
-        root.hide();
-    }
-
-    // ---- backend process (thumbnails/enrichment only, see `open`'s doc) ----
-    readonly property Process backendProc: Process {
-        stdout: SplitParser {
-            onRead: line => root._handleLine(line)
-        }
-    }
-    readonly property Process focusProc: Process {}
-
-    function _handleLine(line) {
-        let msg;
-        try {
-            msg = JSON.parse(line);
-        } catch (e) {
-            return; // a partial/garbled line -- ignore, never crash the panel over it
-        }
-        switch (msg.type) {
-        case "thumbnail":
-            root._pendingThumbnails[msg.address] = { path: msg.path, width: msg.width, height: msg.height };
-            root._scheduleFlush();
-            break;
-        case "enrich":
-            root._pendingEnrich[msg.address] = Object.assign({}, root._pendingEnrich[msg.address] || {}, msg.meta);
-            root._scheduleFlush();
-            break;
-        }
-    }
-
-    // Reviewer-caught gap (2026-09-10, thanks Codex): every incoming
-    // `thumbnail`/`enrich` NDJSON line used to reassign the *whole*
-    // `thumbnails`/`enrichMeta` dictionary immediately -- for a ~45-window
-    // session that's dozens of full-dictionary copies in the first
-    // several hundred ms, and each one invalidates *every* delegate's
-    // `thumb`/`meta` bindings simultaneously (they read `root.thumbnails`/
-    // `root.enrichMeta` directly), not just the one window that actually
-    // changed. The earlier `results` fast-path fix only addressed the
-    // *model*-level churn this caused (GridView rebuilding delegates from
-    // scratch); it didn't touch this separate, per-delegate-binding
-    // source of the same kind of repeated work. Coalescing into one flush
-    // per animation frame (~16ms) cuts what could be 100+ reassignments
-    // down to roughly one per frame for as long as data keeps streaming
-    // in, while staying well under human perception of "instant."
-    property var _pendingThumbnails: ({})
-    property var _pendingEnrich: ({})
-    property bool _flushScheduled: false
-    function _scheduleFlush() {
-        if (!root._flushScheduled) {
-            root._flushScheduled = true;
-            flushTimer.start();
-        }
-    }
-    Timer {
-        id: flushTimer
-        interval: 16
-        repeat: false
-        onTriggered: root._flushPending()
-    }
-    function _flushPending() {
-        root._flushScheduled = false;
-        if (Object.keys(root._pendingThumbnails).length > 0) {
-            root.thumbnails = Object.assign({}, root.thumbnails, root._pendingThumbnails);
-            root._pendingThumbnails = {};
-        }
-        if (Object.keys(root._pendingEnrich).length > 0) {
-            const e = Object.assign({}, root.enrichMeta);
-            for (const idx in root._pendingEnrich)
-                e[idx] = Object.assign({}, e[idx] || {}, root._pendingEnrich[idx]);
-            root.enrichMeta = e;
-            root._pendingEnrich = {};
-        }
-    }
-
-    // ---- grid layout (ported from the old ui.rs's typical_aspect /
-    // grid_dims / cell_size / frame_size -- see that file's own doc for the
-    // reasoning behind each constant/formula; this is a straight port, not
-    // a redesign) ------------------------------------------------------
+    // ---- grid layout (ported from the old GTK ui.rs's typical_aspect /
+    // grid_dims / cell_size / frame_size) ------------------------------------
     readonly property int minFrame: 64
     readonly property int maxFrame: 320
     readonly property int labelAllowance: 54
@@ -520,10 +179,7 @@ PanelWindow {
         const maxH = Math.max(root.minFrame, Math.min(root.maxFrame, cellH - root.labelAllowance));
         return [cellW, maxH];
     }
-    // Fits one window's own aspect ratio into a `budgetW`x`budgetH` box --
-    // ui.rs's `frame_size`, used both for each cell's placeholder frame and
-    // (implicitly, since the backend already downscaled to fit) for how
-    // large its `Image` renders.
+    // Fits one window's own aspect ratio into a `budgetW`x`budgetH` box.
     function frameSize(winW, winH, budgetW, budgetH) {
         if (winW <= 0 || winH <= 0) return [budgetW, budgetH];
         const aspect = winH / winW;
@@ -552,20 +208,15 @@ PanelWindow {
     readonly property int cellHeight: root.maxH + root.labelAllowance + root.cellVOverhead
 
     // ---- search box / DSL state --------------------------------------
+    // Two modes: unlocked, Tab/Shift+Tab cycle and releasing Alt confirms;
+    // typing any printable key locks into search mode (a filter/sort/column
+    // DSL, see WinSwitchQueryDsl.qml), where Alt release no longer confirms
+    // and Enter/Escape confirm/cancel. Locking doesn't require releasing Alt.
     property string queryText: ""
-    // Two-phase key state machine, ported from ui.rs's own module doc:
-    // while unlocked, Tab/Shift+Tab cycle the selection and releasing Alt
-    // confirms it; pressing any other printable key locks the grid into
-    // search mode (a filter/sort/column DSL -- see WinSwitchQueryDsl.qml),
-    // Alt no longer confirms once locked, and Enter/Escape confirm/cancel
-    // in either mode. Locking doesn't require releasing Alt first --
-    // holding Alt while typing a search is a completely normal sequence.
-    property bool locked: false
 
     readonly property var _commandSpans: root.queryText.length ? WinSwitchQueryDsl.commandSpans(root.queryText) : []
 
-    // ---- autocomplete (marginalia-style, ported from ui.rs's own
-    // suggestion machinery / AppLauncher.qml's simpler equivalent) -----
+    // ---- autocomplete (marginalia-style, same as AppLauncher.qml) ---------
     property var acItems: []
     property int acSel: 0
     property var acSuggestionKind: null // {kind, start, verb?, via?, field?}
@@ -578,11 +229,7 @@ PanelWindow {
 
     function _acRowInfo(kind, item) {
         if (kind.kind === "verb") {
-            // `item` is bare (see WinSwitchQueryDsl.completionCandidates's
-            // own doc); `verbInfo` is keyed with the leading "/" (its
-            // canonical-identity form), and the displayed label gets one
-            // put back too -- matches ui.rs's own `SuggestRow { label:
-            // format!("/{item}"), ... }` for the identical stage.
+            // `item` is bare; `verbInfo` is keyed with the leading "/".
             const info = WinSwitchQueryDsl.verbInfo["/" + item] || { long: "", desc: "" };
             return { label: "/" + item, alias: info.long, desc: info.desc };
         }
@@ -591,11 +238,8 @@ PanelWindow {
         return { label: item, alias: "", desc: "" };
     }
 
-    // Candidates for the *current* queryText with no side effects beyond
-    // updating acSuggestionKind (render-time row info needs it) - unlike
-    // _triggerCompletion below, never auto-accepts a unique candidate, so
-    // it's safe to call on every keystroke while narrowing an
-    // already-open popup (see searchInput.onTextChanged).
+    // Candidates for the current queryText without auto-accepting a unique
+    // one (safe to call on every keystroke while narrowing an open popup).
     function _acRecompute() {
         const completion = WinSwitchQueryDsl.completionContext(root.queryText);
         root.acSuggestionKind = completion;
@@ -609,15 +253,19 @@ PanelWindow {
         const items = WinSwitchQueryDsl.completionCandidates(completion, root.windows, root.metas);
         if (items.length === 0) return false;
         root.acSuggestionKind = completion;
-        if (items.length === 1) {
-            root.acItems = items;
-            root.acSel = 0;
-            root._acAccept();
-            return true;
-        }
         root.acItems = items;
         root.acSel = 0;
+        if (items.length === 1)
+            root._acAccept();
         return true;
+    }
+
+    // First Tab opens the popup; later Tabs move the highlight; Enter accepts.
+    function _completionTab(direction) {
+        if (acPopup.visible)
+            root.acSel = (root.acSel + (direction === "prev" ? -1 : 1) + root.acItems.length) % root.acItems.length;
+        else
+            root._triggerCompletion();
     }
 
     function _acAccept() {
@@ -674,11 +322,17 @@ PanelWindow {
     HyprlandFocusGrab {
         id: focusGrab
         windows: [root]
-        onCleared: root.hide()
+        onCleared: {
+            if (root._grabSession === WinSwitchState.sessionId)
+                root.hide();
+        }
     }
 
     MouseArea {
+        id: backdropMouse
         anchors.fill: parent
+        hoverEnabled: true
+        onPositionChanged: mouse => root._pointerMoved(backdropMouse, mouse)
         onClicked: root.hide()
     }
 
@@ -687,10 +341,8 @@ PanelWindow {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.verticalCenter: parent.verticalCenter
         width: root.gridWinW + 32
-        // Grows to fit the search box + autocomplete popup once locked, on
-        // top of the grid's own budget height -- capped a bit past
-        // `_availH` so it can't sprawl past a usable fraction of the
-        // screen; the GridView's own scrolling takes over beyond that.
+        // Grows to fit the search box + autocomplete popup once locked,
+        // capped so the GridView's own scrolling takes over beyond that.
         readonly property int maxCardH: root.screen ? Math.round(root.screen.height * 0.92) : 1000
         height: Math.min(card.maxCardH, (root.locked ? searchHeader.height : 0) + acPopup.height + gridScroll.contentHeightHint + 32)
         radius: Theme.rounding
@@ -738,25 +390,17 @@ PanelWindow {
                     onTextChanged: {
                         if (root.queryText !== text)
                             root.queryText = text;
-                        // Once the popup is already open, keep recomputing
-                        // candidates from the new text instead of closing
-                        // it -- narrows the list as you type rather than
-                        // forcing another Tab press. `wasOpen` is read
-                        // before root.acItems below can change it.
-                        const wasOpen = acPopup.visible;
-                        if (wasOpen)
+                        // An already-open popup narrows as you type instead
+                        // of closing.
+                        if (acPopup.visible)
                             root.acItems = root._acRecompute();
                         else
                             root._hideSuggestions();
                     }
 
                     // Inline command-validity coloring (query-dsl.md): an
-                    // underline under each /command token -- TextInput has
-                    // no per-range text color hook the way GTK's
-                    // Pango-backed Entry did (see ui.rs's
-                    // apply_command_colors), so an underline positioned via
-                    // positionToRectangle is the safe middle ground here,
-                    // same approach AppLauncher.qml already uses.
+                    // underline under each /command token, same approach as
+                    // AppLauncher.qml (TextInput has no per-range color).
                     Repeater {
                         model: root.queryText.length ? root._commandSpans : []
                         Rectangle {
@@ -771,14 +415,6 @@ PanelWindow {
                         }
                     }
 
-                    // Standard completion-menu convention (reported
-                    // 2026-09-09 that accepting on every Tab press without
-                    // ever letting you cycle through options was
-                    // confusing): the first Tab opens the popup; every Tab
-                    // after that just moves the highlight, the same as
-                    // Down; Enter is the one key that actually accepts the
-                    // highlighted suggestion. Same fix applied to
-                    // AppLauncher.qml's identical pattern.
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape) {
                             if (acPopup.visible) root._hideSuggestions();
@@ -788,11 +424,8 @@ PanelWindow {
                             if (acPopup.visible) root._acAccept();
                             else root.confirm(root.selected);
                             event.accepted = true;
-                        } else if (event.key === Qt.Key_Tab) {
-                            if (acPopup.visible)
-                                root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
-                            else
-                                root._triggerCompletion();
+                        } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+                            root._completionTab(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Space && acPopup.visible) {
                             root._acAccept();
@@ -810,10 +443,8 @@ PanelWindow {
                 }
             }
 
-            // Autocomplete popup, in-layout under the search box -- one row
-            // per candidate: label, then the long-form alias and a
-            // one-line description, both dim (marginalia), matching
-            // AppLauncher.qml's identical popup.
+            // Autocomplete popup, in-layout under the search box: label, then
+            // the long-form alias and a one-line description, both dim.
             Column {
                 id: acPopup
                 visible: false
@@ -898,10 +529,14 @@ PanelWindow {
                         width: grid.cellWidth
                         height: grid.cellHeight
 
-                        readonly property var thumb: root.thumbnails[modelData.address]
+                        readonly property var thumb: WinSwitchState.thumbnails[modelData.address]
+                        readonly property string thumbPath: cellItem.thumb ? cellItem.thumb.path : ""
+                        // What's on screen: only swapped once the incoming
+                        // capture has decoded, so a refresh never blanks.
+                        property string shownPath: ""
                         readonly property bool isSelected: modelData.index === root.selected
                         readonly property var frameDims: root.frameSize(modelData.width, modelData.height, root.cellW, root.maxH)
-                        readonly property var meta: root.enrichMeta[modelData.address] || {}
+                        readonly property var meta: WinSwitchState.enrichMeta[modelData.address] || {}
                         readonly property string label: {
                             if (root.activeColumns.length === 0) return "";
                             const parts = [];
@@ -923,7 +558,7 @@ PanelWindow {
                             border.color: cellItem.isSelected ? Theme.cyan : "transparent"
                             border.width: 1
 
-                            Rectangle { // thumbnail frame placeholder, matches ui.rs's outline-only "thumb-frame"
+                            Rectangle { // thumbnail frame placeholder
                                 id: frame
                                 anchors.top: parent.top
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -938,9 +573,17 @@ PanelWindow {
                                 Image {
                                     anchors.fill: parent
                                     fillMode: Image.PreserveAspectFit
+                                    visible: cellItem.shownPath !== ""
+                                    source: cellItem.shownPath
+                                }
+                                Image {
+                                    visible: false
                                     asynchronous: true
-                                    visible: !!cellItem.thumb
-                                    source: cellItem.thumb ? cellItem.thumb.path : ""
+                                    source: cellItem.thumbPath
+                                    onStatusChanged: {
+                                        if (status === Image.Ready)
+                                            cellItem.shownPath = source.toString();
+                                    }
                                 }
                             }
 
@@ -961,9 +604,13 @@ PanelWindow {
                         }
 
                         MouseArea {
+                            id: cellMouse
                             anchors.fill: parent
                             hoverEnabled: true
-                            onEntered: root.selected = cellItem.modelData.index
+                            onPositionChanged: mouse => {
+                                if (root._pointerMoved(cellMouse, mouse))
+                                    WinSwitchState.selected = cellItem.modelData.index;
+                            }
                             onClicked: root.confirm(cellItem.modelData.index)
                         }
                     }
@@ -971,17 +618,20 @@ PanelWindow {
             }
         }
 
+        // Only reached while unlocked (searchInput has focus once locked).
+        // Alt+Tab never arrives here -- the compositor bind eats it -- so
+        // this is Escape/Enter/arrows, plus typing to enter search mode.
         Keys.onPressed: event => {
             if (root.locked)
-                return; // searchInput owns input once locked, see its own Keys.onPressed
+                return;
             if (event.key === Qt.Key_Escape) {
                 root.hide();
                 event.accepted = true;
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                 root.confirm(root.selected);
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Tab) {
-                root._advance(event.modifiers & Qt.ShiftModifier ? "prev" : "next");
+            } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+                root._advance(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
                 event.accepted = true;
             } else if (event.key === Qt.Key_Right) {
                 root._advance("next");
@@ -990,44 +640,19 @@ PanelWindow {
                 root._advance("prev");
                 event.accepted = true;
             } else if (event.key === Qt.Key_Down) {
-                const k = Math.min(root.results.length - 1, root.visualSelected + root.cols);
-                if (root.results[k]) root.selected = root.results[k].index;
+                root._advanceRow(root.cols);
                 event.accepted = true;
             } else if (event.key === Qt.Key_Up) {
-                const k = Math.max(0, root.visualSelected - root.cols);
-                if (root.results[k]) root.selected = root.results[k].index;
+                root._advanceRow(-root.cols);
                 event.accepted = true;
-            } else if (event.text && event.text.length > 0) {
-                // Any other printable key locks the grid into search mode
-                // -- see `locked`'s own doc. Holding Alt doesn't exempt a
-                // key from this (typing while Alt is still down is a
-                // normal sequence), so no modifier check beyond "did this
-                // produce real text" (Qt's own `event.text`, empty for a
-                // bare modifier press).
-                root.locked = true;
+            } else if (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
+                // Any printable key (Alt may still be held) locks into search.
+                WinSwitchState.locked = true;
                 root.queryText = event.text;
                 Qt.callLater(() => {
                     searchInput.forceActiveFocus();
                     searchInput.cursorPosition = searchInput.text.length;
                 });
-                event.accepted = true;
-            }
-        }
-
-        // Classic alt-tab: releasing Alt (not typing Enter) is what
-        // confirms the held selection -- ported from the old GTK version's
-        // own `key_release_event` handler (Alt_L/Alt_R, only outside
-        // search-lock mode). Qt.Key_Alt covers Alt_L on a standard layout;
-        // AltGr (right Alt on many non-US layouts) reports as
-        // Qt.Key_AltGr separately, so both are handled the same way here.
-        // Attached to `card`, not `searchInput`: once locked, active focus
-        // has moved to `searchInput`, and key-release events bubble up to
-        // `card` the same way unhandled presses would, so this still sees
-        // them -- the `!root.locked` guard is what actually implements
-        // "Alt no longer confirms once locked."
-        Keys.onReleased: event => {
-            if (!root.locked && (event.key === Qt.Key_Alt || event.key === Qt.Key_AltGr)) {
-                root.confirm(root.selected);
                 event.accepted = true;
             }
         }

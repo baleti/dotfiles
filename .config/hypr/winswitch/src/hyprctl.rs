@@ -66,8 +66,5 @@ pub fn list_windows() -> Vec<Window> {
         .collect()
 }
 
-// Alt-state checking and focus dispatch (`hl.is_key_down`, `hl.dsp.focus`
-// via `hyprctl repl`) moved to WinSwitch.qml (2026-09-10) -- see main.rs's
-// own module doc. Both now happen entirely in the already-running
-// Quickshell process, ahead of ever spawning this binary, so this crate no
-// longer needs its own copies.
+// Alt-state tracking and focus dispatch live in ~/.config/hypr/winswitch.lua
+// (driven by services/WinSwitchState.qml) -- see main.rs's module doc.
