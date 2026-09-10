@@ -1144,6 +1144,40 @@ Item {
         onExpandedChanged: expanded ? root.forceActiveFocus() : root.refocusActivePanel()
     }
 
+    // ClaudeUsageExpanded's hover/keyboard window thumbnail -- rendered
+    // here, not inside that panel, so it can sit just outside the panel's
+    // left border (the panel Rectangle is clip:true). Purely visual and
+    // deliberately outside shell.qml's input mask, so clicks pass straight
+    // through to whatever is beneath it. The panel exposes thumbAnchorY as
+    // a Y in its own coordinate space (top of the hovered/selected row);
+    // add claudeUsageExpanded.y to lift it into root's, clamped to the
+    // panel's vertical span.
+    Rectangle {
+        id: claudeUsageThumb
+        readonly property var src: claudeUsageExpanded
+        visible: (src.thumbHovering || src.thumbKeyboardActive) && src.thumbReady && src.thumbAddress !== ""
+        width: claudeUsageThumbImg.implicitWidth > 0 ? Math.min(280, claudeUsageThumbImg.implicitWidth) + 4 : 4
+        height: claudeUsageThumbImg.implicitHeight > 0
+            ? (width - 4) * (claudeUsageThumbImg.implicitHeight / claudeUsageThumbImg.implicitWidth) + 4 : 4
+        x: src.x - width - 8
+        y: Math.max(src.y, Math.min(src.y + src.thumbAnchorY, src.y + src.height - height))
+        z: 100
+        color: Theme.bg
+        border.color: Theme.cyan
+        border.width: 1
+        radius: 3
+
+        Image {
+            id: claudeUsageThumbImg
+            anchors.fill: parent
+            anchors.margins: 2
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            cache: false
+            source: claudeUsageThumb.src.thumbReady ? "file://" + claudeUsageThumb.src.thumbImagePath : ""
+        }
+    }
+
     // Keyboard shortcuts (hyprland/keybinds.lua: mod+n/p/m/t/d, via
     // ~/.config/hypr/scripts/bar-toggle.sh) call these -- same open/close
     // toggle feel as the old standalone sysmon-graph popups, just for the
