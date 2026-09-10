@@ -66,7 +66,6 @@ State is written atomically to ~/.cache/claude-usage/state.json.
 """
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -329,24 +328,59 @@ def last_message_ts_ms(transcript_path: Path):
     return None
 
 
-def get_tmux_pane_titles() -> dict:
-    """{pane_id ("%1828"): pane_title} for every pane on the server, in one
-    batched call -- not one `tmux display-message` subprocess per session
-    (85+ of those every cycle would be wasteful). Empty dict (not an
-    exception) if tmux isn't running or isn't on PATH."""
+def _tmux_panes_by_tty() -> dict:
+    """Controlling-tty rdev -> {"session", "window", "pane", "title"} for
+    every pane on the server, live, in one batched call -- not one `tmux
+    display-message` subprocess per session (85+ of those every cycle
+    would be wasteful).
+
+    This is list_sessions' *live* source for tmux_session/window/pane and
+    title, matched against each Claude process's own controlling tty (see
+    _read_proc_stat). It replaces trusting sessions/<pid>.json's own
+    self-reported "tmux" field (e.g. "653:@1017.%1828"), which the CLI
+    writes once at process start and never updates again: the moment that
+    pane's tmux session gets killed (or killed and recreated under a new
+    id -- tmux reuses low ids), the cached field silently goes stale while
+    the process itself keeps running in the background. Confirmed live
+    2026-09-10: 51 of 106 live Claude sessions here had a cached "tmux"
+    field pointing at a session id that no longer existed at all, and a
+    further 6 pointed at a session that existed but had no attached
+    client -- both read as "no window to show" once resolved live instead
+    of quietly carrying a wrong-looking number forever. A pid whose live
+    tty has no match here (process not currently sitting in any tmux pane,
+    or no controlling terminal at all) gets None for all of tmux_session/
+    window/pane/title, which is the honest answer rather than a stale one.
+
+    Empty dict (not an exception) if tmux isn't running or isn't on
+    PATH."""
     try:
         out = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}"],
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_tty}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_title}"],
             capture_output=True, timeout=3, text=True, check=True,
         )
     except Exception:
         return {}
-    titles = {}
+    result = {}
     for line in out.stdout.splitlines():
-        pane_id, _, title = line.partition("\t")
-        if pane_id:
-            titles[pane_id] = title
-    return titles
+        parts = line.split("\t", 4)
+        if len(parts) != 5:
+            continue
+        tty, session_id, window_id, pane_id, title = parts
+        try:
+            rdev = os.stat(tty).st_rdev
+        except OSError:
+            continue
+        # tmux's own sigils ("$"/"@"/"%") stripped here, same convention
+        # the rest of this file and the quickshell side already use for
+        # these ids.
+        result[rdev] = {
+            "session": session_id.lstrip("$"),
+            "window": window_id.lstrip("@"),
+            "pane": pane_id.lstrip("%"),
+            "title": title,
+        }
+    return result
 
 
 def _read_proc_stat(pid: int):
@@ -500,7 +534,7 @@ def _monitor_names() -> dict:
         return {}
 
 
-def hyprland_windows_by_tmux_session() -> dict:
+def hyprland_windows_by_tmux_session(procs: dict = None) -> dict:
     """{tmux session id (no '$'): {"address", "class", "title",
     "workspace", "monitor"}} for every tmux session that currently has a
     client attached and displayed in some Hyprland window -- feeds the
@@ -555,7 +589,12 @@ def hyprland_windows_by_tmux_session() -> dict:
         return {}
 
     monitor_names = _monitor_names()
-    procs = _read_all_proc()
+    # Shared with list_sessions' own live tty resolution when main() passes
+    # one in (one /proc sweep per cycle instead of two) -- still usable
+    # standalone (module-level testing, the earlier ad-hoc checks run
+    # against this file) since a fresh sweep happens when procs is None.
+    if procs is None:
+        procs = _read_all_proc()
     result: dict = {}
     for win in windows:
         pid = win.get("pid")
@@ -577,17 +616,7 @@ def hyprland_windows_by_tmux_session() -> dict:
     return result
 
 
-PANE_ID_RE = re.compile(r"%\d+")
-# sessions/<pid>.json's "tmux" field, e.g. "653:@1017.%1828" -- session id
-# (no prefix), window id ("@"-prefixed), pane id ("%"-prefixed). Split out
-# so quickshell can show them as their own sub-columns without the tmux
-# object-type sigils (session 653, window 1017, pane 1828), not because
-# they're wrong, but because they're tmux's own internal notation, not
-# meaningful outside a tmux command.
-TMUX_FIELD_RE = re.compile(r"^(\d+):@(\d+)\.%(\d+)$")
-
-
-def list_sessions(base: Path, tmux_titles: dict, hypr_by_session: dict) -> list:
+def list_sessions(base: Path, tty_panes: dict, procs: dict, hypr_by_session: dict) -> list:
     sessions_dir = base / "sessions"
     if not sessions_dir.is_dir():
         return []
@@ -611,19 +640,21 @@ def list_sessions(base: Path, tmux_titles: dict, hypr_by_session: dict) -> list:
             context_tokens, last_output_tokens = context_tokens_for(transcript)
             transcript_ts = last_message_ts_ms(transcript)
 
-        tmux_field = data.get("tmux")
+        # Live tty match (see _tmux_panes_by_tty's own comment for why this
+        # replaced trusting the CLI's self-reported "tmux" field in this
+        # file) -- info[1] is this pid's own tty_nr (_read_proc_stat's
+        # (ppid, tty_nr) pair), already known for every live pid from
+        # main()'s one /proc sweep.
+        info = procs.get(pid)
+        pane = tty_panes.get(info[1]) if info else None
         title = None
         tmux_session = tmux_window = tmux_pane = None
-        if tmux_field:
-            m = PANE_ID_RE.search(tmux_field)
-            if m:
-                title = tmux_titles.get(m.group(0))
-            m2 = TMUX_FIELD_RE.match(tmux_field)
-            if m2:
-                tmux_session, tmux_window, tmux_pane = m2.group(1), m2.group(2), m2.group(3)
+        if pane:
+            tmux_session, tmux_window, tmux_pane = pane["session"], pane["window"], pane["pane"]
+            title = pane["title"]
         if not title:
-            # Not in tmux (or that pane's gone) -- fall back to the CLI's
-            # own opaque auto-id rather than showing nothing.
+            # Not currently in any tmux pane -- fall back to the CLI's own
+            # opaque auto-id rather than showing nothing.
             title = data.get("name")
 
         # The Hyprland window currently displaying this session's tmux
@@ -699,9 +730,10 @@ def main() -> None:
         # Session/process listing: local-only, its own cadence, runs even
         # during a network backoff window.
         if now >= next_sessions:
-            tmux_titles = get_tmux_pane_titles()
-            hypr_by_session = hyprland_windows_by_tmux_session()
-            sessions_data = {name: list_sessions(base, tmux_titles, hypr_by_session) for name, base in ACCOUNTS}
+            procs = _read_all_proc()
+            tty_panes = _tmux_panes_by_tty()
+            hypr_by_session = hyprland_windows_by_tmux_session(procs)
+            sessions_data = {name: list_sessions(base, tty_panes, procs, hypr_by_session) for name, base in ACCOUNTS}
             next_sessions = time.time() + SESSIONS_INTERVAL
             dirty = True
 
