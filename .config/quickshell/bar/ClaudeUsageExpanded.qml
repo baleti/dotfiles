@@ -720,7 +720,7 @@ Rectangle {
     // pair; monitor dropped 2026-09-08).
     readonly property var colDefaults: ({
         acct: 30, status: root.statusNaturalW, title: 400, tokens: root.tokensNaturalW, last: 44,
-        tmuxSession: 54, tmuxWindow: root.tmuxWindowNaturalW, tmuxPane: root.tmuxPaneNaturalW,
+        tmuxSession: root.tmuxSessionNaturalW, tmuxWindow: root.tmuxWindowNaturalW, tmuxPane: root.tmuxPaneNaturalW,
         hyprWorkspace: root.hyprWorkspaceNaturalW,
         pid: root.pidNaturalW, path: 100,
     })
@@ -756,9 +756,12 @@ Rectangle {
     // "last" itself is short, but values like "2mo 1w" aren't.
     property real colLastW: colDefaults.last
     // tmux is a *grouped* column -- one "tmux" super-header spanning these
-    // 3, sized off their own header labels ("session"/"window"/"pane",
-    // the widest of which is "session" at 7 chars) rather than the
-    // (shorter, numeric) session/window/pane ids they actually hold.
+    // 3, each shrink-to-fit like status/tokens/pid below (whichever is
+    // wider of its own header label - "sess"/"win"/"pane" - and the actual
+    // current values). session used to stay flat at 54px (~"session"
+    // spelled out) while window/pane already got this treatment -
+    // reported 2026-09-10 as visibly wider than it needed to be once the
+    // other two had shrunk and it hadn't.
     property real colTmuxSessionW: colDefaults.tmuxSession
     property real colTmuxWindowW: colDefaults.tmuxWindow
     property real colTmuxPaneW: colDefaults.tmuxPane
@@ -871,15 +874,16 @@ Rectangle {
         return m;
     }
 
-    // ---- content-driven natural widths: status/tkns/wks/win/pane/pid ----
-    // These 6 columns used to default to hand-picked flat numbers (some
+    // ---- content-driven natural widths: status/tkns/wks/sess/win/pane/pid --
+    // These columns used to default to hand-picked flat numbers (some
     // sized for the header label, some for the values, whichever was
     // wider) -- request 2026-09-05: size each to whatever its own header
     // + actual current values need, same shrink-to-fit approach path
-    // already used above, instead of a guessed constant. Values render at
-    // fontSize-2 for status/tokens/pid, fontSize-3 (same as every header)
-    // for tmux window/pane and hyprland workspace -- two FontMetrics to
-    // match.
+    // already used above, instead of a guessed constant (sess joined the
+    // set 2026-09-10, having been missed the first time round). Values
+    // render at fontSize-2 for status/tokens/pid, fontSize-3 (same as
+    // every header) for tmux session/window/pane and hyprland workspace --
+    // two FontMetrics to match.
     FontMetrics {
         id: valueFontMetrics
         font.family: Theme.fontFamily
@@ -906,6 +910,10 @@ Rectangle {
     readonly property real pidNaturalW: Math.max(
         pathFontMetrics.advanceWidth(qsTr("pid") + " ▲"),
         root._maxTextWidth(valueFontMetrics, root.allProcs.map(r => String(r.pid)))
+    ) + 6
+    readonly property real tmuxSessionNaturalW: Math.max(
+        pathFontMetrics.advanceWidth(qsTr("sess") + " ▲"),
+        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_session || ""))
     ) + 6
     readonly property real tmuxWindowNaturalW: Math.max(
         pathFontMetrics.advanceWidth(qsTr("win") + " ▲"),
