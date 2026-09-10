@@ -549,6 +549,12 @@ Rectangle {
                         id: legendRow
                         spacing: 5
                         required property var modelData
+                        // Matched by name against whichever line is under
+                        // the cursor (request 2026-09-10) -- see
+                        // Graph.hoveredLegendName's own comment for why
+                        // name, not index (net/disk's rx+tx share one
+                        // legend row and one name).
+                        readonly property bool hovered: legendRow.modelData.name === graph.hoveredLegendName
 
                         Rectangle {
                             width: 9
@@ -560,7 +566,8 @@ Rectangle {
 
                         Text {
                             text: legendRow.modelData.name
-                            color: Theme.textDim
+                            color: legendRow.hovered ? Theme.text : Theme.textDim
+                            font.bold: legendRow.hovered
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                         }

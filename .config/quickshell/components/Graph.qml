@@ -65,12 +65,31 @@ Canvas {
     // that distinction is the whole fix.
     property int historyLen: 600
 
+    // Which series is under the cursor right now, by its `name` field
+    // (request 2026-09-10: "hovers mouse over a graph line it gets bolder
+    // and its corresponding label gets bolder too") -- "" means nothing.
+    // Named rather than indexed so a pill whose legend groups two series
+    // under one row (net/disk's rx+tx sharing one interface/device name
+    // and one legend swatch) bolds *both* lines together when either is
+    // hovered, matching what the legend row itself represents. Single
+    // mode (series/color1, no seriesList) has no real name to key off, so
+    // its one line uses the sentinel below instead of "" -- "" has to
+    // stay reserved for "nothing hovered" or a single-mode graph would
+    // read as permanently hovered.
+    readonly property string _singleSentinel: "__single__"
+    property string hoveredName: ""
+    // Read by GraphPill.qml's legend Repeater to bold the matching row --
+    // exposed as the sentinel-free single-mode-aware form (never leaks
+    // _singleSentinel to a consumer that doesn't know about it).
+    readonly property string hoveredLegendName: hoveredName === _singleSentinel ? "" : hoveredName
+
     onSeriesChanged: requestPaint()
     onSeriesListChanged: requestPaint()
     onMaxValueChanged: requestPaint()
     onFillOverlayChanged: requestPaint()
     onSecondaryOnTopChanged: requestPaint()
     onLineWidthChanged: requestPaint()
+    onHoveredNameChanged: requestPaint()
 
     // Plots every raw sample at its exact (sub-pixel, unrounded) x position,
     // anchored to a FIXED width/historyLen scale (not width/rawData.length)
@@ -124,6 +143,74 @@ Canvas {
             points[i] = { x: width - slotFromRight * pxPerSample, v: smoothed[i] };
         }
         return points;
+    }
+
+    // The list hit-testing/the bold-redraw pass both iterate -- single
+    // mode's one implicit line wrapped up the same shape as an overlay
+    // entry (with the sentinel name, see hoveredName's own comment) so
+    // both code paths share one implementation instead of a duplicate for
+    // "is it single or overlay mode".
+    function _hitTestSeries() {
+        if (root.seriesList.length > 0)
+            return root.seriesList;
+        if (root.series.length > 0)
+            return [{ data: root.series, color: root.color1, name: root._singleSentinel }];
+        return [];
+    }
+
+    // y (canvas px) of series `data`'s line at x (canvas px), by linear
+    // interpolation between the two downsampled points bracketing it --
+    // null if x falls outside the plotted range (fewer than 2 points, or
+    // past either end, which happens for a still-filling ring buffer's
+    // right edge).
+    function _lineYAt(data, x) {
+        const pts = root.downsample(data);
+        if (pts.length < 2)
+            return null;
+        if (x < pts[0].x || x > pts[pts.length - 1].x)
+            return null;
+        for (let i = 1; i < pts.length; i++) {
+            if (x <= pts[i].x) {
+                const span = pts[i].x - pts[i - 1].x;
+                const t = span > 0 ? (x - pts[i - 1].x) / span : 0;
+                const v = pts[i - 1].v + (pts[i].v - pts[i - 1].v) * t;
+                return height - Math.max(0, Math.min(1, v / root.maxValue)) * height;
+            }
+        }
+        return null;
+    }
+
+    // Nearest line to (mx, my) within a comfortable click/hover radius
+    // (10px -- a bare 1-1.5px stroke is a much smaller target than that,
+    // same "give hover targets real breathing room" reasoning as any
+    // other thin-control hit area in this UI) sets hoveredName; nothing
+    // within radius clears it. Ties (two lines equally close, e.g. rx/tx
+    // crossing) keep whichever was checked first -- seriesList's own
+    // draw order, stable and not worth breaking on.
+    function _updateHover(mx, my) {
+        const list = root._hitTestSeries();
+        let bestName = "";
+        let bestDist = 10;
+        for (const s of list) {
+            const y = root._lineYAt(s.data, mx);
+            if (y === null)
+                continue;
+            const d = Math.abs(my - y);
+            if (d < bestDist) {
+                bestDist = d;
+                bestName = s.name ?? "";
+            }
+        }
+        root.hoveredName = bestName;
+    }
+
+    MouseArea {
+        id: hoverArea
+        anchors.fill: parent
+        hoverEnabled: true
+        acceptedButtons: Qt.NoButton
+        onPositionChanged: mouse => root._updateHover(mouse.x, mouse.y)
+        onExited: root.hoveredName = ""
     }
 
     // seriesList's per-entry `color` field comes from Theme.seriesPalette,
@@ -254,6 +341,22 @@ Canvas {
         } else {
             fillSeries(ctx, series, color1, 0.24);
             strokeSeries(ctx, series, color1, 1.25, 0.9);
+        }
+
+        // Bold re-stroke of whichever line is hovered, on top of
+        // everything else drawn above (including its own already-drawn
+        // normal-weight pass) so it's never occluded by a sibling line --
+        // request 2026-09-10. Every series sharing hoveredName redraws
+        // together (net/disk's rx+tx pair under one legend row both bold
+        // when either is hovered, matching what that one row represents).
+        // Always full alpha regardless of primary/secondary, and always
+        // double lineWidth -- deliberately not "1px more" so it reads as
+        // obviously emphasised even on the thinnest per-pill lineWidth
+        // (CPU's 0.7, see Bar.qml).
+        if (root.hoveredName.length > 0) {
+            for (const s of root._hitTestSeries())
+                if ((s.name ?? "") === root.hoveredName)
+                    strokeSeries(ctx, s.data, s.color, root.lineWidth * 2.2, 1.0);
         }
     }
 }
