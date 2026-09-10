@@ -158,17 +158,9 @@ hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("python3 ~/.config/hypr/scripts/appme
 hl.bind(mainMod .. " + Tab", hl.dsp.window.cycle_next(), { description = "Cycle to the next window" })
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"), { description = "Open htop" })
 
--- Custom grid alt-tab switcher: holding Alt and tapping Tab/Shift+Tab
--- cycles a thumbnail grid; a quick tap (no hold) does a plain instant
--- switch instead. Quickshell owns the UI (~/.config/quickshell/winswitch/)
--- and IPC-dispatches into WinSwitchState.cycle, which is reentrant -- a
--- second bind-fire while the grid is already open just advances the
--- selection in place, no new process spawned. The actual window
--- enumeration/live-thumbnail-capture/tmux-Claude-correlation work still
--- happens in ~/.config/hypr/winswitch (now a headless NDJSON-emitting
--- backend Quickshell spawns fresh per session -- see its src/main.rs).
-hl.bind("ALT + Tab",         hl.dsp.exec_cmd("qs ipc call winswitch cycle next"), { description = "Window switcher (next)" })
-hl.bind("ALT + SHIFT + Tab", hl.dsp.exec_cmd("qs ipc call winswitch cycle prev"), { description = "Window switcher (previous)" })
+-- ALT+Tab / ALT+SHIFT+Tab (grid alt-tab switcher) are bound in
+-- winswitch.lua: they emit ordered events on Hyprland's event socket for
+-- Quickshell instead of exec'ing a process per press.
 
 -- window groups (tabs) removed 2026-09-05: never used, and mod+G / mod+g
 -- collide (Hyprland folds keysym case without an explicit SHIFT), so

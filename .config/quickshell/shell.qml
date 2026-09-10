@@ -56,18 +56,14 @@ ShellRoot {
         }
     }
 
-    // Alt-tab grid (ALT+Tab / ALT+SHIFT+Tab), replacing the old standalone
-    // GTK winswitch binary. Same single-top-level-target / latched-monitor
-    // pattern; `cycle` (not `toggle`) since Hyprland re-fires the same bind
-    // on every Tab press while held -- WinSwitchState.cycle is reentrant
-    // (see its own doc) so this is safe to call on every press, not just
-    // the one that opens the grid.
+    // Alt-tab grid (ALT+Tab / ALT+SHIFT+Tab). Driven by Hyprland socket
+    // events from ~/.config/hypr/winswitch.lua, not IPC -- see
+    // WinSwitchState.qml. `close` is only a manual escape hatch.
     IpcHandler {
         target: "winswitch"
-        function cycle(direction: string): void {
-            WinSwitchState.cycle(direction, Hyprland.focusedMonitor?.name ?? "");
-        }
-    }
+        function close(): void {
+            WinSwitchState.close();
+        }    }
 
     Variants {
         model: Quickshell.screens

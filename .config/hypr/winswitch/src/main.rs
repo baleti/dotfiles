@@ -6,34 +6,14 @@
 //! never stays open waiting for further Tab presses -- once shown, the
 //! Quickshell panel handles its own repeat cycling locally.
 //!
-//! ## Tap/hold + the window list itself moved to QML (2026-09-10)
+//! ## Not on the critical path
 //!
-//! This used to *also* do the tap/hold determination (a debounced
-//! `hyprctl::is_alt_down()` read) and be the sole source of the window
-//! list, gating the whole grid opening on this process being spawned,
-//! reading its own tap/hold state, running `hyprctl -j clients`, and
-//! streaming a `windows` line back over a pipe -- three sequential
-//! subprocess spawns (`qs` IPC client, this binary, `hyprctl` inside it)
-//! plus this binary's own dynamic-linking/runtime-init cost, all on the
-//! critical path before a human could see *anything*, even an
-//! image-less placeholder grid. Reported as a 1-2s lag (2026-09-10) even
-//! after two earlier rounds of fixes to this same complaint -- measuring
-//! confirmed the individual pieces were each fast (tens of ms), but their
-//! sum, sequential and always paid before first paint, wasn't.
-//!
-//! Quickshell already keeps a live, in-process window list via
-//! `Quickshell.Hyprland`'s `Hyprland.toplevels` (populated from Hyprland's
-//! own IPC event stream, no subprocess needed at all), and can run the
-//! same debounced `hyprctl repl` Alt-state check itself just as cheaply as
-//! this process could. So WinSwitch.qml now does both directly and opens
-//! the grid the instant a hold is confirmed, using that in-process window
-//! list for an immediate placeholder grid -- *then* spawns this process,
-//! purely to do the one thing QML genuinely can't (live thumbnail capture
-//! via wayland-toplevel-export/dmabuf, and tmux/Claude correlation).
-//! `hyprctl::list_windows()` stays here (still needed to know what to
-//! capture and to size the capture thread's work), but it's no longer
-//! gating when anything becomes *visible* -- purely an internal detail
-//! by the time this process is even running.
+//! Key handling, window order and tap-vs-hold live in
+//! `~/.config/hypr/winswitch.lua` + `services/WinSwitchState.qml` (no
+//! processes spawned per keypress). This binary is spawned only once a grid
+//! is actually shown, to do what QML can't: live thumbnail capture via
+//! wayland-toplevel-export/dmabuf and tmux/Claude correlation.
+//! `hyprctl::list_windows()` here only decides what to capture.
 
 mod enrich;
 mod hyprctl;
@@ -41,9 +21,12 @@ mod output;
 mod protocol;
 mod wayland_capture;
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use hyprctl::Window;
 
 /// How long to keep draining thumbnail/enrichment results before giving up
 /// on stragglers and exiting -- a slow compositor-side copy queue (see
@@ -73,6 +56,37 @@ fn log_line(msg: &str) {
     let _ = writeln!(f, "[{secs} pid={}] {msg}", std::process::id());
 }
 
+/// Thumbnails are named `<address>-<run id>.png`. Drops `.tmp` leftovers from
+/// a killed run, the pre-2026-09-10 `thumb-<index>.png` files, and captures of
+/// windows that no longer exist.
+fn prune_thumb_dir(dir: &Path, windows: &[Window]) {
+    let live: HashSet<&str> = windows.iter().map(|w| w.address.as_str()).collect();
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let keep = !name.ends_with(".tmp") && name.split_once('-').is_some_and(|(addr, _)| live.contains(addr));
+        if !keep {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Keeps only `keep` for this window -- the frontend holds the older image in
+/// memory already and switches to the new path on the NDJSON line.
+fn remove_older_thumbs(dir: &Path, address: &str, keep: &Path) {
+    let prefix = format!("{address}-");
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && !name.ends_with(".tmp") && path != keep {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> std::io::Result<()> {
     let file = fs::File::create(path)?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
@@ -98,6 +112,8 @@ fn main() {
 
     let thumb_dir = thumb_dir();
     let _ = fs::create_dir_all(&thumb_dir);
+    prune_thumb_dir(&thumb_dir, &windows);
+    let run_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
 
     let thumb_rx = wayland_capture::start(&windows);
     let enrich_rx = enrich::start(&windows);
@@ -110,8 +126,12 @@ fn main() {
             progressed = true;
             thumbs_done += 1;
             let Some(w) = windows.get(msg.index) else { continue };
-            let path = thumb_dir.join(format!("thumb-{}.png", msg.index));
-            if write_png(&path, msg.width as u32, msg.height as u32, &msg.rgba).is_ok() {
+            // A fresh name per capture: the frontend's Image pixmap cache is
+            // keyed by URL, so reusing a path would show a stale picture.
+            let path = thumb_dir.join(format!("{}-{run_id}.png", w.address));
+            let tmp = path.with_extension("png.tmp");
+            if write_png(&tmp, msg.width as u32, msg.height as u32, &msg.rgba).is_ok() && fs::rename(&tmp, &path).is_ok() {
+                remove_older_thumbs(&thumb_dir, &w.address, &path);
                 output::thumbnail(&w.address, &format!("file://{}", path.display()), msg.width, msg.height);
             }
         }
