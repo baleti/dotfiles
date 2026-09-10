@@ -1012,8 +1012,8 @@ Rectangle {
     property real thumbAnchorY: 0
 
     // Kick off an async capture of `address` into a fresh PNG (thumbProc's
-    // onExited flips thumbReady once it lands). Shared by the "wks"-cell
-    // hover path and the keyboard-selection path.
+    // onExited flips thumbReady once it lands). Shared by the row-hover
+    // path and the keyboard-selection path.
     function startThumbCapture(address) {
         if (!address) {
             root.thumbReady = false;
@@ -1057,6 +1057,13 @@ Rectangle {
             + "    end\n"
             + "end";
         focusProc.exec(["hyprctl", "repl", script]);
+        // Close the panel once a window is picked -- same as winswitch's
+        // confirm() (focus then hide). Leaving it open kept this panel's
+        // layer-shell keyboard-focus grab (shell.qml, driven by
+        // openPanelCount) alive, which blocked ALT+Tab / mod+Tab from
+        // switching away afterwards (reported: "unable to return to that
+        // previous window").
+        root.expanded = false;
     }
 
     // ---- keyboard row navigation --------------------------------------
@@ -1978,15 +1985,32 @@ Rectangle {
                             ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
                             : "transparent")
 
-                    HoverHandler { id: procRowHover }
+                    // Hovering anywhere on the row (not just the "wks" cell)
+                    // shows that window's thumbnail, same as arrow-key
+                    // selection does (request). A HoverHandler, not a
+                    // MouseArea, so it still reports hovered while the
+                    // cursor is over the "acct" cell's own child MouseArea.
+                    // Gated on mouseMovedSinceOpen so a panel opened under
+                    // the pointer doesn't pop a thumbnail with no input.
+                    HoverHandler {
+                        id: procRowHover
+                        onHoveredChanged: {
+                            if (!root.mouseMovedSinceOpen)
+                                return;
+                            if (hovered)
+                                root.hyprHoverEntered(procRow.modelData.hypr_address,
+                                                      procRow.mapToItem(root, 0, 0).y);
+                            else
+                                root.hyprHoverExited();
+                        }
+                    }
 
                     // Click anywhere on the row focuses that session's
                     // window (request: "clicking anywhere in any row
                     // switches focus ... not just on its value in workspace
-                    // column"). Sits below the RowLayout, so the "wks"/
-                    // "acct" cells' own MouseAreas (hover tooltips, the
-                    // thumbnail) still get their own areas first; every
-                    // plain-text cell falls through to here.
+                    // column"). Sits below the RowLayout, so the "acct"
+                    // cell's own MouseArea (hover tooltip) still gets its
+                    // own area first; every other cell falls through here.
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: procRow.modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
@@ -2089,12 +2113,10 @@ Rectangle {
                         // session, if any (see root.hyprHoverEntered's own
                         // comment for why it's address-keyed rather than
                         // title/appId-matched). Just the "wks" column now
-                        // (monitor dropped, request 2026-09-08) -- still a
-                        // fixed-size Item (Layout.preferredWidth, not
-                        // implicit-from-children) so the MouseArea below
-                        // doesn't hit the sizing/MouseArea layout cycle
-                        // this file's old heading block once ran into (see
-                        // git history for that comment).
+                        // (monitor dropped, request 2026-09-08). Hover
+                        // (thumbnail) and click (focus) are both handled at
+                        // row level now -- see procRowHover / the row
+                        // MouseArea above -- so this is a plain text cell.
                         Item {
                             id: hyprCell
                             Layout.preferredWidth: root.colHyprWorkspaceW
@@ -2113,18 +2135,6 @@ Rectangle {
                                 font.bold: modelData.hypr_workspace && modelData.hypr_workspace === root.activeWorkspaceName
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 3
-                            }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onEntered: root.hyprHoverEntered(modelData.hypr_address, procRow.mapToItem(root, 0, 0).y)
-                                // Row can shift under the cursor as the
-                                // table scrolls -- keep the anchor current.
-                                onPositionChanged: root.thumbAnchorY = procRow.mapToItem(root, 0, 0).y
-                                onExited: root.hyprHoverExited()
-                                onClicked: root.focusHyprWindow(modelData)
                             }
                         }
                         Item { Layout.preferredWidth: root.handleW }
