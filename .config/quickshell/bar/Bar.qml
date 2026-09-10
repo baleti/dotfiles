@@ -107,17 +107,23 @@ Item {
             }
         } else if (calendarExpanded.expanded) {
             calendarExpanded.handleKey(event);
-        } else if (claudeUsageExpanded.expanded && event.key === Qt.Key_Escape) {
-            claudeUsageExpanded.expanded = false;
-            event.accepted = true;
-        } else if (claudeUsageExpanded.expanded && event.key === Qt.Key_Slash) {
-            // Real keyboard focus moves into the search box itself here
-            // (ClaudeUsageExpanded.focusSearch()) -- subsequent keystrokes
-            // (including its own Escape-clears-query handling) go straight
-            // to that TextInput, not back through this handler, the same
-            // way "/" hands off focus in the RSS reader/app launcher.
-            claudeUsageExpanded.focusSearch();
-            event.accepted = true;
+        } else if (claudeUsageExpanded.expanded) {
+            if (event.key === Qt.Key_Escape) {
+                claudeUsageExpanded.expanded = false;
+                event.accepted = true;
+            } else if (event.key === Qt.Key_Slash) {
+                // Real keyboard focus moves into the search box itself here
+                // (ClaudeUsageExpanded.focusSearch()) -- subsequent keystrokes
+                // (including its own Escape-clears-query handling) go straight
+                // to that TextInput, not back through this handler, the same
+                // way "/" hands off focus in the RSS reader/app launcher.
+                claudeUsageExpanded.focusSearch();
+                event.accepted = true;
+            } else {
+                // Up/Down walk the row selection; Space/Enter focuses the
+                // selected row's window (ClaudeUsageExpanded.handleKey).
+                claudeUsageExpanded.handleKey(event);
+            }
         }
     }
 
