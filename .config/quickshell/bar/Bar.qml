@@ -423,8 +423,11 @@ Item {
         const out = [];
         for (const iface of SysmonSvc.netInterfaces) {
             const c = root.colorFor(iface.name);
-            out.push({ data: iface.rx_bps, color: c, dashed: false });
-            out.push({ data: iface.tx_bps, color: c, dashed: true });
+            // Same name on both rx/tx (request 2026-09-10: hover-bold) --
+            // matches netLegend's own one-row-per-interface name, so
+            // hovering either line bolds both plus their shared legend row.
+            out.push({ data: iface.rx_bps, color: c, dashed: false, name: iface.name });
+            out.push({ data: iface.tx_bps, color: c, dashed: true, name: iface.name });
         }
         return out;
     }
@@ -452,17 +455,22 @@ Item {
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
     // confusing; separate overlaid lines show each core's own load clearly.
-    readonly property var cpuOverlayList: cpuPill.expanded ? SysmonSvc.cpuCores.map((c, i) => ({ data: c, color: root.palette[i % root.palette.length], dashed: false })) : []
+    // No legend for CPU (12+ cores would be unwieldy) -- name is still set
+    // per core (request 2026-09-10) so each line has a stable identity to
+    // hover-bold by; it just never gets matched against a legend row here.
+    readonly property var cpuOverlayList: cpuPill.expanded ? SysmonSvc.cpuCores.map((c, i) => ({ data: c, color: root.palette[i % root.palette.length], dashed: false, name: qsTr("core %1").arg(i) })) : []
 
     readonly property var memLegend: [
         { name: qsTr("Used"), color: Theme.green },
         { name: qsTr("Cached"), color: Theme.cyan },
         { name: qsTr("Swap"), color: Theme.orange }
     ]
+    // Names match memLegend's own exactly (request 2026-09-10: hover-bold
+    // needs the two to agree).
     readonly property var memSeriesList: memPill.expanded ? [
-        { data: SysmonSvc.memUsedPct, color: Theme.green, dashed: false },
-        { data: SysmonSvc.memCachedPct, color: Theme.cyan, dashed: true },
-        { data: SysmonSvc.swapUsedPct, color: Theme.orange, dashed: false }
+        { data: SysmonSvc.memUsedPct, color: Theme.green, dashed: false, name: qsTr("Used") },
+        { data: SysmonSvc.memCachedPct, color: Theme.cyan, dashed: true, name: qsTr("Cached") },
+        { data: SysmonSvc.swapUsedPct, color: Theme.orange, dashed: false, name: qsTr("Swap") }
     ] : []
 
     readonly property var diskLegend: diskPill.expanded ? SysmonSvc.diskDevices.map(d => ({ name: d.name, color: root.colorFor(d.name) })) : []
@@ -472,8 +480,10 @@ Item {
         const out = [];
         for (const dev of SysmonSvc.diskDevices) {
             const c = root.colorFor(dev.name);
-            out.push({ data: dev.read_bps, color: c, dashed: false });
-            out.push({ data: dev.write_bps, color: c, dashed: true });
+            // Same name on both read/write (request 2026-09-10: same
+            // reasoning as netSeriesList's own comment above).
+            out.push({ data: dev.read_bps, color: c, dashed: false, name: dev.name });
+            out.push({ data: dev.write_bps, color: c, dashed: true, name: dev.name });
         }
         return out;
     }
@@ -580,8 +590,10 @@ Item {
         return out;
     }
     readonly property var gpuLegend: root.gpuLines.map(l => ({ name: l.name, color: l.color }))
+    // name threaded through (request 2026-09-10: hover-bold, matches
+    // gpuLegend's own name exactly since both map the same gpuLines).
     readonly property var gpuSeriesList: gpuPill.expanded
-        ? root.gpuLines.map(l => ({ data: l.data, color: l.color, dashed: l.dashed }))
+        ? root.gpuLines.map(l => ({ data: l.data, color: l.color, dashed: l.dashed, name: l.name }))
         : []
     // One section per GPU -- its detail rows and its own "Top processes"
     // table, under a single heading so the GPU name isn't repeated.
