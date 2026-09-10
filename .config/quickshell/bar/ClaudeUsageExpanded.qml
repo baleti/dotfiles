@@ -2274,36 +2274,13 @@ Rectangle {
         }
     }
 
-    // Thumbnail popup: a purely visual cue for the row currently being
-    // hovered (its "wks" cell) or keyboard-selected -- not a click target
-    // itself, focusing is on the row (see focusHyprWindow). Pinned to the
-    // panel's left edge with its top at that row's top (request: "on the
-    // left of the panel rather than under the cursor ... top aligned to
-    // the top of any selected entry", and the same for Up/Down selection),
-    // clamped so a row near the bottom doesn't push the image off-panel.
-    Rectangle {
-        id: thumbPopup
-        visible: (root.thumbHovering || root.thumbKeyboardActive) && root.thumbReady && root.thumbAddress !== ""
-        x: 12
-        y: Math.max(4, Math.min(root.thumbAnchorY, root.height - height - 4))
-        z: 100
-        width: thumbImg.implicitWidth > 0 ? Math.min(280, thumbImg.implicitWidth) + 4 : 4
-        height: thumbImg.implicitHeight > 0 ? (width - 4) * (thumbImg.implicitHeight / thumbImg.implicitWidth) + 4 : 4
-        color: Theme.bg
-        border.color: Theme.cyan
-        border.width: 1
-        radius: 3
-
-        Image {
-            id: thumbImg
-            anchors.fill: parent
-            anchors.margins: 2
-            fillMode: Image.PreserveAspectFit
-            asynchronous: true
-            cache: false
-            source: root.thumbReady ? "file://" + root.thumbImagePath : ""
-        }
-    }
+    // The hover/keyboard thumbnail is rendered by Bar.qml, NOT here: it's
+    // meant to sit just outside this panel's left edge (request: "out of
+    // the panel aligned to the left border"), and this Rectangle has
+    // clip:true (its content can exceed the monitor-capped height), which
+    // would swallow anything drawn past its bounds. Bar.qml binds to the
+    // thumb* properties above and to thumbAnchorY (a Y in this panel's own
+    // coordinate space, top of the hovered/selected row) for placement.
 
     // Generic cursor-following hover hint -- header abbreviations
     // (wks/sess/win/tkns) and each row's "acct" cell (root.showHint/
