@@ -1306,6 +1306,12 @@ Rectangle {
                     } else if (event.key === Qt.Key_Up && root.acOpen) {
                         root.acSel = Math.max(0, root.acSel - 1);
                         event.accepted = true;
+                    } else if (event.key === Qt.Key_PageDown && root.acOpen) {
+                        root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_PageUp && root.acOpen) {
+                        root.acSel = Math.max(0, root.acSel - 7);
+                        event.accepted = true;
                     }
                 }
             }
@@ -1339,6 +1345,7 @@ Rectangle {
                 id: acList
                 anchors.fill: parent
                 anchors.margins: 4
+                anchors.rightMargin: 10
                 clip: true
                 model: root.acItems
                 currentIndex: root.acSel
@@ -1386,6 +1393,67 @@ Rectangle {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: { root.acSel = acRow.index; root.acAccept(); }
+                    }
+                }
+            }
+
+            // Hand-rolled vertical scrollbar (no QtQuick.Controls anywhere
+            // in this project, see bar/CalendarExpanded.qml's identical
+            // pattern) - visible only once acItems overflows the 7-row
+            // window, thumb size/position proportional to how much of the
+            // list is in view.
+            Rectangle {
+                id: acScrollBar
+                visible: acList.contentHeight > acList.height + 1
+                anchors.top: acList.top
+                anchors.right: parent.right
+                anchors.rightMargin: 3
+                width: 4
+                height: acList.height
+                radius: 2
+                color: Qt.rgba(1, 1, 1, 0.06)
+
+                readonly property real thumbH: Math.max(10, acList.visibleArea.heightRatio * height)
+                readonly property real travel: Math.max(1, height - thumbH)
+                readonly property real maxContentY: Math.max(0, acList.contentHeight - acList.height)
+
+                function scrollToThumbTop(ty: real): void {
+                    const clamped = Math.max(0, Math.min(acScrollBar.travel, ty));
+                    acList.contentY = (clamped / acScrollBar.travel) * acScrollBar.maxContentY;
+                }
+
+                Rectangle {
+                    width: parent.width
+                    radius: 2
+                    height: acScrollBar.thumbH
+                    y: Math.min(acScrollBar.travel, acList.visibleArea.yPosition * acScrollBar.height)
+                    color: acSbArea.pressed ? Theme.text
+                        : (acSbArea.containsMouse ? Theme.textDim : Qt.rgba(1, 1, 1, 0.28))
+                }
+
+                MouseArea {
+                    id: acSbArea
+                    anchors.fill: parent
+                    anchors.leftMargin: -8
+                    anchors.topMargin: -2
+                    anchors.bottomMargin: -2
+                    hoverEnabled: true
+                    preventStealing: true
+                    property real grabOffset: 0
+
+                    onPressed: mouse => {
+                        const ty = mouse.y + anchors.topMargin;
+                        const thumbY = Math.min(acScrollBar.travel, acList.visibleArea.yPosition * acScrollBar.height);
+                        if (ty >= thumbY && ty <= thumbY + acScrollBar.thumbH) {
+                            grabOffset = ty - thumbY;
+                        } else {
+                            grabOffset = acScrollBar.thumbH / 2;
+                            acScrollBar.scrollToThumbTop(ty - grabOffset);
+                        }
+                    }
+                    onPositionChanged: mouse => {
+                        if (pressed)
+                            acScrollBar.scrollToThumbTop(mouse.y + anchors.topMargin - grabOffset);
                     }
                 }
             }
