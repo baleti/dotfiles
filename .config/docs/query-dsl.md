@@ -453,21 +453,44 @@ above.
 
 ## Autocompletion
 
-**The popup is Tab-triggered, never shown just from typing.** Nothing
-pops up on its own as you type `/frag` - typing alone only ever affects
-the row filter/columns/order the same way it always did. Pressing Tab is
-what asks "what could this become": if there's exactly one candidate, it
-completes immediately with no popup ever built or shown at all, the same
-way ordinary shell tab-completion silently completes an unambiguous path;
-only 2+ candidates actually reveal a popup, to choose among them. Typing
-anything further after a popup is showing closes it (the fragment it was
-built from is stale now) - Tab recomputes it fresh for wherever the
-cursor is. This applies uniformly everywhere: the GTK pickers show/hide
+**The popup is Tab-triggered to open, never shown just from typing.**
+Nothing pops up on its own as you type `/frag` - typing alone only ever
+affects the row filter/columns/order the same way it always did. Pressing
+Tab is what asks "what could this become": if there's exactly one
+candidate, it completes immediately with no popup ever built or shown at
+all, the same way ordinary shell tab-completion silently completes an
+unambiguous path; only 2+ candidates actually reveal a popup, to choose
+among them. This applies uniformly everywhere: the GTK pickers show/hide
 an in-layout `GtkListBox`, the QML consumers an overlay `Rectangle`,
 claude-history spawns/dismisses a nested fzf (see below) - always
-Tab-gated, never live. An always-on popup that repainted on every
-keystroke was tried first and dropped: it read as obtrusive, and once in
-a while it stole a focus/resize cycle at exactly the wrong moment.
+Tab-gated to *open*, never live. An always-on popup that repainted on
+every keystroke was tried first and dropped: it read as obtrusive, and
+once in a while it stole a focus/resize cycle at exactly the wrong moment.
+
+**Once open, typing further narrows it instead of closing it** (changed
+2026-09-10 - the original rule closed the popup on the next keystroke,
+"the fragment it was built from is stale now, Tab recomputes fresh for
+wherever the cursor is"; reported as the wrong call once popups routinely
+held more than a handful of entries: `/fv/` + Tab lists every field, and
+typing `p` should narrow that list to `path`/`pid`/... in place, not
+force another Tab press). Every keystroke while the popup is showing
+recomputes candidates fresh from the current text - the same
+computation Tab itself uses, just re-run on each change rather than
+gated behind the key - and replaces the shown rows with whatever comes
+back, resetting the highlight to the top: narrows as the fragment
+narrows, jumps to a whole new candidate set if the edit crosses into a
+different stage (finishing a type path and typing the value that follows
+it, say), and closes itself once nothing matches at all - the same
+"narrows to nothing" honest-empty-result rule the rest of the grammar
+already follows (see Design principles), not a special case. Unlike
+Tab's own trigger, narrowing down to exactly one candidate by typing
+never auto-accepts it - the popup still shows that one row and still
+waits for an explicit accept (Enter / Space / Tab, per picker - see
+below), since silently applying a completion just because typing
+happened to narrow to a single match would be a surprise, not a
+convenience. Typing while nothing is open still never opens anything
+from scratch - that half of the original rule is unchanged, only the
+"once shown" half flipped from close-and-retrigger to narrow-in-place.
 
 Typing `/` then pressing Tab is enough to discover the whole grammar (the
 list just won't appear until you actually press Tab - see above). All the
