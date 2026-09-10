@@ -55,6 +55,12 @@ QtObject {
     readonly property list<real> memUsedPct: memSock.data.used_pct ?? []
     readonly property list<real> memCachedPct: memSock.data.cached_pct ?? []
     readonly property list<real> swapUsedPct: memSock.data.swap_used_pct ?? []
+    // Swap activity (bytes/s of pages actually moving in/out right now),
+    // distinct from swapUsedPct above (how full swap is) -- see sysmond's
+    // Snapshot::Mem comment. From /proc/vmstat's pswpin/pswpout, diffed
+    // tick-over-tick like any other byte-rate series.
+    readonly property list<real> swapInBps: memSock.data.swap_in_bps ?? []
+    readonly property list<real> swapOutBps: memSock.data.swap_out_bps ?? []
 
     // Every GPU on the machine, one object each (iGPU + dGPU on a hybrid
     // laptop). Per entry: name, vendor ("intel"|"nvidia"), the history

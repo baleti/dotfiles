@@ -135,18 +135,29 @@ fn merge_snapshot(existing: Option<Snapshot>, incoming: Snapshot) -> Snapshot {
             append_trim(&mut merged, delta);
             Snapshot::Temp { full: true, celsius: merged }
         }
-        Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct } => {
-            Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct }
+        Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct, swap_in_bps, swap_out_bps } => {
+            Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct, swap_in_bps, swap_out_bps }
         }
-        Snapshot::Mem { full: false, used_pct: d_used, cached_pct: d_cached, swap_used_pct: d_swap } => {
-            let (mut used_pct, mut cached_pct, mut swap_used_pct) = match existing {
-                Some(Snapshot::Mem { used_pct, cached_pct, swap_used_pct, .. }) => (used_pct, cached_pct, swap_used_pct),
-                _ => (Vec::new(), Vec::new(), Vec::new()),
+        Snapshot::Mem {
+            full: false,
+            used_pct: d_used,
+            cached_pct: d_cached,
+            swap_used_pct: d_swap,
+            swap_in_bps: d_swap_in,
+            swap_out_bps: d_swap_out,
+        } => {
+            let (mut used_pct, mut cached_pct, mut swap_used_pct, mut swap_in_bps, mut swap_out_bps) = match existing {
+                Some(Snapshot::Mem { used_pct, cached_pct, swap_used_pct, swap_in_bps, swap_out_bps, .. }) => {
+                    (used_pct, cached_pct, swap_used_pct, swap_in_bps, swap_out_bps)
+                }
+                _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             };
             append_trim(&mut used_pct, d_used);
             append_trim(&mut cached_pct, d_cached);
             append_trim(&mut swap_used_pct, d_swap);
-            Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct }
+            append_trim(&mut swap_in_bps, d_swap_in);
+            append_trim(&mut swap_out_bps, d_swap_out);
+            Snapshot::Mem { full: true, used_pct, cached_pct, swap_used_pct, swap_in_bps, swap_out_bps }
         }
         Snapshot::Gpu { full: true, gpus } => Snapshot::Gpu { full: true, gpus },
         Snapshot::Gpu { full: false, gpus: delta } => {

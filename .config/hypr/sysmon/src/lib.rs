@@ -285,9 +285,26 @@ pub enum Snapshot {
     // MemAvailable); `cached_pct` is Buffers+Cached, overlaid separately so
     // both are visible instead of only the "true" used figure. `swap_used_pct`
     // is a third overlaid line, percent of SwapTotal in use (2026-08-29).
-    // `#[serde(default)]` so an old sysmond (pre-swap) doesn't break a
-    // rebuilt client expecting this field.
-    Mem { #[serde(default = "default_full")] full: bool, used_pct: Vec<f64>, cached_pct: Vec<f64>, #[serde(default)] swap_used_pct: Vec<f64> },
+    // `swap_in_bps`/`swap_out_bps` (2026-09-06) are actual swap *activity* --
+    // bytes/s of pages being swapped in/out right now, from `/proc/vmstat`'s
+    // pswpin/pswpout counters diffed tick-over-tick (same rate treatment as
+    // Net/Disk's byte counters) -- distinct from `swap_used_pct`, which is
+    // just how full swap is and says nothing about whether it's actively
+    // thrashing. `#[serde(default)]` so an old sysmond (pre-swap, or
+    // pre-swap-activity) doesn't break a rebuilt client expecting these
+    // fields.
+    Mem {
+        #[serde(default = "default_full")]
+        full: bool,
+        used_pct: Vec<f64>,
+        cached_pct: Vec<f64>,
+        #[serde(default)]
+        swap_used_pct: Vec<f64>,
+        #[serde(default)]
+        swap_in_bps: Vec<f64>,
+        #[serde(default)]
+        swap_out_bps: Vec<f64>,
+    },
     // One entry per whole-disk block device (partitions excluded), same
     // overlay-per-device treatment as Net (same new-device-forces-full rule).
     Disk { #[serde(default = "default_full")] full: bool, devices: Vec<DiskHistory> },

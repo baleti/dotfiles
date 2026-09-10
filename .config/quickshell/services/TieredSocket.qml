@@ -110,7 +110,9 @@ Item {
             return { metric: "mem",
                      used_pct: root._tail(src.used_pct, cap),
                      cached_pct: root._tail(src.cached_pct, cap),
-                     swap_used_pct: root._tail(src.swap_used_pct, cap) };
+                     swap_used_pct: root._tail(src.swap_used_pct, cap),
+                     swap_in_bps: root._tail(src.swap_in_bps, cap),
+                     swap_out_bps: root._tail(src.swap_out_bps, cap) };
         case "net":
         case "disk": {
             const listKey = root.metricName === "net" ? "interfaces" : "devices";
@@ -184,6 +186,8 @@ Item {
             root._pushTrim(d.used_pct, msg.used_pct, cap);
             root._pushTrim(d.cached_pct, msg.cached_pct, cap);
             root._pushTrim(d.swap_used_pct, msg.swap_used_pct, cap);
+            root._pushTrim(d.swap_in_bps, msg.swap_in_bps, cap);
+            root._pushTrim(d.swap_out_bps, msg.swap_out_bps, cap);
             break;
         case "net":
         case "disk": {

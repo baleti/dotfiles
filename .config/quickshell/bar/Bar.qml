@@ -383,6 +383,23 @@ Item {
         return arr.length > 0 ? arr[arr.length - 1] : 0;
     }
 
+    // Average of the last `n` raw samples, not just the single most recent
+    // one -- for bursty per-second counters (swap in/out) `last()` reads as
+    // "stuck at 0" most of the time since the kernel moves pages in short
+    // spikes rather than continuously (2026-09-08: confirmed via direct
+    // /proc/vmstat sampling, ~10-35% of seconds nonzero even under real
+    // swap pressure). Smoothing over a short window keeps it representative
+    // of "activity right now" without hiding real activity between polls.
+    function avgLast(arr: var, n: int): real {
+        if (arr.length === 0)
+            return 0;
+        const count = Math.min(n, arr.length);
+        let sum = 0;
+        for (let i = arr.length - count; i < arr.length; i++)
+            sum += arr[i];
+        return sum / count;
+    }
+
     function fmtRate(bps: real): string {
         if (bps >= 1024 * 1024)
             return (bps / (1024 * 1024)).toFixed(1) + " MB/s";
@@ -770,6 +787,19 @@ Item {
             secondaryDivider: false
             secondaryValueFraction: root.last(SysmonSvc.swapUsedPct) / 100
             legendItems: root.memLegend
+            // Swap *activity* (pages actually moving right now), not just
+            // how full swap is (already covered by secondaryText above) --
+            // request 2026-09-06: "useful to know what's currently
+            // swapping". bytes/s from /proc/vmstat's pswpin/pswpout, same
+            // fmtRate used for net/disk throughput. Averaged over the last
+            // 5 raw (1s) samples rather than root.last()'s single most
+            // recent one -- swap I/O happens in short kernel bursts, so the
+            // instantaneous reading sat at 0 most of the time even during
+            // real swap pressure (2026-09-08).
+            detailRows: [
+                { name: qsTr("Swap in"), value: root.fmtRate(root.avgLast(SysmonSvc.swapInBps, 5)) },
+                { name: qsTr("Swap out"), value: root.fmtRate(root.avgLast(SysmonSvc.swapOutBps, 5)) },
+            ]
             topProcs: SysmonSvc.topMem
             topUnit: " MB"
             yAxisFormatter: v => Math.round(v) + "%"
@@ -819,8 +849,8 @@ Item {
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
             usageItems: SysmonSvc.diskUsage
-            topProcs: SysmonSvc.topDisk
-            topUnit: " KB/s"
+            topProcs: SysmonSvc.topDisk.map(e => ({ pid: e.pid, name: e.name, detail: e.detail, util_pct: e.util_pct, value: e.value / 1024 }))
+            topUnit: " MB/s"
             yAxisFormatter: v => root.fmtRate(v)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
