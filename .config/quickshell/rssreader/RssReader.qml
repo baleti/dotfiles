@@ -522,6 +522,14 @@ PanelWindow {
                                     }
                                 }
 
+                                // Standard completion-menu convention
+                                // (reported 2026-09-09 against winswitch's
+                                // identical pattern -- accepting on every
+                                // Tab press without ever letting you cycle
+                                // through options was confusing): the first
+                                // Tab opens the popup; every Tab after that
+                                // just moves the highlight, same as Down;
+                                // Enter is the one key that accepts.
                                 Keys.onPressed: e => {
                                     if (e.key === Qt.Key_Escape) {
                                         if (root.acOpen) root.acDismissed = true;
@@ -529,12 +537,20 @@ PanelWindow {
                                         else root._returnFocusToList();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Tab) {
-                                        if (root.acOpen) { root.acAccept(); e.accepted = true; }
-                                        else if (root._triggerCompletion()) { e.accepted = true; }
+                                        if (root.acOpen) {
+                                            root.acSel = (root.acSel + (e.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
+                                            e.accepted = true;
+                                        } else if (root._triggerCompletion()) {
+                                            e.accepted = true;
+                                        }
                                         // else: fall through to keyScope's
                                         // search<->list Tab toggle.
                                     } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
-                                        root._returnFocusToList();
+                                        if (root.acOpen) root.acAccept();
+                                        else root._returnFocusToList();
+                                        e.accepted = true;
+                                    } else if (e.key === Qt.Key_Space && root.acOpen) {
+                                        root.acAccept();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Down) {
                                         if (root.acOpen) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);

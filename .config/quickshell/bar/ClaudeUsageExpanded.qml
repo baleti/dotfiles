@@ -596,6 +596,10 @@ Rectangle {
     property bool acDismissed: false
     readonly property bool acOpen: acItems.length > 0 && !acDismissed
     onAcItemsChanged: { acSel = 0; acDismissed = false; }
+    // Keep the highlighted row in view as arrow keys move acSel past
+    // the popup's fixed 7-row window -- acList is the ListView defined
+    // below, in the same component so its id is visible here.
+    onAcSelChanged: acList.positionViewAtIndex(acSel, ListView.Contain)
 
     function _applyAcItem(it) {
         if (!it) return;
@@ -1287,8 +1291,15 @@ Rectangle {
                         }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
-                        if (root.acOpen) { root.acAccept(); event.accepted = true; }
-                        else if (root.triggerCompletion()) { event.accepted = true; }
+                        if (root.acOpen) {
+                            root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
+                        } else {
+                            root.triggerCompletion();
+                        }
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Space && root.acOpen) {
+                        root.acAccept();
+                        event.accepted = true;
                     } else if (event.key === Qt.Key_Down && root.acOpen) {
                         root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
                         event.accepted = true;
@@ -1320,56 +1331,61 @@ Rectangle {
             border.width: 1
             clip: true
 
-            Column {
+            // ListView instead of a plain Column+Repeater so entries past
+            // the 7-row window are reachable -- wheel-scrollable, and
+            // Up/Down (root.onAcSelChanged above) keeps the selection in
+            // view via positionViewAtIndex.
+            ListView {
+                id: acList
                 anchors.fill: parent
-                padding: 4
+                anchors.margins: 4
+                clip: true
+                model: root.acItems
+                currentIndex: root.acSel
+                boundsBehavior: Flickable.StopAtBounds
+                delegate: Rectangle {
+                    id: acRow
+                    required property var modelData
+                    required property int index
+                    readonly property bool cur: index === root.acSel
+                    width: acList.width
+                    height: 24
+                    radius: Theme.rounding - 5
+                    color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
 
-                Repeater {
-                    model: root.acItems
-                    Rectangle {
-                        id: acRow
-                        required property var modelData
-                        required property int index
-                        readonly property bool cur: index === root.acSel
-                        width: ac.width - 8
-                        height: 24
-                        radius: Theme.rounding - 5
-                        color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        x: 10
+                        spacing: 8
 
-                        Row {
-                            anchors.verticalCenter: parent.verticalCenter
-                            x: 10
-                            spacing: 8
-
-                            Text {
-                                id: acLabel
-                                text: acRow.modelData.label
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                color: acRow.cur ? Theme.cyan : Theme.text
-                            }
-                            Text {
-                                visible: !!acRow.modelData.alias
-                                anchors.baseline: acLabel.baseline
-                                text: "(" + acRow.modelData.alias + ")"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                                color: Theme.muted
-                            }
-                            Text {
-                                anchors.baseline: acLabel.baseline
-                                text: acRow.modelData.desc
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 3
-                                color: Theme.textDim
-                            }
+                        Text {
+                            id: acLabel
+                            text: acRow.modelData.label
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            color: acRow.cur ? Theme.cyan : Theme.text
                         }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: { root.acSel = acRow.index; root.acAccept(); }
+                        Text {
+                            visible: !!acRow.modelData.alias
+                            anchors.baseline: acLabel.baseline
+                            text: "(" + acRow.modelData.alias + ")"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            color: Theme.muted
                         }
+                        Text {
+                            anchors.baseline: acLabel.baseline
+                            text: acRow.modelData.desc
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            color: Theme.textDim
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { root.acSel = acRow.index; root.acAccept(); }
                     }
                 }
             }

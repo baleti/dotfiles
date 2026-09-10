@@ -430,17 +430,30 @@ PanelWindow {
                     }
                 }
 
+                // Standard completion-menu convention (reported 2026-09-09
+                // against winswitch's identical pattern -- accepting on
+                // every Tab press without ever letting you cycle through
+                // options was confusing): the first Tab opens the popup;
+                // every Tab after that just moves the highlight, the same
+                // as Down/Ctrl+j; Enter is the one key that actually
+                // accepts the highlighted suggestion.
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
                         if (ac.visible) ac.visible = false;
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                        root.launch(root.selected);
+                        if (ac.visible) root.acAccept();
+                        else root.launch(root.selected);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
-                        if (ac.visible) root.acAccept();
-                        else root._triggerCompletion();
+                        if (ac.visible)
+                            root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
+                        else
+                            root._triggerCompletion();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Space && ac.visible) {
+                        root.acAccept();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Down
                                || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
