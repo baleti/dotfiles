@@ -77,6 +77,12 @@ Canvas {
     // stay reserved for "nothing hovered" or a single-mode graph would
     // read as permanently hovered.
     readonly property string _singleSentinel: "__single__"
+    // Whether hovering a line bolds it (and its legend row). Only useful on
+    // graphs that have labels to match a line back to -- the CPU panel has
+    // a dozen unlabelled per-core lines, where bolding one on hover is just
+    // noise. Off there; the cursor-slice tracking below (hoveredIndex, for
+    // GraphPill's top-process tooltip) is unaffected.
+    property bool lineHoverHighlight: true
     property string hoveredName: ""
     // Read by GraphPill.qml's legend Repeater to bold the matching row --
     // exposed as the sentinel-free single-mode-aware form (never leaks
@@ -204,20 +210,22 @@ Canvas {
     // crossing) keep whichever was checked first -- seriesList's own
     // draw order, stable and not worth breaking on.
     function _updateHover(mx, my) {
-        const list = root._hitTestSeries();
-        let bestName = "";
-        let bestDist = 10;
-        for (const s of list) {
-            const y = root._lineYAt(s.data, mx);
-            if (y === null)
-                continue;
-            const d = Math.abs(my - y);
-            if (d < bestDist) {
-                bestDist = d;
-                bestName = s.name ?? "";
+        if (root.lineHoverHighlight) {
+            const list = root._hitTestSeries();
+            let bestName = "";
+            let bestDist = 10;
+            for (const s of list) {
+                const y = root._lineYAt(s.data, mx);
+                if (y === null)
+                    continue;
+                const d = Math.abs(my - y);
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestName = s.name ?? "";
+                }
             }
+            root.hoveredName = bestName;
         }
-        root.hoveredName = bestName;
 
         const n = root._pointCount();
         if (n >= 1 && mx >= 0 && mx <= width) {

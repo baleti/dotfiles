@@ -758,6 +758,10 @@ Item {
             valueLabel: compactText
             mode: "overlay"
             seriesList: root.cpuOverlayList
+            // No line-hover bolding here -- a dozen unlabelled per-core
+            // lines, nothing to match a bolded one back to (unlike net/
+            // disk/gpu/mem, which have legends).
+            lineHoverHighlight: false
             // Thinner (request 2026-09-06) -- one line per logical core
             // (a dozen-plus on this machine), where thin lines were
             // already the whole point of not stacking per-core fills
