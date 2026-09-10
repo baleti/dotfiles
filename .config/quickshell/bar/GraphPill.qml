@@ -112,6 +112,20 @@ Rectangle {
 
     readonly property bool hoverTipActive: root.expanded && root.procHistSub !== "" && graph.hoveredIndex >= 0
 
+    // Cursor position in this pill's coordinates -- both hover popups anchor
+    // off it. Recomputed whenever the Graph's tracked cursor moves.
+    readonly property point _hoverCursorInPill: graph.mapToItem(root, graph.hoveredPixelX, graph.hoveredPixelY)
+
+    // The legend colour of the line currently under the cursor (Graph only
+    // tracks its name), for the little name chip. Empty string when no line
+    // is hovered or the pill has no legend (e.g. CPU).
+    readonly property color _hoveredLineColor: {
+        for (const l of root.legendItems)
+            if (l.name === graph.hoveredLegendName)
+                return l.color;
+        return Theme.text;
+    }
+
     // The snapshot lined up with the graph point under the cursor -- the
     // snapshot ring and the graph series for a tier finalize a bucket
     // together server-side, so both are tail-aligned (newest last); index
@@ -1074,78 +1088,116 @@ Rectangle {
             }
         }
 
-        // Graph-hover tooltip -- the top processes at the graph point under
-        // the cursor (see `hoverSnap`, driven by Graph.qml's hoveredIndex).
-        // A later sibling of `content` so it paints on top; clipped to the
-        // panel like everything else in here, which is fine since the
-        // cursor (and so this) is always over the graph area near the
-        // panel's top.
-        Rectangle {
-            id: hoverTip
-            visible: root.hoverTipActive && !!root.hoverSnap
-                     && (root.hoverSnap.procs ? root.hoverSnap.procs.length : 0) > 0
-            z: 50
-            width: 250
-            height: hoverTipCol.implicitHeight + 16
-            // To the right of the cursor and vertically centred on it
-            // (mapping the Graph's own coords into this panel's), flipping
-            // to the left when it would overflow the panel's right edge,
-            // and clamped inside the panel either way.
-            readonly property point cursorInPanel: graph.mapToItem(expandPanel, graph.hoveredPixelX, graph.hoveredPixelY)
-            readonly property real _gap: 16
-            readonly property bool _flipLeft: cursorInPanel.x + _gap + width > parent.width - 4
-            x: _flipLeft ? Math.max(4, cursorInPanel.x - _gap - width)
-                         : Math.min(parent.width - width - 4, cursorInPanel.x + _gap)
-            y: Math.max(4, Math.min(parent.height - height - 4, cursorInPanel.y - height / 2))
-            color: Theme.bg
-            border.color: Theme.border
-            border.width: 1
-            radius: Theme.rounding
+    }
 
-            Column {
-                id: hoverTipCol
-                x: 8
-                y: 8
-                width: parent.width - 16
-                spacing: 3
+    // Graph-hover tooltip -- the top processes at the graph point under the
+    // cursor (see `hoverSnap`, driven by Graph.qml's hoveredIndex). A child
+    // of `root` rather than `expandPanel` so it isn't clipped by the
+    // panel's `clip: true` -- it's meant to sit to the RIGHT of the cursor
+    // always, spilling out over the desktop beside the panel when the
+    // cursor is near the panel's own right edge.
+    Rectangle {
+        id: hoverTip
+        parent: root
+        visible: root.hoverTipActive && !!root.hoverSnap
+                 && (root.hoverSnap.procs ? root.hoverSnap.procs.length : 0) > 0
+        z: 100
+        width: 250
+        height: hoverTipCol.implicitHeight + 16
+        // Always to the right of the cursor, vertically centred on it
+        // (Graph coords mapped into this pill's). No left-flip and no
+        // right-edge clamp -- overflowing the panel onto the background is
+        // intended; only the top is floored so it never rides up over the
+        // bar strip.
+        x: root._hoverCursorInPill.x + 16
+        y: Math.max(root.height + 4, root._hoverCursorInPill.y - height / 2)
+        color: Theme.bg
+        border.color: Theme.border
+        border.width: 1
+        radius: Theme.rounding
 
-                Text {
-                    width: parent.width
-                    text: root.hoverSnap
-                          ? (root._fmtAgo(root.hoverSnap.secs_ago) + "  ·  peak " + root.yAxisFormatter(root.hoverSnap.value))
-                          : ""
-                    color: Theme.textDim
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 3
-                    font.italic: true
-                }
+        Column {
+            id: hoverTipCol
+            x: 8
+            y: 8
+            width: parent.width - 16
+            spacing: 3
 
-                Repeater {
-                    model: root.hoverSnap ? (root.hoverSnap.procs ?? []) : []
+            Text {
+                width: parent.width
+                text: root.hoverSnap
+                      ? (root._fmtAgo(root.hoverSnap.secs_ago) + "  ·  peak " + root.yAxisFormatter(root.hoverSnap.value))
+                      : ""
+                color: Theme.textDim
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 3
+                font.italic: true
+            }
 
-                    RowLayout {
-                        required property var modelData
-                        width: hoverTipCol.width
-                        spacing: 6
+            Repeater {
+                model: root.hoverSnap ? (root.hoverSnap.procs ?? []) : []
 
-                        Text {
-                            text: modelData.detail ? modelData.name + " " + modelData.detail : modelData.name
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            text: root.procHistValueFmt(modelData.value)
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                            horizontalAlignment: Text.AlignRight
-                            Layout.preferredWidth: 64
-                        }
+                RowLayout {
+                    required property var modelData
+                    width: hoverTipCol.width
+                    spacing: 6
+
+                    Text {
+                        text: modelData.detail ? modelData.name + " " + modelData.detail : modelData.name
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: root.procHistValueFmt(modelData.value)
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                        horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: 64
                     }
                 }
+            }
+        }
+    }
+
+    // Little name chip for the graph line directly under the cursor -- only
+    // shows when a line is actually hovered (Graph bolds it + its legend
+    // row already; this puts the name at the cursor too). Sits just above
+    // the process tooltip, same left edge.
+    Rectangle {
+        id: lineChip
+        parent: root
+        visible: root.expanded && graph.hoveredLegendName.length > 0
+        z: 101
+        width: chipRow.implicitWidth + 16
+        height: chipRow.implicitHeight + 8
+        x: root._hoverCursorInPill.x + 16
+        y: hoverTip.y - height - 4
+        color: Theme.bg
+        border.color: Theme.border
+        border.width: 1
+        radius: Theme.rounding
+
+        Row {
+            id: chipRow
+            anchors.centerIn: parent
+            spacing: 6
+
+            Rectangle {
+                width: 8
+                height: 8
+                radius: 2
+                anchors.verticalCenter: parent.verticalCenter
+                color: root._hoveredLineColor
+            }
+            Text {
+                text: graph.hoveredLegendName
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 2
             }
         }
     }
