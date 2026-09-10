@@ -756,12 +756,11 @@ Rectangle {
     // "last" itself is short, but values like "2mo 1w" aren't.
     property real colLastW: colDefaults.last
     // tmux is a *grouped* column -- one "tmux" super-header spanning these
-    // 3, each shrink-to-fit like status/tokens/pid below (whichever is
-    // wider of its own header label - "sess"/"win"/"pane" - and the actual
-    // current values). session used to stay flat at 54px (~"session"
-    // spelled out) while window/pane already got this treatment -
-    // reported 2026-09-10 as visibly wider than it needed to be once the
-    // other two had shrunk and it hadn't.
+    // 3, each shrink-to-fit to its actual current values alone (see
+    // tmuxSessionNaturalW etc. below for why these 3, unlike
+    // status/tokens/pid, don't also take their header label into the
+    // Math.max - the label would nearly always be the wider of the two
+    // and defeat the point).
     property real colTmuxSessionW: colDefaults.tmuxSession
     property real colTmuxWindowW: colDefaults.tmuxWindow
     property real colTmuxPaneW: colDefaults.tmuxPane
@@ -911,18 +910,25 @@ Rectangle {
         pathFontMetrics.advanceWidth(qsTr("pid") + " ▲"),
         root._maxTextWidth(valueFontMetrics, root.allProcs.map(r => String(r.pid)))
     ) + 6
-    readonly property real tmuxSessionNaturalW: Math.max(
-        pathFontMetrics.advanceWidth(qsTr("sess") + " ▲"),
-        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_session || ""))
-    ) + 6
-    readonly property real tmuxWindowNaturalW: Math.max(
-        pathFontMetrics.advanceWidth(qsTr("win") + " ▲"),
-        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_window || ""))
-    ) + 6
-    readonly property real tmuxPaneNaturalW: Math.max(
-        pathFontMetrics.advanceWidth(qsTr("pane") + " ▲"),
-        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_pane || ""))
-    ) + 6
+    // Content-only, unlike status/tkns/pid above -- those headers
+    // ("status"/"tkns"/"pid") are comparable in length to their own
+    // values, so the Math.max(header, value) pattern they use rarely
+    // matters. tmux's ids are short (1-3 digit numbers, `tmux_session`
+    // etc. is `#{session_id}` with its "$" stripped - see
+    // claude-usage-daemon.py) but "sess"/"win"/"pane" + a reserved sort-
+    // arrow slot are not, so that same pattern let the header label (not
+    // the values) set the width every time - the column always read as
+    // padded well past its actual digits (reported 2026-09-10, "sess"
+    // worst of the three since its label is longest). Sizing off the
+    // values alone means an active sort's " ▲"/" ▼" can, rarely, overflow
+    // a very narrow column - the header Text below now has `elide` as the
+    // safety net for that, same as the "title" header's.
+    readonly property real tmuxSessionNaturalW: Math.max(root.colMinW,
+        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_session || "")) + 6)
+    readonly property real tmuxWindowNaturalW: Math.max(root.colMinW,
+        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_window || "")) + 6)
+    readonly property real tmuxPaneNaturalW: Math.max(root.colMinW,
+        root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.tmux_pane || "")) + 6)
     readonly property real hyprWorkspaceNaturalW: Math.max(
         pathFontMetrics.advanceWidth(qsTr("wks") + " ▲"),
         root._maxTextWidth(pathFontMetrics, root.allProcs.map(r => r.hypr_workspace || ""))
@@ -1654,6 +1660,7 @@ Rectangle {
                     color: Theme.muted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
+                    elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxSessionW
                     MouseArea {
                         anchors.fill: parent
@@ -1680,6 +1687,7 @@ Rectangle {
                     color: Theme.muted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
+                    elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxWindowW
                     MouseArea {
                         anchors.fill: parent
@@ -1705,6 +1713,7 @@ Rectangle {
                     color: Theme.muted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
+                    elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxPaneW
                     MouseArea {
                         anchors.fill: parent
