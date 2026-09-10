@@ -84,6 +84,11 @@ Rectangle {
     // GPU) that carries BOTH its detail rows and its own process table, so
     // the subject's name isn't repeated. Used instead of topProcs when set.
     property var sections: []
+    // [{name, value}] -- plain name/value rows (memory pill's swap in/out
+    // readout), styled like one `sections` entry's own detail rows but
+    // without a title or a process sub-table, and shown alongside a normal
+    // topProcs table rather than replacing it the way `sections` does.
+    property var detailRows: []
     // [{name, value}] -- top-10 list shown when non-empty.
     property var topProcs: []
     property string topUnit: ""
@@ -599,6 +604,51 @@ Rectangle {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.tierRequested(tierBtn.modelData)
+                        }
+                    }
+                }
+            }
+
+            // Plain name/value rows (memory pill's swap in/out readout) --
+            // same key/value look as one `sections` entry's rows, but no
+            // title and no process sub-table, and it sits above the plain
+            // topProcs table below rather than replacing it.
+            Column {
+                width: parent.width
+                spacing: 3
+                visible: root.detailRows.length > 0
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.border
+                }
+
+                Repeater {
+                    model: root.detailRows
+
+                    Item {
+                        required property var modelData
+                        width: parent.width
+                        height: rowName.implicitHeight
+
+                        Text {
+                            id: rowName
+                            anchors.left: parent.left
+                            anchors.baseline: rowValue.baseline
+                            text: parent.modelData.name
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
+                        }
+
+                        Text {
+                            id: rowValue
+                            anchors.right: parent.right
+                            text: parent.modelData.value
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
                         }
                     }
                 }

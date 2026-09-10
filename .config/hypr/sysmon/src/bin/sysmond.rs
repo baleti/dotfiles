@@ -166,6 +166,26 @@ fn read_swap_pct() -> f64 {
     100.0 * (1.0 - free / total)
 }
 
+/// Cumulative page-in/page-out counts from swap since boot (`/proc/vmstat`'s
+/// `pswpin`/`pswpout`, whitespace-separated unlike meminfo's `key: value`) --
+/// only ever a running total, so sample_loop diffs successive readings
+/// itself (same treatment as the net/disk byte counters) to get an
+/// instantaneous swap-activity rate.
+fn read_vmstat_swap_pages() -> (u64, u64) {
+    let Ok(vmstat) = fs::read_to_string("/proc/vmstat") else { return (0, 0) };
+    let mut pswpin = 0u64;
+    let mut pswpout = 0u64;
+    for line in vmstat.lines() {
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("pswpin") => pswpin = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            Some("pswpout") => pswpout = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            _ => {}
+        }
+    }
+    (pswpin, pswpout)
+}
+
 /// Two parallel tiered series -- rx/tx for a network interface, or
 /// read/write for a disk. Field names are generic on purpose.
 struct TwoSeriesBuf {
@@ -192,6 +212,12 @@ struct PersistedHistory {
     // too, not just swap.
     #[serde(default)]
     swap_used_pct: PersistedSeries,
+    // Swap activity (bytes/s in/out), same `#[serde(default)]` reasoning as
+    // swap_used_pct above -- added later than it was.
+    #[serde(default)]
+    swap_in_bps: PersistedSeries,
+    #[serde(default)]
+    swap_out_bps: PersistedSeries,
     // Per-GPU util/vram/power history, keyed by GPU name. `#[serde(default)]`
     // for the same reason as swap. The pre-multi-GPU `gpu_util_pct` /
     // `gpu_vram_pct` / `gpu_power_pct` flat fields are simply dropped on the
@@ -283,6 +309,9 @@ struct History {
     mem_used_pct: TieredSeries,
     mem_cached_pct: TieredSeries,
     swap_used_pct: TieredSeries,
+    // Swap activity, not occupancy -- see lib.rs's Snapshot::Mem comment.
+    swap_in_bps: TieredSeries,
+    swap_out_bps: TieredSeries,
     // One entry per GPU (iGPU + dGPU on a hybrid laptop), built once by
     // `enumerate_gpus` and updated in place by `gpu_loop` (nvidia) and
     // `intel_gpu_loop` (i915). Empty if the machine has no supported GPU.
@@ -332,6 +361,8 @@ impl History {
             mem_used_pct: TieredSeries::new(),
             mem_cached_pct: TieredSeries::new(),
             swap_used_pct: TieredSeries::new(),
+            swap_in_bps: TieredSeries::new(),
+            swap_out_bps: TieredSeries::new(),
             gpus: enumerate_gpus(),
             top_cpu: Vec::new(),
             top_mem: Vec::new(),
@@ -356,6 +387,8 @@ impl History {
         self.mem_used_pct.load_persisted(&p.mem_used_pct);
         self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
         self.swap_used_pct.load_persisted(&p.swap_used_pct);
+        self.swap_in_bps.load_persisted(&p.swap_in_bps);
+        self.swap_out_bps.load_persisted(&p.swap_out_bps);
         for saved in &p.gpus {
             if let Some(g) = self.gpus.iter_mut().find(|g| g.name == saved.name) {
                 g.util.load_persisted(&saved.util);
@@ -387,6 +420,8 @@ impl History {
             mem_used_pct: self.mem_used_pct.to_persisted(),
             mem_cached_pct: self.mem_cached_pct.to_persisted(),
             swap_used_pct: self.swap_used_pct.to_persisted(),
+            swap_in_bps: self.swap_in_bps.to_persisted(),
+            swap_out_bps: self.swap_out_bps.to_persisted(),
             gpus: self
                 .gpus
                 .iter()
@@ -1524,6 +1559,8 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
     let mut prev_cpu_lines = read_all_cpu_lines();
     let mut prev_net: HashMap<String, (u64, u64, Instant)> = HashMap::new();
     let mut prev_disk: HashMap<String, (u64, u64, Instant)> = HashMap::new();
+    let page_size_bytes = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as f64;
+    let mut prev_swap: Option<(u64, u64, Instant)> = None;
 
     loop {
         std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
@@ -1597,6 +1634,19 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
 
         let (mem_used_pct, mem_cached_pct) = read_mem_pcts();
         let swap_used_pct = read_swap_pct();
+
+        let (pswpin, pswpout) = read_vmstat_swap_pages();
+        let (swap_in_bps, swap_out_bps) = match prev_swap {
+            Some((prev_in, prev_out, prev_time)) => {
+                let elapsed = now.duration_since(prev_time).as_secs_f64().max(0.001);
+                (
+                    pswpin.saturating_sub(prev_in) as f64 * page_size_bytes / elapsed,
+                    pswpout.saturating_sub(prev_out) as f64 * page_size_bytes / elapsed,
+                )
+            }
+            None => (0.0, 0.0), // first tick since sysmond started: no baseline yet
+        };
+        prev_swap = Some((pswpin, pswpout, now));
 
         // Each of top_cpu/top_mem/top_disk only matters to whichever
         // panel shows it -- nobody sees them until that panel is expanded
@@ -1717,6 +1767,8 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
         h.mem_used_pct.push_raw(mem_used_pct);
         h.mem_cached_pct.push_raw(mem_cached_pct);
         h.swap_used_pct.push_raw(swap_used_pct);
+        h.swap_in_bps.push_raw(swap_in_bps);
+        h.swap_out_bps.push_raw(swap_out_bps);
         for (i, pct) in core_pcts.into_iter().enumerate() {
             if let Some(series) = h.cpu_cores.get_mut(i) {
                 series.push_raw(pct);
@@ -1852,7 +1904,7 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
     let mut cpu_total_since: u64 = 0;
     let mut cpu_cores_since: Vec<u64> = Vec::new();
     let mut temp_since: u64 = 0;
-    let mut mem_since: (u64, u64, u64) = (0, 0, 0);
+    let mut mem_since: (u64, u64, u64, u64, u64) = (0, 0, 0, 0, 0);
     let mut net_since: HashMap<String, (u64, u64)> = HashMap::new();
     let mut disk_since: HashMap<String, (u64, u64)> = HashMap::new();
     let mut gpu_since: Vec<(u64, u64, u64)> = Vec::new();
@@ -1977,16 +2029,21 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
                 }
                 Metric::Mem => {
                     let full = resync;
-                    let (used_since, cached_since, swap_since) = if full { (0, 0, 0) } else { mem_since };
+                    let (used_since, cached_since, swap_since, swap_in_since, swap_out_since) =
+                        if full { (0, 0, 0, 0, 0) } else { mem_since };
                     let used_pct = h.mem_used_pct.delta_since(tier, used_since);
                     let cached_pct = h.mem_cached_pct.delta_since(tier, cached_since);
                     let swap_used_pct = h.swap_used_pct.delta_since(tier, swap_since);
+                    let swap_in_bps = h.swap_in_bps.delta_since(tier, swap_in_since);
+                    let swap_out_bps = h.swap_out_bps.delta_since(tier, swap_out_since);
                     mem_since = (
                         h.mem_used_pct.total_pushed(tier),
                         h.mem_cached_pct.total_pushed(tier),
                         h.swap_used_pct.total_pushed(tier),
+                        h.swap_in_bps.total_pushed(tier),
+                        h.swap_out_bps.total_pushed(tier),
                     );
-                    Snapshot::Mem { full, used_pct, cached_pct, swap_used_pct }
+                    Snapshot::Mem { full, used_pct, cached_pct, swap_used_pct, swap_in_bps, swap_out_bps }
                 }
                 Metric::TopCpu => Snapshot::TopProcs { procs: h.top_cpu.clone() },
                 Metric::TopMem => Snapshot::TopProcs { procs: h.top_mem.clone() },
