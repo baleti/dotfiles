@@ -106,6 +106,9 @@ Rectangle {
     property string procHistSub: ""
     property var procHistSnaps: []
     property var procHistValueFmt: v => v.toFixed(1)
+    // Passthrough to Graph.lineHoverHighlight -- off for the CPU pill (a
+    // dozen unlabelled per-core lines, nothing to match a bolded one to).
+    property bool lineHoverHighlight: true
 
     readonly property bool hoverTipActive: root.expanded && root.procHistSub !== "" && graph.hoveredIndex >= 0
 
@@ -535,6 +538,7 @@ Rectangle {
                     fillOverlay: root.fillOverlay
                     secondaryOnTop: root.secondaryOnTop
                     lineWidth: root.lineWidth
+                    lineHoverHighlight: root.lineHoverHighlight
 
                     // Faint vertical marker at the cursor while the hover
                     // tooltip is up -- shows which slice of the graph the
