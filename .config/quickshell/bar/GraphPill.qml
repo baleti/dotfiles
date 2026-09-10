@@ -535,6 +535,19 @@ Rectangle {
                     fillOverlay: root.fillOverlay
                     secondaryOnTop: root.secondaryOnTop
                     lineWidth: root.lineWidth
+
+                    // Faint vertical marker at the cursor while the hover
+                    // tooltip is up -- shows which slice of the graph the
+                    // top-process list belongs to.
+                    Rectangle {
+                        visible: root.hoverTipActive
+                        x: Math.round(graph.hoveredPixelX)
+                        y: 0
+                        width: 1
+                        height: graph.height
+                        color: Theme.text
+                        opacity: 0.28
+                    }
                 }
             }
 
