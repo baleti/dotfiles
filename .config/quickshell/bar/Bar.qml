@@ -601,26 +601,30 @@ Item {
             // dGPU's own power reading takes the dark "primary" recipe
             // (its old utilization look), and iGPU's memory takes "dim"
             // (the darkest shade in that vendor's family, see gpuColors).
-            // procSnaps (2026-09-11): utilisation and power share one ring
-            // (this GPU's own engine-time-ranked top list -- there's no
-            // separate per-process power figure, so power's hover falls
-            // back to the same attribution as utilisation). VRAM gets its
-            // own ring (its top list is ranked by memory instead) and is a
-            // different unit (MB, not %) from every other GPU line, so it
-            // carries its own header formatter and opts out of the
-            // empty-space merge (summing MB into a %-utilisation total
-            // makes no sense).
-            const utilSnaps = SysmonSvc.procHistSnaps("gpu:" + g.name + ":util");
+            // procSnaps (2026-09-11) was wired up here the same way as
+            // net/mem/disk's own per-line rings, but reported the same day
+            // as freezing quickshell solid (~100% CPU on one thread,
+            // persisting even after the mouse left the graph, no warnings
+            // logged) specifically when hovering this pill's graph -- not
+            // reproduced on net/mem/disk, which share the exact same
+            // GraphPill/_mergedSnaps machinery. The one thing genuinely
+            // unique to this machine's GPU config vs. those (single
+            // interface/device/swap-source each) is having 2 GPUs, which
+            // is what actually exercises _mergedSnaps' multi-ring merge
+            // loop rather than its single-ring fast path -- circumstantial,
+            // not confirmed (gdb/strace are blocked in the environment
+            // this was investigated from, so no live stack trace was
+            // possible). Reverted to no per-line attribution at all here
+            // (matching cpu/temp's own always-safe zero-procSnaps
+            // baseline) until it can be root-caused with real tooling --
+            // hovering the GPU graph again should no longer freeze, just
+            // show no top-process tooltip, same as cpu/temp already don't.
             if ((g.util_pct?.length ?? 0) > 0)
-                group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization"), procSnaps: utilSnaps });
+                group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization") });
             if ((g.vram_pct?.length ?? 0) > 0)
-                group.push({
-                    data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel,
-                    procSnaps: SysmonSvc.procHistSnaps("gpu:" + g.name + ":vram"), procMerge: false,
-                    headerFmt: v => Math.round(v) + " MB",
-                });
+                group.push({ data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel });
             if ((g.power_pct?.length ?? 0) > 0)
-                group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power"), procSnaps: utilSnaps });
+                group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power") });
             group.forEach(l => out.push(Object.assign(l, { color: root.gpuShadeColor(g.vendor, l.role) })));
         }
         return out;
