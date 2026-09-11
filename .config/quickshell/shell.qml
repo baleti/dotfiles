@@ -11,6 +11,7 @@ import "launcher"
 import "rssreader"
 import "keybinds"
 import "winswitch"
+import "clipboard"
 import "services"
 
 ShellRoot {
@@ -65,6 +66,16 @@ ShellRoot {
             WinSwitchState.close();
         }    }
 
+    // Clipboard history picker (mod+v). Same single-top-level-target /
+    // latched-monitor pattern as launcher/rssReader -- see
+    // ClipboardPickerState.qml.
+    IpcHandler {
+        target: "clipboardPicker"
+        function toggle(): void {
+            ClipboardPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
     Variants {
         model: Quickshell.screens
 
@@ -114,6 +125,15 @@ ShellRoot {
         model: Quickshell.screens
 
         WinSwitch {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        ClipboardPicker {
             required property var modelData
             screen: modelData
         }

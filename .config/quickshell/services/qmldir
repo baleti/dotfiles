@@ -11,3 +11,4 @@ singleton RssReaderState 1.0 RssReaderState.qml
 singleton KeybindsHelpState 1.0 KeybindsHelpState.qml
 singleton WinSwitchState 1.0 WinSwitchState.qml
 singleton ClaudeUsageSvc 1.0 ClaudeUsageSvc.qml
+singleton ClipboardPickerState 1.0 ClipboardPickerState.qml

@@ -1,26 +1,37 @@
-//! cliphist picker on GTK3 + wlr-layer-shell, built on the shared `picker`
-//! engine. Rust port of clipboard-picker.py: same behaviour, but without the
-//! ~140ms the Python version spent on interpreter startup and
-//! GObject-introspection typelib loading before it could draw anything.
+//! cliphist picker headless backend. UI moved to Quickshell/QML
+//! (~/.config/quickshell/clipboard/ClipboardPicker.qml, mirroring winswitch's
+//! GTK->Quickshell move) on 2026-09-11; this binary now just talks to
+//! cliphist/wl-copy and prints NDJSON, the same split winswitch's
+//! output.rs/main.rs settled on. `notification-picker` (this crate's other
+//! bin) is untouched and still the GTK+layer-shell `picker::run` engine --
+//! only mod+v moved.
+//!
+//! Subcommands:
+//!   list             one NDJSON line per cliphist entry, then exit
+//!   thumb <id>       ensure `<id>.png`'s scaled thumbnail is cached, print
+//!                    its path (nothing if the entry isn't a decodable image)
+//!   thumbs <id>...   same as `thumb`, batched -- one `{id,path}` NDJSON line
+//!                    per successfully decoded id, streamed as each one
+//!                    finishes rather than held until the last (same
+//!                    streaming-output reasoning as winswitch's output.rs)
+//!   activate <id>    decode `<id>` and push it to the clipboard (wl-copy)
 
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gdk_pixbuf::prelude::*;
 use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
+use serde_json::json;
 
-use clipboard_picker::picker::{self, Entry, PickerConfig};
+use clipboard_picker::picker::{self, Entry};
 
 const PROGRAM_NAME: &str = "clipboard-picker";
 const THUMB_HEIGHT: i32 = 160;
 const THUMB_MAX_WIDTH: i32 = 480;
-/// `/fv field:value`-selectable fields, offered by the autocomplete popup.
-const FIELD_NAMES: [&str; 2] = ["type", "date"];
 
 /// cliphist renders non-text entries as "[[ binary data 50 KiB png 600x509 ]]".
 fn looks_like_image(preview: &str) -> bool {
@@ -159,28 +170,61 @@ fn copy_entry(id: &str) {
     }
 }
 
+/// One NDJSON line per entry: `{id, preview, haystack, thumb, fields}`,
+/// `fields` an object keyed by field name (`type`, optionally `date`) --
+/// same field set `cliphist_list` always built, just serialized instead of
+/// stuffed into a GTK row. QML's ClipboardQueryDsl.qml is the field-name
+/// registry now (was `FIELD_NAMES`/`field_descs` here).
+fn print_list(entries: &[Entry]) {
+    let mut out = std::io::stdout().lock();
+    for e in entries {
+        let fields: serde_json::Map<String, serde_json::Value> =
+            e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
+        let line = json!({
+            "id": e.id,
+            "preview": e.preview,
+            "haystack": e.haystack,
+            "thumb": e.thumb,
+            "fields": fields,
+        });
+        let _ = writeln!(out, "{line}");
+    }
+}
+
 fn main() {
-    let entries = cliphist_list();
-
-    let config = PickerConfig {
-        program_name: PROGRAM_NAME,
-        field_names: FIELD_NAMES.to_vec(),
-        field_descs: vec![
-            ("type", "text or image"),
-            ("date", "how long ago it was copied"),
-        ],
-        placeholder: "search   ·   $type:  $date:".to_string(),
-        width_fraction: 0.5,
-        height_fraction: 0.8,
-        thumb_height: THUMB_HEIGHT,
-        initial_rows: 60,
-        chunk_rows: 120,
-    };
-
-    picker::run(
-        entries,
-        config,
-        Some(Rc::new(load_thumb)),
-        Box::new(|entry: &Entry| copy_entry(&entry.id)),
-    );
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("thumb") => {
+            let Some(id) = args.next() else {
+                eprintln!("usage: {PROGRAM_NAME} thumb <id>");
+                std::process::exit(1);
+            };
+            if load_thumb(&id).is_some() {
+                let path = picker::cache_dir(PROGRAM_NAME).join(format!("{id}.png"));
+                println!("{}", path.display());
+            }
+        }
+        Some("thumbs") => {
+            let mut out = std::io::stdout().lock();
+            for id in args {
+                if load_thumb(&id).is_some() {
+                    let path = picker::cache_dir(PROGRAM_NAME).join(format!("{id}.png"));
+                    let _ = writeln!(out, "{}", json!({"id": id, "path": path.display().to_string()}));
+                    let _ = out.flush();
+                }
+            }
+        }
+        Some("activate") => {
+            let Some(id) = args.next() else {
+                eprintln!("usage: {PROGRAM_NAME} activate <id>");
+                std::process::exit(1);
+            };
+            copy_entry(&id);
+        }
+        None | Some("list") => print_list(&cliphist_list()),
+        Some(other) => {
+            eprintln!("{PROGRAM_NAME}: unknown subcommand {other:?}");
+            std::process::exit(1);
+        }
+    }
 }
