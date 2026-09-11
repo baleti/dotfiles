@@ -259,25 +259,6 @@ Rectangle {
         return root.statusLabels[status] || status || "?";
     }
 
-    readonly property var pollModeLabels: ({
-        "locked": qsTr("polling hourly (locked/screen off)"),
-        "active": qsTr("polling every 2m (active)"),
-        "idle": qsTr("polling every 5m (idle)"),
-    })
-
-    // Backoff isn't a fixed label like the other 3 tiers -- it's a live
-    // countdown to when polling resumes, computed from updated_at (when
-    // this backoff started) + poll_interval_s (how long it runs), same
-    // pair every other mode uses for its own bookkeeping.
-    function modeLine() {
-        if (ClaudeUsageSvc.pollMode === "backoff") {
-            const resumeMs = new Date(ClaudeUsageSvc.updatedAt).getTime() + ClaudeUsageSvc.pollIntervalS * 1000;
-            const deltaS = Math.round((resumeMs - Date.now()) / 1000);
-            return qsTr("rate limited (429) -- retrying in %1").arg(root.fmtDuration(Math.max(0, deltaS)));
-        }
-        return root.pollModeLabels[ClaudeUsageSvc.pollMode] || qsTr("Claude usage");
-    }
-
     // Re-render the relative-time strings once a second while open -- they
     // read off Date.now()/live deltas, which QML has no binding source for
     // on its own.
@@ -1204,14 +1185,13 @@ Rectangle {
             width: parent.width
             spacing: 10
 
-            Text {
-                Layout.fillWidth: true
-                text: root.tick >= 0 ? root.modeLine() + " -- " + qsTr("updated %1 ago").arg(root.fmtAgo(ClaudeUsageSvc.updatedAt)) : ""
-                color: Theme.textDim
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize - 2
-                elide: Text.ElideRight
-            }
+            // The mode-line ("polling every 2m..." + "updated N ago") used
+            // to sit here with Layout.fillWidth, sharing this row with the
+            // account pills -- routinely lost the width fight and got
+            // elided down to "polling every ..." (reported 2026-09-11), so
+            // it's gone outright rather than fixed; this filler keeps the
+            // pills right-aligned the way they already were.
+            Item { Layout.fillWidth: true }
 
             Repeater {
                 model: ClaudeUsageSvc.accounts
