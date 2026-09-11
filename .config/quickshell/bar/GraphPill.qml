@@ -151,7 +151,11 @@ Rectangle {
     // one the cursor is nearest, not just the shared name.
     readonly property var _hoveredSeriesEntry: root.seriesList[graph.hoveredSeriesIndex] ?? null
 
-    readonly property var _mergedSnaps: {
+    // Which rings feed the empty-space merge (dedup by identity, skip
+    // procMerge:false) -- cheap, touches only ring *references*, never
+    // ring *contents*, so this stays fast regardless of how much history
+    // each ring holds or how many GPUs/interfaces/devices are in play.
+    readonly property var _mergeRings: {
         const rings = [];
         for (const s of root.seriesList) {
             if (!s.procSnaps || s.procMerge === false)
@@ -159,32 +163,49 @@ Rectangle {
             if (!rings.includes(s.procSnaps))
                 rings.push(s.procSnaps);
         }
-        if (rings.length === 0)
-            return [];
-        if (rings.length === 1)
-            return rings[0];
-        const minLen = Math.min(...rings.map(r => r.length));
-        if (minLen === 0)
-            return [];
-        const out = [];
-        for (let i = 0; i < minLen; i++) {
-            const totals = {};
-            let value = 0;
-            let secsAgo = 0;
-            for (const ring of rings) {
-                const snap = ring[ring.length - minLen + i];
-                value += snap.value;
-                secsAgo = Math.max(secsAgo, snap.secs_ago);
-                for (const p of snap.procs) {
-                    const e = totals[p.pid] ?? { pid: p.pid, name: p.name, detail: p.detail, value: 0, util_pct: p.util_pct };
-                    e.value += p.value;
-                    totals[p.pid] = e;
-                }
+        return rings;
+    }
+    readonly property int _mergedLen: {
+        const rings = root._mergeRings;
+        return rings.length > 0 ? Math.min(...rings.map(r => r.length)) : 0;
+    }
+    // Merges just the ONE point at merged-index `i` (0 = oldest), on
+    // demand -- see hoverSnap below, the only caller. Reworked 2026-09-11
+    // (reported same-day: hovering a multi-ring pill's graph froze
+    // quickshell solid, ~100% CPU, not tied to how fast the mouse kept
+    // moving) from eagerly rebuilding the FULL merged history -- up to
+    // TIER_CAPACITY (600) points, each summing every ring's per-process
+    // totals and sorting them -- every time this recomputed, even though
+    // hoverSnap only ever reads ONE index of the result. Root cause of the
+    // freeze itself was never pinned down for certain (gdb/strace were
+    // both unavailable in the environment this was diagnosed from, so no
+    // live stack trace of the hung process was possible) -- this is a
+    // structural fix on general efficiency grounds (O(rings * procs) per
+    // actual hover query instead of O(minLen * rings * procs) on every
+    // recompute, a ~600x reduction at full ring capacity) rather than a
+    // fix for a specifically identified line, but it removes the one
+    // genuinely unbounded cost in this path regardless of what exactly
+    // was triggering it.
+    function _mergedSnapAt(i) {
+        const rings = root._mergeRings;
+        const minLen = root._mergedLen;
+        if (rings.length === 0 || i < 0 || i >= minLen)
+            return null;
+        const totals = {};
+        let value = 0;
+        let secsAgo = 0;
+        for (const ring of rings) {
+            const snap = ring[ring.length - minLen + i];
+            value += snap.value;
+            secsAgo = Math.max(secsAgo, snap.secs_ago);
+            for (const p of snap.procs) {
+                const e = totals[p.pid] ?? { pid: p.pid, name: p.name, detail: p.detail, value: 0, util_pct: p.util_pct };
+                e.value += p.value;
+                totals[p.pid] = e;
             }
-            const procs = Object.values(totals).sort((a, b) => b.value - a.value).slice(0, 6);
-            out.push({ secs_ago: secsAgo, value, procs });
         }
-        return out;
+        const procs = Object.values(totals).sort((a, b) => b.value - a.value).slice(0, 6);
+        return { secs_ago: secsAgo, value, procs };
     }
 
     // The snapshot lined up with the graph point under the cursor -- every
@@ -196,13 +217,17 @@ Rectangle {
         if (!root.hoverTipActive)
             return null;
         const entry = root._hoveredSeriesEntry;
-        let s;
         if (entry && entry.procSnaps) {
-            s = entry.procSnaps;
-        } else {
-            const merged = root._mergedSnaps;
-            s = merged.length > 0 ? merged : root.procHistSnaps;
+            const s = entry.procSnaps;
+            const idx = s.length - graph._pointCount() + graph.hoveredIndex;
+            return (idx >= 0 && idx < s.length) ? s[idx] : null;
         }
+        const mergedLen = root._mergedLen;
+        if (mergedLen > 0) {
+            const idx = mergedLen - graph._pointCount() + graph.hoveredIndex;
+            return root._mergedSnapAt(idx);
+        }
+        const s = root.procHistSnaps;
         if (!s || s.length === 0)
             return null;
         const idx = s.length - graph._pointCount() + graph.hoveredIndex;
