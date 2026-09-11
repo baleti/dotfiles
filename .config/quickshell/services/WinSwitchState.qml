@@ -12,17 +12,18 @@ import Quickshell.Hyprland
 // Input arrives from ~/.config/hypr/winswitch.lua as events on Hyprland's own
 // socket2, in the exact order the compositor saw the keys:
 //
-//   winswitch tab next|prev <json>   ALT+Tab / ALT+SHIFT+Tab pressed; json is
-//                                    the window list in focus-history order
-//                                    captured at that press
-//   winswitch altup                  Alt released (in-compositor poll)
+//   winswitch tab next|prev   ALT+Tab / ALT+SHIFT+Tab pressed; the window list
+//                             (focus-history order at that press) was written
+//                             to $XDG_RUNTIME_DIR/winswitch-windows.json first
+//   winswitch altup           Alt released (in-compositor poll)
 //
 // State machine:
 //   idle    + tab    -> start session: selection = the focused window, then
 //                       advance by one. Grid is not drawn yet.
 //   pending + tab    -> advance (no restart, whatever the timing)
 //   pending + altup  -> confirm, grid never drawn (a tap)
-//   pending + showDelayMs elapses -> draw the grid, start thumbnail capture
+//   pending + showDelayMs elapses -> draw the grid
+//   shown   + layer mapped + captureSettleMs -> start thumbnail capture
 //   shown   + tab    -> advance, or cycle autocomplete once locked
 //   shown   + altup  -> confirm, unless locked into search mode
 // So ALT+Tab, SHIFT+Tab, release always lands back on the focused window
@@ -33,6 +34,14 @@ QtObject {
     // An Alt release before this counts as a tap: switch without ever
     // mapping a surface.
     readonly property int showDelayMs: 80
+    // Thumbnail capture makes Hyprland render every window on its main
+    // thread, which stalls it (measured: up to ~240ms without replies). Run
+    // concurrently with the grid's first frame, that stall held the layer
+    // back from mapping (+400ms after the press vs +137ms without capture),
+    // so capture waits for Hyprland's `openlayer` event plus this settle
+    // time. The fallback covers a missed event.
+    readonly property int captureSettleMs: 150
+    readonly property int captureFallbackMs: 600
 
     property bool active: false
     property bool shown: false
@@ -57,13 +66,22 @@ QtObject {
 
     signal lockedTab(string direction)
 
+    property real _sessionStartedAt: 0
+    property bool _capturePending: false
+
     function _log(msg) {
-        console.log(`[winswitch ${Date.now()}] ${msg}`);
+        const since = root.active ? ` +${Date.now() - root._sessionStartedAt}ms` : "";
+        console.log(`[winswitch ${Date.now()}${since}] ${msg}`);
     }
 
     readonly property Connections _events: Connections {
         target: Hyprland
         function onRawEvent(event: var): void {
+            if (event.name === "openlayer") {
+                if (event.data === "quickshell-winswitch")
+                    root._onMapped();
+                return;
+            }
             if (event.name !== "custom" || !event.data.startsWith("winswitch "))
                 return;
             const rest = event.data.slice("winswitch ".length);
@@ -133,6 +151,7 @@ QtObject {
                 kept[a] = root.thumbnails[a];
 
         root.sessionId++;
+        root._sessionStartedAt = Date.now();
         root._pendingThumbnails = ({});
         root._pendingEnrich = ({});
         root.thumbnails = kept;
@@ -167,6 +186,8 @@ QtObject {
         if (!root.active)
             return;
         showTimer.stop();
+        captureTimer.stop();
+        root._capturePending = false;
         root.shown = false;
         root.locked = false;
         root.active = false;
@@ -186,17 +207,40 @@ QtObject {
             if (!root.active)
                 return;
             root._log(`show (session ${root.sessionId})`);
+            root._capturePending = true; // holds only: a tap never pays for a capture run
+            captureTimer.interval = root.captureFallbackMs;
+            captureTimer.restart();
             root.shown = true;
-            // Holds only: a tap never pays for a capture run.
+        }
+    }
+
+    function _onMapped() {
+        if (!root.active)
+            return;
+        root._log("layer mapped");
+        if (root._capturePending) {
+            captureTimer.interval = root.captureSettleMs;
+            captureTimer.restart();
+        }
+    }
+
+    readonly property Timer _captureTimer: Timer {
+        id: captureTimer
+        repeat: false
+        onTriggered: {
+            if (!root.active || !root._capturePending)
+                return;
+            root._capturePending = false;
+            root._log("capture start");
             backend.running = false;
             backend.running = true;
         }
     }
 
     // ---- thumbnail/enrichment backend (~/.config/hypr/winswitch) ----------
-    // Captures every window once and exits (~0.4s for ~50 windows); output
-    // is NDJSON keyed by address. Not killed on close, so a quick
-    // hold-release still finishes refreshing the cache for next time.
+    // Captures every window once and exits; output is NDJSON keyed by
+    // address. Not killed on close, so a quick hold-release still finishes
+    // refreshing the cache for next time.
     readonly property Process _backend: Process {
         id: backend
         command: [Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
