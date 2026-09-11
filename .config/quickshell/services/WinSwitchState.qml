@@ -163,6 +163,73 @@ QtObject {
         root.monitor = root._resolveMonitor();
         root.active = true;
         showTimer.restart();
+        // Deferred: the procfs reads block ~20ms, nothing should wait on them.
+        Qt.callLater(() => root._diagLog("session start"));
+    }
+
+    // ---- cold-start diagnostics (2026-09-11) ------------------------------
+    // The first alt-tab after ~11h idle took ~12s to show, all of it before
+    // this file even received the tab event, on a machine with ~36GB in disk
+    // swap. To tell swap thrash from anything else next time: a 30s baseline
+    // of system memory/IO full-stall totals (PSI) and Hyprland's + Quickshell's
+    // major page faults, logged as deltas at session start (covers the stall
+    // before the event arrived) and at layer map.
+    readonly property FileView _psiMemFile: FileView { id: psiMemFile; path: "/proc/pressure/memory"; blockAllReads: true; printErrors: false }
+    readonly property FileView _psiIoFile: FileView { id: psiIoFile; path: "/proc/pressure/io"; blockAllReads: true; printErrors: false }
+    readonly property FileView _selfStatFile: FileView { id: selfStatFile; path: "/proc/self/stat"; blockAllReads: true; printErrors: false }
+    readonly property FileView _hyprStatFile: FileView { id: hyprStatFile; blockAllReads: true; printErrors: false }
+    readonly property FileView _hyprLockFile: FileView {
+        id: hyprLockFile
+        path: `${Quickshell.env("XDG_RUNTIME_DIR")}/hypr/${Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE")}/hyprland.lock`
+        blockAllReads: true
+        printErrors: false
+    }
+    property var _diagBaseline: null
+
+    function _readProc(view) {
+        view.reload();
+        return view.text();
+    }
+    function _psiFullUs(text) {
+        const m = /full .*total=(\d+)/.exec(text);
+        return m ? Number(m[1]) : 0;
+    }
+    function _majorFaults(statText) {
+        const i = statText.lastIndexOf(")");
+        return i < 0 ? 0 : Number(statText.slice(i + 2).split(" ")[9]) || 0;
+    }
+    function _diagSample() {
+        const pid = root._readProc(hyprLockFile).split("\n")[0].trim();
+        const statPath = pid ? `/proc/${pid}/stat` : "";
+        if (hyprStatFile.path !== statPath)
+            hyprStatFile.path = statPath;
+        return {
+            at: Date.now(),
+            mem: root._psiFullUs(root._readProc(psiMemFile)),
+            io: root._psiFullUs(root._readProc(psiIoFile)),
+            hypr: pid ? root._majorFaults(root._readProc(hyprStatFile)) : 0,
+            qs: root._majorFaults(root._readProc(selfStatFile)),
+        };
+    }
+    function _diagLog(label) {
+        const now = root._diagSample();
+        const b = root._diagBaseline;
+        if (b)
+            root._log(`${label}: in last ${now.at - b.at}ms memory full-stall ${Math.round((now.mem - b.mem) / 1000)}ms, io full-stall ${Math.round((now.io - b.io) / 1000)}ms, major faults hyprland +${now.hypr - b.hypr} quickshell +${now.qs - b.qs}`);
+        root._diagBaseline = now;
+    }
+    readonly property Timer _diagTimer: Timer {
+        interval: 30000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            if (root.active)
+                return;
+            if (!root._diagBaseline)
+                root._log("diagnostics baseline armed");
+            root._diagBaseline = root._diagSample();
+        }
     }
 
     // Cyclic over the full list; WinSwitch.qml has its own over filtered
@@ -217,7 +284,7 @@ QtObject {
     function _onMapped() {
         if (!root.active)
             return;
-        root._log("layer mapped");
+        Qt.callLater(() => root._diagLog("layer mapped"));
         if (root._capturePending) {
             captureTimer.interval = root.captureSettleMs;
             captureTimer.restart();
