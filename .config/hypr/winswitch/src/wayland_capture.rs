@@ -63,7 +63,7 @@
 //! connection erroring out -- this is a separate process from Hyprland with
 //! its own GBM/EGL state; nothing here runs inside the compositor.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
@@ -245,7 +245,27 @@ struct Capture {
     export_manager: Option<HyprlandToplevelExportManagerV1>,
     address_to_index: HashMap<u64, usize>,
     pending_frames: HashMap<ObjectId, PendingFrame>,
+    /// Mapped windows not yet requested, lowest index (most recently
+    /// focused, top of the grid) first -- see `MAX_IN_FLIGHT`.
+    capture_queue: BTreeMap<usize, ZwlrForeignToplevelHandleV1>,
+    in_flight: usize,
     tx: mpsc::Sender<ThumbMsg>,
+}
+
+/// Captures outstanding with the compositor at once. Hyprland renders and
+/// reads back every requested window on its main thread (the wl_shm path),
+/// and requesting all ~50 at once stalled it for up to ~240ms -- keyboard
+/// input and the switcher grid's own frames froze with it.
+const MAX_IN_FLIGHT: usize = 3;
+
+fn pump_captures(state: &mut Capture, qh: &QueueHandle<Capture>) {
+    let Some(export_manager) = state.export_manager.clone() else { return };
+    while state.in_flight < MAX_IN_FLIGHT {
+        let Some((index, toplevel)) = state.capture_queue.pop_first() else { break };
+        debug_log(&format!("window[{index}]: requesting capture ({} in flight)", state.in_flight + 1));
+        export_manager.capture_toplevel_with_wlr_toplevel_handle(0, &toplevel, qh, index);
+        state.in_flight += 1;
+    }
 }
 
 /// The only sizing knob this module has -- a cap on a thumbnail's long
@@ -409,10 +429,9 @@ impl Dispatch<HyprlandToplevelWindowMappingHandleV1, ZwlrForeignToplevelHandleV1
             hyprland_toplevel_window_mapping_handle_v1::Event::WindowAddress { address_hi, address } => {
                 let addr = ((address_hi as u64) << 32) | address as u64;
                 if let Some(&index) = state.address_to_index.get(&addr) {
-                    debug_log(&format!("window[{index}]: mapping resolved (addr={addr:#x}), requesting capture"));
-                    if let Some(export_manager) = &state.export_manager {
-                        export_manager.capture_toplevel_with_wlr_toplevel_handle(0, toplevel, qh, index);
-                    }
+                    debug_log(&format!("window[{index}]: mapping resolved (addr={addr:#x}), queueing capture"));
+                    state.capture_queue.insert(index, toplevel.clone());
+                    pump_captures(state, qh);
                 } else {
                     debug_log(&format!("mapping resolved to addr={addr:#x}, no matching window in our list"));
                 }
@@ -605,6 +624,8 @@ impl Dispatch<HyprlandToplevelExportFrameV1, usize> for Capture {
                     }
                 }
                 frame.destroy();
+                state.in_flight = state.in_flight.saturating_sub(1);
+                pump_captures(state, qh);
             }
             Event::Failed => {
                 if let Some(pf) = state.pending_frames.remove(&id) {
@@ -619,6 +640,8 @@ impl Dispatch<HyprlandToplevelExportFrameV1, usize> for Capture {
                     }
                 }
                 frame.destroy();
+                state.in_flight = state.in_flight.saturating_sub(1);
+                pump_captures(state, qh);
             }
             _ => {}
         }
@@ -783,6 +806,8 @@ fn run_capture_thread(windows: Vec<Window>, tx: mpsc::Sender<ThumbMsg>) {
         export_manager: None,
         address_to_index,
         pending_frames: HashMap::new(),
+        capture_queue: BTreeMap::new(),
+        in_flight: 0,
         tx,
     };
 
