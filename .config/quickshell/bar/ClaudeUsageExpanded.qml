@@ -316,14 +316,7 @@ Rectangle {
         return 0;
     }
 
-    // Session count for one account -- the per-account tally pills below
-    // the table (request 2026-09-05; token totals dropped from these
-    // 2026-09-05).
-    function acctTotals(account) {
-        return { count: (ClaudeUsageSvc.sessions[account] || []).length };
-    }
-
-    // Sessions across every account -- the leftmost total pill on the
+    // Sessions across every account -- the total pill on the
     // tally line (request 2026-09-05).
     readonly property int totalSessionCount: {
         let n = 0;
@@ -652,7 +645,13 @@ Rectangle {
     onExpandedChanged: {
         root.sort = null;
         root.selIndex = 0;
-        root.selActive = false;
+        // First row starts pre-selected (highlighted) on open -- but
+        // thumbKeyboardActive stays false, so the left-side thumbnail
+        // still only appears once an actual Up/Down/Home/End press
+        // (root.handleKey/_syncKeyboardThumb) asks for it (request
+        // 2026-09-11: selected-by-default row, no thumbnail until a real
+        // arrow press).
+        root.selActive = root.expanded;
         root.thumbKeyboardActive = false;
         root.thumbHovering = false;
         root.thumbReady = false;
@@ -669,6 +668,19 @@ Rectangle {
         searchInput.text = "";
         root.searchText = "";
         root.resetColumnWidths();
+        // Search box gets real keyboard focus by default on open (request
+        // 2026-09-11), same box "/" already focuses mid-session -- typing
+        // filters immediately, no extra keypress needed. Deferred via
+        // Qt.callLater so it wins regardless of whether Bar.qml's own
+        // onExpandedChanged (root.forceActiveFocus(), wired at the
+        // instantiation site for the same signal) happens to run before or
+        // after this component-internal handler -- callLater always runs
+        // after both have finished this turn.
+        if (root.expanded)
+            Qt.callLater(function () {
+                if (root.expanded)
+                    searchInput.forceActiveFocus();
+            });
     }
 
     function toggleSort(col) {
@@ -1166,8 +1178,8 @@ Rectangle {
         // 20: the mode-line/summary row. 24: root's own implicitHeight
         // padding (content.implicitHeight + 24). 16: safety margin.
         // groupHeaderH: the table's own header block (tmux/hyprland row +
-        // column-header row). tallyLineH: the per-account totals line
-        // below the table.
+        // column-header row). tallyLineH: the total-sessions line below
+        // the table.
         const fixedOverhead = 20 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
     }
@@ -1452,6 +1464,14 @@ Rectangle {
                     } else if (event.key === Qt.Key_PageUp && root.acOpen) {
                         root.acSel = Math.max(0, root.acSel - 7);
                         event.accepted = true;
+                    } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !root.acOpen) {
+                        // TextInput would otherwise just swallow Return/Enter
+                        // as a no-op "accepted" edit key -- forward it to the
+                        // same row-select handling handleKey already gives
+                        // Space/Enter when focus sits on the panel itself, so
+                        // "search box focused by default" (2026-09-11) doesn't
+                        // also disable Enter-to-open-selected-row.
+                        root.handleKey(event);
                     }
                 }
             }
@@ -2191,28 +2211,15 @@ Rectangle {
             }
         }
 
-        // Per-account session tally -- pills matching the top summary line
-        // (request 2026-09-05: box these like the ones above, "convos" ->
-        // "sessions", drop the token totals, add a leftmost total pill,
-        // and hoist the repeated word "sessions" out to a single label on
-        // the left). Same account-index labeling and baseline alignment as
-        // the top summary pills; counts every session the daemon reports,
-        // not just the ones scrolled into view.
+        // Session tally -- just the total across every account (request
+        // 2026-09-11: drop the per-account "1 N / 2 N / 3 N" pills and the
+        // "sessions" label, keep only the Σ total pill this row started
+        // as before 2026-09-05's per-account breakdown was added).
         RowLayout {
             width: content.width
             spacing: 6
             visible: root.anyProcsVisible
 
-            Text {
-                text: qsTr("sessions")
-                color: Theme.textDim
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize - 2
-                Layout.alignment: Qt.AlignVCenter
-                Layout.rightMargin: 2
-            }
-
-            // Total across all accounts.
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
                 implicitWidth: tallyTotalText.implicitWidth + 16
@@ -2230,45 +2237,6 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1
                     font.bold: true
-                }
-            }
-
-            Repeater {
-                model: ClaudeUsageSvc.accounts
-
-                Rectangle {
-                    id: tallyPill
-                    required property var modelData
-                    readonly property var totals: root.acctTotals(modelData.account)
-                    Layout.alignment: Qt.AlignVCenter
-                    implicitWidth: tallyPillRow.implicitWidth + 16
-                    implicitHeight: tallyPillRow.implicitHeight + 6
-                    radius: height / 2
-                    color: Theme.bgAlpha
-                    border.color: Theme.border
-                    border.width: 1
-
-                    Row {
-                        id: tallyPillRow
-                        anchors.centerIn: parent
-                        spacing: 4
-
-                        Text {
-                            id: tallyPillName
-                            text: String(root.acctIndex(tallyPill.modelData.account))
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 1
-                            font.bold: true
-                        }
-                        Text {
-                            anchors.baseline: tallyPillName.baseline
-                            text: String(tallyPill.totals.count)
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                        }
-                    }
                 }
             }
             Item { Layout.fillWidth: true }
