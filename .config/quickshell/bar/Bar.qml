@@ -601,30 +601,37 @@ Item {
             // dGPU's own power reading takes the dark "primary" recipe
             // (its old utilization look), and iGPU's memory takes "dim"
             // (the darkest shade in that vendor's family, see gpuColors).
-            // procSnaps (2026-09-11) was wired up here the same way as
-            // net/mem/disk's own per-line rings, but reported the same day
-            // as freezing quickshell solid (~100% CPU on one thread,
-            // persisting even after the mouse left the graph, no warnings
-            // logged) specifically when hovering this pill's graph -- not
-            // reproduced on net/mem/disk, which share the exact same
-            // GraphPill/_mergedSnaps machinery. The one thing genuinely
-            // unique to this machine's GPU config vs. those (single
-            // interface/device/swap-source each) is having 2 GPUs, which
-            // is what actually exercises _mergedSnaps' multi-ring merge
-            // loop rather than its single-ring fast path -- circumstantial,
-            // not confirmed (gdb/strace are blocked in the environment
-            // this was investigated from, so no live stack trace was
-            // possible). Reverted to no per-line attribution at all here
-            // (matching cpu/temp's own always-safe zero-procSnaps
-            // baseline) until it can be root-caused with real tooling --
-            // hovering the GPU graph again should no longer freeze, just
-            // show no top-process tooltip, same as cpu/temp already don't.
+            // procSnaps (2026-09-11): utilisation and power share one ring
+            // (this GPU's own engine-time-ranked top list -- there's no
+            // separate per-process power figure, so power's hover falls
+            // back to the same attribution as utilisation). VRAM gets its
+            // own ring (its top list is ranked by memory instead) and is a
+            // different unit (MB, not %) from every other GPU line, so it
+            // carries its own header formatter and opts out of the
+            // empty-space merge (summing MB into a %-utilisation total
+            // makes no sense).
+            //
+            // Briefly reverted the same day this was added (2 GPUs on this
+            // machine meant GraphPill's empty-space merge was actually
+            // exercising its multi-ring path for the first time anywhere
+            // in this codebase -- net/mem/disk's own procSnaps never see
+            // more than one distinct ring here -- and hovering this pill's
+            // graph froze quickshell solid, ~100% CPU, persisting past
+            // when the mouse left). Restored now that GraphPill's merge
+            // (_mergedSnapAt) computes just the one point actually needed
+            // per hover query instead of eagerly rebuilding the full
+            // merged history on every recompute -- see its own comment.
+            const utilSnaps = SysmonSvc.procHistSnaps("gpu:" + g.name + ":util");
             if ((g.util_pct?.length ?? 0) > 0)
-                group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization") });
+                group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization"), procSnaps: utilSnaps });
             if ((g.vram_pct?.length ?? 0) > 0)
-                group.push({ data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel });
+                group.push({
+                    data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel,
+                    procSnaps: SysmonSvc.procHistSnaps("gpu:" + g.name + ":vram"), procMerge: false,
+                    headerFmt: v => Math.round(v) + " MB",
+                });
             if ((g.power_pct?.length ?? 0) > 0)
-                group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power") });
+                group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power"), procSnaps: utilSnaps });
             group.forEach(l => out.push(Object.assign(l, { color: root.gpuShadeColor(g.vendor, l.role) })));
         }
         return out;
