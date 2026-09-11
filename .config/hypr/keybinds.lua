@@ -141,7 +141,12 @@ hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = tr
 hl.bind("XF86AudioRewind",  hl.dsp.exec_cmd("playerctl position 5-"), { locked = true, repeating = true, description = "Media: seek back 5s" })
 hl.bind("XF86AudioForward", hl.dsp.exec_cmd("playerctl position 5+"), { locked = true, repeating = true, description = "Media: seek forward 5s" })
 
-hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/clipboard-picker"), { description = "Clipboard history picker" })
+-- Moved to Quickshell 2026-09-11 (same GTK->Quickshell move winswitch made
+-- first, 753e505): ~/.config/quickshell/clipboard/ClipboardPicker.qml is
+-- now the UI, the `clipboard-picker` binary a headless
+-- list/thumbs/activate backend. notification-picker (CTRL+mod+n, below) is
+-- untouched, still the GTK+layer-shell `picker::run` engine.
+hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("qs ipc call clipboardPicker toggle"), { description = "Clipboard history picker" })
 hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region -r | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit"), { description = "Screenshot a region (annotate)" })
 
 -- Global menu prototype (KDE's mod+a equivalent): flattens the focused

@@ -1,0 +1,2 @@
+singleton ClipboardQueryDsl 1.0 ClipboardQueryDsl.qml
+ClipboardPicker 1.0 ClipboardPicker.qml
