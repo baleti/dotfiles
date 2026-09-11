@@ -34,28 +34,38 @@ QtObject {
     readonly property TieredSocket tempSock: TieredSocket { metricName: "temp"; historyWanted: root.tempHistRefs > 0 }
     readonly property TieredSocket gpuSock: TieredSocket { metricName: "gpu"; includeProcs: root.gpuProcsRefs > 0; historyWanted: root.gpuHistRefs > 0 }
 
-    // Graph-hover top-process history, one socket per sub-metric (see
-    // ProcHistSocket.qml). `tier` tracks the matching series socket's tier
-    // so a hover tooltip lines its snapshots up with what the graph shows;
-    // `wanted` is a refcount (a panel refs on expand, unrefs on collapse)
-    // so the socket only streams while some panel is open. The GPU one
-    // follows the dGPU (nvidia) if present, else the first GPU -- the
-    // per-GPU rings are all collected server-side regardless.
-    readonly property string _hoverGpuName: {
-        for (const g of root.gpuList)
-            if (g.vendor === "nvidia")
-                return g.name;
-        return root.gpuList[0]?.name ?? "";
+    // Graph-hover top-process history, one ProcHistSocket per attributable
+    // "sub" -- see sysmon/src/lib.rs's Snapshot::ProcHist for the exact sub
+    // string shapes. `tier` tracks the matching series socket's tier so a
+    // hover tooltip lines its snapshots up with what the graph shows; each
+    // `wanted` is a refcount (a panel refs on expand, unrefs on collapse via
+    // refProcHist/unrefProcHist below) so a socket only streams while some
+    // panel that could show it is open.
+    //
+    // net/gpu are dynamic -- an interface/GPU can be discovered after
+    // startup -- so instead of one socket instantiated per name (a
+    // Repeater's model would need to be the interface/GPU list itself,
+    // which TieredSocket reshapes into a fresh array reference every tick
+    // and would thrash the delegates constantly) this keeps a small fixed
+    // pool of slots, index-matched to a STABLE name list that only changes
+    // reference when the actual set of names changes.
+    readonly property int _netSlots: 6 // headroom past the ~4 interfaces seen here
+    readonly property int _gpuSlots: 3 // headroom past the 2 GPUs (iGPU+dGPU) seen here
+
+    property var _netIfaceNames: []
+    onNetInterfacesChanged: {
+        const names = root.netInterfaces.map(i => i.name).slice().sort();
+        if (JSON.stringify(names) !== JSON.stringify(root._netIfaceNames))
+            root._netIfaceNames = names;
     }
-    readonly property ProcHistSocket procHistCpu: ProcHistSocket { sub: "cpu"; tier: root.cpuSock.tier; wanted: root.procHistCpuRefs > 0 }
-    readonly property ProcHistSocket procHistMem: ProcHistSocket { sub: "mem"; tier: root.memSock.tier; wanted: root.procHistMemRefs > 0 }
-    readonly property ProcHistSocket procHistNet: ProcHistSocket { sub: "net"; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 }
-    readonly property ProcHistSocket procHistDisk: ProcHistSocket { sub: "disk"; tier: root.diskSock.tier; wanted: root.procHistDiskRefs > 0 }
-    readonly property ProcHistSocket procHistGpu: ProcHistSocket {
-        sub: root._hoverGpuName.length > 0 ? "gpu:" + root._hoverGpuName : ""
-        tier: root.gpuSock.tier
-        wanted: root.procHistGpuRefs > 0 && root._hoverGpuName.length > 0
+    property var _gpuNames: []
+    onGpuListChanged: {
+        const names = root.gpuList.map(g => g.name);
+        if (JSON.stringify(names) !== JSON.stringify(root._gpuNames))
+            root._gpuNames = names;
     }
+    function _netIfaceAt(i: int): string { return root._netIfaceNames[i] ?? ""; }
+    function _gpuNameAt(i: int): string { return root._gpuNames[i] ?? ""; }
 
     property int procHistCpuRefs: 0
     property int procHistMemRefs: 0
@@ -63,17 +73,83 @@ QtObject {
     property int procHistDiskRefs: 0
     property int procHistGpuRefs: 0
 
-    // Snapshot ring for `metric`'s graph-hover tooltip (temp shares cpu's).
-    function procHistSnaps(metric: string): var {
-        switch (metric) {
+    readonly property ProcHistSocket procHistCpu: ProcHistSocket { sub: "cpu"; tier: root.cpuSock.tier; wanted: root.procHistCpuRefs > 0 }
+    readonly property ProcHistSocket procHistMemRss: ProcHistSocket { sub: "mem:rss"; tier: root.memSock.tier; wanted: root.procHistMemRefs > 0 }
+    readonly property ProcHistSocket procHistMemSwap: ProcHistSocket { sub: "mem:swap"; tier: root.memSock.tier; wanted: root.procHistMemRefs > 0 }
+    readonly property ProcHistSocket procHistDiskRead: ProcHistSocket { sub: "disk:read"; tier: root.diskSock.tier; wanted: root.procHistDiskRefs > 0 }
+    readonly property ProcHistSocket procHistDiskWrite: ProcHistSocket { sub: "disk:write"; tier: root.diskSock.tier; wanted: root.procHistDiskRefs > 0 }
+
+    property list<ProcHistSocket> _netRxSlots: [
+        ProcHistSocket { sub: root._netIfaceAt(0) ? "net:" + root._netIfaceAt(0) + ":rx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(1) ? "net:" + root._netIfaceAt(1) + ":rx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(2) ? "net:" + root._netIfaceAt(2) + ":rx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(3) ? "net:" + root._netIfaceAt(3) + ":rx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(4) ? "net:" + root._netIfaceAt(4) + ":rx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(5) ? "net:" + root._netIfaceAt(5) + ":rx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 }
+    ]
+    property list<ProcHistSocket> _netTxSlots: [
+        ProcHistSocket { sub: root._netIfaceAt(0) ? "net:" + root._netIfaceAt(0) + ":tx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(1) ? "net:" + root._netIfaceAt(1) + ":tx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(2) ? "net:" + root._netIfaceAt(2) + ":tx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(3) ? "net:" + root._netIfaceAt(3) + ":tx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(4) ? "net:" + root._netIfaceAt(4) + ":tx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 },
+        ProcHistSocket { sub: root._netIfaceAt(5) ? "net:" + root._netIfaceAt(5) + ":tx" : ""; tier: root.netSock.tier; wanted: root.procHistNetRefs > 0 }
+    ]
+    property list<ProcHistSocket> _gpuUtilSlots: [
+        ProcHistSocket { sub: root._gpuNameAt(0) ? "gpu:" + root._gpuNameAt(0) + ":util" : ""; tier: root.gpuSock.tier; wanted: root.procHistGpuRefs > 0 },
+        ProcHistSocket { sub: root._gpuNameAt(1) ? "gpu:" + root._gpuNameAt(1) + ":util" : ""; tier: root.gpuSock.tier; wanted: root.procHistGpuRefs > 0 },
+        ProcHistSocket { sub: root._gpuNameAt(2) ? "gpu:" + root._gpuNameAt(2) + ":util" : ""; tier: root.gpuSock.tier; wanted: root.procHistGpuRefs > 0 }
+    ]
+    property list<ProcHistSocket> _gpuVramSlots: [
+        ProcHistSocket { sub: root._gpuNameAt(0) ? "gpu:" + root._gpuNameAt(0) + ":vram" : ""; tier: root.gpuSock.tier; wanted: root.procHistGpuRefs > 0 },
+        ProcHistSocket { sub: root._gpuNameAt(1) ? "gpu:" + root._gpuNameAt(1) + ":vram" : ""; tier: root.gpuSock.tier; wanted: root.procHistGpuRefs > 0 },
+        ProcHistSocket { sub: root._gpuNameAt(2) ? "gpu:" + root._gpuNameAt(2) + ":vram" : ""; tier: root.gpuSock.tier; wanted: root.procHistGpuRefs > 0 }
+    ]
+
+    // Resolves an exact wire-protocol sub string (see sysmon's Snapshot::
+    // ProcHist) to its socket's snapshot ring -- the one place that maps
+    // "cpu" | "mem:rss" | "mem:swap" | "disk:read" | "disk:write" |
+    // "net:<iface>:rx"/"tx" | "gpu:<name>:util"/"vram" to a live socket,
+    // whether a fixed one or a pool slot. GraphPill calls this once per
+    // seriesList entry's own `procSub` field (built in Bar.qml) and once
+    // more for a pill's default/merged sub.
+    function procHistSnaps(sub: string): var {
+        switch (sub) {
         case "cpu": case "temp": return root.procHistCpu.snaps;
-        case "mem": return root.procHistMem.snaps;
-        case "net": return root.procHistNet.snaps;
-        case "disk": return root.procHistDisk.snaps;
-        case "gpu": return root.procHistGpu.snaps;
+        case "mem:rss": return root.procHistMemRss.snaps;
+        case "mem:swap": return root.procHistMemSwap.snaps;
+        case "disk:read": return root.procHistDiskRead.snaps;
+        case "disk:write": return root.procHistDiskWrite.snaps;
+        }
+        if (sub.startsWith("net:")) {
+            const rest = sub.slice(4);
+            const dir = rest.endsWith(":rx") ? "rx" : rest.endsWith(":tx") ? "tx" : "";
+            if (!dir)
+                return [];
+            const iface = rest.slice(0, rest.length - 3);
+            const idx = root._netIfaceNames.indexOf(iface);
+            if (idx < 0)
+                return [];
+            const slot = (dir === "tx" ? root._netTxSlots : root._netRxSlots)[idx];
+            return slot ? slot.snaps : [];
+        }
+        if (sub.startsWith("gpu:")) {
+            const rest = sub.slice(4);
+            const dim = rest.endsWith(":util") ? "util" : rest.endsWith(":vram") ? "vram" : "";
+            if (!dim)
+                return [];
+            const name = rest.slice(0, rest.length - (dim.length + 1));
+            const idx = root._gpuNames.indexOf(name);
+            if (idx < 0)
+                return [];
+            const slot = (dim === "vram" ? root._gpuVramSlots : root._gpuUtilSlots)[idx];
+            return slot ? slot.snaps : [];
         }
         return [];
     }
+    // Coarse per-panel refcounts -- one panel wants ALL of its own
+    // dimensions' sockets connected while it's open (hover just picks which
+    // already-streaming ring to show), not one socket per hovered line.
     function refProcHist(metric: string): void {
         switch (metric) {
         case "cpu": case "temp": root.procHistCpuRefs++; break;

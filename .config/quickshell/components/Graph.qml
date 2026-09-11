@@ -84,6 +84,10 @@ Canvas {
     // GraphPill's top-process tooltip) is unaffected.
     property bool lineHoverHighlight: true
     property string hoveredName: ""
+    // Index into `seriesList` of the nearest line (-1 = none/single-mode)
+    // -- see `_updateHover`'s own comment on why this exists alongside
+    // `hoveredName` rather than being redundant with it.
+    property int hoveredSeriesIndex: -1
     // Read by GraphPill.qml's legend Repeater to bold the matching row --
     // exposed as the sentinel-free single-mode-aware form (never leaks
     // _singleSentinel to a consumer that doesn't know about it).
@@ -213,18 +217,28 @@ Canvas {
         if (root.lineHoverHighlight) {
             const list = root._hitTestSeries();
             let bestName = "";
+            let bestIdx = -1;
             let bestDist = 10;
-            for (const s of list) {
-                const y = root._lineYAt(s.data, mx);
+            for (let i = 0; i < list.length; i++) {
+                const y = root._lineYAt(list[i].data, mx);
                 if (y === null)
                     continue;
                 const d = Math.abs(my - y);
                 if (d < bestDist) {
                     bestDist = d;
-                    bestName = s.name ?? "";
+                    bestName = list[i].name ?? "";
+                    bestIdx = i;
                 }
             }
             root.hoveredName = bestName;
+            // Index into `seriesList` (== `list` in overlay mode -- single
+            // mode's one implicit line has no real seriesList entry, so
+            // this stays -1 there) of the nearest line, not just its name --
+            // two lines can share one `name` on purpose (rx/tx under one
+            // legend row bold together), so GraphPill needs to know which
+            // one was actually nearest to attribute a hover tooltip to just
+            // that line, not whichever shares the name.
+            root.hoveredSeriesIndex = root.seriesList.length > 0 ? bestIdx : -1;
         }
 
         const n = root._pointCount();
@@ -247,6 +261,7 @@ Canvas {
         onPositionChanged: mouse => root._updateHover(mouse.x, mouse.y)
         onExited: {
             root.hoveredName = "";
+            root.hoveredSeriesIndex = -1;
             root.hoveredIndex = -1;
         }
     }

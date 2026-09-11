@@ -293,6 +293,66 @@ impl SnapSeries {
     }
 }
 
+/// One GPU's two attributable snapshot rings -- engine utilisation and VRAM
+/// occupancy are different units, so hovering the utilisation line and
+/// hovering the VRAM line show different top-process rankings (both drawn
+/// from the same underlying `GpuHist::top` list -- see `sample_loop`'s own
+/// comment on that approximation). There's no per-process board-power
+/// figure, so the power line falls back to `util` client-side (GraphPill).
+struct GpuSnap {
+    util: SnapSeries,
+    vram: SnapSeries,
+}
+
+impl GpuSnap {
+    fn new() -> Self {
+        GpuSnap { util: SnapSeries::new(), vram: SnapSeries::new() }
+    }
+}
+
+/// Resolves a wire-protocol / persist-file `sub` string ("cpu" | "temp" |
+/// "mem:rss" | "mem:swap" | "disk:read" | "disk:write" |
+/// "net:<iface>:rx" | "net:<iface>:tx" | "gpu:<name>:util" |
+/// "gpu:<name>:vram") to its snapshot ring. Shared by `serve_client` (live
+/// `prochist` requests) and `History::load_procs_from_disk` (persist file
+/// keys use exactly this same shape), so the two can't drift apart on what
+/// a sub string means. Auto-vivifies a `net:<iface>:...` entry for an
+/// unseen interface name (same permissive pattern `History::net` itself
+/// already uses) -- harmless, and lets a persisted ring for an interface
+/// not yet seen this session load in. GPU names are matched against the
+/// real (fixed-at-startup) GPU list instead, so a stale/bogus name just
+/// returns `None`.
+fn snap_series<'a>(h: &'a mut History, sub: &str) -> Option<&'a mut SnapSeries> {
+    match sub {
+        "cpu" | "temp" => Some(&mut h.snap_cpu),
+        "mem:rss" => Some(&mut h.snap_mem_rss),
+        "mem:swap" => Some(&mut h.snap_mem_swap),
+        "disk:read" => Some(&mut h.snap_disk_read),
+        "disk:write" => Some(&mut h.snap_disk_write),
+        other => {
+            if let Some(rest) = other.strip_prefix("net:") {
+                if let Some(iface) = rest.strip_suffix(":rx") {
+                    return Some(&mut h.net_snap.entry(iface.to_string()).or_insert_with(|| (SnapSeries::new(), SnapSeries::new())).0);
+                }
+                if let Some(iface) = rest.strip_suffix(":tx") {
+                    return Some(&mut h.net_snap.entry(iface.to_string()).or_insert_with(|| (SnapSeries::new(), SnapSeries::new())).1);
+                }
+            }
+            if let Some(rest) = other.strip_prefix("gpu:") {
+                if let Some(name) = rest.strip_suffix(":util") {
+                    let i = h.gpus.iter().position(|g| g.name == name)?;
+                    return Some(&mut h.snap_gpu.get_mut(i)?.util);
+                }
+                if let Some(name) = rest.strip_suffix(":vram") {
+                    let i = h.gpus.iter().position(|g| g.name == name)?;
+                    return Some(&mut h.snap_gpu.get_mut(i)?.vram);
+                }
+            }
+            None
+        }
+    }
+}
+
 /// Only the coarse "historic" tiers are persisted -- 10m/30m refill within
 /// their own span on a restart and aren't what "explain a spike from last
 /// week" needs, and they're the bulk of the snapshot count.
@@ -560,21 +620,42 @@ struct History {
     // panel is open -- distinct from `top_cpu`/`top_mem`/`top_disk` above,
     // which are the 1s-fresh lists a live panel shows and stay empty while
     // no panel wants them. `sample_loop` feeds these into the snap rings.
-    // (net's snapshot source is `top_net` directly -- nethogs is always on
-    // now -- and each GPU's is its own `GpuHist::top`.)
+    // Mem/disk are split per attributable dimension (RSS vs swap, read vs
+    // write) so hovering the matching graph LINE shows just that dimension's
+    // top processes, not the combined figure the live panel's table still
+    // uses. (GPU's snapshot source is each `GpuHist::top`, not here.)
     hist_top_cpu: Vec<ProcEntry>,
-    hist_top_mem: Vec<ProcEntry>,
-    hist_top_disk: Vec<ProcEntry>,
+    hist_top_mem_rss: Vec<ProcEntry>,
+    hist_top_mem_swap: Vec<ProcEntry>,
+    hist_top_disk_read: Vec<ProcEntry>,
+    hist_top_disk_write: Vec<ProcEntry>,
+
+    // Per-interface network attribution, always-on (one `nethogs` instance
+    // per interface -- see `NethogsPool`'s doc comment for why one each
+    // rather than one shared instance). `net_latest[iface]` is that
+    // interface's most recent full (pid, name, sent_kb, recv_kb) list,
+    // unTRUNCATED -- needed so `recompute_top_net` can sum sent+recv
+    // correctly across every interface for the live panel's combined
+    // `top_net`, which independently-truncated top-6-per-interface lists
+    // couldn't do accurately. `hist_top_net_rx`/`hist_top_net_tx` are this
+    // interface's own top-6-by-recv / top-6-by-sent, the snapshot sources
+    // for its rx/tx lines.
+    net_latest: HashMap<String, Vec<(i32, String, f64, f64)>>,
+    hist_top_net_rx: HashMap<String, Vec<ProcEntry>>,
+    hist_top_net_tx: HashMap<String, Vec<ProcEntry>>,
 
     // Tiered top-process snapshot rings, one observation per second from
-    // `sample_loop`, kept in lockstep with the matching metric series so a
-    // hover on a graph point can look up "what was running" then. `snap_gpu`
-    // is parallel to `gpus`.
+    // `sample_loop`, kept in lockstep with the matching metric series so
+    // hovering a graph point (or a specific line within it) can look up
+    // "what was running" then. `net_snap`/`snap_gpu` are keyed/indexed the
+    // same way as `net`/`gpus`.
     snap_cpu: SnapSeries,
-    snap_mem: SnapSeries,
-    snap_net: SnapSeries,
-    snap_disk: SnapSeries,
-    snap_gpu: Vec<SnapSeries>,
+    snap_mem_rss: SnapSeries,
+    snap_mem_swap: SnapSeries,
+    snap_disk_read: SnapSeries,
+    snap_disk_write: SnapSeries,
+    net_snap: HashMap<String, (SnapSeries, SnapSeries)>, // iface -> (rx, tx)
+    snap_gpu: Vec<GpuSnap>,
 }
 
 impl History {
@@ -602,13 +683,20 @@ impl History {
             prev_proc_io: HashMap::new(),
             prev_proc_io_at: None,
             hist_top_cpu: Vec::new(),
-            hist_top_mem: Vec::new(),
-            hist_top_disk: Vec::new(),
+            hist_top_mem_rss: Vec::new(),
+            hist_top_mem_swap: Vec::new(),
+            hist_top_disk_read: Vec::new(),
+            hist_top_disk_write: Vec::new(),
+            net_latest: HashMap::new(),
+            hist_top_net_rx: HashMap::new(),
+            hist_top_net_tx: HashMap::new(),
             snap_cpu: SnapSeries::new(),
-            snap_mem: SnapSeries::new(),
-            snap_net: SnapSeries::new(),
-            snap_disk: SnapSeries::new(),
-            snap_gpu: (0..n_gpus).map(|_| SnapSeries::new()).collect(),
+            snap_mem_rss: SnapSeries::new(),
+            snap_mem_swap: SnapSeries::new(),
+            snap_disk_read: SnapSeries::new(),
+            snap_disk_write: SnapSeries::new(),
+            net_snap: HashMap::new(),
+            snap_gpu: (0..n_gpus).map(|_| GpuSnap::new()).collect(),
         };
         h.load_from_disk();
         h.load_procs_from_disk();
@@ -691,6 +779,8 @@ impl History {
 
     /// Best-effort, same contract as `load_from_disk` -- a missing or
     /// shape-mismatched sidecar just leaves every snapshot ring empty.
+    /// Delegates to `snap_series` for the actual sub -> ring lookup, the
+    /// same resolver `serve_client` uses for live requests.
     fn load_procs_from_disk(&mut self) {
         let Ok(text) = fs::read_to_string(persist_procs_path()) else { return };
         let Ok(p) = serde_json::from_str::<PersistedProcs>(&text) else { return };
@@ -701,20 +791,8 @@ impl History {
             by_sub.entry(sub.to_string()).or_default().insert(tier.to_string(), ring);
         }
         for (sub, per_tier) in &by_sub {
-            match sub.as_str() {
-                "cpu" => self.snap_cpu.load_persisted(per_tier, &p.names),
-                "mem" => self.snap_mem.load_persisted(per_tier, &p.names),
-                "net" => self.snap_net.load_persisted(per_tier, &p.names),
-                "disk" => self.snap_disk.load_persisted(per_tier, &p.names),
-                _ => {
-                    if let Some(name) = sub.strip_prefix("gpu:") {
-                        if let Some(i) = self.gpus.iter().position(|g| g.name == name) {
-                            if let Some(s) = self.snap_gpu.get_mut(i) {
-                                s.load_persisted(per_tier, &p.names);
-                            }
-                        }
-                    }
-                }
+            if let Some(series) = snap_series(self, sub) {
+                series.load_persisted(per_tier, &p.names);
             }
         }
         eprintln!("sysmond: loaded persisted snapshot history from {}", persist_procs_path().display());
@@ -723,18 +801,24 @@ impl History {
     fn save_procs_to_disk(&self) {
         let mut interner = Interner::default();
         let mut rings: HashMap<String, Vec<PersistedSnap>> = HashMap::new();
-        let mut add = |sub: &str, series: &SnapSeries, interner: &mut Interner| {
+        let mut add = |sub: String, series: &SnapSeries, interner: &mut Interner| {
             for (tier_code, ring) in series.to_persisted(interner) {
                 rings.insert(format!("{sub}/{tier_code}"), ring);
             }
         };
-        add("cpu", &self.snap_cpu, &mut interner);
-        add("mem", &self.snap_mem, &mut interner);
-        add("net", &self.snap_net, &mut interner);
-        add("disk", &self.snap_disk, &mut interner);
+        add("cpu".to_string(), &self.snap_cpu, &mut interner);
+        add("mem:rss".to_string(), &self.snap_mem_rss, &mut interner);
+        add("mem:swap".to_string(), &self.snap_mem_swap, &mut interner);
+        add("disk:read".to_string(), &self.snap_disk_read, &mut interner);
+        add("disk:write".to_string(), &self.snap_disk_write, &mut interner);
+        for (iface, (rx, tx)) in &self.net_snap {
+            add(format!("net:{iface}:rx"), rx, &mut interner);
+            add(format!("net:{iface}:tx"), tx, &mut interner);
+        }
         for (i, g) in self.gpus.iter().enumerate() {
             if let Some(s) = self.snap_gpu.get(i) {
-                add(&format!("gpu:{}", g.name), s, &mut interner);
+                add(format!("gpu:{}:util", g.name), &s.util, &mut interner);
+                add(format!("gpu:{}:vram", g.name), &s.vram, &mut interner);
             }
         }
         let p = PersistedProcs { names: interner.names, rings };
@@ -990,6 +1074,21 @@ fn proc_rss_mb(pid: i32) -> Option<f64> {
     None
 }
 
+/// `/proc/[pid]/status`'s `VmSwap` -- this process's own share of swap
+/// occupancy, the per-process counterpart to the mem graph's "Swap" line
+/// (`swap_used_pct`, the machine-wide reading). Same file `proc_rss_mb`
+/// already reads for `VmRSS`, just a different field.
+fn proc_swap_mb(pid: i32) -> Option<f64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmSwap:") {
+            let kb: f64 = rest.trim().trim_end_matches(" kB").parse().ok()?;
+            return Some(kb / 1024.0);
+        }
+    }
+    None
+}
+
 /// `/proc/[pid]/io`'s read_bytes/write_bytes -- actual block I/O (not
 /// rchar/wchar, which also count cache-served reads/writes with no disk
 /// activity behind them), matching what the per-device read_bps/write_bps
@@ -1126,8 +1225,11 @@ fn top_n(mut entries: Vec<ProcEntry>, n: usize) -> Vec<ProcEntry> {
 /// `unknown TCP/0/0\t..\t..` (packet seen, no matching /proc socket owner
 /// yet) and raw `ip:port-ip:port/0/0\t..\t..` connection identifiers (same
 /// cause). `<name>` is nethogs' own resolved program path/name and can
-/// itself contain `/`, so split from the right, not the left.
-fn parse_nethogs_line(line: &str) -> Option<ProcEntry> {
+/// itself contain `/`, so split from the right, not the left. Returns
+/// (pid, name, sent_kb, recv_kb) rather than a pre-summed `ProcEntry` --
+/// callers need sent and recv separately now (one interface's rx line
+/// ranks by recv, its tx line by sent).
+fn parse_nethogs_line(line: &str) -> Option<(i32, String, f64, f64)> {
     let fields: Vec<&str> = line.split('\t').collect();
     if fields.len() < 3 {
         return None;
@@ -1142,40 +1244,65 @@ fn parse_nethogs_line(line: &str) -> Option<ProcEntry> {
         return None; // "unknown TCP/0/0" and raw ip:port/0/0 connection lines
     }
     let name = path.rsplit('/').next().unwrap_or(path).to_string();
-    Some(ProcEntry { pid, name, value: sent + recv, detail: String::new(), util_pct: 0.0 })
+    Some((pid, name, sent, recv))
 }
 
-/// `nethogs -t` (packet-capture based per-process network attribution) is
-/// only worth running while at least one client actually wants `top_net`
-/// (i.e. the network pill's panel is open somewhere) -- unlike every other
-/// metric here, it's a full-time subprocess, not a periodic scan, so idling
-/// it is the single biggest win of the on-demand-panel-data change (2026-
-/// 09-05: "collect live data... but data that only shows up in panels ...
-/// isn't needed until that panel gets opened"). `refcount` supports several
-/// simultaneous wanters (e.g. two monitors' net panels both open) without
-/// starting a second nethogs or stopping it while anyone still wants it.
-struct NethogsManager {
-    refcount: usize,
-    child: Option<std::process::Child>,
+/// One `nethogs -t` instance PER interface, always on. `nethogs`'s own CLI
+/// accepts several `device` args, but even given several it never splits
+/// its report *by* device -- so true per-interface attribution (2026-09-11:
+/// "obtain that information per interface for mod+n") needs one instance
+/// each, restricted to its own device. Total packet-processing cost stays
+/// about the same as a single instance watching everything (each instance
+/// only sees its own interface's packets); this just pays a modest fixed
+/// per-process overhead once per live interface (4 possible, usually 1-2
+/// actually up) instead of once total. Always-on and never stopped --
+/// interfaces essentially never disappear here (a bounced VPN tunnel keeps
+/// its name), and an instance idling on a gone one just reports nothing.
+struct NethogsPool {
+    children: HashMap<String, std::process::Child>,
 }
 
-/// Bumps the refcount and starts nethogs on the 0 -> 1 transition. A
-/// no-op-forever (not a crash) if nethogs isn't installed, same contract
-/// every other missing-sensor path here uses -- the refcount still tracks
-/// correctly, `top_net` just never gets populated.
-fn nethogs_ref(mgr: &Arc<Mutex<NethogsManager>>, history: Arc<Mutex<History>>) {
-    let mut m = mgr.lock().unwrap();
-    m.refcount += 1;
-    if m.refcount != 1 {
-        return; // someone else already has it running
+/// Whether an interface currently has the kernel's `IFF_UP` flag set.
+/// nethogs refuses to open a pcap handle on an explicitly-named device that
+/// isn't -- confirmed live: a disabled `wlan0` prints "No devices to
+/// monitor" and exits immediately -- but happily monitors a WireGuard
+/// tunnel whose `operstate` reports "unknown" rather than "up" (nethogs
+/// itself doesn't care about operstate, just this flag), so this checks the
+/// flags bitmask directly rather than the more commonly-reached-for but
+/// here-unreliable `operstate` file.
+fn iface_is_up(iface: &str) -> bool {
+    let Ok(hex) = fs::read_to_string(format!("/sys/class/net/{iface}/flags")) else { return false };
+    let hex = hex.trim().trim_start_matches("0x");
+    u32::from_str_radix(hex, 16).map(|f| f & 0x1 != 0).unwrap_or(false)
+}
+
+/// Starts this interface's own nethogs instance if it doesn't already have
+/// a live one and the interface is currently up -- called from
+/// `sample_loop` every tick for every interface it knows about (cheap: the
+/// early-return below is just a lock + hashmap lookup, no process spawn,
+/// for every tick after the first that actually succeeds). The up-check
+/// avoids spawn/exit churn for an interface that isn't ready yet (`wlan0`
+/// while on ethernet, say) -- `nethogs_reader` removes its own pool entry
+/// when the child exits, so once the interface comes up a later tick's call
+/// here retries. A no-op-forever (not a crash) if nethogs isn't installed,
+/// same contract every other missing-sensor path here uses.
+fn nethogs_pool_ensure(pool: &Arc<Mutex<NethogsPool>>, history: Arc<Mutex<History>>, iface: &str) {
+    let mut p = pool.lock().unwrap();
+    if p.children.contains_key(iface) {
+        return;
     }
-    match Command::new("nethogs").args(["-t", "-d", "1"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+    if !iface_is_up(iface) {
+        return;
+    }
+    match Command::new("nethogs").args(["-t", "-d", "1", iface]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         Ok(mut child) => {
             let stdout = child.stdout.take();
-            m.child = Some(child);
-            drop(m);
+            p.children.insert(iface.to_string(), child);
+            drop(p);
             if let Some(stdout) = stdout {
-                std::thread::spawn(move || nethogs_reader(stdout, history));
+                let iface = iface.to_string();
+                let pool = pool.clone();
+                std::thread::spawn(move || nethogs_reader(stdout, history, iface, pool));
             }
         }
         Err(_) => {
@@ -1184,44 +1311,86 @@ fn nethogs_ref(mgr: &Arc<Mutex<NethogsManager>>, history: Arc<Mutex<History>>) {
     }
 }
 
-/// Drops the refcount and, on the 1 -> 0 transition, kills nethogs --
-/// closing its stdout, which ends `nethogs_reader`'s blocking read loop on
-/// its own (no separate stop signal needed). `wait()`s on it so it doesn't
-/// linger as a zombie.
-fn nethogs_unref(mgr: &Arc<Mutex<NethogsManager>>) {
-    let mut m = mgr.lock().unwrap();
-    m.refcount = m.refcount.saturating_sub(1);
-    if m.refcount != 0 {
-        return;
+/// Recomputes the live panel's machine-wide `top_net` (combined sent+recv,
+/// same shape as before per-interface attribution existed) by summing each
+/// interface's latest UNtruncated per-pid sample across every interface --
+/// summing the already-truncated per-interface top-6 lists instead could
+/// both miss a process that's mid-table on every interface individually but
+/// top-6 combined, and double-count nothing (each interface contributes at
+/// most once per pid), so this always recomputes from `net_latest` rather
+/// than merging `hist_top_net_rx`/`hist_top_net_tx`.
+fn recompute_top_net(h: &mut History) {
+    let mut totals: HashMap<i32, ProcEntry> = HashMap::new();
+    for samples in h.net_latest.values() {
+        for (pid, name, sent, recv) in samples {
+            let e = totals.entry(*pid).or_insert_with(|| ProcEntry {
+                pid: *pid,
+                name: name.clone(),
+                value: 0.0,
+                detail: String::new(),
+                util_pct: 0.0,
+            });
+            e.value += sent + recv;
+        }
     }
-    if let Some(mut child) = m.child.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    let mut top = top_n(totals.into_values().collect(), 10);
+    enrich_details(&mut top);
+    h.top_net = top;
 }
 
-/// Reads `nethogs -t` trace-mode output (one block per ~1s refresh) until
-/// the child exits -- either it was killed by `nethogs_unref` (demand
-/// dropped to zero) or it crashed on its own, either way this thread just
-/// ends; a fresh `nethogs_ref` call starts a new one from scratch. Clears
-/// `top_net` on exit so a stale list doesn't linger once nobody's running
-/// nethogs to refresh it.
-fn nethogs_reader(stdout: std::process::ChildStdout, history: Arc<Mutex<History>>) {
+/// Reads one interface's `nethogs -t` trace-mode output (one block per ~1s
+/// refresh) until the child exits -- expected to run for as long as the
+/// interface stays up; if it dies (the interface going down, a transient
+/// pcap-open failure, a crash) this thread ends and clears its `NethogsPool`
+/// entry so `nethogs_pool_ensure`'s next call for this interface (every
+/// `sample_loop` tick) spawns a fresh one once it's viable again.
+fn nethogs_reader(stdout: std::process::ChildStdout, history: Arc<Mutex<History>>, iface: String, pool: Arc<Mutex<NethogsPool>>) {
     let reader = BufReader::new(stdout);
-    let mut current: HashMap<i32, ProcEntry> = HashMap::new();
+    let mut current: HashMap<i32, (String, f64, f64)> = HashMap::new();
     for line in reader.lines().map_while(Result::ok) {
         if line.starts_with("Refreshing:") {
-            let entries: Vec<ProcEntry> = current.drain().map(|(_, v)| v).collect();
-            let mut top_net = top_n(entries, 10);
-            enrich_details(&mut top_net);
-            history.lock().unwrap().top_net = top_net;
+            let samples: Vec<(i32, String, f64, f64)> =
+                current.drain().map(|(pid, (name, sent, recv))| (pid, name, sent, recv)).collect();
+
+            let by_recv_entries: Vec<ProcEntry> = samples
+                .iter()
+                .filter(|(_, _, _, recv)| *recv > 0.0)
+                .map(|(pid, name, _, recv)| ProcEntry { pid: *pid, name: name.clone(), value: *recv, detail: String::new(), util_pct: 0.0 })
+                .collect();
+            let by_sent_entries: Vec<ProcEntry> = samples
+                .iter()
+                .filter(|(_, _, sent, _)| *sent > 0.0)
+                .map(|(pid, name, sent, _)| ProcEntry { pid: *pid, name: name.clone(), value: *sent, detail: String::new(), util_pct: 0.0 })
+                .collect();
+            let mut by_recv = top_n(by_recv_entries, SNAP_TOP_N);
+            let mut by_sent = top_n(by_sent_entries, SNAP_TOP_N);
+            enrich_details(&mut by_recv);
+            enrich_details(&mut by_sent);
+
+            let mut h = history.lock().unwrap();
+            h.net_latest.insert(iface.clone(), samples);
+            h.hist_top_net_rx.insert(iface.clone(), by_recv);
+            h.hist_top_net_tx.insert(iface.clone(), by_sent);
+            recompute_top_net(&mut h);
             continue;
         }
-        if let Some(entry) = parse_nethogs_line(&line) {
-            current.insert(entry.pid, entry);
+        if let Some((pid, name, sent, recv)) = parse_nethogs_line(&line) {
+            current.insert(pid, (name, sent, recv));
         }
     }
-    history.lock().unwrap().top_net = Vec::new();
+    let mut h = history.lock().unwrap();
+    h.net_latest.remove(&iface);
+    h.hist_top_net_rx.remove(&iface);
+    h.hist_top_net_tx.remove(&iface);
+    recompute_top_net(&mut h);
+    drop(h);
+    // The child already exited (that's why stdout hit EOF) -- wait() just
+    // reaps it rather than blocking, same as nethogs_pool_ensure would have
+    // to do if this weren't here (a Child dropped without waiting leaves a
+    // zombie).
+    if let Some(mut child) = pool.lock().unwrap().children.remove(&iface) {
+        let _ = child.wait();
+    }
 }
 
 /// Runs `f` against the first GPU of the given vendor, if the machine has
@@ -1806,15 +1975,16 @@ fn gpu_proc_reader(stdout: std::process::ChildStdout, history: Arc<Mutex<History
 /// on-demand metric -- each `serve_client` connection bumps the relevant
 /// counter(s) for its own lifetime (see `DemandGuard`) and the background
 /// loops that do the expensive work (`sample_loop`'s per-process scans,
-/// `NethogsManager`, `GpuProcManager`) check them before bothering. Every
-/// field is an `Arc`, so `#[derive(Clone)]` just clones the handles, not
-/// the underlying counters/managers.
+/// `GpuProcManager`) check them before bothering. Every field is an `Arc`,
+/// so `#[derive(Clone)]` just clones the handles, not the underlying
+/// counters/managers. Network attribution (`NethogsPool`) isn't demand-
+/// gated anymore -- always-on for the snapshot history -- so it's a
+/// separate top-level handle, not part of this struct.
 #[derive(Clone)]
 struct Demand {
     top_cpu: Arc<AtomicUsize>,
     top_mem: Arc<AtomicUsize>,
     top_disk: Arc<AtomicUsize>,
-    nethogs: Arc<Mutex<NethogsManager>>,
     gpu_procs: Arc<Mutex<GpuProcManager>>,
 }
 
@@ -1824,7 +1994,6 @@ impl Demand {
             top_cpu: Arc::new(AtomicUsize::new(0)),
             top_mem: Arc::new(AtomicUsize::new(0)),
             top_disk: Arc::new(AtomicUsize::new(0)),
-            nethogs: Arc::new(Mutex::new(NethogsManager { refcount: 0, child: None })),
             gpu_procs: Arc::new(Mutex::new(GpuProcManager { refcount: 0, child: None })),
         }
     }
@@ -1864,9 +2033,11 @@ fn nvidia_compute_apps(n: usize) -> Vec<ProcEntry> {
 /// spike showing up later in a historic graph can still be explained -- just
 /// on a slower cadence than `sample_loop` (PROC_HIST_INTERVAL_MS) so the
 /// steady cost of keeping that history is small. Writes
-/// `History::hist_top_{cpu,mem,disk}` (which `sample_loop` folds into the
-/// snap rings) and, when `nvidia-smi pmon` isn't already running for an open
-/// GPU panel, the nvidia GPU's `top` via the cheap VRAM-only query.
+/// `History::hist_top_cpu` and the mem/disk pairs split by attributable
+/// dimension (RSS vs swap, read vs write -- `sample_loop` folds all of these
+/// into their own snap rings) and, when `nvidia-smi pmon` isn't already
+/// running for an open GPU panel, the nvidia GPU's `top` via the cheap
+/// VRAM-only query.
 fn proc_hist_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcManager>>, clk_tck: f64) {
     let has_nvidia = history.lock().unwrap().gpus.iter().any(|g| g.vendor == "nvidia");
     let mut prev_ticks: HashMap<i32, u64> = HashMap::new();
@@ -1883,8 +2054,10 @@ fn proc_hist_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
         let mut cur_ticks: HashMap<i32, u64> = HashMap::with_capacity(pids.len());
         let mut cur_io: HashMap<i32, (u64, u64)> = HashMap::with_capacity(pids.len());
         let mut cpu_e: Vec<ProcEntry> = Vec::new();
-        let mut mem_e: Vec<ProcEntry> = Vec::new();
-        let mut disk_e: Vec<ProcEntry> = Vec::new();
+        let mut rss_e: Vec<ProcEntry> = Vec::new();
+        let mut swap_e: Vec<ProcEntry> = Vec::new();
+        let mut read_e: Vec<ProcEntry> = Vec::new();
+        let mut write_e: Vec<ProcEntry> = Vec::new();
 
         for &pid in &pids {
             if let Some(t) = proc_cpu_ticks(pid) {
@@ -1898,15 +2071,24 @@ fn proc_hist_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
             }
             if let Some(mb) = proc_rss_mb(pid) {
                 if mb > 0.0 {
-                    mem_e.push(ProcEntry { pid, name: proc_name(pid), value: mb, detail: String::new(), util_pct: 0.0 });
+                    rss_e.push(ProcEntry { pid, name: proc_name(pid), value: mb, detail: String::new(), util_pct: 0.0 });
+                }
+            }
+            if let Some(mb) = proc_swap_mb(pid) {
+                if mb > 0.0 {
+                    swap_e.push(ProcEntry { pid, name: proc_name(pid), value: mb, detail: String::new(), util_pct: 0.0 });
                 }
             }
             if let Some(io) = proc_io_bytes(pid) {
                 cur_io.insert(pid, io);
                 if let Some(&(pr, pw)) = prev_io.get(&pid) {
-                    let kb = (io.0.saturating_sub(pr) as f64 + io.1.saturating_sub(pw) as f64) / 1024.0 / elapsed_s;
-                    if kb > 1.0 {
-                        disk_e.push(ProcEntry { pid, name: proc_name(pid), value: kb, detail: String::new(), util_pct: 0.0 });
+                    let d_read = (io.0.saturating_sub(pr)) as f64 / 1024.0 / elapsed_s;
+                    let d_write = (io.1.saturating_sub(pw)) as f64 / 1024.0 / elapsed_s;
+                    if d_read > 1.0 {
+                        read_e.push(ProcEntry { pid, name: proc_name(pid), value: d_read, detail: String::new(), util_pct: 0.0 });
+                    }
+                    if d_write > 1.0 {
+                        write_e.push(ProcEntry { pid, name: proc_name(pid), value: d_write, detail: String::new(), util_pct: 0.0 });
                     }
                 }
             }
@@ -1915,11 +2097,15 @@ fn proc_hist_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
         prev_io = cur_io;
 
         let mut top_cpu = top_n(cpu_e, SNAP_TOP_N);
-        let mut top_mem = top_n(mem_e, SNAP_TOP_N);
-        let mut top_disk = top_n(disk_e, SNAP_TOP_N);
+        let mut top_rss = top_n(rss_e, SNAP_TOP_N);
+        let mut top_swap = top_n(swap_e, SNAP_TOP_N);
+        let mut top_read = top_n(read_e, SNAP_TOP_N);
+        let mut top_write = top_n(write_e, SNAP_TOP_N);
         enrich_details(&mut top_cpu);
-        enrich_details(&mut top_mem);
-        enrich_details(&mut top_disk);
+        enrich_details(&mut top_rss);
+        enrich_details(&mut top_swap);
+        enrich_details(&mut top_read);
+        enrich_details(&mut top_write);
 
         let nvidia_top = if has_nvidia && !gpu_procs_wanted(&gpu_procs) {
             let mut v = nvidia_compute_apps(SNAP_TOP_N);
@@ -1931,8 +2117,10 @@ fn proc_hist_loop(history: Arc<Mutex<History>>, gpu_procs: Arc<Mutex<GpuProcMana
 
         let mut h = history.lock().unwrap();
         h.hist_top_cpu = top_cpu;
-        h.hist_top_mem = top_mem;
-        h.hist_top_disk = top_disk;
+        h.hist_top_mem_rss = top_rss;
+        h.hist_top_mem_swap = top_swap;
+        h.hist_top_disk_read = top_read;
+        h.hist_top_disk_write = top_write;
         if let Some(nv) = nvidia_top {
             if let Some(g) = h.gpus.iter_mut().find(|g| g.vendor == "nvidia") {
                 g.top = nv;
@@ -1949,7 +2137,7 @@ fn proc_persist_loop(history: Arc<Mutex<History>>) {
     }
 }
 
-fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
+fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, nethogs_pool: Arc<Mutex<NethogsPool>>) {
     let thermal_zone = find_cpu_thermal_zone();
     let disk_names = whole_disk_names();
     let mut prev_cpu_lines = read_all_cpu_lines();
@@ -2157,13 +2345,6 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
             Vec::new()
         };
 
-        // Peak instantaneous rate across interfaces / disks this tick --
-        // used only to pick which second within a tier bucket the kept
-        // snapshot comes from (the top net/disk process lists are
-        // machine-wide, not per-device).
-        let net_peak = rates.iter().map(|(_, rx, tx)| rx + tx).fold(0.0_f64, f64::max);
-        let disk_peak = disk_rates.iter().map(|(_, rd, wr)| rd + wr).fold(0.0_f64, f64::max);
-
         let mut h = history.lock().unwrap();
         h.cpu_total.push_raw(cpu_total);
         h.temp_c.push_raw(temp_c);
@@ -2177,37 +2358,76 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand) {
                 series.push_raw(pct);
             }
         }
-        for (name, rx_bps, tx_bps) in rates {
-            let buf = h.net.entry(name).or_insert_with(TwoSeriesBuf::new);
-            buf.a.push_raw(rx_bps);
-            buf.b.push_raw(tx_bps);
+
+        // Series push + this interface's own rx/tx snapshot observe in one
+        // pass -- rx ranks by the interface's own top-recv list, tx by its
+        // top-sent list (see `hist_top_net_rx`/`_tx`, fed by that
+        // interface's own always-on `nethogs` instance). Ensuring its
+        // nethogs instance every tick (not just the first time this
+        // interface's seen) is cheap once it's running -- `nethogs_pool_
+        // ensure`'s own early-return is just a lock + lookup -- and is what
+        // lets an interface that's down when first seen (wlan0 while on
+        // ethernet, say) start being monitored the moment it comes up.
+        for (name, rx_bps, tx_bps) in &rates {
+            nethogs_pool_ensure(&nethogs_pool, history.clone(), name);
+            let buf = h.net.entry(name.clone()).or_insert_with(TwoSeriesBuf::new);
+            buf.a.push_raw(*rx_bps);
+            buf.b.push_raw(*tx_bps);
+            let rx_src = h.hist_top_net_rx.get(name).cloned().unwrap_or_default();
+            let tx_src = h.hist_top_net_tx.get(name).cloned().unwrap_or_default();
+            let snap = h.net_snap.entry(name.clone()).or_insert_with(|| (SnapSeries::new(), SnapSeries::new()));
+            snap.0.observe(*rx_bps, &rx_src);
+            snap.1.observe(*tx_bps, &tx_src);
         }
-        for (name, rd_bps, wr_bps) in disk_rates {
-            let buf = h.disk.entry(name).or_insert_with(TwoSeriesBuf::new);
-            buf.a.push_raw(rd_bps);
-            buf.b.push_raw(wr_bps);
+
+        // Same idea for disk, machine-wide rather than per-device (no
+        // practical per-device per-process attribution -- see the plan's
+        // own note on this): push each device's series, and separately
+        // track the peak instantaneous read/write rate across devices this
+        // tick to pick which second the read/write snapshot rings keep.
+        let mut disk_peak_read = 0.0_f64;
+        let mut disk_peak_write = 0.0_f64;
+        for (name, rd_bps, wr_bps) in &disk_rates {
+            let buf = h.disk.entry(name.clone()).or_insert_with(TwoSeriesBuf::new);
+            buf.a.push_raw(*rd_bps);
+            buf.b.push_raw(*wr_bps);
+            disk_peak_read = disk_peak_read.max(*rd_bps);
+            disk_peak_write = disk_peak_write.max(*wr_bps);
         }
+
         h.top_cpu = top_cpu;
         h.top_mem = top_mem;
         h.top_disk = top_disk;
 
         // Feed the tiered snapshot rings, one observation per second in
-        // lockstep with the series pushes above. Source: the live 1s panel
-        // list when a panel populated it this tick, otherwise
-        // proc_hist_loop's always-on (~3s) list. temp shares cpu's.
+        // lockstep with the series pushes above -- one ring per
+        // attributable graph LINE, not per metric, so hovering a specific
+        // line (e.g. the GPU panel's VRAM line, or the mem panel's Swap
+        // line) shows just that line's top processes. cpu/temp share one
+        // ring (no per-core attribution -- processes migrate cores); mem
+        // and disk split by dimension using `proc_hist_loop`'s always-on
+        // (~3s) lists (no "prefer the live panel list" here -- those stay
+        // combined, unlike these split-by-dimension rings); GPU shares one
+        // source list (`GpuHist::top`) between its util and vram rings,
+        // just picking different peak-selection values from it (see
+        // `GpuSnap`'s own comment).
         let cpu_src = if !h.top_cpu.is_empty() { h.top_cpu.clone() } else { h.hist_top_cpu.clone() };
-        let mem_src = if !h.top_mem.is_empty() { h.top_mem.clone() } else { h.hist_top_mem.clone() };
-        let disk_src = if !h.top_disk.is_empty() { h.top_disk.clone() } else { h.hist_top_disk.clone() };
-        let net_src = h.top_net.clone();
         h.snap_cpu.observe(cpu_total, &cpu_src);
-        h.snap_mem.observe(mem_used_pct, &mem_src);
-        h.snap_net.observe(net_peak, &net_src);
-        h.snap_disk.observe(disk_peak, &disk_src);
+        let rss_src = h.hist_top_mem_rss.clone();
+        let swap_src = h.hist_top_mem_swap.clone();
+        h.snap_mem_rss.observe(mem_used_pct, &rss_src);
+        h.snap_mem_swap.observe(swap_used_pct, &swap_src);
+        let read_src = h.hist_top_disk_read.clone();
+        let write_src = h.hist_top_disk_write.clone();
+        h.snap_disk_read.observe(disk_peak_read, &read_src);
+        h.snap_disk_write.observe(disk_peak_write, &write_src);
         for i in 0..h.gpus.len() {
             let util = h.gpus[i].last_util;
+            let vram_mb = h.gpus[i].detail.vram_used_mb;
             let gtop = h.gpus[i].top.clone();
             if let Some(s) = h.snap_gpu.get_mut(i) {
-                s.observe(util, &gtop);
+                s.util.observe(util, &gtop);
+                s.vram.observe(vram_mb, &gtop);
             }
         }
     }
@@ -2247,7 +2467,6 @@ const FULL_RESYNC_TICKS: u64 = 30;
 enum DemandGuard {
     None,
     Counter(Arc<AtomicUsize>),
-    Nethogs(Arc<Mutex<NethogsManager>>),
     GpuProcs(Arc<Mutex<GpuProcManager>>),
 }
 
@@ -2258,7 +2477,6 @@ impl Drop for DemandGuard {
             DemandGuard::Counter(c) => {
                 c.fetch_sub(1, Ordering::Relaxed);
             }
-            DemandGuard::Nethogs(m) => nethogs_unref(m),
             DemandGuard::GpuProcs(m) => gpu_procs_unref(m),
         }
     }
@@ -2299,10 +2517,11 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
             }
             DemandGuard::Counter(demand.top_disk.clone())
         }
-        Metric::TopNet => {
-            nethogs_ref(&demand.nethogs, history.clone());
-            DemandGuard::Nethogs(demand.nethogs.clone())
-        }
+        // No demand-gating needed anymore -- every interface's nethogs
+        // instance is always running (sample_loop starts one per interface
+        // on first sight, for the snapshot history), so `h.top_net` is
+        // already warm the moment a connection asks for it.
+        Metric::TopNet => DemandGuard::None,
         Metric::Gpu if include_procs => {
             // Checked before, not after, gpu_procs_ref's own increment --
             // a benign race with another simultaneous connection at worst
@@ -2339,7 +2558,10 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
         // out full) and then every FULL_RESYNC_TICKS after that.
         let resync = tick % FULL_RESYNC_TICKS == 0;
         let snapshot = {
-            let h = history.lock().unwrap();
+            // `mut` for `Metric::ProcHist`'s `snap_series` lookup, which
+            // can auto-vivify a not-yet-seen net interface's ring entry --
+            // every other arm here only reads `h`.
+            let mut h = history.lock().unwrap();
             match metric {
                 Metric::Net => {
                     // A name net_since doesn't know about yet (a new
@@ -2474,17 +2696,9 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
                 Metric::TopNet => Snapshot::TopProcs { procs: h.top_net.clone() },
                 Metric::TopDisk => Snapshot::TopProcs { procs: h.top_disk.clone() },
                 Metric::ProcHist => {
-                    let series: Option<&SnapSeries> = match proc_sub.as_str() {
-                        "cpu" | "temp" => Some(&h.snap_cpu),
-                        "mem" => Some(&h.snap_mem),
-                        "net" => Some(&h.snap_net),
-                        "disk" => Some(&h.snap_disk),
-                        other => other
-                            .strip_prefix("gpu:")
-                            .and_then(|name| h.gpus.iter().position(|g| g.name == name))
-                            .and_then(|i| h.snap_gpu.get(i)),
-                    };
-                    match series {
+                    // Same resolver `load_procs_from_disk`/`save_procs_to_disk`
+                    // use for the persist file's keys -- see its own comment.
+                    match snap_series(&mut h, &proc_sub) {
                         None => Snapshot::ProcHist { full: true, sub: proc_sub.clone(), base: 0, snaps: Vec::new() },
                         Some(series) => {
                             let st = series.tier(tier);
@@ -2538,17 +2752,21 @@ fn main() {
     };
 
     // Shared demand signals for the on-demand-panel-data metrics (2026-09-
-    // 05: nethogs/gpu-pmon/the per-process CPU-mem-disk scans only run
-    // while some client actually wants that panel's data) -- see Demand's
-    // own doc comment. Nothing here starts nethogs or nvidia-smi pmon;
-    // that only happens the first time a client asks for topnet / gpu
-    // procs (nethogs_ref / gpu_procs_ref, called from serve_client).
+    // 05: gpu-pmon/the per-process CPU-mem-disk scans only run while some
+    // client actually wants that panel's data) -- see Demand's own doc
+    // comment. Nothing here starts nvidia-smi pmon; that only happens the
+    // first time a client asks for gpu procs (gpu_procs_ref, called from
+    // serve_client). Network attribution (nethogs) isn't demand-gated --
+    // always on, one instance per interface, started lazily by sample_loop
+    // as it discovers each one (see NethogsPool).
     let demand = Demand::new();
+    let nethogs_pool = Arc::new(Mutex::new(NethogsPool { children: HashMap::new() }));
 
     {
         let history = history.clone();
         let demand = demand.clone();
-        std::thread::spawn(move || sample_loop(history, clk_tck, demand));
+        let nethogs_pool = nethogs_pool.clone();
+        std::thread::spawn(move || sample_loop(history, clk_tck, demand, nethogs_pool));
     }
     if has_nvidia {
         let history = history.clone();
@@ -2565,14 +2783,6 @@ fn main() {
         let history = history.clone();
         let gpu_procs = demand.gpu_procs.clone();
         std::thread::spawn(move || proc_hist_loop(history, gpu_procs, clk_tck));
-    }
-    {
-        // Snapshot history needs nethogs running continuously, not just
-        // while the net panel is open -- take one permanent ref that's
-        // never dropped. serve_client's own topnet refs stack on top of
-        // this harmlessly.
-        let history = history.clone();
-        nethogs_ref(&demand.nethogs, history);
     }
     {
         let history = history.clone();
