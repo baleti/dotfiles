@@ -97,20 +97,36 @@ Rectangle {
     // process temperature attribution (the kernel has no such thing).
     property string topLabel: qsTr("Top processes")
 
-    // Graph-hover top-process tooltip. `procHistSub` ("" disables it) names
-    // the SysmonSvc.procHistSnaps() sub-metric; `procHistSnaps` is that
-    // ring, bound in Bar.qml. `procHistValueFmt` formats a raw per-process
-    // ProcEntry value for the tooltip (cpu %, mem MB, net/disk byte rate,
-    // gpu VRAM MB). The graph point under the cursor comes from Graph.qml's
-    // own hover hit-testing (`graph.hoveredIndex`, -1 when off the graph).
-    property string procHistSub: ""
+    // Graph-hover top-process tooltip. Two sources, depending on what's
+    // hovered:
+    //  - a specific LINE, when `seriesList`'s matching entry (by name, the
+    //    same one Graph.qml's hover-bolding already matches) carries its
+    //    own `procSnaps` ring (set in Bar.qml -- e.g. the GPU panel's VRAM
+    //    line carries that GPU's VRAM ring, not its utilisation one) --
+    //    "for those that you can meaningfully attribute their contribution"
+    //    (2026-09-11).
+    //  - otherwise (empty space, or a pill with no per-line attribution at
+    //    all, e.g. CPU's per-core lines) `_mergedSnaps`: every DISTINCT
+    //    attributable ring among `seriesList`'s entries (deduped by ring
+    //    identity, so e.g. mem's Cached line reusing Used's RSS ring isn't
+    //    double-counted; `procMerge: false` opts a line out entirely, e.g.
+    //    GPU's VRAM line -- summing MB into a %-utilisation total makes no
+    //    sense), summed per process -- if that comes up empty (no
+    //    attributable lines at all), `procHistSnaps` is the pill's own
+    //    plain default ring (cpu/temp -- set directly in Bar.qml, no
+    //    seriesList entries carry per-line rings for those).
     property var procHistSnaps: []
     property var procHistValueFmt: v => v.toFixed(1)
+    // Header-line ("N ago * peak ...") formatter override for when the
+    // pill's own default ring's peak-selection value isn't in the graph's
+    // own y-axis unit -- just temp, whose ring is cpu's (no per-process
+    // temperature exists) so its value is a CPU %, not °C.
+    property var procHistHeaderFmt: null
     // Passthrough to Graph.lineHoverHighlight -- off for the CPU pill (a
     // dozen unlabelled per-core lines, nothing to match a bolded one to).
     property bool lineHoverHighlight: true
 
-    readonly property bool hoverTipActive: root.expanded && root.procHistSub !== "" && graph.hoveredIndex >= 0
+    readonly property bool hoverTipActive: root.expanded && graph.hoveredIndex >= 0
 
     // Cursor position in this pill's coordinates -- both hover popups anchor
     // off it. Recomputed whenever the Graph's tracked cursor moves.
@@ -126,18 +142,80 @@ Rectangle {
         return Theme.text;
     }
 
-    // The snapshot lined up with the graph point under the cursor -- the
-    // snapshot ring and the graph series for a tier finalize a bucket
-    // together server-side, so both are tail-aligned (newest last); index
-    // by distance from the end. Tolerates a small length mismatch at the
+    // The seriesList entry matching the currently-hovered line, if any --
+    // "" (nothing hovered, or single-mode's sentinel) naturally finds
+    // nothing since seriesList is only populated in overlay mode.
+    // By index, not by matching `graph.hoveredLegendName` -- two lines can
+    // deliberately share one `name` (net/disk's rx+tx under one legend row,
+    // so they bold together), and attribution needs to know exactly WHICH
+    // one the cursor is nearest, not just the shared name.
+    readonly property var _hoveredSeriesEntry: root.seriesList[graph.hoveredSeriesIndex] ?? null
+
+    readonly property var _mergedSnaps: {
+        const rings = [];
+        for (const s of root.seriesList) {
+            if (!s.procSnaps || s.procMerge === false)
+                continue;
+            if (!rings.includes(s.procSnaps))
+                rings.push(s.procSnaps);
+        }
+        if (rings.length === 0)
+            return [];
+        if (rings.length === 1)
+            return rings[0];
+        const minLen = Math.min(...rings.map(r => r.length));
+        if (minLen === 0)
+            return [];
+        const out = [];
+        for (let i = 0; i < minLen; i++) {
+            const totals = {};
+            let value = 0;
+            let secsAgo = 0;
+            for (const ring of rings) {
+                const snap = ring[ring.length - minLen + i];
+                value += snap.value;
+                secsAgo = Math.max(secsAgo, snap.secs_ago);
+                for (const p of snap.procs) {
+                    const e = totals[p.pid] ?? { pid: p.pid, name: p.name, detail: p.detail, value: 0, util_pct: p.util_pct };
+                    e.value += p.value;
+                    totals[p.pid] = e;
+                }
+            }
+            const procs = Object.values(totals).sort((a, b) => b.value - a.value).slice(0, 6);
+            out.push({ secs_ago: secsAgo, value, procs });
+        }
+        return out;
+    }
+
+    // The snapshot lined up with the graph point under the cursor -- every
+    // ring here is tail-aligned with the graph's own series for the same
+    // tier (both finalize a bucket together server-side), so index by
+    // distance from the end. Tolerates a small length mismatch at the
     // moving edge.
     readonly property var hoverSnap: {
-        const s = root.procHistSnaps;
-        if (!root.hoverTipActive || !s || s.length === 0)
+        if (!root.hoverTipActive)
+            return null;
+        const entry = root._hoveredSeriesEntry;
+        let s;
+        if (entry && entry.procSnaps) {
+            s = entry.procSnaps;
+        } else {
+            const merged = root._mergedSnaps;
+            s = merged.length > 0 ? merged : root.procHistSnaps;
+        }
+        if (!s || s.length === 0)
             return null;
         const idx = s.length - graph._pointCount() + graph.hoveredIndex;
         return (idx >= 0 && idx < s.length) ? s[idx] : null;
     }
+
+    // Header ("N ago * peak ...") formatter: a hovered line's own override
+    // (only GPU's VRAM line sets one -- its peak-selection value is MB, not
+    // the graph's %-utilisation y-axis unit) beats the pill-level one
+    // (temp only, same reasoning), beats the graph's own y-axis formatter
+    // (correct for every net/disk/mem/gpu-util line and for the merged
+    // view, since those all observe() the same value the graph plots).
+    readonly property var _hoverValueFmt: root._hoveredSeriesEntry?.headerFmt ?? root.procHistHeaderFmt ?? root.yAxisFormatter
 
     function _fmtAgo(secs) {
         if (secs < 60) return Math.round(secs) + "s ago";
@@ -1126,7 +1204,7 @@ Rectangle {
             Text {
                 width: parent.width
                 text: root.hoverSnap
-                      ? (root._fmtAgo(root.hoverSnap.secs_ago) + "  ·  peak " + root.yAxisFormatter(root.hoverSnap.value))
+                      ? (root._fmtAgo(root.hoverSnap.secs_ago) + "  ·  peak " + root._hoverValueFmt(root.hoverSnap.value))
                       : ""
                 color: Theme.textDim
                 font.family: Theme.fontFamily

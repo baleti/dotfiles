@@ -432,8 +432,14 @@ Item {
             // Same name on both rx/tx (request 2026-09-10: hover-bold) --
             // matches netLegend's own one-row-per-interface name, so
             // hovering either line bolds both plus their shared legend row.
-            out.push({ data: iface.rx_bps, color: c, dashed: false, name: iface.name });
-            out.push({ data: iface.tx_bps, color: c, dashed: true, name: iface.name });
+            // procSnaps (2026-09-11): this interface's own rx/tx top-process
+            // rings, so hovering one line attributes to just its own
+            // direction on just this interface (nethogs can't split by
+            // interface on its own -- see NethogsPool's doc comment in
+            // sysmond.rs -- so a separate instance per interface is what
+            // makes this possible at all).
+            out.push({ data: iface.rx_bps, color: c, dashed: false, name: iface.name, procSnaps: SysmonSvc.procHistSnaps("net:" + iface.name + ":rx") });
+            out.push({ data: iface.tx_bps, color: c, dashed: true, name: iface.name, procSnaps: SysmonSvc.procHistSnaps("net:" + iface.name + ":tx") });
         }
         return out;
     }
@@ -472,11 +478,15 @@ Item {
         { name: qsTr("Swap"), color: Theme.orange }
     ]
     // Names match memLegend's own exactly (request 2026-09-10: hover-bold
-    // needs the two to agree).
+    // needs the two to agree). procSnaps (2026-09-11): Used and Cached both
+    // point at the RSS ring (page cache has no per-process owner, so Cached
+    // has no ring of its own -- it just rides on Used's, and the two
+    // referencing the SAME ring is also what keeps GraphPill's empty-space
+    // merge from double-counting it).
     readonly property var memSeriesList: memPill.expanded ? [
-        { data: SysmonSvc.memUsedPct, color: Theme.green, dashed: false, name: qsTr("Used") },
-        { data: SysmonSvc.memCachedPct, color: Theme.cyan, dashed: true, name: qsTr("Cached") },
-        { data: SysmonSvc.swapUsedPct, color: Theme.orange, dashed: false, name: qsTr("Swap") }
+        { data: SysmonSvc.memUsedPct, color: Theme.green, dashed: false, name: qsTr("Used"), procSnaps: SysmonSvc.procHistSnaps("mem:rss") },
+        { data: SysmonSvc.memCachedPct, color: Theme.cyan, dashed: true, name: qsTr("Cached"), procSnaps: SysmonSvc.procHistSnaps("mem:rss") },
+        { data: SysmonSvc.swapUsedPct, color: Theme.orange, dashed: false, name: qsTr("Swap"), procSnaps: SysmonSvc.procHistSnaps("mem:swap") }
     ] : []
 
     readonly property var diskLegend: diskPill.expanded ? SysmonSvc.diskDevices.map(d => ({ name: d.name, color: root.colorFor(d.name) })) : []
@@ -487,9 +497,15 @@ Item {
         for (const dev of SysmonSvc.diskDevices) {
             const c = root.colorFor(dev.name);
             // Same name on both read/write (request 2026-09-10: same
-            // reasoning as netSeriesList's own comment above).
-            out.push({ data: dev.read_bps, color: c, dashed: false, name: dev.name });
-            out.push({ data: dev.write_bps, color: c, dashed: true, name: dev.name });
+            // reasoning as netSeriesList's own comment above). procSnaps
+            // (2026-09-11): machine-wide, not per-device -- no comparable
+            // per-device per-process attribution exists (would need block-
+            // layer eBPF, not attempted) -- so every device's read line
+            // shares the ONE read ring (ditto write); referencing the same
+            // ring across devices is also what keeps the empty-space merge
+            // from summing it once per device.
+            out.push({ data: dev.read_bps, color: c, dashed: false, name: dev.name, procSnaps: SysmonSvc.procHistSnaps("disk:read") });
+            out.push({ data: dev.write_bps, color: c, dashed: true, name: dev.name, procSnaps: SysmonSvc.procHistSnaps("disk:write") });
         }
         return out;
     }
@@ -585,21 +601,42 @@ Item {
             // dGPU's own power reading takes the dark "primary" recipe
             // (its old utilization look), and iGPU's memory takes "dim"
             // (the darkest shade in that vendor's family, see gpuColors).
+            // procSnaps (2026-09-11): utilisation and power share one ring
+            // (this GPU's own engine-time-ranked top list -- there's no
+            // separate per-process power figure, so power's hover falls
+            // back to the same attribution as utilisation). VRAM gets its
+            // own ring (its top list is ranked by memory instead) and is a
+            // different unit (MB, not %) from every other GPU line, so it
+            // carries its own header formatter and opts out of the
+            // empty-space merge (summing MB into a %-utilisation total
+            // makes no sense).
+            const utilSnaps = SysmonSvc.procHistSnaps("gpu:" + g.name + ":util");
             if ((g.util_pct?.length ?? 0) > 0)
-                group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization") });
+                group.push({ data: g.util_pct, dashed: false, role: "power", name: tag + " " + qsTr("utilization"), procSnaps: utilSnaps });
             if ((g.vram_pct?.length ?? 0) > 0)
-                group.push({ data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel });
+                group.push({
+                    data: g.vram_pct, dashed: true, role: isIntel ? "dim" : "secondary", name: tag + " " + memLabel,
+                    procSnaps: SysmonSvc.procHistSnaps("gpu:" + g.name + ":vram"), procMerge: false,
+                    headerFmt: v => Math.round(v) + " MB",
+                });
             if ((g.power_pct?.length ?? 0) > 0)
-                group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power") });
+                group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power"), procSnaps: utilSnaps });
             group.forEach(l => out.push(Object.assign(l, { color: root.gpuShadeColor(g.vendor, l.role) })));
         }
         return out;
     }
     readonly property var gpuLegend: root.gpuLines.map(l => ({ name: l.name, color: l.color }))
     // name threaded through (request 2026-09-10: hover-bold, matches
-    // gpuLegend's own name exactly since both map the same gpuLines).
+    // gpuLegend's own name exactly since both map the same gpuLines) --
+    // procSnaps/procMerge/headerFmt threaded through too (2026-09-11, see
+    // gpuLines' own comment) for the hover tooltip's per-line attribution.
+    // No object-spread in this engine (confirmed elsewhere) -- fields
+    // listed explicitly.
     readonly property var gpuSeriesList: gpuPill.expanded
-        ? root.gpuLines.map(l => ({ data: l.data, color: l.color, dashed: l.dashed, name: l.name }))
+        ? root.gpuLines.map(l => ({
+              data: l.data, color: l.color, dashed: l.dashed, name: l.name,
+              procSnaps: l.procSnaps, procMerge: l.procMerge, headerFmt: l.headerFmt,
+          }))
         : []
     // One section per GPU -- its detail rows and its own "Top processes"
     // table, under a single heading so the GPU name isn't repeated.
@@ -737,8 +774,10 @@ Item {
             topProcs: SysmonSvc.topNet
             topUnit: " KB/s"
             yAxisFormatter: v => root.fmtRate(v)
-            procHistSub: "net"
-            procHistSnaps: SysmonSvc.procHistSnaps("net")
+            // No pill-level procHistSub/procHistSnaps -- net's per-line
+            // attribution (netSeriesList's own procSnaps, one ring per
+            // interface per direction) plus GraphPill's empty-space merge
+            // cover every case here.
             procHistValueFmt: v => root.fmtRate(v * 1024)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
@@ -778,7 +817,6 @@ Item {
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             yAxisFormatter: v => Math.round(v) + "%"
-            procHistSub: "cpu"
             procHistSnaps: SysmonSvc.procHistSnaps("cpu")
             procHistValueFmt: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
@@ -831,8 +869,9 @@ Item {
             topProcs: SysmonSvc.topMem
             topUnit: " MB"
             yAxisFormatter: v => Math.round(v) + "%"
-            procHistSub: "mem"
-            procHistSnaps: SysmonSvc.procHistSnaps("mem")
+            // No pill-level procHistSub/procHistSnaps -- see netPill's own
+            // comment on why (memSeriesList's own procSnaps + the merge
+            // cover it).
             procHistValueFmt: v => Math.round(v) + " MB"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
@@ -883,8 +922,9 @@ Item {
             topProcs: SysmonSvc.topDisk.map(e => ({ pid: e.pid, name: e.name, detail: e.detail, util_pct: e.util_pct, value: e.value / 1024 }))
             topUnit: " MB/s"
             yAxisFormatter: v => root.fmtRate(v)
-            procHistSub: "disk"
-            procHistSnaps: SysmonSvc.procHistSnaps("disk")
+            // No pill-level procHistSub/procHistSnaps -- see netPill's own
+            // comment on why (diskSeriesList's own procSnaps + the merge
+            // cover it).
             procHistValueFmt: v => root.fmtRate(v * 1024)
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
@@ -917,9 +957,12 @@ Item {
             topLabel: qsTr("Top CPU (heat proxy)")
             yAxisFormatter: v => Math.round(v) + "°C"
             // Heat proxy again -- the hover tooltip shows the CPU snapshot
-            // (there is no per-process temperature).
-            procHistSub: "temp"
+            // (there is no per-process temperature). Its ring's own peak
+            // value is a CPU %, not the °C this graph plots -- yAxisFormatter
+            // would mislabel it ("peak 45°C" when 45 is actually a percent),
+            // so this overrides just the tooltip header's formatter.
             procHistSnaps: SysmonSvc.procHistSnaps("temp")
+            procHistHeaderFmt: v => Math.round(v) + "%"
             procHistValueFmt: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
@@ -991,11 +1034,12 @@ Item {
             legendItems: root.gpuLegend
             sections: root.gpuSections
             yAxisFormatter: v => Math.round(v) + "%"
-            // Hover tooltip follows the dGPU (nvidia) if present, else the
-            // first GPU -- its rows are VRAM MiB per process, like the
-            // panel's own GPU section.
-            procHistSub: "gpu"
-            procHistSnaps: SysmonSvc.procHistSnaps("gpu")
+            // No pill-level procHistSub/procHistSnaps -- every GPU/line
+            // combination attributes via gpuLines' own procSnaps (utilisation
+            // and power share one ring, VRAM its own -- see its comment) plus
+            // GraphPill's empty-space merge (VRAM opts out of that, see
+            // procMerge there). Row values are always VRAM MB regardless of
+            // which line -- see sysmond's GpuHist::top / ProcEntry.value.
             procHistValueFmt: v => Math.round(v) + " MB"
             tierCodes: SysmonSvc.tierCodes
             tierLabels: SysmonSvc.tierLabels
