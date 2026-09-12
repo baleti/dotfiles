@@ -10,10 +10,14 @@
 //!   list             one NDJSON line per cliphist entry, then exit
 //!   thumb <id>       ensure `<id>.png`'s scaled thumbnail is cached, print
 //!                    its path (nothing if the entry isn't a decodable image)
-//!   thumbs <id>...   same as `thumb`, batched -- one `{id,path}` NDJSON line
-//!                    per successfully decoded id, streamed as each one
-//!                    finishes rather than held until the last (same
-//!                    streaming-output reasoning as winswitch's output.rs)
+//!   thumbs <id>...   same as `thumb`, batched -- one `{id,path,width,height}`
+//!                    NDJSON line per successfully decoded id, streamed as
+//!                    each one finishes rather than held until the last
+//!                    (same streaming-output reasoning as winswitch's
+//!                    output.rs)
+//!   texts <id>...    full decoded text for ids whose `list` preview
+//!                    cliphist itself truncated -- one `{id,text}` NDJSON
+//!                    line per id, streamed
 //!   activate <id>    decode `<id>` and push it to the clipboard (wl-copy)
 
 use std::collections::HashMap;
@@ -205,13 +209,43 @@ fn main() {
             }
         }
         Some("thumbs") => {
+            // Reports the cached PNG's own pixel dimensions alongside its
+            // path -- QML computes its own further downscale (this file's
+            // THUMB_HEIGHT/THUMB_MAX_WIDTH are a first, coarser cap; the
+            // frontend's own, usually smaller, target is applied from these
+            // real numbers) rather than guessing at how Image's `sourceSize`
+            // reflects into `implicitWidth`/`implicitHeight`, the same
+            // "report real numbers, don't make the frontend guess" reasoning
+            // as winswitch's own `output.rs::thumbnail`.
             let mut out = std::io::stdout().lock();
             for id in args {
-                if load_thumb(&id).is_some() {
+                if let Some(pb) = load_thumb(&id) {
                     let path = picker::cache_dir(PROGRAM_NAME).join(format!("{id}.png"));
-                    let _ = writeln!(out, "{}", json!({"id": id, "path": path.display().to_string()}));
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        json!({"id": id, "path": path.display().to_string(), "width": pb.width(), "height": pb.height()})
+                    );
                     let _ = out.flush();
                 }
+            }
+        }
+        Some("texts") => {
+            // Full decoded text for entries whose `list` preview cliphist
+            // itself truncated (fixed ~100-rune cap plus its own "…",
+            // regardless of how wide the picker's search box actually is --
+            // reported as text eliding "too early" when it was really just
+            // short data, not a layout bug). One `{id,text}` NDJSON line per
+            // id that actually decodes to something.
+            let mut out = std::io::stdout().lock();
+            for id in args {
+                let raw = decode(&id);
+                if raw.is_empty() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&raw).into_owned();
+                let _ = writeln!(out, "{}", json!({"id": id, "text": text}));
+                let _ = out.flush();
             }
         }
         Some("activate") => {
