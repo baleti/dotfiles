@@ -697,19 +697,6 @@ Rectangle {
         searchInput.text = "";
         root.searchText = "";
         root.resetColumnWidths();
-        // Search box gets real keyboard focus by default on open (request
-        // 2026-09-11), same box "/" already focuses mid-session -- typing
-        // filters immediately, no extra keypress needed. Deferred via
-        // Qt.callLater so it wins regardless of whether Bar.qml's own
-        // onExpandedChanged (root.forceActiveFocus(), wired at the
-        // instantiation site for the same signal) happens to run before or
-        // after this component-internal handler -- callLater always runs
-        // after both have finished this turn.
-        if (root.expanded)
-            Qt.callLater(function () {
-                if (root.expanded)
-                    searchInput.forceActiveFocus();
-            });
     }
 
     function toggleSort(col) {
