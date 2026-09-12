@@ -316,9 +316,9 @@ QtObject {
                     if (i < toks.length && !root.startsCommand(toks[i])) {
                         out.filters.push(root.filterTerm(via + ":" + toks[i].text));
                         i++;
-                    } else if (via.indexOf(".") < 0 && root.resolveGroups(via).length > 0) {
+                    } else if (via.length > 0 && via.indexOf(".") < 0 && root.resolveGroups(via).length > 0) {
                         out.filters.push({ kind: "exists", seg: via });
-                    } else if (root.resolveFilterFields(via).length > 0) {
+                    } else if (via.length > 0 && root.resolveFilterFields(via).length > 0) {
                         // Via path alone, no value yet, resolving to a
                         // flat type or dotted group subfield (a bare
                         // group is the "exists" branch above) - reuse the
@@ -334,6 +334,22 @@ QtObject {
                         // updated 2026-09-12). An unresolvable path (typo,
                         // still mid-typing) hits neither branch, so
                         // nothing is pushed and nothing shows - unchanged.
+                        //
+                        // `via.length > 0` above matters on its own: an
+                        // empty via ("/fv/" with nothing typed after the
+                        // second "/" yet) would otherwise resolve through
+                        // `resolveGroups`/`resolveFilterFields` as if it
+                        // matched *every* group and type - an empty
+                        // substring needle matches everything (`substr`'s
+                        // own contract) - so without this guard "/fv/"
+                        // alone auto-showed every group's default
+                        // subfield at once (reported 2026-09-13: typing
+                        // "/fv/" showed Claude session info under every
+                        // thumbnail before any type was even chosen). A
+                        // still-empty via is "nothing typed yet," not an
+                        // ambiguous fragment to union across - it must
+                        // stay exactly as inert as it looked before this
+                        // whole feature existed.
                         out.filters.push({ kind: "scoped", path: via, value: "" });
                     }
                 } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {

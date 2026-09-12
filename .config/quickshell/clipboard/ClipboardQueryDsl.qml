@@ -221,7 +221,15 @@ QtObject {
                 if (tv.verb === "fv" && i < toks.length && !root.startsCmd(toks[i])) {
                     root._pushFvArg(tv.via + ":" + toks[i].text, fieldNames, fieldTerms, words);
                     i++;
-                } else if (tv.verb === "fv") {
+                } else if (tv.verb === "fv" && tv.via.length > 0) {
+                    // `tv.via.length > 0` matters on its own: an empty via
+                    // ("/fv/" with nothing typed after the second "/" yet)
+                    // would otherwise resolve through `resolveFields` as
+                    // if it matched every field name at once - an empty
+                    // substring needle matches everything - so "/fv/"
+                    // alone auto-showed every field (reported 2026-09-13).
+                    // Nothing typed yet must stay inert, not get treated
+                    // as an ambiguous fragment to union across.
                     for (const f of root.resolveFields(tv.via, fieldNames))
                         if (openFields.indexOf(f) < 0) openFields.push(f);
                 }

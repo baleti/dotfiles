@@ -174,8 +174,19 @@ QtObject {
                         // against its own type names the same way it
                         // already resolves a complete term's `field` -
                         // resolving to nothing (a typo'd path) shows
-                        // nothing, same as it always would have.
-                        res.openPaths.push(via);
+                        // nothing, same as it always would have. Guarded
+                        // on a non-empty `via`: an empty via ("/fv/" with
+                        // nothing typed after the second "/" yet) would
+                        // otherwise resolve against `resolvePath` as if it
+                        // matched *every* type name - an empty substring
+                        // needle matches everything - so "/fv/" alone
+                        // auto-showed every field at once (reported
+                        // 2026-09-13). Nothing typed yet must stay exactly
+                        // as inert as it looked before this feature
+                        // existed, not get treated as an ambiguous
+                        // fragment to union across every candidate.
+                        if (via.length > 0)
+                            res.openPaths.push(via);
                     }
                 } else if (verb === "/s") {
                     let dir = "asc";

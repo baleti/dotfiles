@@ -659,6 +659,28 @@ always was between "a field name about to get a colon" and "a bare
 free-text word" (see `/filter-value`'s own section) - via's leading `/`
 is what removes that ambiguity, so only via gets the early trigger.
 
+**A genuinely empty via segment is nothing typed yet, not an ambiguous
+fragment.** `/fv/` with nothing typed after the second `/` yet has an
+empty-string path - and every resolver in this grammar treats an empty
+*needle* as matching everything (`substr`'s own contract - see
+Resolution, precisely), which is exactly right for a value ("no text
+required" is the whole point of a colonless filter) but disastrous for a
+*path*: resolved naively, an empty segment reads as "ambiguous across
+every group and type," and the union-everything rule an ambiguous
+fragment legitimately gets (`/fv/cl` reaching every group starting with
+`cl`) would auto-show every group's default subfield at once - reported
+2026-09-13, `/fv/` alone flashing Claude session info under every
+thumbnail before any type had even been chosen. Fixed by gating this
+whole early-trigger path on a non-empty via string specifically (each
+implementation's own `via.length > 0` check) - not a new resolution rule,
+just refusing to resolve at all when there is, literally, nothing there
+yet. This is scoped to the auto-show trigger alone: an empty via still
+means what it always did everywhere else in the grammar (the verb itself
+is still valid, still colored as such - see Inline command-validity
+coloring - and the *value* stage of a query like `/fv/ text` still
+resolves that empty path the normal ambiguous-union way, for whatever
+that construct is worth typed on purpose).
+
 What "shown" means is necessarily picker-specific:
 
 - **winswitch**: the referenced field becomes an active column exactly
