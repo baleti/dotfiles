@@ -371,7 +371,14 @@ def tokenize(query):
 
 
 def is_verb_prefix(s):
-    return bool(s) and any(v.startswith(s) for v in VERB_FORMS)
+    """A prefix of some verb form - no separate empty-string guard: every
+    verb form trivially starts with "" already, so a bare "/" (s == "")
+    is correctly a prefix of all of them too - excluding it would make
+    the very first keystroke of any command fall through as a literal
+    bare-word search instead of staying inert (reported 2026-09-13
+    against the sibling winswitch implementation - typing "/" alone was
+    clearing the whole pane list)."""
+    return any(v.startswith(s) for v in VERB_FORMS)
 
 
 def starts_cmd(text, lead_quote):

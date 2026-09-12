@@ -159,8 +159,14 @@ QtObject {
         return v === null ? null : { verb: v, via: null };
     }
 
+    // A non-empty verb form always "starts with" the empty string, so a
+    // bare "/" (s === "") is correctly a prefix of every verb here too -
+    // no separate guard needed, and one that excluded "" would be wrong:
+    // it would make the very first keystroke of any command ("/" alone)
+    // fall through as literal text instead of staying inert (reported
+    // 2026-09-13 - typing "/" alone was clearing the whole grid).
     function isVerbPrefix(s) {
-        return s.length > 0 && root.verbForms.some(f => f.indexOf(s) === 0);
+        return root.verbForms.some(f => f.indexOf(s) === 0);
     }
 
     function startsCommand(tok) {

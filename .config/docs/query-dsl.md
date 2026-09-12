@@ -881,7 +881,20 @@ predictable, and at these corpus sizes the looseness bought nothing.
   token still being typed (`/`, `/f`, `/ft `, `/ft cla`, `/s date `, a
   flat-type `/fv/path` with no value yet, an unterminated `"phrase`) is
   inert - contributes no requirement - rather than searched for literally
-  as typed.
+  as typed. A bare `/` (the empty string as the verb-name fragment) is
+  the boundary case here worth calling out explicitly: every verb form
+  trivially "starts with" the empty string, so `is_verb_prefix`/
+  `isVerbPrefix` needs no special-casing to cover it - a guard excluding
+  the empty string (`!s.is_empty()`, `s.length > 0`, `bool(s)`) looks like
+  reasonable defensive code but actively reintroduces this exact
+  regression, since it makes the very first keystroke of *any* command
+  fall through as literal text instead of staying inert. Reported
+  2026-09-13 against winswitch (typing `/` alone cleared the whole grid)
+  and found identically broken in every hand-written port that had this
+  guard (`QueryDsl.qml`, `ClipboardQueryDsl.qml`, `picker.rs`,
+  `focus-picker.py`) - window-search.py and claude-history are naturally
+  immune, since their regex-based bare-word fallback tokenizes `/` down
+  to zero alphanumeric characters and contributes nothing on its own.
 - **Every picker keeps one plain-typing default with no syntax at all.**
   Bare text is always `/filter-value` over the free-text haystack. The
   DSL is additive, never a wall a casual user has to learn first.
