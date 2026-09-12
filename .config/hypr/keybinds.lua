@@ -147,7 +147,7 @@ hl.bind("XF86AudioForward", hl.dsp.exec_cmd("playerctl position 5+"), { locked =
 -- list/thumbs/activate backend. notification-picker (CTRL+mod+n, below) is
 -- untouched, still the GTK+layer-shell `picker::run` engine.
 hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("qs ipc call clipboardPicker toggle"), { description = "Clipboard history picker" })
-hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region -r | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate)" })
+hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate)" })
 
 -- Global menu prototype (KDE's mod+a equivalent): flattens the focused
 -- window's AT-SPI accessible menu tree into a rofi picker and activates
