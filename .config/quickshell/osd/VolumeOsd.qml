@@ -77,9 +77,9 @@ PanelWindow {
         id: card
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        anchors.rightMargin: 14
-        width: 46
-        height: 150
+        anchors.rightMargin: 18
+        width: 64
+        height: 210
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.border
@@ -93,22 +93,22 @@ PanelWindow {
 
         Column {
             anchors.centerIn: parent
-            spacing: 10
+            spacing: 14
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: root.muted ? Icons.volMuted : Icons.levelIcon(Icons.volLevels, root.fraction)
                 font.family: Theme.iconFontFamily
-                font.pixelSize: 18
+                font.pixelSize: 26
                 color: root.muted ? Theme.muted : Theme.text
             }
 
             Rectangle {
                 id: track
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: 6
-                height: 90
-                radius: 3
+                width: 8
+                height: 126
+                radius: 4
                 color: Qt.rgba(1, 1, 1, 0.12)
 
                 Rectangle {
@@ -128,7 +128,7 @@ PanelWindow {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: Math.round(root.fraction * 100) + "%"
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize - 2
+                font.pixelSize: Theme.fontSize + 2
                 color: Theme.textDim
             }
         }
