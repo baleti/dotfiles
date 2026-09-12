@@ -78,7 +78,7 @@ PanelWindow {
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         anchors.rightMargin: 18
-        width: 64
+        width: 56
         height: 210
         radius: Theme.rounding
         color: Theme.bgAlpha
