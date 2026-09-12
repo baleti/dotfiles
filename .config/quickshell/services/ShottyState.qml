@@ -2,6 +2,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 
 // Screenshot-annotation tool ("shotty") -- see the approved plan at
 // ~/.claude2/plans/rippling-wiggling-wilkinson.md. Panels are dumb views
@@ -34,11 +35,24 @@ QtObject {
     readonly property real selHeight: Math.abs(selY2 - selY1)
 
     // ---- annotation tools ----
-    readonly property var palette: ["#ff5555", "#50fa7b", "#8be9fd", "#f1fa8c", "#ffffff"]
+    // palette[0] is a toned/muted red (not neon #ff5555) -- the default
+    // annotation color per the user's request.
+    readonly property var palette: ["#c0392b", "#50fa7b", "#8be9fd", "#f1fa8c", "#ffffff"]
     property string currentTool: "arrow" // arrow | line | rect
     property string currentColor: root.palette[0]
     // Committed shapes: [{tool, color, x1,y1,x2,y2}], global coords.
     property var shapes: []
+
+    // ---- Ctrl+A "select all" (Lightshot precedent: Ctrl+A maximizes the
+    // selection to fullscreen; extended here for multi-monitor -- first
+    // press selects the screen the tool was opened on, a second
+    // consecutive press expands to the full virtual desktop). Any manual
+    // drag resets this so Ctrl+A always starts from "current screen" again.
+    property string lastSelectAllScope: "" // "" | "screen" | "all"
+    property real originX: 0
+    property real originY: 0
+    property real originW: 0
+    property real originH: 0
 
     // In-progress shape drag (phase "drawing"), global coords.
     property real drawX1: 0
@@ -55,6 +69,16 @@ QtObject {
         root.phase = "selecting";
         root.active = true;
         root.shapes = [];
+        // Reset the leftover selection rect from the previous session --
+        // without this, a fresh Print showed the old spotlight cutout
+        // still in place until the first new drag started.
+        root.selX1 = root.selY1 = root.selX2 = root.selY2 = 0;
+        root.lastSelectAllScope = "";
+
+        const mon = Hyprland.focusedMonitor;
+        const s = (mon && Quickshell.screens.find(sc => sc.name === mon.name)) || Quickshell.screens[0];
+        root.originX = s.x; root.originY = s.y; root.originW = s.width; root.originH = s.height;
+
         console.log(`shotty: open() at ${root.openedAt}`);
     }
 
@@ -70,8 +94,36 @@ QtObject {
 
     // ---- selection drag ----
     function beginSelect(gx: real, gy: real): void {
+        root.lastSelectAllScope = "";
         root.selX1 = root.selX2 = gx;
         root.selY1 = root.selY2 = gy;
+    }
+
+    // Ctrl+A: first call selects the screen the tool opened on; a second
+    // consecutive call (no manual drag in between) expands to every
+    // monitor's combined bounding box. Works from "selecting" (no
+    // selection yet) or "toolbar" (replacing the current selection).
+    function selectAllToggle(): void {
+        if (root.phase !== "selecting" && root.phase !== "toolbar") return;
+        if (root.lastSelectAllScope !== "screen") {
+            root.selX1 = root.originX;
+            root.selY1 = root.originY;
+            root.selX2 = root.originX + root.originW;
+            root.selY2 = root.originY + root.originH;
+            root.lastSelectAllScope = "screen";
+        } else {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const s of Quickshell.screens) {
+                minX = Math.min(minX, s.x);
+                minY = Math.min(minY, s.y);
+                maxX = Math.max(maxX, s.x + s.width);
+                maxY = Math.max(maxY, s.y + s.height);
+            }
+            root.selX1 = minX; root.selY1 = minY;
+            root.selX2 = maxX; root.selY2 = maxY;
+            root.lastSelectAllScope = "all";
+        }
+        root.phase = "toolbar";
     }
     function updateSelect(gx: real, gy: real): void {
         root.selX2 = gx;
