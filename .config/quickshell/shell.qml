@@ -12,6 +12,7 @@ import "rssreader"
 import "keybinds"
 import "winswitch"
 import "clipboard"
+import "shotty"
 import "services"
 
 ShellRoot {
@@ -73,6 +74,34 @@ ShellRoot {
         target: "clipboardPicker"
         function toggle(): void {
             ClipboardPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
+    // Screenshot annotation tool ("shotty", Print key). Unlike every picker
+    // above, no latched monitor is passed -- see ShottyState.qml: a
+    // selection must be able to span all monitors, so every instance opens
+    // together. Re-enabled 2026-09-12 after fixing Shotty.qml to assign
+    // captureSource on-demand (see its onOpenChanged) instead of as a
+    // static binding -- the static-binding version briefly froze Hyprland
+    // by firing 3 simultaneous screencopy sessions at qs startup while its
+    // first-ever permission prompt sat unanswered. Isolated qs -p testing
+    // afterward (1/2/3 outputs, full-screen, WlrLayer.Overlay, visible and
+    // invisible) never reproduced a freeze once permission was granted, so
+    // that prompt-blocking is the confirmed root cause, not the capture
+    // path itself.
+    IpcHandler {
+        target: "shotty"
+        function toggle(): void {
+            ShottyState.toggle();
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        Shotty {
+            required property var modelData
+            screen: modelData
         }
     }
 
@@ -138,6 +167,7 @@ ShellRoot {
             screen: modelData
         }
     }
+
 
     Variants {
         model: Quickshell.screens

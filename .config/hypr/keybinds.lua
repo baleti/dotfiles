@@ -147,7 +147,14 @@ hl.bind("XF86AudioForward", hl.dsp.exec_cmd("playerctl position 5+"), { locked =
 -- list/thumbs/activate backend. notification-picker (CTRL+mod+n, below) is
 -- untouched, still the GTK+layer-shell `picker::run` engine.
 hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("qs ipc call clipboardPicker toggle"), { description = "Clipboard history picker" })
-hl.bind("Print",           hl.dsp.exec_cmd("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate)" })
+-- shotty (custom Quickshell screenshot tool, replacing hyprshot+satty
+-- 2026-09-12): instant multi-monitor freeze, drag-select (can cross
+-- monitor boundaries in one motion), arrow/line/rect annotation, straight
+-- to clipboard, no file ever written. See
+-- ~/.claude2/plans/rippling-wiggling-wilkinson.md. hyprshot+satty kept on
+-- SHIFT+Print as a fallback until shotty has proven itself in daily use.
+hl.bind("Print",           hl.dsp.exec_cmd("qs ipc call shotty toggle"), { description = "Screenshot a region (annotate)" })
+hl.bind("SHIFT + Print",   hl.dsp.exec_cmd("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate, hyprshot+satty fallback)" })
 
 -- Global menu prototype (KDE's mod+a equivalent): flattens the focused
 -- window's AT-SPI accessible menu tree into a rofi picker and activates
