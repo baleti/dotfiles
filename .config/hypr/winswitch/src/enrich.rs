@@ -439,9 +439,37 @@ fn claude_time_bucket(base_dir: &Path, session_id: &str) -> Option<String> {
     Some(humanize_ago(delta))
 }
 
-fn load_claude_contents(base_dir: &Path, session_id: &str) -> Option<String> {
+/// Reads the transcript once for both `claude.title` and `claude.contents`,
+/// rather than twice (a separate `claude_ai_title` doing its own
+/// `find_transcript` + read would otherwise duplicate this same I/O every
+/// enrichment pass).
+///
+/// `ai_title` is the real AI-generated session title - the transcript's own
+/// `{"type":"ai-title","aiTitle":...}` line, same field claude-history's own
+/// title column reads (`parse_session`'s `ai_title`) - scanned from the end
+/// since a rename appends a fresh line rather than rewriting the old one, so
+/// the last one in the file is always current. This is NOT `sessions/<pid>.
+/// json`'s own `name` field: that one is a `"nameSource":"derived"`
+/// auto-generated placeholder ("user1-b5", confirmed against a live session
+/// file) assigned before any title exists, never replaced by this file, and
+/// was what `claude.title` used to read directly (reported 2026-09-13: the
+/// alt-tab grid showed "user1-4c" under `/fv/claude.title` instead of the
+/// actual conversation title). `run_enrichment`'s synchronous pass still
+/// seeds `claude_title` with that placeholder for instant display before
+/// this slower background read completes - see its own comment.
+fn load_claude_title_and_contents(base_dir: &Path, session_id: &str) -> Option<(Option<String>, String)> {
     let path = find_transcript(base_dir, session_id)?;
     let content = fs::read_to_string(path).ok()?;
+
+    let mut ai_title = None;
+    for line in content.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("type").and_then(Value::as_str) == Some("ai-title") {
+            ai_title = v.get("aiTitle").and_then(Value::as_str).map(str::to_string);
+            break;
+        }
+    }
+
     let mut out = String::new();
     for line in content.lines().rev() {
         if out.len() >= CLAUDE_CONTENTS_BUDGET {
@@ -450,7 +478,7 @@ fn load_claude_contents(base_dir: &Path, session_id: &str) -> Option<String> {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         collect_strings(&v, &mut out, CLAUDE_CONTENTS_BUDGET);
     }
-    Some(out.to_lowercase())
+    Some((ai_title, out.to_lowercase()))
 }
 
 fn run_enrichment(win_specs: Vec<(usize, i32)>, tx: mpsc::Sender<(usize, TmuxClaudeMeta)>) {
@@ -523,8 +551,18 @@ fn run_enrichment(win_specs: Vec<(usize, i32)>, tx: mpsc::Sender<(usize, TmuxCla
     }
 
     // Cheap claude metadata (no transcript read) for every match found
-    // above, then hand the expensive contents read off to its own thread
-    // per window -- bounded by "open windows only," so at most a handful.
+    // above, then hand the expensive transcript read (title + contents,
+    // see `load_claude_title_and_contents`) off to its own thread per
+    // window -- bounded by "open windows only," so at most a handful.
+    // `claude_title` here is only a placeholder until that thread's real
+    // title lands - `session.name` is `sessions/<pid>.json`'s own
+    // auto-generated label ("user1-b5"), not a real conversation title
+    // (see `load_claude_title_and_contents`'s doc) - so something
+    // reasonable shows immediately rather than a blank field, and
+    // `TmuxClaudeMeta::merge` overwrites it once the background read
+    // finds the actual AI-generated title (or leaves this placeholder in
+    // place if the session is too new to have one yet - merge only
+    // overwrites on `Some`).
     for (idx, si) in claude_by_index {
         let session = &sessions[si];
         let meta = TmuxClaudeMeta {
@@ -540,8 +578,8 @@ fn run_enrichment(win_specs: Vec<(usize, i32)>, tx: mpsc::Sender<(usize, TmuxCla
         let session_id = session.session_id.clone();
         let tx = tx.clone();
         std::thread::spawn(move || {
-            if let Some(contents) = load_claude_contents(&base_dir, &session_id) {
-                let meta = TmuxClaudeMeta { claude_contents: Some(contents), ..Default::default() };
+            if let Some((ai_title, contents)) = load_claude_title_and_contents(&base_dir, &session_id) {
+                let meta = TmuxClaudeMeta { claude_title: ai_title, claude_contents: Some(contents), ..Default::default() };
                 let _ = tx.send((idx, meta));
             }
         });
