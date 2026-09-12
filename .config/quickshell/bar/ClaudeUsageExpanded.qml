@@ -538,16 +538,60 @@ Rectangle {
         return out.sort();
     }
 
+    // The full Verb-stage vocabulary: the three verbs that do anything here
+    // (`_acVerbs`) plus `/fv` and `/s` - the two that take a real path -
+    // crossed with every type name ("fv/tokens", "s/tmux.session", ...), so
+    // a fragment of the *type*, not just the verb, reaches a whole working
+    // command. `/rv` isn't crossed (takes no path). See query-dsl.md's
+    // "Verb-stage depth".
+    function _verbStageUniverse() {
+        const bare = root._acVerbs.map(v => v.slice(1));
+        const deep = [];
+        for (const v of ["fv", "s"])
+            for (const n of root.searchTypeNames)
+                deep.push(v + "/" + n);
+        return bare.concat(deep);
+    }
+
+    // A deep candidate lands the via form ("/fv/tokens "), matching this
+    // panel's own steering everywhere else in _acCandidates.
+    function _verbStageItem(prefix, v) {
+        const slash = v.indexOf("/");
+        if (slash < 0) {
+            return { text: prefix + "/" + v + " ", label: "/" + v,
+                     alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
+        }
+        const verb = v.slice(0, slash), name = v.slice(slash + 1);
+        return { text: `${prefix}/${verb}/${name} `, label: "/" + v,
+                 alias: QueryDsl.verbInfo["/" + verb].long, desc: root.searchTypeDescs[name] || "" };
+    }
+
+    // Ctrl+Space AND-narrowing (query-dsl.md): true while a Verb-stage
+    // popup is being narrowed by more than one space-separated fragment;
+    // `acVerbMultiStart` freezes the char offset of that completion's
+    // opening "/". See the Ctrl+Space key handler below.
+    property bool acVerbMulti: false
+    property int acVerbMultiStart: 0
+
     function _acCandidates() {
         const t = root.searchText;
+
+        if (root.acVerbMulti) {
+            if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
+                const frags = t.slice(root.acVerbMultiStart + 1).split(/\s+/).filter(f => f.length > 0);
+                const prefix = t.slice(0, root.acVerbMultiStart);
+                return root._verbStageUniverse()
+                    .filter(v => frags.every(f => v.indexOf(f) >= 0))
+                    .map(v => root._verbStageItem(prefix, v));
+            }
+            root.acVerbMulti = false;
+        }
 
         const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
-            return root._acVerbs.filter(v => v.indexOf(frag) >= 0).map(v => ({
-                text: v + " ", label: v,
-                alias: QueryDsl.verbInfo[v].long, desc: QueryDsl.verbInfo[v].desc
-            }));
+            const prefix = t.slice(0, t.length - vm[1].length);
+            return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
         }
 
         const val = t.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
@@ -591,7 +635,11 @@ Rectangle {
     property int acSel: 0
     property bool acDismissed: false
     readonly property bool acOpen: acItems.length > 0 && !acDismissed
-    onAcItemsChanged: { acSel = 0; acDismissed = false; }
+    onAcItemsChanged: {
+        acSel = 0;
+        acDismissed = false;
+        if (acItems.length === 0) root.acVerbMulti = false;
+    }
     // Keep the highlighted row in view as arrow keys move acSel past
     // the popup's fixed 7-row window -- acList is the ListView defined
     // below, in the same component so its id is visible here.
@@ -1050,13 +1098,13 @@ Rectangle {
             + "    end\n"
             + "end";
         focusProc.exec(["hyprctl", "repl", script]);
-        // Close the panel once a window is picked -- same as winswitch's
-        // confirm() (focus then hide). Leaving it open kept this panel's
-        // layer-shell keyboard-focus grab (shell.qml, driven by
-        // openPanelCount) alive, which blocked ALT+Tab / mod+Tab from
-        // switching away afterwards (reported: "unable to return to that
-        // previous window").
-        root.expanded = false;
+        // Deliberately stays open after focusing -- picking a window here
+        // is meant to feel like clicking it in a normal alt-tab-ish list,
+        // not a one-shot action that closes the panel behind it (reverted
+        // 2026-09-12; the ALT+Tab/mod+Tab-can't-switch-away issue this used
+        // to work around was a winswitch-side focus-grab interaction, since
+        // fixed by winswitch's own socket2 rework rather than by closing
+        // this panel).
     }
 
     // ---- keyboard row navigation --------------------------------------
@@ -1409,6 +1457,7 @@ Rectangle {
                     if (event.key === Qt.Key_Escape) {
                         if (root.acOpen) {
                             root.acDismissed = true;
+                            root.acVerbMulti = false;
                         } else {
                             searchInput.text = "";
                             // Clear the field's own focus *before* handing
@@ -1427,6 +1476,19 @@ Rectangle {
                             root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
                         } else {
                             root.triggerCompletion();
+                        }
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Space && root.acOpen && (event.modifiers & Qt.ControlModifier)) {
+                        // AND-narrows instead of accepting (query-dsl.md) -
+                        // see AppLauncher.qml's identical handler for the
+                        // full rationale.
+                        const vm = searchInput.text.match(/(?:^|\s)(\/[a-z-]*)$/);
+                        if (vm || root.acVerbMulti) {
+                            if (!root.acVerbMulti) {
+                                root.acVerbMulti = true;
+                                root.acVerbMultiStart = searchInput.text.length - vm[1].length;
+                            }
+                            searchInput.insert(searchInput.cursorPosition, " ");
                         }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Space && root.acOpen) {
