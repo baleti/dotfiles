@@ -1,20 +1,53 @@
 import QtQuick
+import "../theme"
 
-// Toolbar button: icon glyph + tiny shortcut-letter caption underneath, so
-// the toolbar doubles as its own shortcut reference.
+// Toolbar button: icon only (bigger, no cramped inline caption) -- the
+// shortcut shows as a small tooltip next to the cursor on hover instead.
 Rectangle {
     id: tb
     required property string icon
-    required property string letter
+    required property string tooltip
     property bool active: false
     signal activated()
-    width: 30; height: 34; radius: 5
-    color: active ? "#3a5a7a" : "#333333"
-    Column {
+
+    width: 38; height: 38; radius: 6
+    color: active ? Theme.cyan : Theme.bgAlpha
+    border.width: 1
+    border.color: Theme.border
+
+    Text {
         anchors.centerIn: parent
-        spacing: 0
-        Text { anchors.horizontalCenter: parent.horizontalCenter; text: tb.icon; font.pixelSize: 14; color: "white" }
-        Text { anchors.horizontalCenter: parent.horizontalCenter; text: tb.letter; font.pixelSize: 8; color: "#aaaaaa" }
+        text: tb.icon
+        font.pixelSize: 18
+        color: active ? Theme.bg : Theme.text
     }
-    MouseArea { anchors.fill: parent; onClicked: tb.activated() }
+
+    MouseArea {
+        id: ma
+        anchors.fill: parent
+        hoverEnabled: true
+        onClicked: tb.activated()
+    }
+
+    Rectangle {
+        id: tip
+        visible: ma.containsMouse
+        x: ma.mouseX + 14
+        y: ma.mouseY + 14
+        z: 1000
+        width: tipText.implicitWidth + 12
+        height: tipText.implicitHeight + 6
+        radius: 4
+        color: Theme.bgAlpha
+        border.width: 1
+        border.color: Theme.border
+
+        Text {
+            id: tipText
+            anchors.centerIn: parent
+            text: tb.tooltip
+            font.pixelSize: 11
+            color: Theme.text
+        }
+    }
 }
