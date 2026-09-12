@@ -1516,7 +1516,7 @@ class PickerState:
     `ready` rather than answering "nothing" and leaving fzf showing 0/0
     until the next keystroke."""
 
-    def __init__(self, fzf_sock, reload_action, header):
+    def __init__(self, fzf_sock, reload_action):
         self.lock = threading.Lock()
         self.ready = threading.Event()
         self.snapshot = None
@@ -1526,7 +1526,6 @@ class PickerState:
         self.label_shown = None
         self.fzf_sock = fzf_sock
         self.reload_action = reload_action
-        self.header = header    # the column-title line the readout rides on
         self.wake = threading.Event()
 
     def get(self):
@@ -1579,13 +1578,15 @@ class PickerState:
         (finish) reload is never held back: `dirty` with an empty label
         means "done", and that one goes out at once.
 
-        The progress readout is appended to the column-header line itself
-        (change-header, same single line) rather than shown as its own
-        line or on the border: an extra header line would shift the list
-        and steal a row from resize_on_result's budget (which assumes
-        exactly one header line - see the +4 there), and a border-label
-        in the bottom corner is where nobody is looking. Cleared by
-        re-posting the bare header once finish() lands."""
+        The progress readout is the border label, anchored top-left
+        (--border-label-pos=2): the top border is the topmost line fzf
+        draws, above prompt/list/preview alike, and the left edge is where
+        the eye starts. Not its own line inside the frame (an extra header
+        line would shift the list and steal a row from resize_on_result's
+        budget, which assumes exactly one header line - see the +4 there),
+        and not the bottom corner (where a first version put it, and where
+        nobody looks). Cleared by posting an empty label once finish()
+        lands."""
         last_reload = 0.0
         while True:
             self.wake.wait(0.25)
@@ -1610,10 +1611,8 @@ class PickerState:
                     with self.lock:
                         self.dirty = True
             if label is not None and label != self.label_shown:
-                text = self.header
-                if label:
-                    text += f"   \x1b[1;33m⟳ {label}\x1b[0m"
-                if fzf_post(self.fzf_sock, f"change-header({text})"):
+                text = f" ⟳ {label} " if label else ""
+                if fzf_post(self.fzf_sock, f"change-border-label({text})"):
                     self.label_shown = label
 
 
@@ -1743,8 +1742,7 @@ def drive():
     # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
     # cwd's slack (see row()), which is expected: the header marks the
     # normal case, individual rows are still free to shift when they
-    # actually need to. While the reindex child is streaming, the progress
-    # readout is appended to this same line (PickerState.refresher).
+    # actually need to
     header = (f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  '
               f'{"MSGS":>{MSGS_WIDTH}}  TITLE')
     # the reload action re-sends {q} (fzf substitutes it from the CURRENT
@@ -1752,7 +1750,7 @@ def drive():
     # gets {q}/{n}-style placeholders resolved against live state, not
     # just ones bound with --bind) so a query the user already started
     # typing survives every refresh instead of being reset to empty.
-    state = PickerState(fzf_sock, f"reload({search_cmd})", header)
+    state = PickerState(fzf_sock, f"reload({search_cmd})")
 
     _rm(sock_path)
     server = PickerServer(sock_path, make_handler(state))
@@ -1818,6 +1816,9 @@ def drive():
         # a visually inset look rather than filling every last cell.
         "fzf", "--ansi", "--disabled", "--layout=reverse",
         "--border=rounded", "--margin=2,4",
+        # the "indexing N%" progress readout (PickerState.refresher) sits
+        # on the top border, left-anchored - the topmost line fzf draws
+        "--border-label-pos=2", "--color=label:bold:yellow",
         "--delimiter", "\t", "--with-nth", "2..",
         "--prompt", "claude history> ",
         "--header", header,
