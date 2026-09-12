@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Dialogs
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -93,6 +94,28 @@ ShellRoot {
         target: "shotty"
         function toggle(): void {
             ShottyState.toggle();
+        }
+    }
+
+    // shotty's save-as dialog. Lives here (not in ShottyState, a plain
+    // QtObject singleton with no window context) because FileDialog needs
+    // one. Qt's own native/portal-backed dialog -- this system runs both
+    // xdg-desktop-portal-gtk and xdg-desktop-portal-hyprland (no -kde
+    // despite QT_QPA_PLATFORMTHEME=kde), so whichever of those backs the
+    // FileChooser portal is what actually renders; Qt falls back to its
+    // own built-in QtQuick.Dialogs implementation if neither does.
+    FileDialog {
+        id: shottySaveDialog
+        title: "Save screenshot"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PNG image (*.png)"]
+        onAccepted: ShottyState.saveToFile(selectedFile.toString())
+    }
+    Connections {
+        target: ShottyState
+        function onRequestSaveDialog() {
+            shottySaveDialog.currentFile = `file://${ShottyState.defaultSavePath()}`;
+            shottySaveDialog.open();
         }
     }
 
