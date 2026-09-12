@@ -220,80 +220,35 @@ PanelWindow {
         }
     }
 
-    // Toolbar: shown once a selection exists, only in the panel that
-    // contains the selection's bottom-right corner (an arbitrary but always
-    // well-defined anchor point).
-    readonly property bool _isToolbarAnchor: {
+    // Keyboard-only: no clickable toolbar. A small translucent shortcut
+    // reference is shown instead, fixed to the bottom-right corner of
+    // whichever panel contains the selection's bottom-right corner (an
+    // arbitrary but always well-defined anchor point) -- not tracking the
+    // selection itself, just a quiet reminder of the available keys.
+    readonly property bool _isHintAnchor: {
         const s = root.screen;
         const px = ShottyState.selLeft + ShottyState.selWidth;
         const py = ShottyState.selTop + ShottyState.selHeight;
         return s && px >= s.x && px <= s.x + s.width && py >= s.y && py <= s.y + s.height;
     }
 
-    Row {
-        id: toolbar
-        visible: root._isToolbarAnchor && (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
-        x: Math.min(root.toLocalX(ShottyState.selLeft + ShottyState.selWidth), root.width - width)
-        y: Math.min(root.toLocalY(ShottyState.selTop + ShottyState.selHeight) + 8, root.height - height)
-        spacing: 6
-        z: 10
+    Rectangle {
+        id: hint
+        visible: root._isHintAnchor && (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 14
+        width: hintText.implicitWidth + 16
+        height: hintText.implicitHeight + 10
+        radius: 6
+        color: "#00000090"
 
-        Rectangle {
-            width: toolbarRow.implicitWidth + 16
-            height: toolbarRow.implicitHeight + 12
-            radius: 8
-            color: "#282a36"
-            border.color: "#44475a"
-
-            Row {
-                id: toolbarRow
-                x: 8
-                y: 6
-                spacing: 6
-
-                Repeater {
-                    model: ["arrow", "line", "rect"]
-                    Rectangle {
-                        required property string modelData
-                        width: 32
-                        height: 28
-                        radius: 4
-                        color: ShottyState.currentTool === modelData ? "#6272a4" : "#44475a"
-                        Text { anchors.centerIn: parent; text: modelData[0].toUpperCase(); color: "white" }
-                        MouseArea { anchors.fill: parent; onClicked: ShottyState.pickTool(parent.modelData) }
-                    }
-                }
-
-                Rectangle { width: 1; height: 24; color: "#44475a" }
-
-                Repeater {
-                    model: ShottyState.palette
-                    Rectangle {
-                        required property string modelData
-                        width: 22
-                        height: 22
-                        radius: 11
-                        color: modelData
-                        border.width: ShottyState.currentColor === modelData ? 2 : 0
-                        border.color: "white"
-                        anchors.verticalCenter: parent.verticalCenter
-                        MouseArea { anchors.fill: parent; onClicked: ShottyState.pickColor(parent.modelData) }
-                    }
-                }
-
-                Rectangle { width: 1; height: 24; color: "#44475a" }
-
-                Rectangle {
-                    width: 32; height: 28; radius: 4; color: "#50fa7b"
-                    Text { anchors.centerIn: parent; text: "✓"; color: "#282a36" }
-                    MouseArea { anchors.fill: parent; onClicked: ShottyState.commit() }
-                }
-                Rectangle {
-                    width: 32; height: 28; radius: 4; color: "#ff5555"
-                    Text { anchors.centerIn: parent; text: "✕"; color: "#282a36" }
-                    MouseArea { anchors.fill: parent; onClicked: ShottyState.close() }
-                }
-            }
+        Text {
+            id: hintText
+            anchors.centerIn: parent
+            font.pixelSize: 11
+            color: "#dddddd"
+            text: `A arrow  R rect  L line  1-${ShottyState.palette.length} color  Ctrl+Z/Y undo/redo  ↵ copy  Esc cancel`
         }
     }
 
@@ -306,12 +261,23 @@ PanelWindow {
                 ShottyState.close();
             } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
                 ShottyState.selectAllToggle();
+            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") ShottyState.commit();
+            } else if (event.key === Qt.Key_Z && (event.modifiers & Qt.ControlModifier)) {
+                if (ShottyState.phase === "toolbar") ShottyState.undo();
+            } else if (event.key === Qt.Key_Y && (event.modifiers & Qt.ControlModifier)) {
+                if (ShottyState.phase === "toolbar") ShottyState.redo();
             } else if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") {
                 // Tool shortcuts (Flameshot convention): a=arrow, r=rectangle,
-                // l=line.
+                // l=line. Digits 1-N pick a palette color (satty convention) --
+                // there's no clickable swatch anymore, so this is the only way.
                 if (event.key === Qt.Key_A) ShottyState.pickTool("arrow");
                 else if (event.key === Qt.Key_R) ShottyState.pickTool("rect");
                 else if (event.key === Qt.Key_L) ShottyState.pickTool("line");
+                else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9) {
+                    const idx = event.key - Qt.Key_1;
+                    if (idx < ShottyState.palette.length) ShottyState.pickColor(ShottyState.palette[idx]);
+                }
             }
         }
     }

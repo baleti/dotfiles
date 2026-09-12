@@ -42,6 +42,10 @@ QtObject {
     property string currentColor: root.palette[0]
     // Committed shapes: [{tool, color, x1,y1,x2,y2}], global coords.
     property var shapes: []
+    // Undo/redo stack (Ctrl+Z / Ctrl+Y), shapes only -- not the selection
+    // itself. Drawing a new shape after an undo drops the redo stack, same
+    // as any standard editor.
+    property var _redoStack: []
 
     // ---- Ctrl+A "select all" (Lightshot precedent: Ctrl+A maximizes the
     // selection to fullscreen; extended here for multi-monitor -- first
@@ -69,6 +73,7 @@ QtObject {
         root.phase = "selecting";
         root.active = true;
         root.shapes = [];
+        root._redoStack = [];
         // Reset the leftover selection rect from the previous session --
         // without this, a fresh Print showed the old spotlight cutout
         // still in place until the first new drag started.
@@ -162,8 +167,29 @@ QtObject {
             const next = root.shapes.slice();
             next.push({ tool: root.currentTool, color: root.currentColor, x1: root.drawX1, y1: root.drawY1, x2: root.drawX2, y2: root.drawY2 });
             root.shapes = next;
+            root._redoStack = []; // a new shape invalidates any redo history
         }
         root.phase = "toolbar";
+    }
+
+    // ---- undo/redo (shapes only, not the selection itself) ----
+    function undo(): void {
+        if (root.shapes.length === 0) return;
+        const shapes = root.shapes.slice();
+        const popped = shapes.pop();
+        root.shapes = shapes;
+        const redo = root._redoStack.slice();
+        redo.push(popped);
+        root._redoStack = redo;
+    }
+    function redo(): void {
+        if (root._redoStack.length === 0) return;
+        const redo = root._redoStack.slice();
+        const shape = redo.pop();
+        root._redoStack = redo;
+        const shapes = root.shapes.slice();
+        shapes.push(shape);
+        root.shapes = shapes;
     }
 
     // ---- commit ----
