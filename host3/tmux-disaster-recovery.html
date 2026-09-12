@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmux/Hyprland disaster recovery: what we learned 2026-09-06 · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-12 19:09 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-12 19:09 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="tmux-disaster-recovery.html" aria-current="page">tmux-disaster-recovery</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1
+id="tmuxhyprland-disaster-recovery-what-we-learned-2026-09-06">tmux/Hyprland
+disaster recovery: what we learned 2026-09-06</h1>
+<p>Findings from actually exercising [[desktop-snapshot]] +
+tmux-resurrect after a real session-loss incident, for the first time.
+Supersedes the "UNEXERCISED" caveat in <code>restore_plan.py</code>'s
+docstring for the pieces covered here.</p>
+<h2 id="the-incident-had-two-separate-causes-not-one">The incident had
+two separate causes, not one</h2>
+<ol type="1">
+<li><strong>~14:22</strong> - the real mass-loss event. An old,
+untracked <code>tmux.service</code> (forking,
+<code>ExecStop=kill-server</code>) got pulled in by a
+<code>Wants=</code> dependency from a <em>new</em> systemd unit and
+killed the live server, taking ~107 sessions / 151 panes with it. Root
+cause and fix already covered by
+<span class="memref" title="internal memory note, outside this doc set">tmux_service_execstop_kill_server_footgun</span> - this doc is about
+recovering the content, not that bug.</li>
+<li><strong>~15:54</strong>, over an hour later - a separate, deliberate
+<code>sudo reboot -h now</code> run from a live pane. Unrelated to (1);
+by this point only a handful of sessions existed (rebuilt since the
+fix), so it's a much smaller loss. Don't conflate the two when reading
+logs - <code>journalctl --list-boots</code> and <code>who -b</code>
+disambiguate a reboot from a service kill.</li>
+</ol>
+<p>Lesson: when diagnosing "everything died," check
+<code>journalctl -u tmux.service</code> around the actual drop in
+<code>desktop-snapshot</code>'s <code>tmux.sessions</code> count, not
+just the most recent boot.</p>
+<h2 id="picking-which-resurrect-snapshot-to-restore-from">Picking which
+resurrect snapshot to restore from</h2>
+<p><code>~/.tmux/resurrect/last</code> and
+<code>pane_contents.tar.gz</code> reflect whatever was saved <em>most
+recently</em> - which after a crash is often a near-empty post-crash
+state, not the rich pre-crash one you want. The daemon here also saves
+periodically (<code>snapshot.py daemon --resurrect-interval 300</code>),
+so <code>last</code> can drift forward from under you mid-recovery (see
+gotcha below).</p>
+<p>Correct approach: pick the newest
+<code>pane_contents_&lt;ts&gt;.tar.gz</code> under
+<code>~/.tmux/resurrect/pane_contents_history/</code> from
+<em>before</em> the crash timestamp, then find the layout file
+<code>tmux_resurrect_&lt;ts&gt;.txt</code> with the closest-preceding
+timestamp. This is exactly what
+<code>~/.config/tmux/scripts/resurrect-restore-picker.sh</code> (bound
+to prefix+C-r) already automates interactively via fzf - use it when
+attached to a live client. When restoring from a detached/scripted
+context instead:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="va">d</span><span class="op">=</span>~/.tmux/resurrect</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">cp</span> <span class="at">-f</span> <span class="st">&quot;</span><span class="va">$d</span><span class="st">/pane_contents_history/pane_contents_&lt;good-ts&gt;.tar.gz&quot;</span> <span class="st">&quot;</span><span class="va">$d</span><span class="st">/pane_contents.tar.gz&quot;</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ln</span> <span class="at">-sf</span> <span class="st">&quot;tmux_resurrect_&lt;good-ts-or-earlier&gt;.txt&quot;</span> <span class="st">&quot;</span><span class="va">$d</span><span class="st">/last&quot;</span></span></code></pre></div>
+<p>Back up the live files first (they're small) rather than trusting you
+can reconstruct them - <code>cp</code> to
+<code>pane_contents_history/</code> under a "now" timestamp is what the
+interactive picker itself does before swapping.</p>
+<h2
+id="gotcha-desktop-snapshotservice-will-clobber-your-staged-files-mid-recovery">Gotcha:
+desktop-snapshot.service will clobber your staged files
+mid-recovery</h2>
+<p><code>desktop-snapshot.service</code> runs
+<code>snapshot.py daemon --resurrect-interval 300</code> - every 5
+minutes it calls tmux-resurrect's <code>save.sh</code> against
+<em>current</em> (post-crash, sparse) state, overwriting
+<code>pane_contents.tar.gz</code> and repointing <code>last</code>. If a
+manual recovery takes more than ~5 minutes (it will), the daemon undoes
+your staging partway through with no warning.</p>
+<p><strong><code>systemctl --user stop desktop-snapshot.service</code>
+before touching <code>~/.tmux/resurrect/*</code> by hand, every
+time.</strong> Restart it only after the restore is fully verified.</p>
+<h2
+id="gotcha-tmux-resurrects-restoresh-silently-targets-the-wrong-server-when-run-detached">Gotcha:
+tmux-resurrect's restore.sh silently targets the wrong server when run
+detached</h2>
+<p><code>scripts/helpers.sh</code>'s <code>tmux_socket()</code> is
+<code>echo $TMUX | cut -d',' -f1</code>. <code>new_session()</code>
+(used for the <em>first</em> pane of each session) explicitly does
+<code>TMUX="" tmux -S "$(tmux_socket)" new-session ...</code>. If you
+invoke <code>restore.sh</code> from a shell that isn't attached to any
+tmux client, <code>$TMUX</code> is empty, <code>tmux_socket()</code>
+returns <code>""</code>, and <code>-S ""</code> makes tmux bind an
+<strong>abstract-namespace socket</strong> - a second, fully separate,
+real tmux server that <code>tmux list-sessions</code> (default socket)
+will never show you. Every session appears to restore fine (no errors
+beyond "no current client" from unrelated title-setting calls), but they
+all land on this invisible server.
+<code>new_window</code>/<code>new_pane</code> don't override
+<code>-S</code>, so they correctly hit the real default socket - which
+is exactly why they then fail with "can't find session: X" for sessions
+that only exist on the phantom one.</p>
+<p><strong>Fix</strong>: export a <code>TMUX</code> value that resolves
+to the real socket before invoking restore.sh from a detached
+context:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">TMUX</span><span class="op">=</span><span class="st">&quot;/tmp/tmux-</span><span class="va">$(</span><span class="fu">id</span> <span class="at">-u</span><span class="va">)</span><span class="st">/default,0,0&quot;</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> ~/.tmux/plugins/tmux-resurrect/scripts/restore.sh</span></code></pre></div>
+<p>Diagnose this class of bug in general via
+<code>lsof -U 2&gt;/dev/null | grep tmux</code> - a second
+<code>tmux:</code> LISTEN entry with an abstract
+(<code>@</code>-prefixed, per lsof's rendering of a leading NUL) address
+instead of a real path is the tell.
+<code>TMUX="" tmux -S "" list-sessions</code> reconnects to it directly
+if you need to inspect or <code>kill-server</code> it.</p>
+<h2
+id="gotcha-a-stale-layout-file-can-predate-a-plugin-re-clone-in-a-format-vanilla-restoresh-cant-read">Gotcha:
+a stale layout file can predate a plugin re-clone, in a format vanilla
+restore.sh can't read</h2>
+<p><code>~/.tmux/plugins/tmux-resurrect</code> is a self-healing git
+clone (<code>[ -f resurrect.tmux ] || git clone ...</code> in
+<code>.tmux.conf</code>) - if the directory is ever missing, it silently
+re-clones vanilla upstream. If this system's
+<code>save.sh</code>/<code>restore.sh</code> were ever locally patched
+(this one was, to add a <code>pane_title</code> field used for
+<code>select-pane -T</code> window-title restoration) and the directory
+later got wiped and re-cloned, that patch is gone with no warning - but
+old <code>tmux_resurrect_*.txt</code> files saved <em>before</em> the
+re-clone still use the old format.</p>
+<p>Symptom: <code>restore.sh</code> runs clean (exit 0, sessions/panes
+get created at roughly the right count) but almost every pane comes back
+<strong>empty</strong>, and every run spams
+<code>can't find pane: &lt;a full window title&gt;</code> /
+<code>can't find window: &lt;title&gt;</code>. That message is the tell
+- it means some <code>restore.sh</code> function parsed a field meant to
+be a small pane index and got a whole title string instead, because the
+file has one extra field (or one in a different position) than what's
+currently installed expects.</p>
+<p>Diagnose precisely with
+<code>awk -F'\t' '$1=="pane" &amp;&amp; $2=="&lt;session&gt;"{for(i=1;i&lt;=NF;i++) print i": ["$i"]"}' &lt;file&gt;</code>
+and compare the field count/order against the <em>currently
+installed</em> <code>save.sh</code>'s own
+<code>pane_format()</code>/<code>window_format()</code>
+(<code>grep -n "^pane_format\|^window_format" -A 20 scripts/save.sh</code>).
+A mismatch here</p>
+<ul>
+<li>not the pane_contents.tar.gz archive itself, which is just raw bytes
+keyed by pane-id filename and was never the problem - is what breaks
+<code>pane_contents_file_exists()</code>: it builds a lookup path from
+the (garbled) pane_index, which can never match a real extracted
+file.</li>
+</ul>
+<p><strong>Fix the data, not the plugin.</strong> Patching the vendored
+<code>restore.sh</code> to read the old format works but doesn't survive
+the next re-clone, and the currently-installed <code>save.sh</code>
+already writes vanilla-format files going forward - only old,
+already-saved files are affected. Convert them once instead:
+<code>~/.config/desktop-snapshot/convert_legacy_resurrect_format.py OLD.txt NEW.txt</code>
+reorders old-format pane/window lines into whatever the
+currently-installed vanilla scripts expect, leaving everything else
+(state lines, the harmless multi-process
+<code>pane_full_command()</code> artifacts that don't start with
+<code>pane</code>/<code>window</code>) passed through untouched. Point
+<code>last</code> at the converted file and run stock, untouched
+<code>restore.sh</code>.</p>
+<h2
+id="known-deferred-limitation-pane-content-can-still-collapse-if-replay-size-doesnt-match-capture-size">Known,
+deferred limitation: pane content can still collapse if replay size
+doesn't match capture size</h2>
+<p>Pane content is captured with real cursor-positioning/clear-region
+ANSI escape sequences at whatever size the terminal actually was
+(<code>#{window_layout}</code>'s <code>WxH</code>). Replaying those into
+a session/window created at a different size can make the escapes land
+wrong and wipe most of the scrollback - confirmed directly on one pane:
+87 lines of history survive replay at its original 80x24, only 13 at a
+mismatched 220x60. <code>restore.sh</code> has always used one global
+<code>default-size</code> for every window it creates, regardless of
+what size each was actually captured at, so this is a pre-existing
+vanilla limitation, not something recovery work introduced. Not fixed as
+of this writing - deliberately deferred, see the session for why. If
+chasing this later, a per-window <code>-x</code>/<code>-y</code> at
+creation time (sessions support this directly; windows within an
+already-open session would need <code>resize-window</code> immediately
+after creation) is the shape of the fix, sourced from each window's own
+recorded <code>WxH</code> rather than a single shared value.</p>
+<h2
+id="mapping-a-restored-tmux-pane-back-to-its-exact-claude---resume-uuid">Mapping
+a restored tmux pane back to its exact <code>claude --resume</code>
+UUID</h2>
+<h3
+id="preferred-read-it-straight-from-the-clis-own-session-file">Preferred:
+read it straight from the CLI's own session file</h3>
+<p>While a <code>claude</code> process is alive, the CLI itself
+maintains <code>&lt;config_dir&gt;/sessions/&lt;pid&gt;.json</code>
+(<code>{"sessionId": ..., "cwd": ..., "tmux": "sess:@win.%pane", ...}</code>)
+- <code>claude-usage-daemon.py</code> (behind the CTRL+ALT+c usage
+panel) already reads these for its own session list.
+<code>snapshot.py</code>'s <code>claude_self_reported()</code> reads the
+same file at snapshot time and stores the exact <code>sessionId</code>
+directly on
+<code>tmux.sessions[].windows[].panes[].claude.session_id</code> - a
+real <code>--resume</code> uuid straight from the source, captured
+proactively, with no after-the-crash archaeology needed for any session
+a recent-enough snapshot covers. <code>restore_plan.py</code>'s
+<code>apply_tmux(--resume)</code> uses this whenever it's present and
+only falls back to scrollback-parsing (below) when it's missing - e.g. a
+snapshot taken before this field existed, or
+<code>sessions/&lt;pid&gt;.json</code> already cleaned up by the time a
+snapshot ran.</p>
+<p>The same file's own <code>cwd</code> is stored too, as
+<code>claude.claude_cwd</code>, and takes precedence over the pane-level
+<code>cwd</code> (from <code>/proc/&lt;pid&gt;/cwd</code>) when both are
+present: confirmed a real incident where the <code>/proc</code>-based
+value was silently corrupted for a pane on an rclone FUSE mount (missing
+its real path prefix entirely) - reproduced identically by tmux's own
+<code>#{pane_current_path}</code> capture, so it's a kernel/FUSE-mount
+quirk affecting both, not something reading <code>/proc</code> more
+carefully would have fixed. The CLI's own self-report doesn't route
+through that same symlink resolution.</p>
+<p><strong>The account mismatch this fixed</strong>:
+<code>account_for_config_dir()</code> labels a pane's account
+(<code>claude</code>/<code>claude2</code>/<code>claude3</code>) from
+<code>CLAUDE_CONFIG_DIR</code> correctly, but the <em>first</em> version
+of the <code>--resume</code> injection code never actually threaded that
+account through to the injected command - it resolved a real uuid via
+the scrollback method below, then ran bare
+<code>claude --resume &lt;uuid&gt;</code> with no
+<code>CLAUDE_CONFIG_DIR</code> prefix at all. Since <strong>the
+<code>-home-user1</code> project directory is the same inode under all
+three <code>~/.claude*/projects/</code></strong> (verified via
+<code>stat -c %i</code>), the uuid itself still resolved correctly - but
+every single resumed session silently launched under the default account
+regardless of which one actually owned it. Confirmed live: sessions
+captured under <code>claude2</code>/<code>claude3</code> all came back
+running as plain <code>claude</code>. Fixed by joining
+<code>tmux.sessions[].windows[].panes[].claude</code> (account +
+config_dir) into <code>build_session_workspace_map()</code>'s
+per-session mapping - a completely separate part of the same snapshot
+the mapping function used to ignore entirely - and prefixing the
+injected command with <code>CLAUDE_CONFIG_DIR=&lt;config_dir&gt;</code>
+whenever it's set. The account itself was never missing from the
+snapshot; the injection code just never looked at it.</p>
+<h3 id="fallback-scrollback-osc-8-footer--jsonl-match">Fallback:
+scrollback OSC-8 footer + jsonl match</h3>
+<p>For sessions with no <code>session_id</code> available (older
+snapshots, or a dead process whose
+<code>sessions/&lt;pid&gt;.json</code> is long gone):
+<code>~/.tmux/resurrect/pane_contents_history/*.tar.gz</code> captures
+each pane's actual on-screen scrollback, and Claude Code's footer
+renders an OSC-8 hyperlink to
+<code>https://claude.ai/code/session_&lt;id&gt;</code> for the active
+conversation. That same <code>&lt;id&gt;</code> appears verbatim in the
+session's own jsonl transcript as
+<code>"bridgeSessionId":"cse_&lt;id&gt;"</code>, sitting next to
+<code>"sessionId":"&lt;uuid&gt;"</code> - the UUID
+<code>claude --resume</code> actually takes. So:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">tar</span> <span class="at">-xzf</span> pane_contents_<span class="op">&lt;</span>ts<span class="op">&gt;</span>.tar.gz <span class="at">-C</span> /tmp/x ./pane_contents/pane-<span class="op">&lt;</span>session<span class="op">&gt;</span>:<span class="op">&lt;</span>window<span class="op">&gt;</span>.<span class="op">&lt;</span>pane<span class="op">&gt;</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-o</span> <span class="st">&#39;session_[A-Za-z0-9]*&#39;</span> /tmp/x/pane_contents/pane-<span class="op">&lt;</span>session<span class="op">&gt;</span>:<span class="op">&lt;</span>window<span class="op">&gt;</span>.<span class="op">&lt;</span>pane<span class="op">&gt;</span> <span class="kw">|</span> <span class="fu">tail</span> <span class="at">-1</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="fu">grep</span> <span class="at">-rl</span> <span class="st">&#39;&lt;that-id&gt;&#39;</span> ~/.claude3/projects/-home-user1/<span class="pp">*</span>.jsonl   <span class="co"># -&gt; the real --resume uuid is the filename</span></span></code></pre></div>
+<p>This is exact, not inferred from timing/cwd - safe to script. It
+cannot tell accounts apart on its own (same inode issue above) - always
+pair it with the <code>tmux.sessions[]...claude</code> join for the
+account/config_dir, per the fix above. One caveat if scripting a
+<em>live</em> investigation this way: grepping for an ID you just read
+out loud in the same Claude Code session will also match that session's
+own transcript file (it now contains the ID as tool-output text) -
+exclude the current session's own jsonl from candidate matches.</p>
+<h3 id="last-resort-content-cross-reference-no-footer-at-all">Last
+resort: content cross-reference (no footer at all)</h3>
+<p>Some panes' saved scrollback has no OSC-8 footer anywhere in it -
+<code>tmux capture-pane</code> only saves a limited area, and if that
+slice happened to catch the pane mid-scroll or between redraws, the
+footer simply isn't in what got saved (real, confirmed cause in one
+incident: nothing to do with pane width, that was a dead end chased for
+too long before realizing it didn't actually explain most cases). If the
+pane still has substantial real conversation content, cross-reference it
+against every account's jsonl transcripts directly instead of giving
+up:</p>
+<ol type="1">
+<li>Pull the CLI's own <strong>recap line</strong> if the tail shows one
+(<code>※ recap: ...</code> - an LLM-generated one-sentence summary,
+close to verbatim in the transcript) or, failing that, a
+<strong>distinctive sentence</strong> from the visible conversation -
+the user's own last message works well since it's stored close to
+verbatim.</li>
+<li><strong>Don't use whole rendered terminal lines</strong> as the
+search string - they're word-wrapped to the pane's width and
+syntax-highlighted; the jsonl stores the original unwrapped markdown
+source, so a wrapped line frequently won't appear as a contiguous
+substring even in its own session's transcript. Use a shorter phrase (a
+clause, not a paragraph) that's unlikely to span a wrap boundary.</li>
+<li><strong>Never use generic file paths or repo-wide terms as the sole
+probe</strong> - confirmed a real failure mode: a config file path
+referenced across dozens of unrelated sessions on the same dotfiles repo
+matched 50+ candidates, useless for disambiguation. Prefer specific
+values (an IP:port, an exact function/variable name, a quoted error
+message, a proper noun from the actual conversation).</li>
+<li>Require the probe to match <strong>exactly one</strong> jsonl file
+across <em>all three</em> accounts' full project trees (not just
+<code>-home-user1</code> - use whatever cwd applies), deduplicated by
+inode (same reasoning as the OSC-8 method -
+<code>.claude</code>/<code>.claude2</code>/<code>.claude3</code> alias
+the same physical file for a shared cwd) and excluding your own current
+session's jsonl (same self-reference risk as above, worse here since
+you've likely been pasting these panes' raw text into your own tool
+output while investigating). Two or more independent probes agreeing on
+the same file is strong confirmation; a single short probe with many
+hits is not trustworthy on its own - confirmed two real false-positive
+collisions from single-line probes matching an unrelated session that
+happened to discuss something similar, caught only by cross-checking
+against UUIDs already resolved via the exact footer method. Don't inject
+a match you haven't cross-checked this way.</li>
+</ol>
+<h2
+id="placing-alacritty-windows-on-the-right-workspacemonitor-without-stealing-focus">Placing
+Alacritty windows on the right workspace/monitor without stealing
+focus</h2>
+<p>This Hyprland build is Lua-scriptable
+(<span class="memref" title="internal memory note, outside this doc set">hyprland_lua_binding_dispatch_syntax</span>) - dispatch via
+<code>hyprctl eval</code></p>
+<ul>
+<li><code>hl.dsp.*</code>, not stock <code>hyprctl dispatch</code>.</li>
+</ul>
+<p>Verified safe (activewindow and every monitor's visible
+<code>activeWorkspace</code> unchanged before/after, checked directly
+rather than assumed):</p>
+<ul>
+<li><code>hl.dsp.exec_cmd("[workspace N silent] &lt;cmd&gt;")</code> -
+spawns without stealing keyboard focus or changing what's currently
+on-screen anywhere, <strong>but</strong> a workspace that doesn't exist
+yet gets created on whatever Hyprland currently considers the focused
+monitor (tied to mouse position under <code>follow_mouse=1</code>), not
+any monitor you intended.</li>
+<li><code>hl.dsp.workspace.move({ workspace = N, monitor = "NAME" })</code>
+- re-pins an <em>existing</em> workspace to a specific monitor. Despite
+flipping the monitor's <code>focused</code> boolean in
+<code>hyprctl monitors -j</code>, this does <strong>not</strong> move
+keyboard focus (<code>hyprctl activewindow</code> unchanged) and does
+<strong>not</strong> change any monitor's visible
+<code>activeWorkspace</code> - the <code>focused</code> flag here is
+cosmetic bookkeeping, not real input focus. Confirmed by checking
+<code>activewindow</code> directly before/after, not by inference.</li>
+<li><code>hl.dsp.window.move({ workspace = N, window = w, follow = false })</code>
+(<code>w</code> from <code>hl.get_windows({})</code>, matched by
+<code>.pid</code>) - relocates one <em>existing</em> window without
+touching focus. Already the pattern used by this config's own
+scratchpad-toggle keybind (<span class="memref" title="internal memory note, outside this doc set">hyprland_lua_binding_dispatch_syntax</span>) -
+reach for it first instead of rediscovering it under time pressure.</li>
+</ul>
+<p>Correct order per target workspace, since <strong>Hyprland
+auto-destroys a workspace the moment its last window closes</strong>
+(non-persistent, <code>ispersistent: false</code>), which silently
+undoes any monitor pinning done before that point:</p>
+<ol type="1">
+<li>Spawn <em>all</em> windows for that workspace first via
+<code>[workspace N silent]</code> (no monitor targeting yet - don't care
+which monitor it transiently lands on).</li>
+<li>Only once real content lives there, pin the monitor once with
+<code>hl.dsp.workspace.move</code>.</li>
+<li>Never let a target workspace go back to zero windows between steps 1
+and 2 (e.g. don't kill a placeholder/test window in it) - that destroys
+it and any later spawn recreates it on the wrong monitor again,
+requiring a repeat of step 2.</li>
+</ol>
+<h3 id="tiling-order-not-absolute-position">Tiling order, not absolute
+position</h3>
+<p>Hyprland doesn't expose a direct "tiling tree order" IPC call, and
+raw pixel coordinates (<code>at</code>/<code>size</code> from
+<code>hyprctl clients -j</code>) don't survive a monitor swap or
+resolution change anyway. But for the <code>master</code> layout, a
+freshly spawned window becomes master if its workspace was empty,
+otherwise it joins the stack - so <strong>replaying spawns in the same
+relative order reproduces the layout</strong>, with no coordinates
+needed at all.</p>
+<p><code>snapshot.py</code> derives this at capture time: within each
+workspace, sort its windows left-to-right/top-to-bottom (master
+conventionally occupies the leftmost/largest area, stack members ordered
+top-to-bottom to its right) and store the resulting rank as
+<code>tile_order</code> on each client. On restore, sort by that rank
+before spawning, per workspace - master-layout placement then falls out
+for free.</p>
+<p>Session -&gt; workspace -&gt; monitor mapping comes from a
+<strong>pre-crash</strong> <code>desktop-snapshot</code> JSON's
+<code>hyprland.clients[].tmux_session</code> (already computed by
+<code>snapshot.py</code>'s tty-ownership matching) joined against
+<code>hyprland.workspaces[].monitor</code>. A post-crash snapshot has
+none of this, so keep/back up the last few pre-crash snapshots rather
+than relying on <code>latest.json</code> once trouble starts.</p>
+<h2
+id="recovery-order-validated-end-to-end---107-sessions-117151-panes-with-real-content-using-stock-unmodified-tmux-resurrect">Recovery
+order (validated end to end - 107 sessions, 117/151 panes with real
+content, using stock unmodified tmux-resurrect)</h2>
+<ol type="1">
+<li><code>systemctl --user stop desktop-snapshot.service</code></li>
+<li>Stage the pre-crash <code>pane_contents.tar.gz</code> +
+<code>last</code> symlink (see above), backing up the live ones
+first.</li>
+<li>Sanity-check the layout file's field format against the currently
+installed <code>save.sh</code> (see the gotcha above) - if it's
+stale/mismatched, run <code>convert_legacy_resurrect_format.py</code> on
+it first and point <code>last</code> at the converted copy instead.</li>
+<li><code>export TMUX="/tmp/tmux-$(id -u)/default,0,0"; bash .../tmux-resurrect/scripts/restore.sh</code>
+- stock, unmodified script - restores all sessions/panes with pre-crash
+scrollback onto the real server.</li>
+<li>Build the session -&gt; workspace -&gt; monitor table from a
+pre-crash <code>desktop-snapshot</code> JSON.</li>
+<li>Per workspace: spawn
+<code>alacritty -e tmux attach -t &lt;session&gt;</code> for every
+session mapped to it (<code>[workspace N silent]</code>, no monitor
+bracket), then pin the workspace's monitor once via
+<code>hl.dsp.workspace.move</code>.</li>
+<li>Only for sessions where the actual Claude conversation (not just the
+tmux pane) needs resuming: resolve the <code>--resume</code> UUID via
+the pane-contents OSC-8 footer method above, then run
+<code>claude --resume &lt;uuid&gt;</code> inside the now-attached
+pane.</li>
+<li>Restart <code>desktop-snapshot.service</code> once fully
+verified.</li>
+</ol>
+<p>Test this on one workspace before batching all of them - confirm
+<code>activewindow</code>/<code>activeWorkspace</code> are unaffected on
+your own machine's config before trusting the general claim above on a
+different box.</p>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#the-incident-had-two-separate-causes-not-one">The incident had two separate causes, not one</a></li><li class="lvl2"><a href="#picking-which-resurrect-snapshot-to-restore-from">Picking which resurrect snapshot to restore from</a></li><li class="lvl3"><a href="#fallback-scrollback-osc-8-footer--jsonl-match">Fallback: scrollback OSC-8 footer + jsonl match</a></li><li class="lvl3"><a href="#last-resort-content-cross-reference-no-footer-at-all">Last resort: content cross-reference (no footer at all)</a></li><li class="lvl3"><a href="#tiling-order-not-absolute-position">Tiling order, not absolute position</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>
