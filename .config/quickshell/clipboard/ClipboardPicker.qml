@@ -306,13 +306,19 @@ PanelWindow {
         id: box
         anchors.centerIn: parent
         width: root.screen ? Math.round(root.screen.width * 0.5) : 800
-        height: header.height + (ac.visible ? ac.height : 0) + list.height
+        // bottomPad is real structural space below the list, not just
+        // ListView's own bottomMargin (which lives *inside* its computed
+        // height and kept reading as "too close to the border" even bumped
+        // up several times -- this reserves the gap at the box level
+        // instead, so it can't be eaten by anything list-internal).
+        height: header.height + (ac.visible ? ac.height : 0) + list.height + box.bottomPad
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.cyan
         border.width: 1
 
         readonly property real _maxTotal: root.screen ? root.screen.height * 0.8 : 800
+        readonly property int bottomPad: 14
 
         Item {
             id: header
@@ -322,20 +328,15 @@ PanelWindow {
             // height with, so it can run more compact.
             height: 34
 
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                x: 16
-                text: ""
-                font.family: Theme.iconFontFamily
-                font.pixelSize: Theme.fontSize - 1
-                color: Theme.textDim
-            }
-
             TextInput {
                 id: query
                 anchors.verticalCenter: parent.verticalCenter
-                x: 40
-                width: parent.width - 56
+                // No leading icon (dropped -- reported as an unwanted left
+                // margin) -- 8px matches the list rows' own left inset
+                // (col's anchors.leftMargin below) so the text lines up
+                // with entry previews underneath.
+                x: 8
+                width: parent.width - 16
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize
                 color: Theme.text
@@ -515,13 +516,12 @@ PanelWindow {
             id: list
             anchors.top: ac.visible ? ac.bottom : header.bottom
             width: parent.width
-            height: Math.max(0, Math.min(contentHeight, box._maxTotal - header.height - (ac.visible ? ac.height : 0)))
+            height: Math.max(0, Math.min(contentHeight, box._maxTotal - header.height - (ac.visible ? ac.height : 0) - box.bottomPad))
             clip: true
             model: root.results
             boundsBehavior: Flickable.StopAtBounds
             topMargin: 4
-            // Still reported cut off at 12px, bumped further.
-            bottomMargin: 24
+            bottomMargin: 4
 
             delegate: Rectangle {
                 id: row
