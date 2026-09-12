@@ -38,8 +38,10 @@ PanelWindow {
         "type": "text or image",
         "date": "how long ago it was copied"
     })
-    readonly property int thumbHeight: 160
-    readonly property int thumbMaxWidth: 480
+    // Shrunk from the GTK version's 160/480 (reported too big after the
+    // first live test).
+    readonly property int thumbHeight: 120
+    readonly property int thumbMaxWidth: 360
     readonly property string _bin: Quickshell.env("HOME") + "/.config/hypr/clipboard-picker/target/release/clipboard-picker"
 
     function _recompute() {
@@ -69,6 +71,18 @@ PanelWindow {
     // same as the GTK version re-ran `cliphist list` every invocation ----
     property var _entries: []
     property var _thumbPaths: ({}) // id -> cached PNG path, once resolved
+    property var _thumbMeta: ({})  // id -> {width, height} of that cached PNG (its real pixels)
+
+    // cliphist's own `list` preview hard-truncates at a fixed rune count
+    // (observed 100 + its own "…"), independent of the picker's actual
+    // width -- a wide box then elides a short, already-truncated string
+    // "too early" with a lot of blank space after it, which reads as a
+    // layout bug but isn't one (reported 2026-09-12). Detected by shape
+    // (long + cliphist's own ellipsis char) rather than trusting an exact
+    // length, in case that cap ever changes.
+    function _looksTruncated(preview) {
+        return preview.length >= 95 && preview.endsWith("…");
+    }
 
     function _refresh() {
         if (listProc.running) return;
@@ -88,10 +102,15 @@ PanelWindow {
                     try { rows.push(JSON.parse(l)); } catch (e) { /* skip */ }
                 }
                 root._entries = rows;
-                const ids = rows.filter(e => e.thumb).map(e => e.id);
-                if (ids.length > 0) {
-                    thumbsProc.command = [root._bin, "thumbs"].concat(ids);
+                const thumbIds = rows.filter(e => e.thumb).map(e => e.id);
+                if (thumbIds.length > 0) {
+                    thumbsProc.command = [root._bin, "thumbs"].concat(thumbIds);
                     thumbsProc.running = true;
+                }
+                const longIds = rows.filter(e => !e.thumb && root._looksTruncated(e.preview)).map(e => e.id);
+                if (longIds.length > 0) {
+                    textsProc.command = [root._bin, "texts"].concat(longIds);
+                    textsProc.running = true;
                 }
             }
         }
@@ -105,9 +124,36 @@ PanelWindow {
             onRead: line => {
                 try {
                     const m = JSON.parse(line);
-                    const next = Object.assign({}, root._thumbPaths);
-                    next[m.id] = m.path;
-                    root._thumbPaths = next;
+                    const paths = Object.assign({}, root._thumbPaths);
+                    paths[m.id] = m.path;
+                    root._thumbPaths = paths;
+                    const meta = Object.assign({}, root._thumbMeta);
+                    meta[m.id] = { width: m.width, height: m.height };
+                    root._thumbMeta = meta;
+                } catch (e) { /* skip */ }
+            }
+        }
+    }
+
+    // Swaps a truncated entry's preview/haystack for the real full text
+    // once decoded (see _looksTruncated) -- mutates `_entries` in place so
+    // both the row label and search matching pick it up through the normal
+    // path, no separate fallback needed at render time. Multi-line copies
+    // are flattened to one line, matching how a short/untruncated cliphist
+    // preview already reads.
+    Process {
+        id: textsProc
+        stdout: SplitParser {
+            onRead: line => {
+                try {
+                    const m = JSON.parse(line);
+                    const full = m.text.replace(/\s+/g, " ").trim();
+                    if (!full) return;
+                    const idx = root._entries.findIndex(e => e.id === m.id);
+                    if (idx < 0) return;
+                    const next = root._entries.slice();
+                    next[idx] = Object.assign({}, next[idx], { preview: full, haystack: full.toLowerCase() });
+                    root._entries = next;
                 } catch (e) { /* skip */ }
             }
         }
@@ -188,7 +234,7 @@ PanelWindow {
         else if (ctx.kind === "field") items = ClipboardQueryDsl.fieldSuggestions(root.fieldNames, ctx.frag);
         else items = ClipboardQueryDsl.valueSuggestions(root._entries, ctx.field, ctx.frag);
         if (items.length === 0) return null;
-        return { start: ctx.start, kind: ctx.kind, field: ctx.field, items: items };
+        return { start: ctx.start, kind: ctx.kind, field: ctx.field, via: ctx.via, items: items };
     }
 
     function _hideSuggestions() {
@@ -198,7 +244,7 @@ PanelWindow {
     }
 
     function _applyCandidates(cand) {
-        root._acCtx = { start: cand.start, kind: cand.kind, field: cand.field };
+        root._acCtx = { start: cand.start, kind: cand.kind, field: cand.field, via: cand.via };
         root.acSel = 0;
         root.acItems = cand.items;
     }
@@ -271,14 +317,17 @@ PanelWindow {
         Item {
             id: header
             width: parent.width
-            height: 44
+            // Shrunk from AppLauncher's 44 (reported too tall after the
+            // first live test) -- this picker has no icon column to match
+            // height with, so it can run more compact.
+            height: 34
 
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 x: 16
                 text: ""
                 font.family: Theme.iconFontFamily
-                font.pixelSize: Theme.fontSize
+                font.pixelSize: Theme.fontSize - 1
                 color: Theme.textDim
             }
 
@@ -288,7 +337,7 @@ PanelWindow {
                 x: 40
                 width: parent.width - 56
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize + 1
+                font.pixelSize: Theme.fontSize
                 color: Theme.text
                 selectionColor: Theme.cyan
                 selectByMouse: true
@@ -297,13 +346,11 @@ PanelWindow {
                     if (root.acItems.length > 0) root._refreshSuggestions();
                 }
 
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("search   ·   $type:  $date:")
-                    color: Theme.muted
-                    font: query.font
-                    visible: query.text.length === 0
-                }
+                // No placeholder text -- the old "$type: $date:" hint used
+                // syntax this DSL doesn't speak any more (it's `/ft type`,
+                // `/fv type:...` now); "/" + Tab already discovers the
+                // grammar (query-dsl.md's Autocompletion section), so a
+                // blank box on open beats a stale hint.
 
                 // Inline command-validity coloring (query-dsl.md) -- an
                 // underline under each `/command` token (TextInput has no
@@ -473,7 +520,8 @@ PanelWindow {
             model: root.results
             boundsBehavior: Flickable.StopAtBounds
             topMargin: 4
-            bottomMargin: 4
+            // Still reported cut off at 12px, bumped further.
+            bottomMargin: 24
 
             delegate: Rectangle {
                 id: row
@@ -492,35 +540,49 @@ PanelWindow {
 
                 Column {
                     id: col
-                    x: 8
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
                     y: 2
-                    width: parent.width - 16
                     spacing: 2
 
                     // Placeholder-sized until its thumbnail resolves (keeps
                     // the row from jumping around as thumbnails stream in),
-                    // then shrinks to the real (decoded, aspect-fit) size.
+                    // then shrinks to the real target size. Sized from the
+                    // backend's *reported* native pixel dimensions
+                    // (_thumbMeta), not Qt's `sourceSize`-driven implicit
+                    // sizing -- images were coming out visibly larger than
+                    // thumbHeight/thumbMaxWidth and softly pixelated
+                    // (reported 2026-09-12), consistent with Image ending
+                    // up upscaled rather than down. Explicit width/height
+                    // computed here can only ever shrink (min(...,1) below),
+                    // never upscale.
                     Item {
+                        id: thumbBox
                         visible: row.modelData.thumb
-                        width: Math.max(1, thumbImg.width)
-                        height: thumbImg.status === Image.Ready ? Math.max(1, thumbImg.height) : root.thumbHeight
+                        readonly property var _nat: root._thumbMeta[row.modelData.id]
+                        readonly property real _scale: thumbBox._nat
+                            ? Math.min(root.thumbMaxWidth / thumbBox._nat.width, root.thumbHeight / thumbBox._nat.height, 1)
+                            : 1
+                        width: thumbBox._nat ? Math.max(1, Math.round(thumbBox._nat.width * thumbBox._scale)) : 1
+                        height: thumbBox._nat ? Math.max(1, Math.round(thumbBox._nat.height * thumbBox._scale)) : root.thumbHeight
 
                         Image {
                             id: thumbImg
-                            anchors.left: parent.left
-                            anchors.top: parent.top
+                            anchors.fill: parent
                             source: root._thumbPaths[row.modelData.id]
                                     ? ("file://" + root._thumbPaths[row.modelData.id]) : ""
-                            sourceSize.width: root.thumbMaxWidth
-                            sourceSize.height: root.thumbHeight
                             fillMode: Image.PreserveAspectFit
                             asynchronous: true
+                            smooth: true
+                            mipmap: true
                         }
                     }
 
                     Text {
                         visible: !row.modelData.thumb
-                        width: parent.width
+                        width: col.width
                         text: row.modelData.preview
                         elide: Text.ElideRight
                         maximumLineCount: 1
@@ -531,7 +593,7 @@ PanelWindow {
 
                     Text {
                         visible: row.extraText.length > 0
-                        width: parent.width
+                        width: col.width
                         text: row.extraText
                         elide: Text.ElideRight
                         font.family: Theme.fontFamily
