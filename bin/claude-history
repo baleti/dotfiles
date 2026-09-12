@@ -1485,18 +1485,21 @@ def fzf_post(sock_path, action):
     AF_UNIX rather than a curl subprocess: this runs from the refresher
     thread up to a few times a second while the reindex streams in, and
     a 10ms fork+exec per poke is the kind of cost this whole rewrite is
-    about removing. Best-effort - fzf being gone is normal."""
+    about removing. Returns whether fzf took it: False both when fzf is
+    gone (normal at the end) and when it hasn't bound the socket yet (the
+    path exists from mkstemp before fzf replaces it - normal at the start,
+    the first ~0.1s), so the caller can retry what still matters."""
     if not sock_path or not os.path.exists(sock_path):
-        return
+        return False
     conn = http.client.HTTPConnection("localhost", timeout=2)
     try:
         conn.sock = socket.socket(socket.AF_UNIX)
         conn.sock.settimeout(2)
         conn.sock.connect(sock_path)
         conn.request("POST", "/", body=action.encode())
-        conn.getresponse().read()
+        return conn.getresponse().status == 200
     except (OSError, http.client.HTTPException):
-        pass
+        return False
     finally:
         conn.close()
 
@@ -1513,16 +1516,17 @@ class PickerState:
     `ready` rather than answering "nothing" and leaving fzf showing 0/0
     until the next keystroke."""
 
-    def __init__(self, fzf_sock, reload_action):
+    def __init__(self, fzf_sock, reload_action, header):
         self.lock = threading.Lock()
         self.ready = threading.Event()
         self.snapshot = None
         self.sessions = {}      # session_id -> indexed, the merge target
         self.dirty = False      # sessions changed since snapshot was built
-        self.label = None       # border label wanted ("" clears it)
+        self.label = None       # progress readout wanted ("" clears it)
         self.label_shown = None
         self.fzf_sock = fzf_sock
         self.reload_action = reload_action
+        self.header = header    # the column-title line the readout rides on
         self.wake = threading.Event()
 
     def get(self):
@@ -1573,7 +1577,15 @@ class PickerState:
         and repaints the list - fine a few times, not fine 30 times over
         a 2s reindex) and at most a few label updates a second. The final
         (finish) reload is never held back: `dirty` with an empty label
-        means "done", and that one goes out at once."""
+        means "done", and that one goes out at once.
+
+        The progress readout is appended to the column-header line itself
+        (change-header, same single line) rather than shown as its own
+        line or on the border: an extra header line would shift the list
+        and steal a row from resize_on_result's budget (which assumes
+        exactly one header line - see the +4 there), and a border-label
+        in the bottom corner is where nobody is looking. Cleared by
+        re-posting the bare header once finish() lands."""
         last_reload = 0.0
         while True:
             self.wake.wait(0.25)
@@ -1591,10 +1603,18 @@ class PickerState:
                     self.snapshot = snapshot
                 self.ready.set()
                 last_reload = time.time()
-                fzf_post(self.fzf_sock, self.reload_action)
+                if not fzf_post(self.fzf_sock, self.reload_action):
+                    # fzf not listening yet (or gone): the merged data is
+                    # already what the next request serves, but the list
+                    # on screen wasn't told - try again next tick
+                    with self.lock:
+                        self.dirty = True
             if label is not None and label != self.label_shown:
-                self.label_shown = label
-                fzf_post(self.fzf_sock, f"change-border-label({label})")
+                text = self.header
+                if label:
+                    text += f"   \x1b[1;33m⟳ {label}\x1b[0m"
+                if fzf_post(self.fzf_sock, f"change-header({text})"):
+                    self.label_shown = label
 
 
 def _recv_exact(sock, n):
@@ -1637,7 +1657,9 @@ def make_handler(state):
             mode, args = parts[0], parts[1:]
             snap = state.get()
             if mode == "search":
-                out = "\n".join(search(snap, args[0] if args else "")) + "\n" if snap else ""
+                rows = search(snap, args[0] if args else "") if snap else []
+                out = "\n".join(rows) + "\n" if rows else ""  # no rows: no
+                # bytes at all - a lone "\n" would be one blank list item
             elif mode == "preview":
                 out = preview(args[0], args[1] if len(args) > 1 else "", snap)
             elif mode == "complete":
@@ -1667,7 +1689,7 @@ def make_handler(state):
                 if msg.get("type") == "sessions":
                     state.merge(msg["entries"])
                     pct = int(100 * msg["done"] / max(1, msg["total"]))
-                    state.set_label(f" indexing {pct}% ")
+                    state.set_label(f"indexing {pct}% - list still filling in")
                 elif msg.get("type") == "done":
                     state.finish(msg["session_ids"])
     return Handler
@@ -1717,12 +1739,20 @@ def drive():
     search_cmd = f"{client} search {{q}}"
     preview_cmd = f"{client} preview {{1}} {{q}}"
     complete_cmd = f"{client} complete {{q}} > {shlex.quote(complete_path)}"
+    # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
+    # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
+    # cwd's slack (see row()), which is expected: the header marks the
+    # normal case, individual rows are still free to shift when they
+    # actually need to. While the reindex child is streaming, the progress
+    # readout is appended to this same line (PickerState.refresher).
+    header = (f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  '
+              f'{"MSGS":>{MSGS_WIDTH}}  TITLE')
     # the reload action re-sends {q} (fzf substitutes it from the CURRENT
     # query box, confirmed directly: an action posted to --listen still
     # gets {q}/{n}-style placeholders resolved against live state, not
     # just ones bound with --bind) so a query the user already started
     # typing survives every refresh instead of being reset to empty.
-    state = PickerState(fzf_sock, f"reload({search_cmd})")
+    state = PickerState(fzf_sock, f"reload({search_cmd})", header)
 
     _rm(sock_path)
     server = PickerServer(sock_path, make_handler(state))
@@ -1749,7 +1779,7 @@ def drive():
             # for at least one session - kick off the real build_snapshot()
             # in a detached child (see reindex_and_stream) that streams
             # each session back over sock_path as it's parsed
-            state.set_label(" indexing 0% ")
+            state.set_label("indexing 0% - list still filling in")
             subprocess.Popen(
                 [sys.executable, os.path.abspath(__file__),
                  "--reindex-and-notify", sock_path],
@@ -1760,14 +1790,6 @@ def drive():
             # the cache for the *next* prefix+C-c
 
     threading.Thread(target=load, daemon=True).start()
-
-    # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
-    # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
-    # cwd's slack (see row()), which is expected: the header marks the
-    # normal case, individual rows are still free to shift when they
-    # actually need to
-    header = (f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  '
-              f'{"MSGS":>{MSGS_WIDTH}}  TITLE')
 
     resize_on_result = (
         # list gets just enough rows for its matches (+4: the header row,
@@ -1796,10 +1818,6 @@ def drive():
         # a visually inset look rather than filling every last cell.
         "fzf", "--ansi", "--disabled", "--layout=reverse",
         "--border=rounded", "--margin=2,4",
-        # the border label is the "indexing N%" progress readout while
-        # the reindex child streams (see PickerState.refresher) - bottom
-        # edge so it never competes with the column header at the top
-        "--border-label-pos=-3:bottom",
         "--delimiter", "\t", "--with-nth", "2..",
         "--prompt", "claude history> ",
         "--header", header,
