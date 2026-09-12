@@ -78,24 +78,40 @@ Tab completes the query DSL (see the "query language" comment below and
 complete_query) - a unique field/value completes directly, an ambiguous
 one opens a small nested fzf popup to pick from.
 
+Startup is "fzf first, data second": fzf is launched before any history
+is read, the cached index is loaded on a thread (~0.1s) and served to it
+from memory over a unix socket (see PickerServer), and whatever changed
+on disk since the cache was written is reparsed by a niced, detached
+child that streams sessions back one at a time while an "indexing N%"
+border label counts up - typing and picking work throughout. Before this
+the same picker took 2-3s to become responsive: every keystroke was a
+fresh python process re-reading a 16MB snapshot, and the reindex ran
+un-niced against it.
+
 Deps: fzf, python3. tmux is optional - only needed for the live/switch path.
 """
 import argparse
 import atexit
 import glob
 import hashlib
+import http.client
 import json
 import math
 import os
+import pickle
 import re
 import shlex
 import signal
+import socket
+import socketserver
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from concurrent.futures import ProcessPoolExecutor
-from collections import namedtuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import Counter, namedtuple
 
 CLAUDE_DIR = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
 PROJECTS_GLOB = os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl")
@@ -258,6 +274,16 @@ def parse_query(query):
     return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms)
 
 
+def phrase_hint(raw):
+    """The longest whitespace-free literal piece of a phrase - a plain `in`
+    test for it is a C-speed pre-filter (7.5MB of corpus text in ~5ms)
+    that lets the far slower phrase_re() scan be skipped for every session
+    the phrase can't possibly be in. Lowercased like the text it's tested
+    against; empty if the phrase is all whitespace (then always "in")."""
+    parts = raw.strip().lower().split()
+    return max(parts, key=len) if parts else ""
+
+
 def phrase_re(raw, prefix=False):
     raw = raw.strip().lower()
     parts = [p for p in re.split(r"(\s+)", raw) if p]
@@ -398,14 +424,17 @@ def parse_session(path):
 # promises. One cache file per profile fixes that: each keeps its own
 # entries indefinitely regardless of which other profile ran in between.
 _cache_key = hashlib.sha1(CLAUDE_DIR.encode()).hexdigest()[:12]
-PARSE_CACHE_PATH = os.path.expanduser(f"~/.cache/claude-history-parse-cache-{_cache_key}.json")
+PARSE_CACHE_PATH = os.path.expanduser(f"~/.cache/claude-history-parse-cache-{_cache_key}.pkl")
+# the pre-v5 JSON spelling of the same file - removed on the first save of
+# the pickle one so 15MB of dead cache doesn't sit in ~/.cache forever
+_LEGACY_CACHE_PATH = PARSE_CACHE_PATH[:-len(".pkl")] + ".json"
 # (path, mtime, size) only tells you a *file* hasn't changed - it says
 # nothing about whether parse_session()/index_session() would still
 # compute the same thing from it. Bump this whenever their logic changes
 # (MAX_MSG_CHARS, USER_BOOST/TITLE_BOOST, extract_text's block filtering,
 # etc.) so old entries can't silently outlive the code that produced them;
 # a mismatch just means "start over", not corruption.
-CACHE_VERSION = 4  # 2: tf_title/tf_body/time_text added (the $field: DSL).
+CACHE_VERSION = 5  # 2: tf_title/tf_body/time_text added (the $field: DSL).
 # 3: the body field was originally named "text" during development, then
 # renamed - the cached dict's own keys changed shape (tf_text ->
 # tf_body etc.) under what was still version 2, which is exactly the class
@@ -415,6 +444,14 @@ CACHE_VERSION = 4  # 2: tf_title/tf_body/time_text added (the $field: DSL).
 # $time: turned out to need the *displayed* relative age ("14d ago"), not
 # the raw timestamp, and that has to be computed fresh at query time (it's
 # relative to now) rather than ever cached at all - see session_filter_text.
+# 5: JSON -> pickle (protocol 5). Same dict, different serializer: loading
+# the 15MB JSON was the single largest fixed cost left on the path to the
+# first row on screen (0.17s measured) and pickle.load of the same data is
+# 0.06s. Nothing else changed shape, but the bump is what makes an old
+# .json file get ignored (it's a different path anyway, see
+# _LEGACY_CACHE_PATH) rather than needing a format sniff. The file is
+# private (mkstemp, 0600) and only ever written by this tool, so
+# unpickling it is as trusted as reading its JSON predecessor was.
 
 
 def index_session(s):
@@ -460,17 +497,15 @@ def index_session(s):
 
 def load_parse_cache():
     try:
-        with open(PARSE_CACHE_PATH) as f:
-            data = json.load(f)
-        # a version mismatch (including an old unversioned cache file,
-        # which has file paths as top-level keys and so has no "_version"
-        # at all - .get returns None, which never matches) is treated
-        # exactly like "no cache" rather than an error: start over, don't
-        # trust entries a different code version produced.
-        if data.get("_version") != CACHE_VERSION:
+        with open(PARSE_CACHE_PATH, "rb") as f:
+            data = pickle.load(f)
+        # a version mismatch is treated exactly like "no cache" rather than
+        # an error: start over, don't trust entries a different code
+        # version produced.
+        if not isinstance(data, dict) or data.get("_version") != CACHE_VERSION:
             return {}
         return data.get("files", {})
-    except (OSError, ValueError):
+    except (OSError, ValueError, pickle.UnpicklingError, EOFError, AttributeError):
         return {}
 
 
@@ -483,14 +518,15 @@ def save_parse_cache(cache):
     try:
         d = os.path.dirname(PARSE_CACHE_PATH)
         fd, tmp = tempfile.mkstemp(dir=d, prefix=".claude-history-cache-")
-        with os.fdopen(fd, "w") as f:
-            json.dump({"_version": CACHE_VERSION, "files": cache}, f)
+        with os.fdopen(fd, "wb") as f:
+            pickle.dump({"_version": CACHE_VERSION, "files": cache}, f, protocol=5)
         os.replace(tmp, PARSE_CACHE_PATH)
+        _rm(_LEGACY_CACHE_PATH)
     except OSError:
         pass
 
 
-def build_snapshot():
+def build_snapshot(progress=None):
     """Parsing and indexing every transcript from scratch on every single
     invocation used to be the dominant startup cost - one real file in this
     corpus is 163MB (a runaway conversation with huge tool output; the next
@@ -512,6 +548,16 @@ def build_snapshot():
         wait, not the CPU-bound part. ProcessPoolExecutor sidesteps the
         GIL entirely (separate interpreters, separate cores) - measured
         1.06s -> 0.65s on this real corpus switching from one to the other.
+
+    `progress`, if given, is called from this thread as each changed file
+    finishes parsing - progress(path, indexed_or_None, done_bytes,
+    total_bytes) - in completion order, not file order (as_completed, not
+    ex.map: one 163MB transcript in this corpus takes longer than every
+    other changed file put together, and ex.map would have held every
+    result behind it). Byte-weighted rather than file-counted for the same
+    reason: 3 of 4 files done can still mean 5% of the work done. This is
+    what lets reindex_and_stream() push sessions to an already-open picker
+    one at a time instead of only once everything has finished.
     """
     files = glob.glob(PROJECTS_GLOB)
     if not files:
@@ -539,9 +585,22 @@ def build_snapshot():
     freshly_indexed = {}
     if to_parse:
         workers = min(os.cpu_count() or 4, len(to_parse))
+        # largest first: with as_completed the order only affects packing,
+        # and starting the biggest file first is what keeps the other
+        # workers from all sitting idle at the end waiting on it
+        to_parse.sort(key=lambda p: -stats[p].st_size)
+        total_bytes = sum(stats[p].st_size for p in to_parse) or 1
+        done_bytes = 0
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            for path, s in zip(to_parse, ex.map(parse_session, to_parse)):
-                freshly_indexed[path] = index_session(s) if s else None
+            futs = {ex.submit(parse_session, p): p for p in to_parse}
+            for fut in as_completed(futs):
+                path = futs[fut]
+                s = fut.result()
+                indexed = index_session(s) if s else None
+                freshly_indexed[path] = indexed
+                done_bytes += stats[path].st_size
+                if progress:
+                    progress(path, indexed, done_bytes, total_bytes)
 
     new_cache = {}
     sessions = {}
@@ -571,40 +630,65 @@ def _aggregate_snapshot(sessions):
     # the combined ones the plain unscoped search has always used; _title/
     # _body are the same aggregation over each field's own tf, for $title:/
     # $body: to score and prefix-expand against
-    df, df_title, df_body = {}, {}, {}
+    # Counter.update over a keys view counts each token once per session
+    # in C (_count_elements) - this rollup runs on every streamed refresh
+    # of the picker as well as at startup, and the per-token Python loop
+    # it replaces was the larger half of the fast path's ~0.1s
+    df, df_title, df_body = Counter(), Counter(), Counter()
     for s in sessions.values():
-        for tok in s["tf"]:
-            df[tok] = df.get(tok, 0) + 1
-        for tok in s["tf_title"]:
-            df_title[tok] = df_title.get(tok, 0) + 1
-        for tok in s["tf_body"]:
-            df_body[tok] = df_body.get(tok, 0) + 1
+        df.update(s["tf"].keys())
+        df_title.update(s["tf_title"].keys())
+        df_body.update(s["tf_body"].keys())
 
     n = max(1, len(sessions))
     avgdl = sum(s["doclen"] for s in sessions.values()) / n
     avgdl_title = sum(s["doclen_title"] for s in sessions.values()) / n
     avgdl_body = sum(s["doclen_body"] for s in sessions.values()) / n
-    return {"sessions": sessions, "n": len(sessions),
+    # "text_low" (see snap_text_low) is filled in lazily by the first query
+    # that needs it, not here: this rollup is on the path to the first row
+    # on screen, and lowercasing 7.5MB of transcript text is 40ms of it
+    # that only phrase/soft queries ever use
+    return {"sessions": sessions, "n": len(sessions), "text_low": None,
             "df": df, "avgdl": avgdl, "vocab": sorted(df.keys()),
             "df_title": df_title, "avgdl_title": avgdl_title, "vocab_title": sorted(df_title.keys()),
             "df_body": df_body, "avgdl_body": avgdl_body, "vocab_body": sorted(df_body.keys())}
 
 
+_text_low_lock = threading.Lock()
+
+
+def snap_text_low(snap):
+    """session_id -> the joined, lowercased conversation text every phrase/
+    soft regex runs against - built once per snapshot, on first use, not
+    re-joined per session per query (and, before the df fix in search(),
+    per session per *matching* session: a 5-hit phrase query used to
+    rebuild the whole corpus's text six times over, 0.87s vs 0.04s for a
+    bare word). Kept beside the sessions rather than inside each one so it
+    never leaks into what build_snapshot() pickles back to the cache. The
+    lock only matters for the picker's server threads, which can be asked
+    for a search and a preview of the same fresh snapshot at once."""
+    with _text_low_lock:
+        if snap["text_low"] is None:
+            snap["text_low"] = {sid: "\n".join(t for _, t in s["turns"]).lower()
+                                for sid, s in snap["sessions"].items()}
+    return snap["text_low"]
+
+
 def build_snapshot_fast():
     """The instant-display counterpart to build_snapshot() above: cache
-    reads only, zero reparsing, so this is a json.load plus a handful of
-    stat() calls - no ProcessPoolExecutor, no cache rewrite. Lets drive()
-    put fzf on screen immediately instead of blocking on a cold-cache full
-    corpus parse (measured 2-4s on this corpus, worse under memory
-    pressure) - see the module docstring's note on prefix+C-c latency.
+    reads only, zero reparsing, so this is a pickle.load plus a handful of
+    stat() calls (~0.1s here) - no ProcessPoolExecutor, no cache rewrite.
+    Runs on drive()'s loader thread while fzf is already on screen, so the
+    picker never blocks on a cold-cache full corpus parse (measured 2-4s
+    on this corpus, worse under memory pressure).
 
     A file that's missing from the cache entirely (never indexed) is just
     left out of the result - there's nothing to show for it yet. A file
     whose cache entry is stale (changed since last indexed, e.g. a session
     actively being written to right now) still contributes its last-known
     indexed content rather than being dropped, since a slightly-stale row
-    beats no row at all for the few seconds until the background refresh
-    (see build_snapshot_and_notify) lands.
+    beats no row at all for the second or two until the reindex child
+    (see reindex_and_stream) streams the fresh version in.
 
     Returns (snapshot, stale) - stale is True whenever anything in the
     corpus doesn't match the cache byte-for-byte, telling the caller a
@@ -636,40 +720,75 @@ def build_snapshot_fast():
     return _aggregate_snapshot(sessions), stale
 
 
-def build_snapshot_and_notify(snap_path, sock_path):
-    """Run in the background (see drive()) after the fast/stale snapshot is
-    already on screen: does the real, canonical build_snapshot() - reparse
-    whatever changed, rewrite the cache, full df/vocab rollup - then
-    atomically replaces snap_path with the fresh result and pokes fzf's
-    --listen socket to redraw against it.
-
-    mkstemp+os.replace (same pattern save_parse_cache uses) so self_cmd,
-    running concurrently against snap_path for every keystroke in the
-    meantime, never sees a half-written file. The reload action re-sends
-    {q} (fzf substitutes it from the CURRENT query box, confirmed directly:
-    an action posted to --listen still gets {q}/{n}-style placeholders
-    resolved against live state, not just ones bound with --bind) so a
-    query the user already started typing during the fast/stale window
-    survives the refresh instead of being reset to empty."""
-    snapshot = build_snapshot()
-    d = os.path.dirname(snap_path)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".claude-history-snap-")
-    with os.fdopen(fd, "w") as f:
-        json.dump(snapshot, f)
-    os.replace(tmp, snap_path)
-
-    if not os.path.exists(sock_path):
-        return  # fzf (and the socket it owned) is already gone - nothing to refresh
-    py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
-    self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
+def _send_frame(sock, obj):
+    """One length-prefixed pickle on the picker's feed connection (see
+    PickerServer's "feed" mode). Best-effort: the picker being gone (user
+    already picked something, or dismissed it) is the normal way this
+    fails, and is no reason to stop warming the cache."""
+    if sock is None:
+        return None
     try:
-        subprocess.run(
-            ["curl", "-s", "--unix-socket", sock_path, "http",
-             "-d", f"reload({self_cmd})"],
-            capture_output=True, timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass  # best-effort - a missed refresh just means the fast/stale view stands
+        payload = pickle.dumps(obj, protocol=5)
+        sock.sendall(struct.pack("!I", len(payload)) + payload)
+        return sock
+    except OSError:
+        sock.close()
+        return None
+
+
+def reindex_and_stream(server_sock):
+    """Run as a detached child (see drive()) after the fast/stale snapshot
+    is already on screen: does the real, canonical build_snapshot() -
+    reparse whatever changed, rewrite the cache, full df/vocab rollup -
+    and, while doing it, streams each freshly-parsed session plus a
+    byte-weighted progress figure back to the picker over its socket the
+    moment it's ready, so the list updates incrementally (and the border
+    label counts up) instead of everything landing at once at the end.
+
+    A separate process rather than a thread of the picker on purpose: the
+    picker ends in os.execvp (exec_resume), which would take a reindex
+    thread and its ProcessPoolExecutor down with it mid-write, and this
+    child's other job - warming the cache for the NEXT prefix+C-c - is
+    exactly the one that has to survive the user picking something fast.
+    Niced so its 12 workers never compete with the picker's own keystroke
+    handling for the CPU."""
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    sock = socket.socket(socket.AF_UNIX)
+    try:
+        sock.connect(server_sock)
+        sock.sendall(b"feed\0")  # mode word, see PickerServer's handler
+    except OSError:
+        sock.close()
+        sock = None  # picker already gone - still worth finishing the cache
+
+    pending = {}
+    last_flush = [0.0]
+
+    def progress(path, indexed, done_bytes, total_bytes):
+        nonlocal sock
+        pending[path] = indexed
+        # batch the per-file sends: the picker throttles its own redraws
+        # anyway (see PickerState.refresher), so one frame every ~0.3s is
+        # as fine-grained as anything downstream can show
+        now = time.time()
+        if now - last_flush[0] < 0.3 and done_bytes < total_bytes:
+            return
+        last_flush[0] = now
+        sock = _send_frame(sock, {"type": "sessions", "entries": dict(pending),
+                                  "done": done_bytes, "total": total_bytes})
+        pending.clear()
+
+    snapshot = build_snapshot(progress=progress)
+    # the final frame carries the complete session-id set so the picker
+    # can also drop sessions whose transcript vanished since its own fast
+    # snapshot (a deleted/moved jsonl) - the incremental frames above only
+    # ever add or replace
+    sock = _send_frame(sock, {"type": "done", "session_ids": list(snapshot["sessions"])})
+    if sock:
+        sock.close()
 
 
 # --- live-session detection -------------------------------------------------
@@ -804,8 +923,9 @@ def row(sid, s, live_map, targets, qset=frozenset(), rxs=()):
     return f"{sid}\t{label}"
 
 
-# --- search / preview subcommands (invoked by fzf's reload on every keystroke,
-# same shape as window-search.py's --search/--preview) --------------------
+# --- search / preview / complete (served over the picker's socket on every
+# keystroke - see PickerServer; same shape as window-search.py's
+# --search/--preview, minus the per-keystroke process) --------------------
 
 def session_filter_text(sid, s, live_map, targets):
     """FILTER_FIELDS text (lowercased) for one session, computed once per
@@ -868,9 +988,14 @@ def field_term_score(fields, subtoks, s, vocabs, dfs, avgdls, n):
     return score
 
 
-def search(snapshot_path, query):
-    with open(snapshot_path) as f:
-        snap = json.load(f)
+def search(snap, query):
+    """One ranked result list for `query` against the in-memory snapshot,
+    as the tab-delimited lines fzf displays (see row()). Called by the
+    picker's socket server on every keystroke - the snapshot lives in
+    drive()'s process for the whole picker session, never re-read from
+    disk per keystroke (a previous version did exactly that: every
+    keystroke was a fresh python process json.load-ing a 16MB file, 0.34s
+    before a single row could print)."""
     sessions, df, n, avgdl = snap["sessions"], snap["df"], snap["n"], snap["avgdl"]
     live_map = get_live_sessions()  # fetched fresh every keystroke - real
     # process state, not the once-per-popup snapshot, so status updates
@@ -881,9 +1006,7 @@ def search(snapshot_path, query):
 
     if not any(q):
         ranked = sorted(sessions.items(), key=lambda kv: -kv[1]["mtime"])
-        for sid, s in ranked:
-            print(row(sid, s, live_map, targets))
-        return
+        return [row(sid, s, live_map, targets) for sid, s in ranked]
 
     vocab = snap["vocab"]
     groups = [expand_prefix(tok, vocab) for tok in q.terms]
@@ -893,6 +1016,13 @@ def search(snapshot_path, query):
     rxs = [phrase_re(p) for p in q.phrases]
     neg_rxs = [phrase_re(p) for p in q.neg_phrases]
     soft_rxs = [phrase_re(s, prefix=True) for s in q.soft]
+    hint = {rx: phrase_hint(p) for rx, p in zip(rxs, q.phrases)}
+    text_low = snap_text_low(snap) if (rxs or neg_rxs or soft_rxs) else None
+    # a phrase's document frequency is a property of the corpus, not of
+    # the session being scored - one pass per phrase here, not one per
+    # surviving session inside the loop below (which is what it was)
+    rx_df = {rx: sum(1 for t in text_low.values() if hint[rx] in t and rx.search(t))
+             for rx in rxs}
 
     # subtoks computed once per field-term here, not per session below -
     # tokenizing/lowering doesn't depend on any one session
@@ -906,10 +1036,10 @@ def search(snapshot_path, query):
     for sid, s in sessions.items():
         if neg_terms and not neg_terms.isdisjoint(s["tf"]):
             continue
-        text = "\n".join(t for _, t in s["turns"]).lower()
+        text = text_low[sid] if text_low is not None else ""
         if any(rx.search(text) for rx in neg_rxs):
             continue
-        if rxs and not all(rx.search(text) for rx in rxs):
+        if rxs and not all(hint[rx] in text and rx.search(text) for rx in rxs):
             continue
         if MATCH_MODE == "all" and not all(
                 any(s["tf"].get(t) for t in g) for g in groups):
@@ -932,9 +1062,7 @@ def search(snapshot_path, query):
         for rx in rxs:
             hits = len(rx.findall(text))
             if hits:
-                df_p = sum(1 for _, s2 in sessions.items()
-                           if rx.search("\n".join(t for _, t in s2["turns"]).lower()))
-                score += bm25_term_score(hits, df_p, dl, n, avgdl)
+                score += bm25_term_score(hits, rx_df[rx], dl, n, avgdl)
         for rx in soft_rxs:
             hits = len(rx.findall(text))
             if hits:
@@ -958,8 +1086,7 @@ def search(snapshot_path, query):
     scored.sort(key=lambda t: -t[0])
     qset = set(q.terms) | {tok for _, subtoks in field_terms for tok in subtoks}
     show_rxs = rxs + soft_rxs
-    for _, sid, s in scored:
-        print(row(sid, s, live_map, targets, qset, show_rxs))
+    return [row(sid, s, live_map, targets, qset, show_rxs) for _, sid, s in scored]
 
 
 # --- Tab completion (bound to `tab` in drive(), see query-dsl.md's "Via
@@ -997,41 +1124,26 @@ def _value_candidates(fields, fragment, snap, live_map, targets):
     return sorted(seen)
 
 
-def _pick_candidate(candidates):
-    """A unique candidate completes directly, no popup - same "narrow
-    match completes silently, ambiguous one shows a list" rule ordinary
-    shell tab-completion follows. 2+ candidates open a small nested fzf
-    (fzf's `execute(...)` action hands over the terminal to whatever it
-    runs, same as `execute(less {})` in fzf's own docs, so a real
-    interactive picker works here even though it's launched *from inside*
-    the outer fzf) - its own stdout is the chosen line, its stdin is the
-    candidate list (fzf reads the UI from /dev/tty directly, never stdin/
-    stdout, which is exactly what makes `selected=$(fzf < list)` and this
-    nested case both work)."""
-    if not candidates:
-        return None
-    if len(candidates) == 1:
-        return candidates[0]
-    try:
-        r = subprocess.run(
-            ["fzf", "--height=~40%", "--layout=reverse", "--border=rounded", "--prompt=complete> "],
-            input="\n".join(candidates), capture_output=True, text=True,
-        )
-    except FileNotFoundError:
-        return None
-    chosen = r.stdout.strip()
-    return chosen or None
-
-
-def complete_query(query, snapshot_path):
-    """Prints the query with one token completed via Tab - unchanged if
-    there's nothing to complete (a `transform-query` no-op back in fzf).
-    Only ever steers towards the `/fv/field value` via spelling (see
-    query-dsl.md's "Via paths") regardless of which stage is reached -
-    that's the one this exists to make discoverable; the older
+def complete_query(query, snap):
+    """The one Tab completion available at the end of `query`, as
+    {"query", "prefix", "suffix", "candidates"}: the completed query is
+    prefix + <chosen candidate> + suffix, or `query` unchanged if there's
+    nothing to complete (candidates empty - a `transform-query` no-op back
+    in fzf). The *choosing* happens in the client (CLIENT_SRC), not here:
+    a unique candidate completes directly, no popup - same "narrow match
+    completes silently, ambiguous one shows a list" rule ordinary shell
+    tab-completion follows - and 2+ candidates open a small nested fzf
+    there (fzf's `execute(...)` action hands over the terminal to whatever
+    it runs, same as `execute(less {})` in fzf's own docs, so a real
+    interactive picker works even though it's launched *from inside* the
+    outer fzf; the client is what's running on that terminal, this server
+    thread isn't). Only ever steers towards the `/fv/field value` via
+    spelling (see query-dsl.md's "Via paths") regardless of which stage is
+    reached - that's the one this exists to make discoverable; the older
     `/fv field:value` spelling still works when typed by hand, it just
     isn't Tab-assisted."""
     frag, prev, _ = _completion_context(query)
+    none = {"query": query, "prefix": "", "suffix": "", "candidates": []}
 
     if frag.startswith("/"):
         rest = frag[1:]
@@ -1040,26 +1152,20 @@ def complete_query(query, snapshot_path):
             name, via_frag = rest.split("/", 1)
             if name in ("fv", "filter-value") and ":" not in via_frag:
                 candidates = resolve_fields(via_frag)
-                chosen = _pick_candidate(candidates)
-                if chosen:
-                    prefix = query[: len(query) - len(via_frag)]
-                    print(f"{prefix}{chosen} ", end="")
-                    return
-            print(query, end="")
-            return
+                if candidates:
+                    return {"query": query, "prefix": query[: len(query) - len(via_frag)],
+                            "suffix": " ", "candidates": candidates}
+            return none
         # `/frag` - completing the verb itself. Only "fv"/"filter-value"
         # ever do anything in this picker (see the module docstring), so
         # those are the only two ever offered - same "a picker only
         # offers the verbs that do something for it" rule the app
         # launcher's autocomplete already follows (query-dsl.md).
         candidates = [v for v in ("fv", "filter-value") if rest.lower() in v]
-        chosen = _pick_candidate(candidates)
-        if chosen:
-            prefix = query[: len(query) - len(frag)]
-            print(f"{prefix}/{chosen}/", end="")
-            return
-        print(query, end="")
-        return
+        if candidates:
+            return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
+                    "suffix": "/", "candidates": candidates}
+        return none
 
     if prev and prev.startswith("/"):
         prest = prev[1:]
@@ -1067,33 +1173,27 @@ def complete_query(query, snapshot_path):
             pname, pfield = prest.split("/", 1)
             if pname in ("fv", "filter-value") and pfield and ":" not in pfield:
                 fields = resolve_fields(pfield)
-                if fields and os.path.exists(snapshot_path):
-                    with open(snapshot_path) as f:
-                        snap = json.load(f)
+                if fields and snap:
                     live_map = get_live_sessions()
                     targets = pane_targets() if in_tmux() else {}
                     candidates = _value_candidates(fields, frag, snap, live_map, targets)
-                    chosen = _pick_candidate(candidates)
-                    if chosen:
+                    if candidates:
                         prefix = query[: len(query) - len(frag)] if frag else query
-                        print(f"{prefix}{chosen} ", end="")
-                        return
-    print(query, end="")
+                        return {"query": query, "prefix": prefix,
+                                "suffix": " ", "candidates": candidates}
+    return none
 
 
 PREVIEW_CONTEXT_TURNS = 2  # turns of leading context kept above a jumped-to match
 
 
-def preview(session_id, query, snap_path):
-    if not snap_path or not os.path.exists(snap_path):
-        print("[snapshot unavailable]")
-        return
-    with open(snap_path) as f:
-        snap = json.load(f)
+def preview(session_id, query, snap):
+    if not snap:
+        return "[snapshot unavailable]"
     s = snap["sessions"].get(session_id)
     if not s:
-        print("[session not found in snapshot]")
-        return
+        return "[session not found in snapshot]"
+    out = []
 
     q = parse_query(query)
     qset = set(q.terms) | {tok for _, term in q.field_terms for tok in tokenize(term)}
@@ -1111,8 +1211,8 @@ def preview(session_id, query, snap_path):
         where = loc or (f"pane {live['pane_id']} (different tmux server)"
                         if live["pane_id"] else "not in tmux")
         header += f"\n\x1b[1;32m● running now\x1b[0m (pid {live['pid']}, {live['status']}, {where})"
-    print(header)
-    print("─" * 60)
+    out.append(header)
+    out.append("─" * 60)
 
     turns = s["turns"]
     match_idx = None
@@ -1129,11 +1229,12 @@ def preview(session_id, query, snap_path):
     start = 0
     if match_idx is not None and match_idx > PREVIEW_CONTEXT_TURNS:
         start = match_idx - PREVIEW_CONTEXT_TURNS
-        print(f"… {start} earlier message(s) not shown …\n")
+        out.append(f"… {start} earlier message(s) not shown …\n")
 
     for role, text in turns[start:]:
         who = "You" if role == "user" else "Claude"
-        print(f"\x1b[1m{who}:\x1b[0m {highlight(text, qset, rxs)}\n")
+        out.append(f"\x1b[1m{who}:\x1b[0m {highlight(text, qset, rxs)}\n")
+    return "\n".join(out)
 
 
 # --- jump / resume -----------------------------------------------------------
@@ -1306,10 +1407,14 @@ def _rm(path):
 
 
 def sweep_stale_snapshots():
-    """Same reasoning as window-search.py's sweep - a snapshot here holds
-    the extracted text of every conversation, so an interrupted invocation
-    (popup dismissed with Escape, second C-c SIGHUPing the first) leaking
-    it is worth cleaning up even though these run only a few MB each."""
+    """Same reasoning as window-search.py's sweep - the picker's per-pid
+    files (its own request socket, fzf's --listen socket, the Tab handoff
+    file) all sit in $XDG_RUNTIME_DIR under one pid-prefixed name each, and
+    an interrupted invocation (second C-c SIGHUPing the first, a crash)
+    leaks them; anything named for a pid that no longer exists is fair
+    game. (These used to include a 16MB snapshot json per invocation - the
+    snapshot lives in memory now - and the .txt handoff file used to be
+    missed here entirely, so a crashed picker left it behind for good.)"""
     seen = set()
     for d in (snapshot_dir(), tempfile.gettempdir()):
         if d in seen:
@@ -1321,7 +1426,7 @@ def sweep_stale_snapshots():
             continue
         for name in names:
             if not (name.startswith(SNAP_PREFIX)
-                    and name.endswith((".json", ".sock"))):
+                    and name.endswith((".json", ".sock", ".txt", ".py"))):
                 continue
             try:
                 pid = int(name[len(SNAP_PREFIX):].split("-", 1)[0])
@@ -1337,55 +1442,324 @@ def sweep_stale_snapshots():
             _rm(os.path.join(d, name))
 
 
+# --- the picker's own socket server -----------------------------------------
+#
+# fzf can only get its rows from a command it runs, and it runs that
+# command afresh on every keystroke. Before this, that command was this
+# very script (`--search <snapshot.json>`), which meant every keystroke
+# paid a fresh interpreter start plus json.load of a 16MB snapshot - 0.34s
+# before one row printed, then the same again for the preview. Now the
+# snapshot lives in drive()'s process for the life of the picker and fzf's
+# per-keystroke command is CLIENT_SRC below, written out to a per-pid
+# file next to the sockets and run as `python3 -I -S <file>` (~10ms: -I -S
+# skip site/env setup, and the file is tiny; as a `-c` string it would
+# have had to survive being nested inside fzf's own `reload(...)`
+# delimiters, which the parentheses in it wouldn't) - it forwards its argv
+# over a unix socket and copies the reply to stdout. Same three operations
+# (search / preview / complete), same output, just without re-reading
+# anything from disk per keystroke.
+#
+# The same socket has a fourth mode, "feed", that the detached reindex
+# child (reindex_and_stream) streams freshly-parsed sessions and progress
+# into - see PickerState for how those are folded into the live view.
+
+CLIENT_SRC = r"""
+import socket,sys
+s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[1])
+s.sendall("\0".join(sys.argv[2:]).encode());s.shutdown(socket.SHUT_WR)
+b=bytearray()
+while (c:=s.recv(1<<16)):b+=c
+if sys.argv[2]!="complete":sys.stdout.buffer.write(b);sys.exit()
+import json,subprocess
+r=json.loads(b);q=r["query"];c=r["candidates"]
+if len(c)==1:q=r["prefix"]+c[0]+r["suffix"]
+elif c:
+    p=subprocess.run(["fzf","--height=~40%","--layout=reverse","--border=rounded","--prompt=complete> "],input="\n".join(c),capture_output=True,text=True)
+    if p.stdout.strip():q=r["prefix"]+p.stdout.strip()+r["suffix"]
+sys.stdout.write(q)
+""".strip()
+
+
+def fzf_post(sock_path, action):
+    """POST one action string to fzf's --listen socket. http.client over
+    AF_UNIX rather than a curl subprocess: this runs from the refresher
+    thread up to a few times a second while the reindex streams in, and
+    a 10ms fork+exec per poke is the kind of cost this whole rewrite is
+    about removing. Best-effort - fzf being gone is normal."""
+    if not sock_path or not os.path.exists(sock_path):
+        return
+    conn = http.client.HTTPConnection("localhost", timeout=2)
+    try:
+        conn.sock = socket.socket(socket.AF_UNIX)
+        conn.sock.settimeout(2)
+        conn.sock.connect(sock_path)
+        conn.request("POST", "/", body=action.encode())
+        conn.getresponse().read()
+    except (OSError, http.client.HTTPException):
+        pass
+    finally:
+        conn.close()
+
+
+class PickerState:
+    """Everything the picker's threads share: the current in-memory
+    snapshot, the incrementally-merged session set the reindex child is
+    streaming into, and the throttled path from either changing to fzf
+    actually redrawing.
+
+    `snapshot` starts as None: fzf is launched before the cache has been
+    read (the whole point - the frame is up and typing works immediately),
+    and a request that arrives before the fast load has landed waits on
+    `ready` rather than answering "nothing" and leaving fzf showing 0/0
+    until the next keystroke."""
+
+    def __init__(self, fzf_sock, reload_action):
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+        self.snapshot = None
+        self.sessions = {}      # session_id -> indexed, the merge target
+        self.dirty = False      # sessions changed since snapshot was built
+        self.label = None       # border label wanted ("" clears it)
+        self.label_shown = None
+        self.fzf_sock = fzf_sock
+        self.reload_action = reload_action
+        self.wake = threading.Event()
+
+    def get(self):
+        self.ready.wait(15)
+        return self.snapshot
+
+    def replace(self, snapshot):
+        """The fast (cache-only) snapshot, from drive()'s loader thread."""
+        with self.lock:
+            self.snapshot = snapshot
+            self.sessions = dict(snapshot["sessions"])
+            self.dirty = False
+        self.ready.set()
+
+    def merge(self, entries):
+        """A batch of freshly-parsed sessions from the reindex child:
+        path -> indexed-or-None. Replaces by session_id (a session that
+        changed) or adds (one the cache had never seen); None (an
+        empty/unparseable file) contributes nothing to the view."""
+        with self.lock:
+            for indexed in entries.values():
+                if indexed:
+                    self.sessions[indexed["session_id"]] = indexed
+            self.dirty = True
+        self.wake.set()
+
+    def finish(self, session_ids):
+        """The reindex child's final word: exactly this set of sessions
+        exists on disk now - drop anything the fast snapshot had that has
+        since vanished."""
+        keep = set(session_ids)
+        with self.lock:
+            for sid in [sid for sid in self.sessions if sid not in keep]:
+                del self.sessions[sid]
+            self.dirty = True
+            self.label = ""
+        self.wake.set()
+
+    def set_label(self, text):
+        with self.lock:
+            self.label = text
+        self.wake.set()
+
+    def refresher(self):
+        """Daemon thread: turns merge()/finish()/set_label() calls into fzf
+        redraws, at most one list reload per second while frames are
+        streaming (each reload re-runs the search for the current query
+        and repaints the list - fine a few times, not fine 30 times over
+        a 2s reindex) and at most a few label updates a second. The final
+        (finish) reload is never held back: `dirty` with an empty label
+        means "done", and that one goes out at once."""
+        last_reload = 0.0
+        while True:
+            self.wake.wait(0.25)
+            self.wake.clear()
+            with self.lock:
+                label = self.label
+                done = self.dirty and self.label == ""
+                do_reload = self.dirty and (done or time.time() - last_reload >= 1.0)
+                if do_reload:
+                    sessions = dict(self.sessions)
+                    self.dirty = False
+            if do_reload:
+                snapshot = _aggregate_snapshot(sessions)
+                with self.lock:
+                    self.snapshot = snapshot
+                self.ready.set()
+                last_reload = time.time()
+                fzf_post(self.fzf_sock, self.reload_action)
+            if label is not None and label != self.label_shown:
+                self.label_shown = label
+                fzf_post(self.fzf_sock, f"change-border-label({label})")
+
+
+def _recv_exact(sock, n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return bytes(buf)
+
+
+class PickerServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def make_handler(state):
+    class Handler(socketserver.BaseRequestHandler):
+        def handle(self):
+            sock = self.request
+            # peek at the mode word: the three client modes send one
+            # NUL-separated argv and half-close; the feed mode streams
+            # length-prefixed frames until EOF, so it has to be told apart
+            # before reading "everything"
+            head = b""
+            while len(head) < 5:
+                head = sock.recv(5, socket.MSG_PEEK)
+                if not head or len(head) >= 5 or b"\0" in head:
+                    break
+                time.sleep(0.001)  # partial first segment - practically never
+            if head[:5] == b"feed\0":
+                sock.recv(5)
+                self.feed(sock)
+                return
+            data = bytearray()
+            while (chunk := sock.recv(1 << 16)):
+                data += chunk
+            parts = data.decode(errors="replace").split("\0")
+            mode, args = parts[0], parts[1:]
+            snap = state.get()
+            if mode == "search":
+                out = "\n".join(search(snap, args[0] if args else "")) + "\n" if snap else ""
+            elif mode == "preview":
+                out = preview(args[0], args[1] if len(args) > 1 else "", snap)
+            elif mode == "complete":
+                out = json.dumps(complete_query(args[0] if args else "", snap))
+            else:
+                out = ""
+            try:
+                sock.sendall(out.encode())
+            except OSError:
+                pass  # fzf killed the client (next keystroke) - expected
+
+        def feed(self, sock):
+            """One long-lived connection from reindex_and_stream: frames
+            of {"type": "sessions"|"done", ...} until EOF."""
+            while True:
+                hdr = _recv_exact(sock, 4)
+                if not hdr:
+                    return
+                (n,) = struct.unpack("!I", hdr)
+                payload = _recv_exact(sock, n)
+                if payload is None:
+                    return
+                try:
+                    msg = pickle.loads(payload)
+                except Exception:
+                    return
+                if msg.get("type") == "sessions":
+                    state.merge(msg["entries"])
+                    pct = int(100 * msg["done"] / max(1, msg["total"]))
+                    state.set_label(f" indexing {pct}% ")
+                elif msg.get("type") == "done":
+                    state.finish(msg["session_ids"])
+    return Handler
+
+
 def drive():
-    # fast/possibly-stale first: build_snapshot_fast() is cache-only (no
-    # reparsing), so this is on screen in well under a second even on a
-    # profile whose cache is completely cold - see build_snapshot_fast's
-    # docstring. If `stale`, a background pass (build_snapshot_and_notify)
-    # does the real parse and pushes a refresh through fzf's --listen
-    # socket once it lands, so the picker never blocks on it up front.
-    snapshot, stale = build_snapshot_fast()
+    # the one failure worth stopping for up front, before anything is on
+    # screen: build_snapshot_fast() would otherwise hit it on the loader
+    # thread, where die()'s sys.exit only ends that thread and fzf would
+    # sit on an empty list
+    if not glob.glob(PROJECTS_GLOB):
+        die(f"no conversation history found matching {PROJECTS_GLOB}")
     sweep_stale_snapshots()
-    fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
-                                     suffix=".json", dir=snapshot_dir())
-    atexit.register(lambda: _rm(snap_path))
+    sdir = snapshot_dir()
+    # the picker's own request socket (CLIENT_SRC connects here) and
+    # fzf's --listen socket (fzf_post pokes here): both mkstemp'd so
+    # sweep_stale_snapshots() has a name+pid to find if this invocation
+    # dies before they're removed, then the fd closed immediately - both
+    # fzf and UnixStreamServer recreate the path as an actual socket on
+    # bind (fzf's docs: "the existing file will be removed"; the server
+    # gets an explicit unlink below).
+    fd, sock_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
+                                     suffix=".sock", dir=sdir)
+    os.close(fd)
+    atexit.register(lambda: _rm(sock_path))
+    fzf_fd, fzf_sock = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-fzf-",
+                                        suffix=".sock", dir=sdir)
+    os.close(fzf_fd)
+    atexit.register(lambda: _rm(fzf_sock))
     # `tab`'s completion result lands here (see complete_query) rather
     # than being captured directly - `execute(...)` doesn't feed its own
     # stdout back into fzf, so `transform-query` reads it from this file
-    # right after (same tempfile-handoff pattern `snap_path` already
-    # uses, just for one line instead of the whole snapshot).
+    # right after.
     complete_fd, complete_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-complete-",
-                                                   suffix=".txt", dir=snapshot_dir())
+                                                   suffix=".txt", dir=sdir)
     os.close(complete_fd)
     atexit.register(lambda: _rm(complete_path))
+    client_fd, client_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-client-",
+                                              suffix=".py", dir=sdir)
+    with os.fdopen(client_fd, "w") as f:
+        f.write(CLIENT_SRC + "\n")
+    atexit.register(lambda: _rm(client_path))
     for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: sys.exit(1))
-    with os.fdopen(fd, "w") as f:
-        json.dump(snapshot, f)
 
-    # `stale` (see build_snapshot_fast) means the view just written to
-    # snap_path is missing or out of date for at least one session - kick
-    # off the real build_snapshot() in the background and let it push a
-    # refresh through fzf's own --listen socket once it lands, rather than
-    # block here the way drive() used to. sock_path follows snap_path's own
-    # mkstemp-then-let-something-else-own-the-inode pattern: create it so
-    # sweep_stale_snapshots() has a name+pid to find if this invocation
-    # dies before fzf claims (and later removes) it, then close our fd
-    # immediately - fzf recreates the path as an actual socket on --listen
-    # startup (its docs: "the existing file will be removed").
-    sock_path = None
-    if stale:
-        sock_fd, sock_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
-                                               suffix=".sock", dir=snapshot_dir())
-        os.close(sock_fd)
-        subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__),
-             "--reindex-and-notify", snap_path, sock_path],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )  # not waited on - it outlives this invocation on purpose, see
-        # build_snapshot_and_notify's docstring; leaving it running after
-        # fzf exits is a feature, not a leak, since it's what warms the
-        # cache for the *next* prefix+C-c
+    client = shlex.join([sys.executable, "-I", "-S", client_path, sock_path])
+    search_cmd = f"{client} search {{q}}"
+    preview_cmd = f"{client} preview {{1}} {{q}}"
+    complete_cmd = f"{client} complete {{q}} > {shlex.quote(complete_path)}"
+    # the reload action re-sends {q} (fzf substitutes it from the CURRENT
+    # query box, confirmed directly: an action posted to --listen still
+    # gets {q}/{n}-style placeholders resolved against live state, not
+    # just ones bound with --bind) so a query the user already started
+    # typing survives every refresh instead of being reset to empty.
+    state = PickerState(fzf_sock, f"reload({search_cmd})")
+
+    _rm(sock_path)
+    server = PickerServer(sock_path, make_handler(state))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=state.refresher, daemon=True).start()
+
+    def load():
+        # the fast (cache-only) snapshot - see build_snapshot_fast. Off the
+        # main thread so fzf is already on screen, drawn and accepting
+        # keystrokes, while this runs; its first `start:reload` request
+        # simply waits on state.ready (PickerState.get) for the ~0.1s this
+        # takes and then fills the list.
+        try:
+            snapshot, stale = build_snapshot_fast()
+        except Exception as e:  # never leave fzf waiting on `ready`
+            _dbg(f"fast load failed: {e!r}")
+            state.replace(_aggregate_snapshot({}))
+            state.set_label(f" cache load failed: {type(e).__name__} ")
+            stale = True
+        else:
+            state.replace(snapshot)
+        if stale:
+            # `stale` means the view just served is missing or out of date
+            # for at least one session - kick off the real build_snapshot()
+            # in a detached child (see reindex_and_stream) that streams
+            # each session back over sock_path as it's parsed
+            state.set_label(" indexing 0% ")
+            subprocess.Popen(
+                [sys.executable, os.path.abspath(__file__),
+                 "--reindex-and-notify", sock_path],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )  # not waited on - it outlives this invocation on purpose,
+            # see reindex_and_stream's docstring; leaving it running after
+            # fzf exits is a feature, not a leak, since it's what warms
+            # the cache for the *next* prefix+C-c
+
+    threading.Thread(target=load, daemon=True).start()
 
     # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
     # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
@@ -1395,13 +1769,6 @@ def drive():
     header = (f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  '
               f'{"MSGS":>{MSGS_WIDTH}}  TITLE')
 
-    py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
-    self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
-    preview_cmd = f"{py} --preview {{1}} --query={{q}} --snapshot={shlex.quote(snap_path)}"
-    complete_cmd = (
-        f"{py} --complete --query={{q}} --snapshot={shlex.quote(snap_path)} "
-        f"> {shlex.quote(complete_path)}"
-    )
     resize_on_result = (
         # list gets just enough rows for its matches (+4: the header row,
         # the prompt line, the match-count info line, one extra - $FZF_LINES
@@ -1429,13 +1796,17 @@ def drive():
         # a visually inset look rather than filling every last cell.
         "fzf", "--ansi", "--disabled", "--layout=reverse",
         "--border=rounded", "--margin=2,4",
+        # the border label is the "indexing N%" progress readout while
+        # the reindex child streams (see PickerState.refresher) - bottom
+        # edge so it never competes with the column header at the top
+        "--border-label-pos=-3:bottom",
         "--delimiter", "\t", "--with-nth", "2..",
         "--prompt", "claude history> ",
         "--header", header,
         "--preview", preview_cmd,
         "--preview-window", "down,50%,border-top,wrap",
-        "--bind", f"start:reload:{self_cmd}",
-        "--bind", f"change:reload:{self_cmd}",
+        "--bind", f"start:reload:{search_cmd}",
+        "--bind", f"change:reload:{search_cmd}",
         "--bind", f"result:transform:{resize_on_result}",
         # `result` alone only re-runs this on a filtering change - a
         # terminal resize while sitting on an unchanged query never fired
@@ -1450,33 +1821,31 @@ def drive():
         # `execute` hands the terminal over to complete_cmd (same as
         # fzf's own `execute(less {})` example) - a genuine nested
         # interactive picker when there's more than one candidate, see
-        # _pick_candidate - then `transform-query` loads whatever it
-        # wrote back into the search box, which also re-triggers `change`
-        # (a query change always does) so results refresh against the
-        # completed query.
+        # complete_query/CLIENT_SRC - then `transform-query` loads
+        # whatever it wrote back into the search box, which also
+        # re-triggers `change` (a query change always does) so results
+        # refresh against the completed query.
         "--bind", f"tab:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
-    ] + ([f"--listen={sock_path}"] if sock_path else [])
+        f"--listen={fzf_sock}",
+    ]
     try:
         result = subprocess.run(fzf_argv, capture_output=True, text=True)
-        # re-read snap_path here, inside the try (before finally removes
-        # it) rather than trust the `snapshot` object built before fzf
-        # ran: when `stale` triggered a background refresh, the session
-        # actually selected may only exist in the version
-        # build_snapshot_and_notify wrote later, not the fast/stale one
-        # this function started with.
-        with open(snap_path) as f:
-            current_sessions = json.load(f)["sessions"]
     finally:
-        _rm(snap_path)
+        server.shutdown()
+        server.server_close()
+        _rm(sock_path)
+        _rm(fzf_sock)
         _rm(complete_path)
-        if sock_path:
-            _rm(sock_path)
+        _rm(client_path)
 
     selected = result.stdout.strip()
     if not selected:
         return
     session_id = selected.split("\t", 1)[0]
-    s = current_sessions.get(session_id) or snapshot["sessions"].get(session_id)
+    # the latest view, not the one fzf started with: the session actually
+    # selected may only exist in what the reindex child streamed in later
+    with state.lock:
+        s = state.sessions.get(session_id)
     if not s:
         die(f"selected session {session_id} vanished from the snapshot")
     resolve(session_id, s["cwd"])
@@ -1484,22 +1853,12 @@ def drive():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--search", metavar="SNAPSHOT")
-    parser.add_argument("--preview", metavar="SESSION_ID")
-    parser.add_argument("--complete", action="store_true")
-    parser.add_argument("--query", default="")
-    parser.add_argument("--snapshot", metavar="SNAPSHOT")
-    parser.add_argument("--reindex-and-notify", nargs=2, metavar=("SNAPSHOT", "SOCKET"))
+    parser.add_argument("--reindex-and-notify", metavar="SOCKET",
+                        help="internal: reparse changed transcripts, stream them to the picker at SOCKET")
     args = parser.parse_args()
 
-    if args.preview:
-        preview(args.preview, args.query, args.snapshot)
-    elif args.search:
-        search(args.search, args.query)
-    elif args.complete:
-        complete_query(args.query, args.snapshot)
-    elif args.reindex_and_notify:
-        build_snapshot_and_notify(*args.reindex_and_notify)
+    if args.reindex_and_notify:
+        reindex_and_stream(args.reindex_and_notify)
     else:
         drive()
 
