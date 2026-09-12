@@ -12,6 +12,17 @@ hl.env("AQ_DRM_DEVICES",
     "/home/user1/.config/hypr/displaylink-DRI-card")
 hl.env("QT_QPA_PLATFORMTHEME", "kde")
 
+-- Quickshell's screencopy buffer manager (used by shotty, the screenshot
+-- annotation tool) has a dmabuf/EGL import path structurally similar to the
+-- class of bug that crashes Hyprland on cross-GPU dmabuf import on this
+-- NVIDIA+Intel hybrid machine (mesa 26.2.2, pinned to 26.2.1 -- see
+-- ~/.claude/projects/-home-user1/memory/mesa_26_2_2_hyprland_crash_pin.md).
+-- Forces plain wl_shm CPU buffers instead, matching winswitch's own
+-- CPU-readback-only discipline. Confirmed (2026-09-12) nothing else in this
+-- config uses the screencopy buffer manager, so this is a zero-regression
+-- toggle. Must be set before `qs -n -d` launches -- see hyprland.lua.
+hl.env("QS_DISABLE_DMABUF", "1")
+
 -- A real Plasma session sources ~/.config/plasma-localerc (System Settings >
 -- Formats) into the session environment at login. Hyprland never does, so
 -- KDE apps like Dolphin fall back to whatever LC_TIME the compositor started
@@ -73,6 +84,7 @@ hl.permission({ binary = "/usr/(bin|local/bin)/wtype", type = "keyboard", mode =
 -- winswitch (~/.config/hypr/winswitch): grid alt-tab switcher, captures live
 -- window thumbnails via hyprland-toplevel-export-v1.
 hl.permission({ binary = "/home/user1/.config/hypr/winswitch/target/release/winswitch", type = "screencopy", mode = "allow" })
+hl.permission({ binary = "/usr/(bin|local/bin)/quickshell", type = "screencopy", mode = "allow" })
 
 -- claude-usage's thumb-capture (~/.config/claude-usage/thumb-capture): the
 -- claude-usage bar panel's hover-thumbnail helper, same protocol as
