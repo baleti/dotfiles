@@ -134,15 +134,16 @@ PanelWindow {
             property var paintSnapshot: [
                 ShottyState.phase, ShottyState.selX1, ShottyState.selY1, ShottyState.selX2, ShottyState.selY2,
                 ShottyState.drawX1, ShottyState.drawY1, ShottyState.drawX2, ShottyState.drawY2,
-                ShottyState.shapes.length, JSON.stringify(ShottyState.shapes), ShottyState.currentColor
+                ShottyState.shapes.length, JSON.stringify(ShottyState.shapes),
+                ShottyState.currentColor, ShottyState.currentWidth
             ]
             onPaintSnapshotChanged: requestPaint()
             onWidthChanged: requestPaint()
             onHeightChanged: requestPaint()
 
-            function drawShape(ctx, tool, color, x1, y1, x2, y2) {
+            function drawShape(ctx, tool, color, lineWidth, x1, y1, x2, y2) {
                 ctx.strokeStyle = color;
-                ctx.lineWidth = 3;
+                ctx.lineWidth = lineWidth;
                 ctx.lineCap = "round";
                 if (tool === "rect") {
                     ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
@@ -186,14 +187,14 @@ PanelWindow {
 
                 for (const shape of ShottyState.shapes) {
                     drawShape(ctx,
-                        shape.tool, shape.color,
+                        shape.tool, shape.color, shape.width || 3,
                         root.toLocalX(shape.x1), root.toLocalY(shape.y1),
                         root.toLocalX(shape.x2), root.toLocalY(shape.y2));
                 }
 
                 if (ShottyState.phase === "drawing") {
                     drawShape(ctx,
-                        ShottyState.currentTool, ShottyState.currentColor,
+                        ShottyState.currentTool, ShottyState.currentColor, ShottyState.currentWidth,
                         root.toLocalX(ShottyState.drawX1), root.toLocalY(ShottyState.drawY1),
                         root.toLocalX(ShottyState.drawX2), root.toLocalY(ShottyState.drawY2));
                 }
@@ -220,12 +221,12 @@ PanelWindow {
         }
     }
 
-    // Keyboard-only: no clickable toolbar. A small translucent shortcut
-    // reference is shown instead, fixed to the bottom-right corner of
-    // whichever panel contains the selection's bottom-right corner (an
-    // arbitrary but always well-defined anchor point) -- not tracking the
-    // selection itself, just a quiet reminder of the available keys.
-    readonly property bool _isHintAnchor: {
+    // Small toolbar (icon + shortcut-letter caption per button, so it
+    // doubles as the shortcut reference) in whichever panel contains the
+    // selection's bottom-right corner (an arbitrary but always well-defined
+    // anchor point) -- fixed to that screen's bottom-right corner, not
+    // tracking the selection.
+    readonly property bool _isToolbarAnchor: {
         const s = root.screen;
         const px = ShottyState.selLeft + ShottyState.selWidth;
         const py = ShottyState.selTop + ShottyState.selHeight;
@@ -233,22 +234,99 @@ PanelWindow {
     }
 
     Rectangle {
-        id: hint
-        visible: root._isHintAnchor && (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
+        id: toolbar
+        visible: root._isToolbarAnchor && (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: 14
-        width: hintText.implicitWidth + 16
-        height: hintText.implicitHeight + 10
-        radius: 6
-        color: "#00000090"
+        width: row.implicitWidth + 16
+        height: row.implicitHeight + 12
+        radius: 8
+        color: "#1a1a1ad0"
+        border.color: "#3a3a3a"
 
-        Text {
-            id: hintText
-            anchors.centerIn: parent
-            font.pixelSize: 11
-            color: "#dddddd"
-            text: `A arrow  R rect  L line  1-${ShottyState.palette.length} color  Ctrl+Z/Y undo/redo  ↵ copy  Esc cancel`
+        Row {
+            id: row
+            x: 8
+            y: 6
+            spacing: 6
+
+            ToolButton {
+                icon: "↗"; letter: "A"; active: ShottyState.currentTool === "arrow"
+                onActivated: ShottyState.pickTool("arrow")
+            }
+            ToolButton {
+                icon: "▭"; letter: "R"; active: ShottyState.currentTool === "rect"
+                onActivated: ShottyState.pickTool("rect")
+            }
+            ToolButton {
+                icon: "╱"; letter: "L"; active: ShottyState.currentTool === "line"
+                onActivated: ShottyState.pickTool("line")
+            }
+
+            Rectangle { width: 1; height: 30; anchors.verticalCenter: parent.verticalCenter; color: "#3a3a3a" }
+
+            Repeater {
+                model: ShottyState.palette
+                Rectangle {
+                    required property string modelData
+                    width: 20; height: 20; radius: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: modelData
+                    border.width: ShottyState.currentColor === modelData ? 2 : 0
+                    border.color: "white"
+                    MouseArea { anchors.fill: parent; onClicked: ShottyState.pickColor(parent.modelData) }
+                }
+            }
+
+            Rectangle { width: 1; height: 30; anchors.verticalCenter: parent.verticalCenter; color: "#3a3a3a" }
+
+            // Stroke-width slider, hand-rolled (no QtQuick.Controls anywhere
+            // else in this shell -- see ClaudeUsageExpanded.qml's own
+            // scrollbar comment).
+            Item {
+                width: 70
+                height: 34
+                anchors.verticalCenter: parent.verticalCenter
+
+                Rectangle {
+                    id: track
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - 10
+                    x: 5
+                    height: 4
+                    radius: 2
+                    color: "#555555"
+                }
+                Rectangle {
+                    id: handle
+                    readonly property real minW: 1
+                    readonly property real maxW: 12
+                    readonly property real frac: (ShottyState.currentWidth - minW) / (maxW - minW)
+                    x: track.x + frac * (track.width - width)
+                    anchors.verticalCenter: track.verticalCenter
+                    width: 12; height: 12; radius: 6
+                    color: "#dddddd"
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onPressed: mouse => {
+                        const f = Math.max(0, Math.min(1, (mouse.x - track.x) / track.width));
+                        ShottyState.currentWidth = Math.round(handle.minW + f * (handle.maxW - handle.minW));
+                    }
+                    onPositionChanged: mouse => {
+                        if (!pressed) return;
+                        const f = Math.max(0, Math.min(1, (mouse.x - track.x) / track.width));
+                        ShottyState.currentWidth = Math.round(handle.minW + f * (handle.maxW - handle.minW));
+                    }
+                }
+            }
+
+            Rectangle { width: 1; height: 30; anchors.verticalCenter: parent.verticalCenter; color: "#3a3a3a" }
+
+            ToolButton { icon: "📋"; letter: "^C"; onActivated: ShottyState.commit() }
+            ToolButton { icon: "💾"; letter: "^S"; onActivated: ShottyState.requestSaveDialog() }
+            ToolButton { icon: "✕"; letter: "Esc"; onActivated: ShottyState.close() }
         }
     }
 
@@ -267,6 +345,10 @@ PanelWindow {
                 if (ShottyState.phase === "toolbar") ShottyState.undo();
             } else if (event.key === Qt.Key_Y && (event.modifiers & Qt.ControlModifier)) {
                 if (ShottyState.phase === "toolbar") ShottyState.redo();
+            } else if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
+                if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") ShottyState.commit();
+            } else if (event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier)) {
+                if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") ShottyState.requestSaveDialog();
             } else if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") {
                 // Tool shortcuts (Flameshot convention): a=arrow, r=rectangle,
                 // l=line. Digits 1-N pick a palette color (satty convention) --

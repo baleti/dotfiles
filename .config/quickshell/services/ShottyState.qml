@@ -3,6 +3,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
+import "../theme"
 
 // Screenshot-annotation tool ("shotty") -- see the approved plan at
 // ~/.claude2/plans/rippling-wiggling-wilkinson.md. Panels are dumb views
@@ -35,12 +36,17 @@ QtObject {
     readonly property real selHeight: Math.abs(selY2 - selY1)
 
     // ---- annotation tools ----
-    // palette[0] is a toned/muted red (not neon #ff5555) -- the default
-    // annotation color per the user's request.
-    readonly property var palette: ["#c0392b", "#50fa7b", "#8be9fd", "#f1fa8c", "#ffffff"]
+    // palette[0] is a fixed toned/muted red (not neon #ff5555, and not
+    // wallpaper-derived -- annotation red needs to stay visible regardless
+    // of theme). The rest come from Theme.seriesPalette, the same
+    // wallpaper-seeded Material You colors gen-theme.py already generates
+    // for the bar's graphs -- so this palette re-themes itself whenever the
+    // wallpaper does, same as everything else in this shell.
+    readonly property var palette: ["#c0392b"].concat(Theme.seriesPalette.slice(0, 4))
     property string currentTool: "arrow" // arrow | line | rect
     property string currentColor: root.palette[0]
-    // Committed shapes: [{tool, color, x1,y1,x2,y2}], global coords.
+    property real currentWidth: 3 // stroke width in px, 1..12 (see the toolbar slider)
+    // Committed shapes: [{tool, color, width, x1,y1,x2,y2}], global coords.
     property var shapes: []
     // Undo/redo stack (Ctrl+Z / Ctrl+Y), shapes only -- not the selection
     // itself. Drawing a new shape after an undo drops the redo stack, same
@@ -144,6 +150,11 @@ QtObject {
 
     function pickTool(tool: string): void {
         root.currentTool = tool;
+        // Zero out the leftover drag coords from the last shape -- without
+        // this, flipping to "drawing" briefly repaints a ghost of whatever
+        // was last drawn (onPaint renders drawX1..drawY2 the instant phase
+        // becomes "drawing", before beginDraw() ever overwrites them).
+        root.drawX1 = root.drawY1 = root.drawX2 = root.drawY2 = 0;
         root.phase = "drawing";
     }
     function pickColor(color: string): void {
@@ -165,7 +176,7 @@ QtObject {
     function endDraw(): void {
         if (Math.abs(root.drawX2 - root.drawX1) >= 2 || Math.abs(root.drawY2 - root.drawY1) >= 2) {
             const next = root.shapes.slice();
-            next.push({ tool: root.currentTool, color: root.currentColor, x1: root.drawX1, y1: root.drawY1, x2: root.drawX2, y2: root.drawY2 });
+            next.push({ tool: root.currentTool, color: root.currentColor, width: root.currentWidth, x1: root.drawX1, y1: root.drawY1, x2: root.drawX2, y2: root.drawY2 });
             root.shapes = next;
             root._redoStack = []; // a new shape invalidates any redo history
         }
@@ -192,8 +203,26 @@ QtObject {
         root.shapes = shapes;
     }
 
-    // ---- commit ----
+    // ---- commit (copy to clipboard) / save-as (write to a chosen file) ----
+    property string _commitMode: "clipboard" // "clipboard" | "file"
+    property string _commitPath: ""
+
     function commit(): void {
+        root._commitMode = "clipboard";
+        root._beginCommit();
+    }
+
+    // fileUrl: a QML file:// URL string, as produced by FileDialog's
+    // selectedFile -- the actual dialog lives in shell.qml (it needs a
+    // window/Item context this QtObject singleton doesn't have) and calls
+    // this once the user picks a destination.
+    function saveToFile(fileUrl: string): void {
+        root._commitMode = "file";
+        root._commitPath = fileUrl.replace(/^file:\/\//, "");
+        root._beginCommit();
+    }
+
+    function _beginCommit(): void {
         root._pieces = {};
         root._expectedNames = Quickshell.screens
             .filter(s => s.x < root.selLeft + root.selWidth && s.x + s.width > root.selLeft &&
@@ -204,6 +233,21 @@ QtObject {
             return;
         }
         root.phase = "compositing";
+    }
+
+    // The actual FileDialog lives in shell.qml (needs a window context this
+    // singleton doesn't have); Ctrl+S / the toolbar's save button just ask
+    // for it to open, pre-filled with defaultSavePath().
+    signal requestSaveDialog()
+
+    // Default location/name for the save-as dialog -- same convention
+    // hyprshot already used (XDG_PICTURES_DIR, falling back to $HOME).
+    function defaultSavePath(): string {
+        const dir = Quickshell.env("XDG_PICTURES_DIR") || Quickshell.env("HOME");
+        const d = new Date();
+        const pad = n => String(n).padStart(2, "0");
+        const name = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}_shotty.png`;
+        return `${dir}/${name}`;
     }
 
     // Called by each intersecting Shotty.qml panel once its own full-panel
@@ -219,7 +263,10 @@ QtObject {
 
     function _runComposite(): void {
         const dir = `${Quickshell.env("XDG_RUNTIME_DIR")}/shotty`;
-        const outPath = `${dir}/shot-${Date.now()}.png`;
+        // Clipboard mode composites to a throwaway tmpfs file, then wl-copy
+        // reads it. Save-as mode composites directly to the user's chosen
+        // path -- no intermediate file at all.
+        const outPath = root._commitMode === "file" ? root._commitPath : `${dir}/shot-${Date.now()}.png`;
         const w = Math.round(root.selWidth);
         const h = Math.round(root.selHeight);
 
@@ -239,7 +286,10 @@ QtObject {
             const pageY = Math.round(Math.max(p.gy, root.selTop) - root.selTop);
             cmd += `\\( '${p.path}' -crop ${cropW}x${cropH}+${cropX}+${cropY} +repage -page +${pageX}+${pageY} \\) `;
         }
-        cmd += `-layers merge +repage '${outPath}' && wl-copy --type image/png < '${outPath}'`;
+        cmd += `-layers merge +repage '${outPath}'`;
+        if (root._commitMode === "clipboard") {
+            cmd += ` && wl-copy --type image/png < '${outPath}'`;
+        }
 
         root._compositeProc.command = ["bash", "-c", cmd];
         root._compositeProc.running = true;
@@ -248,7 +298,11 @@ QtObject {
     property Process _compositeProc: Process {
         onExited: (exitCode, exitStatus) => {
             if (exitCode !== 0) {
-                console.log(`shotty: composite/copy failed, exit ${exitCode}`);
+                console.log(`shotty: composite/${root._commitMode === "file" ? "save" : "copy"} failed, exit ${exitCode}`);
+            } else if (root._commitMode === "file") {
+                console.log(`shotty: saved to ${root._commitPath}`);
+                root._notifyProc.command = ["notify-send", "-a", "shotty", "Screenshot saved", root._commitPath];
+                root._notifyProc.running = true;
             } else {
                 console.log("shotty: committed to clipboard");
                 root._notifyProc.command = ["notify-send", "-a", "shotty", "Screenshot copied", "Copied to clipboard."];
