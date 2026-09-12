@@ -86,11 +86,17 @@ QtObject {
         return v === null ? null : { verb: v, via: null };
     }
 
-    // query.rs::is_verb_prefix -- `s` (no leading "/") is a non-empty
-    // prefix of some verb form, so a "/s..." token still on its way to a
-    // verb stays inert mid-typing rather than being searched literally.
+    // query.rs::is_verb_prefix -- `s` (no leading "/") is a prefix of some
+    // verb form, so a "/s..." token still on its way to a verb stays
+    // inert mid-typing rather than being searched literally. No separate
+    // empty-string guard: every verb form trivially "starts with" ""
+    // already, so a bare "/" (s === "") is correctly a prefix of all of
+    // them too - excluding it here would make the very first keystroke of
+    // any command fall through as literal text instead of staying inert
+    // (reported 2026-09-13 against the sibling winswitch implementation -
+    // typing "/" alone was clearing the whole result set).
     function isVerbPrefix(s) {
-        return s.length > 0 && root.verbForms.some(f => f.indexOf(s) === 0);
+        return root.verbForms.some(f => f.indexOf(s) === 0);
     }
 
     // query.rs::starts_command -- true for a real verb token OR a "/frag"

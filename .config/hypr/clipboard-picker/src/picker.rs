@@ -77,10 +77,16 @@ fn is_filter_value_verb(rest: &str) -> bool {
     rest == "fv" || rest == "filter-value"
 }
 
-/// A non-empty prefix of some verb form - a `/s...` token still on its way
-/// to being a verb, kept inert rather than searched for literally.
+/// A prefix of some verb form - a `/s...` token still on its way to being
+/// a verb, kept inert rather than searched for literally. No separate
+/// empty-string guard: every verb form trivially starts with "" already,
+/// so a bare "/" (s == "") is correctly a prefix of all of them too -
+/// excluding it would make the very first keystroke of any command fall
+/// through as literal phrase text instead of staying inert (reported
+/// 2026-09-13 against the sibling winswitch implementation - typing "/"
+/// alone was clearing the whole list).
 fn is_verb_prefix(s: &str) -> bool {
-    !s.is_empty() && VERB_FORMS.iter().any(|v| v.starts_with(s))
+    VERB_FORMS.iter().any(|v| v.starts_with(s))
 }
 
 fn is_verb(rest: &str) -> bool {
@@ -143,6 +149,18 @@ struct State {
     suggestion_idx: RefCell<usize>,
     suggestion_start: RefCell<usize>,
     suggestion_kind: RefCell<Option<SuggestionKind>>,
+    /// Ctrl+Space AND-narrowing (query-dsl.md's "Verb-stage depth" /
+    /// "Ctrl+Space AND-narrows..."): true while a Verb-stage popup is being
+    /// narrowed by more than one space-separated fragment; `verb_multi_start`
+    /// freezes the byte offset of that completion's opening `/`. See
+    /// `compute_candidates` and the Ctrl+Space key handler in `run`.
+    verb_multi: RefCell<bool>,
+    verb_multi_start: RefCell<usize>,
+    /// One dim label per already-created row (index-aligned with `entries`,
+    /// same creation order - see `make_row`), showing whatever field the
+    /// query is currently `/fv field:value`-scoped to (query-dsl.md's
+    /// "Auto-shown filter fields"). Kept live by `update_extra_labels`.
+    extra_labels: RefCell<Vec<gtk::Label>>,
     /// Valid/invalid colors for the search entry's inline command-token
     /// coloring (see `load_command_validity_colors`), read once at
     /// startup.
@@ -291,6 +309,23 @@ fn parse_query(input: &str, field_names: &[&'static str]) -> Query {
     Query { field_terms, text: words.join(" ").to_lowercase() }
 }
 
+/// Every field name currently `/fv field:value`-scoped by `query`, deduped
+/// in first-referenced order - used to auto-show a match's own value (see
+/// `update_extra_labels` and query-dsl.md's "Auto-shown filter fields").
+/// A bare/free term contributes nothing (it searches the free-text phrase,
+/// not one field).
+fn referenced_fields(query: &Query) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for term in &query.field_terms {
+        for f in &term.fields {
+            if !out.contains(f) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
 /// Which completion stage a query is in.
 enum Suggest {
     Verb { start: usize, frag: String },
@@ -369,8 +404,24 @@ fn completion_context(query: &str, field_names: &[&'static str]) -> Option<Sugge
     }
 }
 
-fn verb_suggestions(frag: &str) -> Vec<String> {
-    ["fv", "ft", "at", "rt", "s", "rv"].iter().filter(|v| substr(frag, v)).map(|v| v.to_string()).collect()
+/// The full Verb-stage vocabulary: the six bare verb shorts (`ft`/`at`/`rt`/
+/// `s`/`rv` recognised-but-inert here, kept so they still complete rather
+/// than falling into free text - see this file's own header) plus `/fv`
+/// crossed with every field name (`fv/type`, `fv/date`, ...) - `/fv` is the
+/// only verb here a deep candidate turns into a *working* command, so
+/// that's the only one crossed (contrast winswitch's `verbStageUniverse`,
+/// which crosses every path-taking verb since all of them act there). See
+/// query-dsl.md's "Verb-stage depth".
+fn verb_stage_universe(field_names: &[&'static str]) -> Vec<String> {
+    let mut out: Vec<String> = ["fv", "ft", "at", "rt", "s", "rv"].iter().map(|v| v.to_string()).collect();
+    for f in field_names {
+        out.push(format!("fv/{f}"));
+    }
+    out
+}
+
+fn verb_suggestions(frag: &str, field_names: &[&'static str]) -> Vec<String> {
+    verb_stage_universe(field_names).into_iter().filter(|v| substr(frag, v)).collect()
 }
 
 /// Every configured field name, in order, whose name contains `fragment`
@@ -612,21 +663,43 @@ fn make_row(
 ) -> gtk::ListBoxRow {
     let entry = &state.entries[idx];
     let row = gtk::ListBoxRow::new();
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 2);
     if entry.thumb {
         // Placeholder keeps the row at its final height so the list doesn't
         // jump around as thumbnails stream in.
         let img = gtk::Image::new();
         img.set_size_request(-1, thumb_height);
         img.set_halign(gtk::Align::Start);
-        row.add(&img);
+        vbox.add(&img);
         pending.borrow_mut().push((img, entry.id.clone()));
     } else {
         let label = gtk::Label::new(Some(&entry.preview));
         label.set_xalign(0.0);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         label.set_max_width_chars(1); // let ellipsize kick in early
-        row.add(&label);
+        vbox.add(&label);
     }
+    // Auto-shown filter field (query-dsl.md's "Auto-shown filter fields"):
+    // an extra dim line under the preview/thumbnail for whatever field the
+    // query is currently `/fv field:value`-scoped to - this picker renders
+    // no columns generally, but seeing the matched value still matters once
+    // more than one candidate is left. Seeded from the query as it stands
+    // right now (rows stream in via `glib::idle_add_local` after startup,
+    // so a row can be created mid-typing); kept live by
+    // `update_extra_labels` afterwards. `set_no_show_all` so the row's own
+    // unconditional `show_all()` below can't force it visible when there's
+    // nothing to show yet (same reason `suggestions_list` needs it - see
+    // `populate_suggestions`'s doc comment).
+    let extra = gtk::Label::new(None);
+    extra.set_xalign(0.0);
+    extra.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    extra.set_max_width_chars(1);
+    extra.set_no_show_all(true);
+    extra.set_visible(false);
+    set_extra_label_text(&extra, entry, &referenced_fields(&state.query.borrow()));
+    vbox.add(&extra);
+    state.extra_labels.borrow_mut().push(extra);
+    row.add(&vbox);
     row.show_all(); // rows added after the window is mapped need this
     // Mouse hover moves the actual selection (not just a separate CSS
     // `:hover` look) so there's exactly one highlighted row, wherever the
@@ -678,6 +751,35 @@ fn hide_suggestions(list: &gtk::ListBox, state: &Rc<State>) {
     list.hide();
     state.suggestions.borrow_mut().clear();
     *state.suggestion_kind.borrow_mut() = None;
+    *state.verb_multi.borrow_mut() = false;
+}
+
+/// Sets (or hides, if empty) one row's auto-shown-field label - see
+/// `State::extra_labels`. Dim styling matches `dim_label`, just applied to
+/// an existing, reused `Label` instead of building a fresh one each time.
+fn set_extra_label_text(label: &gtk::Label, entry: &Entry, fields: &[&'static str]) {
+    let values: Vec<&str> = fields.iter().filter_map(|f| field_value(entry, f)).filter(|v| !v.is_empty()).collect();
+    if values.is_empty() {
+        label.set_visible(false);
+        return;
+    }
+    label.set_markup(&format!(
+        "<span alpha='55%'>{}</span>",
+        gtk::glib::markup_escape_text(&values.join("  ·  "))
+    ));
+    label.set_visible(true);
+}
+
+/// Refreshes every already-created row's auto-shown-field label from
+/// `state.query`'s current `/fv field:value` scoping - called whenever the
+/// query changes. See query-dsl.md's "Auto-shown filter fields".
+fn update_extra_labels(state: &State) {
+    let fields = referenced_fields(&state.query.borrow());
+    for (idx, label) in state.extra_labels.borrow().iter().enumerate() {
+        if let Some(entry) = state.entries.get(idx) {
+            set_extra_label_text(label, entry, &fields);
+        }
+    }
 }
 
 /// Populates `list` with one row per entry in `items` and reveals it.
@@ -749,9 +851,26 @@ fn populate_suggestions(list: &gtk::ListBox, rows: &[SuggestRow]) {
 /// (auto-accept, or reveal the popup) is `trigger_completion`'s call,
 /// since that differs by candidate count.
 fn compute_candidates(query: &str, state: &State) -> Option<(usize, Vec<String>, SuggestionKind)> {
+    // Ctrl+Space AND-narrowing (query-dsl.md): while active, every
+    // space-separated fragment since the frozen opening `/` must
+    // independently substring-match a candidate's full text - an AND, not
+    // a single narrower substring search. Falls through to the ordinary
+    // single-fragment path below if editing has erased back past that `/`.
+    if *state.verb_multi.borrow() {
+        let vm_start = *state.verb_multi_start.borrow();
+        if vm_start < query.len() && query.as_bytes()[vm_start] == b'/' {
+            let frags: Vec<&str> = query[vm_start + 1..].split_whitespace().collect();
+            let items: Vec<String> = verb_stage_universe(&state.field_names)
+                .into_iter()
+                .filter(|v| frags.iter().all(|f| substr(f, v)))
+                .collect();
+            return if items.is_empty() { None } else { Some((vm_start, items, SuggestionKind::Verb)) };
+        }
+        *state.verb_multi.borrow_mut() = false;
+    }
     let ctx = completion_context(query, &state.field_names)?;
     let (start, items, kind) = match ctx {
-        Suggest::Verb { start, frag } => (start, verb_suggestions(&frag), SuggestionKind::Verb),
+        Suggest::Verb { start, frag } => (start, verb_suggestions(&frag, &state.field_names), SuggestionKind::Verb),
         Suggest::Field { start, frag } => (
             start,
             field_suggestions(&state.field_names, &frag).into_iter().map(str::to_string).collect(),
@@ -780,8 +899,18 @@ fn set_completion_state(state: &Rc<State>, start: usize, items: Vec<String>, kin
 fn suggest_row(state: &State, kind: &SuggestionKind, item: &str) -> SuggestRow {
     match kind {
         SuggestionKind::Verb => {
-            let (alias, desc) = verb_meta(item);
-            SuggestRow { label: format!("/{item}"), alias: alias.to_string(), desc: desc.to_string() }
+            if let Some((v, f)) = item.split_once('/') {
+                // Deep candidate ("fv/type") - alias is the verb's own
+                // long form (same role as a plain verb row), description is
+                // the *field's* one-liner, not the verb's, since the verb
+                // is already visible in the label.
+                let (alias, _) = verb_meta(v);
+                let desc = state.field_descs.iter().find(|(name, _)| *name == f).map(|(_, d)| d.to_string()).unwrap_or_default();
+                SuggestRow { label: format!("/{item}"), alias: alias.to_string(), desc }
+            } else {
+                let (alias, desc) = verb_meta(item);
+                SuggestRow { label: format!("/{item}"), alias: alias.to_string(), desc: desc.to_string() }
+            }
         }
         SuggestionKind::Field => {
             let desc = state
@@ -872,7 +1001,15 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
     let query = search.text();
     let prefix = &query[..start];
     let new_query = match kind {
-        SuggestionKind::Verb => format!("{prefix}/{chosen} "),
+        // A deep candidate ("fv/type") lands the colon form ("/fv type:"),
+        // not a via-path ("/fv/type ") - this grammar has no via-path
+        // support at all (see this file's header), so the label shown is
+        // purely presentational (matches winswitch's `/fv/type` look) while
+        // acceptance still produces the one form this parser understands.
+        SuggestionKind::Verb => match chosen.split_once('/') {
+            Some((v, f)) => format!("{prefix}/{v} {f}:"),
+            None => format!("{prefix}/{chosen} "),
+        },
         SuggestionKind::Field => format!("{prefix}{chosen}:"),
         SuggestionKind::Value(field) => {
             let value = if chosen.contains(char::is_whitespace) {
@@ -922,6 +1059,9 @@ pub fn run(
         suggestion_idx: RefCell::new(0),
         suggestion_start: RefCell::new(0),
         suggestion_kind: RefCell::new(None),
+        verb_multi: RefCell::new(false),
+        verb_multi_start: RefCell::new(0),
+        extra_labels: RefCell::new(Vec::new()),
         command_valid_color,
         command_invalid_color,
     });
@@ -1038,6 +1178,7 @@ pub fn run(
             // Resolve the needle once per keystroke rather than once per row,
             // and drop the borrow before the filter func takes it.
             *state.query.borrow_mut() = parse_query(text.as_str(), &state.field_names);
+            update_extra_labels(&state);
             listbox.invalidate_filter();
             // No auto-selection here on purpose -- selecting the first
             // match on every keystroke was confusing (a highlight jumping
@@ -1138,6 +1279,29 @@ pub fn run(
                 if k == key::Tab {
                     accept_suggestion(&search, &suggestions_list, &state);
                     resize_to_content();
+                    return glib::Propagation::Stop;
+                }
+                // Ctrl+Space AND-narrows a Verb-stage popup instead of
+                // accepting it (query-dsl.md): inserts a literal space and
+                // keeps the popup open so a second substring can be typed
+                // and ANDed against the first ("/fv" + Tab + Ctrl+Space +
+                // "type" narrows to just "fv/type"). No-op outside the Verb
+                // stage - a field/value popup has no verb/field universe to
+                // cross. Checked before plain Space below, since that
+                // branch's condition would otherwise also match here.
+                if ctrl && k == key::space {
+                    if matches!(*state.suggestion_kind.borrow(), Some(SuggestionKind::Verb)) {
+                        if !*state.verb_multi.borrow() {
+                            *state.verb_multi.borrow_mut() = true;
+                            *state.verb_multi_start.borrow_mut() = *state.suggestion_start.borrow();
+                        }
+                        let pos = search.position().max(0) as usize;
+                        let mut chars: Vec<char> = search.text().chars().collect();
+                        let at = pos.min(chars.len());
+                        chars.insert(at, ' ');
+                        search.set_text(&chars.into_iter().collect::<String>());
+                        search.set_position((at + 1) as i32);
+                    }
                     return glib::Propagation::Stop;
                 }
                 // Space also accepts the highlighted suggestion, same as
@@ -1450,9 +1614,22 @@ mod tests {
     #[test]
     fn completion_verb_stage() {
         let Some(Suggest::Verb { frag, .. }) = completion_context("/f", &FIELDS) else { panic!() };
-        assert_eq!(verb_suggestions(&frag), vec!["fv", "ft"]);
+        // "f" also substring-matches every "fv/<field>" deep candidate
+        // (they all start with "fv/") - see verb_stage_universe.
+        assert_eq!(verb_suggestions(&frag, &FIELDS), vec!["fv", "ft", "fv/type", "fv/date", "fv/app"]);
         let Some(Suggest::Verb { frag, .. }) = completion_context("/", &FIELDS) else { panic!() };
-        assert_eq!(verb_suggestions(&frag), vec!["fv", "ft", "at", "rt", "s", "rv"]);
+        assert_eq!(
+            verb_suggestions(&frag, &FIELDS),
+            vec!["fv", "ft", "at", "rt", "s", "rv", "fv/type", "fv/date", "fv/app"]
+        );
+    }
+
+    #[test]
+    fn completion_verb_stage_depth_reaches_a_field_directly() {
+        // A fragment of the *field* name, not the verb, still reaches a
+        // full working command - see query-dsl.md's "Verb-stage depth".
+        let Some(Suggest::Verb { frag, .. }) = completion_context("/app", &FIELDS) else { panic!() };
+        assert_eq!(verb_suggestions(&frag, &FIELDS), vec!["fv/app"]);
     }
 
     #[test]

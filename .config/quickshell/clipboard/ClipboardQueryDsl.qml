@@ -60,8 +60,14 @@ QtObject {
 
     function isFilterValueVerb(rest) { return rest === "fv" || rest === "filter-value"; }
     function isVerb(rest) { return root.verbForms.indexOf(rest) >= 0; }
+    // No separate empty-string guard: every verb form trivially "starts
+    // with" "" already, so a bare "/" (s === "") is correctly a prefix of
+    // all of them too - excluding it would make the very first keystroke
+    // of any command fall through as literal phrase text instead of
+    // staying inert (reported 2026-09-13 against the sibling winswitch
+    // implementation - typing "/" alone was clearing the whole list).
     function isVerbPrefix(s) {
-        return s.length > 0 && root.verbForms.some(v => v.indexOf(s) === 0);
+        return root.verbForms.some(v => v.indexOf(s) === 0);
     }
 
     // Long-form -> short-form, for canonicalizing a verb name regardless of
