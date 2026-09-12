@@ -74,7 +74,18 @@ PanelWindow {
     }
 
     function _grabAndReport(): void {
-        const dpr = root.screen.devicePixelRatio || 1;
+        // NOT screen.devicePixelRatio: Qt rounds fractional Hyprland scales
+        // (eDP-2 is really 1.5x, Qt reports 2) but grabToImage's actual
+        // output resolution follows Hyprland's real scale. Using Qt's
+        // rounded dpr made crop math request more pixels than the grabbed
+        // image actually has, silently clipped by ImageMagick to the real
+        // (narrower) width -- the visible cause of a 2026-09-12 stitching
+        // gap at eDP-2's boundary. view.sourceSize is the actual captured
+        // frame's pixel size, so this ratio is always correct regardless of
+        // Qt's own scale-rounding.
+        const dpr = (view.sourceSize.width > 0 && root.screen.width > 0)
+            ? view.sourceSize.width / root.screen.width
+            : (root.screen.devicePixelRatio || 1);
         grabTarget.grabToImage(result => {
             const dir = `${Quickshell.env("XDG_RUNTIME_DIR")}/shotty`;
             const path = `${dir}/piece-${root.screen.name}-${Date.now()}.png`;
@@ -293,6 +304,14 @@ PanelWindow {
         Keys.onPressed: event => {
             if (event.key === Qt.Key_Escape) {
                 ShottyState.close();
+            } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
+                ShottyState.selectAllToggle();
+            } else if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") {
+                // Tool shortcuts (Flameshot convention): a=arrow, r=rectangle,
+                // l=line.
+                if (event.key === Qt.Key_A) ShottyState.pickTool("arrow");
+                else if (event.key === Qt.Key_R) ShottyState.pickTool("rect");
+                else if (event.key === Qt.Key_L) ShottyState.pickTool("line");
             }
         }
     }
