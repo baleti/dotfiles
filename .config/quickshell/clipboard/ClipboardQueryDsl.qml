@@ -16,6 +16,18 @@ import QtQuick
 //     tokens don't leak into the free-text phrase) but otherwise inert, this
 //     picker has no columns and no re-sort.
 //
+// One deliberate divergence from picker.rs (2026-09-12): picker.rs has no
+// via-path parser at all (see its own accept_suggestion comment), so its
+// Verb-stage deep candidates ("/fv/type") land the colon form ("/fv type:")
+// on accept even though the row is labelled with a "/" -- reported here as
+// looking wrong. This file adds real `/fv/path value` parsing (mirroring
+// winswitch's `tokVerb`/via handling, ported below) so accepting a deep
+// candidate can actually produce `/fv/type ` and have it mean what it
+// looks like. `notification-picker` still runs the unmodified GTK engine,
+// so this is the one place the two now differ -- everything else (bare-
+// phrase joining, GTK-family Tab/Ctrl+j/k keyboard handling, no /ft /at /rt
+// /s /rv support) stays identical on purpose.
+//
 // Ported from picker.rs's own functions (named in each comment below) --
 // keep both in sync by hand if either changes, same "copy-pasted on
 // purpose" reasoning query-dsl.md gives for every consumer in its table.
@@ -50,6 +62,34 @@ QtObject {
     function isVerb(rest) { return root.verbForms.indexOf(rest) >= 0; }
     function isVerbPrefix(s) {
         return s.length > 0 && root.verbForms.some(v => v.indexOf(s) === 0);
+    }
+
+    // Long-form -> short-form, for canonicalizing a verb name regardless of
+    // which spelling was typed (winswitch's `_canonName`).
+    readonly property var _aliasToShort: ({
+        "filter-value": "fv", "filter-type": "ft", "add-type": "at",
+        "remove-type": "rt", "sort": "s", "reverse": "rv"
+    })
+    readonly property var _shortForms: ["fv", "ft", "at", "rt", "s", "rv"]
+    function _canon(name) {
+        if (root._shortForms.indexOf(name) >= 0) return name;
+        return root._aliasToShort[name] || null;
+    }
+
+    // winswitch's tokVerb -- {verb, via} for a real verb token (verb always
+    // the canonical short form), or null if `tok` isn't one at all. `via` is
+    // the type path glued on with a second "/" (query-dsl.md "Via paths"),
+    // or null if there wasn't one.
+    function tokVerb(tok) {
+        if (tok.leadQuote || tok.text[0] !== "/") return null;
+        const rest = tok.text.slice(1);
+        const slash = rest.indexOf("/");
+        if (slash >= 0) {
+            const v = root._canon(rest.slice(0, slash));
+            return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
+        }
+        const v = root._canon(rest);
+        return v === null ? null : { verb: v, via: null };
     }
 
     // picker.rs's tokenize -- whitespace-split, a `"..."`-quoted run kept
@@ -102,7 +142,12 @@ QtObject {
             if (tok.leadQuote || tok.text[0] !== "/") continue;
             const rest = tok.text.slice(1);
             if (rest.length === 0) continue;
-            const valid = root.isVerb(rest);
+            // Validity is decided on the verb name alone -- a via path after
+            // it (query-dsl.md: "/fv/bogus_field still colors as valid")
+            // never makes an otherwise-real verb invalid.
+            const slash = rest.indexOf("/");
+            const name = slash >= 0 ? rest.slice(0, slash) : rest;
+            const valid = root._canon(name) !== null;
             if (!valid && root.isVerbPrefix(rest)) continue;
             out.push({ start: tok.start, end: tok.start + tok.text.length, valid: valid });
         }
@@ -131,37 +176,71 @@ QtObject {
     // becomes a phrase word too (query-dsl.md's `/fv text` == bare `text`).
     // Every other verb is recognised and its (own-arity-bounded) argument
     // swallowed so it can't leak into the phrase, but otherwise inert.
+    //
+    // Extends picker.rs with real via-path parsing for `/fv` (this file's
+    // header) -- `/fv/path value` means exactly what `/fv path:value` does,
+    // by synthesizing "path:value" and reusing the same colon-split
+    // resolution (`_pushFvArg`), same trick winswitch's own via handling
+    // uses. `/fv/path` alone with no value yet is a no-op, not free text
+    // (query-dsl.md "Via paths" -- clipboard-picker has no groups, so the
+    // "existence filter" case there never applies here, only the flat-type
+    // no-op case does). Every other verb's via path is recognised (so it
+    // doesn't leak into the phrase) but, like its space form, inert.
+    //
+    // `openFields` (2026-09-12): the field(s) a still-forming `/fv/path`
+    // resolves to, even with no value yet - kept separate from
+    // `fieldTerms` (never consulted by `matches`, so filtering stays
+    // exactly the no-op it already was) purely so `referencedFields` below
+    // can show the column the moment the path is named, not just once a
+    // value narrows anything (query-dsl.md "Auto-shown filter fields").
+    // Deliberately NOT folded into `fieldTerms` with an empty value the
+    // way `_pushFvArg`'s own colon-trailing-empty case already can be:
+    // `matches` treats a field genuinely absent from an entry (not just
+    // empty) as a hard non-match (see this file's own `matches` doc), so
+    // an empty-value fieldTerm can still narrow away entries that lack the
+    // field entirely - fine for a real colon typed on purpose, but not
+    // something an incomplete via path should risk.
     function parse(text, fieldNames) {
         const toks = root.tokenize(text);
         const fieldTerms = [];
         const words = [];
+        const openFields = [];
         let i = 0;
         while (i < toks.length) {
             const tok = toks[i];
-            if (!tok.leadQuote && tok.text[0] === "/") {
-                const rest = tok.text.slice(1);
-                if (root.isFilterValueVerb(rest)) {
-                    i++;
-                    if (i < toks.length && !root.startsCmd(toks[i])) {
-                        root._pushFvArg(toks[i].text, fieldNames, fieldTerms, words);
-                        i++;
-                    }
-                    continue;
-                }
-                if (root.isVerb(rest)) {
-                    i++;
-                    const n = (rest === "rv" || rest === "reverse") ? 0 : 1;
-                    let c = 0;
-                    while (c < n && i < toks.length && !root.startsCmd(toks[i])) { i++; c++; }
-                    continue;
-                }
-                if (root.isVerbPrefix(rest)) { i++; continue; } // mid-typing -- inert
-                // else: a literal like "/usr/bin" -- real phrase text
+            const tv = root.tokVerb(tok);
+            if (tv === null) {
+                const rest = (!tok.leadQuote && tok.text[0] === "/") ? tok.text.slice(1) : null;
+                const midTyping = rest !== null && root.isVerbPrefix(rest);
+                if (!midTyping) words.push(tok.text); // real word, or a literal "/usr/bin"
+                i++;
+                continue;
             }
-            words.push(tok.text);
             i++;
+            if (tv.via !== null) {
+                if (tv.verb === "fv" && i < toks.length && !root.startsCmd(toks[i])) {
+                    root._pushFvArg(tv.via + ":" + toks[i].text, fieldNames, fieldTerms, words);
+                    i++;
+                } else if (tv.verb === "fv") {
+                    for (const f of root.resolveFields(tv.via, fieldNames))
+                        if (openFields.indexOf(f) < 0) openFields.push(f);
+                }
+                // else: some other verb's via (recognised, inert either
+                // way) -- nothing to swallow past the one token itself.
+                continue;
+            }
+            if (tv.verb === "fv") {
+                if (i < toks.length && !root.startsCmd(toks[i])) {
+                    root._pushFvArg(toks[i].text, fieldNames, fieldTerms, words);
+                    i++;
+                }
+                continue;
+            }
+            const n = tv.verb === "rv" ? 0 : 1;
+            let c = 0;
+            while (c < n && i < toks.length && !root.startsCmd(toks[i])) { i++; c++; }
         }
-        return { fieldTerms: fieldTerms, text: words.join(" ").toLowerCase() };
+        return { fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), openFields: openFields };
     }
 
     // True if `entry` (shape: {haystack, fields:{name:value}}) survives
@@ -188,34 +267,60 @@ QtObject {
         for (const t of query.fieldTerms)
             for (const f of t.fields)
                 if (out.indexOf(f) < 0) out.push(f);
+        // A still-forming `/fv/path` with no value yet (see `parse`'s
+        // `openFields`) shows the field immediately too - query-dsl.md
+        // "Auto-shown filter fields", updated 2026-09-12.
+        for (const f of (query.openFields || []))
+            if (out.indexOf(f) < 0) out.push(f);
         return out;
     }
 
-    // picker.rs's fv_open -- whether the last complete command in `context`
-    // (tokens before the fragment being completed) is a still-open `/fv`
-    // waiting for its value argument. Only while this is true does a bare
-    // (colon-less) fragment mean "completing a field name" rather than
-    // "just free text, nothing to complete" -- unlike the launcher/winswitch,
-    // which key their path-stage completion off a regex on the verb alone.
-    function fvOpen(context) {
-        let open = false;
-        let pending = 0;
+    // winswitch's _replay, trimmed to this picker's one live verb -- replays
+    // `context` (tokens before the fragment being completed) to whatever
+    // verb, if any, is still "open" waiting for its next argument:
+    // null | {verb, args:[...]}. A via token starts already-open with its
+    // via path as args[0] (it supplies the path without a separate
+    // argument token), which is what lets a via-typed `/fv/type` reach
+    // Value-stage completion the same way a space-form `/fv type` does.
+    // Every non-`/fv` verb still gets replayed (so it can't be mistaken for
+    // an open `/fv`) but is otherwise a dead end here -- see completionContext.
+    function _replay(context) {
+        let open = null;
         for (const tok of context) {
-            if (pending > 0 && !root.startsCmd(tok)) { pending--; open = false; continue; }
-            pending = 0;
-            if (!tok.leadQuote && tok.text[0] === "/") {
-                const rest = tok.text.slice(1);
-                if (root.isFilterValueVerb(rest)) { open = true; continue; }
-                if (root.isVerb(rest)) { open = false; pending = (rest === "rv" || rest === "reverse") ? 0 : 1; continue; }
-                if (root.isVerbPrefix(rest)) { open = false; continue; }
+            for (;;) {
+                if (open === null) {
+                    const tv = root.tokVerb(tok);
+                    if (tv === null) {
+                        // nothing to track
+                    } else if (tv.verb === "rv") {
+                        // consumes nothing
+                    } else if (tv.via !== null) {
+                        open = { verb: tv.verb, args: [tv.via] };
+                    } else {
+                        open = { verb: tv.verb, args: [] };
+                    }
+                    break;
+                }
+                if (root.startsCmd(tok)) {
+                    open = null;
+                    continue; // reprocess this token as a fresh command
+                }
+                open = null; // single arg consumed -- closes any verb here
+                break;
             }
-            open = false;
         }
         return open;
     }
 
-    // picker.rs's completion_context -- null (nothing to complete), or
-    // {kind:"verb"|"field"|"value", start, frag, field?}.
+    // picker.rs's completion_context, extended with via-path stages --
+    // null (nothing to complete), or one of:
+    //   {kind:"verb", start, frag}
+    //   {kind:"field", start, frag, via}      -- typing the field name
+    //   {kind:"value", start, frag, field}    -- typing "field:value"'s value
+    //   {kind:"bareValue", start, frag, field} -- typing a via-typed value
+    // `via` distinguishes the two ways to reach "field" stage: `/fv frag`
+    // (space form, GTK pickers land the ":" form on accept) vs `/fv/frag`
+    // (via form, still forming its own path segment) -- see acceptText.
     function completionContext(text, fieldNames) {
         const toks = root.tokenize(text);
         if (toks.length === 0) return null;
@@ -228,15 +333,34 @@ QtObject {
             context = toks.slice(0, -1); start = last.start; frag = last.text; leadQuote = last.leadQuote;
         }
         if (leadQuote) return null;
-        if (frag[0] === "/") return { kind: "verb", start: start, frag: frag.slice(1) };
-        if (!root.fvOpen(context)) return null; // fresh phrase text -- nothing to complete
+
+        if (frag[0] === "/") {
+            const rest = frag.slice(1);
+            const slash = rest.indexOf("/");
+            if (slash >= 0) {
+                const name = rest.slice(0, slash), viaFrag = rest.slice(slash + 1);
+                if (root._canon(name) !== "fv") return null; // only /fv does anything here
+                return { kind: "field", start: start + 1 + name.length + 1, frag: viaFrag, via: true };
+            }
+            return { kind: "verb", start: start, frag: rest };
+        }
+
+        const open = root._replay(context);
+        if (open === null || open.verb !== "fv") return null; // fresh phrase text, or some other (inert) verb
+        if (open.args.length === 1) {
+            // Via form already supplied the field via args[0] -- resolve it
+            // the same substring way a typed field name would.
+            const resolved = root.resolveFields(open.args[0], fieldNames);
+            if (resolved.length !== 1) return null; // unresolvable via path -- no-op (see parse)
+            return { kind: "bareValue", start: start, field: resolved[0], frag: frag };
+        }
         const colon = frag.indexOf(":");
         if (colon >= 0) {
             const resolved = fieldNames.filter(c => root.substr(frag.slice(0, colon), c));
             if (resolved.length !== 1) return null; // ambiguous/unresolved -- no single value set
             return { kind: "value", start: start, field: resolved[0], frag: frag.slice(colon + 1) };
         }
-        return { kind: "field", start: start, frag: frag };
+        return { kind: "field", start: start, frag: frag, via: false };
     }
 
     // picker.rs's verb_stage_universe -- the six bare verb shorts
@@ -289,18 +413,33 @@ QtObject {
     }
 
     // picker.rs's accept_suggestion -- the new full query text once `chosen`
-    // (one item from the candidate list for `ctx`, {kind,start,field?}) is
-    // accepted, given the query text it was computed from.
+    // (one item from the candidate list for `ctx`, from completionContext)
+    // is accepted, given the query text it was computed from. Diverges from
+    // picker.rs for "verb": a deep candidate ("fv/type") now lands the via
+    // form it's labelled with ("/fv/type ") instead of the colon form
+    // ("/fv type:") -- see this file's header. Plain field-stage completion
+    // (`/fv frag` with no via) is unchanged, still colon form, matching
+    // query-dsl.md's stated GTK-picker convention.
     function acceptText(text, ctx, chosen) {
         const prefix = text.slice(0, ctx.start);
-        if (ctx.kind === "verb") {
-            const slash = chosen.indexOf("/");
-            if (slash >= 0) return prefix + "/" + chosen.slice(0, slash) + " " + chosen.slice(slash + 1) + ":";
+        switch (ctx.kind) {
+        case "verb":
+            // chosen is already the full "verb" or "verb/path" text --
+            // "/" + chosen + " " lands "/ft " or "/fv/type " alike.
             return prefix + "/" + chosen + " ";
+        case "field":
+            return prefix + chosen + (ctx.via ? " " : ":");
+        case "value": {
+            const value = /\s/.test(chosen) ? "\"" + chosen + "\"" : chosen;
+            return prefix + ctx.field + ":" + value + " ";
         }
-        if (ctx.kind === "field") return prefix + chosen + ":";
-        // value
-        const value = /\s/.test(chosen) ? "\"" + chosen + "\"" : chosen;
-        return prefix + ctx.field + ":" + value + " ";
+        case "bareValue": {
+            // Via-typed field ("/fv/type") already named the field in the
+            // verb token itself -- just append the value, no "field:" glue.
+            const value = /\s/.test(chosen) ? "\"" + chosen + "\"" : chosen;
+            return prefix + value + " ";
+        }
+        }
+        return text;
     }
 }

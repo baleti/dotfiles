@@ -35,6 +35,7 @@ PanelWindow {
     onOpenChanged: {
         if (root.open) {
             search.text = "";
+            root.acVerbMulti = false;
             search.focus = false; // don't let a stale focus-scope memory re-trap into search on reopen
             focusGrab.active = true;
             Qt.callLater(() => keyScope.forceActiveFocus());
@@ -76,6 +77,35 @@ PanelWindow {
     }
 
     property var parsed: QueryDsl.parse(search.text)
+
+    // Every field currently `/fv field:value`-scoped by the query, deduped
+    // - shown as an extra line under the article title (see the article
+    // delegate), same reasoning as AppLauncher.qml's identical property:
+    // no general column system here, but a matched field shouldn't stay
+    // invisible. query-dsl.md's "Auto-shown filter fields".
+    readonly property var referencedFields: {
+        const out = [];
+        for (const t of root.parsed.terms) {
+            if (t.field === undefined) continue;
+            for (const f of QueryDsl.resolvePath(t.field, root.typeNames))
+                if (out.indexOf(f) < 0) out.push(f);
+        }
+        // A via path named but not yet valued (`/fv/author` with nothing
+        // after it yet) shows the field the moment the command names it,
+        // not just once a value narrows anything (query-dsl.md
+        // "Auto-shown filter fields", updated 2026-09-12) - an
+        // unresolvable path (typo, still mid-typing) resolves to nothing
+        // here exactly like it already does for a complete term.
+        for (const p of root.parsed.openPaths) {
+            for (const f of QueryDsl.resolvePath(p, root.typeNames))
+                if (out.indexOf(f) < 0) out.push(f);
+        }
+        return out;
+    }
+    // "title"/"feed"/"date" are always on the row already (see the article
+    // delegate) - auto-showing only adds a field that would otherwise be
+    // genuinely hidden ("author", "tag").
+    readonly property var _alwaysVisibleFields: ["title", "feed", "date"]
 
     function _matches(item, term) {
         if (term.text !== undefined) {
@@ -221,17 +251,63 @@ PanelWindow {
         return out.sort();
     }
 
+    // The full Verb-stage vocabulary: the three verbs that do anything here
+    // (`_acVerbs`) plus `/fv` and `/s` - the two that take a real path -
+    // crossed with every type name ("fv/tag", "s/date", ...), so a
+    // fragment of the *type*, not just the verb, reaches a whole working
+    // command. `/rv` isn't crossed (takes no path). See query-dsl.md's
+    // "Verb-stage depth".
+    function _verbStageUniverse() {
+        const bare = root._acVerbs.map(v => v.slice(1));
+        const deep = [];
+        for (const v of ["fv", "s"])
+            for (const n of root.typeNames)
+                deep.push(v + "/" + n);
+        return bare.concat(deep);
+    }
+
+    // A deep candidate lands the via form ("/fv/tag "), matching this
+    // reader's own steering everywhere else in _acCandidates (unlike
+    // AppLauncher.qml, which has no via support in its own completion and
+    // lands colon there instead).
+    function _verbStageItem(prefix, v) {
+        const slash = v.indexOf("/");
+        if (slash < 0) {
+            return { text: prefix + "/" + v + " ", label: "/" + v,
+                     alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
+        }
+        const verb = v.slice(0, slash), name = v.slice(slash + 1);
+        return { text: `${prefix}/${verb}/${name} `, label: "/" + v,
+                 alias: QueryDsl.verbInfo["/" + verb].long, desc: root.typeDescs[name] || "" };
+    }
+
+    // Ctrl+Space AND-narrowing (query-dsl.md): true while a Verb-stage
+    // popup is being narrowed by more than one space-separated fragment;
+    // `acVerbMultiStart` freezes the char offset of that completion's
+    // opening "/". See the Ctrl+Space key handler below.
+    property bool acVerbMulti: false
+    property int acVerbMultiStart: 0
+
     function _acCandidates() {
         const t = search.text;
+
+        if (root.acVerbMulti) {
+            if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
+                const frags = t.slice(root.acVerbMultiStart + 1).split(/\s+/).filter(f => f.length > 0);
+                const prefix = t.slice(0, root.acVerbMultiStart);
+                return root._verbStageUniverse()
+                    .filter(v => frags.every(f => v.indexOf(f) >= 0))
+                    .map(v => root._verbStageItem(prefix, v));
+            }
+            root.acVerbMulti = false;
+        }
 
         // verb stage: "/frag" at the end of the box
         const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
-            return root._acVerbs.filter(v => v.indexOf(frag) >= 0).map(v => ({
-                text: v + " ", label: v,
-                alias: QueryDsl.verbInfo[v].long, desc: QueryDsl.verbInfo[v].desc
-            }));
+            const prefix = t.slice(0, t.length - vm[1].length);
+            return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
         }
 
         // value stage, via form:  ".../fv/<field> <frag>"
@@ -294,7 +370,11 @@ PanelWindow {
     // for the `ac` id (which QML's id resolution wouldn't see from inside
     // the search box's nested Keys handler).
     readonly property bool acOpen: acItems.length > 0 && !acDismissed
-    onAcItemsChanged: { acSel = 0; acDismissed = false; }
+    onAcItemsChanged: {
+        acSel = 0;
+        acDismissed = false;
+        if (acItems.length === 0) root.acVerbMulti = false;
+    }
 
     function _applyAcItem(it) {
         if (!it) return;
@@ -533,7 +613,7 @@ PanelWindow {
                                 // Enter is the one key that accepts.
                                 Keys.onPressed: e => {
                                     if (e.key === Qt.Key_Escape) {
-                                        if (root.acOpen) root.acDismissed = true;
+                                        if (root.acOpen) { root.acDismissed = true; root.acVerbMulti = false; }
                                         else if (search.text.length) search.text = "";
                                         else root._returnFocusToList();
                                         e.accepted = true;
@@ -549,6 +629,20 @@ PanelWindow {
                                     } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
                                         if (root.acOpen) root.acAccept();
                                         else root._returnFocusToList();
+                                        e.accepted = true;
+                                    } else if (e.key === Qt.Key_Space && root.acOpen && (e.modifiers & Qt.ControlModifier)) {
+                                        // AND-narrows instead of accepting
+                                        // (query-dsl.md) - see
+                                        // AppLauncher.qml's identical handler
+                                        // for the full rationale.
+                                        const vm = search.text.match(/(?:^|\s)(\/[a-z-]*)$/);
+                                        if (vm || root.acVerbMulti) {
+                                            if (!root.acVerbMulti) {
+                                                root.acVerbMulti = true;
+                                                root.acVerbMultiStart = search.text.length - vm[1].length;
+                                            }
+                                            search.insert(search.cursorPosition, " ");
+                                        }
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Space && root.acOpen) {
                                         root.acAccept();
@@ -719,14 +813,31 @@ PanelWindow {
                     boundsBehavior: Flickable.StopAtBounds
 
                     delegate: Rectangle {
+                        id: articleRow
                         required property var modelData
                         required property int index
                         readonly property bool isRead: {
                             RssSvc.readRevision;
                             RssSvc.isRead(modelData.key);
                         }
+                        // A field actively `/fv field:value`-scoped is shown
+                        // as a third line even though this reader has no
+                        // general column system (query-dsl.md's "Auto-shown
+                        // filter fields") - skipped for title/feed/date,
+                        // already on the row unconditionally above.
+                        readonly property string extraText: {
+                            const fields = root.referencedFields.filter(f => root._alwaysVisibleFields.indexOf(f) < 0);
+                            if (fields.length === 0) return "";
+                            const parts = [];
+                            for (const f of fields)
+                                for (const v of root._fieldVals(modelData, f)) {
+                                    const s = String(v);
+                                    if (s) parts.push(s);
+                                }
+                            return parts.join("  ·  ");
+                        }
                         width: listView.width
-                        height: 58
+                        height: articleRow.extraText ? 72 : 58
                         color: index === root.selected
                             ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
                             : "transparent"
@@ -775,6 +886,16 @@ PanelWindow {
                                 font.pixelSize: Theme.fontSize - 1
                                 font.bold: !parent.parent.isRead
                                 color: parent.parent.isRead ? Theme.textDim : Theme.text
+                            }
+                            Text {
+                                visible: !!articleRow.extraText
+                                width: parent.width
+                                text: articleRow.extraText
+                                elide: Text.ElideRight
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                color: Theme.textDim
+                                opacity: 0.7
                             }
                         }
 
