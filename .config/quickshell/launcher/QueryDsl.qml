@@ -130,7 +130,7 @@ QtObject {
     // (never flash to zero on a valid partial keystroke). Mirrors query.rs::parse.
     function parse(text) {
         const toks = root.tokenize(text);
-        const res = { terms: [], sort: null, reverse: false, cols: [] };
+        const res = { terms: [], sort: null, reverse: false, cols: [], openPaths: [] };
         let k = 0;
         while (k < toks.length) {
             const tv = root.tokVerb(toks[k]);
@@ -156,14 +156,27 @@ QtObject {
                         res.terms.push({ field: via, value: toks[k].v.toLowerCase(),
                                          quoted: toks[k].q });
                         k++;
+                    } else {
+                        // Via path alone, no value yet -- still a no-op
+                        // for row filtering, not the space form's
+                        // free-text fallback (query-dsl.md "Via paths" --
+                        // a chosen-but-not-yet-valued via path is exactly
+                        // as incomplete as any other still-forming token;
+                        // treating it as free text broke "never flash to
+                        // zero on a valid partial keystroke", reported
+                        // 2026-09-02). But the path itself is named
+                        // already, so record it separately from `terms`
+                        // (never consulted for matching) for a caller's
+                        // own "Auto-shown filter fields" display, updated
+                        // 2026-09-12: the referenced column now appears
+                        // the moment the command names it, not just once
+                        // a value narrows anything. A caller resolves this
+                        // against its own type names the same way it
+                        // already resolves a complete term's `field` -
+                        // resolving to nothing (a typo'd path) shows
+                        // nothing, same as it always would have.
+                        res.openPaths.push(via);
                     }
-                    // else: via path alone, no value yet -- a no-op, not
-                    // the space form's free-text fallback (query-dsl.md
-                    // "Via paths" -- a chosen-but-not-yet-valued via path
-                    // is exactly as incomplete as any other still-forming
-                    // token; treating it as free text broke "never flash
-                    // to zero on a valid partial keystroke", reported
-                    // 2026-09-02).
                 } else if (verb === "/s") {
                     let dir = "asc";
                     if (k < toks.length && !root.startsCommand(toks[k])

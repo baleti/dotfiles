@@ -52,6 +52,34 @@ QtObject {
         "fv", "ft", "at", "rt", "s", "rv",
         "filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"
     ]
+    // All resolvable type paths (flat types, groups, and group.subfields),
+    // bare, no "*" -- the full depth the Verb stage's completion crosses
+    // with every path-taking verb (see query-dsl.md's "Verb-stage depth").
+    function allPaths() {
+        const out = root.columns.slice();
+        for (const g of root.groupOrder) {
+            out.push(g);
+            for (const s of root.groupSubsOf(g))
+                out.push(g + "." + s);
+        }
+        return out;
+    }
+    // The full Verb-stage vocabulary: the six bare verb shorts plus every
+    // path-taking verb crossed with every resolvable path ("fv/workspace",
+    // "fv/claude.title", ...) -- see query-dsl.md's "Verb-stage depth".
+    // Exposed rather than inlined in completionCandidates so WinSwitch.qml's
+    // Ctrl+Space AND-narrowing mode can filter it with its own
+    // multiple-fragment rule instead of completionCandidates' single one.
+    function verbStageUniverse() {
+        const bareVerbs = root.shortVerbs.map(v => v.slice(1));
+        const deep = [];
+        for (const v of bareVerbs) {
+            if (!root.takesPath("/" + v)) continue;
+            for (const p of root.allPaths())
+                deep.push(v + "/" + p);
+        }
+        return bareVerbs.concat(deep);
+    }
     // One-line description of a type path, for the type-path autocomplete
     // stage -- mirrors ui.rs's `type_desc`.
     readonly property var typeDescs: ({
@@ -290,6 +318,23 @@ QtObject {
                         i++;
                     } else if (via.indexOf(".") < 0 && root.resolveGroups(via).length > 0) {
                         out.filters.push({ kind: "exists", seg: via });
+                    } else if (root.resolveFilterFields(via).length > 0) {
+                        // Via path alone, no value yet, resolving to a
+                        // flat type or dotted group subfield (a bare
+                        // group is the "exists" branch above) - reuse the
+                        // "scoped" term shape with an empty value: an
+                        // empty needle always substring-matches (see
+                        // `substr`), so this stays a genuine no-op for row
+                        // filtering exactly like today, but
+                        // `filterReferencedFields` (below) already knows
+                        // how to read a "scoped" term's `path` and now
+                        // shows the field the moment the command names
+                        // it, not just once a value narrows anything
+                        // (query-dsl.md "Auto-shown filter fields",
+                        // updated 2026-09-12). An unresolvable path (typo,
+                        // still mid-typing) hits neither branch, so
+                        // nothing is pushed and nothing shows - unchanged.
+                        out.filters.push({ kind: "scoped", path: via, value: "" });
                     }
                 } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {
                     const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
@@ -406,9 +451,30 @@ QtObject {
             windows.some((w, i) => root.globMatch(pattern, root.fieldValue(w, metas[i] || {}, f))));
     }
 
+    // Every field a `/fv` term actually scopes to - a bare/free term has
+    // none (it searches the free-text haystack, not one field). Used by
+    // activeColumns to auto-show whatever's being filtered on - see
+    // query-dsl.md's "Auto-shown filter fields".
+    function filterReferencedFields(filters) {
+        const out = [];
+        for (const term of filters) {
+            let fields = [];
+            if (term.kind === "scoped") {
+                fields = root.resolveFilterFields(term.path);
+            } else if (term.kind === "exists") {
+                fields = root.resolveGroups(term.seg).map(g => ({ kind: "group", group: g, sub: root.groupDefaultSubOf(g) }));
+            }
+            for (const f of fields)
+                if (!out.some(o => root.fieldsEqual(o, f)))
+                    out.push(f);
+        }
+        return out;
+    }
+
     function activeColumns(query, defaults, windows, metas) {
+        const parsed = root.parse(query);
         let cols = defaults.slice();
-        for (const { op, path, isVia } of root.parse(query).colOps) {
+        for (const { op, path, isVia } of parsed.colOps) {
             const fields = root.resolveColumnFields(path);
             if (fields.length === 0 && isVia && op === "filter") {
                 cols = root.fieldsMatchingValuePattern(path, windows, metas);
@@ -424,6 +490,14 @@ QtObject {
                 cols = cols.filter(c => !fields.some(f => root.fieldsEqual(c, f)));
             }
         }
+        // Auto-show: a field actively scoped by `/fv` is shown even without
+        // an explicit `/at` (and even past an `/ft`/`/rt` that would
+        // otherwise hide it) - so a match's own value is visible next to
+        // the row it matched, the whole point once there's more than one
+        // candidate left to choose between.
+        for (const f of root.filterReferencedFields(parsed.filters))
+            if (!cols.some(c => root.fieldsEqual(c, f)))
+                cols.push(f);
         return cols;
     }
 
@@ -593,7 +667,7 @@ QtObject {
             // its own "/" the same way ui.rs's `SuggestionKind::Verb` does,
             // so a candidate that already had one produced "//fv" (reported
             // 2026-09-09).
-            return root.shortVerbs.map(v => v.slice(1)).filter(v => root.substr(completion.fragment, v));
+            return root.verbStageUniverse().filter(v => root.substr(completion.fragment, v));
         case "typePath":
             return root.pathSuggestions(completion.fragment);
         case "value":

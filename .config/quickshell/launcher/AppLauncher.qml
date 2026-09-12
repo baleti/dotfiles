@@ -54,6 +54,7 @@ PanelWindow {
             query.text = "";
             root.selected = 0;
             ac.visible = false;
+            root.acVerbMulti = false;
             focusGrab.active = true;
             Qt.callLater(() => query.forceActiveFocus());
         } else {
@@ -187,6 +188,30 @@ PanelWindow {
     // is known (quickshell's own provider misses the hicolor fallback here).
     onAppsChanged: LauncherIcons.resolve(root.apps.map(a => a.entry.icon))
 
+    // Every field currently `/fv field:value`-scoped by the query, deduped
+    // - shown as an extra line under the app name (see the results
+    // delegate) even though this launcher has no general column system,
+    // so a hidden field (comment/keywords/...) that matched is visible
+    // rather than left a mystery. query-dsl.md's "Auto-shown filter fields"
+    // - includes `openPaths` (a via path named but not yet valued, e.g.
+    // `/fv/comment` with nothing after it yet) so the field shows the
+    // moment the command names it, not just once a value narrows anything;
+    // an unresolvable path (typo, still mid-typing) resolves to nothing
+    // here exactly like it already does for a complete term.
+    readonly property var referencedFields: {
+        const out = [];
+        for (const t of root.parsed.terms) {
+            if (t.field === undefined) continue;
+            for (const f of QueryDsl.resolvePath(t.field, root.typeNames))
+                if (out.indexOf(f) < 0) out.push(f);
+        }
+        for (const p of root.parsed.openPaths) {
+            for (const f of QueryDsl.resolvePath(p, root.typeNames))
+                if (out.indexOf(f) < 0) out.push(f);
+        }
+        return out;
+    }
+
     // ---- autocomplete (marginalia-style) --------------------------
     // Rows carry: what accepting inserts (`text`), the short label, the
     // long-form alias, and a one-line description -- alias + desc rendered
@@ -238,16 +263,64 @@ PanelWindow {
         return spans;
     }
 
+    // The full Verb-stage vocabulary: the three verbs that do anything here
+    // (`_acVerbs`) plus `/fv` and `/s` - the two that take a real path -
+    // crossed with every type name ("fv/comment", "s/name", ...), so a
+    // fragment of the *type*, not just the verb, reaches a whole working
+    // command. `/rv` isn't crossed (takes no path). See query-dsl.md's
+    // "Verb-stage depth".
+    function _verbStageUniverse() {
+        const bare = root._acVerbs.map(v => v.slice(1));
+        const deep = [];
+        for (const v of ["fv", "s"])
+            for (const n of root.typeNames)
+                deep.push(v + "/" + n);
+        return bare.concat(deep);
+    }
+
+    // Turns one universe entry ("fv", or the deep "fv/comment") into an
+    // autocomplete row, given the query prefix before the completion's
+    // opening "/". A deep `/fv` candidate lands the colon form
+    // ("/fv comment:"), matching how the plain type-path stage below
+    // already lands here (query-dsl.md: "the GTK pickers and app launcher
+    // still land the : form"); `/s` lands its ordinary space form.
+    function _verbStageItem(prefix, v) {
+        const slash = v.indexOf("/");
+        if (slash < 0) {
+            return { text: prefix + "/" + v + " ", label: "/" + v,
+                     alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
+        }
+        const verb = v.slice(0, slash), name = v.slice(slash + 1);
+        const text = verb === "fv" ? `${prefix}/${verb} ${name}:` : `${prefix}/${verb} ${name} `;
+        return { text, label: "/" + v, alias: QueryDsl.verbInfo["/" + verb].long, desc: root.typeDescs[name] || "" };
+    }
+
+    // Ctrl+Space AND-narrowing (query-dsl.md): true while a Verb-stage
+    // popup is being narrowed by more than one space-separated fragment;
+    // `acVerbMultiStart` freezes the char offset of that completion's
+    // opening "/". See the Ctrl+Space key handler below.
+    property bool acVerbMulti: false
+    property int acVerbMultiStart: 0
+
     function _acCandidates() {
         const t = query.text;
+
+        if (root.acVerbMulti) {
+            if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
+                const frags = t.slice(root.acVerbMultiStart + 1).split(/\s+/).filter(f => f.length > 0);
+                const prefix = t.slice(0, root.acVerbMultiStart);
+                return root._verbStageUniverse()
+                    .filter(v => frags.every(f => v.indexOf(f) >= 0))
+                    .map(v => root._verbStageItem(prefix, v));
+            }
+            root.acVerbMulti = false;
+        }
 
         const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
-            return root._acVerbs.filter(v => v.indexOf(frag) >= 0).map(v => ({
-                text: v + " ", label: v,
-                alias: QueryDsl.verbInfo[v].long, desc: QueryDsl.verbInfo[v].desc
-            }));
+            const prefix = t.slice(0, t.length - vm[1].length);
+            return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
         }
 
         const pm = t.match(/(?:\/fv|\/filter-value|\/s|\/sort)\s+([a-z.]*)$/);
@@ -270,7 +343,11 @@ PanelWindow {
     // not recompute unconditionally on every one.
     property var acItems: []
     property int acSel: 0
-    onAcItemsChanged: { ac.visible = acItems.length > 0; acSel = 0; }
+    onAcItemsChanged: {
+        ac.visible = acItems.length > 0;
+        acSel = 0;
+        if (!ac.visible) root.acVerbMulti = false;
+    }
 
     function _applyAcItem(it) {
         if (!it) return;
@@ -447,7 +524,7 @@ PanelWindow {
                 // accepts the highlighted suggestion.
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
-                        if (ac.visible) ac.visible = false;
+                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; }
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -459,6 +536,22 @@ PanelWindow {
                             root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
                         else
                             root._triggerCompletion();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Space && ac.visible && (event.modifiers & Qt.ControlModifier)) {
+                        // AND-narrows instead of accepting (query-dsl.md):
+                        // only meaningful once the popup's on a Verb-stage
+                        // fragment - `_acCandidates`'s multi branch is a
+                        // no-op otherwise (empty universe cross), so this
+                        // just always tries it rather than re-deriving the
+                        // current stage here too.
+                        const vm = query.text.match(/(?:^|\s)(\/[a-z-]*)$/);
+                        if (vm || root.acVerbMulti) {
+                            if (!root.acVerbMulti) {
+                                root.acVerbMulti = true;
+                                root.acVerbMultiStart = query.text.length - vm[1].length;
+                            }
+                            query.insert(query.cursorPosition, " ");
+                        }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Space && ac.visible) {
                         root.acAccept();
@@ -568,12 +661,29 @@ PanelWindow {
             topMargin: 4
             bottomMargin: 4
 
-            // One compact line per entry: icon + name, nothing else.
+            // One compact line per entry: icon + name -- plus, once a
+            // `/fv field:value` term is actively scoping the query, a second
+            // dim line showing that field's own value (query-dsl.md's
+            // "Auto-shown filter fields") - this launcher has no general
+            // column system, but a hidden field (comment/keywords/...) that
+            // matched shouldn't stay invisible once there's more than one
+            // candidate left to choose between.
             delegate: Rectangle {
+                id: row
                 required property var modelData
                 required property int index
+                readonly property string extraText: {
+                    if (root.referencedFields.length === 0) return "";
+                    const parts = [];
+                    for (const f of root.referencedFields)
+                        for (const v of root._fieldVals(modelData, f)) {
+                            const s = String(v);
+                            if (s) parts.push(s);
+                        }
+                    return parts.join("  ·  ");
+                }
                 width: list.width
-                height: 30
+                height: row.extraText ? 44 : 30
                 color: index === root.selected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
                                                : "transparent"
 
@@ -602,15 +712,30 @@ PanelWindow {
                     color: Theme.textDim
                 }
 
-                Text {
+                Column {
                     x: 40
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - 52
-                    text: modelData.name
-                    elide: Text.ElideRight
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 1
-                    color: Theme.text
+                    spacing: 1
+
+                    Text {
+                        width: parent.width
+                        text: row.modelData.name
+                        elide: Text.ElideRight
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 1
+                        color: Theme.text
+                    }
+                    Text {
+                        visible: !!row.extraText
+                        width: parent.width
+                        text: row.extraText
+                        elide: Text.ElideRight
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        color: Theme.textDim
+                        opacity: 0.7
+                    }
                 }
 
                 MouseArea {

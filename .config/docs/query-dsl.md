@@ -22,7 +22,7 @@ add a new consumer, add its row here too.
 | window-search | tmux prefix+C-w | `~/.config/tmux/scripts/window-search.py` | live tmux pane scrollback, BM25-ranked |
 | claude-history | tmux prefix+C-c | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
 | focus-picker | tmux prefix+w | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
-| winswitch | Alt+Tab (hold) | `~/.config/hypr/winswitch/src/query.rs` | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
+| winswitch | Alt+Tab (hold) | `~/.config/quickshell/winswitch/WinSwitchQueryDsl.qml` + `WinSwitch.qml` (grammar ported off `~/.config/hypr/winswitch/src/query.rs`, unused since the 2026-09-09 GTK->Quickshell UI rewrite) | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
 | clipboard-picker | mod+v | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
 | notification-picker | (notifyd action) | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
@@ -523,12 +523,167 @@ RSS reader grow the equivalent in QML. Stages:
    are `ascending` / `descending`, narrowed by `frag`.
 
 **An empty fragment lists everything for that stage, once Tab asks.** `/`
-+ Tab is all six verbs; `/ft ` / `/at ` / `/rt ` / `/s ` / `/fv ` + Tab
++ Tab is the six verbs plus every verb/path combination the grammar can
+build (see Verb-stage depth, below); `/ft ` / `/at ` / `/rt ` / `/s ` /
+`/fv ` + Tab
 (verb, one space, nothing typed yet) is every type name; `/fv path: ` +
 Tab is every value that type has. Discovery doesn't need a first
 character typed - just Tab, at any point - which is what makes "hidden
 until Tab" (above) fine for discoverability rather than a tradeoff
 against it.
+
+### Verb-stage depth
+
+Added 2026-09-11 (superseding an earlier, same-day attempt at a hardcoded
+single shortcut - see below): the Verb stage (stage 1, above) doesn't stop
+at the six short verb forms - its candidate list is the six verb shorts
+**plus every path-taking verb crossed with every resolvable path**
+(flat types, groups, and group subfields - the same universe stage 2's
+type-path completion already draws from), rendered as the complete
+`verb/path` string. A fragment of the *path*, not just the verb, is
+therefore enough to reach a whole command: `/wo` + Tab reaches
+`/fv/workspace`, `/ft/workspace`, `/at/workspace`, `/rt/workspace`, and
+`/s/workspace` (every path-taking verb crossed with the one path
+containing `wo`); `/cla` + Tab reaches all five verbs crossed with
+`claude` and each of its five subfields (`claude.title`, `claude.path`,
+`claude.session`, `claude.time`, `claude.contents`) - thirty rows, further
+narrowed by typing more (`/claude.t` cuts it to the two subfields
+containing `t`). `/reverse` takes no path and is never crossed.
+
+Matching reuses the exact rule stage 1 already used for the plain verbs -
+`substr(fragment, candidate_text)` against the *complete* `verb/path`
+string, not just one half of it - so a fragment of either the verb or the
+path reaches the same row. Accepting one inserts its full text
+(`/fv/workspace `) in one step, exactly the string `/fv/workspace` already
+parsed to when typed by hand (see Via paths) - this only adds completion
+candidates, nothing new to the grammar or to matching. An empty fragment
+now surfaces this whole depth too (see "An empty fragment lists
+everything," above, updated by this change) - `/` + Tab is no longer just
+the six verbs, it's the six verbs plus every verb/path combination the
+grammar can build, the complete stage-1 vocabulary in one popup.
+
+Computed from the existing type registry (`COLUMNS`/`GROUPS`/group
+subfields), not hardcoded - the first attempt at this (hardcode just
+`/fv/claude` as a single Verb-stage candidate) was the wrong shape: it
+special-cased one group behind one verb instead of the general
+`verb x path` depth being asked for, and `/wo` + Tab correctly found
+nothing under it, since `/fv/workspace` was never in the hardcoded list.
+Superseded same-day, no version of the hardcoded-list design shipped
+beyond winswitch.
+
+**Row anatomy for a deep candidate** (extends Suggestion row anatomy,
+below): label is the full `/verb/path` string; alias is the verb's own
+`/long-form` (`/filter-value` for an `/fv/...` row), same role it already
+plays for a plain verb candidate; description is the *path's* one-liner
+(`typeDescs`/`type_desc` - "the Hyprland workspace" for `workspace`), not
+the verb's - the path is the newer, less-obvious half once the verb is
+visible in the label itself.
+
+**Rollout: winswitch first, ported everywhere else 2026-09-11-12.**
+Landed in winswitch first (`WinSwitchQueryDsl.qml`'s `completionCandidates`'s
+`"verb"` case, alongside the existing `shortVerbs` filter - not
+`query.rs`, which stopped being winswitch's live implementation once its
+UI was rewritten onto Quickshell/QML on 2026-09-09; `query.rs`'s own grammar
+code is unused today), confirmed correct there, then ported by hand to
+every other consumer that has a Tab-triggered popup at all (window-search,
+focus-picker and claude-history stay out of scope - see the maturity note
+at the top of Autocompletion): `picker.rs`'s `verb_stage_universe`
+(clipboard-picker/notification-picker - crosses only `/fv`, the one verb
+that's actually acting there, against its flat `field_names`, landing the
+colon form since this grammar has no via-path support at all) and each
+QML consumer's own `_verbStageUniverse`/`_acCandidates` (app-launcher,
+landing colon to match its established convention; rss-reader and
+claude-usage, landing via form to match theirs).
+
+**Ctrl+Space AND-narrows a Verb-stage popup instead of accepting it.** With
+the popup open on a `"verb"`-stage completion, `Ctrl+Space` inserts a
+literal space and keeps the popup open, rather than accepting the
+highlighted row the way plain `Space` does (see Suggestion row anatomy,
+below, for `Space`'s ordinary meaning) - so `/wo` + Tab (five rows: every
+verb crossed with `workspace`) + `Ctrl+Space` + `fv` narrows that same
+five down to just `/fv/workspace`, the one row whose full `verb/path` text
+contains *both* `wo` and `fv`. Each fragment (space-separated, including
+the one the popup was already open on) must independently substring-match
+a candidate's complete text - an AND over the fragments, not a second,
+narrower substring search - so fragment order never matters and a third
+`Ctrl+Space` narrows further the same way a second one does. Scoped to the
+Verb stage only: a value or sort-direction popup has no `verb x path`
+universe to cross, so `Ctrl+Space` there is a no-op (the space isn't
+inserted). No-op, not a grammar change, either - the text that ends up
+typed (`/wo fv`) is never itself parsed as two tokens the way plain typing
+normally would be (that would make `wo` a literal `/fv` text search once a
+space followed it, since `wo` isn't a prefix of any verb - see Design
+principles' "never flash to zero"): the popup intercepts recomputation
+while this mode is active and replaces the whole span from the completion's
+original opening `/` through the cursor in one go on accept, the same as
+accepting any other Verb-stage row already does.
+
+Same rollout as Verb-stage depth, same day: winswitch first
+(`WinSwitch.qml`'s `acVerbMulti`/`acVerbMultiStart`), then `picker.rs`
+(clipboard-picker/notification-picker) and each QML consumer
+(app-launcher, rss-reader, claude-usage) by hand.
+
+## Auto-shown filter fields
+
+Added 2026-09-11-12, alongside Verb-stage depth: a field actively
+`/fv field:value`-scoped (or, for a group, `/fv group` existence-filtered)
+is shown even without an explicit `/at` - and even past an `/ft`/`/rt`
+that would otherwise hide it - so the value that actually matched is
+visible the moment there's more than one candidate left to choose between,
+rather than a filter narrowing the result set for reasons that aren't on
+screen. This is additive to whatever `/ft`/`/at`/`/rt` already computed
+(or, in a picker with no column system at all, additive to that picker's
+fixed default display) - never a replacement, and it disappears again the
+moment the scoping term is deleted from the query.
+
+**Triggers the moment the field is named, not just once a value narrows
+anything.** Added 2026-09-12: a via-form `/fv/path` with nothing typed
+after it *yet* (`/fv/claude.session`, about to add a value) already
+resolves `path` to a real field - see Via paths, above - even though
+that resolution stays a no-op for row filtering (the whole point of the
+2026-09-02 fix this doc already documents there). Auto-show reads that
+same resolution and shows the field immediately, rather than waiting for
+`/fv/claude.session 3` to actually be typed - the column that's about to
+be filtered on is exactly what a still-forming command benefits from
+showing early, same "don't make the user wait to see what they're doing"
+spirit as inline command-validity coloring or Tab-completion itself. An
+unresolvable or still-ambiguous via path (a typo, or a fragment on its
+way to becoming a real field name) resolves to nothing here exactly like
+it always does for a complete term, so nothing flickers into view for
+`/fv/zzz` or a `/fv/cl` still being typed - only a path that has actually
+landed on one real field (or a real group, for the existence form) counts.
+Scoped to the via form specifically (and the pre-existing `/fv path:`
+colon-with-empty-value case, which already triggered this before today):
+the *space* form's colonless `/fv path` stays exactly as ambiguous as it
+always was between "a field name about to get a colon" and "a bare
+free-text word" (see `/filter-value`'s own section) - via's leading `/`
+is what removes that ambiguity, so only via gets the early trigger.
+
+What "shown" means is necessarily picker-specific:
+
+- **winswitch**: the referenced field becomes an active column exactly
+  like an `/at` would (`WinSwitchQueryDsl.qml`'s `filterReferencedFields`,
+  folded into `activeColumns`) - rendered as its own extra line under the
+  thumbnail (`WinSwitch.qml`'s `labelLines`, one line per active column,
+  not space-joined), with the grid's cells growing (`labelAllowance`) to
+  fit however many lines are now showing rather than clipping them.
+- **clipboard-picker / notification-picker**: a dim extra line under the
+  entry's preview/thumbnail (`picker.rs`'s `update_extra_labels`) - this
+  picker has no real column system to fold into (see its own header), so
+  this is the one place these two pickers show a field's value at all.
+- **app-launcher / rss-reader**: a dim second (or third, for the RSS
+  reader) line under the app name / article title - skipped for whichever
+  fields that row already shows unconditionally (the RSS reader excludes
+  `title`/`feed`/`date`, always visible; the app launcher has nothing to
+  exclude, since it shows only the name by default).
+- **claude-usage**: a deliberate no-op - its table already renders every
+  field as a permanent column (see its own `/ft`/`/at`/`/rt`-are-inert
+  comment), so there is nothing hidden left to surface.
+
+Scoped to consumers that support a Tab-triggered popup at all, same as
+Verb-stage depth and Ctrl+Space above (window-search, focus-picker,
+claude-history out of scope - see the maturity note at the top of
+Autocompletion).
 
 ### Suggestion row anatomy
 
