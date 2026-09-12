@@ -83,6 +83,7 @@ Deps: fzf, python3. tmux is optional - only needed for the live/switch path.
 import argparse
 import atexit
 import glob
+import hashlib
 import json
 import math
 import os
@@ -386,7 +387,18 @@ def parse_session(path):
     }
 
 
-PARSE_CACHE_PATH = os.path.expanduser("~/.cache/claude-history-parse-cache.json")
+# keyed by CLAUDE_DIR, not just a fixed name: this box runs several
+# CLAUDE_CONFIG_DIR profiles side by side (~/.claude, ~/.claude2, ...),
+# each with its own, disjoint set of project paths under PROJECTS_GLOB. A
+# single shared cache file used to mean "switch to a pane on a different
+# profile" evicted every entry the other profile had just built - every
+# invocation from a differently-profiled pane paid the full
+# ProcessPoolExecutor reparse of the whole corpus (~350 files) instead of
+# the cheap stat-only path the caching comment above build_snapshot()
+# promises. One cache file per profile fixes that: each keeps its own
+# entries indefinitely regardless of which other profile ran in between.
+_cache_key = hashlib.sha1(CLAUDE_DIR.encode()).hexdigest()[:12]
+PARSE_CACHE_PATH = os.path.expanduser(f"~/.cache/claude-history-parse-cache-{_cache_key}.json")
 # (path, mtime, size) only tells you a *file* hasn't changed - it says
 # nothing about whether parse_session()/index_session() would still
 # compute the same thing from it. Bump this whenever their logic changes
@@ -541,7 +553,12 @@ def build_snapshot():
         new_cache[path] = {"mtime": st.st_mtime, "size": st.st_size, "indexed": indexed}
         if indexed:
             sessions[indexed["session_id"]] = indexed
-    save_parse_cache(new_cache)
+    # writing back ~14MB+ of JSON is pure overhead on the common case (every
+    # file was already a cache hit) - only pay for it when the cache itself
+    # would actually differ: something got (re)parsed, or a file disappeared
+    # from the corpus since the cache was last written.
+    if to_parse or len(new_cache) != len(cache):
+        save_parse_cache(new_cache)
 
     # df/avgdl/vocab per BM25 field - "df"/"avgdl"/"vocab" (no suffix) stay
     # the combined ones the plain unscoped search has always used; _title/
