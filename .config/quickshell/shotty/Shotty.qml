@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Wayland
 import Quickshell.Hyprland
 import "../services"
+import "../theme"
 
 // Screenshot annotation tool ("shotty", Print key) -- see
 // ~/.claude2/plans/rippling-wiggling-wilkinson.md. One instance per
@@ -22,6 +23,7 @@ PanelWindow {
     id: root
 
     property bool open: false
+    property bool colorPickerOpen: false
 
     function _recompute() {
         root.open = ShottyState.active;
@@ -52,6 +54,7 @@ PanelWindow {
         if (root.open) {
             view.captureSource = root.screen;
             view.captureFrame();
+            root.colorPickerOpen = false;
             Qt.callLater(() => escCatcher.forceActiveFocus());
         }
     }
@@ -180,7 +183,7 @@ PanelWindow {
                     const lx = root.toLocalX(ShottyState.selLeft);
                     const ly = root.toLocalY(ShottyState.selTop);
                     ctx.clearRect(lx, ly, ShottyState.selWidth, ShottyState.selHeight);
-                    ctx.strokeStyle = "#8be9fd";
+                    ctx.strokeStyle = Theme.cyan;
                     ctx.lineWidth = 1;
                     ctx.strokeRect(lx + 0.5, ly + 0.5, ShottyState.selWidth - 1, ShottyState.selHeight - 1);
                 }
@@ -221,11 +224,9 @@ PanelWindow {
         }
     }
 
-    // Small toolbar (icon + shortcut-letter caption per button, so it
-    // doubles as the shortcut reference) in whichever panel contains the
-    // selection's bottom-right corner (an arbitrary but always well-defined
-    // anchor point) -- fixed to that screen's bottom-right corner, not
-    // tracking the selection.
+    // Toolbar tracks the selection's own bottom-right corner, shown only in
+    // whichever panel that corner actually falls in (an arbitrary but
+    // always well-defined anchor point).
     readonly property bool _isToolbarAnchor: {
         const s = root.screen;
         const px = ShottyState.selLeft + ShottyState.selWidth;
@@ -236,58 +237,70 @@ PanelWindow {
     Rectangle {
         id: toolbar
         visible: root._isToolbarAnchor && (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.margins: 14
-        width: row.implicitWidth + 16
+        width: Math.min(row.implicitWidth, root.width - 44) + 16
         height: row.implicitHeight + 12
-        radius: 8
-        color: "#1a1a1ad0"
-        border.color: "#3a3a3a"
+        // Anchored to the selection's bottom-right corner, but clamped to
+        // stay fully on this screen -- a selection ending near a screen
+        // edge would otherwise push the toolbar half off-screen.
+        x: Math.max(0, Math.min(root.toLocalX(ShottyState.selLeft + ShottyState.selWidth), root.width - width))
+        y: Math.max(0, Math.min(root.toLocalY(ShottyState.selTop + ShottyState.selHeight) + 8, root.height - height))
+        radius: 10
+        color: Theme.bgAlpha
+        border.width: 1
+        border.color: Theme.border
 
+        // Row, not Flow: Flow's own implicitWidth depends on whatever width
+        // it's currently assigned (wrapping is width-dependent), so any
+        // `width: f(implicitWidth)` binding on a Flow is self-referential
+        // and QML resolves it unpredictably -- this is what wrapped the
+        // toolbar into one long vertical column instead of reflowing sanely
+        // (2026-09-12). Row's implicitWidth is always just "natural
+        // single-line content width" regardless of its own assigned width,
+        // so capping it here is safe; in the rare case content is wider
+        // than the screen it clips at the toolbar's edge rather than
+        // wrapping -- acceptable since none of this machine's real monitors
+        // are anywhere near that narrow.
         Row {
             id: row
             x: 8
             y: 6
-            spacing: 6
+            spacing: 8
 
             ToolButton {
-                icon: "↗"; letter: "A"; active: ShottyState.currentTool === "arrow"
+                icon: "↗"; tooltip: "Arrow (A)"; active: ShottyState.currentTool === "arrow"
                 onActivated: ShottyState.pickTool("arrow")
             }
             ToolButton {
-                icon: "▭"; letter: "R"; active: ShottyState.currentTool === "rect"
+                icon: "▭"; tooltip: "Rectangle (R)"; active: ShottyState.currentTool === "rect"
                 onActivated: ShottyState.pickTool("rect")
             }
             ToolButton {
-                icon: "╱"; letter: "L"; active: ShottyState.currentTool === "line"
+                icon: "╱"; tooltip: "Line (L)"; active: ShottyState.currentTool === "line"
                 onActivated: ShottyState.pickTool("line")
             }
 
-            Rectangle { width: 1; height: 30; anchors.verticalCenter: parent.verticalCenter; color: "#3a3a3a" }
+            Rectangle { width: 1; height: 38; color: Theme.border }
 
-            Repeater {
-                model: ShottyState.palette
-                Rectangle {
-                    required property string modelData
-                    width: 20; height: 20; radius: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: modelData
-                    border.width: ShottyState.currentColor === modelData ? 2 : 0
-                    border.color: "white"
-                    MouseArea { anchors.fill: parent; onClicked: ShottyState.pickColor(parent.modelData) }
-                }
+            // Single color-picker button (shows the current color) instead
+            // of all swatches inline -- click opens a small flyout with the
+            // full palette (below).
+            Rectangle {
+                id: colorPickerButton
+                width: 38; height: 38; radius: 19
+                color: ShottyState.currentColor
+                border.width: 2
+                border.color: Theme.text
+                MouseArea { anchors.fill: parent; onClicked: root.colorPickerOpen = !root.colorPickerOpen }
             }
 
-            Rectangle { width: 1; height: 30; anchors.verticalCenter: parent.verticalCenter; color: "#3a3a3a" }
+            Rectangle { width: 1; height: 38; color: Theme.border }
 
             // Stroke-width slider, hand-rolled (no QtQuick.Controls anywhere
             // else in this shell -- see ClaudeUsageExpanded.qml's own
             // scrollbar comment).
             Item {
                 width: 70
-                height: 34
-                anchors.verticalCenter: parent.verticalCenter
+                height: 38
 
                 Rectangle {
                     id: track
@@ -296,7 +309,7 @@ PanelWindow {
                     x: 5
                     height: 4
                     radius: 2
-                    color: "#555555"
+                    color: Theme.border
                 }
                 Rectangle {
                     id: handle
@@ -305,8 +318,8 @@ PanelWindow {
                     readonly property real frac: (ShottyState.currentWidth - minW) / (maxW - minW)
                     x: track.x + frac * (track.width - width)
                     anchors.verticalCenter: track.verticalCenter
-                    width: 12; height: 12; radius: 6
-                    color: "#dddddd"
+                    width: 14; height: 14; radius: 7
+                    color: Theme.cyan
                 }
                 MouseArea {
                     anchors.fill: parent
@@ -322,11 +335,58 @@ PanelWindow {
                 }
             }
 
-            Rectangle { width: 1; height: 30; anchors.verticalCenter: parent.verticalCenter; color: "#3a3a3a" }
+            Rectangle { width: 1; height: 38; color: Theme.border }
 
-            ToolButton { icon: "📋"; letter: "^C"; onActivated: ShottyState.commit() }
-            ToolButton { icon: "💾"; letter: "^S"; onActivated: ShottyState.requestSaveDialog() }
-            ToolButton { icon: "✕"; letter: "Esc"; onActivated: ShottyState.close() }
+            ToolButton { icon: "📋"; tooltip: "Copy to clipboard (Ctrl+C / Enter)"; onActivated: ShottyState.commit() }
+            ToolButton { icon: "💾"; tooltip: "Save to file (Ctrl+S)"; onActivated: ShottyState.requestSaveDialog() }
+            ToolButton { icon: "✕"; tooltip: "Cancel (Esc)"; onActivated: ShottyState.close() }
+        }
+    }
+
+    // Color palette flyout -- opened by the toolbar's single color-picker
+    // button instead of showing every swatch inline. Sits just above the
+    // toolbar, clamped the same way the toolbar itself is.
+    Rectangle {
+        id: colorPopup
+        visible: root.colorPickerOpen && toolbar.visible
+        width: swatchFlow.implicitWidth + 16
+        height: swatchFlow.implicitHeight + 12
+        x: Math.max(0, Math.min(toolbar.x, root.width - width))
+        y: Math.max(0, toolbar.y - height - 8)
+        radius: 8
+        color: Theme.bgAlpha
+        border.width: 1
+        border.color: Theme.border
+        z: 20
+
+        Flow {
+            id: swatchFlow
+            x: 8
+            y: 6
+            spacing: 8
+
+            Repeater {
+                model: ShottyState.palette
+                Item {
+                    id: swatchWrap
+                    required property string modelData
+                    width: 30; height: 30
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 26; height: 26; radius: 13
+                        color: swatchWrap.modelData
+                        border.width: ShottyState.currentColor === swatchWrap.modelData ? 2 : 0
+                        border.color: Theme.text
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                ShottyState.pickColor(swatchWrap.modelData);
+                                root.colorPickerOpen = false;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
