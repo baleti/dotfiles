@@ -560,6 +560,13 @@ def build_snapshot():
     if to_parse or len(new_cache) != len(cache):
         save_parse_cache(new_cache)
 
+    return _aggregate_snapshot(sessions)
+
+
+def _aggregate_snapshot(sessions):
+    """The BM25 df/avgdl/vocab rollup, factored out of build_snapshot() so
+    build_snapshot_fast() (see below) can produce the exact same snapshot
+    shape from a cache-only, no-reparse session set."""
     # df/avgdl/vocab per BM25 field - "df"/"avgdl"/"vocab" (no suffix) stay
     # the combined ones the plain unscoped search has always used; _title/
     # _body are the same aggregation over each field's own tf, for $title:/
@@ -581,6 +588,88 @@ def build_snapshot():
             "df": df, "avgdl": avgdl, "vocab": sorted(df.keys()),
             "df_title": df_title, "avgdl_title": avgdl_title, "vocab_title": sorted(df_title.keys()),
             "df_body": df_body, "avgdl_body": avgdl_body, "vocab_body": sorted(df_body.keys())}
+
+
+def build_snapshot_fast():
+    """The instant-display counterpart to build_snapshot() above: cache
+    reads only, zero reparsing, so this is a json.load plus a handful of
+    stat() calls - no ProcessPoolExecutor, no cache rewrite. Lets drive()
+    put fzf on screen immediately instead of blocking on a cold-cache full
+    corpus parse (measured 2-4s on this corpus, worse under memory
+    pressure) - see the module docstring's note on prefix+C-c latency.
+
+    A file that's missing from the cache entirely (never indexed) is just
+    left out of the result - there's nothing to show for it yet. A file
+    whose cache entry is stale (changed since last indexed, e.g. a session
+    actively being written to right now) still contributes its last-known
+    indexed content rather than being dropped, since a slightly-stale row
+    beats no row at all for the few seconds until the background refresh
+    (see build_snapshot_and_notify) lands.
+
+    Returns (snapshot, stale) - stale is True whenever anything in the
+    corpus doesn't match the cache byte-for-byte, telling the caller a
+    background full build_snapshot() pass is worth kicking off."""
+    files = glob.glob(PROJECTS_GLOB)
+    if not files:
+        die(f"no conversation history found matching {PROJECTS_GLOB}")
+
+    cache = load_parse_cache()
+    stale = False
+    sessions = {}
+    for path in files:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        entry = cache.get(path)
+        if not entry:
+            stale = True
+            continue
+        if entry.get("mtime") != st.st_mtime or entry.get("size") != st.st_size:
+            stale = True
+        indexed = entry["indexed"]
+        if indexed:
+            sessions[indexed["session_id"]] = indexed
+    if len(cache) != len(files):
+        stale = True
+
+    return _aggregate_snapshot(sessions), stale
+
+
+def build_snapshot_and_notify(snap_path, sock_path):
+    """Run in the background (see drive()) after the fast/stale snapshot is
+    already on screen: does the real, canonical build_snapshot() - reparse
+    whatever changed, rewrite the cache, full df/vocab rollup - then
+    atomically replaces snap_path with the fresh result and pokes fzf's
+    --listen socket to redraw against it.
+
+    mkstemp+os.replace (same pattern save_parse_cache uses) so self_cmd,
+    running concurrently against snap_path for every keystroke in the
+    meantime, never sees a half-written file. The reload action re-sends
+    {q} (fzf substitutes it from the CURRENT query box, confirmed directly:
+    an action posted to --listen still gets {q}/{n}-style placeholders
+    resolved against live state, not just ones bound with --bind) so a
+    query the user already started typing during the fast/stale window
+    survives the refresh instead of being reset to empty."""
+    snapshot = build_snapshot()
+    d = os.path.dirname(snap_path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".claude-history-snap-")
+    with os.fdopen(fd, "w") as f:
+        json.dump(snapshot, f)
+    os.replace(tmp, snap_path)
+
+    if not os.path.exists(sock_path):
+        return  # fzf (and the socket it owned) is already gone - nothing to refresh
+    py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
+    self_cmd = f"{py} --search {shlex.quote(snap_path)} --query={{q}}"
+    try:
+        subprocess.run(
+            ["curl", "-s", "--unix-socket", sock_path, "http",
+             "-d", f"reload({self_cmd})"],
+            capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # best-effort - a missed refresh just means the fast/stale view stands
 
 
 # --- live-session detection -------------------------------------------------
@@ -1231,7 +1320,8 @@ def sweep_stale_snapshots():
         except OSError:
             continue
         for name in names:
-            if not (name.startswith(SNAP_PREFIX) and name.endswith(".json")):
+            if not (name.startswith(SNAP_PREFIX)
+                    and name.endswith((".json", ".sock"))):
                 continue
             try:
                 pid = int(name[len(SNAP_PREFIX):].split("-", 1)[0])
@@ -1248,7 +1338,13 @@ def sweep_stale_snapshots():
 
 
 def drive():
-    snapshot = build_snapshot()
+    # fast/possibly-stale first: build_snapshot_fast() is cache-only (no
+    # reparsing), so this is on screen in well under a second even on a
+    # profile whose cache is completely cold - see build_snapshot_fast's
+    # docstring. If `stale`, a background pass (build_snapshot_and_notify)
+    # does the real parse and pushes a refresh through fzf's --listen
+    # socket once it lands, so the picker never blocks on it up front.
+    snapshot, stale = build_snapshot_fast()
     sweep_stale_snapshots()
     fd, snap_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
                                      suffix=".json", dir=snapshot_dir())
@@ -1266,6 +1362,30 @@ def drive():
         signal.signal(sig, lambda *_: sys.exit(1))
     with os.fdopen(fd, "w") as f:
         json.dump(snapshot, f)
+
+    # `stale` (see build_snapshot_fast) means the view just written to
+    # snap_path is missing or out of date for at least one session - kick
+    # off the real build_snapshot() in the background and let it push a
+    # refresh through fzf's own --listen socket once it lands, rather than
+    # block here the way drive() used to. sock_path follows snap_path's own
+    # mkstemp-then-let-something-else-own-the-inode pattern: create it so
+    # sweep_stale_snapshots() has a name+pid to find if this invocation
+    # dies before fzf claims (and later removes) it, then close our fd
+    # immediately - fzf recreates the path as an actual socket on --listen
+    # startup (its docs: "the existing file will be removed").
+    sock_path = None
+    if stale:
+        sock_fd, sock_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-",
+                                               suffix=".sock", dir=snapshot_dir())
+        os.close(sock_fd)
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__),
+             "--reindex-and-notify", snap_path, sock_path],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )  # not waited on - it outlives this invocation on purpose, see
+        # build_snapshot_and_notify's docstring; leaving it running after
+        # fzf exits is a feature, not a leak, since it's what warms the
+        # cache for the *next* prefix+C-c
 
     # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
     # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
@@ -1300,57 +1420,63 @@ def drive():
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
         'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
+    fzf_argv = [
+        # fzf's default full-screen mode already takes over the terminal
+        # via the alternate screen buffer and restores it on exit - the
+        # "popup" here, no tmux display-popup needed (see module
+        # docstring for why prefix+C-c avoids one: popups don't resize
+        # live and don't set $TMUX_PANE). --border/--margin just gives it
+        # a visually inset look rather than filling every last cell.
+        "fzf", "--ansi", "--disabled", "--layout=reverse",
+        "--border=rounded", "--margin=2,4",
+        "--delimiter", "\t", "--with-nth", "2..",
+        "--prompt", "claude history> ",
+        "--header", header,
+        "--preview", preview_cmd,
+        "--preview-window", "down,50%,border-top,wrap",
+        "--bind", f"start:reload:{self_cmd}",
+        "--bind", f"change:reload:{self_cmd}",
+        "--bind", f"result:transform:{resize_on_result}",
+        # `result` alone only re-runs this on a filtering change - a
+        # terminal resize while sitting on an unchanged query never fired
+        # it, so the list/preview split stayed exactly as computed at
+        # whatever size the window happened to be when you last typed.
+        # `resize` (fzf 0.44+) is the event fzf itself provides for this,
+        # triggered on terminal size change specifically - same
+        # transform, just a second trigger for it.
+        "--bind", f"resize:transform:{resize_on_result}",
+        "--bind", "ctrl-left:backward-word",
+        "--bind", "ctrl-right:forward-word",
+        # `execute` hands the terminal over to complete_cmd (same as
+        # fzf's own `execute(less {})` example) - a genuine nested
+        # interactive picker when there's more than one candidate, see
+        # _pick_candidate - then `transform-query` loads whatever it
+        # wrote back into the search box, which also re-triggers `change`
+        # (a query change always does) so results refresh against the
+        # completed query.
+        "--bind", f"tab:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
+    ] + ([f"--listen={sock_path}"] if sock_path else [])
     try:
-        result = subprocess.run(
-            [
-                # fzf's default full-screen mode already takes over the
-                # terminal via the alternate screen buffer and restores it
-                # on exit - the "popup" here, no tmux display-popup needed
-                # (see module docstring for why prefix+C-c avoids one:
-                # popups don't resize live and don't set $TMUX_PANE).
-                # --border/--margin just gives it a visually inset look
-                # rather than filling every last cell.
-                "fzf", "--ansi", "--disabled", "--layout=reverse",
-                "--border=rounded", "--margin=2,4",
-                "--delimiter", "\t", "--with-nth", "2..",
-                "--prompt", "claude history> ",
-                "--header", header,
-                "--preview", preview_cmd,
-                "--preview-window", "down,50%,border-top,wrap",
-                "--bind", f"start:reload:{self_cmd}",
-                "--bind", f"change:reload:{self_cmd}",
-                "--bind", f"result:transform:{resize_on_result}",
-                # `result` alone only re-runs this on a filtering change - a
-                # terminal resize while sitting on an unchanged query never
-                # fired it, so the list/preview split stayed exactly as
-                # computed at whatever size the window happened to be when
-                # you last typed. `resize` (fzf 0.44+) is the event fzf
-                # itself provides for this, triggered on terminal size
-                # change specifically - same transform, just a second
-                # trigger for it.
-                "--bind", f"resize:transform:{resize_on_result}",
-                "--bind", "ctrl-left:backward-word",
-                "--bind", "ctrl-right:forward-word",
-                # `execute` hands the terminal over to complete_cmd (same
-                # as fzf's own `execute(less {})` example) - a genuine
-                # nested interactive picker when there's more than one
-                # candidate, see _pick_candidate - then `transform-query`
-                # loads whatever it wrote back into the search box,
-                # which also re-triggers `change` (a query change always
-                # does) so results refresh against the completed query.
-                "--bind", f"tab:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
-            ],
-            capture_output=True, text=True,
-        )
+        result = subprocess.run(fzf_argv, capture_output=True, text=True)
+        # re-read snap_path here, inside the try (before finally removes
+        # it) rather than trust the `snapshot` object built before fzf
+        # ran: when `stale` triggered a background refresh, the session
+        # actually selected may only exist in the version
+        # build_snapshot_and_notify wrote later, not the fast/stale one
+        # this function started with.
+        with open(snap_path) as f:
+            current_sessions = json.load(f)["sessions"]
     finally:
         _rm(snap_path)
         _rm(complete_path)
+        if sock_path:
+            _rm(sock_path)
 
     selected = result.stdout.strip()
     if not selected:
         return
     session_id = selected.split("\t", 1)[0]
-    s = snapshot["sessions"].get(session_id)
+    s = current_sessions.get(session_id) or snapshot["sessions"].get(session_id)
     if not s:
         die(f"selected session {session_id} vanished from the snapshot")
     resolve(session_id, s["cwd"])
@@ -1363,6 +1489,7 @@ def main():
     parser.add_argument("--complete", action="store_true")
     parser.add_argument("--query", default="")
     parser.add_argument("--snapshot", metavar="SNAPSHOT")
+    parser.add_argument("--reindex-and-notify", nargs=2, metavar=("SNAPSHOT", "SOCKET"))
     args = parser.parse_args()
 
     if args.preview:
@@ -1371,6 +1498,8 @@ def main():
         search(args.search, args.query)
     elif args.complete:
         complete_query(args.query, args.snapshot)
+    elif args.reindex_and_notify:
+        build_snapshot_and_notify(*args.reindex_and_notify)
     else:
         drive()
 
