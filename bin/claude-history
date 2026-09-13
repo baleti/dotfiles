@@ -1156,15 +1156,23 @@ def complete_query(query, snap):
                     return {"query": query, "prefix": query[: len(query) - len(via_frag)],
                             "suffix": " ", "candidates": candidates}
             return none
-        # `/frag` - completing the verb itself. Only "fv"/"filter-value"
-        # ever do anything in this picker (see the module docstring), so
-        # those are the only two ever offered - same "a picker only
-        # offers the verbs that do something for it" rule the app
-        # launcher's autocomplete already follows (query-dsl.md).
-        candidates = [v for v in ("fv", "filter-value") if rest.lower() in v]
+        # `/frag` - completing the verb itself, crossed with every field
+        # it can scope to ("Verb-stage depth", query-dsl.md) so one Tab
+        # from bare "/" already reaches the full flat "/fv/field" list
+        # instead of needing a second Tab press to get past the bare verb
+        # first (reported 2026-09-13 against focus-picker and here alike -
+        # winswitch's verbStageUniverse() is the reference implementation).
+        # Only "fv" is crossed - it's the only verb that ever does
+        # anything here (see the module docstring), so unlike winswitch's
+        # multi-verb crossing this is one verb against its own field list;
+        # the bare "fv"/"filter-value"-with-no-field candidates this used
+        # to offer are gone since a field-less `/fv/` is a no-op anyway -
+        # every candidate here is immediately useful once accepted.
+        rest_lower = rest.lower()
+        candidates = [f"fv/{f}" for f in FIELD_NAMES if rest_lower in f"fv/{f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
-                    "suffix": "/", "candidates": candidates}
+                    "suffix": " ", "candidates": candidates}
         return none
 
     if prev and prev.startswith("/"):
@@ -1390,6 +1398,63 @@ def resolve(session_id, cwd):
 
 
 SNAP_PREFIX = "claude-history-search-"
+# Search-box history (query-dsl.md's "Search-box history" section): one
+# submitted query per line, oldest first - fzf's own --history file
+# format, loaded straight into drive()'s outer fzf below so ctrl-p/ctrl-n
+# ("Up-arrow"'s equivalent here - Up/Down stay list-navigation, same
+# reasoning as focus-picker.py's HISTORY_PATH comment) cycle through it
+# and draft-restore for free, confirmed directly against real fzf
+# 2026-09-13. Ctrl+R (history_candidates/CLIENT_SRC below) is a second,
+# separate nested-fzf popup over the same file, fuzzy-matched.
+HISTORY_PATH = os.path.expanduser("~/.cache/claude-history-query-history")
+
+
+def dedupe_history():
+    """Same HIST_IGNORE_ALL_DUPS + HIST_REDUCE_BLANKS collapse as
+    focus-picker.py's dedupe_history() - fzf's --history just appends on
+    every accept with no dedup at all (confirmed directly), so this keeps
+    only the LAST occurrence of each whitespace-normalized line, run after
+    the outer fzf exits so both the next invocation's --history load and
+    this invocation's own already-fresh Ctrl+R reads see a clean file."""
+    try:
+        with open(HISTORY_PATH) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return
+    last_pos, order = {}, []
+    for idx, line in enumerate(lines):
+        norm = " ".join(line.split())
+        if norm:
+            last_pos[norm] = idx
+    for norm in last_pos:
+        order.append(norm)
+    order.sort(key=lambda norm: last_pos[norm])
+    d = os.path.dirname(HISTORY_PATH)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".claude-history-history-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(order) + ("\n" if order else ""))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, HISTORY_PATH)
+    except OSError:
+        _rm(tmp)
+
+
+def history_candidates(query):
+    """{"query", "candidates"} for Ctrl+R: HISTORY_PATH read fresh (this
+    server process is long-lived for the picker's whole session, unlike
+    focus-picker.py's one-shot invocation - see query-dsl.md's
+    INC_APPEND_HISTORY/SHARE_HISTORY note), most-recent-first. The client
+    (CLIENT_SRC) does the actual nested-fzf popup and whole-line replace,
+    same "server decides the data, client owns the terminal" split
+    complete_query already uses."""
+    try:
+        with open(HISTORY_PATH) as f:
+            entries = [l for l in f.read().splitlines() if l.strip()]
+    except FileNotFoundError:
+        entries = []
+    entries.reverse()
+    return {"query": query, "candidates": entries}
 
 
 def snapshot_dir():
@@ -1469,13 +1534,23 @@ s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[1])
 s.sendall("\0".join(sys.argv[2:]).encode());s.shutdown(socket.SHUT_WR)
 b=bytearray()
 while (c:=s.recv(1<<16)):b+=c
-if sys.argv[2]!="complete":sys.stdout.buffer.write(b);sys.exit()
+mode=sys.argv[2]
+if mode not in ("complete","history"):sys.stdout.buffer.write(b);sys.exit()
 import json,subprocess
 r=json.loads(b);q=r["query"];c=r["candidates"]
-if len(c)==1:q=r["prefix"]+c[0]+r["suffix"]
-elif c:
-    p=subprocess.run(["fzf","--height=~40%","--layout=reverse","--border=rounded","--prompt=complete> "],input="\n".join(c),capture_output=True,text=True)
-    if p.stdout.strip():q=r["prefix"]+p.stdout.strip()+r["suffix"]
+if mode=="complete":
+    if len(c)==1:q=r["prefix"]+c[0]+r["suffix"]
+    elif c:
+        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=complete> "],input="\n".join(c),capture_output=True,text=True)
+        if p.stdout.strip():q=r["prefix"]+p.stdout.strip()+r["suffix"]
+else:
+    # history: always opens (even one/zero candidates - zsh's own ctrl-r
+    # widget always shows its popup too), seeded with the current query
+    # (fzf --query "$LBUFFER"'s own behaviour) and a whole-line replace on
+    # accept, no prefix/suffix - see query-dsl.md's Search-box history
+    if c:
+        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=history> ","--query="+q],input="\n".join(c),capture_output=True,text=True)
+        if p.stdout.strip():q=p.stdout.strip()
 sys.stdout.write(q)
 """.strip()
 
@@ -1663,6 +1738,8 @@ def make_handler(state):
                 out = preview(args[0], args[1] if len(args) > 1 else "", snap)
             elif mode == "complete":
                 out = json.dumps(complete_query(args[0] if args else "", snap))
+            elif mode == "history":
+                out = json.dumps(history_candidates(args[0] if args else ""))
             else:
                 out = ""
             try:
@@ -1726,6 +1803,11 @@ def drive():
                                                    suffix=".txt", dir=sdir)
     os.close(complete_fd)
     atexit.register(lambda: _rm(complete_path))
+    history_fd, history_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-history-",
+                                                  suffix=".txt", dir=sdir)
+    os.close(history_fd)
+    atexit.register(lambda: _rm(history_path))
+    os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
     client_fd, client_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-client-",
                                               suffix=".py", dir=sdir)
     with os.fdopen(client_fd, "w") as f:
@@ -1738,6 +1820,7 @@ def drive():
     search_cmd = f"{client} search {{q}}"
     preview_cmd = f"{client} preview {{1}} {{q}}"
     complete_cmd = f"{client} complete {{q}} > {shlex.quote(complete_path)}"
+    history_cmd = f"{client} history {{q}} > {shlex.quote(history_path)}"
     # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
     # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
     # cwd's slack (see row()), which is expected: the header marks the
@@ -1845,6 +1928,12 @@ def drive():
         # re-triggers `change` (a query change always does) so results
         # refresh against the completed query.
         "--bind", f"tab:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
+        # Search-box history (query-dsl.md): ctrl-p/ctrl-n cycle
+        # submitted queries via fzf's own --history below; ctrl-r opens
+        # the fuzzy history popup, same execute+transform-query split as
+        # tab above, just pointed at history_candidates/CLIENT_SRC.
+        "--bind", f"ctrl-r:execute({history_cmd})+transform-query(cat {shlex.quote(history_path)})",
+        "--history", HISTORY_PATH,
         f"--listen={fzf_sock}",
     ]
     try:
@@ -1855,7 +1944,9 @@ def drive():
         _rm(sock_path)
         _rm(fzf_sock)
         _rm(complete_path)
+        _rm(history_path)
         _rm(client_path)
+        dedupe_history()
 
     selected = result.stdout.strip()
     if not selected:
