@@ -244,23 +244,53 @@ PanelWindow {
         enabled: ShottyState.phase === "selecting" || ShottyState.phase === "toolbar" || ShottyState.phase === "drawing"
         hoverEnabled: true
         property bool panning: false
+        // "" when not resizing, else one of nw/n/ne/w/e/sw/s/se -- resize
+        // detection lives entirely in this MouseArea (see hitTestHandle's
+        // own comment for why: the 8 handles used to each have their own
+        // MouseArea and never received a single real press on this
+        // compositor, same class of thing as WheelHandler never firing).
+        property string resizingEdge: ""
+        // Generous hit radius, deliberately much bigger than the little
+        // square drawn for each handle -- "annoyingly small" was the
+        // explicit complaint, and since hit-testing no longer depends on a
+        // literal Item's bounds there's no cost to being generous here.
+        readonly property real handleHitRadius: 20
 
-        // "toolbar" phase (a selection exists, no tool armed): hovering
-        // inside the selection shows a move/pan cursor (same idea as
-        // Hyprland's mod+drag window-move cursor) since dragging there
-        // pans the whole selection; anywhere else (or in "selecting"/
-        // "drawing") is a plain crosshair, since a drag there always
-        // starts something fresh (a new selection, or a new shape).
-        readonly property bool hoverInsideSel: ShottyState.phase === "toolbar" &&
+        function cursorForEdge(edge) {
+            switch (edge) {
+                case "nw": case "se": return Qt.SizeFDiagCursor;
+                case "ne": case "sw": return Qt.SizeBDiagCursor;
+                case "n": case "s": return Qt.SizeVerCursor;
+                case "w": case "e": return Qt.SizeHorCursor;
+                default: return Qt.CrossCursor;
+            }
+        }
+
+        readonly property string hoverHandle: ShottyState.phase === "toolbar"
+            ? ShottyState.hitTestHandle(root.screen.x + mouseX, root.screen.y + mouseY, handleHitRadius)
+            : ""
+        // "toolbar" phase (a selection exists, no tool armed): hovering a
+        // handle shows its resize cursor; hovering inside the selection
+        // shows a move/pan cursor (same idea as Hyprland's mod+drag
+        // window-move cursor) since dragging there pans the whole
+        // selection; anywhere else (or in "selecting"/"drawing") is a
+        // plain crosshair, since a drag there always starts something
+        // fresh (a new selection, or a new shape).
+        readonly property bool hoverInsideSel: ShottyState.phase === "toolbar" && hoverHandle === "" &&
             ShottyState.isInsideSelection(root.screen.x + mouseX, root.screen.y + mouseY)
-        cursorShape: hoverInsideSel ? Qt.SizeAllCursor : Qt.CrossCursor
+        cursorShape: hoverHandle !== "" ? cursorForEdge(hoverHandle)
+            : hoverInsideSel ? Qt.SizeAllCursor : Qt.CrossCursor
 
         onPressed: mouse => {
             const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
             if (ShottyState.phase === "selecting") {
                 ShottyState.beginSelect(gx, gy);
             } else if (ShottyState.phase === "toolbar") {
-                if (ShottyState.isInsideSelection(gx, gy)) {
+                const edge = ShottyState.hitTestHandle(gx, gy, mainArea.handleHitRadius);
+                if (edge !== "") {
+                    mainArea.resizingEdge = edge;
+                    ShottyState.beginResize(edge, gx, gy);
+                } else if (ShottyState.isInsideSelection(gx, gy)) {
                     mainArea.panning = true;
                     ShottyState.beginPan(gx, gy);
                 } else {
@@ -284,7 +314,8 @@ PanelWindow {
             if (ShottyState.phase === "selecting") {
                 ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "toolbar") {
-                if (mainArea.panning) ShottyState.updatePan(gx, gy);
+                if (mainArea.resizingEdge !== "") ShottyState.updateResize(gx, gy);
+                else if (mainArea.panning) ShottyState.updatePan(gx, gy);
                 else ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "drawing") {
                 ShottyState.updateDraw(gx, gy);
@@ -294,8 +325,14 @@ PanelWindow {
             if (ShottyState.phase === "selecting") {
                 ShottyState.endSelect();
             } else if (ShottyState.phase === "toolbar") {
-                if (mainArea.panning) ShottyState.endPan();
-                else ShottyState.endSelect();
+                if (mainArea.resizingEdge !== "") {
+                    ShottyState.endResize();
+                    mainArea.resizingEdge = "";
+                } else if (mainArea.panning) {
+                    ShottyState.endPan();
+                } else {
+                    ShottyState.endSelect();
+                }
                 mainArea.panning = false;
             } else if (ShottyState.phase === "drawing") {
                 ShottyState.endDraw();
@@ -340,73 +377,46 @@ PanelWindow {
         z: 30
     }
 
-    // Resize handles: 8 small draggable squares around the selection
-    // border, active only once a selection exists ("toolbar" phase, not
-    // while actively drawing a shape). Each handle's global position is
-    // computed from the current selection bounds; a handle whose position
-    // falls outside THIS panel's own screen just renders off-window and is
-    // naturally invisible/non-interactive there (a Wayland surface only
-    // composites and accepts input within its own bounds) -- so every
-    // panel can declare all 8 unconditionally and only the panel(s) that
-    // actually contain a given handle ever show or receive it, exactly
-    // like shapes/selection already work.
+    // Resize handles: 8 squares around the selection border, active only
+    // once a selection exists ("toolbar" phase, not while actively drawing
+    // a shape). Purely visual -- actual resize detection/dragging happens
+    // entirely in mainArea above (via ShottyState.hitTestHandle with a
+    // generous hit radius), not here: each handle used to have its own
+    // MouseArea and never received a single real press on this compositor,
+    // even correctly sized/positioned/z-ordered -- same class of thing as
+    // WheelHandler never firing. Bigger now (was 9px) since "annoyingly
+    // small" was the explicit complaint, and there's no longer a hit-testing
+    // reason to keep them tiny. Each handle's global position is computed
+    // from the current selection bounds; one that falls outside THIS
+    // panel's own screen just renders off-window there, same as
+    // shapes/selection already do.
     Repeater {
-        model: [
-            { edge: "nw", cursor: Qt.SizeFDiagCursor },
-            { edge: "n",  cursor: Qt.SizeVerCursor },
-            { edge: "ne", cursor: Qt.SizeBDiagCursor },
-            { edge: "w",  cursor: Qt.SizeHorCursor },
-            { edge: "e",  cursor: Qt.SizeHorCursor },
-            { edge: "sw", cursor: Qt.SizeBDiagCursor },
-            { edge: "s",  cursor: Qt.SizeVerCursor },
-            { edge: "se", cursor: Qt.SizeFDiagCursor }
-        ]
+        model: ["nw", "n", "ne", "w", "e", "sw", "s", "se"]
         Rectangle {
             id: handle
-            required property var modelData
+            required property string modelData
             readonly property real gx: {
-                switch (modelData.edge) {
+                switch (modelData) {
                     case "nw": case "w": case "sw": return ShottyState.selLeft;
                     case "ne": case "e": case "se": return ShottyState.selLeft + ShottyState.selWidth;
                     default: return ShottyState.selLeft + ShottyState.selWidth / 2; // n, s
                 }
             }
             readonly property real gy: {
-                switch (modelData.edge) {
+                switch (modelData) {
                     case "nw": case "n": case "ne": return ShottyState.selTop;
                     case "sw": case "s": case "se": return ShottyState.selTop + ShottyState.selHeight;
                     default: return ShottyState.selTop + ShottyState.selHeight / 2; // w, e
                 }
             }
             visible: ShottyState.phase === "toolbar"
-            width: 9; height: 9; radius: 2
+            width: 14; height: 14; radius: 3
             x: root.toLocalX(gx) - width / 2
             y: root.toLocalY(gy) - height / 2
-            color: Theme.cyan
-            border.width: 1
-            border.color: Theme.bg
+            color: mainArea.hoverHandle === modelData ? Theme.cyan : Theme.bgAlpha
+            border.width: 2
+            border.color: Theme.cyan
             z: 15
-
-            MouseArea {
-                id: handleMouse
-                anchors.fill: parent
-                anchors.margins: -4 // small squares are hard to grab exactly
-                cursorShape: handle.modelData.cursor
-                // mapToItem(root, ...), not handle.x + mouse.x: this
-                // MouseArea is expanded 4px beyond `handle` by the negative
-                // margin above, so mouse.x/y aren't directly relative to
-                // handle's own origin.
-                onPressed: mouse => {
-                    const p = handleMouse.mapToItem(root, mouse.x, mouse.y);
-                    ShottyState.beginResize(handle.modelData.edge, p.x + root.screen.x, p.y + root.screen.y);
-                }
-                onPositionChanged: mouse => {
-                    if (!pressed) return;
-                    const p = handleMouse.mapToItem(root, mouse.x, mouse.y);
-                    ShottyState.updateResize(p.x + root.screen.x, p.y + root.screen.y);
-                }
-                onReleased: ShottyState.endResize()
-            }
         }
     }
 
