@@ -318,7 +318,7 @@ PanelWindow {
                 else if (mainArea.panning) ShottyState.updatePan(gx, gy);
                 else ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "drawing") {
-                ShottyState.updateDraw(gx, gy);
+                ShottyState.updateDraw(gx, gy, !!(mouse.modifiers & Qt.ControlModifier));
             }
         }
         onReleased: mouse => {
@@ -463,15 +463,23 @@ PanelWindow {
             spacing: 5
 
             ToolButton {
-                iconType: "arrow"; tooltip: "Arrow (A)"; active: ShottyState.currentTool === "arrow"
+                iconType: "arrow"; tooltip: "Arrow (A)"
+                // Also require phase === "drawing" (actually armed), not
+                // just "this happens to be the last tool value from a
+                // previous session" -- otherwise a fresh Print showed
+                // whichever tool was last used as already "active" even
+                // though nothing is armed yet.
+                active: ShottyState.currentTool === "arrow" && ShottyState.phase === "drawing"
                 onActivated: ShottyState.pickTool("arrow")
             }
             ToolButton {
-                iconType: "rect"; tooltip: "Rectangle (R)"; active: ShottyState.currentTool === "rect"
+                iconType: "rect"; tooltip: "Rectangle (R)"
+                active: ShottyState.currentTool === "rect" && ShottyState.phase === "drawing"
                 onActivated: ShottyState.pickTool("rect")
             }
             ToolButton {
-                iconType: "line"; tooltip: "Line (L)"; active: ShottyState.currentTool === "line"
+                iconType: "line"; tooltip: "Line (L)"
+                active: ShottyState.currentTool === "line" && ShottyState.phase === "drawing"
                 onActivated: ShottyState.pickTool("line")
             }
 
