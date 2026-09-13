@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # mod+F11/F12: volume up/down, then flashes the side OSD
-# (~/.config/quickshell/osd/VolumeOsd.qml) on whichever monitor the active
-# window is on (each monitor runs its own instance, IpcHandler target
-# "volume-osd-<screen name>").
-#
-# Deliberately the active *window's* monitor, not hyprctl monitors' own
-# "focused" field like bar-toggle.sh uses: this Hyprland has follow_mouse=1
-# (see ydotool_focus_follows_mouse_risk memory), so "focused" tracks
-# whichever monitor the cursor is currently hovering, which can differ from
-# where the active/keyboard-focused window actually is - showing the OSD on
-# the wrong screen if the mouse happened to have drifted elsewhere.
+# (~/.config/quickshell/osd/VolumeOsd.qml) via VolumeOsdSvc, a
+# process-wide singleton every screen's OSD instance listens to; only the
+# one on Hyprland's currently focused monitor actually draws (same
+# mouse-follows-focus behaviour as notification cards). Monitor selection
+# used to be done here (active window's monitor via hyprctl, deliberately
+# avoiding "focused" because of follow_mouse=1), but that was in service of
+# a per-screen IPC target that only ever reliably mapped on one output -
+# see VolumeOsd.qml's history. Now the OSD picks its own monitor the same
+# way notifications do, so this script no longer needs to.
 #
 # Routes to the "current" player's MPRIS Volume property
 # (~/.config/playerctl-current) when it's pixel6 - the one MPRIS player here
@@ -41,17 +40,4 @@ fi
 [ -z "${frac:-}" ] && exit 0
 percent=$(awk -v f="$frac" 'BEGIN { printf "%d", f * 100 + 0.5 }')
 
-mon=$(python3 -c "
-import json, subprocess
-aw = json.loads(subprocess.check_output(['hyprctl', '-j', 'activewindow']) or b'{}')
-mons = json.loads(subprocess.check_output(['hyprctl', '-j', 'monitors']))
-mid = aw.get('monitor')
-name = next((m['name'] for m in mons if m.get('id') == mid), '')
-if not name:
-    # No active window (empty workspace) - fall back to hyprctl's own
-    # notion of the focused monitor, same as bar-toggle.sh.
-    name = next((m['name'] for m in mons if m.get('focused')), '')
-print(name)
-")
-[ -n "$mon" ] || exit 0
-qs ipc call "volume-osd-$mon" display "$percent" "$muted"
+qs ipc call volume-osd display "$percent" "$muted"
