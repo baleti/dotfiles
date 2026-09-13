@@ -1117,12 +1117,85 @@ Tab's "a unique candidate completes silently" rule, since Ctrl+R's whole
 point is *browsing*, not narrowing to an obvious single answer.
 window-search stays out of scope for the same reason it already sits out
 of the rest of Autocompletion (see the maturity note at the top of this
-document). Not yet ported to the QML pickers (app-launcher, rss-reader,
-claude-usage, winswitch) or the Rust ones (clipboard-picker,
-notification-picker) - those have no fzf `--history` to lean on, so each
-needs its own Up/Down-vs-list-navigation call (the QML pickers already
-spend Down/Up on the completion popup's highlight - see Shared popup UI,
-above) and its own from-scratch fuzzy-match popup for Ctrl+R.
+document).
+
+**Rollout, continued: all four QML pickers plus the Rust GTK pickers,
+also 2026-09-13.** None of these have fzf's `--history` to lean on, so
+each needed its own Up/Down-vs-list-navigation call and its own
+from-scratch fuzzy-match popup for Ctrl+R - but every one reused its
+*existing* Tab-completion popup machinery for that popup (acItems/acSel/
+accept in QML; `suggestions`/`suggestion_idx`/`accept_suggestion` in
+Rust) rather than building a second component: only what *computes* the
+popup's candidates differs (`_acHistoryCandidates`/
+`compute_history_candidates` - an ordered-subsequence fuzzy match, ported
+by hand into JS three times and once into Rust as `_fuzzySubsequence`/
+`fuzzy_subsequence`) and, in the QML pickers, a mode flag/kind variant so
+`onTextChanged`/`connect_changed` know which computation to keep
+re-running while the popup stays open.
+
+- **app-launcher** (`LauncherQueryHistory.qml`, `AppLauncher.qml`): Down/
+  Up already meant "move the completion popup's highlight, else move the
+  results list" - moving the *results list* half to Ctrl+J/Ctrl+K (split
+  out of the combined Down/`Key_J`-with-ctrl condition that used to alias
+  them) freed Down/Up for history-cycling. Recorded on `launch()` (accept)
+  and on Ctrl+J/Ctrl+K/PageDown/PageUp (selection-move).
+- **winswitch** (`WinSwitchQueryHistory.qml`, `WinSwitch.qml`): same
+  Down/Up-vs-Ctrl+J/K split, but only in the locked/search-box-focused
+  key handler - the *other* (unlocked, plain Alt+Tab hold-and-cycle)
+  handler is untouched, since it never has a query typed for history to
+  be about. `_acAccept`'s existing `kind.kind` switch (already how every
+  completion stage decides what to splice into the query) grew one more
+  case, `"history"`, that replaces the whole query instead of splicing at
+  a fragment. Recorded on `confirm()` and inside `_advance`/`_advanceRow`
+  (both grid-navigation paths, locked or not - `record()` no-ops on an
+  empty query, so plain Alt+Tab cycling with nothing typed stays a no-op).
+- **rss-reader** (`RssQueryHistory.qml`, `RssReader.qml`): the search
+  box's Down/Up, with the completion popup closed, used to just
+  `_returnFocusToList()` - already redundant with Tab and Escape, which
+  do the same job, so repurposing them for history-cycling loses nothing.
+  Recorded on `openCurrent()` and inside `move()`.
+- **claude-usage** (`ClaudeUsageQueryHistory.qml`, `ClaudeUsageExpanded.qml`):
+  the one QML picker with no pre-existing Ctrl+J/Ctrl+K alias for Down/Up
+  at all (its two-tier key-handler split - `handleKey()` for the panel,
+  a separate one for the search box - had never needed one, since Down/Up
+  simply bubbled from the unhandled-in-search-box case up to `handleKey`).
+  Added Ctrl+J/Ctrl+K there from scratch, forwarding to `handleKey()`
+  explicitly the same way the search box already explicitly forwards
+  Enter, and pulled Down/Up out of that bubble path entirely so they land
+  on history-cycling in the search box instead. Recorded on
+  `focusHyprWindow()` and inside `handleKey`'s own Down/Up/Ctrl+J/Ctrl+K
+  arms.
+- **clipboard-picker / notification-picker** (`picker.rs`, shared): no
+  QML-style two-popup split needed - `SuggestionKind` grew a `History`
+  variant next to `Verb`/`Field`/`Value`, and `accept_suggestion`'s
+  existing per-kind switch grew one more arm (whole-query replace, same
+  as winswitch's `"history"` case). Ctrl+j/Ctrl+k were *already* the only
+  way to move the results list once a popup could be showing (this
+  picker's Up/Down were dual-purpose from the start, unlike the QML
+  pickers' history/list split being new work) - the change was pulling
+  plain Up/Down out of the shared `step` calculation entirely, freeing
+  them for `history_prev`/`history_next`. `connect_changed` recognises a
+  live history popup via `state.suggestion_kind` being `Some(History)` -
+  the same field every other stage already used to mean "a popup session
+  is open," rather than a second boolean. The history file itself is
+  plain text, one query per line, oldest-first - deliberately the same
+  shape fzf's own `--history` file already uses (see the tmux pickers'
+  rollout above), even though nothing here reads it with fzf; each binary
+  gets its own file via `cache_dir(program_name)`, already how this file
+  keeps clipboard-picker's and notification-picker's own per-program
+  state apart. Recorded on `connect_row_activated` (accept, covers both a
+  mouse double-click and Enter's synthetic `row.activate()`) and inside
+  the arrow-key list-navigation arm of the key-press handler
+  (selection-move). Verified with `cargo check --all-targets`, `cargo
+  clippy` (zero new warnings) and `cargo test` (21/21, including a new
+  `fuzzy_subsequence_is_ordered_not_contiguous` case) - not yet
+  live-tested in a real picker invocation.
+
+None of the seven implementations above have been exercised against a
+running instance yet (the QML pickers only `qmllint`-checked, the Rust
+ones only `cargo check`/`test`-checked) - live behavior should be
+confirmed via each picker's own keybind before relying on this day to
+day.
 
 ## Resolution, precisely
 
