@@ -1,2 +1,3 @@
 singleton WinSwitchQueryDsl 1.0 WinSwitchQueryDsl.qml
+singleton WinSwitchQueryHistory 1.0 WinSwitchQueryHistory.qml
 WinSwitch 1.0 WinSwitch.qml

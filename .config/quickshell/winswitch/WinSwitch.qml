@@ -77,6 +77,10 @@ PanelWindow {
         WinSwitchState.close();
     }
     function confirm(i) {
+        // query-dsl.md's "Search-box history": a real accept records the
+        // query, same as fzf's own --history flag does for the tmux
+        // pickers.
+        WinSwitchQueryHistory.record(root.queryText);
         WinSwitchState.confirm(i);
     }
 
@@ -163,12 +167,18 @@ PanelWindow {
         else
             next = direction === "prev" ? (cur - 1 + n) % n : (cur + 1) % n;
         WinSwitchState.selected = root.results[next].index;
+        // query-dsl.md's "Search-box history": moving the grid selection
+        // after typing counts as "acted on" too, not just a full accept -
+        // record() itself no-ops on an empty query, so this is a
+        // harmless no-op during plain (unlocked) Alt+Tab cycling.
+        WinSwitchQueryHistory.record(root.queryText);
     }
     function _advanceRow(delta) {
         const n = root.results.length;
         if (n === 0) return;
         const k = Math.max(0, Math.min(n - 1, Math.max(0, root.visualSelected) + delta));
         WinSwitchState.selected = root.results[k].index;
+        WinSwitchQueryHistory.record(root.queryText);
     }
 
     // ---- grid layout (ported from the old GTK ui.rs's typical_aspect /
@@ -378,12 +388,98 @@ PanelWindow {
             newQuery = prefix + val + " ";
             break;
         }
+        case "history":
+            // Whole-line replace, no prefix (kind.start is 0 - see
+            // _triggerHistorySearch) - matches zsh's own `LBUFFER=$selected`.
+            newQuery = chosen;
+            break;
         default:
             return;
         }
         root._hideSuggestions();
         root.queryText = newQuery;
         Qt.callLater(() => { searchInput.cursorPosition = searchInput.text.length; });
+    }
+
+    // ---- search-box history (query-dsl.md's "Search-box history") ---------
+    // Ctrl+R reuses the completion popup's own rendering/highlight/accept
+    // machinery (acItems/acSel/_acAccept all already just read `chosen` and
+    // build `newQuery` generically per `kind.kind`) rather than a second
+    // popup component - "history" is just one more case in that switch.
+
+    // The QML pickers' own approximation of fzf's default fuzzy algorithm
+    // (deliberately not this DSL's plain substring rule - see the doc
+    // section): ordered-subsequence match, same as fzf's core heuristic
+    // without its scoring/highlighting.
+    function _fuzzySubsequence(hay, needle) {
+        let i = 0;
+        for (let j = 0; j < hay.length && i < needle.length; j++)
+            if (hay[j] === needle[i]) i++;
+        return i === needle.length;
+    }
+
+    function _acHistoryCandidates() {
+        const q = root.queryText.toLowerCase();
+        const entries = WinSwitchQueryHistory.listMostRecentFirst();
+        return q.length === 0 ? entries
+            : entries.filter(e => root._fuzzySubsequence(e.toLowerCase(), q));
+    }
+
+    // Ctrl+R: opens unconditionally, even with zero history yet - same as
+    // zsh's own ctrl-r widget, which shows its (empty) popup rather than
+    // doing nothing the first time there's no history - so the binding is
+    // never indistinguishable from unbound.
+    function _triggerHistorySearch() {
+        root.acSuggestionKind = { kind: "history", start: 0 };
+        root.acActive = true;
+        root.acSel = 0;
+        root.acItems = root._acHistoryCandidates();
+    }
+
+    // Up/Down cycling: most-recent-first with draft-restore, scoped to
+    // whenever the completion/history popup ISN'T open (query-dsl.md's
+    // Up-arrow bullet) - Up/Down there stay popup-highlight movement, and
+    // grid navigation moves to Ctrl+J/Ctrl+K (already an existing alias
+    // for Down/Up here, same as AppLauncher.qml).
+    property string acHistDraft: ""
+    property int acHistIndex: -1  // -1 = sitting on the draft, not cycling
+    property bool _histCycling: false  // guards searchInput's onTextChanged
+    // (below) from treating OUR OWN text-set as a fresh edit that should
+    // cancel cycling or reopen a stale completion session
+
+    function _setQueryTextForHistory(text) {
+        root._hideSuggestions();  // avoid recomputing completion candidates
+        // against whatever history text just landed (same reasoning
+        // _acAccept already follows)
+        root._histCycling = true;
+        root.queryText = text;
+        root._histCycling = false;
+        Qt.callLater(() => { searchInput.cursorPosition = searchInput.text.length; });
+    }
+
+    function _historyPrev() {
+        const entries = WinSwitchQueryHistory.entries;  // oldest-first
+        if (entries.length === 0) return;
+        if (root.acHistIndex < 0) {
+            root.acHistDraft = root.queryText;
+            root.acHistIndex = entries.length;
+        }
+        if (root.acHistIndex > 0) {
+            root.acHistIndex--;
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
+    }
+
+    function _historyNext() {
+        if (root.acHistIndex < 0) return;  // not cycling - nothing to do
+        const entries = WinSwitchQueryHistory.entries;
+        root.acHistIndex++;
+        if (root.acHistIndex >= entries.length) {
+            root.acHistIndex = -1;
+            root._setQueryTextForHistory(root.acHistDraft);
+        } else {
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
     }
 
     // ---- window ---------------------------------------------------
@@ -468,6 +564,15 @@ PanelWindow {
                     onTextChanged: {
                         if (root.queryText !== text)
                             root.queryText = text;
+                        // A real edit cancels an in-progress Up/Down history
+                        // cycle (query-dsl.md: editing invalidates the cycle
+                        // the same way it does in a real shell) - but not
+                        // when WE just set the text ourselves while cycling
+                        // (_setQueryTextForHistory already calls
+                        // _hideSuggestions() itself, so this only needs to
+                        // skip the index reset, not the branch below).
+                        if (!root._histCycling)
+                            root.acHistIndex = -1;
                         // An open session narrows as you type instead of
                         // closing -- gated on `acActive`, not `acPopup.visible`:
                         // the popup itself hides the instant candidates drop
@@ -528,11 +633,27 @@ PanelWindow {
                         } else if (event.key === Qt.Key_Space && acPopup.visible) {
                             root._acAccept();
                             event.accepted = true;
-                        } else if (event.key === Qt.Key_Down || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
+                        } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
+                            // query-dsl.md's "Search-box history": always
+                            // (re)opens, even with an empty history file yet.
+                            root._triggerHistorySearch();
+                            event.accepted = true;
+                        } else if (event.key === Qt.Key_Down) {
+                            // Popup open: highlight-move, unchanged. Popup
+                            // closed: history-cycle instead of grid-advance -
+                            // see acHistIndex's own comment.
+                            if (acPopup.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                            else root._historyNext();
+                            event.accepted = true;
+                        } else if (event.key === Qt.Key_Up) {
+                            if (acPopup.visible) root.acSel = Math.max(0, root.acSel - 1);
+                            else root._historyPrev();
+                            event.accepted = true;
+                        } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
                             if (acPopup.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
                             else root._advance("next");
                             event.accepted = true;
-                        } else if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
+                        } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
                             if (acPopup.visible) root.acSel = Math.max(0, root.acSel - 1);
                             else root._advance("prev");
                             event.accepted = true;

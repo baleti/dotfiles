@@ -655,6 +655,7 @@ Rectangle {
         root._applyAcItem(root.acItems[root.acSel]);
     }
     function triggerCompletion() {
+        root.acHistoryMode = false;
         const items = root._acCandidates();
         if (items.length === 0) return false;
         if (items.length === 1) {
@@ -664,6 +665,87 @@ Rectangle {
         root.acSel = 0;
         root.acItems = items;
         return true;
+    }
+
+    // ---- search-box history (query-dsl.md's "Search-box history") --
+    // Ctrl+R reuses the completion popup's own rendering/highlight/accept
+    // machinery (acItems/acSel/acAccept/_applyAcItem all already just
+    // read-and-replace `it.text` generically) rather than a second popup
+    // component - acHistoryMode only changes what *computes* acItems.
+    property bool acHistoryMode: false
+
+    // The QML pickers' own approximation of fzf's default fuzzy algorithm
+    // (deliberately not this DSL's plain substring rule - see the doc
+    // section): ordered-subsequence match, same as fzf's core heuristic
+    // without its scoring/highlighting.
+    function _fuzzySubsequence(hay, needle) {
+        let i = 0;
+        for (let j = 0; j < hay.length && i < needle.length; j++)
+            if (hay[j] === needle[i]) i++;
+        return i === needle.length;
+    }
+
+    function _acHistoryCandidates() {
+        const q = root.searchText.toLowerCase();
+        const entries = ClaudeUsageQueryHistory.listMostRecentFirst();
+        const matched = q.length === 0 ? entries
+            : entries.filter(e => root._fuzzySubsequence(e.toLowerCase(), q));
+        return matched.map(e => ({ text: e, label: e, alias: "", desc: "" }));
+    }
+
+    // Ctrl+R: opens unconditionally, even with zero history yet - same as
+    // zsh's own ctrl-r widget, which shows its (empty) popup rather than
+    // doing nothing the first time there's no history - so the binding is
+    // never indistinguishable from unbound.
+    function _triggerHistorySearch() {
+        root.acHistoryMode = true;
+        root.acSel = 0;
+        root.acItems = root._acHistoryCandidates();
+    }
+
+    // Up/Down cycling: most-recent-first with draft-restore, scoped to
+    // whenever the completion/history popup ISN'T open (query-dsl.md's
+    // Up-arrow bullet) - Up/Down there stay popup-highlight movement (the
+    // `&& root.acOpen` guard on their existing branches below); with the
+    // popup closed they otherwise bubble to handleKey() and move the
+    // process-row selection, so this intercepts them first instead.
+    property string acHistDraft: ""
+    property int acHistIndex: -1  // -1 = sitting on the draft, not cycling
+    property bool _histCycling: false  // guards searchInput's onTextChanged
+    // (below) from treating OUR OWN text-set as a fresh edit that should
+    // cancel cycling
+
+    function _setQueryTextForHistory(text) {
+        root._histCycling = true;
+        root.searchText = text;
+        searchInput.text = text;
+        searchInput.cursorPosition = searchInput.text.length;
+        root._histCycling = false;
+    }
+
+    function _historyPrev() {
+        const entries = ClaudeUsageQueryHistory.entries;  // oldest-first
+        if (entries.length === 0) return;
+        if (root.acHistIndex < 0) {
+            root.acHistDraft = root.searchText;
+            root.acHistIndex = entries.length;
+        }
+        if (root.acHistIndex > 0) {
+            root.acHistIndex--;
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
+    }
+
+    function _historyNext() {
+        if (root.acHistIndex < 0) return;  // not cycling - nothing to do
+        const entries = ClaudeUsageQueryHistory.entries;
+        root.acHistIndex++;
+        if (root.acHistIndex >= entries.length) {
+            root.acHistIndex = -1;
+            root._setQueryTextForHistory(root.acHistDraft);
+        } else {
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
     }
 
     // View-state resets on every panel open *and* close -- this Rectangle
@@ -1072,6 +1154,10 @@ Rectangle {
     function focusHyprWindow(row) {
         if (!row.hypr_address)
             return;
+        // query-dsl.md's "Search-box history": a real accept records the
+        // query, same as fzf's own --history flag does for the tmux
+        // pickers.
+        ClaudeUsageQueryHistory.record(root.searchText);
         if (row.tmux_window)
             tmuxSelectProc.exec(["tmux", "select-window", "-t", "@" + row.tmux_window]);
         if (row.tmux_pane)
@@ -1137,15 +1223,27 @@ Rectangle {
         const n = root.sortedProcs.length;
         if (n === 0)
             return;
-        if (event.key === Qt.Key_Down) {
+        // Ctrl+J/Ctrl+K alias Down/Up, same convention as every other
+        // picker (AppLauncher/WinSwitch/RssReader) - needed here now that
+        // plain Down/Up, while the search box has focus, are claimed for
+        // history-cycling instead of bubbling up to this function (see
+        // searchInput's own Keys.onPressed, which forwards Ctrl+J/Ctrl+K
+        // here explicitly the same way it already forwards Enter).
+        if (event.key === Qt.Key_Down || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
             root.selIndex = root.selActive ? Math.min(n - 1, root.selIndex + 1) : 0;
             root.selActive = true;
             root._syncKeyboardThumb();
+            // query-dsl.md's "Search-box history": moving the selection
+            // after typing counts as "acted on" too, not just a full
+            // accept - record() no-ops on an empty query, so this is
+            // harmless while the search box was never touched.
+            ClaudeUsageQueryHistory.record(root.searchText);
             event.accepted = true;
-        } else if (event.key === Qt.Key_Up) {
+        } else if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
             root.selIndex = root.selActive ? Math.max(0, root.selIndex - 1) : 0;
             root.selActive = true;
             root._syncKeyboardThumb();
+            ClaudeUsageQueryHistory.record(root.searchText);
             event.accepted = true;
         } else if (event.key === Qt.Key_Home) {
             root.selIndex = 0;
@@ -1390,6 +1488,11 @@ Rectangle {
                 // (harmlessly, on an already-empty acItems) when accepting
                 // a completion sets this text itself.
                 onTextChanged: {
+                    // A real edit cancels an in-progress Up/Down history
+                    // cycle (query-dsl.md: editing invalidates the cycle
+                    // the same way it does in a real shell) - but not when
+                    // WE just set the text ourselves while cycling.
+                    if (!root._histCycling) root.acHistIndex = -1;
                     // Once the popup is already open, keep recomputing
                     // candidates from the new text instead of clearing --
                     // narrows the list as you type (e.g. `/fv/` + Tab shows
@@ -1399,7 +1502,9 @@ Rectangle {
                     // acItems, since root.acOpen depends on both.
                     const wasOpen = root.acOpen;
                     root.searchText = text;
-                    root.acItems = wasOpen ? root._acCandidates() : [];
+                    root.acItems = wasOpen
+                        ? (root.acHistoryMode ? root._acHistoryCandidates() : root._acCandidates())
+                        : [];
                 }
 
                 Text {
@@ -1481,11 +1586,36 @@ Rectangle {
                     } else if (event.key === Qt.Key_Space && root.acOpen) {
                         root.acAccept();
                         event.accepted = true;
+                    } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
+                        // query-dsl.md's "Search-box history": always
+                        // (re)opens, even with an empty history file yet.
+                        root._triggerHistorySearch();
+                        event.accepted = true;
                     } else if (event.key === Qt.Key_Down && root.acOpen) {
                         root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Up && root.acOpen) {
                         root.acSel = Math.max(0, root.acSel - 1);
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Down) {
+                        // Popup closed: history-cycle instead of letting
+                        // this bubble to handleKey() and move the
+                        // process-row selection (query-dsl.md's Up-arrow
+                        // bullet - Up/Down are claimed for history here,
+                        // same trade the other QML pickers make); row
+                        // navigation moves to Ctrl+J/Ctrl+K below instead.
+                        root._historyNext();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Up) {
+                        root._historyPrev();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
+                        if (root.acOpen) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                        else root.handleKey(event);
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
+                        if (root.acOpen) root.acSel = Math.max(0, root.acSel - 1);
+                        else root.handleKey(event);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageDown && root.acOpen) {
                         root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
