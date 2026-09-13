@@ -271,9 +271,23 @@ QtObject {
         root.drawX1 = root.drawX2 = gx;
         root.drawY1 = root.drawY2 = gy;
     }
-    function updateDraw(gx: real, gy: real): void {
-        root.drawX2 = gx;
-        root.drawY2 = gy;
+    // snapAngle: held Ctrl while dragging an arrow/line's second point --
+    // rounds the angle from the start point to the nearest 45 deg (keeping
+    // the actual dragged distance), same idea as Flameshot's Shift-snap.
+    // Not applied to "rect" -- there's no meaningful "angle" for a
+    // rectangle's opposite corner to snap to.
+    function updateDraw(gx: real, gy: real, snapAngle: bool): void {
+        if (snapAngle && (root.currentTool === "arrow" || root.currentTool === "line")) {
+            const dx = gx - root.drawX1, dy = gy - root.drawY1;
+            const dist = Math.hypot(dx, dy);
+            const step = Math.PI / 4; // 45 degrees
+            const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+            root.drawX2 = root.drawX1 + dist * Math.cos(angle);
+            root.drawY2 = root.drawY1 + dist * Math.sin(angle);
+        } else {
+            root.drawX2 = gx;
+            root.drawY2 = gy;
+        }
     }
     function endDraw(): void {
         if (Math.abs(root.drawX2 - root.drawX1) >= 2 || Math.abs(root.drawY2 - root.drawY1) >= 2) {
