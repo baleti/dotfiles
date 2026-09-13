@@ -266,20 +266,31 @@ PanelWindow {
             }
         }
 
+        // Same generous-independent-of-visual-size idea as handleHitRadius.
+        readonly property real shapeHitRadius: 10
+
         readonly property string hoverHandle: ShottyState.phase === "toolbar"
             ? ShottyState.hitTestHandle(root.screen.x + mouseX, root.screen.y + mouseY, handleHitRadius)
             : ""
+        // A specific shape takes priority over "pan the whole selection"
+        // when hovering inside it -- Lightshot flattens shapes on commit,
+        // this deliberately doesn't: any placed arrow/rect/line stays its
+        // own draggable object, not baked into the frame.
+        readonly property int hoverShape: (ShottyState.phase === "toolbar" && hoverHandle === "")
+            ? ShottyState.hitTestShape(root.screen.x + mouseX, root.screen.y + mouseY, shapeHitRadius)
+            : -1
         // "toolbar" phase (a selection exists, no tool armed): hovering a
-        // handle shows its resize cursor; hovering inside the selection
-        // shows a move/pan cursor (same idea as Hyprland's mod+drag
-        // window-move cursor) since dragging there pans the whole
-        // selection; anywhere else (or in "selecting"/"drawing") is a
-        // plain crosshair, since a drag there always starts something
-        // fresh (a new selection, or a new shape).
-        readonly property bool hoverInsideSel: ShottyState.phase === "toolbar" && hoverHandle === "" &&
+        // handle shows its resize cursor; hovering a shape or inside the
+        // selection shows a move/pan cursor (same idea as Hyprland's
+        // mod+drag window-move cursor) -- for a shape that drags just it,
+        // for empty selection space it pans the whole selection; anywhere
+        // else (or in "selecting"/"drawing") is a plain crosshair, since a
+        // drag there always starts something fresh (a new selection, or a
+        // new shape).
+        readonly property bool hoverInsideSel: ShottyState.phase === "toolbar" && hoverHandle === "" && hoverShape < 0 &&
             ShottyState.isInsideSelection(root.screen.x + mouseX, root.screen.y + mouseY)
         cursorShape: hoverHandle !== "" ? cursorForEdge(hoverHandle)
-            : hoverInsideSel ? Qt.SizeAllCursor : Qt.CrossCursor
+            : (hoverShape >= 0 || hoverInsideSel) ? Qt.SizeAllCursor : Qt.CrossCursor
 
         onPressed: mouse => {
             const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
@@ -287,9 +298,12 @@ PanelWindow {
                 ShottyState.beginSelect(gx, gy);
             } else if (ShottyState.phase === "toolbar") {
                 const edge = ShottyState.hitTestHandle(gx, gy, mainArea.handleHitRadius);
+                const shapeIdx = edge === "" ? ShottyState.hitTestShape(gx, gy, mainArea.shapeHitRadius) : -1;
                 if (edge !== "") {
                     mainArea.resizingEdge = edge;
                     ShottyState.beginResize(edge, gx, gy);
+                } else if (shapeIdx >= 0) {
+                    ShottyState.beginMoveShape(shapeIdx, gx, gy);
                 } else if (ShottyState.isInsideSelection(gx, gy)) {
                     mainArea.panning = true;
                     ShottyState.beginPan(gx, gy);
@@ -315,6 +329,7 @@ PanelWindow {
                 ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "toolbar") {
                 if (mainArea.resizingEdge !== "") ShottyState.updateResize(gx, gy);
+                else if (ShottyState.movingShapeIndex >= 0) ShottyState.updateMoveShape(gx, gy);
                 else if (mainArea.panning) ShottyState.updatePan(gx, gy);
                 else ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "drawing") {
@@ -328,6 +343,8 @@ PanelWindow {
                 if (mainArea.resizingEdge !== "") {
                     ShottyState.endResize();
                     mainArea.resizingEdge = "";
+                } else if (ShottyState.movingShapeIndex >= 0) {
+                    ShottyState.endMoveShape();
                 } else if (mainArea.panning) {
                     ShottyState.endPan();
                 } else {
