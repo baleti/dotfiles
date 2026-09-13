@@ -313,7 +313,7 @@ PanelWindow {
         onWheel: wheel => {
             if (!(wheel.modifiers & Qt.ControlModifier)) return;
             const delta = wheel.angleDelta.y > 0 ? 1 : -1;
-            ShottyState.currentWidth = Math.max(1, Math.min(12, ShottyState.currentWidth + delta));
+            ShottyState.currentWidth = Math.max(1, Math.min(24, ShottyState.currentWidth + delta));
             root.showWidthIndicator = true;
             widthIndicatorTimer.restart();
         }
@@ -598,7 +598,7 @@ PanelWindow {
         Rectangle {
             id: widthHandle
             readonly property real minW: 1
-            readonly property real maxW: 12
+            readonly property real maxW: 24
             readonly property real frac: (ShottyState.currentWidth - minW) / (maxW - minW)
             x: widthTrack.x + frac * (widthTrack.width - width)
             anchors.verticalCenter: widthTrack.verticalCenter

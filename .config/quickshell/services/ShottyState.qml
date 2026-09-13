@@ -45,7 +45,7 @@ QtObject {
     readonly property var palette: ["#c0392b"].concat(Theme.seriesPalette.slice(0, 4))
     property string currentTool: "arrow" // arrow | line | rect
     property string currentColor: root.palette[0]
-    property real currentWidth: 3 // stroke width in px, 1..12 (see the toolbar slider)
+    property real currentWidth: 3 // stroke width in px, 1..24 (see the toolbar slider)
     // Committed shapes: [{tool, color, width, x1,y1,x2,y2}], global coords.
     property var shapes: []
     // Undo/redo stack (Ctrl+Z / Ctrl+Y), shapes only -- not the selection
