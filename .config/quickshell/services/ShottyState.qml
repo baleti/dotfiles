@@ -224,6 +224,32 @@ QtObject {
         root.lastSelectAllScope = ""; // this is a manual edit, same as any drag
     }
 
+    // Returns which handle (if any) a point is within `threshold` px of, or
+    // "" if none -- used by the single confirmed-working MouseArea to
+    // detect "the press is meant to resize, not pan/reselect" itself,
+    // rather than giving each of the 8 handles its own separate MouseArea
+    // (which never received a single real press/drag on this compositor,
+    // even correctly sized/positioned -- same class of thing as
+    // WheelHandler never firing). A generous threshold also means the
+    // clickable region can be much bigger than the little square drawn for
+    // it, independent of how large that square actually is.
+    function hitTestHandle(gx: real, gy: real, threshold: real): string {
+        const left = root.selLeft, right = root.selLeft + root.selWidth;
+        const top = root.selTop, bottom = root.selTop + root.selHeight;
+        const midX = (left + right) / 2, midY = (top + bottom) / 2;
+        const points = [
+            ["nw", left, top], ["n", midX, top], ["ne", right, top],
+            ["w", left, midY], ["e", right, midY],
+            ["sw", left, bottom], ["s", midX, bottom], ["se", right, bottom]
+        ];
+        let best = "", bestDist = threshold;
+        for (const p of points) {
+            const d = Math.hypot(gx - p[1], gy - p[2]);
+            if (d <= bestDist) { bestDist = d; best = p[0]; }
+        }
+        return best;
+    }
+
     function pickTool(tool: string): void {
         root.currentTool = tool;
         // Zero out the leftover drag coords from the last shape -- without
