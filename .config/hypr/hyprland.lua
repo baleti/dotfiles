@@ -65,23 +65,26 @@ hl.on("hyprland.start", function()
     -- what clipboard-picker's $date: field reads from. See that script's
     -- own comment for how it correlates a log line to the right id.
     hl.exec_cmd([[wl-paste --watch ~/.config/hypr/scripts/cliphist-store-logged.sh]])
-    -- Keeps the last clipboard/primary selection alive after the source app
-    -- exits -- wlroots clears a selection once its owning client closes.
-    hl.exec_cmd("wl-clip-persist --clipboard both")
-    -- notifyd owns org.freedesktop.Notifications. Replaced dunst
-    -- (~/.claude2/plans/silly-percolating-rose.md): dunst invalidates a
-    -- notification's actions the instant it closes, so mod+n / ctrl+mod+n
-    -- could never invoke one after it left the screen; notifyd never
-    -- discards that. Headless since 2026-08-30 -- the cards are drawn by
-    -- quickshell (~/.config/quickshell/notifications/, off
-    -- ~/.cache/notifyd/state.json). Rollback to dunst: revert this line to
-    -- hl.exec_cmd("dunst") (the package is untouched, its unit masked).
-    hl.exec_cmd("~/.config/hypr/notifyd/target/release/notifyd")
-    -- Background sampler for the bar's hover-graphs and the alt+mod+n/p/t/m
-    -- standalone popups (~/.config/hypr/sysmon). keybinds.lua's comments
-    -- already claimed this was autostarted here -- it wasn't; this was
-    -- only ever running because a dev-session build of it was left up.
-    hl.exec_cmd("~/.config/hypr/sysmon/target/release/sysmond")
+    -- wl-clip-persist, notifyd and sysmond used to be started here via
+    -- hl.exec_cmd -- moved to systemd --user units (2026-09-13) so a crash
+    -- gets Restart=always instead of staying dead until the next full
+    -- Hyprland restart. WAYLAND_DISPLAY/HYPRLAND_INSTANCE_SIGNATURE are
+    -- confirmed present in `systemctl --user show-environment` and in the
+    -- environ of already-running graphical-session.target-gated units
+    -- (desktop-snapshot.service, claude-usage.service), so the Wayland
+    -- connection at startup isn't a race here. See:
+    --   ~/.config/systemd/user/wl-clip-persist.service
+    --   ~/.config/systemd/user/notifyd.service -- owns
+    --     org.freedesktop.Notifications, replaced dunst (dunst's package is
+    --     untouched, its unit masked; rollback: `systemctl --user disable
+    --     --now notifyd`, re-enable `dunst.service`). Headless since
+    --     2026-08-30 -- cards are drawn by quickshell
+    --     (~/.config/quickshell/notifications/, off
+    --     ~/.cache/notifyd/state.json).
+    --   ~/.config/systemd/user/sysmond.service -- feeds the bar's
+    --     hover-graphs and the alt+mod+n/p/t/m popups. Note: a quickshell
+    --     Socket{} to it never auto-reconnects on its own if sysmond
+    --     restarts -- reload quickshell (`qs kill`) after a sysmond crash.
     -- Load the theme's nsxiv colors (Nsxiv.* X resources) into the XWayland
     -- server now -- gen-theme.py also does this on every regen, but the
     -- wallpaper (hence that script) may not have changed yet this session.
