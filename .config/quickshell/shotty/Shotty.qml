@@ -148,28 +148,43 @@ PanelWindow {
 
             function drawShape(ctx, tool, color, lineWidth, x1, y1, x2, y2) {
                 ctx.strokeStyle = color;
+                ctx.fillStyle = color;
                 ctx.lineWidth = lineWidth;
-                ctx.lineCap = "round";
                 if (tool === "rect") {
+                    ctx.lineCap = "square";
                     ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
                 } else if (tool === "line") {
+                    ctx.lineCap = "round";
                     ctx.beginPath();
                     ctx.moveTo(x1, y1);
                     ctx.lineTo(x2, y2);
                     ctx.stroke();
-                } else { // arrow
-                    ctx.beginPath();
-                    ctx.moveTo(x1, y1);
-                    ctx.lineTo(x2, y2);
-                    ctx.stroke();
+                } else { // arrow -- filled solid triangle head, sharp (no
+                         // rounded caps anywhere), scales with stroke width.
+                    ctx.lineCap = "butt";
                     const angle = Math.atan2(y2 - y1, x2 - x1);
-                    const headLen = 14;
+                    const headLen = 16 + lineWidth * 2.2;
+                    const headAngle = Math.PI / 7;
+
+                    // Pull the shaft back so it ends at the head's base
+                    // instead of poking through the solid triangle.
+                    const backX = x2 - headLen * 0.85 * Math.cos(angle);
+                    const backY = y2 - headLen * 0.85 * Math.sin(angle);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(backX, backY);
+                    ctx.stroke();
+
+                    const hx1 = x2 - headLen * Math.cos(angle - headAngle);
+                    const hy1 = y2 - headLen * Math.sin(angle - headAngle);
+                    const hx2 = x2 - headLen * Math.cos(angle + headAngle);
+                    const hy2 = y2 - headLen * Math.sin(angle + headAngle);
                     ctx.beginPath();
                     ctx.moveTo(x2, y2);
-                    ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6));
-                    ctx.moveTo(x2, y2);
-                    ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6));
-                    ctx.stroke();
+                    ctx.lineTo(hx1, hy1);
+                    ctx.lineTo(hx2, hy2);
+                    ctx.closePath();
+                    ctx.fill();
                 }
             }
 
@@ -463,8 +478,20 @@ PanelWindow {
             acceptedModifiers: Qt.ControlModifier
             enabled: ShottyState.phase !== "idle" && ShottyState.phase !== "compositing"
             onWheel: event => {
+                console.log(`shotty: ctrl-wheel angleDelta.y=${event.angleDelta.y}`);
                 const delta = event.angleDelta.y > 0 ? 1 : -1;
                 ShottyState.currentWidth = Math.max(1, Math.min(12, ShottyState.currentWidth + delta));
+            }
+        }
+        // TEMPORARY diagnostic: any wheel at all reaching this Item,
+        // regardless of modifier -- narrows down whether Ctrl+wheel's
+        // silence is a routing problem (this never logs either) or a
+        // modifier-matching problem (this logs, the one above doesn't).
+        WheelHandler {
+            acceptedModifiers: Qt.NoModifier | Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier
+            enabled: ShottyState.phase !== "idle" && ShottyState.phase !== "compositing"
+            onWheel: event => {
+                console.log(`shotty: ANY wheel reached escCatcher, modifiers=${event.modifiers}, angleDelta.y=${event.angleDelta.y}`);
             }
         }
 
