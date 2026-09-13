@@ -24,6 +24,7 @@ PanelWindow {
 
     property bool open: false
     property bool colorPickerOpen: false
+    property bool widthPickerOpen: false
 
     function _recompute() {
         root.open = ShottyState.active;
@@ -55,6 +56,7 @@ PanelWindow {
             view.captureSource = root.screen;
             view.captureFrame();
             root.colorPickerOpen = false;
+            root.widthPickerOpen = false;
             Qt.callLater(() => escCatcher.forceActiveFocus());
         }
     }
@@ -301,47 +303,41 @@ PanelWindow {
                 color: ShottyState.currentColor
                 border.width: 2
                 border.color: Theme.text
-                MouseArea { anchors.fill: parent; onClicked: root.colorPickerOpen = !root.colorPickerOpen }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.colorPickerOpen = !root.colorPickerOpen;
+                        root.widthPickerOpen = false;
+                    }
+                }
             }
 
             Rectangle { width: 1; height: 28; color: Theme.border }
 
-            // Stroke-width slider, hand-rolled (no QtQuick.Controls anywhere
-            // else in this shell -- see ClaudeUsageExpanded.qml's own
-            // scrollbar comment).
-            Item {
-                width: 50
-                height: 28
-
+            // Line-thickness button: shows the current width as a bar
+            // (thicker bar = thicker stroke), click opens a flyout with the
+            // actual slider -- same collapse-to-flyout pattern as the color
+            // picker, instead of an always-visible slider eating toolbar
+            // width. Also adjustable directly via Ctrl+wheel, see the
+            // WheelHandler below.
+            Rectangle {
+                id: widthPickerButton
+                width: 28; height: 28; radius: 5
+                color: Theme.bgAlpha
+                border.width: 1
+                border.color: Theme.border
                 Rectangle {
-                    id: track
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - 8
-                    x: 4
-                    height: 3
-                    radius: 1.5
-                    color: Theme.border
-                }
-                Rectangle {
-                    id: handle
-                    readonly property real minW: 1
-                    readonly property real maxW: 12
-                    readonly property real frac: (ShottyState.currentWidth - minW) / (maxW - minW)
-                    x: track.x + frac * (track.width - width)
-                    anchors.verticalCenter: track.verticalCenter
-                    width: 11; height: 11; radius: 5.5
-                    color: Theme.cyan
+                    anchors.centerIn: parent
+                    width: 16
+                    height: Math.max(2, Math.min(10, ShottyState.currentWidth))
+                    radius: height / 2
+                    color: Theme.text
                 }
                 MouseArea {
                     anchors.fill: parent
-                    onPressed: mouse => {
-                        const f = Math.max(0, Math.min(1, (mouse.x - track.x) / track.width));
-                        ShottyState.currentWidth = Math.round(handle.minW + f * (handle.maxW - handle.minW));
-                    }
-                    onPositionChanged: mouse => {
-                        if (!pressed) return;
-                        const f = Math.max(0, Math.min(1, (mouse.x - track.x) / track.width));
-                        ShottyState.currentWidth = Math.round(handle.minW + f * (handle.maxW - handle.minW));
+                    onClicked: {
+                        root.widthPickerOpen = !root.widthPickerOpen;
+                        root.colorPickerOpen = false;
                     }
                 }
             }
@@ -398,6 +394,66 @@ PanelWindow {
                     }
                 }
             }
+        }
+    }
+
+    // Line-thickness flyout -- opened by the toolbar's width-indicator
+    // button. Same collapse-to-flyout pattern and positioning as the color
+    // popup, just wider (a slider needs more room than swatches).
+    Rectangle {
+        id: widthPopup
+        visible: root.widthPickerOpen && toolbar.visible
+        width: 150
+        height: 36
+        x: Math.max(0, Math.min(toolbar.x, root.width - width))
+        y: Math.max(0, toolbar.y - height - 8)
+        radius: 8
+        color: Theme.bgAlpha
+        border.width: 1
+        border.color: Theme.border
+        z: 20
+
+        Rectangle {
+            id: widthTrack
+            anchors.verticalCenter: parent.verticalCenter
+            x: 12
+            width: parent.width - 24
+            height: 3
+            radius: 1.5
+            color: Theme.border
+        }
+        Rectangle {
+            id: widthHandle
+            readonly property real minW: 1
+            readonly property real maxW: 12
+            readonly property real frac: (ShottyState.currentWidth - minW) / (maxW - minW)
+            x: widthTrack.x + frac * (widthTrack.width - width)
+            anchors.verticalCenter: widthTrack.verticalCenter
+            width: 14; height: 14; radius: 7
+            color: Theme.cyan
+        }
+        MouseArea {
+            anchors.fill: parent
+            onPressed: mouse => {
+                const f = Math.max(0, Math.min(1, (mouse.x - widthTrack.x) / widthTrack.width));
+                ShottyState.currentWidth = Math.round(widthHandle.minW + f * (widthHandle.maxW - widthHandle.minW));
+            }
+            onPositionChanged: mouse => {
+                if (!pressed) return;
+                const f = Math.max(0, Math.min(1, (mouse.x - widthTrack.x) / widthTrack.width));
+                ShottyState.currentWidth = Math.round(widthHandle.minW + f * (widthHandle.maxW - widthHandle.minW));
+            }
+        }
+    }
+
+    // Ctrl+wheel adjusts stroke width directly, without opening the flyout
+    // at all -- available whenever the toolbar itself would be.
+    WheelHandler {
+        acceptedModifiers: Qt.ControlModifier
+        enabled: ShottyState.phase === "toolbar" || ShottyState.phase === "drawing"
+        onWheel: event => {
+            const delta = event.angleDelta.y > 0 ? 1 : -1;
+            ShottyState.currentWidth = Math.max(1, Math.min(12, ShottyState.currentWidth + delta));
         }
     }
 
