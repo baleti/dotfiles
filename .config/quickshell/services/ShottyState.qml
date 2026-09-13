@@ -103,11 +103,41 @@ QtObject {
         if (root.active) root.close(); else root.open();
     }
 
+    function escapeAction(): void {
+        if (root.phase === "drawing") root.phase = "toolbar"; // exit tool-modal, keep the selection
+        else root.close();
+    }
+
     // ---- selection drag ----
+    function isInsideSelection(gx: real, gy: real): bool {
+        return gx >= root.selLeft && gx <= root.selLeft + root.selWidth &&
+               gy >= root.selTop && gy <= root.selTop + root.selHeight;
+    }
+
     function beginSelect(gx: real, gy: real): void {
         root.lastSelectAllScope = "";
         root.selX1 = root.selX2 = gx;
         root.selY1 = root.selY2 = gy;
+    }
+
+    // ---- pan (move the whole selection without resizing it -- shapes are
+    // stored in absolute screen coords and deliberately don't move with it,
+    // same as Flameshot: panning/resizing only changes what gets cropped
+    // into the final output, never the annotations themselves) ----
+    property real _panOffsetX: 0
+    property real _panOffsetY: 0
+    function beginPan(gx: real, gy: real): void {
+        root._panOffsetX = gx - root.selLeft;
+        root._panOffsetY = gy - root.selTop;
+    }
+    function updatePan(gx: real, gy: real): void {
+        const w = root.selWidth, h = root.selHeight;
+        const left = gx - root._panOffsetX, top = gy - root._panOffsetY;
+        root.selX1 = left; root.selY1 = top;
+        root.selX2 = left + w; root.selY2 = top + h;
+    }
+    function endPan(): void {
+        root.lastSelectAllScope = "";
     }
 
     // Ctrl+A: first call selects the screen the tool opened on; a second
@@ -148,6 +178,52 @@ QtObject {
         root.phase = "toolbar";
     }
 
+    // ---- resize handles (8 handles around the selection border, active
+    // only in "toolbar" phase). Reuses the exact same mechanism as the
+    // initial drag: an "anchor" point (the opposite corner/edge, held
+    // fixed) and a "free" point that follows the mouse, both funneled
+    // through selX1/Y1/X2/Y2 -- so selLeft/selTop/selWidth/selHeight's
+    // existing min()/abs() derivation handles a drag crossing past the
+    // opposite edge for free, no extra flip-handling needed. Edge (not
+    // corner) handles additionally pin the OTHER axis to both of its
+    // current extents up front, then updateResize only ever touches the
+    // one axis that's actually supposed to move.
+    property string _resizeEdge: ""
+
+    function beginResize(edge: string, gx: real, gy: real): void {
+        root._resizeEdge = edge;
+        const left = root.selLeft, right = root.selLeft + root.selWidth;
+        const top = root.selTop, bottom = root.selTop + root.selHeight;
+        switch (edge) {
+            case "nw": root.selX1 = right; root.selY1 = bottom; break;
+            case "ne": root.selX1 = left;  root.selY1 = bottom; break;
+            case "sw": root.selX1 = right; root.selY1 = top;    break;
+            case "se": root.selX1 = left;  root.selY1 = top;    break;
+            case "n":  root.selX1 = left;  root.selY1 = bottom; root.selX2 = right; break;
+            case "s":  root.selX1 = left;  root.selY1 = top;    root.selX2 = right; break;
+            case "w":  root.selX1 = right; root.selY1 = top;    root.selY2 = bottom; break;
+            case "e":  root.selX1 = left;  root.selY1 = top;    root.selY2 = bottom; break;
+        }
+        root.updateResize(gx, gy);
+    }
+
+    function updateResize(gx: real, gy: real): void {
+        const edge = root._resizeEdge;
+        if (edge === "n" || edge === "s") {
+            root.selY2 = gy; // X1/X2 already pinned to left/right in beginResize
+        } else if (edge === "w" || edge === "e") {
+            root.selX2 = gx; // Y1/Y2 already pinned to top/bottom in beginResize
+        } else {
+            root.selX2 = gx;
+            root.selY2 = gy;
+        }
+    }
+
+    function endResize(): void {
+        root._resizeEdge = "";
+        root.lastSelectAllScope = ""; // this is a manual edit, same as any drag
+    }
+
     function pickTool(tool: string): void {
         root.currentTool = tool;
         // Zero out the leftover drag coords from the last shape -- without
@@ -180,7 +256,15 @@ QtObject {
             root.shapes = next;
             root._redoStack = []; // a new shape invalidates any redo history
         }
-        root.phase = "toolbar";
+        // Zero the in-progress drag coords -- otherwise the just-finished
+        // shape's stale coordinates would render a second time as the
+        // "live preview" (phase is still "drawing") until the next press
+        // overwrites them, showing a visible duplicate.
+        root.drawX1 = root.drawY1 = root.drawX2 = root.drawY2 = 0;
+        // Deliberately NOT resetting phase to "toolbar" -- the tool stays
+        // armed/modal so the next drag draws another shape immediately,
+        // same tool, no need to press the shortcut again. Escape
+        // (escapeAction()) is what exits back to "toolbar".
     }
 
     // ---- undo/redo (shapes only, not the selection itself) ----
