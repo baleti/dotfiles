@@ -65,6 +65,9 @@ hl.on("hyprland.start", function()
     -- what clipboard-picker's $date: field reads from. See that script's
     -- own comment for how it correlates a log line to the right id.
     hl.exec_cmd([[wl-paste --watch ~/.config/hypr/scripts/cliphist-store-logged.sh]])
+    -- Keeps the last clipboard/primary selection alive after the source app
+    -- exits -- wlroots clears a selection once its owning client closes.
+    hl.exec_cmd("wl-clip-persist --clipboard both")
     -- notifyd owns org.freedesktop.Notifications. Replaced dunst
     -- (~/.claude2/plans/silly-percolating-rose.md): dunst invalidates a
     -- notification's actions the instant it closes, so mod+n / ctrl+mod+n
