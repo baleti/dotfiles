@@ -8,14 +8,15 @@ import "../services"
 // weekly% lives only in the detail panel (too much for a bar pill to carry
 // at a glance across 3 accounts). Backed by ClaudeUsageSvc, which just
 // reads the JSON the standalone claude-usage-daemon.py poller writes; this
-// pill never touches the network. Click, or CTRL+ALT+c (keybinds.lua ->
-// bar-toggle.sh -> Bar.qml's IpcHandler), toggles the detail panel
-// (ClaudeUsageExpanded) -- no hover-open here, unlike media/calendar, since
-// a percentage readout doesn't need a passing-glance preview.
+// pill never touches the network. Hovering shows the detail panel
+// (ClaudeUsageExpanded) as a passing preview; clicking, or CTRL+ALT+c
+// (keybinds.lua -> bar-toggle.sh -> Bar.qml's IpcHandler), pins it open --
+// same hover/pin pattern every other bar pill uses (2026-09-13).
 Rectangle {
     id: root
 
     signal toggled
+    readonly property alias hovered: mouseArea.containsMouse
 
     implicitWidth: row.implicitWidth + Theme.pillPadH * 2
     implicitHeight: Theme.barHeight - 10
@@ -152,7 +153,9 @@ Rectangle {
     }
 
     MouseArea {
+        id: mouseArea
         anchors.fill: parent
+        hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.toggled()
     }

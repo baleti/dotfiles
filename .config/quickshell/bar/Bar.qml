@@ -1072,7 +1072,7 @@ Item {
 
         ClaudeUsagePill {
             id: claudeUsagePill
-            onToggled: claudeUsageExpanded.expanded = !claudeUsageExpanded.expanded
+            onToggled: root.toggleClaudeUsagePin()
         }
 
         Loader {
@@ -1142,12 +1142,19 @@ Item {
         onTriggered: calendarExpanded.expanded = false
     }
 
-    // Authoritative over the visible state -- see GraphPill.togglePin(). The
-    // old `else if (!clockAreaHovered)` guard let a toggle-off keypress do
-    // nothing while the pointer was on the clock or calendar (2026-08-29).
+    // Branches on `clockPinned`, not `expanded` -- hovering the pill already
+    // sets `expanded = true` on its own, so a click while hovering would
+    // otherwise always land on the "close" branch and the panel could never
+    // be pinned open, same bug GraphPill.togglePin() was fixed for
+    // (reported 2026-08-29; this call site was missed at the time).
+    // Still authoritative over the current visible state: toggling a panel
+    // closed closes it NOW even if the pointer is sitting on the pill or
+    // the panel -- the old `else if (!clockAreaHovered)` guard let a
+    // toggle-off keypress do nothing while the pointer stayed there
+    // (2026-08-29).
     function toggleClockPin(): void {
         clockHoverOutTimer.stop();
-        if (calendarExpanded.expanded) {
+        if (clockPinned) {
             clockPinned = false;
             calendarExpanded.expanded = false;
         } else {
@@ -1172,9 +1179,10 @@ Item {
 
         panelWidth: root.widthFor("calendar")
         maxPanelHeight: root.maxPanelHeight
-        // Pinned open (mod+CTRL+c or a clock click) -> the month-view layout
-        // with event titles under each day; a passing hover stays compact.
-        bigMode: root.clockPinned
+        // Always the month-view layout with event titles under each day,
+        // whether opened by hover or pinned open (mod+c / a clock click) --
+        // hover and mod+c show the same view (2026-09-13).
+        bigMode: true
         x: root.layoutFor("calendar").right - width
         y: root.panelYFor("calendar")
         // Take keyboard control on open (so a previously-focused graph pill
@@ -1182,12 +1190,49 @@ Item {
         onExpandedChanged: expanded ? root.forceActiveFocus() : root.refocusActivePanel()
     }
 
-    // CTRL+ALT+c (keybinds.lua) or a click on claudeUsagePill toggles this.
+    // Hovering claudeUsagePill (or this panel itself) opens this as a
+    // passing preview; click, or CTRL+ALT+c (keybinds.lua), pins it open --
+    // same hover/pin pattern as the calendar (root.toggleClockPin() above)
+    // and every GraphPill (2026-09-13; previously click-only, no
+    // hover-open, since a percentage readout was judged to not need a
+    // passing-glance preview -- overridden by explicit request that every
+    // bar pill behave the same way).
     // Takes real keyboard control on open the same way media/calendar do
     // (root.Keys.onPressed above handles Escape while this is the open
     // panel) -- originally left out of this machinery since nothing here
     // needed arrow-key nav, but Escape-to-close was explicitly requested
     // and that needs real focus the same way the other panels get it.
+    readonly property bool claudeUsageAreaHovered: claudeUsagePill.hovered || claudeUsageExpanded.hovered
+    property bool claudeUsagePinned: false
+
+    onClaudeUsageAreaHoveredChanged: {
+        if (claudeUsageAreaHovered) {
+            claudeUsageHoverOutTimer.stop();
+            claudeUsageExpanded.expanded = true;
+        } else if (!claudeUsagePinned) {
+            claudeUsageHoverOutTimer.restart();
+        }
+    }
+
+    Timer {
+        id: claudeUsageHoverOutTimer
+        interval: 0
+        onTriggered: claudeUsageExpanded.expanded = false
+    }
+
+    // Branches on `claudeUsagePinned`, not `expanded` -- see
+    // root.toggleClockPin()'s comment above for why (same bug, same fix).
+    function toggleClaudeUsagePin(): void {
+        claudeUsageHoverOutTimer.stop();
+        if (claudeUsagePinned) {
+            claudeUsagePinned = false;
+            claudeUsageExpanded.expanded = false;
+        } else {
+            claudeUsagePinned = true;
+            claudeUsageExpanded.expanded = true;
+        }
+    }
+
     ClaudeUsageExpanded {
         id: claudeUsageExpanded
 
@@ -1261,6 +1306,6 @@ Item {
         function toggleGpu(): void { gpuPill.togglePin(); }
         function toggleMedia(): void { mediaExpanded.expanded = !mediaExpanded.expanded; }
         function toggleCalendar(): void { root.toggleClockPin(); }
-        function toggleClaudeUsage(): void { claudeUsageExpanded.expanded = !claudeUsageExpanded.expanded; }
+        function toggleClaudeUsage(): void { root.toggleClaudeUsagePin(); }
     }
 }
