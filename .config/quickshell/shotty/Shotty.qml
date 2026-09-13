@@ -221,6 +221,7 @@ PanelWindow {
     MouseArea {
         anchors.fill: parent
         enabled: ShottyState.phase === "selecting" || ShottyState.phase === "drawing"
+        cursorShape: Qt.CrossCursor
         onPressed: mouse => {
             const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
             if (ShottyState.phase === "selecting") ShottyState.beginSelect(gx, gy);
@@ -446,21 +447,27 @@ PanelWindow {
         }
     }
 
-    // Ctrl+wheel adjusts stroke width directly, without opening the flyout
-    // at all -- available whenever the toolbar itself would be.
-    WheelHandler {
-        acceptedModifiers: Qt.ControlModifier
-        enabled: ShottyState.phase === "toolbar" || ShottyState.phase === "drawing"
-        onWheel: event => {
-            const delta = event.angleDelta.y > 0 ? 1 : -1;
-            ShottyState.currentWidth = Math.max(1, Math.min(12, ShottyState.currentWidth + delta));
-        }
-    }
 
     Item {
         id: escCatcher
         anchors.fill: parent
         focus: root.open
+
+        // Ctrl+wheel adjusts stroke width directly (works globally for
+        // whichever tool is selected, not tied to any button) -- must be a
+        // child of a real Item, not the bare PanelWindow: pointer handlers
+        // attach to their parent Item's geometry for hit-testing, and a
+        // Window isn't one, which is why an earlier attempt (as a direct
+        // PanelWindow child) silently never received events.
+        WheelHandler {
+            acceptedModifiers: Qt.ControlModifier
+            enabled: ShottyState.phase !== "idle" && ShottyState.phase !== "compositing"
+            onWheel: event => {
+                const delta = event.angleDelta.y > 0 ? 1 : -1;
+                ShottyState.currentWidth = Math.max(1, Math.min(12, ShottyState.currentWidth + delta));
+            }
+        }
+
         Keys.onPressed: event => {
             if (event.key === Qt.Key_Escape) {
                 ShottyState.close();
