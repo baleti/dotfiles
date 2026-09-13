@@ -272,10 +272,17 @@ PanelWindow {
             }
         }
         onPositionChanged: mouse => {
+            // pressed must gate EVERY branch here, not just "toolbar" --
+            // hoverEnabled: true (added for the pan/crosshair cursor swap)
+            // makes this fire on every mouse move regardless of button
+            // state, so without this guard "selecting"/"drawing" started
+            // dragging a selection/shape from a stale (0,0) anchor the
+            // instant the mouse moved, before any real press (2026-09-13).
+            if (!pressed) return;
             const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
             if (ShottyState.phase === "selecting") {
                 ShottyState.updateSelect(gx, gy);
-            } else if (ShottyState.phase === "toolbar" && pressed) {
+            } else if (ShottyState.phase === "toolbar") {
                 if (mainArea.panning) ShottyState.updatePan(gx, gy);
                 else ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "drawing") {
