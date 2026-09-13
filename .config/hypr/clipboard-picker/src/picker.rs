@@ -138,6 +138,11 @@ enum SuggestionKind {
     /// A field's live values. Accepting inserts `<field>:<value> `
     /// (re-quoted if it contains whitespace).
     Value(&'static str),
+    /// Search-box history (query-dsl.md's "Search-box history"): a past
+    /// submitted query. Accepting replaces the WHOLE search text (start
+    /// is always 0 for this kind - see `refresh_history_suggestions`),
+    /// unlike every other kind, which splices at a trailing fragment.
+    History,
 }
 
 struct State {
@@ -156,6 +161,15 @@ struct State {
     /// `compute_candidates` and the Ctrl+Space key handler in `run`.
     verb_multi: RefCell<bool>,
     verb_multi_start: RefCell<usize>,
+    /// Search-box history (query-dsl.md): Up/Down cycling state.
+    /// `hist_index` is `None` while sitting on the draft (not cycling),
+    /// `Some(i)` into the oldest-first history file otherwise.
+    /// `hist_cycling` guards `connect_changed` (below) from treating our
+    /// own `search.set_text` (inside `history_prev`/`history_next`) as a
+    /// fresh edit that should cancel the cycle.
+    hist_draft: RefCell<String>,
+    hist_index: RefCell<Option<usize>>,
+    hist_cycling: RefCell<bool>,
     /// One dim label per already-created row (index-aligned with `entries`,
     /// same creation order - see `make_row`), showing whatever field the
     /// query is currently `/fv field:value`-scoped to (query-dsl.md's
@@ -922,6 +936,7 @@ fn suggest_row(state: &State, kind: &SuggestionKind, item: &str) -> SuggestRow {
             SuggestRow { label: item.to_string(), alias: String::new(), desc }
         }
         SuggestionKind::Value(_) => SuggestRow { label: item.to_string(), alias: String::new(), desc: String::new() },
+        SuggestionKind::History => SuggestRow { label: item.to_string(), alias: String::new(), desc: String::new() },
     }
 }
 
@@ -1019,10 +1034,160 @@ fn accept_suggestion(search: &gtk::SearchEntry, list: &gtk::ListBox, state: &Rc<
             };
             format!("{prefix}{field}:{value} ")
         }
+        // Whole-line replace, no prefix (start is always 0 - see
+        // `refresh_history_suggestions`) - matches zsh's own
+        // `LBUFFER=$selected`.
+        SuggestionKind::History => chosen,
     };
     hide_suggestions(list, state);
     search.set_text(&new_query);
     search.set_position(-1);
+}
+
+// ---- search-box history (query-dsl.md's "Search-box history") -------------
+//
+// One submitted query per line, oldest first - the same file shape the
+// tmux fzf pickers' own `--history` file uses, kept for consistency across
+// languages even though nothing here reads it with fzf. Lives under this
+// picker's own `cache_dir(program_name)` (clipboard-picker and
+// notification-picker share this binary but pass different
+// `program_name`s, so they get separate files for free - query-dsl.md's
+// "one history list per picker, not shared").
+
+fn history_path(program_name: &str) -> PathBuf {
+    cache_dir(program_name).join("query-history")
+}
+
+/// Read fresh every call rather than cached in `State` - this is a
+/// one-shot process per invocation, same reasoning the tmux Python
+/// pickers' own history_search()/history_candidates() give (see
+/// query-dsl.md's INC_APPEND_HISTORY/SHARE_HISTORY note), and the file is
+/// small enough that re-reading it on every keystroke of a history search
+/// is not worth caching against.
+fn load_history(program_name: &str) -> Vec<String> {
+    match fs::read_to_string(history_path(program_name)) {
+        Ok(s) => s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// HIST_IGNORE_ALL_DUPS + HIST_REDUCE_BLANKS (query-dsl.md): normalize
+/// whitespace, drop nothing if the (normalized) query is empty, otherwise
+/// remove any existing occurrence and re-append at the end so a repeat
+/// floats back to "most recent" instead of piling up. Called both on a
+/// real accept (`on_activate`, in `run`) and on selection-move after
+/// typing (the arrow-key list-navigation arm in `run`'s key-press
+/// handler) - not on every keystroke.
+fn record_history(program_name: &str, query: &str) {
+    let q: String = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    if q.is_empty() {
+        return;
+    }
+    let path = history_path(program_name);
+    let Some(dir) = path.parent() else { return };
+    if fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let mut entries = load_history(program_name);
+    entries.retain(|e| e != &q);
+    entries.push(q);
+    let tmp = path.with_extension("tmp");
+    if fs::write(&tmp, entries.join("\n") + "\n").is_ok() {
+        let _ = fs::rename(&tmp, &path);
+    }
+}
+
+/// The QML pickers' own approximation of fzf's default fuzzy algorithm
+/// (deliberately not this DSL's plain substring rule - see query-dsl.md's
+/// Search-box history section): ordered-subsequence match, same as fzf's
+/// core heuristic without its scoring/highlighting. Ported by hand from
+/// the identical `_fuzzySubsequence`/`_fuzzy_subsequence` in every QML
+/// picker.
+fn fuzzy_subsequence(hay: &str, needle: &str) -> bool {
+    let mut needle = needle.chars();
+    let Some(mut want) = needle.next() else { return true };
+    for c in hay.chars() {
+        if c == want {
+            match needle.next() {
+                Some(next) => want = next,
+                None => return true,
+            }
+        }
+    }
+    false
+}
+
+fn compute_history_candidates(query: &str, program_name: &str) -> Vec<String> {
+    let mut items: Vec<String> = load_history(program_name).into_iter().rev().collect(); // most-recent-first
+    let q = query.to_lowercase();
+    if !q.is_empty() {
+        items.retain(|e| fuzzy_subsequence(&e.to_lowercase(), &q));
+    }
+    items
+}
+
+/// Ctrl+R's entire job, and also what `connect_changed` (in `run`) calls
+/// on every keystroke while a history popup is already open (recognised
+/// by `state.suggestion_kind` being `Some(History)`) - unlike
+/// `trigger_completion`/`refresh_suggestions`, this always shows the
+/// popup, even with zero current candidates (matching zsh's own ctrl-r
+/// widget, which shows its popup unconditionally too - see the doc
+/// section), so a fresh install with no history yet still gives visible
+/// confirmation the binding fired rather than doing nothing.
+fn refresh_history_suggestions(query: &str, list: &gtk::ListBox, state: &Rc<State>, program_name: &str) {
+    let items = compute_history_candidates(query, program_name);
+    set_completion_state(state, 0, items, SuggestionKind::History);
+    show_suggestions_popup(list, state);
+}
+
+/// Up-arrow: walk backward through history, most-recent-first, freezing
+/// whatever was already typed (`hist_draft`) the first time this is
+/// called since the cycle last reset. Scoped by the caller to when no
+/// popup is open (`state.suggestion_kind.borrow().is_none()`).
+fn history_prev(search: &gtk::SearchEntry, state: &Rc<State>, program_name: &str) {
+    let entries = load_history(program_name); // oldest-first
+    if entries.is_empty() {
+        return;
+    }
+    let mut idx = state.hist_index.borrow_mut();
+    if idx.is_none() {
+        *state.hist_draft.borrow_mut() = search.text().to_string();
+        *idx = Some(entries.len());
+    }
+    let Some(i) = *idx else { return };
+    if i == 0 {
+        return;
+    }
+    let new_i = i - 1;
+    *idx = Some(new_i);
+    drop(idx);
+    *state.hist_cycling.borrow_mut() = true;
+    search.set_text(&entries[new_i]);
+    search.set_position(-1);
+    *state.hist_cycling.borrow_mut() = false;
+}
+
+/// Down-arrow: walk forward again, restoring `hist_draft` verbatim once
+/// past the newest entry - the same draft-restore every other
+/// implementation of this feature gives (confirmed against real fzf,
+/// query-dsl.md's Rollout note).
+fn history_next(search: &gtk::SearchEntry, state: &Rc<State>, program_name: &str) {
+    let entries = load_history(program_name);
+    let mut idx = state.hist_index.borrow_mut();
+    let Some(i) = *idx else { return }; // not cycling - nothing to do
+    let new_i = i + 1;
+    let text = if new_i >= entries.len() {
+        *idx = None;
+        state.hist_draft.borrow().clone()
+    } else {
+        *idx = Some(new_i);
+        entries[new_i].clone()
+    };
+    drop(idx);
+    *state.hist_cycling.borrow_mut() = true;
+    search.set_text(&text);
+    search.set_position(-1);
+    *state.hist_cycling.borrow_mut() = false;
 }
 
 /// Runs the picker window until a row is activated or it's dismissed.
@@ -1049,6 +1214,7 @@ pub fn run(
     let _ = fs::write(&pid_path, std::process::id().to_string());
 
     let field_names = config.field_names.clone();
+    let program_name = config.program_name; // &'static str, Copy - usable in every `move` closure below with no extra ceremony
     let (command_valid_color, command_invalid_color) = load_command_validity_colors();
     let state = Rc::new(State {
         entries,
@@ -1061,6 +1227,9 @@ pub fn run(
         suggestion_kind: RefCell::new(None),
         verb_multi: RefCell::new(false),
         verb_multi_start: RefCell::new(0),
+        hist_draft: RefCell::new(String::new()),
+        hist_index: RefCell::new(None),
+        hist_cycling: RefCell::new(false),
         extra_labels: RefCell::new(Vec::new()),
         command_valid_color,
         command_invalid_color,
@@ -1175,6 +1344,13 @@ pub fn run(
         search.connect_changed(move |entry| {
             let text = entry.text();
             apply_command_colors(entry, text.as_str(), &state);
+            // A real edit cancels an in-progress Up/Down history cycle
+            // (query-dsl.md: editing invalidates the cycle the same way
+            // it does in a real shell) - but not when history_prev/
+            // history_next just set this text themselves.
+            if !*state.hist_cycling.borrow() {
+                *state.hist_index.borrow_mut() = None;
+            }
             // Resolve the needle once per keystroke rather than once per row,
             // and drop the borrow before the filter func takes it.
             *state.query.borrow_mut() = parse_query(text.as_str(), &state.field_names);
@@ -1198,8 +1374,15 @@ pub fn run(
             // trigger_completion) - typing alone never opens it from
             // nothing. Once it's already open, keep narrowing it against
             // the new text instead of closing it (refresh_suggestions);
-            // narrowing to zero candidates closes it on its own.
-            if state.suggestions.borrow().is_empty() {
+            // narrowing to zero candidates closes it on its own. A history
+            // popup (Ctrl+R) is recognised the same way completion's own
+            // "already open" check works, just against a different kind -
+            // and unlike completion it keeps recomputing (and staying
+            // open) even at zero current matches, see
+            // refresh_history_suggestions's own doc comment.
+            if matches!(*state.suggestion_kind.borrow(), Some(SuggestionKind::History)) {
+                refresh_history_suggestions(text.as_str(), &suggestions_list, &state, program_name);
+            } else if state.suggestions.borrow().is_empty() {
                 hide_suggestions(&suggestions_list, &state);
             } else {
                 refresh_suggestions(text.as_str(), &suggestions_list, &state);
@@ -1210,7 +1393,14 @@ pub fn run(
 
     {
         let state = state.clone();
+        let search = search.clone();
         listbox.connect_row_activated(move |_, row| {
+            // query-dsl.md's "Search-box history": a real accept records
+            // the query, same as fzf's own --history flag does for the
+            // tmux pickers. This is the one place a row activates
+            // regardless of trigger (mouse double-click or Enter, see the
+            // key-press handler's row.activate() call below).
+            record_history(program_name, &search.text());
             if let Some(e) = state.entries.get(row.index() as usize) {
                 on_activate(e);
             }
@@ -1255,6 +1445,20 @@ pub fn run(
             use gdk::keys::constants as key;
             let k = ev.keyval();
             let ctrl = ev.state().contains(gdk::ModifierType::CONTROL_MASK);
+
+            // Search-box history (query-dsl.md): Ctrl+R always
+            // (re)opens the fuzzy history popup, even with an empty
+            // history file yet - same as zsh's own ctrl-r widget, which
+            // shows its (empty) popup rather than doing nothing the
+            // first time there's no history, so the binding is never
+            // indistinguishable from unbound. Checked first, ahead of
+            // the popup-open block below, so it can also replace an
+            // already-open completion popup with the history one.
+            if ctrl && k == key::r {
+                refresh_history_suggestions(&search.text(), &suggestions_list, &state, program_name);
+                resize_to_content();
+                return glib::Propagation::Stop;
+            }
 
             // The autocomplete popup is Tab-triggered, never shown just
             // from typing (see `connect_changed` and `trigger_completion`)
@@ -1363,13 +1567,30 @@ pub fn run(
                 }
                 return glib::Propagation::Stop;
             }
+            // Search-box history (query-dsl.md): plain Up/Down cycle
+            // submitted queries, most-recent-first with draft-restore,
+            // whenever no popup (completion or history) is open - Ctrl+j/
+            // Ctrl+k below are what move the results list instead, same
+            // trade every other picker in this codebase's family makes
+            // (query-dsl.md's Up-arrow bullet). Gated on
+            // `suggestion_kind` rather than `suggestions.is_empty()`
+            // since a history popup can legitimately be open with zero
+            // current matches (see refresh_history_suggestions).
+            if !ctrl && (k == key::Up || k == key::Down) && state.suggestion_kind.borrow().is_none() {
+                if k == key::Up {
+                    history_prev(&search, &state, program_name);
+                } else {
+                    history_next(&search, &state, program_name);
+                }
+                return glib::Propagation::Stop;
+            }
             // Ctrl+j/k are vim-style Down/Up here too, not just inside the
             // autocomplete popup (which already claims them above and
             // returns early, so this arm only ever runs once that popup
             // isn't showing).
-            let step: i32 = if k == key::Up || (ctrl && k == key::k) {
+            let step: i32 = if ctrl && k == key::k {
                 -1
-            } else if k == key::Down || (ctrl && k == key::j) {
+            } else if ctrl && k == key::j {
                 1
             } else if k == key::Page_Up {
                 -10
@@ -1512,6 +1733,16 @@ mod tests {
         assert!(substr("mag", "image"));
         assert!(!substr("mg", "image")); // not contiguous
         assert!(substr("", "anything"));
+    }
+
+    #[test]
+    fn fuzzy_subsequence_is_ordered_not_contiguous() {
+        // query-dsl.md's Search-box history: Ctrl+R deliberately uses
+        // fuzzy subsequence matching, not `substr`'s containment rule.
+        assert!(fuzzy_subsequence("tmux.session", "txsn")); // ordered subsequence
+        assert!(!fuzzy_subsequence("tmux.session", "nst")); // wrong order
+        assert!(fuzzy_subsequence("anything", "")); // empty needle matches everything
+        assert!(!fuzzy_subsequence("short", "toolongneedle"));
     }
 
     #[test]
