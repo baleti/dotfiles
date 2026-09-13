@@ -244,6 +244,8 @@ PanelWindow {
         enabled: ShottyState.phase === "selecting" || ShottyState.phase === "toolbar" || ShottyState.phase === "drawing"
         hoverEnabled: true
         property bool panning: false
+        // 1, 2, or 0 for "not dragging an edit point".
+        property int editingPoint: 0
         // "" when not resizing, else one of nw/n/ne/w/e/sw/s/se -- resize
         // detection lives entirely in this MouseArea (see hitTestHandle's
         // own comment for why: the 8 handles used to each have their own
@@ -289,7 +291,18 @@ PanelWindow {
         // new shape).
         readonly property bool hoverInsideSel: ShottyState.phase === "toolbar" && hoverHandle === "" && hoverShape < 0 &&
             ShottyState.isInsideSelection(root.screen.x + mouseX, root.screen.y + mouseY)
-        cursorShape: hoverHandle !== "" ? cursorForEdge(hoverHandle)
+        // While editing a shape's own endpoints (double-clicked into it),
+        // hovering either endpoint shows a plain move cursor; that state
+        // takes over cursor duty entirely (no pan/resize/new-select while
+        // editing -- the first click elsewhere just exits edit mode).
+        readonly property bool hoverEditPoint: {
+            if (ShottyState.editingShapeIndex < 0) return false;
+            const s = ShottyState.shapes[ShottyState.editingShapeIndex];
+            const gx = root.screen.x + mouseX, gy = root.screen.y + mouseY;
+            return Math.hypot(gx - s.x1, gy - s.y1) <= handleHitRadius || Math.hypot(gx - s.x2, gy - s.y2) <= handleHitRadius;
+        }
+        cursorShape: ShottyState.editingShapeIndex >= 0 ? (hoverEditPoint ? Qt.SizeAllCursor : Qt.ArrowCursor)
+            : hoverHandle !== "" ? cursorForEdge(hoverHandle)
             : (hoverShape >= 0 || hoverInsideSel) ? Qt.SizeAllCursor : Qt.CrossCursor
 
         onPressed: mouse => {
@@ -297,6 +310,20 @@ PanelWindow {
             if (ShottyState.phase === "selecting") {
                 ShottyState.beginSelect(gx, gy);
             } else if (ShottyState.phase === "toolbar") {
+                if (ShottyState.editingShapeIndex >= 0) {
+                    const s = ShottyState.shapes[ShottyState.editingShapeIndex];
+                    const d1 = Math.hypot(gx - s.x1, gy - s.y1);
+                    const d2 = Math.hypot(gx - s.x2, gy - s.y2);
+                    if (d1 <= mainArea.handleHitRadius && d1 <= d2) {
+                        mainArea.editingPoint = 1;
+                        return;
+                    } else if (d2 <= mainArea.handleHitRadius) {
+                        mainArea.editingPoint = 2;
+                        return;
+                    }
+                    ShottyState.endEditShape(); // clicked away -- deselect, this press does nothing else
+                    return;
+                }
                 const edge = ShottyState.hitTestHandle(gx, gy, mainArea.handleHitRadius);
                 const shapeIdx = edge === "" ? ShottyState.hitTestShape(gx, gy, mainArea.shapeHitRadius) : -1;
                 if (edge !== "") {
@@ -316,6 +343,12 @@ PanelWindow {
                 ShottyState.beginDraw(gx, gy);
             }
         }
+        onDoubleClicked: mouse => {
+            if (ShottyState.phase !== "toolbar") return;
+            const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
+            const idx = ShottyState.hitTestShape(gx, gy, mainArea.shapeHitRadius);
+            if (idx >= 0) ShottyState.beginEditShape(idx);
+        }
         onPositionChanged: mouse => {
             // pressed must gate EVERY branch here, not just "toolbar" --
             // hoverEnabled: true (added for the pan/crosshair cursor swap)
@@ -328,7 +361,8 @@ PanelWindow {
             if (ShottyState.phase === "selecting") {
                 ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "toolbar") {
-                if (mainArea.resizingEdge !== "") ShottyState.updateResize(gx, gy);
+                if (mainArea.editingPoint !== 0) ShottyState.updateEditPoint(mainArea.editingPoint, gx, gy);
+                else if (mainArea.resizingEdge !== "") ShottyState.updateResize(gx, gy);
                 else if (ShottyState.movingShapeIndex >= 0) ShottyState.updateMoveShape(gx, gy);
                 else if (mainArea.panning) ShottyState.updatePan(gx, gy);
                 else ShottyState.updateSelect(gx, gy);
@@ -340,7 +374,9 @@ PanelWindow {
             if (ShottyState.phase === "selecting") {
                 ShottyState.endSelect();
             } else if (ShottyState.phase === "toolbar") {
-                if (mainArea.resizingEdge !== "") {
+                if (mainArea.editingPoint !== 0) {
+                    mainArea.editingPoint = 0;
+                } else if (mainArea.resizingEdge !== "") {
                     ShottyState.endResize();
                     mainArea.resizingEdge = "";
                 } else if (ShottyState.movingShapeIndex >= 0) {
@@ -426,7 +462,7 @@ PanelWindow {
                     default: return ShottyState.selTop + ShottyState.selHeight / 2; // w, e
                 }
             }
-            visible: ShottyState.phase === "toolbar"
+            visible: ShottyState.phase === "toolbar" && ShottyState.editingShapeIndex < 0
             width: 14; height: 14; radius: 3
             x: root.toLocalX(gx) - width / 2
             y: root.toLocalY(gy) - height / 2
@@ -434,6 +470,29 @@ PanelWindow {
             border.width: 2
             border.color: Theme.cyan
             z: 15
+        }
+    }
+
+    // Shape-edit handles: exactly 2, at whichever shape's own defining
+    // points (endpoints for arrow/line, opposite corners for rect --
+    // a rect is fully described by exactly those two points) once
+    // double-clicked into edit mode. Also purely visual; dragging is
+    // handled in mainArea the same way as every other handle here.
+    Repeater {
+        model: ShottyState.editingShapeIndex >= 0 ? [1, 2] : []
+        Rectangle {
+            id: editHandle
+            required property int modelData
+            readonly property var shape: ShottyState.shapes[ShottyState.editingShapeIndex]
+            readonly property real gx: modelData === 1 ? shape.x1 : shape.x2
+            readonly property real gy: modelData === 1 ? shape.y1 : shape.y2
+            width: 14; height: 14; radius: 7
+            x: root.toLocalX(gx) - width / 2
+            y: root.toLocalY(gy) - height / 2
+            color: mainArea.editingPoint === modelData ? Theme.cyan : Theme.bgAlpha
+            border.width: 2
+            border.color: Theme.cyan
+            z: 16
         }
     }
 
@@ -449,7 +508,8 @@ PanelWindow {
 
     Rectangle {
         id: toolbar
-        visible: root._isToolbarAnchor && (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
+        visible: root._isToolbarAnchor && ShottyState.editingShapeIndex < 0 &&
+            (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
         width: Math.min(row.implicitWidth, root.width - 40) + 12
         height: row.implicitHeight + 10
         // Anchored to the selection's bottom-right corner, but clamped to

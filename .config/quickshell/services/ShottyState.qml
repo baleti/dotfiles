@@ -104,7 +104,8 @@ QtObject {
     }
 
     function escapeAction(): void {
-        if (root.phase === "drawing") root.phase = "toolbar"; // exit tool-modal, keep the selection
+        if (root.editingShapeIndex >= 0) root.editingShapeIndex = -1; // exit shape-edit, keep everything else
+        else if (root.phase === "drawing") root.phase = "toolbar"; // exit tool-modal, keep the selection
         else root.close();
     }
 
@@ -197,6 +198,28 @@ QtObject {
     }
     function endMoveShape(): void {
         root.movingShapeIndex = -1;
+    }
+
+    // ---- Stage 2: double-click a shape to edit its two defining points
+    // directly (endpoints for arrow/line, opposite corners for rect --
+    // a rect is fully described by exactly those two points the same as a
+    // line is, so this is one code path for all three shape types). ----
+    property int editingShapeIndex: -1
+
+    function beginEditShape(index: int): void {
+        root.editingShapeIndex = index;
+    }
+    function endEditShape(): void {
+        root.editingShapeIndex = -1;
+    }
+    // point: 1 or 2, matching the shape's x1/y1 vs x2/y2.
+    function updateEditPoint(point: int, gx: real, gy: real): void {
+        if (root.editingShapeIndex < 0) return;
+        const next = root.shapes.slice();
+        const s = Object.assign({}, next[root.editingShapeIndex]);
+        if (point === 1) { s.x1 = gx; s.y1 = gy; } else { s.x2 = gx; s.y2 = gy; }
+        next[root.editingShapeIndex] = s;
+        root.shapes = next;
     }
 
     // Ctrl+A: first call selects the screen the tool opened on; a second
@@ -375,6 +398,7 @@ QtObject {
         const redo = root._redoStack.slice();
         redo.push(popped);
         root._redoStack = redo;
+        if (root.editingShapeIndex >= root.shapes.length) root.editingShapeIndex = -1;
     }
     function redo(): void {
         if (root._redoStack.length === 0) return;
