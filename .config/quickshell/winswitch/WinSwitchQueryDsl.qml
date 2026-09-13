@@ -196,7 +196,10 @@ QtObject {
     function substr(needle, hay) {
         return hay.toLowerCase().indexOf(String(needle).toLowerCase()) >= 0;
     }
-    // A label-line preview of `value`, capped at `maxLen` chars. With no
+    // A label-line preview of `value`, capped at `maxLen` chars, as
+    // `{ text, matchStart, matchLen }` - `matchStart` is -1 when there's no
+    // needle or it wasn't found, so a caller can tell "no highlight" apart
+    // from "highlight at position 0" without a second lookup. With no
     // `needle` this is a plain start-truncation (unchanged behaviour for
     // fields not tied to a matched filter value). With a `needle`, centers
     // the window on its first occurrence instead - a naive chars[0:maxLen]
@@ -206,19 +209,36 @@ QtObject {
     // match was correct (reported 2026-09-13 against winswitch's alt-tab
     // search: `/fv/claude ovh` matched real hits in transcript contents,
     // but every thumbnail showed the same unrelated leading fragment).
+    // `matchStart`/`matchLen` index into the returned `text` (post-slicing,
+    // already accounting for a leading "…") so WinSwitch.qml can wrap
+    // exactly the matched run in a colored span without re-searching.
     function excerpt(value, needle, maxLen) {
-        if (!needle) return value.length > maxLen ? value.slice(0, maxLen) + "…" : value;
-        if (value.length <= maxLen) return value;
+        if (!needle) {
+            const text = value.length > maxLen ? value.slice(0, maxLen) + "…" : value;
+            return { text, matchStart: -1, matchLen: 0 };
+        }
         const idx = value.toLowerCase().indexOf(String(needle).toLowerCase());
-        if (idx < 0) return value.slice(0, maxLen) + "…";
+        if (value.length <= maxLen)
+            return { text: value, matchStart: idx, matchLen: idx >= 0 ? needle.length : 0 };
+        if (idx < 0)
+            return { text: value.slice(0, maxLen) + "…", matchStart: -1, matchLen: 0 };
         const half = Math.floor(Math.max(0, maxLen - needle.length) / 2);
         let start = Math.max(0, idx - half);
         let end = Math.min(value.length, start + maxLen);
         start = Math.max(0, end - maxLen);
         let out = value.slice(start, end);
-        if (start > 0) out = "…" + out;
+        let matchStart = idx - start;
+        if (start > 0) { out = "…" + out; matchStart += 1; }
         if (end < value.length) out = out + "…";
-        return out;
+        return { text: out, matchStart, matchLen: needle.length };
+    }
+    // HTML-escapes `s` for use inside a Text.StyledText string (WinSwitch.qml
+    // renders matched excerpts as rich text to color the hit - see excerpt,
+    // above). Only the three characters that are actually special in that
+    // subset need escaping; arbitrary transcript/title text otherwise passes
+    // through unmodified.
+    function escapeHtml(s) {
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
     function groupDefaultSubOf(g) { return root.groupDefaultSub[g] || ""; }
     function groupSubsOf(g) { return root.groups[g] || []; }
