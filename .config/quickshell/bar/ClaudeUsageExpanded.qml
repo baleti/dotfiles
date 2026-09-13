@@ -634,7 +634,11 @@ Rectangle {
     property var acItems: []
     property int acSel: 0
     property bool acDismissed: false
-    readonly property bool acOpen: acItems.length > 0 && !acDismissed
+    // A history popup (Ctrl+R) stays open even at zero current
+    // candidates - unlike every other kind, where zero means "nothing to
+    // complete" - same as zsh's own ctrl-r widget always showing its
+    // popup (bug found 2026-09-14 testing winswitch's identical gap).
+    readonly property bool acOpen: (acItems.length > 0 || acHistoryMode) && !acDismissed
     onAcItemsChanged: {
         acSel = 0;
         acDismissed = false;

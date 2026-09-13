@@ -258,7 +258,15 @@ PanelWindow {
     // Whether a completion session is open, independent of whether it
     // currently has any candidates to show -- see onTextChanged below.
     property bool acActive: false
-    onAcItemsChanged: { acPopup.visible = root.acItems.length > 0; root.acSel = 0; }
+    // A history popup (Ctrl+R, query-dsl.md's "Search-box history") stays
+    // visible even at zero current candidates - unlike every other kind,
+    // where zero means "nothing to complete, don't show a popup at all" -
+    // same as zsh's own ctrl-r widget always showing its popup.
+    onAcItemsChanged: {
+        acPopup.visible = root.acItems.length > 0
+            || (root.acSuggestionKind !== null && root.acSuggestionKind.kind === "history");
+        root.acSel = 0;
+    }
     // Keeps the highlighted row in the ListView's visible window as
     // Up/Down/Tab move it past either end of the current scroll position.
     onAcSelChanged: if (acList) acList.positionViewAtIndex(acSel, ListView.Contain)
@@ -310,6 +318,16 @@ PanelWindow {
     // Candidates for the current queryText without auto-accepting a unique
     // one (safe to call on every keystroke while narrowing an open popup).
     function _acRecompute() {
+        // A history popup (Ctrl+R) recomputes against a completely
+        // different corpus/matcher (see _acHistoryCandidates) - checked
+        // first, and returned from directly, so the ordinary DSL
+        // completion-context logic below never runs and overwrites
+        // acSuggestionKind out from under an open history search the
+        // moment the user types a character to narrow it (that was a
+        // real bug: typing during Ctrl+R silently closed the popup
+        // instead of narrowing it, reported 2026-09-14).
+        if (root.acSuggestionKind !== null && root.acSuggestionKind.kind === "history")
+            return root._acHistoryCandidates();
         if (root.acVerbMulti) {
             // Bail out of multi-mode if editing has erased back past the
             // frozen "/" (e.g. backspacing the whole command away) - falls
@@ -1066,6 +1084,19 @@ PanelWindow {
                 event.accepted = true;
             } else if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
                 root._advanceRow(-root.cols);
+                event.accepted = true;
+            } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
+                // query-dsl.md's "Search-box history": Ctrl+R works
+                // immediately after Alt+Tab too, before any character has
+                // been typed - locks into search (empty query, unlike the
+                // printable-key branch below which seeds it) and opens
+                // the history popup right away, same "works from a blank
+                // prompt" expectation zsh's own ctrl-r widget gives.
+                WinSwitchState.locked = true;
+                Qt.callLater(() => {
+                    searchInput.forceActiveFocus();
+                    root._triggerHistorySearch();
+                });
                 event.accepted = true;
             } else if (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
                 // Any printable key (Alt may still be held) locks into search.

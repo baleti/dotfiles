@@ -353,7 +353,14 @@ PanelWindow {
     // currently has any candidates to show -- see query's onTextChanged.
     property bool acActive: false
     onAcItemsChanged: {
-        ac.visible = acItems.length > 0;
+        // A history popup (Ctrl+R, query-dsl.md's "Search-box history")
+        // stays visible even at zero current candidates - unlike every
+        // other kind, where zero means "nothing to complete, don't show
+        // a popup at all" - same as zsh's own ctrl-r widget always
+        // showing its popup (bug found 2026-09-14 testing winswitch's
+        // identical gap: a fresh-install empty history made Ctrl+R look
+        // completely unbound instead of showing an empty popup).
+        ac.visible = acItems.length > 0 || root.acHistoryMode;
         acSel = 0;
         if (!ac.visible) root.acVerbMulti = false;
     }
