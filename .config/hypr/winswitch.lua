@@ -89,6 +89,27 @@ end
 -- there's nothing else to bind to.
 local FOCUS_REASON_WORKSPACE_CHANGE = 11
 
+-- How long a FOCUS_REASON_WORKSPACE_CHANGE entry stays revocable. The real
+-- burst (workspace-change bump, maybe a same-window reconfirmation, then the
+-- actual target) is all synchronous C++ signal delivery -- sub-millisecond --
+-- so this only has to clear that with margin, not model human timing. Without
+-- it, `phantom` stays revocable indefinitely: switch to a workspace with a
+-- plain mod+N (reason 11), work there for an hour, then focus anything else
+-- at all, and that hour-long visit gets silently erased from history on the
+-- next unrelated focus change -- not just deprioritized, deleted.
+local PHANTOM_GRACE_MS = 100
+local phantom_timer -- kept referenced: a collected timer never fires
+phantom_timer = hl.timer(function()
+    phantom = nil
+    phantom_timer:set_enabled(false)
+end, { timeout = PHANTOM_GRACE_MS, type = "repeat" })
+phantom_timer:set_enabled(false)
+
+local function restart_phantom_timer()
+    phantom_timer:set_enabled(false)
+    phantom_timer:set_enabled(true)
+end
+
 local active_sub -- kept referenced: a collected subscription never fires
 active_sub = hl.on("window.active", function(w, reason)
     local addr = tostring(w.address)
@@ -96,20 +117,24 @@ active_sub = hl.on("window.active", function(w, reason)
         -- Same window re-confirmed under a different reason right after its
         -- own workspace-change bump (observed live: reason 11 then 2 for the
         -- same address, immediately before the real target's reason-3
-        -- event). Still not a real visit -- leave it revocable.
+        -- event). Still not a real visit -- leave it revocable, and give it
+        -- the full grace window again in case the burst runs longer.
+        restart_phantom_timer()
         return
     end
     if reason == FOCUS_REASON_WORKSPACE_CHANGE then
         history_push(addr)
         phantom = addr
+        restart_phantom_timer()
         return
     end
     if phantom and phantom ~= addr then
-        -- A different window settled right after: that workspace-change
-        -- placeholder was never a real visit. Undo it.
+        -- A different window settled right within the grace window: that
+        -- workspace-change placeholder was never a real visit. Undo it.
         history_remove(phantom)
     end
     phantom = nil
+    phantom_timer:set_enabled(false)
     history_push(addr)
 end)
 
