@@ -68,3 +68,16 @@ hl.window_rule({
 
     no_focus = true,
 })
+
+-- LinkedIn engagement bot (systemd --user timer, every 2 days,
+-- ~/.local/share/linkedin-engagement-bot/run.sh -> chromium-linkedin-engagement-profile
+-- on CDP port 9224, launched with --class=LinkedInEngagementBot). Separate cloned
+-- profile/persona from architect-job-search's own browser-profile (real-identity job
+-- outreach) - see linkedin-engagement-bot/CLAUDE.md. run.sh moves it into
+-- special:linkedinbot at the start of every run.
+hl.window_rule({
+    name  = "linkedin-engagement-bot-no-focus",
+    match = { class = "LinkedInEngagementBot" },
+
+    no_focus = true,
+})
