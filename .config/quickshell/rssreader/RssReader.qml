@@ -369,7 +369,11 @@ PanelWindow {
     // key handler and the popup itself, rather than reaching across scopes
     // for the `ac` id (which QML's id resolution wouldn't see from inside
     // the search box's nested Keys handler).
-    readonly property bool acOpen: acItems.length > 0 && !acDismissed
+    // A history popup (Ctrl+R) stays open even at zero current
+    // candidates - unlike every other kind, where zero means "nothing to
+    // complete" - same as zsh's own ctrl-r widget always showing its
+    // popup (bug found 2026-09-14 testing winswitch's identical gap).
+    readonly property bool acOpen: (acItems.length > 0 || acHistoryMode) && !acDismissed
     onAcItemsChanged: {
         acSel = 0;
         acDismissed = false;
@@ -558,6 +562,16 @@ PanelWindow {
                 RssSvc.markReadKeys(root.view.map(i => i.key));
             } else if (k === Qt.Key_U) {
                 root.unreadOnly = !root.unreadOnly;
+            } else if (k === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
+                // query-dsl.md's "Search-box history": Ctrl+R works
+                // immediately from the article list too, before Tab/"/"
+                // has ever moved focus into search - focuses it (empty
+                // query) and opens the history popup right away, same
+                // "works from a blank prompt" expectation zsh's own
+                // ctrl-r widget gives. Checked ahead of bare "r" below so
+                // it doesn't also trigger a refresh.
+                search.forceActiveFocus();
+                root._triggerHistorySearch();
             } else if (k === Qt.Key_R) {
                 RssSvc.refresh();
             } else if (k === Qt.Key_Slash) {
