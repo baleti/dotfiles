@@ -45,12 +45,32 @@ PanelWindow {
             root._hoverArmed = false;
             root._grabSession = WinSwitchState.sessionId;
             focusGrab.active = true;
-            // Deferred a tick, matching AppLauncher: requesting focus before
-            // the surface has mapped doesn't stick.
-            Qt.callLater(() => card.forceActiveFocus());
+            root._claimFocus();
         } else {
             focusGrab.active = false;
         }
+    }
+
+    // Grabs `card`'s active focus as early as physically possible, and keeps
+    // retrying every event-loop turn until it actually sticks, rather than
+    // the single deferred attempt this used to be ("requesting focus before
+    // the surface has mapped doesn't stick," matching AppLauncher's own
+    // note - true, but a *single* Qt.callLater tick is a race: under load
+    // (reported 2026-09-13, heavier under memory pressure) that one tick can
+    // still land before the surface has actually mapped, and since nothing
+    // else ever retries it, `card` is left with no active focus - key events
+    // reach the surface but no QML item accepts them, and the character
+    // typed to start the search box is silently lost even though nothing
+    // about the grid/thumbnails/enrichment (all independent of this) was
+    // actually still loading). Tried immediately too, not just deferred, so
+    // whichever ordering wins on a given run, focus lands in the same frame
+    // where it's actually possible rather than always waiting a fixed tick.
+    function _claimFocus() {
+        if (!root.open)
+            return;
+        card.forceActiveFocus();
+        if (!card.activeFocus)
+            Qt.callLater(root._claimFocus);
     }
 
     function hide() {
@@ -155,7 +175,12 @@ PanelWindow {
     // grid_dims / cell_size / frame_size) ------------------------------------
     readonly property int minFrame: 64
     readonly property int maxFrame: 320
-    readonly property int labelAllowance: 54
+    // Base allowance fits the title's own (possibly wrapped) 2 lines;
+    // each further active column - `/at`-added, or auto-shown because it's
+    // actively `/fv`-scoped (query-dsl.md's "Auto-shown filter fields") -
+    // gets its own line below, so the grid's cells grow to fit rather than
+    // clipping or overlapping the row beneath.
+    readonly property int labelAllowance: 54 + Math.max(0, root.activeColumns.length - 2) * 14
     readonly property int cellHOverhead: 24
     readonly property int cellVOverhead: 24
 
@@ -220,16 +245,50 @@ PanelWindow {
     property var acItems: []
     property int acSel: 0
     property var acSuggestionKind: null // {kind, start, verb?, via?, field?}
+    // Whether a completion session is open, independent of whether it
+    // currently has any candidates to show -- see onTextChanged below.
+    property bool acActive: false
     onAcItemsChanged: { acPopup.visible = root.acItems.length > 0; root.acSel = 0; }
+    // Keeps the highlighted row in the ListView's visible window as
+    // Up/Down/Tab move it past either end of the current scroll position.
+    onAcSelChanged: if (acList) acList.positionViewAtIndex(acSel, ListView.Contain)
+
+    // Ctrl+Space AND-narrowing (query-dsl.md's "Verb-stage depth"): once a
+    // Verb-stage popup is open, Ctrl+Space inserts a literal space and keeps
+    // it open instead of accepting, so a second (third, ...) substring can
+    // be typed and ANDed against the first -- "/wo" + Tab + Ctrl+Space +
+    // "fv" narrows the whole verb/path universe down to whichever
+    // candidates contain *both* "wo" and "fv" ("/fv/workspace"), rather
+    // than "wo" alone matching every verb crossed with `workspace`.
+    // `acVerbMultiStart` freezes the position of the completion's opening
+    // "/" at the moment multi-mode is entered - ordinary typing after that
+    // updates `queryText` for real (no special-casing of the TextInput
+    // itself), and `_acRecompute` below re-derives the fragments from
+    // whatever now sits between that frozen start and the cursor.
+    property bool acVerbMulti: false
+    property int acVerbMultiStart: 0
 
     function _hideSuggestions() {
         root.acItems = [];
         root.acSuggestionKind = null;
+        root.acVerbMulti = false;
+        root.acActive = false;
     }
 
     function _acRowInfo(kind, item) {
+        if (!kind) return { label: item, alias: "", desc: "" }; // transient: acSuggestionKind resets before acItems does
         if (kind.kind === "verb") {
-            // `item` is bare; `verbInfo` is keyed with the leading "/".
+            // `item` is bare; `verbInfo` is keyed with the leading "/". A
+            // deep candidate (query-dsl.md's "Verb-stage depth") carries its
+            // path glued on after a "/" -- show the verb's long form as the
+            // alias and the path's own description, same roles each already
+            // plays at the plain verb / typePath stages, just combined.
+            const slash = item.indexOf("/");
+            if (slash >= 0) {
+                const verbPart = item.slice(0, slash), pathPart = item.slice(slash + 1);
+                const info = WinSwitchQueryDsl.verbInfo["/" + verbPart] || { long: "", desc: "" };
+                return { label: "/" + item, alias: info.long, desc: WinSwitchQueryDsl.typeDescs[pathPart] || info.desc };
+            }
             const info = WinSwitchQueryDsl.verbInfo["/" + item] || { long: "", desc: "" };
             return { label: "/" + item, alias: info.long, desc: info.desc };
         }
@@ -241,6 +300,19 @@ PanelWindow {
     // Candidates for the current queryText without auto-accepting a unique
     // one (safe to call on every keystroke while narrowing an open popup).
     function _acRecompute() {
+        if (root.acVerbMulti) {
+            // Bail out of multi-mode if editing has erased back past the
+            // frozen "/" (e.g. backspacing the whole command away) - falls
+            // through to the ordinary single-fragment recompute below,
+            // exactly as if multi-mode had never started.
+            if (root.acVerbMultiStart < root.queryText.length && root.queryText[root.acVerbMultiStart] === "/") {
+                const buf = root.queryText.slice(root.acVerbMultiStart + 1);
+                const frags = buf.split(/\s+/).filter(f => f.length > 0);
+                root.acSuggestionKind = { kind: "verb", start: root.acVerbMultiStart, fragment: frags.join(" ") };
+                return WinSwitchQueryDsl.verbStageUniverse().filter(v => frags.every(f => WinSwitchQueryDsl.substr(f, v)));
+            }
+            root.acVerbMulti = false;
+        }
         const completion = WinSwitchQueryDsl.completionContext(root.queryText);
         root.acSuggestionKind = completion;
         if (completion === null) return [];
@@ -250,6 +322,12 @@ PanelWindow {
     function _triggerCompletion() {
         const completion = WinSwitchQueryDsl.completionContext(root.queryText);
         if (completion === null) return false;
+        // Marks the session open the moment Tab lands in a trackable
+        // argument position, even if this exact keystroke has zero
+        // candidates -- onTextChanged below keeps recomputing from here on,
+        // so a later edit that makes the fragment valid again reopens the
+        // popup on its own instead of requiring another Tab press.
+        root.acActive = true;
         const items = WinSwitchQueryDsl.completionCandidates(completion, root.windows, root.metas);
         if (items.length === 0) return false;
         root.acSuggestionKind = completion;
@@ -390,9 +468,17 @@ PanelWindow {
                     onTextChanged: {
                         if (root.queryText !== text)
                             root.queryText = text;
-                        // An already-open popup narrows as you type instead
-                        // of closing.
-                        if (acPopup.visible)
+                        // An open session narrows as you type instead of
+                        // closing -- gated on `acActive`, not `acPopup.visible`:
+                        // the popup itself hides the instant candidates drop
+                        // to zero (e.g. a typo), but the session stays open,
+                        // so fixing the typo recomputes and reopens it rather
+                        // than requiring a fresh Tab (reported 2026-09-13:
+                        // "/cla tt" -> zero candidates hid the popup, and
+                        // correcting it never brought the list back because
+                        // this used to re-test itself against the
+                        // already-false `acPopup.visible`).
+                        if (root.acActive)
                             root.acItems = root._acRecompute();
                         else
                             root._hideSuggestions();
@@ -427,6 +513,18 @@ PanelWindow {
                         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
                             root._completionTab(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
                             event.accepted = true;
+                        } else if (event.key === Qt.Key_Space && acPopup.visible && (event.modifiers & Qt.ControlModifier)) {
+                            // AND-narrow instead of accept - see acVerbMulti
+                            // above. No-op outside the Verb stage (a value/
+                            // sort-direction popup has nothing to cross).
+                            if (root.acSuggestionKind && root.acSuggestionKind.kind === "verb") {
+                                if (!root.acVerbMulti) {
+                                    root.acVerbMulti = true;
+                                    root.acVerbMultiStart = root.acSuggestionKind.start;
+                                }
+                                searchInput.insert(searchInput.cursorPosition, " ");
+                            }
+                            event.accepted = true;
                         } else if (event.key === Qt.Key_Space && acPopup.visible) {
                             root._acAccept();
                             event.accepted = true;
@@ -438,6 +536,23 @@ PanelWindow {
                             if (acPopup.visible) root.acSel = Math.max(0, root.acSel - 1);
                             else root._advance("prev");
                             event.accepted = true;
+                        } else if (!acPopup.visible && event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier)) {
+                            // Ctrl+H/L mirror the grid's own Left/Right (unlocked
+                            // Keys.onPressed, below) the same way Ctrl+J/K above
+                            // already mirror Up/Down - no popup meaning (a
+                            // vertical list has no left/right), so only act while
+                            // the popup isn't showing.
+                            root._advance("next");
+                            event.accepted = true;
+                        } else if (!acPopup.visible && event.key === Qt.Key_H && (event.modifiers & Qt.ControlModifier)) {
+                            root._advance("prev");
+                            event.accepted = true;
+                        } else if (event.key === Qt.Key_PageDown && acPopup.visible) {
+                            root.acSel = Math.min(root.acItems.length - 1, root.acSel + Math.max(1, Math.floor(acList.height / 24)));
+                            event.accepted = true;
+                        } else if (event.key === Qt.Key_PageUp && acPopup.visible) {
+                            root.acSel = Math.max(0, root.acSel - Math.max(1, Math.floor(acList.height / 24)));
+                            event.accepted = true;
                         }
                     }
                 }
@@ -445,23 +560,41 @@ PanelWindow {
 
             // Autocomplete popup, in-layout under the search box: label, then
             // the long-form alias and a one-line description, both dim.
-            Column {
+            // ListView instead of a plain Column+Repeater so entries past
+            // the visible window are reachable -- wheel-scrollable, and
+            // Up/Down (root.onAcSelChanged below) keeps the selection in
+            // view via positionViewAtIndex. Grows with the candidate count
+            // (Verb-stage depth, query-dsl.md, routinely produces far more
+            // than a 7- or 12-row cap ever fit) up to the card's own height
+            // budget -- gridScroll (below) just yields the space, since the
+            // grid isn't usable while the popup has focus anyway; the
+            // hand-rolled scrollbar mirrors bar/ClaudeUsageExpanded.qml's
+            // identical pattern for whatever still doesn't fit even at that
+            // height.
+            Item {
                 id: acPopup
                 visible: false
                 width: parent.width
-                height: visible ? Math.min(root.acItems.length, 7) * 24 + 8 : 0
+                readonly property int maxH: root.screen ? (card.maxCardH - searchHeader.height - 32) : 900
+                height: visible ? Math.min(root.acItems.length * 24 + 8, acPopup.maxH) : 0
                 clip: true
-                padding: 4
 
-                Repeater {
+                ListView {
+                    id: acList
+                    anchors.fill: parent
+                    anchors.margins: 4
+                    anchors.rightMargin: 10
+                    clip: true
                     model: root.acItems
-                    Rectangle {
+                    currentIndex: root.acSel
+                    boundsBehavior: Flickable.StopAtBounds
+                    delegate: Rectangle {
                         id: acRow
                         required property var modelData
                         required property int index
                         readonly property bool cur: index === root.acSel
                         readonly property var info: root._acRowInfo(root.acSuggestionKind, modelData)
-                        width: acPopup.width - 8
+                        width: acList.width
                         height: 24
                         radius: Theme.rounding - 5
                         color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
@@ -504,6 +637,66 @@ PanelWindow {
                         }
                     }
                 }
+
+                // Hand-rolled vertical scrollbar (no QtQuick.Controls anywhere
+                // in this project) - visible only once acItems overflows the
+                // visible window, thumb size/position proportional to how
+                // much of the list is in view.
+                Rectangle {
+                    id: acScrollBar
+                    visible: acList.contentHeight > acList.height + 1
+                    anchors.top: acList.top
+                    anchors.right: parent.right
+                    anchors.rightMargin: 3
+                    width: 4
+                    height: acList.height
+                    radius: 2
+                    color: Qt.rgba(1, 1, 1, 0.06)
+
+                    readonly property real thumbH: Math.max(10, acList.visibleArea.heightRatio * height)
+                    readonly property real travel: Math.max(1, height - thumbH)
+                    readonly property real maxContentY: Math.max(0, acList.contentHeight - acList.height)
+
+                    function scrollToThumbTop(ty: real): void {
+                        const clamped = Math.max(0, Math.min(acScrollBar.travel, ty));
+                        acList.contentY = (clamped / acScrollBar.travel) * acScrollBar.maxContentY;
+                    }
+
+                    Rectangle {
+                        width: parent.width
+                        radius: 2
+                        height: acScrollBar.thumbH
+                        y: Math.min(acScrollBar.travel, acList.visibleArea.yPosition * acScrollBar.height)
+                        color: acSbArea.pressed ? Theme.text
+                            : (acSbArea.containsMouse ? Theme.textDim : Qt.rgba(1, 1, 1, 0.28))
+                    }
+
+                    MouseArea {
+                        id: acSbArea
+                        anchors.fill: parent
+                        anchors.leftMargin: -8
+                        anchors.topMargin: -2
+                        anchors.bottomMargin: -2
+                        hoverEnabled: true
+                        preventStealing: true
+                        property real grabOffset: 0
+
+                        onPressed: mouse => {
+                            const ty = mouse.y + anchors.topMargin;
+                            const thumbY = Math.min(acScrollBar.travel, acList.visibleArea.yPosition * acScrollBar.height);
+                            if (ty >= thumbY && ty <= thumbY + acScrollBar.thumbH) {
+                                grabOffset = ty - thumbY;
+                            } else {
+                                grabOffset = acScrollBar.thumbH / 2;
+                                acScrollBar.scrollToThumbTop(ty - grabOffset);
+                            }
+                        }
+                        onPositionChanged: mouse => {
+                            if (pressed)
+                                acScrollBar.scrollToThumbTop(mouse.y + anchors.topMargin - grabOffset);
+                        }
+                    }
+                }
             }
 
             Item {
@@ -537,18 +730,55 @@ PanelWindow {
                         readonly property bool isSelected: modelData.index === root.selected
                         readonly property var frameDims: root.frameSize(modelData.width, modelData.height, root.cellW, root.maxH)
                         readonly property var meta: WinSwitchState.enrichMeta[modelData.address] || {}
-                        readonly property string label: {
-                            if (root.activeColumns.length === 0) return "";
+                        // One line per active column (title, the default,
+                        // plus whichever fields are `/at`-added or currently
+                        // scoped-filtered - see WinSwitchQueryDsl.qml's
+                        // `activeColumns`/`filterReferencedFields` and
+                        // query-dsl.md's "Auto-shown filter fields") rather
+                        // than one space-joined line, so a field you're
+                        // actively filtering on (`/fv/claude.title foo`)
+                        // reads as its own row under the title, not run
+                        // together with it - the whole point being to see
+                        // what matched when more than one candidate remains.
+                        readonly property var labelLines: {
                             const parts = [];
+                            // Bare-group filters (`/fv/claude foo`) now match
+                            // across every subfield (WinSwitchQueryDsl's
+                            // resolveFilterFields), so which subfield
+                            // actually matched varies row to row - gate each
+                            // group-subfield line to rows where it's the one
+                            // that matched, rather than showing all of a
+                            // group's subfields regardless of relevance
+                            // (query-dsl.md "Auto-shown filter fields").
+                            const groupGate = WinSwitchQueryDsl.scopedGroupFilters(root.queryText);
                             for (const f of root.activeColumns) {
                                 let v = WinSwitchQueryDsl.sortFieldValue(cellItem.modelData, cellItem.meta, f);
                                 if (f.kind === "flat" && f.name === "title" && v === "") v = cellItem.modelData.class || "";
                                 if (v === "") continue;
-                                if (v.length > 80) v = v.slice(0, 80) + "…";
-                                parts.push(f.kind === "flat" && f.name === "workspace" ? ("#" + v) : v);
+                                // For a field reached via a bare-group filter,
+                                // skip it unless it's the subfield that
+                                // actually matched this row, and center the
+                                // preview on the match instead of always
+                                // truncating from the start (see
+                                // WinSwitchQueryDsl's excerpt/scopedGroupFilters).
+                                let needle = null;
+                                if (f.kind === "group") {
+                                    const gated = groupGate.filter(g => g.group === f.group);
+                                    if (gated.length > 0) {
+                                        const hit = gated.find(g => WinSwitchQueryDsl.substr(g.value, v));
+                                        if (!hit) continue;
+                                        needle = hit.value;
+                                    }
+                                }
+                                v = WinSwitchQueryDsl.excerpt(v, needle, 80);
+                                if (f.kind === "group")
+                                    parts.push(f.sub + ": " + v);
+                                else
+                                    parts.push(f.name === "workspace" ? ("#" + v) : v);
                             }
-                            return parts.join(" ");
+                            return parts;
                         }
+                        readonly property string label: cellItem.labelLines.join("\n")
 
                         Rectangle {
                             anchors.fill: parent
@@ -594,7 +824,7 @@ PanelWindow {
                                 width: parent.width - 12
                                 horizontalAlignment: Text.AlignHCenter
                                 elide: Text.ElideRight
-                                maximumLineCount: 2
+                                maximumLineCount: Math.max(2, root.activeColumns.length)
                                 wrapMode: Text.Wrap
                                 text: cellItem.label
                                 font.family: Theme.fontFamily
@@ -633,16 +863,16 @@ PanelWindow {
             } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
                 root._advance(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Right) {
+            } else if (event.key === Qt.Key_Right || (event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier))) {
                 root._advance("next");
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Left) {
+            } else if (event.key === Qt.Key_Left || (event.key === Qt.Key_H && (event.modifiers & Qt.ControlModifier))) {
                 root._advance("prev");
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Down) {
+            } else if (event.key === Qt.Key_Down || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
                 root._advanceRow(root.cols);
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Up) {
+            } else if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
                 root._advanceRow(-root.cols);
                 event.accepted = true;
             } else if (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {

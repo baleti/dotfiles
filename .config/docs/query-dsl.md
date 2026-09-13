@@ -195,10 +195,11 @@ diverge from each other:
 
 - If `path` resolves to a **group**, it's still the same existence filter
   `/fv path` (colonless) already is - `/fv/claude` narrows to
-  claude-hosting rows before a value is ever typed, via or not. A bare
-  group's *via* default (what `/fv/claude` alone resolves to for a
-  *scoped* filter, once a value does follow) is the same
-  `GROUP_DEFAULT_SUB` the colon form already uses - see Type paths.
+  claude-hosting rows before a value is ever typed, via or not. Once a
+  value does follow, a bare group's *via* default (what `/fv/claude ovh`
+  scopes against) is **every subfield of the group**, same as the colon
+  form (`/fv claude:ovh`) and same as `claude.*` already means for a
+  column verb - see Type paths.
 - If `path` resolves only to **flat types**, the via form is a **no-op**
   while it waits for a value - not the space form's free-text fallback
   (see `/filter-value`, below, for why the space form still needs that
@@ -249,11 +250,23 @@ differ).
 
 ```
 title              a flat type
-claude             a group (resolves to its default subfield, /title, for
-                   filtering and sorting; to all its subfields for column verbs)
+claude             a group (resolves to all its subfields for filtering and
+                   column verbs; to its default subfield, GROUP_DEFAULT_SUB,
+                   for /sort, which needs exactly one field)
 claude.title       one explicit group subfield
 claude.*           every subfield of the group
 ```
+
+**A bare group used as a `/fv` scope searches every subfield, not just its
+default one.** `/fv/claude ovh` (or `/fv claude:ovh`) keeps a row if *any*
+subfield - `claude.title`, `claude.path`, `claude.session`, `claude.time`,
+`claude.contents`, whichever the group has - contains `ovh`, the same union
+`claude.*` already means for a column verb (see `/add-type` etc., below).
+This changed 2026-09-13: it used to narrow to just `GROUP_DEFAULT_SUB`
+(`claude.contents` in winswitch), which silently missed a row whose only hit
+was in a different subfield, e.g. `claude.title`. `/sort` keeps the
+default-subfield behavior, since a sort key must resolve to exactly one
+field - see its own section, below.
 
 Each segment is **substring-matched**, case-insensitively, against the
 known names at its level, and **every match is unioned** - `/ft dsl`
@@ -706,6 +719,45 @@ Scoped to consumers that support a Tab-triggered popup at all, same as
 Verb-stage depth and Ctrl+Space above (window-search, focus-picker,
 claude-history out of scope - see the maturity note at the top of
 Autocompletion).
+
+**A group subfield's auto-shown line is labeled with the subfield's own
+name, and gated per row once the scoping term is a bare group.** Added
+2026-09-13, winswitch only (the one picker with groups today): since a bare
+group now searches every subfield rather than just `GROUP_DEFAULT_SUB` (see
+Type paths, above), which subfield actually matched can differ row to row -
+`/fv/claude ovh` might hit `claude.title` on one window and `claude.contents`
+on another. Two changes follow from that:
+
+- **Labeling.** A group-subfield line now renders as `sub: value`
+  (`title: ovh proposal draft`, `contents: ...call it OVH-style...`) instead
+  of a bare, unlabeled value - the reader otherwise has no way to tell which
+  subfield they're looking at, especially once a query can surface more than
+  one. This applies to *every* group-subfield line, not just ones reached
+  through a bare-group filter - a column added via `/at claude.*` gets the
+  same `sub: value` treatment.
+- **Per-row gating.** A field reached through a bare-group scoped filter is
+  only shown on rows where it's actually the subfield that matched -
+  `claude.title` doesn't get a line on a row whose hit was only in
+  `claude.contents`, and vice versa. A field shown for any other reason
+  (`/at`, an explicit `claude.title` scope, the existence-filter default) is
+  unaffected and always shown once it has a non-empty value, same as before.
+- **Match-centered preview.** The shown value is still capped (80 chars in
+  winswitch), but when the line is tied to a matched filter value the window
+  is now centered on the match's first occurrence instead of always starting
+  at character 0 - a plain `value.slice(0, 80)` of a long field like
+  `claude.contents` (a whole transcript) essentially never contains the
+  matched substring within its first 80 characters, so the preview read as
+  unrelated noise even on a correct match (reported 2026-09-13 against
+  winswitch's alt-tab search: `/fv/claude ovh` matched real hits in
+  transcript contents, but every thumbnail showed the same unrelated leading
+  fragment instead of anything resembling `ovh`). Fields not tied to a
+  matched value (an `/at`-added column with nothing scoping it) keep the
+  plain start-truncation, since there's no match position to center on.
+
+`WinSwitchQueryDsl.qml`'s `scopedGroupFilters` (the bare-group `{group,
+value}` pairs currently in the query) and `excerpt` (the centering helper)
+are the reference implementation; `WinSwitch.qml`'s `labelLines` is where
+both are applied per row.
 
 ### Suggestion row anatomy
 

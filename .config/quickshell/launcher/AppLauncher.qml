@@ -55,6 +55,7 @@ PanelWindow {
             root.selected = 0;
             ac.visible = false;
             root.acVerbMulti = false;
+            root.acActive = false;
             focusGrab.active = true;
             Qt.callLater(() => query.forceActiveFocus());
         } else {
@@ -343,6 +344,9 @@ PanelWindow {
     // not recompute unconditionally on every one.
     property var acItems: []
     property int acSel: 0
+    // Whether a completion session is open, independent of whether it
+    // currently has any candidates to show -- see query's onTextChanged.
+    property bool acActive: false
     onAcItemsChanged: {
         ac.visible = acItems.length > 0;
         acSel = 0;
@@ -365,6 +369,12 @@ PanelWindow {
     // onAcItemsChanged) so Up/Down can choose one. Returns whether it
     // found anything to do.
     function _triggerCompletion() {
+        // Marks the session open the moment Tab is pressed, even if this
+        // exact keystroke turns up zero candidates -- onTextChanged below
+        // keeps recomputing from here on, so a later edit that makes the
+        // fragment valid again reopens the popup on its own instead of
+        // requiring another Tab press.
+        root.acActive = true;
         const items = root._acCandidates();
         if (items.length === 0) return false;
         if (items.length === 1) {
@@ -471,17 +481,25 @@ PanelWindow {
                 selectionColor: Theme.cyan
                 selectByMouse: true
                 clip: true
-                // Once the popup is already open, keep recomputing
-                // candidates from the new text instead of clearing --
-                // narrows the list as you type (e.g. `/` + Tab shows every
-                // verb, typing `f` narrows to /fv) rather than closing and
-                // forcing another Tab press. Typing while nothing's open
-                // still doesn't spontaneously show anything (`ac.visible`
-                // check below), matching "Tab-triggered, never live".
-                // Also fires (harmlessly) when accepting a completion sets
-                // this text itself, on an already-open (fine, recomputes
-                // to the same thing) or already-closed (no-op) popup.
-                onTextChanged: root.acItems = ac.visible ? root._acCandidates() : []
+                // Once a session is open (`acActive`, set by Tab -- see
+                // _triggerCompletion), keep recomputing candidates from the
+                // new text instead of clearing -- narrows the list as you
+                // type (e.g. `/` + Tab shows every verb, typing `f` narrows
+                // to /fv) rather than closing and forcing another Tab press.
+                // Gated on `acActive`, not `ac.visible`: the popup itself
+                // hides the instant candidates drop to zero (e.g. a typo),
+                // but the session stays open, so fixing the typo recomputes
+                // and reopens it rather than dead-ending until another Tab
+                // (the same bug reported 2026-09-13 against winswitch's
+                // identical pattern: "/cla tt" -> zero candidates hid the
+                // popup, and correcting it never brought the list back).
+                // Typing while no session is open still doesn't
+                // spontaneously show anything, matching "Tab-triggered,
+                // never live". Also fires (harmlessly) when accepting a
+                // completion sets this text itself, on an already-open
+                // (fine, recomputes to the same thing) or already-closed
+                // (no-op) session.
+                onTextChanged: root.acItems = root.acActive ? root._acCandidates() : []
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
@@ -524,7 +542,7 @@ PanelWindow {
                 // accepts the highlighted suggestion.
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
-                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; }
+                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; }
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
