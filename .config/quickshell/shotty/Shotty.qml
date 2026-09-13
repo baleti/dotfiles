@@ -25,6 +25,7 @@ PanelWindow {
     property bool open: false
     property bool colorPickerOpen: false
     property bool widthPickerOpen: false
+    property bool showWidthIndicator: false
 
     function _recompute() {
         root.open = ShottyState.active;
@@ -300,6 +301,43 @@ PanelWindow {
                 ShottyState.endDraw();
             }
         }
+
+        // Ctrl+wheel adjusts stroke width, works for whichever tool ends up
+        // used next (not tied to any button). Uses MouseArea's own onWheel,
+        // not a separate WheelHandler -- an earlier WheelHandler attempt
+        // (even correctly parented to a real Item, not the bare
+        // PanelWindow) never received a single wheel event on this
+        // compositor, confirmed by diagnostic logging that never fired;
+        // MouseArea's wheel signal, on an Item already proven to receive
+        // real press/move/release input, does.
+        onWheel: wheel => {
+            if (!(wheel.modifiers & Qt.ControlModifier)) return;
+            const delta = wheel.angleDelta.y > 0 ? 1 : -1;
+            ShottyState.currentWidth = Math.max(1, Math.min(12, ShottyState.currentWidth + delta));
+            root.showWidthIndicator = true;
+            widthIndicatorTimer.restart();
+        }
+    }
+
+    // Small circle at the cursor tip while Ctrl+wheel-adjusting stroke
+    // width, showing the width and color that will actually be drawn.
+    // Fades out (via the timer below) shortly after scrolling stops.
+    Timer {
+        id: widthIndicatorTimer
+        interval: 700
+        onTriggered: root.showWidthIndicator = false
+    }
+    Rectangle {
+        visible: root.showWidthIndicator
+        x: mainArea.mouseX + 14
+        y: mainArea.mouseY + 14
+        width: Math.max(6, ShottyState.currentWidth * 2)
+        height: width
+        radius: width / 2
+        color: ShottyState.currentColor
+        border.width: 1
+        border.color: Theme.text
+        z: 30
     }
 
     // Resize handles: 8 small draggable squares around the selection
@@ -587,32 +625,6 @@ PanelWindow {
         anchors.fill: parent
         focus: root.open
 
-        // Ctrl+wheel adjusts stroke width directly (works globally for
-        // whichever tool is selected, not tied to any button) -- must be a
-        // child of a real Item, not the bare PanelWindow: pointer handlers
-        // attach to their parent Item's geometry for hit-testing, and a
-        // Window isn't one, which is why an earlier attempt (as a direct
-        // PanelWindow child) silently never received events.
-        WheelHandler {
-            acceptedModifiers: Qt.ControlModifier
-            enabled: ShottyState.phase !== "idle" && ShottyState.phase !== "compositing"
-            onWheel: event => {
-                console.log(`shotty: ctrl-wheel angleDelta.y=${event.angleDelta.y}`);
-                const delta = event.angleDelta.y > 0 ? 1 : -1;
-                ShottyState.currentWidth = Math.max(1, Math.min(12, ShottyState.currentWidth + delta));
-            }
-        }
-        // TEMPORARY diagnostic: any wheel at all reaching this Item,
-        // regardless of modifier -- narrows down whether Ctrl+wheel's
-        // silence is a routing problem (this never logs either) or a
-        // modifier-matching problem (this logs, the one above doesn't).
-        WheelHandler {
-            acceptedModifiers: Qt.NoModifier | Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier
-            enabled: ShottyState.phase !== "idle" && ShottyState.phase !== "compositing"
-            onWheel: event => {
-                console.log(`shotty: ANY wheel reached escCatcher, modifiers=${event.modifiers}, angleDelta.y=${event.angleDelta.y}`);
-            }
-        }
 
         Keys.onPressed: event => {
             if (event.key === Qt.Key_Escape) {
