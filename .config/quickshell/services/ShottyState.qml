@@ -140,6 +140,65 @@ QtObject {
         root.lastSelectAllScope = "";
     }
 
+    // ---- per-shape hover/move (Stage 1 of "shapes stay editable, not
+    // flattened like Lightshot" -- double-click endpoint/corner editing and
+    // the text tool are later stages). Shapes are referenced by array
+    // index; safe because nothing inserts/removes from `shapes` mid-drag
+    // (you can't simultaneously be moving an existing shape and drawing a
+    // new one). ----
+    function distToSegment(px: real, py: real, x1: real, y1: real, x2: real, y2: real): real {
+        const dx = x2 - x1, dy = y2 - y1;
+        const lenSq = dx * dx + dy * dy;
+        let t = lenSq > 0 ? ((px - x1) * dx + (py - y1) * dy) / lenSq : 0;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+    }
+
+    function distToShape(s: var, px: real, py: real): real {
+        if (s.tool === "rect") {
+            const left = Math.min(s.x1, s.x2), right = Math.max(s.x1, s.x2);
+            const top = Math.min(s.y1, s.y2), bottom = Math.max(s.y1, s.y2);
+            const dx = Math.max(left - px, 0, px - right);
+            const dy = Math.max(top - py, 0, py - bottom);
+            return Math.hypot(dx, dy);
+        }
+        return root.distToSegment(px, py, s.x1, s.y1, s.x2, s.y2);
+    }
+
+    // Returns the index of the topmost (last-drawn) shape within
+    // `threshold` px of a point, or -1. Same generous-radius-independent-
+    // of-visual-size idea as hitTestHandle.
+    function hitTestShape(gx: real, gy: real, threshold: real): int {
+        for (let i = root.shapes.length - 1; i >= 0; i--) {
+            if (root.distToShape(root.shapes[i], gx, gy) <= threshold) return i;
+        }
+        return -1;
+    }
+
+    property int movingShapeIndex: -1
+    property real _moveLastX: 0
+    property real _moveLastY: 0
+
+    function beginMoveShape(index: int, gx: real, gy: real): void {
+        root.movingShapeIndex = index;
+        root._moveLastX = gx;
+        root._moveLastY = gy;
+    }
+    function updateMoveShape(gx: real, gy: real): void {
+        if (root.movingShapeIndex < 0) return;
+        const dx = gx - root._moveLastX, dy = gy - root._moveLastY;
+        const next = root.shapes.slice();
+        const s = Object.assign({}, next[root.movingShapeIndex]);
+        s.x1 += dx; s.y1 += dy; s.x2 += dx; s.y2 += dy;
+        next[root.movingShapeIndex] = s;
+        root.shapes = next;
+        root._moveLastX = gx;
+        root._moveLastY = gy;
+    }
+    function endMoveShape(): void {
+        root.movingShapeIndex = -1;
+    }
+
     // Ctrl+A: first call selects the screen the tool opened on; a second
     // consecutive call (no manual drag in between) expands to every
     // monitor's combined bounding box. Works from "selecting" (no
