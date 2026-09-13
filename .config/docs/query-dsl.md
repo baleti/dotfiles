@@ -75,18 +75,24 @@ group); the pickers whose rows already *are* tmux entities have
 nothing for a `tmux.` prefix to disambiguate the way it does for
 winswitch, since every row already is one. Whether to add it anyway
 purely for cross-picker naming consistency is a call each picker makes
-on its own: focus-picker did (2026-09-13, `FILTER_FIELDS`/`SORT_KEYS` -
-plain flat strings that happen to contain a `.`, not real nested-group
-machinery; see its own module docstring), so `/fv/tmux.session` and a
-bare-group `/fv/tmux query` (unions `tmux.session`/`tmux.window`/
-`tmux.title`, same rule as any ambiguous path segment - Type paths,
-above) both work there now. window-search and claude-history haven't -
-both still keep `session`/`window`/`title` flat (own `FIELD_NAMES`),
-and claude-history specifically can't take this the same way even if
-asked: it already has a *flat* field literally named `tmux` (a
-`session:window.pane` display string), so a `tmux` *group* there would
-collide with existing, differently-shaped meaning rather than just be
-redundant.
+on its own: focus-picker and window-search both did (2026-09-13,
+`FILTER_FIELDS`/`SORT_KEYS` (focus-picker) and `FIELD_NAMES`
+(window-search) - plain flat strings that happen to contain a `.`, not
+real nested-group machinery; see each script's own module docstring),
+so `/fv/tmux.session`, `/fv tmux.session:foo`, and a bare-group
+`/fv tmux:foo` (unions `tmux.session`/`tmux.window`/`tmux.title`, same
+rule as any ambiguous path segment - Type paths, above) all work in
+both now - window-search only ever had the colon form to begin with
+(`QUERY_ELEM_RE`'s field-name character class widened from
+`[a-zA-Z]+` to `[a-zA-Z.]+` to let the dot through; it has no via-path
+support at all, colon or otherwise - see the maturity note above).
+window-search kept `body` flat rather than `tmux.body` - unlike
+session/window/title it has no winswitch counterpart to name-match, so
+there was nothing to gain grouping it. claude-history hasn't picked
+this up and specifically can't the same way even if asked: it already
+has a *flat* field literally named `tmux` (a `session:window.pane`
+display string), so a `tmux` *group* there would collide with
+existing, differently-shaped meaning rather than just be redundant.
 
 The DSL does three orthogonal things to that set, and nothing else:
 
@@ -978,7 +984,12 @@ with no new mechanism to learn.
   open (QML pickers: `Down`/`Up` move it, clamped - see Shared popup UI,
   above), and because replacing the box's text out from under an open
   completion popup that's narrowed to the *old* text would be actively
-  confusing.
+  confusing. **The fzf-native pickers give up Up/Down as row-navigation
+  entirely** to make room for this (there's no separate "popup" state to
+  scope around there the way there is for a QML completion overlay -
+  Up/Down are the *main list's* own navigation by default) - row
+  navigation moves to `ctrl-j`/`ctrl-k` instead, which cost nothing new to
+  bind since they're already fzf's own default synonyms for down/up.
 - **Ctrl+R** opens a popup - the same shared popup machinery
   Tab-completion already uses (nested fzf for the fzf-native pickers,
   in-layout `GtkListBox`/QML overlay elsewhere - see Autocompletion,
@@ -1015,11 +1026,22 @@ with no new mechanism to learn.
     DSL.
 
 **What gets recorded, and when.** A query is appended to that picker's own
-history the moment it's *submitted* - Enter activating a row, mirroring
-"a command" in shell history being whatever you actually pressed Enter
-on - not on every keystroke, and not while a query is only ever narrowing
-results without ever being acted on. An empty search box at that moment
-records nothing (a shell doesn't journal a blank line either). Whitespace
+history the moment the user *acts on it in the results grid* - not on
+every keystroke, and not while a query is only still being typed. Two
+things count as "acted on," added 2026-09-13 after the first cut (accept
+only) turned out to be too narrow in practice: an actual **accept** (Enter
+activating a row - the shell analogue, "a command" being whatever was run)
+and, separately, **moving the row selection** after typing (arrow/ctrl-j/
+ctrl-k navigating the results without ever accepting one) - browsing a
+query's results is itself evidence the query was finished and useful,
+even if the session ends without jumping anywhere. Neither fires mid-typing:
+a keystroke that only changes the query text itself is never on its own a
+trigger, only what comes *after* typing pauses - so a query still being
+composed never gets a half-typed fragment recorded (this DSL's own "never
+flash to zero on a valid partial keystroke" spirit, applied to history
+instead of results - see Design principles, below). An empty search box at
+either moment records nothing (a shell doesn't journal a blank line
+either). Whitespace
 runs are collapsed to one space before storing or comparing (mirrors this
 user's `HIST_REDUCE_BLANKS`), and a submitted query identical, after that
 normalization, to an existing entry anywhere in history removes the older
@@ -1063,18 +1085,29 @@ be its own design, not a port of this section, and hasn't been asked for.
 built.** Landed first in the two fzf-native tmux pickers, where it turned
 out to need almost no new mechanism: fzf's own `--history=FILE` flag
 already *is* Up-arrow-style cycling (confirmed directly, a scripted
-`expect` session against real fzf - loads oldest-first, remaps ctrl-p/
-ctrl-n rather than Up/Down to `prev-history`/`next-history` so this
-picker's existing list-navigation is untouched, writes the file only on
-a genuine accept, never on Escape/ctrl-c, and restores the pre-cycle
-draft verbatim once you walk forward past the newest entry - every part
-of the Up-arrow bullet above, for free). `dedupe_history()`
-(`focus-picker.py`, `claude-history`) is the one thing fzf's flag doesn't
-do on its own - it appends unconditionally, no `HIST_IGNORE_ALL_DUPS`
-equivalent - so both run it right after the outer fzf exits, collapsing
-the file to last-occurrence-wins order before the *next* invocation's
-`--history` load or this invocation's own Ctrl+R popup ever reads it.
-Ctrl+R (`history_search()` in focus-picker.py; `history_candidates()` +
+`expect` session against real fzf - loads oldest-first, writes the file
+only on a genuine accept, never on Escape/ctrl-c, and restores the
+pre-cycle draft verbatim once you walk forward past the newest entry -
+every part of the Up-arrow bullet above, for free). Bound to the literal
+`up`/`down` actions (`--bind up:prev-history --bind down:next-history`),
+not fzf's own ctrl-p/ctrl-n auto-remap default, since real usage showed
+that's what "Up-arrow" actually needs to mean here - row navigation moves
+to `ctrl-j`/`ctrl-k` instead (see the Up-arrow bullet's own note on this).
+`dedupe_history()` (`focus-picker.py`, `claude-history`) is the one thing
+fzf's flag doesn't do on its own - it appends unconditionally, no
+`HIST_IGNORE_ALL_DUPS` equivalent - so both run it right after the outer
+fzf exits, collapsing the file to last-occurrence-wins order before the
+*next* invocation's `--history` load or this invocation's own Ctrl+R
+popup ever reads it. The "moving the selection also records" half of
+"What gets recorded, and when" (above) is `ctrl-j`/`ctrl-k`'s own
+`execute-silent` bind, appending the live query with no read-modify-write
+(`record_history()` in focus-picker.py; `history_candidates()`'s sibling
+`record` mode + socket handler in claude-history) - left as a raw,
+undeduped append on every nav keystroke rather than a full read-dedupe-
+write each time, since `dedupe_history()` already cleans it up once at
+exit and a same-session Ctrl+R seeing a few repeats of one line in the
+meantime is cosmetic, not a correctness problem. Ctrl+R
+(`history_search()` in focus-picker.py; `history_candidates()` +
 `CLIENT_SRC`'s new `history` mode in claude-history) reuses the exact
 same execute()+transform-query() nested-fzf plumbing Tab-completion
 already had, pointed at the history file instead of the DSL candidate

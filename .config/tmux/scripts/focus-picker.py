@@ -935,10 +935,12 @@ def history_search(query):
             entries = [l for l in f.read().splitlines() if l.strip()]
     except FileNotFoundError:
         entries = []
-    if not entries:
-        sys.stdout.write(query)
-        return
     entries.reverse()  # file is oldest-first; popup shows newest-first
+    # Always opens, even with zero entries - same reasoning as zsh's own
+    # ctrl-r widget, which shows its (empty) popup rather than doing
+    # nothing the first time it's pressed with no history yet. An earlier
+    # version returned early here instead, which looked indistinguishable
+    # from Ctrl+R being unbound entirely (reported 2026-09-13).
     p = subprocess.run(
         ["fzf", "--height=100%", "--layout=reverse", "--border=rounded",
          "--prompt=history> ", f"--query={query}"],
@@ -946,6 +948,33 @@ def history_search(query):
     )
     chosen = p.stdout.strip()
     sys.stdout.write(chosen if chosen else query)
+
+
+def record_history(query):
+    """Append the current query to HISTORY_PATH the moment the user acts
+    on it in the grid - either a real accept (already handled for free by
+    fzf's own --history flag, see HISTORY_PATH's comment) or just moving
+    the row selection after typing (drive()'s up/down/ctrl-j/ctrl-k
+    binds, added 2026-09-13 - "the moment user finishes typing and makes
+    an action in the data grid... or only start moving selection around",
+    not gated behind a full accept). Deliberately NOT bound to every
+    keystroke - only to selection-movement, which only fires once typing
+    has paused for an actual navigation - so a query still being composed
+    never gets a half-typed fragment recorded (query-dsl.md's own "never
+    flash..." spirit, applied to history instead of results). Blind
+    append, no read-modify-write and no dedup here: repeatedly moving the
+    selection on an unchanged query appends the same line several times
+    in one sitting, cheap and harmless - dedupe_history() collapses it
+    once, right after this invocation's fzf exits (see drive())."""
+    q = " ".join(query.split())
+    if not q:
+        return
+    try:
+        with open(HISTORY_PATH, "a") as f:
+            f.write(q + "\n")
+        os.chmod(HISTORY_PATH, 0o600)
+    except OSError:
+        pass
 
 
 def sweep_stale_snapshots():
@@ -1100,6 +1129,7 @@ def drive():
     header_cmd = f"{py} --header --query={{q}}"
     complete_cmd = f"{py} --complete --query={{q}} > {shlex.quote(complete_path)}"
     history_cmd = f"{py} --history-search --query={{q}} > {shlex.quote(history_path)}"
+    record_cmd = f"{py} --record-history --query={{q}}"
     preview_cmd = f"{py} --preview {{1}}"
     # same list/preview split as window-search.py and claude-history: react
     # to each match-set change (a reload here, not fzf's own filtering - the
@@ -1129,11 +1159,18 @@ def drive():
                 # only covers the brief instant before that first event's
                 # async command has actually returned.
                 "--prompt", "focus history> ",
-                # query-dsl.md's "Search-box history": ctrl-p/ctrl-n cycle
-                # submitted queries (fzf's own --history feature, see
-                # HISTORY_PATH above); ctrl-r opens the fuzzy history
-                # popup (history_search()).
+                # query-dsl.md's "Search-box history": Up/Down cycle
+                # submitted queries most-recent-first (fzf's own
+                # --history feature below, explicitly rebound here from
+                # its up/down list-navigation default - row navigation
+                # moves to ctrl-j/ctrl-k instead, already fzf's default
+                # synonyms for down/up so nothing new to bind for them);
+                # ctrl-r opens the fuzzy history popup (history_search()).
                 "--history", HISTORY_PATH,
+                "--bind", "up:prev-history",
+                "--bind", "down:next-history",
+                "--bind", f"ctrl-j:down+execute-silent({record_cmd})",
+                "--bind", f"ctrl-k:up+execute-silent({record_cmd})",
                 "--preview", preview_cmd,
                 "--preview-window", "down,50%,border-top,wrap",
                 # reload+transform-header chained with "+" into ONE bind per
@@ -1192,6 +1229,7 @@ def main():
     parser.add_argument("--header", action="store_true")
     parser.add_argument("--complete", action="store_true")
     parser.add_argument("--history-search", action="store_true")
+    parser.add_argument("--record-history", action="store_true")
     parser.add_argument("--query", default="")
     args = parser.parse_args()
     if args.preview:
@@ -1204,6 +1242,8 @@ def main():
         complete(args.query)
     elif args.history_search:
         history_search(args.query)
+    elif args.record_history:
+        record_history(args.query)
     else:
         drive()
 

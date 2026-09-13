@@ -1544,13 +1544,15 @@ if mode=="complete":
         p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=complete> "],input="\n".join(c),capture_output=True,text=True)
         if p.stdout.strip():q=r["prefix"]+p.stdout.strip()+r["suffix"]
 else:
-    # history: always opens (even one/zero candidates - zsh's own ctrl-r
-    # widget always shows its popup too), seeded with the current query
-    # (fzf --query "$LBUFFER"'s own behaviour) and a whole-line replace on
-    # accept, no prefix/suffix - see query-dsl.md's Search-box history
-    if c:
-        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=history> ","--query="+q],input="\n".join(c),capture_output=True,text=True)
-        if p.stdout.strip():q=p.stdout.strip()
+    # history: always opens, even with zero candidates - zsh's own ctrl-r
+    # widget shows its popup unconditionally too, rather than doing
+    # nothing the first time it's pressed with no history yet (an
+    # earlier version skipped opening here, which looked indistinguishable
+    # from Ctrl+R being unbound - reported 2026-09-13). Seeded with the
+    # current query (fzf --query "$LBUFFER"'s own behaviour) and a
+    # whole-line replace on accept, no prefix/suffix.
+    p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=history> ","--query="+q],input="\n".join(c),capture_output=True,text=True)
+    if p.stdout.strip():q=p.stdout.strip()
 sys.stdout.write(q)
 """.strip()
 
@@ -1740,6 +1742,24 @@ def make_handler(state):
                 out = json.dumps(complete_query(args[0] if args else "", snap))
             elif mode == "history":
                 out = json.dumps(history_candidates(args[0] if args else ""))
+            elif mode == "record":
+                # ctrl-j/ctrl-k's execute-silent (drive()'s fzf_argv) -
+                # "the moment user finishes typing and makes an action in
+                # the data grid... or only start moving selection around",
+                # not gated behind a full accept (a real accept is
+                # already handled for free by fzf's own --history flag -
+                # see HISTORY_PATH). Blind append, no dedup here -
+                # dedupe_history() collapses repeats once, after drive()'s
+                # own fzf exits.
+                q = " ".join((args[0] if args else "").split())
+                if q:
+                    try:
+                        with open(HISTORY_PATH, "a") as hf:
+                            hf.write(q + "\n")
+                        os.chmod(HISTORY_PATH, 0o600)
+                    except OSError:
+                        pass
+                out = ""
             else:
                 out = ""
             try:
@@ -1821,6 +1841,7 @@ def drive():
     preview_cmd = f"{client} preview {{1}} {{q}}"
     complete_cmd = f"{client} complete {{q}} > {shlex.quote(complete_path)}"
     history_cmd = f"{client} history {{q}} > {shlex.quote(history_path)}"
+    record_cmd = f"{client} record {{q}}"
     # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
     # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
     # cwd's slack (see row()), which is expected: the header marks the
@@ -1920,6 +1941,18 @@ def drive():
         "--bind", f"resize:transform:{resize_on_result}",
         "--bind", "ctrl-left:backward-word",
         "--bind", "ctrl-right:forward-word",
+        # Search-box history (query-dsl.md): Up/Down cycle submitted
+        # queries most-recent-first (fzf's own --history below, rebound
+        # here from its up/down list-navigation default) with
+        # draft-restore; row navigation moves to ctrl-j/ctrl-k instead
+        # (already fzf's default down/up synonyms), which also record the
+        # current query into history the moment selection actually moves
+        # - not just on a full accept (that's --history's own job) - see
+        # history_candidates()'s "record" mode.
+        "--bind", "up:prev-history",
+        "--bind", "down:next-history",
+        "--bind", f"ctrl-j:down+execute-silent({record_cmd})",
+        "--bind", f"ctrl-k:up+execute-silent({record_cmd})",
         # `execute` hands the terminal over to complete_cmd (same as
         # fzf's own `execute(less {})` example) - a genuine nested
         # interactive picker when there's more than one candidate, see
