@@ -1,64 +1,65 @@
 import QtQuick
 import Quickshell
-import Quickshell.Io
 import Quickshell.Wayland
+import Quickshell.Hyprland
 import "../theme"
+import "../services"
 
-// mod+F11/F12 (~/.config/hypr/scripts/playerctl-volume.sh) POSTs here via
-// `qs ipc call volume-osd-<screen> display <percent> <muted>` -- one
-// instance per monitor (shell.qml's Variants over Quickshell.screens), only
-// the currently-focused one is ever actually told to show. Purely a
-// display: no mouse/keyboard focus, fully click-through, so it never steals
-// input from whatever's underneath.
+// mod+F11/F12 (~/.config/hypr/scripts/playerctl-volume.sh) calls
+// `qs ipc call volume-osd display <percent> <muted>` -> VolumeOsdSvc (a
+// singleton, one process-wide instance) -> every VolumeOsd instance here
+// (one per monitor, shell.qml's Variants over Quickshell.screens) picks it
+// up and only the one on Hyprland's currently focused monitor actually
+// draws -- same split NotifLayer uses (NotifSvc for state, per-screen
+// PanelWindow gated on Hyprland.focusedMonitor for display).
 //
-// KNOWN ISSUE (2026-08-29, unresolved): only reliably shows on DP-1 here.
-// `hyprctl layers` shows its layer-shell surface never gets mapped on
-// eDP-2/HDMI-A-1 - confirmed independent of Variants (reproduces with a
-// single hardcoded non-Variants instance), independent of anchoring style
-// (full-screen and right-edge-only both fail identically), and independent
-// of layer level (Top and Overlay both fail identically). Survives a full
-// `qs` process restart unchanged. Looks like a Hyprland/compositor-side
-// per-output layer-surface state issue, not a bug in this file - see
-// [[quickshell_panelwindow_ipc_gotchas]]. Next step if revisiting: a full
-// Hyprland restart (not just qs) would test that theory, but that kills
-// every window on the machine, so it wasn't done unilaterally.
+// FIXED 2026-09-13 (was: "only reliably shows on DP-1", see
+// [[quickshell_panelwindow_ipc_gotchas]]): the actual bug was a
+// `required property ShellScreen screen` on this PanelWindow shadowing its
+// own built-in `screen` property, so shell.qml's `VolumeOsd { screen:
+// modelData }` never actually placed each Variants delegate on its own
+// output -- all three piled onto whichever screen was left as the (unset)
+// default, duplicating there across hot reloads while the other two
+// outputs got nothing. Full-screen-vs-sized anchoring and on-demand-vs-
+// always-mapped were red herrings from the original investigation; see the
+// memory file for the corrected writeup. Fixed by removing the
+// redeclaration (below) -- same as NotifLayer.qml always did.
 //
-// The IpcHandler function is named `display`, not `show`: `qs ipc call
-// <target> show ...` collides with the CLI's own `qs ipc show` subcommand
-// at the argument-parsing level (confirmed live - it accepted a bare `qs
-// ipc call <target> show` but rejected any arguments after it, "the
-// following argument was not expected"). Reserved-word collision, not a bug
-// in this file - just don't name an IPC function `show`.
+// This also changes monitor selection to match notifications' behaviour
+// (mouse-follows-focus, via Hyprland.focusedMonitor) instead of the old
+// script-side "active window's monitor" logic -- what the user actually
+// asked for ("show on screen with current focus, like notifications").
 PanelWindow {
     id: root
 
-    required property ShellScreen screen
+    // Do NOT redeclare `screen` here -- PanelWindow already has one, and a
+    // `required property ShellScreen screen` shadows it. shell.qml's
+    // `VolumeOsd { screen: modelData }` then sets the shadow property
+    // instead of the real placement one, so every Variants delegate ends up
+    // on whatever the real (unset) screen defaults to -- which is why every
+    // instance piled onto ONE actual output (duplicating there across
+    // reloads) while the other outputs got none. This was mistaken for a
+    // per-output Hyprland/wlroots layer-shell limit (see
+    // [[quickshell_panelwindow_ipc_gotchas]]) but the real bug was here the
+    // whole time; NotifLayer.qml's own comment already flagged this exact
+    // trap on this exact file, it just never got fixed here until now
+    // (2026-09-13).
+    readonly property bool onFocusedMonitor:
+        (Hyprland.focusedMonitor?.name ?? "") === root.screen.name
 
-    property real fraction: 0
-    property bool muted: false
+    property bool active: false
 
-    function apply(percent: real, isMuted: bool): void {
-        root.fraction = Math.max(0, Math.min(100, percent)) / 100;
-        root.muted = isMuted;
-        card.visible = true;
-        hideTimer.restart();
-    }
-
-    // Full-screen anchors (like Background.qml), not just `right: true` -
-    // the card below still only occupies its own small area near the right
-    // edge (positioned by its own anchors), everything else stays
-    // click-through. Chosen over a narrower window because it's the
-    // pattern already proven to map its layer-shell surface reliably; see
-    // [[quickshell_panelwindow_ipc_gotchas]] for the still-unresolved
-    // per-output issue this doesn't fix (works on DP-1, not on eDP-2/HDMI-A-1
-    // here, independent of anchoring or layer level - a Hyprland/compositor
-    // question, not a bug in this file).
+    // Right-edge, screen-height strip -- sized like NotifLayer's corner
+    // box, not full-screen. Not required for the per-output mapping fix
+    // (that was the shadowed `screen` property above); kept anyway to
+    // match NotifLayer's proven-reliable shape rather than the old
+    // full-screen-anchors approach.
     anchors {
         top: true
         bottom: true
-        left: true
         right: true
     }
+    implicitWidth: card.width + 36
     color: "transparent"
 
     WlrLayershell.layer: WlrLayer.Overlay
@@ -73,6 +74,20 @@ PanelWindow {
     // accept input; here nothing should).
     mask: Region {}
 
+    Connections {
+        target: VolumeOsdSvc
+        function onRevisionChanged() {
+            root.active = true;
+            hideTimer.restart();
+        }
+    }
+
+    Timer {
+        id: hideTimer
+        interval: 1200
+        onTriggered: root.active = false
+    }
+
     Rectangle {
         id: card
         anchors.right: parent.right
@@ -84,7 +99,7 @@ PanelWindow {
         color: Theme.bgAlpha
         border.color: Theme.border
         border.width: 1
-        visible: false
+        visible: root.active && root.onFocusedMonitor
         opacity: visible ? 1 : 0
 
         Behavior on opacity {
@@ -97,10 +112,10 @@ PanelWindow {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: root.muted ? Icons.volMuted : Icons.levelIcon(Icons.volLevels, root.fraction)
+                text: VolumeOsdSvc.muted ? Icons.volMuted : Icons.levelIcon(Icons.volLevels, VolumeOsdSvc.fraction)
                 font.family: Theme.iconFontFamily
                 font.pixelSize: 26
-                color: root.muted ? Theme.muted : Theme.text
+                color: VolumeOsdSvc.muted ? Theme.muted : Theme.text
             }
 
             Rectangle {
@@ -114,9 +129,9 @@ PanelWindow {
                 Rectangle {
                     anchors.bottom: parent.bottom
                     width: parent.width
-                    height: track.height * root.fraction
+                    height: track.height * VolumeOsdSvc.fraction
                     radius: parent.radius
-                    color: root.muted ? Theme.muted : Theme.cyan
+                    color: VolumeOsdSvc.muted ? Theme.muted : Theme.cyan
 
                     Behavior on height {
                         NumberAnimation { duration: 100 }
@@ -126,24 +141,11 @@ PanelWindow {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: Math.round(root.fraction * 100) + "%"
+                text: Math.round(VolumeOsdSvc.fraction * 100) + "%"
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize + 2
                 color: Theme.textDim
             }
         }
-    }
-
-    // Auto-hide -- no dismiss interaction exists (nor should it, given the
-    // window is click-through), so this is the only thing that ever hides it.
-    Timer {
-        id: hideTimer
-        interval: 1200
-        onTriggered: card.visible = false
-    }
-
-    IpcHandler {
-        target: "volume-osd-" + root.screen.name
-        function display(percent: real, muted: bool): void { root.apply(percent, muted); }
     }
 }

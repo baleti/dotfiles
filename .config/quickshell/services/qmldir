@@ -13,3 +13,4 @@ singleton WinSwitchState 1.0 WinSwitchState.qml
 singleton ClaudeUsageSvc 1.0 ClaudeUsageSvc.qml
 singleton ClipboardPickerState 1.0 ClipboardPickerState.qml
 singleton ShottyState 1.0 ShottyState.qml
+singleton VolumeOsdSvc 1.0 VolumeOsdSvc.qml
