@@ -61,3 +61,25 @@ https://arstechnica.com/science/feed/                 science
 https://www.nature.com/nature.rss                     science
 https://www.sciencedaily.com/rss/all.xml              science
 https://nautil.us/feed/                               science
+
+# ---------------------------------------------------------------- reddit
+# Same subreddits as ~/.local/share/reddit-architecture-bot/subreddits.txt -
+# keep these two lists in sync when one changes. reddit.com 429s rssd's
+# honest UA; rssd.py special-cases reddit.com feed fetches to use a browser
+# UA instead (see REDDIT_UA in rssd.py).
+https://www.reddit.com/r/architecture/.rss             reddit arch
+https://www.reddit.com/r/ArchitecturePorn/.rss          reddit arch
+https://www.reddit.com/r/Lost_Architecture/.rss         reddit arch
+https://www.reddit.com/r/ArchitecturalRevival/.rss      reddit arch
+https://www.reddit.com/r/LandscapeArchitecture/.rss     reddit arch
+https://www.reddit.com/r/Architects/.rss                reddit arch
+https://www.reddit.com/r/ImaginaryArchitecture/.rss     reddit arch
+https://www.reddit.com/r/brutalism/.rss                 reddit arch
+https://www.reddit.com/r/architecturestudent/.rss       reddit arch
+https://www.reddit.com/r/ModernistArchitecture/.rss     reddit arch
+https://www.reddit.com/r/AfricanArchitecture/.rss       reddit arch
+https://www.reddit.com/r/InteriorDesign/.rss            reddit arch
+https://www.reddit.com/r/Unbuilt_Architecture/.rss      reddit arch
+https://www.reddit.com/r/BIM/.rss                       reddit bim
+https://www.reddit.com/r/FreeCAD/.rss                   reddit bim
+https://www.reddit.com/r/urbanplanning/.rss             reddit property planning

@@ -32,6 +32,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -51,6 +52,34 @@ MEDIA_DIR = CACHE_DIR / "media"
 
 UA = "rssd/1.1 (feed reader; +https://localhost)"
 feedparser.USER_AGENT = UA
+
+# reddit.com 429s the honest feed-reader UA above almost immediately but
+# serves a normal browser UA fine (confirmed 2026-09-10) - used only for
+# reddit.com feed fetches, via feedparser's per-call `agent` override, so
+# every other feed keeps identifying itself honestly.
+REDDIT_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
+
+# `workers` fetches every feed concurrently, which is fine spread across many
+# domains but trips reddit.com's rate limit when several subreddit feeds land
+# in the same wave (confirmed 2026-09-10: 16 reddit.com feeds concurrently ->
+# 15 came back with silently-empty entries, no error/bozo flag raised - not
+# obviously rate-limiting from the output, just looked like empty feeds).
+# Serialize reddit.com fetches with a minimum gap between them regardless of
+# the global worker pool size.
+_REDDIT_MIN_INTERVAL = 10.0
+_reddit_lock = threading.Lock()
+_reddit_next_ok_at = [0.0]
+
+
+def _reddit_throttle():
+    with _reddit_lock:
+        now = time.time()
+        wait = _reddit_next_ok_at[0] - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.time()
+        _reddit_next_ok_at[0] = now + _REDDIT_MIN_INTERVAL
 
 DEFAULTS = {
     "notify": "true",
@@ -487,11 +516,16 @@ def notify(title: str, body: str, urgency: str, icon: str, image: str | None,
 def fetch(feed: dict, feed_state: dict, timeout: int) -> dict:
     socket.setdefaulttimeout(timeout)
     url = feed["url"]
+    host = urlsplit(url).netloc
+    is_reddit = host.endswith("reddit.com")
+    if is_reddit:
+        _reddit_throttle()
     try:
         parsed = feedparser.parse(
             url,
             etag=feed_state.get("etag"),
             modified=feed_state.get("modified"),
+            agent=REDDIT_UA if is_reddit else None,
         )
     except Exception as e:
         return {"feed": feed, "error": f"{type(e).__name__}: {e}", "entries": []}
@@ -509,10 +543,20 @@ def fetch(feed: dict, feed_state: dict, timeout: int) -> dict:
     if isinstance(img, dict):
         image_href = img.get("href") or img.get("url")
 
+    title = (parsed.feed.get("title") or url).strip()
+    if is_reddit:
+        # Reddit's own <title> is just the bare subreddit name ("Architecture"),
+        # ambiguous when a digest reads it aloud as a source name ("Architecture
+        # is reporting..." sounds like a publication). Normalize so it's
+        # unambiguously Reddit regardless of what the feed's XML says.
+        m = re.search(r"/r/([^/]+)/", url)
+        if m:
+            title = f"r/{m.group(1)} (Reddit)"
+
     return {
         "feed": feed,
         "entries": parsed.entries,
-        "title": (parsed.feed.get("title") or url).strip(),
+        "title": title,
         "etag": parsed.get("etag"),
         "modified": parsed.get("modified"),
         "image_href": image_href,
