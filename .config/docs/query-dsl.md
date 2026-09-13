@@ -40,14 +40,18 @@ rule: hidden until Tab, and even then only as a popup when there's more
 than one candidate). winswitch, clipboard-picker, notification-picker,
 app-launcher, rss-reader and claude-usage all follow it; claude-history
 followed it from the start (a nested fzf, since it has no in-layout widget
-tree to put a popup in). focus-picker never shows an overlapping popup at
-all - it prints a quiet `[tab → x]` hint into the header line instead and
-Tab always completes to the first candidate outright, with no way to see
-or choose among the others when there's more than one; window-search has
-no completion assistance at all yet. Both are pre-existing, independent of
-the popup-visibility rule (nothing pops up in either to begin with) -
-worth bringing forward if either picker's DSL usage grows enough to need
-it, but not fixed as part of establishing that rule.
+tree to put a popup in). focus-picker (2026-09-13) followed the same
+nested-fzf pattern: the header's quiet `[tab → x]` hint still shows what
+a unique candidate would complete to (and Tab still completes it directly,
+no popup, when there's only one), but 2+ candidates now open a small
+nested fzf (`complete()`, run via `tab:execute(...)+transform-query(cat
+...)` - `transform-query` alone never hands a command the real terminal a
+nested interactive fzf needs, only `execute(...)` does, same reasoning as
+claude-history's own split) instead of silently picking the first one with
+no way to see or choose the others. window-search still has no completion
+assistance at all - pre-existing, independent of the popup-visibility rule
+(nothing pops up there to begin with) - worth bringing forward if its DSL
+usage grows enough to need it, but not fixed as part of this change.
 
 ## The shape of it
 
@@ -56,8 +60,35 @@ scrollback-bearing windows, ...) with, potentially, several named
 **types** per entry - a "type" here is any one field that can be filtered
 on or shown as a column: a flat one (`title`, `workspace`, `pid`; `type`,
 `date`, `app`) or a subfield of a **group** (winswitch's `tmux.session`,
-`claude.title`, ...). The DSL does three orthogonal things to that set,
-and nothing else:
+`claude.title`, ...).
+
+**Group and flat-type names are each picker's own vocabulary, not
+required to be shared across the table above.** Only the DSL's grammar
+and semantics are meant to stay consistent picker to picker (see the
+intro above); concrete field names are each picker's own call, and one
+picker lacking a group or flat type another picker has is not
+automatically a gap to fix. winswitch's `tmux` group exists because
+winswitch's own entities - Hyprland windows - only optionally run
+inside tmux, so tmux metadata needs a group to sit apart from a
+window's own flat fields (and from its equally-optional `claude`
+group); the pickers whose rows already *are* tmux entities have
+nothing for a `tmux.` prefix to disambiguate the way it does for
+winswitch, since every row already is one. Whether to add it anyway
+purely for cross-picker naming consistency is a call each picker makes
+on its own: focus-picker did (2026-09-13, `FILTER_FIELDS`/`SORT_KEYS` -
+plain flat strings that happen to contain a `.`, not real nested-group
+machinery; see its own module docstring), so `/fv/tmux.session` and a
+bare-group `/fv/tmux query` (unions `tmux.session`/`tmux.window`/
+`tmux.title`, same rule as any ambiguous path segment - Type paths,
+above) both work there now. window-search and claude-history haven't -
+both still keep `session`/`window`/`title` flat (own `FIELD_NAMES`),
+and claude-history specifically can't take this the same way even if
+asked: it already has a *flat* field literally named `tmux` (a
+`session:window.pane` display string), so a `tmux` *group* there would
+collide with existing, differently-shaped meaning rather than just be
+redundant.
+
+The DSL does three orthogonal things to that set, and nothing else:
 
 - **filter rows** - which entries survive (`/filter-value`, and bare
   typed text, which is the same thing)
@@ -598,15 +629,26 @@ Landed in winswitch first (`WinSwitchQueryDsl.qml`'s `completionCandidates`'s
 `query.rs`, which stopped being winswitch's live implementation once its
 UI was rewritten onto Quickshell/QML on 2026-09-09; `query.rs`'s own grammar
 code is unused today), confirmed correct there, then ported by hand to
-every other consumer that has a Tab-triggered popup at all (window-search,
-focus-picker and claude-history stay out of scope - see the maturity note
-at the top of Autocompletion): `picker.rs`'s `verb_stage_universe`
-(clipboard-picker/notification-picker - crosses only `/fv`, the one verb
-that's actually acting there, against its flat `field_names`, landing the
-colon form since this grammar has no via-path support at all) and each
-QML consumer's own `_verbStageUniverse`/`_acCandidates` (app-launcher,
-landing colon to match its established convention; rss-reader and
-claude-usage, landing via form to match theirs).
+every other consumer that has a Tab-triggered popup at all: `picker.rs`'s
+`verb_stage_universe` (clipboard-picker/notification-picker - crosses only
+`/fv`, the one verb that's actually acting there, against its flat
+`field_names`, landing the colon form since this grammar has no via-path
+support at all) and each QML consumer's own
+`_verbStageUniverse`/`_acCandidates` (app-launcher, landing colon to match
+its established convention; rss-reader and claude-usage, landing via form
+to match theirs). window-search stays out of scope (see the maturity note
+at the top of Autocompletion - it has no completion assistance at all);
+focus-picker and claude-history caught up 2026-09-13, both via nested-fzf
+popups (`focus-picker.py`'s `completion_stage`/`verb_stage_universe`,
+crossing `/fv` and `/s` against this picker's flat filter/sort fields and
+`/at`/`/rt`/`/ft` against its column groups since it has no single shared
+type registry the way winswitch does; `claude-history`'s
+`complete_query`, crossing only `/fv` against `FIELD_NAMES` - the one verb
+that does anything there, same reasoning as `picker.rs`). Landing this in
+focus-picker also meant giving it the via-path grammar (`/verb/path ...`)
+it had never actually had - it silently degraded to dead literal-text
+bare terms before (reported 2026-09-13): a picker can't usefully offer
+Tab-completion toward a spelling its own parser can't read back.
 
 **Ctrl+Space AND-narrows a Verb-stage popup instead of accepting it.** With
 the popup open on a `"verb"`-stage completion, `Ctrl+Space` inserts a
@@ -715,10 +757,12 @@ What "shown" means is necessarily picker-specific:
   field as a permanent column (see its own `/ft`/`/at`/`/rt`-are-inert
   comment), so there is nothing hidden left to surface.
 
-Scoped to consumers that support a Tab-triggered popup at all, same as
-Verb-stage depth and Ctrl+Space above (window-search, focus-picker,
-claude-history out of scope - see the maturity note at the top of
-Autocompletion).
+Scoped to consumers that support a Tab-triggered popup at all - window-search,
+focus-picker and claude-history stay out of scope for *this* feature and for
+Ctrl+Space above (see the maturity note at the top of Autocompletion), even
+though focus-picker and claude-history did pick up Verb-stage depth itself
+2026-09-13 (see its own Rollout note) - the two features landed separately,
+not as a package.
 
 **A group subfield's auto-shown line is labeled with the subfield's own
 name, and gated per row once the scoping term is a bare group.** Added
@@ -911,6 +955,141 @@ ambiguous one opens a small *nested* fzf as the actual picker, launched
 via `execute(...)` (which hands the terminal over to it, same as fzf's
 own `execute(less {})`) and fed back into the query with
 `transform-query(...)` once you pick one.
+
+## Search-box history (Up-arrow, Ctrl+R)
+
+Two bindings, modeled directly on zsh's own line editor plus this user's fzf
+`ctrl-r` widget (`~/.zshrc`'s `_fzf_history_widget_wrapper`, plain
+`fzf-history-widget` underneath - its only customization is *where* the
+popup renders, `--tmux` placement, never *how* it matches or orders), so
+the shell muscle memory transfers straight into every picker's search box
+with no new mechanism to learn.
+
+- **Up-arrow** cycles the search box's whole text backward through that
+  picker's own previously-submitted queries, most-recent-first - the same
+  job zsh's default `up-line-or-history` binding does. **Down-arrow**
+  walks forward again, symmetric with Up, eventually landing back on
+  whatever was actually being typed before the first Up press (the
+  pre-cycle draft, restored verbatim, even if it was empty) rather than
+  getting stuck on the oldest entry once you've walked past it - zsh does
+  the same. Scoped to whenever the search box is focused and **no popup
+  (completion or history) is currently open** - both because Up/Down are
+  already claimed for moving the completion popup's highlight once one is
+  open (QML pickers: `Down`/`Up` move it, clamped - see Shared popup UI,
+  above), and because replacing the box's text out from under an open
+  completion popup that's narrowed to the *old* text would be actively
+  confusing.
+- **Ctrl+R** opens a popup - the same shared popup machinery
+  Tab-completion already uses (nested fzf for the fzf-native pickers,
+  in-layout `GtkListBox`/QML overlay elsewhere - see Autocompletion,
+  above), but pointed at a different corpus and a different matcher:
+  - **Corpus**: the picker's own history list, most-recent-first, same
+    list Up-arrow cycles through - not the DSL's verb/type/value
+    candidates.
+  - **Matcher**: fzf's own default fuzzy algorithm, not this DSL's plain
+    substring rule (Resolution, precisely, below) - a deliberate second
+    exception to "no subsequence matching anywhere" (the first being
+    `/ft`'s glob-pattern fallback), made because the whole point of this
+    binding is reusing zsh ctrl-r muscle memory, not staying internally
+    consistent with the rest of the grammar. This is free for the three
+    fzf-native pickers: the nested completion fzf already runs with fzf's
+    untouched default matcher (no `--disabled`, no `--exact` - only the
+    *outer* fzf runs `--disabled`, to hand filtering to the DSL), so
+    pointing that exact same nested-fzf plumbing at the history file
+    instead of the candidate list needs no new matching code, only a new
+    corpus and a new trigger key. Non-fzf pickers approximate the same
+    feel with a fuzzy/subsequence scorer in their own popup instead of
+    substring, since there's no nested fzf to borrow one from.
+  - **Seed**: the popup opens pre-filtered by whatever's currently in the
+    search box (`fzf --query "$LBUFFER"`'s own behavior), not empty -
+    then narrows further exactly like a Tab-completion popup already does
+    on every keystroke (recompute-in-place, reset highlight to top, close
+    on zero matches - see Autocompletion, above; nothing new to invent
+    here either).
+  - **Accept** (Enter, and Space/Tab per the existing Shared popup UI
+    conventions) replaces the **entire** search-box text with the chosen
+    history entry, cursor at the end - a whole-line replace, not an
+    insert at cursor, matching zsh's own `LBUFFER=$selected`.
+  - **Escape** dismisses just the popup, search box left exactly as it
+    was before Ctrl+R was pressed - same as every other popup in this
+    DSL.
+
+**What gets recorded, and when.** A query is appended to that picker's own
+history the moment it's *submitted* - Enter activating a row, mirroring
+"a command" in shell history being whatever you actually pressed Enter
+on - not on every keystroke, and not while a query is only ever narrowing
+results without ever being acted on. An empty search box at that moment
+records nothing (a shell doesn't journal a blank line either). Whitespace
+runs are collapsed to one space before storing or comparing (mirrors this
+user's `HIST_REDUCE_BLANKS`), and a submitted query identical, after that
+normalization, to an existing entry anywhere in history removes the older
+occurrence and re-appends fresh at the end instead of growing a duplicate -
+mirrors `HIST_IGNORE_ALL_DUPS`, which this user's `.zshrc` already sets,
+so a query typed a third time floats back to "most recent" instead of
+piling up three near-identical rows in the Ctrl+R popup.
+
+**One history list per picker, not shared across them.** Same reasoning
+the doc already gives for field/group vocabularies not needing to match
+picker to picker (The shape of it, above): each picker's queries are
+shaped by, and only meaningful against, that picker's own corpus and type
+vocabulary - a `claude.title` scope typed in claude-usage means nothing
+replayed into window-search. Stored per picker under its own cache
+directory (mirroring `~/.zsh_history` itself - one file per shell, not a
+merged global one), unbounded, like this user's own
+`HISTSIZE=99999999`/`SAVEHIST`, rather than capped and pruned.
+
+**Written immediately, read fresh on every Ctrl+R - not just cached at
+picker startup.** Mirrors `INC_APPEND_HISTORY` + `SHARE_HISTORY`: a
+one-shot fzf-native picker (window-search, focus-picker, claude-history)
+is a fresh process every invocation anyway, so this is automatic there -
+there's no earlier in-memory snapshot to go stale. It matters more for the
+long-lived QML/GTK pickers - the quickshell shell process and its panels
+stay resident across many separate open/close cycles, unlike a shell that
+exits with its terminal - so each of those should re-read its history
+file at the moment Ctrl+R opens the popup rather than rely on whatever it
+loaded once at `qs` startup, so a query submitted in one open-close cycle
+is visible to Ctrl+R the very next time that same picker is opened, the
+same way a second concurrent zsh session sees a first session's
+just-run command under `SHARE_HISTORY`.
+
+**Out of scope: claude-agents (Android).** No physical Up-arrow or Ctrl+R
+exists on a phone keyboard, and its `QueryDsl.kt` already departs from the
+desktop completion model for the same reason (live-as-you-type, no
+Tab-gating - see the table entry above); a touch-native equivalent (e.g. a
+swipe-to-recall gesture, or a persistent "recent searches" chip row) would
+be its own design, not a port of this section, and hasn't been asked for.
+
+**Rollout: focus-picker and claude-history, 2026-09-13; the rest not yet
+built.** Landed first in the two fzf-native tmux pickers, where it turned
+out to need almost no new mechanism: fzf's own `--history=FILE` flag
+already *is* Up-arrow-style cycling (confirmed directly, a scripted
+`expect` session against real fzf - loads oldest-first, remaps ctrl-p/
+ctrl-n rather than Up/Down to `prev-history`/`next-history` so this
+picker's existing list-navigation is untouched, writes the file only on
+a genuine accept, never on Escape/ctrl-c, and restores the pre-cycle
+draft verbatim once you walk forward past the newest entry - every part
+of the Up-arrow bullet above, for free). `dedupe_history()`
+(`focus-picker.py`, `claude-history`) is the one thing fzf's flag doesn't
+do on its own - it appends unconditionally, no `HIST_IGNORE_ALL_DUPS`
+equivalent - so both run it right after the outer fzf exits, collapsing
+the file to last-occurrence-wins order before the *next* invocation's
+`--history` load or this invocation's own Ctrl+R popup ever reads it.
+Ctrl+R (`history_search()` in focus-picker.py; `history_candidates()` +
+`CLIENT_SRC`'s new `history` mode in claude-history) reuses the exact
+same execute()+transform-query() nested-fzf plumbing Tab-completion
+already had, pointed at the history file instead of the DSL candidate
+list, with one behavioral difference from Tab: it always opens the popup
+(zsh's own ctrl-r widget does too, unconditionally) rather than
+Tab's "a unique candidate completes silently" rule, since Ctrl+R's whole
+point is *browsing*, not narrowing to an obvious single answer.
+window-search stays out of scope for the same reason it already sits out
+of the rest of Autocompletion (see the maturity note at the top of this
+document). Not yet ported to the QML pickers (app-launcher, rss-reader,
+claude-usage, winswitch) or the Rust ones (clipboard-picker,
+notification-picker) - those have no fzf `--history` to lean on, so each
+needs its own Up/Down-vs-list-navigation call (the QML pickers already
+spend Down/Up on the completion popup's highlight - see Shared popup UI,
+above) and its own from-scratch fuzzy-match popup for Ctrl+R.
 
 ## Resolution, precisely
 
