@@ -370,30 +370,53 @@ fn find_transcript(base_dir: &Path, session_id: &str) -> Option<PathBuf> {
 /// changing, at the cost of also picking up incidental string fields (ids,
 /// tool names) alongside real conversation text -- an acceptable trade for a
 /// haystack that's only ever substring/subsequence-matched, never displayed.
-fn collect_strings(v: &Value, out: &mut String, budget: usize) {
+/// Pulls only genuine conversational text out of one `message.content` value
+/// - a plain string (typical user turn) or a list of content blocks
+/// (assistant turns, and user turns carrying a tool_result). Only `"text"`
+/// blocks are kept, mirroring claude-history's own `extract_text` (`~/bin/
+/// claude-history`'s module doc has the full rationale): thinking blocks are
+/// internal monologue nobody searches for by its wording, and tool_use/
+/// tool_result are the noisiest, largest part of a transcript for the least
+/// search value.
+///
+/// This replaced a blanket "walk every string value in the whole JSON line"
+/// approach (reported 2026-09-13: `/fv/claude ovh` matches showed unrelated
+/// `cse_...`-looking fragments under winswitch's alt-tab thumbnails). The old
+/// version recursed the *entire* line object, not just its message content,
+/// so bookkeeping line types with no conversational content at all -
+/// `bridge-session` (whose only string fields are `sessionId` and a
+/// `bridgeSessionId` literally shaped `cse_<26 base62 chars>`), `cost-state`,
+/// `mode`, `permission-mode`, `file-history-snapshot`/`-delta`,
+/// `queue-operation`, `atis-latch` - contributed just as much text as an
+/// actual `user`/`assistant` line. Read backward from a transcript's tail
+/// (this function's caller), a run of recent `bridge-session`/`cost-state`
+/// housekeeping lines (idle cost-tracking ticks, say) could dominate the
+/// whole `CLAUDE_CONTENTS_BUDGET` before a single real message was ever
+/// reached.
+fn extract_text(content: &Value, out: &mut String, budget: usize) {
     if out.len() >= budget {
         return;
     }
-    match v {
+    match content {
         Value::String(s) => {
             if s.len() > 2 {
                 out.push(' ');
                 out.push_str(s);
             }
         }
-        Value::Array(items) => {
-            for item in items {
-                collect_strings(item, out, budget);
+        Value::Array(blocks) => {
+            for b in blocks {
                 if out.len() >= budget {
                     return;
                 }
-            }
-        }
-        Value::Object(map) => {
-            for val in map.values() {
-                collect_strings(val, out, budget);
-                if out.len() >= budget {
-                    return;
+                if b.get("type").and_then(Value::as_str) != Some("text") {
+                    continue;
+                }
+                if let Some(t) = b.get("text").and_then(Value::as_str) {
+                    if t.len() > 2 {
+                        out.push(' ');
+                        out.push_str(t);
+                    }
                 }
             }
         }
@@ -476,7 +499,13 @@ fn load_claude_title_and_contents(base_dir: &Path, session_id: &str) -> Option<(
             break;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        collect_strings(&v, &mut out, CLAUDE_CONTENTS_BUDGET);
+        let t = v.get("type").and_then(Value::as_str);
+        if t != Some("user") && t != Some("assistant") {
+            continue; // skip bookkeeping lines - see extract_text's doc
+        }
+        if let Some(msg_content) = v.get("message").and_then(|m| m.get("content")) {
+            extract_text(msg_content, &mut out, CLAUDE_CONTENTS_BUDGET);
+        }
     }
     Some((ai_title, out.to_lowercase()))
 }

@@ -740,7 +740,14 @@ PanelWindow {
                         // reads as its own row under the title, not run
                         // together with it - the whole point being to see
                         // what matched when more than one candidate remains.
-                        readonly property var labelLines: {
+                        // One record per active column: { prefix, text,
+                        // matchStart, matchLen }. Kept structured (not
+                        // pre-joined into plain strings) so the details Text
+                        // below can render `text` as rich text and color just
+                        // the `[matchStart, matchStart+matchLen)` run - see
+                        // WinSwitchQueryDsl's excerpt for where matchStart/Len
+                        // come from.
+                        readonly property var labelParts: {
                             const parts = [];
                             // Bare-group filters (`/fv/claude foo`) now match
                             // across every subfield (WinSwitchQueryDsl's
@@ -770,15 +777,38 @@ PanelWindow {
                                         needle = hit.value;
                                     }
                                 }
-                                v = WinSwitchQueryDsl.excerpt(v, needle, 80);
-                                if (f.kind === "group")
-                                    parts.push(f.sub + ": " + v);
-                                else
-                                    parts.push(f.name === "workspace" ? ("#" + v) : v);
+                                const ex = WinSwitchQueryDsl.excerpt(v, needle, 80);
+                                const prefix = f.kind === "group" ? (f.sub + ": ") : (f.name === "workspace" ? "#" : "");
+                                parts.push({ prefix, text: ex.text, matchStart: ex.matchStart, matchLen: ex.matchLen });
                             }
                             return parts;
                         }
-                        readonly property string label: cellItem.labelLines.join("\n")
+                        readonly property string titleText: cellItem.labelParts.length > 0
+                            ? cellItem.labelParts[0].prefix + cellItem.labelParts[0].text : ""
+                        // Rich-text (Text.StyledText) body for every line past
+                        // the title: `sub: value` with the matched substring
+                        // (if any) wrapped in a colored span, same accent
+                        // color the rest of the UI uses for "this is the
+                        // thing that matched" (command-validity coloring,
+                        // selection highlight). Escaped since transcript/
+                        // title text can contain literal `&`/`<`/`>`.
+                        readonly property string detailsHtml: {
+                            const esc = WinSwitchQueryDsl.escapeHtml;
+                            const lines = [];
+                            for (let i = 1; i < cellItem.labelParts.length; i++) {
+                                const p = cellItem.labelParts[i];
+                                if (p.matchStart < 0) {
+                                    lines.push(esc(p.prefix) + esc(p.text));
+                                    continue;
+                                }
+                                const before = p.text.slice(0, p.matchStart);
+                                const hit = p.text.slice(p.matchStart, p.matchStart + p.matchLen);
+                                const after = p.text.slice(p.matchStart + p.matchLen);
+                                lines.push(esc(p.prefix) + esc(before) +
+                                    "<font color=\"" + Theme.cyan.toString() + "\">" + esc(hit) + "</font>" + esc(after));
+                            }
+                            return lines.join("<br>");
+                        }
 
                         Rectangle {
                             anchors.fill: parent
@@ -817,19 +847,60 @@ PanelWindow {
                                 }
                             }
 
-                            Text {
+                            // Window title stays centered on its own first
+                            // line; every extra `sub: value` line below it is
+                            // left-set instead of centered, and (below) has
+                            // its matched substring colored - two separate
+                            // Text items rather than one, since QML's
+                            // horizontalAlignment/textFormat apply to a whole
+                            // Text item, not per line.
+                            Column {
                                 anchors.top: frame.top
                                 anchors.topMargin: root.maxH + 4
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 width: parent.width - 12
-                                horizontalAlignment: Text.AlignHCenter
-                                elide: Text.ElideRight
-                                maximumLineCount: Math.max(2, root.activeColumns.length)
-                                wrapMode: Text.Wrap
-                                text: cellItem.label
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSize - 2
-                                color: Theme.text
+
+                                Text {
+                                    width: parent.width
+                                    textFormat: Text.PlainText
+                                    horizontalAlignment: Text.AlignHCenter
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 2
+                                    wrapMode: Text.Wrap
+                                    text: cellItem.titleText
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 2
+                                    color: Theme.text
+                                }
+                                Text {
+                                    width: parent.width
+                                    // Plain left-align, not Text.AlignJustify:
+                                    // each `sub: value` entry is its own short
+                                    // "paragraph" (joined by "\n"), and most
+                                    // wrap into just one or two lines with a
+                                    // short remainder - real justify stretches
+                                    // that remainder to fill the *entire* cell
+                                    // width, which reads as huge, uneven gaps
+                                    // between two or three words rather than
+                                    // clean text (reported 2026-09-13,
+                                    // screenshot showed exactly this on
+                                    // wrapped `contents:` lines). Left-align
+                                    // keeps natural word spacing and still
+                                    // satisfies "values flush to the left."
+                                    horizontalAlignment: Text.AlignLeft
+                                    elide: Text.ElideRight
+                                    maximumLineCount: Math.max(1, root.activeColumns.length - 1)
+                                    wrapMode: Text.Wrap
+                                    // Rich text: detailsHtml wraps the matched
+                                    // substring (if this line came from a
+                                    // matched filter) in a colored <font>
+                                    // span - see labelParts/detailsHtml above.
+                                    textFormat: Text.StyledText
+                                    text: cellItem.detailsHtml
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 2
+                                    color: Theme.text
+                                }
                             }
                         }
 
