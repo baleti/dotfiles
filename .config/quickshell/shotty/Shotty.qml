@@ -163,7 +163,11 @@ PanelWindow {
                          // rounded caps anywhere), scales with stroke width.
                     ctx.lineCap = "butt";
                     const angle = Math.atan2(y2 - y1, x2 - x1);
-                    const headLen = 16 + lineWidth * 2.2;
+                    // Mostly proportional to stroke width (a fixed base
+                    // offset made thin lines look disproportionately
+                    // big-headed) -- small floor so a 1px line still gets a
+                    // visible head instead of nearly vanishing.
+                    const headLen = Math.max(8, lineWidth * 3.5);
                     const headAngle = Math.PI / 7;
 
                     // Pull the shaft back so it ends at the head's base
@@ -234,22 +238,130 @@ PanelWindow {
     }
 
     MouseArea {
+        id: mainArea
         anchors.fill: parent
-        enabled: ShottyState.phase === "selecting" || ShottyState.phase === "drawing"
-        cursorShape: Qt.CrossCursor
+        enabled: ShottyState.phase === "selecting" || ShottyState.phase === "toolbar" || ShottyState.phase === "drawing"
+        hoverEnabled: true
+        property bool panning: false
+
+        // "toolbar" phase (a selection exists, no tool armed): hovering
+        // inside the selection shows a move/pan cursor (same idea as
+        // Hyprland's mod+drag window-move cursor) since dragging there
+        // pans the whole selection; anywhere else (or in "selecting"/
+        // "drawing") is a plain crosshair, since a drag there always
+        // starts something fresh (a new selection, or a new shape).
+        readonly property bool hoverInsideSel: ShottyState.phase === "toolbar" &&
+            ShottyState.isInsideSelection(root.screen.x + mouseX, root.screen.y + mouseY)
+        cursorShape: hoverInsideSel ? Qt.SizeAllCursor : Qt.CrossCursor
+
         onPressed: mouse => {
             const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
-            if (ShottyState.phase === "selecting") ShottyState.beginSelect(gx, gy);
-            else if (ShottyState.phase === "drawing") ShottyState.beginDraw(gx, gy);
+            if (ShottyState.phase === "selecting") {
+                ShottyState.beginSelect(gx, gy);
+            } else if (ShottyState.phase === "toolbar") {
+                if (ShottyState.isInsideSelection(gx, gy)) {
+                    mainArea.panning = true;
+                    ShottyState.beginPan(gx, gy);
+                } else {
+                    mainArea.panning = false;
+                    ShottyState.phase = "selecting"; // hides the toolbar/handles for the new drag
+                    ShottyState.beginSelect(gx, gy); // replaces the current selection
+                }
+            } else if (ShottyState.phase === "drawing") {
+                ShottyState.beginDraw(gx, gy);
+            }
         }
         onPositionChanged: mouse => {
             const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
-            if (ShottyState.phase === "selecting") ShottyState.updateSelect(gx, gy);
-            else if (ShottyState.phase === "drawing") ShottyState.updateDraw(gx, gy);
+            if (ShottyState.phase === "selecting") {
+                ShottyState.updateSelect(gx, gy);
+            } else if (ShottyState.phase === "toolbar" && pressed) {
+                if (mainArea.panning) ShottyState.updatePan(gx, gy);
+                else ShottyState.updateSelect(gx, gy);
+            } else if (ShottyState.phase === "drawing") {
+                ShottyState.updateDraw(gx, gy);
+            }
         }
         onReleased: mouse => {
-            if (ShottyState.phase === "selecting") ShottyState.endSelect();
-            else if (ShottyState.phase === "drawing") ShottyState.endDraw();
+            if (ShottyState.phase === "selecting") {
+                ShottyState.endSelect();
+            } else if (ShottyState.phase === "toolbar") {
+                if (mainArea.panning) ShottyState.endPan();
+                else ShottyState.endSelect();
+                mainArea.panning = false;
+            } else if (ShottyState.phase === "drawing") {
+                ShottyState.endDraw();
+            }
+        }
+    }
+
+    // Resize handles: 8 small draggable squares around the selection
+    // border, active only once a selection exists ("toolbar" phase, not
+    // while actively drawing a shape). Each handle's global position is
+    // computed from the current selection bounds; a handle whose position
+    // falls outside THIS panel's own screen just renders off-window and is
+    // naturally invisible/non-interactive there (a Wayland surface only
+    // composites and accepts input within its own bounds) -- so every
+    // panel can declare all 8 unconditionally and only the panel(s) that
+    // actually contain a given handle ever show or receive it, exactly
+    // like shapes/selection already work.
+    Repeater {
+        model: [
+            { edge: "nw", cursor: Qt.SizeFDiagCursor },
+            { edge: "n",  cursor: Qt.SizeVerCursor },
+            { edge: "ne", cursor: Qt.SizeBDiagCursor },
+            { edge: "w",  cursor: Qt.SizeHorCursor },
+            { edge: "e",  cursor: Qt.SizeHorCursor },
+            { edge: "sw", cursor: Qt.SizeBDiagCursor },
+            { edge: "s",  cursor: Qt.SizeVerCursor },
+            { edge: "se", cursor: Qt.SizeFDiagCursor }
+        ]
+        Rectangle {
+            id: handle
+            required property var modelData
+            readonly property real gx: {
+                switch (modelData.edge) {
+                    case "nw": case "w": case "sw": return ShottyState.selLeft;
+                    case "ne": case "e": case "se": return ShottyState.selLeft + ShottyState.selWidth;
+                    default: return ShottyState.selLeft + ShottyState.selWidth / 2; // n, s
+                }
+            }
+            readonly property real gy: {
+                switch (modelData.edge) {
+                    case "nw": case "n": case "ne": return ShottyState.selTop;
+                    case "sw": case "s": case "se": return ShottyState.selTop + ShottyState.selHeight;
+                    default: return ShottyState.selTop + ShottyState.selHeight / 2; // w, e
+                }
+            }
+            visible: ShottyState.phase === "toolbar"
+            width: 9; height: 9; radius: 2
+            x: root.toLocalX(gx) - width / 2
+            y: root.toLocalY(gy) - height / 2
+            color: Theme.cyan
+            border.width: 1
+            border.color: Theme.bg
+            z: 15
+
+            MouseArea {
+                id: handleMouse
+                anchors.fill: parent
+                anchors.margins: -4 // small squares are hard to grab exactly
+                cursorShape: handle.modelData.cursor
+                // mapToItem(root, ...), not handle.x + mouse.x: this
+                // MouseArea is expanded 4px beyond `handle` by the negative
+                // margin above, so mouse.x/y aren't directly relative to
+                // handle's own origin.
+                onPressed: mouse => {
+                    const p = handleMouse.mapToItem(root, mouse.x, mouse.y);
+                    ShottyState.beginResize(handle.modelData.edge, p.x + root.screen.x, p.y + root.screen.y);
+                }
+                onPositionChanged: mouse => {
+                    if (!pressed) return;
+                    const p = handleMouse.mapToItem(root, mouse.x, mouse.y);
+                    ShottyState.updateResize(p.x + root.screen.x, p.y + root.screen.y);
+                }
+                onReleased: ShottyState.endResize()
+            }
         }
     }
 
@@ -497,7 +609,7 @@ PanelWindow {
 
         Keys.onPressed: event => {
             if (event.key === Qt.Key_Escape) {
-                ShottyState.close();
+                ShottyState.escapeAction(); // exits tool-modal back to "toolbar", or closes if no tool is active
             } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
                 ShottyState.selectAllToggle();
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
