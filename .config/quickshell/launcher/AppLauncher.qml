@@ -180,6 +180,11 @@ PanelWindow {
     function launch(i) {
         const app = root.results[i];
         if (!app) return;
+        // query-dsl.md's "Search-box history": a real accept records the
+        // query, same as fzf's own --history flag does for the tmux
+        // pickers - before LauncherHistory.bump, which is a different
+        // thing (per-app launch frecency, not the search-box history).
+        LauncherQueryHistory.record(query.text);
         LauncherHistory.bump(app.id);
         app.entry.execute();
         root.hide();
@@ -374,6 +379,7 @@ PanelWindow {
         // keeps recomputing from here on, so a later edit that makes the
         // fragment valid again reopens the popup on its own instead of
         // requiring another Tab press.
+        root.acHistoryMode = false;
         root.acActive = true;
         const items = root._acCandidates();
         if (items.length === 0) return false;
@@ -384,6 +390,88 @@ PanelWindow {
         root.acSel = 0;
         root.acItems = items;
         return true;
+    }
+
+    // ---- search-box history (query-dsl.md's "Search-box history") --
+    // Ctrl+R reuses the completion popup's own rendering/highlight/accept
+    // machinery (acItems/acSel/acAccept/_applyAcItem all already just
+    // read-and-replace `it.text` generically) rather than a second popup
+    // component - acHistoryMode only changes what *computes* acItems
+    // (this vs. _acCandidates) and what typing recomputes against.
+    property bool acHistoryMode: false
+
+    // The QML pickers' own approximation of fzf's default fuzzy algorithm
+    // (deliberately not this DSL's plain substring rule - see the doc
+    // section): ordered-subsequence match, same as fzf's core heuristic
+    // without its scoring/highlighting.
+    function _fuzzySubsequence(hay, needle) {
+        let i = 0;
+        for (let j = 0; j < hay.length && i < needle.length; j++)
+            if (hay[j] === needle[i]) i++;
+        return i === needle.length;
+    }
+
+    function _acHistoryCandidates() {
+        const q = query.text.toLowerCase();
+        const entries = LauncherQueryHistory.listMostRecentFirst();
+        const matched = q.length === 0 ? entries
+            : entries.filter(e => root._fuzzySubsequence(e.toLowerCase(), q));
+        return matched.map(e => ({ text: e, label: e, alias: "", desc: "" }));
+    }
+
+    // Ctrl+R: opens unconditionally, even with zero history yet - same as
+    // zsh's own ctrl-r widget, which shows its (empty) popup rather than
+    // doing nothing the first time there's no history - so the binding is
+    // never indistinguishable from unbound.
+    function _triggerHistorySearch() {
+        root.acHistoryMode = true;
+        root.acActive = true;
+        root.acSel = 0;
+        root.acItems = root._acHistoryCandidates();
+        ac.visible = true;
+    }
+
+    // Up/Down cycling (query-dsl.md): most-recent-first with draft-restore,
+    // scoped to whenever the completion/history popup ISN'T open (see the
+    // doc's Up-arrow bullet) - Up/Down there stay popup-highlight
+    // movement, and results-list navigation moves to Ctrl+J/Ctrl+K, since
+    // this picker (unlike the fzf-native tmux ones) already overloads
+    // Up/Down for popup-vs-list depending on state.
+    property string acHistDraft: ""
+    property int acHistIndex: -1  // -1 = sitting on the draft, not cycling
+    property bool _histCycling: false  // guards onTextChanged (below) from
+    // treating OUR OWN text-set as a fresh edit that should cancel cycling
+
+    function _setQueryTextForHistory(text) {
+        root._histCycling = true;
+        query.text = text;
+        query.cursorPosition = query.text.length;
+        root._histCycling = false;
+    }
+
+    function _historyPrev() {
+        const entries = LauncherQueryHistory.entries;  // oldest-first
+        if (entries.length === 0) return;
+        if (root.acHistIndex < 0) {
+            root.acHistDraft = query.text;
+            root.acHistIndex = entries.length;
+        }
+        if (root.acHistIndex > 0) {
+            root.acHistIndex--;
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
+    }
+
+    function _historyNext() {
+        if (root.acHistIndex < 0) return;  // not cycling - nothing to do
+        const entries = LauncherQueryHistory.entries;
+        root.acHistIndex++;
+        if (root.acHistIndex >= entries.length) {
+            root.acHistIndex = -1;
+            root._setQueryTextForHistory(root.acHistDraft);
+        } else {
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
     }
 
     // ---- dynamic card width: fit the widest visible name -----------
@@ -499,7 +587,16 @@ PanelWindow {
                 // completion sets this text itself, on an already-open
                 // (fine, recomputes to the same thing) or already-closed
                 // (no-op) session.
-                onTextChanged: root.acItems = root.acActive ? root._acCandidates() : []
+                onTextChanged: {
+                    // A real edit cancels an in-progress Up/Down history
+                    // cycle (query-dsl.md: editing invalidates the cycle
+                    // the same way it does in a real shell) - but not when
+                    // WE just set the text ourselves while cycling.
+                    if (!root._histCycling) root.acHistIndex = -1;
+                    root.acItems = root.acActive
+                        ? (root.acHistoryMode ? root._acHistoryCandidates() : root._acCandidates())
+                        : [];
+                }
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
@@ -542,7 +639,7 @@ PanelWindow {
                 // accepts the highlighted suggestion.
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
-                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; }
+                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; root.acHistoryMode = false; }
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -574,24 +671,56 @@ PanelWindow {
                     } else if (event.key === Qt.Key_Space && ac.visible) {
                         root.acAccept();
                         event.accepted = true;
-                    } else if (event.key === Qt.Key_Down
-                               || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
-                        if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                        else root.selected = Math.min(root.results.length - 1, root.selected + 1);
+                    } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
+                        // query-dsl.md's "Search-box history": always
+                        // (re)opens, even with an empty history file yet.
+                        root._triggerHistorySearch();
                         event.accepted = true;
-                    } else if (event.key === Qt.Key_Up
-                               || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
+                    } else if (event.key === Qt.Key_Down) {
+                        // Popup open: highlight-move, unchanged. Popup
+                        // closed: history-cycle instead of list-nav - see
+                        // acHistIndex's own comment for why this picker
+                        // can't just reuse Ctrl+J/Ctrl+K's dual-purpose
+                        // trick the way it does for Tab-completion.
+                        if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                        else root._historyNext();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Up) {
                         if (ac.visible) root.acSel = Math.max(0, root.acSel - 1);
-                        else root.selected = Math.max(0, root.selected - 1);
+                        else root._historyPrev();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
+                        if (ac.visible) {
+                            root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                        } else {
+                            root.selected = Math.min(root.results.length - 1, root.selected + 1);
+                            LauncherQueryHistory.record(query.text);
+                        }
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
+                        if (ac.visible) {
+                            root.acSel = Math.max(0, root.acSel - 1);
+                        } else {
+                            root.selected = Math.max(0, root.selected - 1);
+                            LauncherQueryHistory.record(query.text);
+                        }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageDown) {
-                        if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
-                        else root.selected = Math.min(root.results.length - 1,
-                                                       root.selected + Math.max(1, Math.floor(list.height / 30)));
+                        if (ac.visible) {
+                            root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
+                        } else {
+                            root.selected = Math.min(root.results.length - 1,
+                                                      root.selected + Math.max(1, Math.floor(list.height / 30)));
+                            LauncherQueryHistory.record(query.text);
+                        }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageUp) {
-                        if (ac.visible) root.acSel = Math.max(0, root.acSel - 7);
-                        else root.selected = Math.max(0, root.selected - Math.max(1, Math.floor(list.height / 30)));
+                        if (ac.visible) {
+                            root.acSel = Math.max(0, root.acSel - 7);
+                        } else {
+                            root.selected = Math.max(0, root.selected - Math.max(1, Math.floor(list.height / 30)));
+                            LauncherQueryHistory.record(query.text);
+                        }
                         event.accepted = true;
                     }
                 }

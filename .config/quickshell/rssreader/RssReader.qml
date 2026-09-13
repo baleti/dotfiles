@@ -393,6 +393,7 @@ PanelWindow {
     // (which also gives Tab the search<->list focus-toggle meaning) knows
     // when to fall through to that instead.
     function _triggerCompletion() {
+        root.acHistoryMode = false;
         const items = root._acCandidates();
         if (items.length === 0) return false;
         if (items.length === 1) {
@@ -404,9 +405,93 @@ PanelWindow {
         return true;
     }
 
+    // ---- search-box history (query-dsl.md's "Search-box history") --
+    // Ctrl+R reuses the completion popup's own rendering/highlight/accept
+    // machinery (acItems/acSel/acAccept/_applyAcItem all already just
+    // read-and-replace `it.text` generically) rather than a second popup
+    // component - acHistoryMode only changes what *computes* acItems.
+    property bool acHistoryMode: false
+
+    // The QML pickers' own approximation of fzf's default fuzzy algorithm
+    // (deliberately not this DSL's plain substring rule - see the doc
+    // section): ordered-subsequence match, same as fzf's core heuristic
+    // without its scoring/highlighting.
+    function _fuzzySubsequence(hay, needle) {
+        let i = 0;
+        for (let j = 0; j < hay.length && i < needle.length; j++)
+            if (hay[j] === needle[i]) i++;
+        return i === needle.length;
+    }
+
+    function _acHistoryCandidates() {
+        const q = search.text.toLowerCase();
+        const entries = RssQueryHistory.listMostRecentFirst();
+        const matched = q.length === 0 ? entries
+            : entries.filter(e => root._fuzzySubsequence(e.toLowerCase(), q));
+        return matched.map(e => ({ text: e, label: e, alias: "", desc: "" }));
+    }
+
+    // Ctrl+R: opens unconditionally, even with zero history yet - same as
+    // zsh's own ctrl-r widget, which shows its (empty) popup rather than
+    // doing nothing the first time there's no history - so the binding is
+    // never indistinguishable from unbound.
+    function _triggerHistorySearch() {
+        root.acHistoryMode = true;
+        root.acSel = 0;
+        root.acItems = root._acHistoryCandidates();
+    }
+
+    // Up/Down cycling: most-recent-first with draft-restore, scoped to
+    // whenever the completion/history popup ISN'T open (query-dsl.md's
+    // Up-arrow bullet). Search-box Down/Up otherwise just return focus to
+    // the article list (_returnFocusToList) when the popup's closed -
+    // redundant with Tab/Escape, which already do that job, so nothing is
+    // lost by spending Down/Up on history-cycling instead.
+    property string acHistDraft: ""
+    property int acHistIndex: -1  // -1 = sitting on the draft, not cycling
+    property bool _histCycling: false  // guards search's onTextChanged
+    // (below) from treating OUR OWN text-set as a fresh edit that should
+    // cancel cycling
+
+    function _setQueryTextForHistory(text) {
+        root._histCycling = true;
+        search.text = text;
+        search.cursorPosition = search.text.length;
+        root._histCycling = false;
+    }
+
+    function _historyPrev() {
+        const entries = RssQueryHistory.entries;  // oldest-first
+        if (entries.length === 0) return;
+        if (root.acHistIndex < 0) {
+            root.acHistDraft = search.text;
+            root.acHistIndex = entries.length;
+        }
+        if (root.acHistIndex > 0) {
+            root.acHistIndex--;
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
+    }
+
+    function _historyNext() {
+        if (root.acHistIndex < 0) return;  // not cycling - nothing to do
+        const entries = RssQueryHistory.entries;
+        root.acHistIndex++;
+        if (root.acHistIndex >= entries.length) {
+            root.acHistIndex = -1;
+            root._setQueryTextForHistory(root.acHistDraft);
+        } else {
+            root._setQueryTextForHistory(entries[root.acHistIndex]);
+        }
+    }
+
     function openCurrent() {
         if (!root.current)
             return;
+        // query-dsl.md's "Search-box history": a real accept records the
+        // query, same as fzf's own --history flag does for the tmux
+        // pickers.
+        RssQueryHistory.record(search.text);
         Qt.openUrlExternally(root.current.link);
         RssSvc.markRead(root.current.key);
     }
@@ -414,6 +499,10 @@ PanelWindow {
         root.selected = Math.max(0, Math.min(root.view.length - 1, root.selected + d));
         listView.positionViewAtIndex(root.selected, ListView.Contain);
         dwell.restart();
+        // Moving the selection after typing counts as "acted on" too, not
+        // just a full accept - record() itself no-ops on an empty query,
+        // so this is a harmless no-op while just browsing unread articles.
+        RssQueryHistory.record(search.text);
     }
 
     // ---- window ---------------------------------------------------
@@ -572,7 +661,12 @@ PanelWindow {
                                 // before this fires (root.acOpen depends on
                                 // acItems, which this handler is about to
                                 // reassign).
-                                onTextChanged: root.acItems = root.acOpen ? root._acCandidates() : []
+                                onTextChanged: {
+                                    if (!root._histCycling) root.acHistIndex = -1;
+                                    root.acItems = root.acOpen
+                                        ? (root.acHistoryMode ? root._acHistoryCandidates() : root._acCandidates())
+                                        : [];
+                                }
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: "filter… (/ for DSL)"
@@ -647,13 +741,26 @@ PanelWindow {
                                     } else if (e.key === Qt.Key_Space && root.acOpen) {
                                         root.acAccept();
                                         e.accepted = true;
+                                    } else if (e.key === Qt.Key_R && (e.modifiers & Qt.ControlModifier)) {
+                                        // query-dsl.md's "Search-box history":
+                                        // always (re)opens, even with an empty
+                                        // history file yet. Accepted here so it
+                                        // never bubbles to keyScope's bare "r"
+                                        // (RssSvc.refresh()).
+                                        root._triggerHistorySearch();
+                                        e.accepted = true;
                                     } else if (e.key === Qt.Key_Down) {
+                                        // Popup open: highlight-move,
+                                        // unchanged. Popup closed:
+                                        // history-cycle instead of returning
+                                        // focus to the list - Tab/Escape
+                                        // already do that, so nothing is lost.
                                         if (root.acOpen) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                                        else root._returnFocusToList();
+                                        else root._historyNext();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Up) {
                                         if (root.acOpen) root.acSel = Math.max(0, root.acSel - 1);
-                                        else root._returnFocusToList();
+                                        else root._historyPrev();
                                         e.accepted = true;
                                     }
                                 }
