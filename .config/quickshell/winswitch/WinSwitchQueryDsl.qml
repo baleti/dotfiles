@@ -196,6 +196,30 @@ QtObject {
     function substr(needle, hay) {
         return hay.toLowerCase().indexOf(String(needle).toLowerCase()) >= 0;
     }
+    // A label-line preview of `value`, capped at `maxLen` chars. With no
+    // `needle` this is a plain start-truncation (unchanged behaviour for
+    // fields not tied to a matched filter value). With a `needle`, centers
+    // the window on its first occurrence instead - a naive chars[0:maxLen]
+    // truncation of a long field (claude.contents, a whole transcript) very
+    // rarely contains the matched substring itself within its first 80
+    // characters, so the preview read as unrelated noise even though the
+    // match was correct (reported 2026-09-13 against winswitch's alt-tab
+    // search: `/fv/claude ovh` matched real hits in transcript contents,
+    // but every thumbnail showed the same unrelated leading fragment).
+    function excerpt(value, needle, maxLen) {
+        if (!needle) return value.length > maxLen ? value.slice(0, maxLen) + "…" : value;
+        if (value.length <= maxLen) return value;
+        const idx = value.toLowerCase().indexOf(String(needle).toLowerCase());
+        if (idx < 0) return value.slice(0, maxLen) + "…";
+        const half = Math.floor(Math.max(0, maxLen - needle.length) / 2);
+        let start = Math.max(0, idx - half);
+        let end = Math.min(value.length, start + maxLen);
+        start = Math.max(0, end - maxLen);
+        let out = value.slice(start, end);
+        if (start > 0) out = "…" + out;
+        if (end < value.length) out = out + "…";
+        return out;
+    }
     function groupDefaultSubOf(g) { return root.groupDefaultSub[g] || ""; }
     function groupSubsOf(g) { return root.groups[g] || []; }
     function resolveGroups(seg) { return root.groupOrder.filter(g => root.substr(seg, g)); }
@@ -242,9 +266,24 @@ QtObject {
                     out.push({ kind: "group", group: g, sub: s });
             return out;
         }
+        // A bare group (no explicit subfield) searches *every* subfield for
+        // a scoped value match, same shape as resolveColumnFields's bare-
+        // group case just below - `/fv/claude foo` is meant to reach
+        // `claude.title`, `claude.contents`, etc. all at once, not just
+        // GROUP_DEFAULT_SUB (query-dsl.md's "Type paths": a bare group used
+        // to narrow filtering/sorting to one default subfield the same way
+        // it does for /sort, but that made `/fv/claude ovh` silently miss a
+        // hit that only existed in `claude.title` while `claude.contents`
+        // had none - reported 2026-09-13 against winswitch's alt-tab
+        // search, screenshot showed unrelated `claude.contents` fragments
+        // under thumbnails that had actually matched on `claude.title`).
+        // `/sort`'s own bare-group resolution (`resolveOne`) is unchanged -
+        // a sort key must be exactly one field, so it still needs
+        // GROUP_DEFAULT_SUB.
         const out = root.columns.filter(c => root.substr(gSeg, c)).map(c => ({ kind: "flat", name: c }));
         for (const g of root.resolveGroups(gSeg))
-            out.push({ kind: "group", group: g, sub: root.groupDefaultSubOf(g) });
+            for (const s of root.groupSubsOf(g))
+                out.push({ kind: "group", group: g, sub: s });
         return out;
     }
 
@@ -489,6 +528,26 @@ QtObject {
             for (const f of fields)
                 if (!out.some(o => root.fieldsEqual(o, f)))
                     out.push(f);
+        }
+        return out;
+    }
+
+    // Bare-group scoped filters currently in effect ({group, value} pairs) -
+    // a `/fv/claude foo` / `/fv claude:foo` term, as opposed to one naming
+    // an explicit subfield (`/fv/claude.title foo`). Since such a term now
+    // matches across every subfield of the group (see resolveFilterFields
+    // above), the matched subfield differs row to row - WinSwitch.qml's
+    // labelLines uses this to show only the subfield(s) that actually
+    // matched *this* row instead of every subfield unconditionally, and to
+    // label each with its own name (query-dsl.md "Auto-shown filter
+    // fields": "title: ..." / "contents: ...", not a bare value that could
+    // be any subfield).
+    function scopedGroupFilters(query) {
+        const out = [];
+        for (const t of root.parse(query).filters) {
+            if (t.kind !== "scoped" || t.path.indexOf(".") >= 0) continue;
+            for (const g of root.resolveGroups(t.path))
+                out.push({ group: g, value: t.value });
         }
         return out;
     }

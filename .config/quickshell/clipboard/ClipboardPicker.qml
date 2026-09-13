@@ -213,6 +213,9 @@ PanelWindow {
     property var _acCtx: null // {start, kind, field?} the current acItems were computed from
     property bool _verbMulti: false
     property int _verbMultiStart: 0
+    // Whether a completion session is open, independent of whether it
+    // currently has any candidates to show -- see query's onTextChanged.
+    property bool acActive: false
 
     function _candidates(text) {
         // Ctrl+Space AND-narrowing (query-dsl.md "Ctrl+Space AND-narrows a
@@ -237,10 +240,19 @@ PanelWindow {
         return { start: ctx.start, kind: ctx.kind, field: ctx.field, via: ctx.via, items: items };
     }
 
-    function _hideSuggestions() {
+    // Clears what's shown but leaves the session (`acActive`) alone -- used
+    // when a keystroke transiently yields zero candidates, so the next
+    // keystroke still recomputes instead of dead-ending (see
+    // _refreshSuggestions and query's onTextChanged).
+    function _clearItems() {
         root.acItems = [];
         root._acCtx = null;
         root._verbMulti = false;
+    }
+
+    function _hideSuggestions() {
+        root._clearItems();
+        root.acActive = false;
     }
 
     function _applyCandidates(cand) {
@@ -253,6 +265,12 @@ PanelWindow {
     // ordinary shell tab-completion; 2+ reveals the popup. Returns whether
     // it found anything to do.
     function _triggerCompletion() {
+        // Marks the session open the moment Tab is pressed, even if this
+        // exact keystroke turns up no candidates -- onTextChanged below
+        // keeps recomputing from here on, so a later edit that makes the
+        // fragment valid again reopens the popup on its own instead of
+        // requiring another Tab press.
+        root.acActive = true;
         const cand = root._candidates(query.text);
         if (!cand) return false;
         if (cand.items.length === 1) {
@@ -269,7 +287,7 @@ PanelWindow {
     function _refreshSuggestions() {
         const cand = root._candidates(query.text);
         if (cand) root._applyCandidates(cand);
-        else root._hideSuggestions();
+        else root._clearItems(); // keep the session open -- see _clearItems
     }
 
     function _acceptSuggestion() {
@@ -344,7 +362,15 @@ PanelWindow {
                 selectByMouse: true
                 clip: true
                 onTextChanged: {
-                    if (root.acItems.length > 0) root._refreshSuggestions();
+                    // Gated on `acActive` (the session), not `acItems.length`
+                    // (what's currently shown): the popup hides the instant
+                    // candidates drop to zero (e.g. a typo), but the session
+                    // stays open, so fixing the typo recomputes and reopens
+                    // it rather than dead-ending until another Tab (the same
+                    // bug reported 2026-09-13 against winswitch's identical
+                    // pattern: "/cla tt" -> zero candidates hid the popup,
+                    // and correcting it never brought the list back).
+                    if (root.acActive) root._refreshSuggestions();
                 }
 
                 // No placeholder text -- the old "$type: $date:" hint used
