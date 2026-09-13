@@ -1,0 +1,13 @@
+[Unit]
+Description=Headless notification daemon (owns org.freedesktop.Notifications; quickshell draws the cards)
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/hypr/notifyd/target/release/notifyd
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

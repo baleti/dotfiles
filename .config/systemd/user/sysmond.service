@@ -1,0 +1,13 @@
+[Unit]
+Description=Background sampler for the bar's hover-graphs and mod+alt+n/p/t/m popups
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/hypr/sysmon/target/release/sysmond
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
