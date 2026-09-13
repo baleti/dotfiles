@@ -1095,7 +1095,17 @@ PanelWindow {
                 WinSwitchState.locked = true;
                 Qt.callLater(() => {
                     searchInput.forceActiveFocus();
-                    root._triggerHistorySearch();
+                    // A second callLater, not one: acPopup's height/maxH
+                    // depend on searchHeader.height, which only settles
+                    // to its locked (32px) value once this first tick's
+                    // layout pass has actually run - triggering the
+                    // history search in the SAME tick as the focus grab
+                    // computed the popup against the still-unlocked (0px)
+                    // geometry, so it never visibly appeared until a
+                    // second Ctrl+R press (reported 2026-09-14: "only
+                    // focuses the search box, need to press Ctrl+R again
+                    // to see the popup").
+                    Qt.callLater(() => root._triggerHistorySearch());
                 });
                 event.accepted = true;
             } else if (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
