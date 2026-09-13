@@ -634,9 +634,9 @@ PanelWindow {
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                 if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") ShottyState.commit();
             } else if (event.key === Qt.Key_Z && (event.modifiers & Qt.ControlModifier)) {
-                if (ShottyState.phase === "toolbar") ShottyState.undo();
+                if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") ShottyState.undo();
             } else if (event.key === Qt.Key_Y && (event.modifiers & Qt.ControlModifier)) {
-                if (ShottyState.phase === "toolbar") ShottyState.redo();
+                if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") ShottyState.redo();
             } else if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
                 if (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing") ShottyState.commit();
             } else if (event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier)) {
