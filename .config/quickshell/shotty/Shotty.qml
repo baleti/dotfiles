@@ -176,16 +176,27 @@ PanelWindow {
                 ctx.reset();
                 if (ShottyState.phase === "idle") return;
 
-                ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
-                ctx.fillRect(0, 0, width, height);
+                // Skip the dim/cutout/border once committing: they're
+                // purely decorative (always cropped away, only the inner
+                // selection rect ever makes it into the composited output)
+                // and the actual grab/composite/wl-copy pipeline keeps
+                // running in the background regardless of what's painted
+                // here -- clearing them the instant Ctrl+C/Enter is pressed
+                // makes the frozen frame snap back to looking like the live
+                // desktop immediately instead of visibly lingering for
+                // however long compositing takes.
+                if (ShottyState.phase !== "compositing") {
+                    ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+                    ctx.fillRect(0, 0, width, height);
 
-                if (ShottyState.selWidth > 0 || ShottyState.selHeight > 0) {
-                    const lx = root.toLocalX(ShottyState.selLeft);
-                    const ly = root.toLocalY(ShottyState.selTop);
-                    ctx.clearRect(lx, ly, ShottyState.selWidth, ShottyState.selHeight);
-                    ctx.strokeStyle = Theme.cyan;
-                    ctx.lineWidth = 1;
-                    ctx.strokeRect(lx + 0.5, ly + 0.5, ShottyState.selWidth - 1, ShottyState.selHeight - 1);
+                    if (ShottyState.selWidth > 0 || ShottyState.selHeight > 0) {
+                        const lx = root.toLocalX(ShottyState.selLeft);
+                        const ly = root.toLocalY(ShottyState.selTop);
+                        ctx.clearRect(lx, ly, ShottyState.selWidth, ShottyState.selHeight);
+                        ctx.strokeStyle = Theme.cyan;
+                        ctx.lineWidth = 1;
+                        ctx.strokeRect(lx + 0.5, ly + 0.5, ShottyState.selWidth - 1, ShottyState.selHeight - 1);
+                    }
                 }
 
                 for (const shape of ShottyState.shapes) {
@@ -237,14 +248,14 @@ PanelWindow {
     Rectangle {
         id: toolbar
         visible: root._isToolbarAnchor && (ShottyState.phase === "toolbar" || ShottyState.phase === "drawing")
-        width: Math.min(row.implicitWidth, root.width - 44) + 16
-        height: row.implicitHeight + 12
+        width: Math.min(row.implicitWidth, root.width - 40) + 12
+        height: row.implicitHeight + 10
         // Anchored to the selection's bottom-right corner, but clamped to
         // stay fully on this screen -- a selection ending near a screen
         // edge would otherwise push the toolbar half off-screen.
         x: Math.max(0, Math.min(root.toLocalX(ShottyState.selLeft + ShottyState.selWidth), root.width - width))
         y: Math.max(0, Math.min(root.toLocalY(ShottyState.selTop + ShottyState.selHeight) + 8, root.height - height))
-        radius: 10
+        radius: 8
         color: Theme.bgAlpha
         border.width: 1
         border.color: Theme.border
@@ -262,53 +273,53 @@ PanelWindow {
         // are anywhere near that narrow.
         Row {
             id: row
-            x: 8
-            y: 6
-            spacing: 8
+            x: 6
+            y: 5
+            spacing: 5
 
             ToolButton {
-                icon: "↗"; tooltip: "Arrow (A)"; active: ShottyState.currentTool === "arrow"
+                iconType: "arrow"; tooltip: "Arrow (A)"; active: ShottyState.currentTool === "arrow"
                 onActivated: ShottyState.pickTool("arrow")
             }
             ToolButton {
-                icon: "▭"; tooltip: "Rectangle (R)"; active: ShottyState.currentTool === "rect"
+                iconType: "rect"; tooltip: "Rectangle (R)"; active: ShottyState.currentTool === "rect"
                 onActivated: ShottyState.pickTool("rect")
             }
             ToolButton {
-                icon: "╱"; tooltip: "Line (L)"; active: ShottyState.currentTool === "line"
+                iconType: "line"; tooltip: "Line (L)"; active: ShottyState.currentTool === "line"
                 onActivated: ShottyState.pickTool("line")
             }
 
-            Rectangle { width: 1; height: 38; color: Theme.border }
+            Rectangle { width: 1; height: 28; color: Theme.border }
 
             // Single color-picker button (shows the current color) instead
             // of all swatches inline -- click opens a small flyout with the
             // full palette (below).
             Rectangle {
                 id: colorPickerButton
-                width: 38; height: 38; radius: 19
+                width: 28; height: 28; radius: 14
                 color: ShottyState.currentColor
                 border.width: 2
                 border.color: Theme.text
                 MouseArea { anchors.fill: parent; onClicked: root.colorPickerOpen = !root.colorPickerOpen }
             }
 
-            Rectangle { width: 1; height: 38; color: Theme.border }
+            Rectangle { width: 1; height: 28; color: Theme.border }
 
             // Stroke-width slider, hand-rolled (no QtQuick.Controls anywhere
             // else in this shell -- see ClaudeUsageExpanded.qml's own
             // scrollbar comment).
             Item {
-                width: 70
-                height: 38
+                width: 50
+                height: 28
 
                 Rectangle {
                     id: track
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - 10
-                    x: 5
-                    height: 4
-                    radius: 2
+                    width: parent.width - 8
+                    x: 4
+                    height: 3
+                    radius: 1.5
                     color: Theme.border
                 }
                 Rectangle {
@@ -318,7 +329,7 @@ PanelWindow {
                     readonly property real frac: (ShottyState.currentWidth - minW) / (maxW - minW)
                     x: track.x + frac * (track.width - width)
                     anchors.verticalCenter: track.verticalCenter
-                    width: 14; height: 14; radius: 7
+                    width: 11; height: 11; radius: 5.5
                     color: Theme.cyan
                 }
                 MouseArea {
@@ -335,11 +346,11 @@ PanelWindow {
                 }
             }
 
-            Rectangle { width: 1; height: 38; color: Theme.border }
+            Rectangle { width: 1; height: 28; color: Theme.border }
 
-            ToolButton { icon: "📋"; tooltip: "Copy to clipboard (Ctrl+C / Enter)"; onActivated: ShottyState.commit() }
-            ToolButton { icon: "💾"; tooltip: "Save to file (Ctrl+S)"; onActivated: ShottyState.requestSaveDialog() }
-            ToolButton { icon: "✕"; tooltip: "Cancel (Esc)"; onActivated: ShottyState.close() }
+            ToolButton { iconType: "copy"; tooltip: "Copy to clipboard (Ctrl+C / Enter)"; onActivated: ShottyState.commit() }
+            ToolButton { iconType: "save"; tooltip: "Save to file (Ctrl+S)"; onActivated: ShottyState.requestSaveDialog() }
+            ToolButton { iconType: "cancel"; tooltip: "Cancel (Esc)"; onActivated: ShottyState.close() }
         }
     }
 
