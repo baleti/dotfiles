@@ -82,9 +82,12 @@ hl.on("hyprland.start", function()
     --     (~/.config/quickshell/notifications/, off
     --     ~/.cache/notifyd/state.json).
     --   ~/.config/systemd/user/sysmond.service -- feeds the bar's
-    --     hover-graphs and the alt+mod+n/p/t/m popups. Note: a quickshell
-    --     Socket{} to it never auto-reconnects on its own if sysmond
-    --     restarts -- reload quickshell (`qs kill`) after a sysmond crash.
+    --     hover-graphs and the alt+mod+n/p/t/m popups. Every consumer
+    --     (SysmonSvc's TieredSocket/ProcHistSocket and its topCpu/Mem/Net/
+    --     Disk sockets) already carries a 2s reconnect timer (2026-08-29,
+    --     a5240aede1) that re-asserts `connected = true` while wanted, so a
+    --     sysmond restart is picked back up on its own -- no `qs kill`
+    --     needed.
     -- Load the theme's nsxiv colors (Nsxiv.* X resources) into the XWayland
     -- server now -- gen-theme.py also does this on every regen, but the
     -- wallpaper (hence that script) may not have changed yet this session.
