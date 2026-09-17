@@ -24,7 +24,7 @@ Two steps, always in this order:
      restore_plan.choose_apps_interactive/apply_selected.
 
 Which snapshot to use is also interactive by default (restore_plan.
-choose_snapshot_interactive): every candidate under ~/.cache/desktop-snapshot
+choose_snapshot_interactive): every candidate under ~/.local/share/desktop-snapshot
 is listed with its workspace/window/tmux-session/claude-session/other-app
 counts so a human can tell a rich pre-crash capture apart from the
 near-empty one the daemon writes right after this very script's own
