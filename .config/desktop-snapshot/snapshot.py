@@ -4,7 +4,7 @@
 Captures, on an interval, everything needed to reconstruct "what was running
 and where" on this desktop:
 
-1. A metadata snapshot (JSON, in ~/.cache/desktop-snapshot/): Hyprland window
+1. A metadata snapshot (JSON, in ~/.local/share/desktop-snapshot/): Hyprland window
    positions/workspaces for every app, tmux sessions/windows/panes, and which
    Claude account (CLAUDE_CONFIG_DIR) each claude pane runs under -- plus an
    explicit cross-reference tying each terminal window to the tmux
@@ -37,9 +37,15 @@ import sys
 import time
 from pathlib import Path
 
-CACHE_DIR = Path.home() / ".cache" / "desktop-snapshot"
-SNAP_DIR = CACHE_DIR / "snapshots"
-LATEST = CACHE_DIR / "latest.json"
+# Not ~/.cache: this is irreplaceable disaster-recovery state, not
+# disposable/regenerable data - it also needs to fall under restic's
+# backup (which excludes ~/.cache, and ~/.cache/user1 is its own btrfs
+# subvolume so it's invisible to /home's snapper snapshots too, a real
+# gap confirmed 2026-09-17 when this same drive nearly didn't survive a
+# water-damage incident with the old data still sitting there).
+DATA_DIR = Path.home() / ".local" / "share" / "desktop-snapshot"
+SNAP_DIR = DATA_DIR / "snapshots"
+LATEST = DATA_DIR / "latest.json"
 US = "\x1f"  # field separator, matches claude-account-window-rename-hook.sh's convention
 
 # Matches resurrect-rotate-pane-contents.sh's own default
@@ -391,8 +397,14 @@ def rotate(retention_days=RETENTION_DAYS):
 
     Mirrors resurrect-rotate-pane-contents.sh's own bucket schedule
     exactly (full resolution <=1h, 20min buckets to 3h, 1h buckets to
-    18h, daily buckets beyond, out to a 30-day cutoff) instead of an
-    independent one. A resurrect layout/content pair and the
+    18h, 2h buckets to 3 days, daily buckets beyond, out to a 30-day
+    cutoff) instead of an independent one. The 18h-3d tier exists so a
+    user who doesn't notice a crash same-day still gets a day or two of
+    real recovery granularity instead of falling straight to 1/day at
+    the 18h mark - confirmed too short in practice 2026-09-17: a
+    same-day-of-crash recovery worked fine, but the schedule gave no
+    margin for noticing a day or two late. A resurrect layout/content
+    pair and the
     desktop-snapshot from that same moment should survive or age out
     together - confirmed a real disaster-recovery gap 2026-09-06 where a
     good resurrect pair survived its own thinning while the matching
@@ -413,7 +425,10 @@ def rotate(retention_days=RETENTION_DAYS):
         age = now - mtime
         if age <= 3600:
             continue
-        granularity = 20 * 60 if age <= 3 * 3600 else 3600 if age <= 18 * 3600 else 86400
+        granularity = (20 * 60 if age <= 3 * 3600 else
+                        3600 if age <= 18 * 3600 else
+                        2 * 3600 if age <= 3 * 86400 else
+                        86400)
         bucket = (granularity, int(mtime // granularity))
         if bucket in seen_buckets:
             f.unlink(missing_ok=True)

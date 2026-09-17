@@ -12,9 +12,12 @@
 # that history AND tmux-resurrect's own tmux_resurrect_*.txt layout files
 # (replacing resurrect's cruder "keep 5, delete after 30 days" policy for
 # those) with the same keep-newest-per-bucket generational rotation: full
-# 10-minute resolution for the last hour, widening to daily out past 18h,
-# expiring at @resurrect-delete-backup-after - one retention knob for both,
-# so neither directory accumulates without bound.
+# 10-minute resolution for the last hour, widening to 20min/1h/2h/daily
+# buckets out past 18h (the 18h-3d 2h tier gives a user who doesn't
+# notice a crash same-day a day or two of real recovery granularity
+# instead of falling straight to 1/day - confirmed too short in
+# practice 2026-09-17), expiring at @resurrect-delete-backup-after - one
+# retention knob for both, so neither directory accumulates without bound.
 #
 # Layout thinning is NOT purely independent of content thinning, though:
 # every content snapshot that survives its own thinning pass gets its true
@@ -88,8 +91,10 @@ thin() {
 			bucket="20m-$(( age_min / 20 ))"   # 1h-3h: 1 per 20 min
 		elif [ "$age_min" -le 1080 ]; then
 			bucket="1h-$(( age_min / 60 ))"    # 3h-18h: 1 per hour
+		elif [ "$age_min" -le 4320 ]; then
+			bucket="2h-$(( age_min / 120 ))"   # 18h-3d: 1 per 2 hours
 		elif [ "$age_min" -le "$max_age_min" ]; then
-			bucket="1d-$(( age_min / 1440 ))"  # 18h-max_age: 1 per day
+			bucket="1d-$(( age_min / 1440 ))"  # 3d-max_age: 1 per day
 		else
 			rm -f "$f"
 			continue

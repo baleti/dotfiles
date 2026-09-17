@@ -54,8 +54,8 @@ import tempfile
 import time
 from pathlib import Path
 
-DEFAULT = Path.home() / ".cache" / "desktop-snapshot" / "latest.json"
-SNAPSHOTS_DIR = Path.home() / ".cache" / "desktop-snapshot" / "snapshots"
+DEFAULT = Path.home() / ".local" / "share" / "desktop-snapshot" / "latest.json"
+SNAPSHOTS_DIR = Path.home() / ".local" / "share" / "desktop-snapshot" / "snapshots"
 CLAUDE_DIRS = [Path.home() / ".claude", Path.home() / ".claude2", Path.home() / ".claude3"]
 
 # Every tmux call inject_resume() makes uses this - see its use there for
@@ -271,7 +271,7 @@ def choose_snapshot_interactive():
     Falls back to the text prompt only if fzf isn't on PATH."""
     summaries = list_snapshots()
     if not summaries:
-        print("no snapshots found under ~/.cache/desktop-snapshot", file=sys.stderr)
+        print("no snapshots found under ~/.local/share/desktop-snapshot", file=sys.stderr)
         sys.exit(1)
 
     # field 1 (tab-delimited) = full path, consumed by --with-nth=2.. /
