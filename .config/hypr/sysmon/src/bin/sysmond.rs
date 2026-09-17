@@ -248,6 +248,27 @@ impl SnapTier {
         }
     }
 
+    /// Pushes up to `n` empty (no-process) buckets, evicting from the front
+    /// past `TIER_CAPACITY` exactly like a real finalize would -- same
+    /// downtime-gap purpose as `TierBuf::push_gap` in the main tiered
+    /// series, but for the process-attribution ring: without this, a
+    /// restart after the machine was off leaves `total_pushed` (and so
+    /// every `secs_ago` computed from it) implying the last pre-shutdown
+    /// bucket happened moments ago instead of however long the machine was
+    /// actually down, misattributing "what was running" to the wrong time.
+    /// An empty bucket's `procs` list is simply empty, not a stale one --
+    /// hovering into the gap honestly shows nothing rather than the wrong
+    /// thing.
+    fn push_gap(&mut self, n: usize) {
+        for _ in 0..n.min(TIER_CAPACITY) {
+            if self.snaps.len() == TIER_CAPACITY {
+                self.snaps.pop_front();
+            }
+            self.snaps.push_back((sysmon::NO_DATA, Vec::new()));
+            self.total_pushed += 1;
+        }
+    }
+
     /// Buckets finalized since `since` (a prior `total_pushed` reading),
     /// oldest-first, clamped to what's still buffered -- mirrors
     /// `TieredSeries::delta_since`, plus the absolute index of the first one
@@ -277,6 +298,18 @@ impl SnapSeries {
     fn tier(&self, tier: Tier) -> &SnapTier {
         let idx = ALL_TIERS.iter().position(|&t| t == tier).unwrap();
         &self.tiers[idx]
+    }
+
+    /// Same idea as `TieredSeries::apply_downtime_gap`: converts a
+    /// wall-clock downtime span into each tier's own bucket count via that
+    /// tier's `interval`, and pushes that many empty buckets.
+    fn apply_downtime_gap(&mut self, gap_secs: u64) {
+        for t in &mut self.tiers {
+            let n = (gap_secs / t.interval) as usize;
+            if n > 0 {
+                t.push_gap(n);
+            }
+        }
     }
 
     fn to_persisted(&self, interner: &mut Interner) -> Vec<(String, Vec<PersistedSnap>)> {
@@ -421,6 +454,10 @@ impl Interner {
 /// `History::load_from_disk`.
 #[derive(Serialize, Deserialize, Default)]
 struct PersistedProcs {
+    // Same purpose and `#[serde(default)]` reasoning as `PersistedHistory`'s
+    // own field -- see that one's comment.
+    #[serde(default)]
+    saved_at: u64,
     // Interned "name" or "name\u{1}detail"; `PersistedSnap` entries index this.
     names: Vec<String>,
     // "<sub>/<tier code>" -> that tier's snap ring, oldest-first. `<sub>` is
@@ -592,6 +629,19 @@ impl GpuHist {
     }
 }
 
+/// Wall-clock seconds between a persisted file's `saved_at` and right now --
+/// shared by `History::load_from_disk` and `load_procs_from_disk`, both of
+/// which need the same "how long was sysmond not running" figure to convert
+/// into their own ring's gap. `saved_at == 0` means an older-format file
+/// with no timestamp at all; treated as "unknown, don't guess" rather than
+/// a bogus multi-decade gap.
+fn downtime_gap_secs(saved_at: u64) -> u64 {
+    if saved_at == 0 {
+        return 0;
+    }
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(saved_at)
+}
+
 fn persist_path() -> PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -752,16 +802,9 @@ impl History {
     fn load_from_disk(&mut self) {
         let Ok(text) = fs::read_to_string(persist_path()) else { return };
         let Ok(p) = serde_json::from_str::<PersistedHistory>(&text) else { return };
-        // Wall-clock seconds between this file's last save and right now --
-        // covers both "machine was off/suspended" and "sysmond itself was
-        // down" for the same reason. `saved_at == 0` means an
-        // older-format file with no timestamp; treat that as "unknown,
-        // don't guess" rather than a bogus multi-decade gap.
-        let gap_secs = if p.saved_at > 0 {
-            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(p.saved_at)
-        } else {
-            0
-        };
+        // Covers both "machine was off/suspended" and "sysmond itself was
+        // down" for the same reason.
+        let gap_secs = downtime_gap_secs(p.saved_at);
         self.cpu_total.load_persisted(&p.cpu_total);
         self.cpu_total.apply_downtime_gap(gap_secs);
         self.temp_c.load_persisted(&p.temp_c);
@@ -858,6 +901,7 @@ impl History {
     fn load_procs_from_disk(&mut self) {
         let Ok(text) = fs::read_to_string(persist_procs_path()) else { return };
         let Ok(p) = serde_json::from_str::<PersistedProcs>(&text) else { return };
+        let gap_secs = downtime_gap_secs(p.saved_at);
         // Group the flat "<sub>/<tier>" map back into per-sub tier maps.
         let mut by_sub: HashMap<String, HashMap<String, Vec<PersistedSnap>>> = HashMap::new();
         for (key, ring) in p.rings {
@@ -867,9 +911,14 @@ impl History {
         for (sub, per_tier) in &by_sub {
             if let Some(series) = snap_series(self, sub) {
                 series.load_persisted(per_tier, &p.names);
+                series.apply_downtime_gap(gap_secs);
             }
         }
-        eprintln!("sysmond: loaded persisted snapshot history from {}", persist_procs_path().display());
+        eprintln!(
+            "sysmond: loaded persisted snapshot history from {} ({}s downtime gap)",
+            persist_procs_path().display(),
+            gap_secs
+        );
     }
 
     fn save_procs_to_disk(&self) {
@@ -895,7 +944,8 @@ impl History {
                 add(format!("gpu:{}:vram", g.name), &s.vram, &mut interner);
             }
         }
-        let p = PersistedProcs { names: interner.names, rings };
+        let saved_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let p = PersistedProcs { saved_at, names: interner.names, rings };
         let Ok(text) = serde_json::to_string(&p) else { return };
         let path = persist_procs_path();
         if let Some(dir) = path.parent() {
