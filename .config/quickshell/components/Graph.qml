@@ -65,6 +65,19 @@ Canvas {
     // that distinction is the whole fix.
     property int historyLen: 600
 
+    // Mirrors sysmon::NO_DATA (lib.rs) -- sysmond writes this into a tier's
+    // buffer for the wall-clock span it wasn't running (machine off/
+    // suspended, service restarted), instead of splicing pre-shutdown
+    // history directly against post-restart samples as if no time had
+    // passed. Every metric this draws (percentages, temps, bytes/sec) is
+    // non-negative, so -1 can never be a real sample -- see that constant's
+    // own comment for why it's a plain sentinel and not NaN/Infinity.
+    readonly property real _noData: -1
+
+    function _isGap(v) {
+        return v <= root._noData;
+    }
+
     // Which series is under the cursor right now, by its `name` field
     // (request 2026-09-10: "hovers mouse over a graph line it gets bolder
     // and its corresponding label gets bolder too") -- "" means nothing.
@@ -140,21 +153,51 @@ Canvas {
     // "picket fence" rather than a legible trend (reported 2026-08-28).
     // This softens that into rounded humps without reducing the actual
     // point count/time resolution -- it's a filter, not a downsample.
+    // Gap (NO_DATA) points pass through untouched -- never averaged into
+    // a neighbor. A real point's own average also excludes any gap
+    // neighbors within `radius`, so a valid sample right next to a gap
+    // isn't pulled toward -1.
     function smooth(data, radius) {
         const n = data.length;
         const out = new Array(n);
         for (let i = 0; i < n; i++) {
+            if (root._isGap(data[i])) {
+                out[i] = root._noData;
+                continue;
+            }
             let sum = 0, count = 0;
             for (let k = -radius; k <= radius; k++) {
                 const j = i + k;
-                if (j >= 0 && j < n) {
+                if (j >= 0 && j < n && !root._isGap(data[j])) {
                     sum += data[j];
                     count++;
                 }
             }
-            out[i] = sum / count;
+            out[i] = count > 0 ? sum / count : root._noData;
         }
         return out;
+    }
+
+    // Splits a downsample()d points array into contiguous runs with no gap
+    // (NO_DATA) point in them -- every draw routine below strokes/fills
+    // each run separately instead of one path across the whole series, so
+    // a gap becomes a visible break rather than a line through -1 (or,
+    // pre-smoothing-fix, a value dragged toward it).
+    function _splitRuns(points) {
+        const runs = [];
+        let cur = [];
+        for (const p of points) {
+            if (root._isGap(p.v)) {
+                if (cur.length > 0)
+                    runs.push(cur);
+                cur = [];
+            } else {
+                cur.push(p);
+            }
+        }
+        if (cur.length > 0)
+            runs.push(cur);
+        return runs;
     }
 
     function downsample(data) {
@@ -191,16 +234,18 @@ Canvas {
     // right edge).
     function _lineYAt(data, x) {
         const pts = root.downsample(data);
-        if (pts.length < 2)
-            return null;
-        if (x < pts[0].x || x > pts[pts.length - 1].x)
-            return null;
-        for (let i = 1; i < pts.length; i++) {
-            if (x <= pts[i].x) {
-                const span = pts[i].x - pts[i - 1].x;
-                const t = span > 0 ? (x - pts[i - 1].x) / span : 0;
-                const v = pts[i - 1].v + (pts[i].v - pts[i - 1].v) * t;
-                return height - Math.max(0, Math.min(1, v / root.maxValue)) * height;
+        for (const run of root._splitRuns(pts)) {
+            if (run.length < 2)
+                continue;
+            if (x < run[0].x || x > run[run.length - 1].x)
+                continue;
+            for (let i = 1; i < run.length; i++) {
+                if (x <= run[i].x) {
+                    const span = run[i].x - run[i - 1].x;
+                    const t = span > 0 ? (x - run[i - 1].x) / span : 0;
+                    const v = run[i - 1].v + (run[i].v - run[i - 1].v) * t;
+                    return height - Math.max(0, Math.min(1, v / root.maxValue)) * height;
+                }
             }
         }
         return null;
@@ -279,19 +324,24 @@ Canvas {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
-        if (points.length < 2)
+        const runs = root._splitRuns(points);
+        if (runs.length === 0)
             return;
         const rgb = Qt.color(rawColor);
         const h = height;
         const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, h);
-        for (const p of points)
-            ctx.lineTo(p.x, yOf(p.v));
-        ctx.lineTo(points[points.length - 1].x, h);
-        ctx.closePath();
         ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha);
-        ctx.fill();
+        for (const run of runs) {
+            if (run.length < 2)
+                continue;
+            ctx.beginPath();
+            ctx.moveTo(run[0].x, h);
+            for (const p of run)
+                ctx.lineTo(p.x, yOf(p.v));
+            ctx.lineTo(run[run.length - 1].x, h);
+            ctx.closePath();
+            ctx.fill();
+        }
     }
 
     // One translucent fill under the UPPER ENVELOPE (max at each x) of a
@@ -306,41 +356,65 @@ Canvas {
         const n = Math.min(...cols.map(c => c.length));
         if (n < 2)
             return;
+        // Per-x max across every column, skipping columns that are gapped
+        // at that x -- if every column is gapped there, the envelope
+        // itself is gapped too (_splitRuns below breaks the fill there).
+        const envPoints = new Array(n);
+        for (let i = 0; i < n; i++) {
+            // root._noData (-1) as the running max's start is safe here
+            // (not just "no worse than 0"): every real value in these
+            // series is non-negative, so it's immediately overtaken by the
+            // first real column and never surfaces unless `any` stays
+            // false, at which point the whole point is reported as a gap.
+            let v = root._noData, any = false;
+            for (const c of cols) {
+                if (root._isGap(c[i].v))
+                    continue;
+                any = true;
+                v = Math.max(v, c[i].v);
+            }
+            envPoints[i] = { x: cols[0][i].x, v: any ? v : root._noData };
+        }
         const rgb = Qt.color(envColor);
         const h = height;
         const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
-        ctx.beginPath();
-        ctx.moveTo(cols[0][0].x, h);
-        for (let i = 0; i < n; i++) {
-            let v = 0;
-            for (const c of cols)
-                v = Math.max(v, c[i].v);
-            ctx.lineTo(cols[0][i].x, yOf(v));
-        }
-        ctx.lineTo(cols[0][n - 1].x, h);
-        ctx.closePath();
         ctx.fillStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, fillAlpha);
-        ctx.fill();
+        for (const run of root._splitRuns(envPoints)) {
+            if (run.length < 2)
+                continue;
+            ctx.beginPath();
+            ctx.moveTo(run[0].x, h);
+            for (const p of run)
+                ctx.lineTo(p.x, yOf(p.v));
+            ctx.lineTo(run[run.length - 1].x, h);
+            ctx.closePath();
+            ctx.fill();
+        }
     }
 
     function strokeSeries(ctx, rawData, rawColor, lineWidth, strokeAlpha) {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
-        if (points.length < 2)
+        const runs = root._splitRuns(points);
+        if (runs.length === 0)
             return;
         const rgb = Qt.color(rawColor);
         const h = height;
         const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
-        ctx.beginPath();
-        ctx.lineJoin = "round";
-        ctx.lineCap = "round";
-        ctx.moveTo(points[0].x, yOf(points[0].v));
-        for (let i = 1; i < points.length; i++)
-            ctx.lineTo(points[i].x, yOf(points[i].v));
         ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, strokeAlpha);
         ctx.lineWidth = lineWidth;
-        ctx.stroke();
+        for (const run of runs) {
+            if (run.length < 2)
+                continue;
+            ctx.beginPath();
+            ctx.lineJoin = "round";
+            ctx.lineCap = "round";
+            ctx.moveTo(run[0].x, yOf(run[0].v));
+            for (let i = 1; i < run.length; i++)
+                ctx.lineTo(run[i].x, yOf(run[i].v));
+            ctx.stroke();
+        }
     }
 
     onPaint: {
