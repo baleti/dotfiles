@@ -1292,13 +1292,26 @@ Rectangle {
     // it's a fixed-height scrollable viewport instead, holding every row
     // in root.sortedProcs, so this is now just "how tall should that
     // viewport be" rather than "how many rows fit before truncating".
+    // One line (+ the Column's own spacing) per account currently showing
+    // an error (see the error Repeater below) -- omitted from
+    // fixedOverhead until 2026-09-17, when a real 429 on the "claude"
+    // account showed the actual bug: that Repeater's line wasn't budgeted
+    // for at all, so its extra height silently grew content past
+    // maxPanelHeight and pushed the tally pill below root's clipped
+    // bounds (cut off at the bottom) instead of shrinking the table to
+    // make room for it.
+    readonly property int errorLineCount: ClaudeUsageSvc.accounts.filter(a => !!a.error).length
+    readonly property real errorLineH: valueFontMetrics.height + content.spacing
+
     readonly property real processAreaBudget: {
         // 20: the mode-line/summary row. 24: root's own implicitHeight
         // padding (content.implicitHeight + 24). 16: safety margin.
         // groupHeaderH: the table's own header block (tmux/hyprland row +
         // column-header row). tallyLineH: the total-sessions line below
-        // the table.
-        const fixedOverhead = 20 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH;
+        // the table. errorLineCount * errorLineH: one line per account
+        // currently showing an error.
+        const fixedOverhead = 20 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH
+            + root.errorLineCount * root.errorLineH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
     }
 
