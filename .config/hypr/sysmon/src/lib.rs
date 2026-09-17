@@ -8,6 +8,23 @@ use std::path::PathBuf;
 /// One sample per tick, so callers can convert to a duration however they like.
 pub const SAMPLE_INTERVAL_MS: u64 = 1000;
 
+/// Sentinel value marking a tiered-series point where no real sample was
+/// ever taken -- currently only produced for the wall-clock span sysmond
+/// wasn't running at all (machine off/suspended, service restarted), so a
+/// restart doesn't splice pre-shutdown history directly against
+/// post-restart samples and read as one unbroken line across a gap that
+/// was actually blank (reported 2026-09-17: a multi-day shutdown showed up
+/// on the 6h graph as if sampling had continued right through it). `-1.0`
+/// is safe as a magic number here because every metric this crate tracks
+/// (percentages, temperatures, bytes/sec) is naturally non-negative --
+/// picked over `f64::NAN`/`INFINITY` specifically because serde_json
+/// serializes those as JSON `null`, which a plain `Vec<f64>` field can't
+/// deserialize back (it would fail the whole history.json parse, wiping
+/// every OTHER series' history too, not just the gap). Producers must
+/// insert it wholesale (never blend it into an average with real samples);
+/// consumers (Graph.qml) must treat it as "break the line here", not plot it.
+pub const NO_DATA: f64 = -1.0;
+
 /// Every tiered series (see `Tier`) stores at most this many points,
 /// regardless of the tier's span -- older points within a tier are
 /// averaged together more coarsely instead of the buffer just growing, so

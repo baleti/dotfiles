@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sysmon::{socket_path, DiskHistory, GpuHistory, IfaceHistory, Metric, ProcEntry, ProcSnapshot, Request, Snapshot, Tier, ALL_TIERS, SAMPLE_INTERVAL_MS, TIER_CAPACITY};
@@ -64,6 +64,23 @@ impl TierBuf {
             self.accum_n = 0;
         }
     }
+
+    /// Pushes up to `n` `NO_DATA` placeholder points, evicting from the
+    /// front past `TIER_CAPACITY` exactly like a real `push_raw` finalize
+    /// would -- used once at startup to represent wall-clock downtime (see
+    /// `TieredSeries::apply_downtime_gap`). Capped at `TIER_CAPACITY`
+    /// because once that many gap points have been pushed the buffer is
+    /// entirely `NO_DATA` regardless of how much bigger `n` is -- no need
+    /// to spin the eviction loop further.
+    fn push_gap(&mut self, n: usize) {
+        for _ in 0..n.min(TIER_CAPACITY) {
+            if self.buf.len() == TIER_CAPACITY {
+                self.buf.pop_front();
+            }
+            self.buf.push_back(sysmon::NO_DATA);
+            self.total_pushed += 1;
+        }
+    }
 }
 
 /// Persisted form of one TierBuf -- just the finalized points. The partial
@@ -98,6 +115,23 @@ impl TieredSeries {
     fn total_pushed(&self, tier: Tier) -> u64 {
         let idx = ALL_TIERS.iter().position(|&t| t == tier).unwrap();
         self.tiers[idx].total_pushed
+    }
+
+    /// Converts a wall-clock downtime span (seconds sysmond wasn't running,
+    /// from `saved_at` vs now -- see `History::load_from_disk`) into each
+    /// tier's own point count via that tier's `interval`, and pushes that
+    /// many `NO_DATA` points onto every tier at once. A tier whose interval
+    /// is coarser than the gap (e.g. the 7-month tier during a half-hour
+    /// outage) naturally absorbs it as zero points -- nothing to do, and
+    /// correctly so, since that tier's resolution couldn't show a gap that
+    /// short anyway.
+    fn apply_downtime_gap(&mut self, gap_secs: u64) {
+        for t in &mut self.tiers {
+            let n = (gap_secs / t.interval) as usize;
+            if n > 0 {
+                t.push_gap(n);
+            }
+        }
     }
 
     /// Points appended since `since` (a prior `total_pushed()` reading),
@@ -458,6 +492,16 @@ impl TwoSeriesBuf {
 
 #[derive(Serialize, Deserialize, Default)]
 struct PersistedHistory {
+    // Unix timestamp (seconds) this file was written -- compared against
+    // `now` on the next load to compute how long sysmond wasn't running,
+    // so that gap can be represented as NO_DATA points instead of silently
+    // splicing old history against new (see `History::load_from_disk` and
+    // `TieredSeries::apply_downtime_gap`). `#[serde(default)]` so a
+    // history.json from before this field existed just loads as `0`, which
+    // `load_from_disk` treats as "unknown, skip the gap logic" -- same as
+    // sysmond's very first ever run.
+    #[serde(default)]
+    saved_at: u64,
     cpu_total: PersistedSeries,
     cpu_cores: Vec<PersistedSeries>,
     temp_c: PersistedSeries,
@@ -708,38 +752,68 @@ impl History {
     fn load_from_disk(&mut self) {
         let Ok(text) = fs::read_to_string(persist_path()) else { return };
         let Ok(p) = serde_json::from_str::<PersistedHistory>(&text) else { return };
+        // Wall-clock seconds between this file's last save and right now --
+        // covers both "machine was off/suspended" and "sysmond itself was
+        // down" for the same reason. `saved_at == 0` means an
+        // older-format file with no timestamp; treat that as "unknown,
+        // don't guess" rather than a bogus multi-decade gap.
+        let gap_secs = if p.saved_at > 0 {
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(p.saved_at)
+        } else {
+            0
+        };
         self.cpu_total.load_persisted(&p.cpu_total);
+        self.cpu_total.apply_downtime_gap(gap_secs);
         self.temp_c.load_persisted(&p.temp_c);
+        self.temp_c.apply_downtime_gap(gap_secs);
         self.mem_used_pct.load_persisted(&p.mem_used_pct);
+        self.mem_used_pct.apply_downtime_gap(gap_secs);
         self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
+        self.mem_cached_pct.apply_downtime_gap(gap_secs);
         self.swap_used_pct.load_persisted(&p.swap_used_pct);
+        self.swap_used_pct.apply_downtime_gap(gap_secs);
         self.swap_in_bps.load_persisted(&p.swap_in_bps);
+        self.swap_in_bps.apply_downtime_gap(gap_secs);
         self.swap_out_bps.load_persisted(&p.swap_out_bps);
+        self.swap_out_bps.apply_downtime_gap(gap_secs);
         for saved in &p.gpus {
             if let Some(g) = self.gpus.iter_mut().find(|g| g.name == saved.name) {
                 g.util.load_persisted(&saved.util);
+                g.util.apply_downtime_gap(gap_secs);
                 g.vram.load_persisted(&saved.vram);
+                g.vram.apply_downtime_gap(gap_secs);
                 g.power.load_persisted(&saved.power);
+                g.power.apply_downtime_gap(gap_secs);
             }
         }
         for (core, saved) in self.cpu_cores.iter_mut().zip(p.cpu_cores.iter()) {
             core.load_persisted(saved);
+            core.apply_downtime_gap(gap_secs);
         }
         for (name, (a, b)) in p.net {
             let buf = self.net.entry(name).or_insert_with(TwoSeriesBuf::new);
             buf.a.load_persisted(&a);
+            buf.a.apply_downtime_gap(gap_secs);
             buf.b.load_persisted(&b);
+            buf.b.apply_downtime_gap(gap_secs);
         }
         for (name, (a, b)) in p.disk {
             let buf = self.disk.entry(name).or_insert_with(TwoSeriesBuf::new);
             buf.a.load_persisted(&a);
+            buf.a.apply_downtime_gap(gap_secs);
             buf.b.load_persisted(&b);
+            buf.b.apply_downtime_gap(gap_secs);
         }
-        eprintln!("sysmond: loaded persisted history from {}", persist_path().display());
+        eprintln!(
+            "sysmond: loaded persisted history from {} ({}s downtime gap)",
+            persist_path().display(),
+            gap_secs
+        );
     }
 
     fn save_to_disk(&self) {
         let p = PersistedHistory {
+            saved_at: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             cpu_total: self.cpu_total.to_persisted(),
             cpu_cores: self.cpu_cores.iter().map(TieredSeries::to_persisted).collect(),
             temp_c: self.temp_c.to_persisted(),
