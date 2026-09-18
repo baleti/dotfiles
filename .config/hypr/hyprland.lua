@@ -51,6 +51,40 @@ hl.on("window.open", function(win)
 end)
 
 hl.on("hyprland.start", function()
+    -- Makes WAYLAND_DISPLAY/HYPRLAND_INSTANCE_SIGNATURE visible to every
+    -- systemd --user unit, current and future - `systemctl --user
+    -- import-environment` copies the named variables' CURRENT values from
+    -- whatever process runs it into the --user MANAGER's own environment
+    -- block (`systemctl --user show-environment`), and every unit that
+    -- manager subsequently starts *or restarts* inherits that block
+    -- automatically. This process is Hyprland's own child, so it already
+    -- has both variables the moment this line runs - Hyprland has to set
+    -- them for itself before doing anything else, to create its own IPC
+    -- socket in the first place.
+    --
+    -- Root cause this closes: a systemd --user unit is not a child of
+    -- Hyprland, so it never inherits these vars on its own - confirmed
+    -- three separate times independently (claude-usage-daemon.py
+    -- 2026-09-08, desktop-snapshot's snapshot.py 2026-09-18) as *empty*
+    -- hyprctl results with no error, since hyprctl itself exits nonzero
+    -- rather than falling back to the sole entry under
+    -- $XDG_RUNTIME_DIR/hypr/ when the signature is unset - each fix ended
+    -- up independently reinventing the same per-daemon env lookup instead
+    -- of this being set once, centrally. Specifically fixes the
+    -- Restart=always case: a unit's `After=graphical-session.target` only
+    -- orders its very first start, a later crash/restart respawn skips
+    -- that check entirely and just re-execs against whatever the
+    -- manager's environment happens to be at that instant - two
+    -- back-to-back desktop-snapshot.service restarts right after a reboot
+    -- (2026-09-17) landed in exactly that gap before this import ran.
+    --
+    -- Does NOT help systemd --user units with no After=graphical-session.target
+    -- gating that a timer can fire while lingering (loginctl Linger=yes for
+    -- this account) with no Hyprland running at all, e.g.
+    -- linkedin-engagement-bot.service/reddit-architecture-bot.service -
+    -- there's nothing to import when Hyprland genuinely isn't up. Those
+    -- guard their own hyprctl calls separately instead.
+    hl.exec_cmd("systemctl --user import-environment HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY")
     -- wl-paste tags copies flagged x-kde-passwordManagerHint=secret (app
     -- passwords, generated passwords, TOTP codes, etc.) with
     -- CLIPBOARD_STATE=sensitive, and cliphist silently skips storing those.
@@ -68,11 +102,9 @@ hl.on("hyprland.start", function()
     -- wl-clip-persist, notifyd and sysmond used to be started here via
     -- hl.exec_cmd -- moved to systemd --user units (2026-09-13) so a crash
     -- gets Restart=always instead of staying dead until the next full
-    -- Hyprland restart. WAYLAND_DISPLAY/HYPRLAND_INSTANCE_SIGNATURE are
-    -- confirmed present in `systemctl --user show-environment` and in the
-    -- environ of already-running graphical-session.target-gated units
-    -- (desktop-snapshot.service, claude-usage.service), so the Wayland
-    -- connection at startup isn't a race here. See:
+    -- Hyprland restart. The import-environment call above is what actually
+    -- guarantees WAYLAND_DISPLAY/HYPRLAND_INSTANCE_SIGNATURE are present
+    -- for graphical-session.target-gated units, restart or not - see:
     --   ~/.config/systemd/user/wl-clip-persist.service
     --   ~/.config/systemd/user/notifyd.service -- owns
     --     org.freedesktop.Notifications, replaced dunst (dunst's package is
