@@ -79,15 +79,49 @@ DEFAULT_RESURRECT_INTERVAL = 300
 DEFAULT_STARTUP_GRACE = 600
 
 
-def run(cmd):
+def run(cmd, env=None):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=10, env=env).stdout
     except Exception:
         return ""
 
 
+def _hyprctl_env():
+    """os.environ, with HYPRLAND_INSTANCE_SIGNATURE filled in if missing.
+
+    This daemon is default.target.wants'd as a systemd --user service, which
+    can start (on every restart, not just boot) before it inherits Hyprland's
+    session env, or outlive a Hyprland restart with a now-stale signature --
+    confirmed 2026-09-18: two captures right after service starts that
+    evening (20260917T205658, 20260917T223727) got HYPRLAND_INSTANCE_SIGNATURE-
+    less env, so every hyprctl call returned nothing and hyprctl_json's
+    `except json.JSONDecodeError: return None` swallowed it silently --
+    monitors/workspaces just wrote out as [] instead of erroring. Same root
+    cause and fix as claude-usage-daemon.py's _hyprctl_env().
+
+    Rediscovered fresh on every call (not cached at import time) so this
+    keeps working across a Hyprland restart without needing the service
+    restarted too -- the signature is a new random string each Hyprland run,
+    but it's always the sole entry under $XDG_RUNTIME_DIR/hypr/ on this
+    single-session machine."""
+    env = dict(os.environ)
+    if env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return env
+    runtime_dir = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    hypr_dir = Path(runtime_dir) / "hypr"
+    try:
+        sigs = [p.name for p in hypr_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return env
+    if not sigs:
+        return env
+    sigs.sort(key=lambda n: (hypr_dir / n).stat().st_mtime, reverse=True)
+    env["HYPRLAND_INSTANCE_SIGNATURE"] = sigs[0]
+    return env
+
+
 def hyprctl_json(*args):
-    out = run(["hyprctl", "-j", *args])
+    out = run(["hyprctl", "-j", *args], env=_hyprctl_env())
     try:
         return json.loads(out) if out else None
     except json.JSONDecodeError:
