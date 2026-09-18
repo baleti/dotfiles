@@ -54,6 +54,26 @@ Item {
         function reload(): void { root.generation++; }
     }
 
+    // Turning off/unplugging an external monitor changes Quickshell.screens
+    // even for outputs that aren't affected -- reported 2026-09-18: laptop
+    // wallpaper going black/blank after powering off the other screens and
+    // never recovering. Quickshell's own screen bookkeeping keeps the
+    // laptop's QuickshellScreenInfo/layer-shell surface alive across that
+    // change (confirmed against quickshell-git's updateScreens(), which
+    // matches by QScreen* and only recreates entries for screens that
+    // actually changed), so this isn't a missing/recreated window -- it's
+    // that nothing here ever re-commits a frame after the transition, so
+    // if the compositor drops or garbles the laptop panel's buffer during
+    // it (the same class of layer-shell race already worked around
+    // elsewhere in this file), it just stays broken. Bumping `generation`
+    // reuses the existing switch-wallpaper repaint path to force a fresh
+    // decode + commit on every remaining screen right after the list
+    // settles, regardless of what actually went wrong during it.
+    Connections {
+        target: Quickshell
+        function onScreensChanged(): void { root.generation++; }
+    }
+
     Variants {
         model: Quickshell.screens
 
