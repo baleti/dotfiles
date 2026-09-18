@@ -703,11 +703,15 @@ Item {
     // segment is a fixed width in the monospace bar font -- the second
     // GPU's letter then never shifts as the first GPU's number crosses 10.
     // A 100% is three digits and does push things (an intentional "maxed"
-    // cue).
+    // cue). The prefix only exists to tell two GPUs' numbers apart --
+    // dropped entirely on a single-GPU machine (request 2026-09-18: "i"
+    // alone only made sense next to a "d" for the dGPU it was distinguishing
+    // from).
     readonly property string gpuCompactText: SysmonSvc.gpuList
         .map(g => {
             const n = Math.round(root.last(g.util_pct ?? []));
-            return (g.vendor === "intel" ? "i " : "d ") + (n < 10 ? " " + n : n) + " %";
+            const prefix = SysmonSvc.gpuList.length > 1 ? (g.vendor === "intel" ? "i " : "d ") : "";
+            return prefix + (n < 10 ? " " + n : n) + " %";
         })
         .join(" ")
     // Fixed width sized for two-digit values so the pill doesn't jitter as
@@ -725,7 +729,8 @@ Item {
         id: gpuCompactMetrics
         font.family: Theme.fontFamily
         font.pixelSize: Theme.fontSize
-        text: SysmonSvc.gpuList.map(g => (g.vendor === "intel" ? "i " : "d ") + "88 %").join(" ")
+        // Mirrors gpuCompactText's own prefix rule -- see its comment.
+        text: SysmonSvc.gpuList.map(g => (SysmonSvc.gpuList.length > 1 ? (g.vendor === "intel" ? "i " : "d ") : "") + "88 %").join(" ")
     }
 
     anchors.fill: parent
