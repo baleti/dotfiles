@@ -99,13 +99,12 @@ hl.on("hyprland.start", function()
     -- what clipboard-picker's $date: field reads from. See that script's
     -- own comment for how it correlates a log line to the right id.
     hl.exec_cmd([[wl-paste --watch ~/.config/hypr/scripts/cliphist-store-logged.sh]])
-    -- wl-clip-persist, notifyd and sysmond used to be started here via
-    -- hl.exec_cmd -- moved to systemd --user units (2026-09-13) so a crash
-    -- gets Restart=always instead of staying dead until the next full
-    -- Hyprland restart. The import-environment call above is what actually
+    -- notifyd and sysmond used to be started here via hl.exec_cmd --
+    -- moved to systemd --user units (2026-09-13) so a crash gets
+    -- Restart=always instead of staying dead until the next full Hyprland
+    -- restart. The import-environment call above is what actually
     -- guarantees WAYLAND_DISPLAY/HYPRLAND_INSTANCE_SIGNATURE are present
     -- for graphical-session.target-gated units, restart or not - see:
-    --   ~/.config/systemd/user/wl-clip-persist.service
     --   ~/.config/systemd/user/notifyd.service -- owns
     --     org.freedesktop.Notifications, replaced dunst (dunst's package is
     --     untouched, its unit masked; rollback: `systemctl --user disable

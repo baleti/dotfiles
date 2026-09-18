@@ -187,11 +187,6 @@ hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("alacritty -e tmux new-sessio
 -- src/config/lua/bindings/LuaBindingsDispatchers.cpp: mode = "fullscreen"|"maximized", action defaults to "toggle"
 hl.bind(mainMod .. " + f", hl.dsp.window.fullscreen({ mode = "maximized", action = "toggle" }), { description = "Maximize the active window" })
 
--- waybar: SIGUSR1 toggles visibility (waybar(5), "SIGNALS"). The bar is
--- configured non-exclusive (~/.config/waybar/config.jsonc), so it overlays
--- windows and toggling it does not reflow the layout.
-hl.bind(mainMod .. " + b", hl.dsp.exec_cmd("killall -SIGUSR1 waybar"), { description = "Toggle the status bar" })
-
 -- notifications: invoke the last notification's default action (mirrors
 -- dunstrc's mouse_left_click = do_action) -- works even if it already
 -- closed/timed out, since notifyd (replacing dunst -- see
