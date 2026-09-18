@@ -1,0 +1,13 @@
+[Unit]
+Description=LinkedIn engagement run (see ~/.local/share/linkedin-engagement-bot/CLAUDE.md)
+# Runs real Chromium automation (a visible window, parked into a hidden
+# workspace via hyprctl) - needs an actual Hyprland session to make sense
+# at all, not just for that hyprctl call. Without this, a lingering
+# systemd --user instance (loginctl Linger=yes for this account) could
+# fire the timer with no session active at all - confirmed 2026-09-18.
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/user1/.local/share/linkedin-engagement-bot/run.sh
