@@ -1,0 +1,49 @@
+#!/bin/bash
+# Run by the `pass` shell wrapper right after `pass open`: keep rclone.conf and the
+# restic password files inside the (now open) pass store, so the next `pass close`
+# buries them in the coffin with everything else. They are what you need to reach the
+# restic repo on a blank machine (rclone.conf holds the gdrive-crypt passwords).
+#
+# Encrypting only needs the PUBLIC key (the store's .gpg-id), so no card or PIN here.
+#
+# Race safety: this only ever writes into a store that is genuinely open, i.e. the
+# coffin file is already gone. `pass open` removes it only after tar has finished
+# extracting, so pass can no longer overwrite what we write. If the coffin is still
+# there (open failed / cancelled) we do nothing at all.
+set -eu
+
+store="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+state="${PASS_SYNC_STATE:-$HOME/.local/state/pass-sync-rclone-conf.sha256}"
+conf="$HOME/.config/rclone/rclone.conf"
+restic_dir="$HOME/.config/restic"
+
+[ -e "$store/.coffin/coffin.tar.gpg" ] && exit 0
+[ -e "$store/.gpg-id" ] || exit 0
+[ -n "$(find "$store" -name '*.gpg' -not -path "$store/.coffin/*" -print -quit)" ] || exit 0
+
+# entry name in the store -> source file
+declare -A src=([backup/rclone.conf]="$conf")
+for f in "$restic_dir"/*; do
+    [ -f "$f" ] && src[backup/restic/$(basename "$f")]="$f"
+done
+
+# rclone rewrites its OAuth "token =" lines on every refresh; ignore them so only real
+# changes (remotes, crypt passwords, restic passwords) count. Stale tokens are harmless:
+# the refresh token stays valid.
+current=$( { grep -v '^token = ' "$conf"; cat "$restic_dir"/*; } | sha256sum | cut -d' ' -f1)
+
+stale=0
+[ -f "$state" ] && [ "$(cat "$state")" = "$current" ] || stale=1
+# also repair the case where the hash matches but entries are missing from the store
+# (e.g. an older coffin was restored)
+for name in "${!src[@]}"; do
+    [ -e "$store/$name.gpg" ] || stale=1
+done
+[ "$stale" -eq 0 ] && exit 0
+
+mkdir -p "$(dirname "$state")"
+for name in "${!src[@]}"; do
+    pass insert -m -f "$name" < "${src[$name]}" > /dev/null
+done
+printf %s "$current" > "$state"
+echo "pass: rclone.conf + restic passwords synced into the store (${#src[@]} entries)" >&2
