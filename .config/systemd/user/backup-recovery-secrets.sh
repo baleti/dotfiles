@@ -5,10 +5,10 @@
 #
 # Encrypting needs only the PUBLIC key, so this runs unattended whether the pass
 # coffin is open or closed and never touches the smartcard. Decrypting needs the
-# card:  rclone cat gdrive:password-store/recovery/<file> | gpg -d | tar x -C <dir>
+# card:  rclone cat gdrive:password-store/rclone.conf-incrementals/<file> | gpg -d | tar x -C <dir>
 set -eu
 
-dest="gdrive:password-store/recovery"
+dest="gdrive:password-store/rclone.conf-incrementals"
 stamp="$HOME/.local/state/backup-recovery-secrets.stamp"
 recipient=$(cat "$HOME/.password-store/.gpg-id")
 
