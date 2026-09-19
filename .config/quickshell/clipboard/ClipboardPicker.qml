@@ -77,11 +77,6 @@ PanelWindow {
     // Deliberately kept across opens: an id's content never changes, so a
     // reopen shows badges immediately and only decodes ids not yet seen.
     property var _stats: ({})
-    // Roughly how many chars of a single line fit in a row (box is half the
-    // screen; ~0.6em average glyph). One shared binding rather than measuring
-    // text per row: per-row TextMetrics on long previews froze the picker on
-    // open, and "approximately fits" is all the badge needs.
-    readonly property int _fitChars: root.screen ? Math.floor(root.screen.width * 0.5 / (Theme.fontSize * 0.6)) : 100
     property var _statsPending: ({})
 
     // cliphist's own `list` preview hard-truncates at a fixed rune count
@@ -699,12 +694,8 @@ PanelWindow {
                         }
                     }
 
-                    // Preview line plus, at its right, a "N lines · M chars"
-                    // badge -- only when the entry holds more than the one
-                    // line shows: several lines (cliphist flattens newlines
-                    // to spaces in the preview), or a single line wider than
-                    // the row (estimated once via root._fitChars, no per-row
-                    // text measuring).
+                    // Preview line plus, at its right, an "M chars · N lines"
+                    // badge on every text entry (images have no counts).
                     Item {
                         id: previewRow
                         visible: !row.modelData.thumb
@@ -729,9 +720,8 @@ PanelWindow {
                                 ? row.modelData : root._stats[row.modelData.id];
                             if (!m) return "";
                             const lines = m.lines || 1;
-                            if (lines <= 1 && m.chars <= root._fitChars) return "";
-                            const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0) + " chars";
-                            return lines > 1 ? (lines + " lines · " + chars) : chars;
+                            const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0);
+                            return chars + " chars \u00b7 " + lines + (lines === 1 ? " line" : " lines");
                         }
 
                         Text {
