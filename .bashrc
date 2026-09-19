@@ -55,10 +55,16 @@ source /usr/share/bash-completion/bash_completion
 # auto close pass coffin after 5 minutes, no systemd timers
 # tag via argv[0] so a later `pass open` can find and kill any timer
 # still running from a previous call, then start a fresh 300s countdown
+#
+# after `pass open` returns, pass-sync-rclone-conf syncs rclone.conf + restic passwords into
+# the open store (see .zshrc); the old timer is killed first so it can't close mid-sync.
 pass() {
 	command pass "$@"
-	if [[ "$1" == "open" && "$#" -eq 1 ]]; then
+	if [[ "$1" == "open" ]]; then
 		pkill -f '_PASS_AUTOCLOSE_TIMER_' 2>/dev/null
+		~/bin/pass-sync-rclone-conf
+	fi
+	if [[ "$1" == "open" && "$#" -eq 1 ]]; then
 		exec -a _PASS_AUTOCLOSE_TIMER_ bash -c 'sleep 300; command pass close > /dev/null 2>&1' &
 		disown
 	fi

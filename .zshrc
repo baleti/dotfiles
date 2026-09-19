@@ -309,10 +309,18 @@ bindkey '^R' _fzf_history_widget_wrapper
 # auto close pass coffin after 5 minutes, no systemd timers
 # tag via argv[0] so a later `pass open` can find and kill any timer 
 # still running from a previous call, then start a fresh 300s countdown
+#
+# after `pass open` returns (coffin extracted and deleted, so pass can no longer overwrite
+# anything) pass-sync-rclone-conf puts rclone.conf + restic passwords into the open store
+# if they changed; the next `pass close` buries them in the coffin. The old timer is
+# killed first so it can't close the store halfway through that sync.
 pass() {
   command pass "$@"
-  if [[ "$1" == "open" && "$#" -eq 1 ]]; then
+  if [[ "$1" == "open" ]]; then
     pkill -f '_PASS_AUTOCLOSE_TIMER_' 2>/dev/null
+    ~/bin/pass-sync-rclone-conf
+  fi
+  if [[ "$1" == "open" && "$#" -eq 1 ]]; then
     ( exec -a _PASS_AUTOCLOSE_TIMER_ bash -c 'sleep 300; command pass close' </dev/null >/dev/null 2>&1 & )
   fi
 }
