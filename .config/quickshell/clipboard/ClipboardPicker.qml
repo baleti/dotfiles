@@ -549,8 +549,8 @@ PanelWindow {
                     let step = 0;
                     if (event.key === Qt.Key_Up || (ctrl && event.key === Qt.Key_K)) step = -1;
                     else if (event.key === Qt.Key_Down || (ctrl && event.key === Qt.Key_J)) step = 1;
-                    else if (event.key === Qt.Key_PageUp) step = -10;
-                    else if (event.key === Qt.Key_PageDown) step = 10;
+                    else if (event.key === Qt.Key_PageUp) step = -20;
+                    else if (event.key === Qt.Key_PageDown) step = 20;
                     else return; // let the search entry have it
 
                     root._move(step);
