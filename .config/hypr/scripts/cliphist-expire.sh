@@ -78,3 +78,15 @@ awk -v p="$prune_before" '$1 >= p' "$WATERMARKS" > "$WATERMARKS.tmp" && mv "$WAT
 # has no interpolation to protect (each line already is an exact copy time,
 # not a sample to interpolate between).
 awk -v c="$cutoff" '$1 >= c' "$TIMESTAMPS" > "$TIMESTAMPS.tmp" && mv "$TIMESTAMPS.tmp" "$TIMESTAMPS"
+
+# Same for the picker's size-badge log (cliphist-store-logged.sh): keep only
+# ids cliphist still has. Keyed by id rather than time, so join against the
+# live list instead of comparing a cutoff.
+SIZES="$STATE_DIR/sizes"
+if [[ -f "$SIZES" ]]; then
+    cliphist list 2>/dev/null | cut -f1 > "$SIZES.ids"
+    if [[ -s "$SIZES.ids" ]]; then
+        awk 'NR==FNR{k[$1]=1;next} ($1 in k)' "$SIZES.ids" "$SIZES" > "$SIZES.tmp" && mv "$SIZES.tmp" "$SIZES"
+    fi
+    rm -f "$SIZES.ids"
+fi

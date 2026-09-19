@@ -39,6 +39,7 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cliphist-expire"
 LOG="$STATE_DIR/timestamps"
 LOCK="$STATE_DIR/store.lock"
 SELF_HASH="$STATE_DIR/last-selfcopy-sha256"
+SIZES="$STATE_DIR/sizes"
 mkdir -p "$STATE_DIR"
 touch "$LOG"
 
@@ -56,7 +57,9 @@ unset CLIPBOARD_STATE
 cliphist store < "$tmp"
 
 id=$(cliphist list 2>/dev/null | head -1 | cut -f1)
+new_id=""
 if [[ "$id" =~ ^[0-9]+$ ]]; then
+    new_id="$id"
     printf '%s\t%s\n' "$(date +%s)" "$id" >> "$LOG"
 fi
 
@@ -75,4 +78,23 @@ exec 9>&-
 if [[ "$hash" != "$last_hash" ]]; then
     wl-copy < "$tmp"
     echo "$hash" > "$SELF_HASH"
+fi
+
+# Per-entry `id<TAB>chars<TAB>lines` for the mod+v picker's size badge, read
+# by clipboard-picker's `list` so opening the picker never has to decode
+# entries to count them (an entry's content is immutable, so this is
+# computed once, here, and never again). Deliberately last: the selection
+# re-assert above is what other apps are waiting on, this only has to land
+# before the user next opens the picker. Text only (valid UTF-8, <8 MiB) -
+# images/binary get no line and the picker shows no badge for them. Same
+# trimming as the picker's own `stats` backfill: trailing newlines dropped,
+# lines = newline count + 1.
+if [[ -n "$new_id" ]] && (( $(stat -c %s "$tmp") < 8388608 )) \
+        && LC_ALL=C.UTF-8 iconv -f UTF-8 -t UTF-8 "$tmp" >/dev/null 2>&1; then
+    text=$(<"$tmp")
+    if [[ -n "$text" ]]; then
+        chars=$(printf '%s' "$text" | LC_ALL=C.UTF-8 wc -m)
+        nl=$(printf '%s' "$text" | wc -l)
+        printf '%s\t%s\t%s\n' "$new_id" "$chars" "$((nl + 1))" >> "$SIZES"
+    fi
 fi

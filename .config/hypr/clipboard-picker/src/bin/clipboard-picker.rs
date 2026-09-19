@@ -81,6 +81,22 @@ fn read_timestamps() -> HashMap<String, u64> {
         .collect()
 }
 
+/// id -> (chars, lines), from `cliphist-store-logged.sh`'s `sizes` log
+/// (written at copy time) plus anything `stats` has since backfilled. An id
+/// with no line just gets no badge until `stats` fills it in.
+fn read_sizes() -> HashMap<String, (u64, u64)> {
+    let Ok(text) = fs::read_to_string(cliphist_state_dir().join("sizes")) else {
+        return HashMap::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut it = line.split('\t');
+            let id = it.next()?;
+            Some((id.to_string(), (it.next()?.parse().ok()?, it.next()?.parse().ok()?)))
+        })
+        .collect()
+}
+
 fn cliphist_list() -> Vec<Entry> {
     let out = match Command::new("cliphist").arg("list").output() {
         Ok(o) => o.stdout,
@@ -181,7 +197,9 @@ fn copy_entry(id: &str) {
 /// registry now (was `FIELD_NAMES`/`field_descs` here).
 fn print_list(entries: &[Entry]) {
     let mut out = std::io::stdout().lock();
+    let sizes = read_sizes();
     for e in entries {
+        let size = sizes.get(&e.id);
         let fields: serde_json::Map<String, serde_json::Value> =
             e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
         let line = json!({
@@ -190,6 +208,8 @@ fn print_list(entries: &[Entry]) {
             "haystack": e.haystack,
             "thumb": e.thumb,
             "fields": fields,
+            "chars": size.map(|s| s.0),
+            "lines": size.map(|s| s.1),
         });
         let _ = writeln!(out, "{line}");
     }
@@ -258,6 +278,13 @@ fn main() {
             // and merges results in as they arrive. Ids that don't decode to
             // text (images, empty) are simply skipped.
             let mut out = std::io::stdout().lock();
+            // Also persisted to the `sizes` log so this only ever runs once
+            // per pre-existing entry (new ones are logged at copy time).
+            let mut log = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(cliphist_state_dir().join("sizes"))
+                .ok();
             for id in args {
                 let raw = decode(&id);
                 if raw.is_empty() || raw.starts_with(b"\x89PNG") || raw.starts_with(b"\xff\xd8") {
@@ -265,11 +292,11 @@ fn main() {
                 }
                 let text = String::from_utf8_lossy(&raw);
                 let trimmed = text.trim_end_matches(['\n', '\r']);
-                let _ = writeln!(
-                    out,
-                    "{}",
-                    json!({"id": id, "chars": trimmed.chars().count(), "lines": trimmed.lines().count().max(1)})
-                );
+                let (chars, lines) = (trimmed.chars().count(), trimmed.lines().count().max(1));
+                if let Some(f) = log.as_mut() {
+                    let _ = writeln!(f, "{id}\t{chars}\t{lines}");
+                }
+                let _ = writeln!(out, "{}", json!({"id": id, "chars": chars, "lines": lines}));
                 let _ = out.flush();
             }
         }
