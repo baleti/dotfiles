@@ -269,6 +269,16 @@ PanelWindow {
         });
     }
 
+    // Home/End: select the first/last result (these no longer move the
+    // search box's text cursor).
+    function _jump(toEnd) {
+        const n = root.results.length;
+        if (n === 0) return;
+        const idx = toEnd ? n - 1 : 0;
+        root.selectedId = root.results[idx].id;
+        root._reveal(idx);
+    }
+
     function _move(step) {
         const n = root.results.length;
         if (n === 0) return;
@@ -528,6 +538,11 @@ PanelWindow {
                     }
                     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                         root._activateSelectedOrFirst();
+                        event.accepted = true; return;
+                    }
+
+                    if (event.key === Qt.Key_Home || event.key === Qt.Key_End) {
+                        root._jump(event.key === Qt.Key_End);
                         event.accepted = true; return;
                     }
 
