@@ -699,7 +699,7 @@ PanelWindow {
                         }
                     }
 
-                    // Preview line plus, at its right, a "M chars · N lines"
+                    // Preview line plus, at its right, a "N lines · M chars"
                     // badge -- only when the entry holds more than the one
                     // line shows: several lines (cliphist flattens newlines
                     // to spaces in the preview), or a single line wider than
@@ -731,7 +731,7 @@ PanelWindow {
                             const lines = m.lines || 1;
                             if (lines <= 1 && m.chars <= root._fitChars) return "";
                             const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0) + " chars";
-                            return lines > 1 ? (chars + " · " + lines + " lines") : chars;
+                            return lines > 1 ? (lines + " lines · " + chars) : chars;
                         }
 
                         Text {
