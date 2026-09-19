@@ -739,5 +739,49 @@ PanelWindow {
                 }
             }
         }
+
+        // Scrollbar drawn by hand off the ListView's visibleArea instead of
+        // QtQuick.Controls' ScrollBar: no style/palette to fight the theme,
+        // nothing extra to load on the picker's open path. A *sibling* of
+        // `list`, not a child -- a ListView's declared children live in its
+        // scrolling contentItem and would scroll away with the rows.
+        Item {
+            id: sbar
+            visible: list.contentHeight > list.height
+            x: list.x + list.width - width - 2
+            y: list.y + 4
+            width: 6
+            height: list.height - 8
+
+            readonly property real _thumbH: Math.max(28, sbar.height * list.visibleArea.heightRatio)
+            readonly property real _travel: sbar.height - sbar._thumbH
+
+            Rectangle {
+                id: sthumb
+                width: parent.width
+                radius: width / 2
+                height: sbar._thumbH
+                y: sbar._travel * list.visibleArea.yPosition
+                     / Math.max(0.0001, 1 - list.visibleArea.heightRatio)
+                color: Theme.text
+                opacity: sdrag.pressed ? 0.6 : (sdrag.containsMouse ? 0.45 : 0.25)
+            }
+
+            // Wider than the drawn thumb so it's easy to grab.
+            MouseArea {
+                id: sdrag
+                x: -6
+                width: parent.width + 8
+                height: parent.height
+                hoverEnabled: true
+                function _seek(my) {
+                    const frac = Math.max(0, Math.min(1, (my - sbar._thumbH / 2) / Math.max(1, sbar._travel)));
+                    list.contentY = list.originY - list.topMargin
+                        + frac * Math.max(0, list.contentHeight + list.topMargin + list.bottomMargin - list.height);
+                }
+                onPressed: mouse => sdrag._seek(mouse.y)
+                onPositionChanged: mouse => { if (pressed) sdrag._seek(mouse.y); }
+            }
+        }
     }
 }
