@@ -249,19 +249,39 @@ PanelWindow {
             root.selectedId = null;
     }
 
+    // Keeps row `idx` inside the viewport. positionViewAtIndex alone isn't
+    // enough here: rows differ in height (thumbnails, badge/extra lines) and
+    // a ListView only estimates the position of delegates it hasn't created
+    // yet, so a far jump (PageDown) can land short and leave the selection
+    // below the window (reported 2026-09-19). So position roughly first, then,
+    // once the delegate exists, nudge contentY by its real geometry.
+    function _reveal(idx) {
+        list.positionViewAtIndex(idx, ListView.Contain);
+        Qt.callLater(() => {
+            const it = list.itemAtIndex(idx);
+            if (!it) return;
+            const viewTop = list.contentY + list.topMargin;
+            const viewBottom = list.contentY + list.height - list.bottomMargin;
+            if (it.y + it.height > viewBottom)
+                list.contentY = it.y + it.height - list.height + list.bottomMargin;
+            else if (it.y < viewTop)
+                list.contentY = it.y - list.topMargin;
+        });
+    }
+
     function _move(step) {
         const n = root.results.length;
         if (n === 0) return;
         if (root.selectedIndex < 0) {
             root.selectedId = root.results[0].id; // any first nav lands on top, not step-from-0
-            list.positionViewAtIndex(0, ListView.Contain);
+            root._reveal(0);
             return;
         }
         const idx = Math.max(0, Math.min(n - 1, root.selectedIndex + step));
         root.selectedId = root.results[idx].id;
         // Keyboard navigation only (mouse hover sets selectedId directly and
         // must not scroll): keep the selected row inside the viewport.
-        list.positionViewAtIndex(idx, ListView.Contain);
+        root._reveal(idx);
     }
 
     // ---- autocomplete (Tab-triggered to open; GTK-family key handling --
