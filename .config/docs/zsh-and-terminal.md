@@ -12,7 +12,7 @@ after 300s by spawning a tagged background sleep (`_PASS_AUTOCLOSE_TIMER_`
 via `exec -a`), killing any previous still-running timer first — a
 no-systemd-timer alternative to a real auto-lock. After the open finishes, the wrapper also
 runs `bin/pass-sync-rclone-conf`, which (only if they changed) encrypts
-`rclone.conf` and `~/.config/restic/*` into the open store under `backup/`,
+`rclone.conf` and `~/.config/restic/*` into the open store as `rclone.conf` and `restic-*` entries,
 so the next `pass close` buries them in the coffin; encrypting needs only
 the public key, and it does nothing unless the coffin file is already gone
 (no race with pass's own extraction). `EDITOR=emacsclient -t`;
