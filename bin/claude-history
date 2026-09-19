@@ -164,6 +164,9 @@ def tokenize(text):
 # "Via paths"), no colon involved at all: `/fv/tit foo` searches only
 # title, `/fv/x foo` searches only tmux (field is substring-resolved - any
 # FIELD_NAMES entry whose name *contains* it, unioned - not just a prefix).
+# The verb slot may be left empty: `//field word` is `/fv/field word`
+# (query-dsl.md "Default verb" - /fv is the default verb when a via "/" is
+# used with nothing before it).
 # `/fv/field` alone (no word following) is a no-op - there's no group/
 # subfield distinction here (every FIELD_NAMES entry is already flat), so
 # unlike a bare group path elsewhere in this DSL there's no existence
@@ -213,7 +216,7 @@ FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 # unrelated tokens. See ~/.config/docs/query-dsl.md.
 QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
-    r'/(?:filter-value|fv)/([a-zA-Z]+)(?:\s+(\S+))?'
+    r'/(?:filter-value|fv|)/([a-zA-Z]+)(?:\s+(\S+))?'
     r'|/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
     r'|/(?:reverse|rv)'
@@ -1150,7 +1153,7 @@ def complete_query(query, snap):
         if "/" in rest:
             # `/fv/via_frag` - completing the field name.
             name, via_frag = rest.split("/", 1)
-            if name in ("fv", "filter-value") and ":" not in via_frag:
+            if name in ("fv", "filter-value", "") and ":" not in via_frag:
                 candidates = resolve_fields(via_frag)
                 if candidates:
                     return {"query": query, "prefix": query[: len(query) - len(via_frag)],
@@ -1541,7 +1544,7 @@ r=json.loads(b);q=r["query"];c=r["candidates"]
 if mode=="complete":
     if len(c)==1:q=r["prefix"]+c[0]+r["suffix"]
     elif c:
-        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=complete> "],input="\n".join(c),capture_output=True,text=True)
+        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=complete> ","--bind","ctrl-space:put( )"],input="\n".join(c),capture_output=True,text=True)
         if p.stdout.strip():q=r["prefix"]+p.stdout.strip()+r["suffix"]
 else:
     # history: always opens, even with zero candidates - zsh's own ctrl-r

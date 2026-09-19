@@ -140,7 +140,11 @@ QtObject {
         return tokens;
     }
 
+    // "" (the empty verb slot of "//path") is the default verb /fv - see
+    // query-dsl.md "Default verb". Callers only reach "" with a via slash
+    // after it; tokVerb guards the bare-"/" case itself.
     function _canonName(name) {
+        if (name === "") return "/fv";
         if (root.shortVerbs.indexOf("/" + name) >= 0) return "/" + name;
         if (root.verbAliases["/" + name]) return root.verbAliases["/" + name];
         return null;
@@ -155,6 +159,7 @@ QtObject {
             const v = root._canonName(rest.slice(0, slash));
             return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
         }
+        if (rest === "") return null; // bare "/" - not the default verb
         const v = root._canonName(rest);
         return v === null ? null : { verb: v, via: null };
     }

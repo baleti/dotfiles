@@ -77,7 +77,11 @@ QtObject {
         "remove-type": "rt", "sort": "s", "reverse": "rv"
     })
     readonly property var _shortForms: ["fv", "ft", "at", "rt", "s", "rv"]
+    // "" (the empty verb slot of "//path") is the default verb /fv -
+    // query-dsl.md "Default verb". Only reachable with a via slash after
+    // it; tokVerb guards the bare-"/" case.
     function _canon(name) {
+        if (name === "") return "fv";
         if (root._shortForms.indexOf(name) >= 0) return name;
         return root._aliasToShort[name] || null;
     }
@@ -94,6 +98,7 @@ QtObject {
             const v = root._canon(rest.slice(0, slash));
             return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
         }
+        if (rest === "") return null; // bare "/" - not the default verb
         const v = root._canon(rest);
         return v === null ? null : { verb: v, via: null };
     }

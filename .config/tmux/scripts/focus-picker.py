@@ -435,6 +435,8 @@ def starts_cmd(text, lead_quote):
     if lead_quote or not text.startswith("/"):
         return False
     rest = text[1:]
+    if rest.startswith("/"):
+        return True  # "//path" - empty verb slot, default /fv (query-dsl.md "Default verb")
     return rest in VERB_FORMS or is_verb_prefix(rest)
 
 
@@ -537,7 +539,9 @@ def parse_query(query):
             # command stays inert, same as any other unresolvable path.
             verb_part, via_slash, via_path = rest.partition("/")
             if via_slash:
-                if verb_part in FV_FORMS:
+                # verb_part == "" is "//path": the empty verb slot before the
+                # via "/" defaults to /fv (query-dsl.md "Default verb")
+                if verb_part in FV_FORMS or verb_part == "":
                     arg = take_arg()
                     if arg is not None:
                         _add_filter(f"{via_path}:{arg}", bare_terms, field_terms)
@@ -663,7 +667,7 @@ def completion_stage(query):
             # in the fragment is a "typePath, via: true" completion, not
             # a "verb" one.
             base = f"{prefix}/{verb_part}/"
-            if verb_part in FV_FORMS:
+            if verb_part in FV_FORMS or verb_part == "":
                 cands = [f for f in resolve_by_substring(via_frag, FILTER_FIELDS) if f != via_frag]
                 return (base, " ", cands) if cands else ("", "", [])
             if verb_part in SORT_FORMS:
@@ -776,7 +780,18 @@ def complete(query):
         return
     p = subprocess.run(
         ["fzf", "--height=100%", "--layout=reverse", "--border=rounded",
-         "--prompt=complete> "],
+         "--prompt=complete> ",
+         # Ctrl+Space AND-narrows instead of accepting (query-dsl.md) - a
+         # second fragment typed after this still has to independently
+         # match each candidate's full text, fzf's own multi-term AND
+         # already gives that for free once a space is in the query, same
+         # as everywhere else typing a space here narrows further; this
+         # binding only exists so the *key* matches winswitch's (plain
+         # Space isn't otherwise claimed for "accept" in this popup the
+         # way it is in the GTK/QML families - Enter is what accepts here
+         # - so Space alone would already work, but Ctrl+Space is what's
+         # asked for and costs nothing extra to also bind).
+         "--bind", "ctrl-space:put( )"],
         input="\n".join(cands), capture_output=True, text=True,
     )
     chosen = p.stdout.strip()
