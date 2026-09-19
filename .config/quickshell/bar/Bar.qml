@@ -1368,6 +1368,16 @@ Item {
                         fillMode: Image.Stretch
                         asynchronous: true
                         cache: false
+                        // thumb-capture saves each window at its real
+                        // native resolution (a near-fullscreen terminal can
+                        // be ~1900x1000+), but this cell is only ever ~100px
+                        // across -- decoding the full-res PNG just to throw
+                        // most of it away was a real chunk of the delay
+                        // between hover and thumbnail. sourceSize tells Qt's
+                        // image loader to decode already-downscaled (2x the
+                        // cell size, plenty sharp at this display size)
+                        // instead of decode-then-scale.
+                        sourceSize: Qt.size(Math.ceil(width * 2), Math.ceil(height * 2))
                         // Gated on thumbReadySeq rather than bound straight
                         // to modelData.path -- see Workspaces.qml's
                         // thumbReadySeq comment for why a not-yet-existing

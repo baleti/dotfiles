@@ -84,7 +84,14 @@ Row {
 
     readonly property Timer _hoverTimer: Timer {
         id: hoverTimer
-        interval: 350
+        // Just long enough to not fire while the pointer is passing
+        // through a pill on its way elsewhere (a plain traversal is
+        // typically well under 100ms) -- capture itself is cheap (measured
+        // ~150-300ms for up to 8 windows, run in parallel via one bash
+        // invocation) and doesn't stall Hyprland the way winswitch's
+        // capture-everything backend does, so there's no real cost to
+        // triggering it quickly once a hover looks intentional.
+        interval: 120
         repeat: false
         onTriggered: root._startHoverCapture()
     }
