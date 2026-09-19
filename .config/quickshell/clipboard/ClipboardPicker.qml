@@ -254,10 +254,14 @@ PanelWindow {
         if (n === 0) return;
         if (root.selectedIndex < 0) {
             root.selectedId = root.results[0].id; // any first nav lands on top, not step-from-0
+            list.positionViewAtIndex(0, ListView.Contain);
             return;
         }
         const idx = Math.max(0, Math.min(n - 1, root.selectedIndex + step));
         root.selectedId = root.results[idx].id;
+        // Keyboard navigation only (mouse hover sets selectedId directly and
+        // must not scroll): keep the selected row inside the viewport.
+        list.positionViewAtIndex(idx, ListView.Contain);
     }
 
     // ---- autocomplete (Tab-triggered to open; GTK-family key handling --
