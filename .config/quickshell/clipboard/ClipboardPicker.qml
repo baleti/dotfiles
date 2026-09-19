@@ -118,7 +118,7 @@ PanelWindow {
                     thumbsProc.command = [root._bin, "thumbs"].concat(thumbIds);
                     thumbsProc.running = true;
                 }
-                const statIds = rows.filter(e => !e.thumb && !root._stats[e.id]).map(e => e.id);
+                const statIds = rows.filter(e => !e.thumb && (e.chars === null || e.chars === undefined) && !root._stats[e.id]).map(e => e.id);
                 if (statIds.length > 0 && !statsProc.running) {
                     statsProc.command = [root._bin, "stats"].concat(statIds);
                     statsProc.running = true;
@@ -660,7 +660,7 @@ PanelWindow {
                         }
                     }
 
-                    // Preview line plus, at its right, a "N lines · M chars"
+                    // Preview line plus, at its right, a "M chars · N lines"
                     // badge -- only when the entry holds more than the one
                     // line shows: several lines (cliphist flattens newlines
                     // to spaces in the preview), or a single line wider than
@@ -684,12 +684,15 @@ PanelWindow {
                             ? row.modelData.preview.slice(0, previewRow._previewCap) : row.modelData.preview
 
                         readonly property string sizeInfo: {
-                            const m = root._stats[row.modelData.id];
+                            // `list` already carries chars/lines (logged at copy
+                            // time); _stats only covers entries with none yet.
+                            const m = (row.modelData.chars !== null && row.modelData.chars !== undefined)
+                                ? row.modelData : root._stats[row.modelData.id];
                             if (!m) return "";
                             const lines = m.lines || 1;
                             if (lines <= 1 && m.chars <= root._fitChars) return "";
                             const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0) + " chars";
-                            return lines > 1 ? (lines + " lines · " + chars) : chars;
+                            return lines > 1 ? (chars + " · " + lines + " lines") : chars;
                         }
 
                         Text {
