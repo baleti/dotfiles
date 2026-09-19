@@ -95,6 +95,18 @@ Row {
     // sweeping the pointer across several workspaces doesn't spawn a batch
     // of processes per pill passed over.
     function requestHoverPreview(ws, anchorX, anchorY) {
+        // Moving straight from one pill to an adjacent one can fire this
+        // pill's onEntered before the previous pill's onExited (Qt doesn't
+        // guarantee ordering across two MouseAreas for one mouse-move), so
+        // thumbWindows can still hold the PREVIOUS workspace's already-
+        // loaded thumbnails at the moment the anchor jumps to the new
+        // pill's position -- briefly showing the wrong workspace's real
+        // layout, not just a stale image. Clearing it here means the popup
+        // just disappears until the new workspace's own capture lands,
+        // rather than ever showing data that doesn't belong to what's
+        // being pointed at.
+        if (root._pendingWs !== ws)
+            root.thumbWindows = [];
         root._pendingWs = ws;
         root.thumbAnchor = Qt.point(anchorX, anchorY);
         root.thumbHovering = true;
