@@ -5,6 +5,9 @@
 # The /etc paths are the hand-picked, world-readable system config worth keeping (root-only
 # ones like /etc/wireguard and NetworkManager connections would need a root job). Only the
 # custom systemd units are listed (not the whole dir), and no dracut config: it is stock.
+# Thunderbird's ImapMail is only a re-downloadable IMAP cache (16 GB, churns constantly);
+# its Mail/ folder (Local Folders, old office365 mail) and Evolution's mail/local are REAL
+# local mail and stay backed up.
 # NOT included on purpose: cliphist (clipboard history, has its own expiry timer), rssd/media,
 # newsdigest-server models/tts-cache, notifyd (ephemeral), all build/tool caches.
 restic backup \
@@ -48,6 +51,7 @@ restic backup \
     --exclude /home/user1/Downloads \
     --exclude /home/user1/virtual-machines \
     --exclude /home/user1/.local/share/fsearch \
+    --exclude '/home/user1/.thunderbird/*/ImapMail' \
     --one-file-system \
     --repo rclone:gdrive:backups/host3-restic \
     --password-file=/home/user1/.config/restic/password-file-host3 \
