@@ -606,15 +606,60 @@ PanelWindow {
                         }
                     }
 
-                    Text {
+                    // Preview line plus, at its right, a "N lines · M chars"
+                    // badge -- only when the entry holds more than the one
+                    // line shows: several lines (cliphist flattens newlines
+                    // to spaces in the preview), or a single line wider than
+                    // the row. Fit is measured with TextMetrics on the full
+                    // preview against the *unreserved* row width, not via
+                    // previewText.truncated, so reserving room for the badge
+                    // can't feed back into whether it's shown (binding loop).
+                    Item {
+                        id: previewRow
                         visible: !row.modelData.thumb
                         width: col.width
-                        text: row.modelData.preview
-                        elide: Text.ElideRight
-                        maximumLineCount: 1
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 1
-                        color: Theme.text
+                        height: previewText.implicitHeight
+
+                        TextMetrics {
+                            id: previewMetrics
+                            font: previewText.font
+                            text: row.modelData.preview
+                        }
+
+                        readonly property string sizeInfo: {
+                            const m = row.modelData;
+                            if (m.chars === null || m.chars === undefined) return "";
+                            const lines = m.lines || 1;
+                            if (lines <= 1 && previewMetrics.advanceWidth <= previewRow.width) return "";
+                            const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0) + " chars";
+                            return lines > 1 ? (lines + " lines · " + chars) : chars;
+                        }
+
+                        Text {
+                            id: previewText
+                            anchors.left: parent.left
+                            width: previewRow.sizeInfo.length > 0
+                                   ? previewRow.width - sizeText.implicitWidth - 10
+                                   : previewRow.width
+                            text: row.modelData.preview
+                            elide: Text.ElideRight
+                            maximumLineCount: 1
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
+                            color: Theme.text
+                        }
+
+                        Text {
+                            id: sizeText
+                            visible: previewRow.sizeInfo.length > 0
+                            anchors.right: parent.right
+                            anchors.verticalCenter: previewText.verticalCenter
+                            text: previewRow.sizeInfo
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            opacity: 0.55
+                            color: Theme.text
+                        }
                     }
 
                     Text {

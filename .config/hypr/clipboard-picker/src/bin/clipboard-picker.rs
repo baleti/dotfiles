@@ -182,6 +182,22 @@ fn copy_entry(id: &str) {
 fn print_list(entries: &[Entry]) {
     let mut out = std::io::stdout().lock();
     for e in entries {
+        // `chars`/`lines` of the full decoded text, for the row's right-hand
+        // size badge (cliphist's own preview flattens newlines to spaces and
+        // caps at ~100 runes, so neither is recoverable from it). Decoding
+        // every text entry is cheap: expiry keeps the db to O(100) entries
+        // (~0.25s to decode all 81 at time of writing). Absent for images and
+        // non-text binary entries.
+        let stats = if e.thumb || e.preview.trim_start().starts_with("[[ binary data") {
+            None
+        } else {
+            let raw = decode(&e.id);
+            (!raw.is_empty()).then(|| {
+                let text = String::from_utf8_lossy(&raw);
+                let trimmed = text.trim_end_matches(['\n', '\r']);
+                (trimmed.chars().count(), trimmed.lines().count().max(1))
+            })
+        };
         let fields: serde_json::Map<String, serde_json::Value> =
             e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
         let line = json!({
@@ -190,6 +206,8 @@ fn print_list(entries: &[Entry]) {
             "haystack": e.haystack,
             "thumb": e.thumb,
             "fields": fields,
+            "chars": stats.map(|(c, _)| c),
+            "lines": stats.map(|(_, l)| l),
         });
         let _ = writeln!(out, "{line}");
     }
