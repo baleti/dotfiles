@@ -70,6 +70,14 @@ Row {
     // popup in Bar.qml), so the popup can anchor itself without needing a
     // reference to Bar's root.
     property point thumbAnchor: Qt.point(0, 0)
+    // The hovered workspace's own monitor size (logical pixels, same space
+    // hyprctl reports window `at`/`size` in) -- the popup draws a
+    // monitor-shaped canvas at this aspect ratio and places each window's
+    // capture at its real (relX, relY, relW, relH) within it, rather than a
+    // plain row of same-size thumbnails, so the preview reads as "this
+    // workspace's actual layout" the way a real overview would.
+    property real thumbMonitorW: 0
+    property real thumbMonitorH: 0
 
     Process { id: mkdirThumbProc }
     Component.onCompleted: mkdirThumbProc.exec(["mkdir", "-p", root.thumbDir])
@@ -105,6 +113,10 @@ Row {
             return;
         const wins = ws.toplevels ? ws.toplevels.values : [];
         root.thumbWsName = ws.name;
+        root.thumbMonitorW = ws.monitor ? ws.monitor.width : 0;
+        root.thumbMonitorH = ws.monitor ? ws.monitor.height : 0;
+        const monX = ws.monitor ? ws.monitor.x : 0;
+        const monY = ws.monitor ? ws.monitor.y : 0;
         if (wins.length === 0) {
             root.thumbWindows = [];
             return;
@@ -112,12 +124,27 @@ Row {
         root.thumbSeq += 1;
         const seq = root.thumbSeq;
         root._pendingSeq = seq;
-        const entries = wins.map((w, i) => ({
-            address: w.address,
-            title: w.title,
-            path: root.thumbDir + "/" + seq + "-" + i + ".png",
-            seq: seq
-        }));
+        // `at`/`size` come from hyprctl's own client JSON (lastIpcObject --
+        // Quickshell's typed HyprlandToplevel doesn't expose geometry any
+        // other way), in the same absolute-desktop coordinate space as
+        // monitor.x/y, hence subtracting the monitor's own origin to get a
+        // position relative to it, which is what the popup's canvas scales
+        // against (see wsThumbPopup in Bar.qml).
+        const entries = wins.map((w, i) => {
+            const ipc = w.lastIpcObject || {};
+            const at = ipc.at || [0, 0];
+            const size = ipc.size || [0, 0];
+            return {
+                address: w.address,
+                title: w.title,
+                path: root.thumbDir + "/" + seq + "-" + i + ".png",
+                seq: seq,
+                relX: at[0] - monX,
+                relY: at[1] - monY,
+                relW: size[0],
+                relH: size[1]
+            };
+        });
         root.thumbWindows = entries;
         const cmds = entries.map(e => "'" + root.thumbBin + "' '" + e.address + "' '" + e.path + "' &").join("\n");
         captureProc.exec(["bash", "-c", cmds + "\nwait\n"]);
