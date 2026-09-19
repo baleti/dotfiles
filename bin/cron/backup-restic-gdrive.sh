@@ -2,6 +2,9 @@
 # ~/.cache is excluded wholesale (rebuildable, and its own btrfs subvolume), so the small
 # service state files that live there are listed as explicit FILE targets (a file or glob-expanded
 # file is never excluded, but everything inside a directory target would be, hence the globs).
+# The /etc paths are the hand-picked, world-readable system config worth keeping (root-only
+# ones like /etc/wireguard and NetworkManager connections would need a root job). The
+# initramfs config is dracut's, not mkinitcpio's.
 # NOT included on purpose: cliphist (clipboard history, has its own expiry timer), rssd/media,
 # newsdigest-server models/tts-cache, notifyd (ephemeral), all build/tool caches.
 restic backup \
@@ -22,6 +25,18 @@ restic backup \
     /home/user1/.cache/quickshell/winswitch-query-history.json \
     /home/user1/.cache/tmux-focus-picker-history \
     /home/user1/.cache/claude-history-query-history \
+    /etc/fstab \
+    /etc/pacman.conf \
+    /etc/systemd/system \
+    /etc/ssh/sshd_config* \
+    /etc/fuse.conf \
+    /etc/default/grub \
+    /etc/dracut.conf* \
+    /etc/hosts \
+    /etc/environment \
+    /etc/udev/rules.d \
+    /etc/modprobe.d \
+    /etc/firewalld/zones/wgtunnel.xml \
     --exclude /home/user1/.cache \
     --exclude /home/user1/.pyenv \
     --exclude /home/user1/src \
