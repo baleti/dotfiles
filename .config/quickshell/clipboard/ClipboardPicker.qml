@@ -728,7 +728,7 @@ PanelWindow {
                             id: previewText
                             anchors.left: parent.left
                             width: previewRow.sizeInfo.length > 0
-                                   ? previewRow.width - sizeText.implicitWidth - 10
+                                   ? previewRow.width - sizeText.implicitWidth - sizeText.anchors.rightMargin - 10
                                    : previewRow.width
                             text: previewRow.shownPreview
                             elide: Text.ElideRight
@@ -742,6 +742,9 @@ PanelWindow {
                             id: sizeText
                             visible: previewRow.sizeInfo.length > 0
                             anchors.right: parent.right
+                            // Clear of the scrollbar (drawn over the row's
+                            // right edge, ~8px wide incl. its own margin).
+                            anchors.rightMargin: 10
                             anchors.verticalCenter: previewText.verticalCenter
                             text: previewRow.sizeInfo
                             font.family: Theme.fontFamily
