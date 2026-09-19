@@ -3,8 +3,8 @@
 # service state files that live there are listed as explicit FILE targets (a file or glob-expanded
 # file is never excluded, but everything inside a directory target would be, hence the globs).
 # The /etc paths are the hand-picked, world-readable system config worth keeping (root-only
-# ones like /etc/wireguard and NetworkManager connections would need a root job). The
-# initramfs config is dracut's, not mkinitcpio's.
+# ones like /etc/wireguard and NetworkManager connections would need a root job). Only the
+# custom systemd units are listed (not the whole dir), and no dracut config: it is stock.
 # NOT included on purpose: cliphist (clipboard history, has its own expiry timer), rssd/media,
 # newsdigest-server models/tts-cache, notifyd (ephemeral), all build/tool caches.
 restic backup \
@@ -27,11 +27,15 @@ restic backup \
     /home/user1/.cache/claude-history-query-history \
     /etc/fstab \
     /etc/pacman.conf \
-    /etc/systemd/system \
-    /etc/ssh/sshd_config* \
+    /etc/systemd/system/paccache.service \
+    /etc/systemd/system/paccache.timer \
+    /etc/systemd/system/ssd-health-check.service \
+    /etc/systemd/system/ssd-health-check.timer \
+    /etc/systemd/system/win10-off-virtual-keyboard.service \
+    /etc/ssh/sshd_config \
+    /etc/ssh/sshd_config.d \
     /etc/fuse.conf \
     /etc/default/grub \
-    /etc/dracut.conf* \
     /etc/hosts \
     /etc/environment \
     /etc/udev/rules.d \
