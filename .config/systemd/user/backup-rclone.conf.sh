@@ -10,7 +10,7 @@
 set -eu
 
 dest="gdrive:password-store/rclone.conf-incrementals"
-hashfile="$HOME/.local/state/backup-recovery-secrets.sha256"
+hashfile="$HOME/.local/state/backup-rclone.conf.sha256"
 recipient=$(cat "$HOME/.password-store/.gpg-id")
 
 mkdir -p "$(dirname "$hashfile")"
@@ -25,7 +25,7 @@ if [ -f "$hashfile" ] && [ "$(cat "$hashfile")" = "$current" ]; then
     exit 0
 fi
 
-tmp=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/recovery-secrets.XXXXXX")
+tmp=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/rclone.conf-backup.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 
 tar -c .config/rclone/rclone.conf .config/restic \
