@@ -694,7 +694,7 @@ PanelWindow {
                         }
                     }
 
-                    // Preview line plus, at its right, an "M chars · N lines"
+                    // Preview line plus, at its right, an "M ch · N l"
                     // badge on every text entry (images have no counts).
                     Item {
                         id: previewRow
@@ -721,7 +721,7 @@ PanelWindow {
                             if (!m) return "";
                             const lines = m.lines || 1;
                             const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0);
-                            return chars + " chars \u00b7 " + lines + (lines === 1 ? " line" : " lines");
+                            return chars + " ch \u00b7 " + lines + " l";
                         }
 
                         Text {
