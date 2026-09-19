@@ -32,19 +32,19 @@ tar -c .config/rclone/rclone.conf .config/restic \
     | gpg --batch --yes --quiet --no-encrypt-to -e -r "$recipient" -o "$tmp"
 
 [ -s "$tmp" ] || { echo "empty bundle, aborting" >&2; exit 1; }
-name="recovery-$(date +%Y-%m-%dT%H%M%S).tar.gpg"
+name="rclone.conf-$(date +%Y-%m-%dT%H%M%S).tar.gpg"
 rclone copyto "$tmp" "$dest/$name"
 [ "$(rclone size --json "$dest/$name" | sed -n 's/.*"bytes":\([0-9]*\).*/\1/p')" = "$(wc -c < "$tmp")" ] \
     || { echo "uploaded size mismatch" >&2; exit 1; }
 
 # Thin old copies (files are ~2 KB, so this is generous): keep the newest 8,
 # the newest of each month for 24 months, and the newest of each year forever.
-# Only names matching recovery-YYYY-MM-DD[THHMMSS].tar.gpg are ever considered.
+# Only names matching rclone.conf-YYYY-MM-DD[THHMMSS].tar.gpg are ever considered.
 cutoff=$(date -d '24 months ago' +%Y-%m)
 rclone lsf "$dest" --files-only \
-    | grep -E '^recovery-[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{6})?\.tar\.gpg$' | sort -r \
+    | grep -E '^rclone\.conf-[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{6})?\.tar\.gpg$' | sort -r \
     | awk -v cutoff="$cutoff" '
-        { y = substr($0, 10, 4); m = substr($0, 10, 7)
+        { y = substr($0, 13, 4); m = substr($0, 13, 7)
           keep = (NR <= 8) || (m >= cutoff && !(m in sm)) || !(y in sy)
           sm[m] = 1; sy[y] = 1
           if (!keep) print }' \
