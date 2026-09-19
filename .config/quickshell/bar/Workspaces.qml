@@ -4,7 +4,10 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import "../theme"
 
-// hyprland/workspaces equivalent: {name} buttons, click to activate.
+// hyprland/workspaces equivalent: {name} buttons, click to activate. Also
+// drives a hover-preview popup (rendered by Bar.qml, outside this Row's own
+// bounds -- same split as ClaudeUsageExpanded's hover thumbnail) showing a
+// live capture of every window on the hovered workspace.
 Row {
     id: root
 
@@ -22,6 +25,116 @@ Row {
     }
 
     Process { id: switchProc }
+
+    // ---- hover-preview capture -----------------------------------------
+    //
+    // Reuses the claude-usage panel's thumb-capture binary (address-keyed
+    // hyprland-toplevel-export-v1 capture, proven fast enough for a plain
+    // hover trigger there -- see ClaudeUsageExpanded.qml's own hover
+    // thumbnail) rather than winswitch's capture-every-window backend,
+    // which stalls Hyprland's main thread for ~240ms because it captures
+    // the *entire* window set on every run (see WinSwitchState.qml). A
+    // workspace preview only ever needs the handful of windows on one
+    // workspace, so one thumb-capture process per window, backgrounded and
+    // waited on from a single Process/bash invocation (Quickshell doesn't
+    // make it convenient to fire an arbitrary number of concurrent
+    // Process{} objects from a JS array), stays cheap however many
+    // workspaces exist.
+    readonly property string thumbBin: Quickshell.env("HOME") + "/.config/claude-usage/thumb-capture/target/release/thumb-capture"
+    readonly property string thumbDir: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/quickshell-ws-thumbs"
+    property int thumbSeq: 0
+    // Guards a capture batch's results against a since-changed hover
+    // target, same idea as ClaudeUsageExpanded's _pendingAddress check.
+    property int _pendingSeq: -1
+
+    property bool thumbHovering: false
+    property string thumbWsName: ""
+    // [{address, title, path}], path already fixed up-front (per-seq, so a
+    // fresh capture never lands on the same filename an Image may still
+    // have cached) -- individual entries whose file never materializes
+    // (window closed mid-capture, export timeout) just stay as an empty
+    // placeholder frame in the popup rather than blocking the others.
+    property var thumbWindows: []
+    // Set to a batch's seq only once its Process has exited, i.e. once
+    // every entry's file either exists or never will. The popup's Image
+    // delegates gate their `source` on this rather than on thumbWindows
+    // directly: thumbWindows (and therefore each entry's `path`) is filled
+    // in immediately so titles/placeholders show right away, but binding
+    // Image.source to a path that doesn't exist yet would just fail once
+    // and never retry -- QML Image doesn't re-request a URL that hasn't
+    // itself changed, so the reload has to be driven by *this* flipping,
+    // not by thumbWindows changing.
+    property int thumbReadySeq: -1
+    // Bottom-left of the hovered pill, in scene coordinates (Bar.qml's root
+    // Item has no offset from the scene -- see Workspaces_hover_thumbnail
+    // popup in Bar.qml), so the popup can anchor itself without needing a
+    // reference to Bar's root.
+    property point thumbAnchor: Qt.point(0, 0)
+
+    Process { id: mkdirThumbProc }
+    Component.onCompleted: mkdirThumbProc.exec(["mkdir", "-p", root.thumbDir])
+
+    readonly property Timer _hoverTimer: Timer {
+        id: hoverTimer
+        interval: 350
+        repeat: false
+        onTriggered: root._startHoverCapture()
+    }
+
+    property var _pendingWs: null
+
+    // Called on pill hover-enter; the actual capture is debounced so
+    // sweeping the pointer across several workspaces doesn't spawn a batch
+    // of processes per pill passed over.
+    function requestHoverPreview(ws, anchorX, anchorY) {
+        root._pendingWs = ws;
+        root.thumbAnchor = Qt.point(anchorX, anchorY);
+        root.thumbHovering = true;
+        hoverTimer.restart();
+    }
+
+    function cancelHoverPreview() {
+        hoverTimer.stop();
+        root._pendingWs = null;
+        root.thumbHovering = false;
+    }
+
+    function _startHoverCapture() {
+        const ws = root._pendingWs;
+        if (!ws)
+            return;
+        const wins = ws.toplevels ? ws.toplevels.values : [];
+        root.thumbWsName = ws.name;
+        if (wins.length === 0) {
+            root.thumbWindows = [];
+            return;
+        }
+        root.thumbSeq += 1;
+        const seq = root.thumbSeq;
+        root._pendingSeq = seq;
+        const entries = wins.map((w, i) => ({
+            address: w.address,
+            title: w.title,
+            path: root.thumbDir + "/" + seq + "-" + i + ".png",
+            seq: seq
+        }));
+        root.thumbWindows = entries;
+        const cmds = entries.map(e => "'" + root.thumbBin + "' '" + e.address + "' '" + e.path + "' &").join("\n");
+        captureProc.exec(["bash", "-c", cmds + "\nwait\n"]);
+    }
+
+    readonly property Process _captureProc: Process {
+        id: captureProc
+        onExited: {
+            // A stale batch (hover moved on before this one finished, or
+            // moved on and back so a newer one is already pending) leaves
+            // thumbReadySeq alone -- nothing in the current popup is bound
+            // to this seq, and a soon-to-arrive newer batch will set it
+            // for real.
+            if (root._pendingSeq === root.thumbSeq)
+                root.thumbReadySeq = root._pendingSeq;
+        }
+    }
 
     Repeater {
         // ScriptModel (not a plain array) so Repeater diffs by object
@@ -65,6 +178,11 @@ Row {
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: root.switchToWorkspace(wsBtn.modelData.id)
+                onEntered: {
+                    const p = wsBtn.mapToItem(null, 0, wsBtn.height);
+                    root.requestHoverPreview(wsBtn.modelData, p.x, p.y);
+                }
+                onExited: root.cancelHoverPreview()
             }
         }
     }

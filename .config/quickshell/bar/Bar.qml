@@ -749,7 +749,7 @@ Item {
         spacing: 6
 
         Pill {
-            Workspaces { screen: root.screen }
+            Workspaces { id: workspaces; screen: root.screen }
         }
         Submap {}
     }
@@ -1280,6 +1280,100 @@ Item {
             asynchronous: true
             cache: false
             source: claudeUsageThumb.src.thumbReady ? "file://" + claudeUsageThumb.src.thumbImagePath : ""
+        }
+    }
+
+    // Workspaces.qml's hover-preview popup -- same split as the claude-usage
+    // thumbnail above (rendered here, not inside Workspaces.qml, so it can
+    // drop below the bar strip unclipped and stay outside shell.qml's input
+    // mask). thumbAnchor is already in scene coordinates (Workspaces.qml's
+    // own root has no offset from Bar's), so this positions off it directly
+    // rather than through workspaces.x/y the way claudeUsageThumb does.
+    Rectangle {
+        id: wsThumbPopup
+        readonly property var src: workspaces
+        readonly property int thumbW: 140
+        readonly property int thumbH: 88
+        readonly property int cellGap: 8
+        readonly property int hpad: 8
+        readonly property int vpad: 6
+        readonly property int labelH: 16
+
+        visible: src.thumbHovering && src.thumbWindows.length > 0
+        width: src.thumbWindows.length * thumbW + Math.max(0, src.thumbWindows.length - 1) * cellGap + hpad * 2
+        height: wsLabel.implicitHeight + 4 + thumbH + 4 + labelH + vpad * 2
+        x: Math.max(4, Math.min(src.thumbAnchor.x, root.screen.width - width - 4))
+        y: src.thumbAnchor.y + 6
+        z: 100
+        color: Theme.bg
+        border.color: Theme.cyan
+        border.width: 1
+        radius: Theme.rounding
+
+        Text {
+            id: wsLabel
+            anchors.top: parent.top
+            anchors.topMargin: wsThumbPopup.vpad
+            anchors.left: parent.left
+            anchors.leftMargin: wsThumbPopup.hpad
+            text: "workspace " + wsThumbPopup.src.thumbWsName
+            color: Theme.muted
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSize - 2
+        }
+
+        Row {
+            anchors.top: wsLabel.bottom
+            anchors.topMargin: 4
+            anchors.left: parent.left
+            anchors.leftMargin: wsThumbPopup.hpad
+            spacing: wsThumbPopup.cellGap
+
+            Repeater {
+                model: wsThumbPopup.src.thumbWindows
+
+                Column {
+                    id: cell
+                    required property var modelData
+                    spacing: 2
+
+                    Rectangle {
+                        width: wsThumbPopup.thumbW
+                        height: wsThumbPopup.thumbH
+                        radius: 4
+                        color: Qt.rgba(1, 1, 1, 0.02)
+                        border.color: Qt.rgba(1, 1, 1, 0.18)
+                        border.width: 1
+
+                        Image {
+                            anchors.fill: parent
+                            anchors.margins: 2
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            cache: false
+                            // Gated on thumbReadySeq rather than bound
+                            // straight to modelData.path -- see
+                            // Workspaces.qml's thumbReadySeq comment for why
+                            // a not-yet-existing path can't just be
+                            // reassigned once the file lands.
+                            source: wsThumbPopup.src.thumbReadySeq === cell.modelData.seq
+                                ? "file://" + cell.modelData.path : ""
+                        }
+                    }
+
+                    Text {
+                        width: wsThumbPopup.thumbW
+                        height: wsThumbPopup.labelH
+                        text: cell.modelData.title
+                        elide: Text.ElideRight
+                        maximumLineCount: 1
+                        horizontalAlignment: Text.AlignHCenter
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 3
+                    }
+                }
+            }
         }
     }
 
