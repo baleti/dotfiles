@@ -28,12 +28,8 @@ runs after this hook otherwise wins."
        "l" #'display-line-numbers-mode))
 
 (setq org-directory "~/notes/")
-
-(add-hook 'org-mode-hook
-          (lambda ()
-            (when buffer-file-name
-              (setq org-download-image-dir
-                    (concat (file-name-sans-extension (file-name-nondirectory buffer-file-name)) "-images")))))
+(after! org
+  (setq org-agenda-files nil))
 
 (add-hook 'after-change-major-mode-hook (lambda () (setq evil-shift-width 2)))
 
@@ -234,26 +230,28 @@ runs after this hook otherwise wins."
         :n "C-<return>" #'org-insert-heading
         :n "C-S-<return>" #'+org/insert-item-above-normal))
 
-;; https://baty.net/2022/configuring-the-org-download-save-directory
-;; https://github.com/abo-abo/org-download/issues/46
-;; https://github.com/abo-abo/org-download/issues/151#issuecomment-1425096926
-(after! org-download
-  (setq org-download-method 'directory)
-  ;; moved to org-mode-hook above
-  ;; see https://github.com/abo-abo/org-download/issues/216
-  ;; (setq org-download-image-dir (concat (file-name-sans-extension (buffer-file-name)) "-images"))
-  (setq org-download-image-org-width 600)
-  (setq org-download-link-format "[[file:%s]]"
-        org-download-abbreviate-filename-function #'file-relative-name)
-  (setq org-download-link-format-function #'org-download-link-format-function-default)
-  (setq-default org-download-heading-lvl 'nil))
-
 (defun open-terminal-alacritty ()
   (interactive)
   (add-to-list 'display-buffer-alist '("*Async Shell Command*" display-buffer-no-window (nil)))
   (async-shell-command "alacritty -e tmux" nil nil))
 
 (map! :leader "o t" 'open-terminal-alacritty)
+
+(defun my/wayland-display ()
+  "Return the live Wayland socket name for this session, or nil.
+The Emacs daemon is a systemd user service that can start before
+Hyprland does, so its own environment may lack WAYLAND_DISPLAY (or hold
+a stale one). Ask the systemd user manager, which Hyprland updates on
+login, then fall back to the newest wayland-N socket in XDG_RUNTIME_DIR."
+  (let ((rt (or (getenv "XDG_RUNTIME_DIR") (format "/run/user/%d" (user-uid)))))
+    (or (let ((d (getenv "WAYLAND_DISPLAY")))
+          (and d (file-exists-p (expand-file-name d rt)) d))
+        (with-temp-buffer
+          (when (eq 0 (call-process "systemctl" nil t nil "--user" "show-environment"))
+            (goto-char (point-min))
+            (when (re-search-forward "^WAYLAND_DISPLAY=\\(.+\\)$" nil t)
+              (match-string 1))))
+        (car (last (sort (directory-files rt nil "\\`wayland-[0-9]+\\'") #'string<))))))
 
 (defun copy-selection-to-clipboard ()
   "Copy the selected region to the system clipboard via wl-copy."
@@ -269,6 +267,10 @@ runs after this hook otherwise wins."
              ;; a real file sidesteps that: nothing reads it until after the
              ;; (non-blocking, /dev/null-backed) call returns.
              (err-file (make-temp-file "wl-copy-err"))
+             (disp (my/wayland-display))
+             (process-environment
+              (if disp (cons (concat "WAYLAND_DISPLAY=" disp) process-environment)
+                process-environment))
              (status (call-process-region
                       text nil "sh" nil nil nil
                       "-c" (format "wl-copy 2>%s" (shell-quote-argument err-file)))))
