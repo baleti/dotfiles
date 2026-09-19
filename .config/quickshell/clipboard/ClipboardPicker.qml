@@ -72,6 +72,12 @@ PanelWindow {
     property var _entries: []
     property var _thumbPaths: ({}) // id -> cached PNG path, once resolved
     property var _thumbMeta: ({})  // id -> {width, height} of that cached PNG (its real pixels)
+    // id -> {chars, lines} for the size badge. Streamed in by statsProc after
+    // `list` (decoding every entry inside `list` itself delayed first paint).
+    // Deliberately kept across opens: an id's content never changes, so a
+    // reopen shows badges immediately and only decodes ids not yet seen.
+    property var _stats: ({})
+    property var _statsPending: ({})
 
     // cliphist's own `list` preview hard-truncates at a fixed rune count
     // (observed 100 + its own "…"), independent of the picker's actual
@@ -107,6 +113,11 @@ PanelWindow {
                     thumbsProc.command = [root._bin, "thumbs"].concat(thumbIds);
                     thumbsProc.running = true;
                 }
+                const statIds = rows.filter(e => !e.thumb && !root._stats[e.id]).map(e => e.id);
+                if (statIds.length > 0 && !statsProc.running) {
+                    statsProc.command = [root._bin, "stats"].concat(statIds);
+                    statsProc.running = true;
+                }
                 const longIds = rows.filter(e => !e.thumb && root._looksTruncated(e.preview)).map(e => e.id);
                 if (longIds.length > 0) {
                     textsProc.command = [root._bin, "texts"].concat(longIds);
@@ -114,6 +125,34 @@ PanelWindow {
                 }
             }
         }
+    }
+
+    // Stats stream in one NDJSON line per entry, but are merged in batches
+    // (statsFlush): replacing `_stats` re-evaluates every row's badge
+    // binding, so doing that per line would itself stall the UI.
+    Process {
+        id: statsProc
+        stdout: SplitParser {
+            onRead: line => {
+                try {
+                    const m = JSON.parse(line);
+                    root._statsPending[m.id] = { chars: m.chars, lines: m.lines };
+                    statsFlush.start();
+                } catch (e) { /* skip */ }
+            }
+        }
+        onRunningChanged: if (!running) statsFlush.triggerFlush()
+    }
+    Timer {
+        id: statsFlush
+        interval: 80
+        function triggerFlush() {
+            statsFlush.stop();
+            if (Object.keys(root._statsPending).length === 0) return;
+            root._stats = Object.assign({}, root._stats, root._statsPending);
+            root._statsPending = ({});
+        }
+        onTriggered: triggerFlush()
     }
 
     // Streamed as each decodes (mirrors winswitch's per-window thumbnail
@@ -627,8 +666,8 @@ PanelWindow {
                         }
 
                         readonly property string sizeInfo: {
-                            const m = row.modelData;
-                            if (m.chars === null || m.chars === undefined) return "";
+                            const m = root._stats[row.modelData.id];
+                            if (!m) return "";
                             const lines = m.lines || 1;
                             if (lines <= 1 && previewMetrics.advanceWidth <= previewRow.width) return "";
                             const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0) + " chars";

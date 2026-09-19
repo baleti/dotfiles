@@ -182,22 +182,6 @@ fn copy_entry(id: &str) {
 fn print_list(entries: &[Entry]) {
     let mut out = std::io::stdout().lock();
     for e in entries {
-        // `chars`/`lines` of the full decoded text, for the row's right-hand
-        // size badge (cliphist's own preview flattens newlines to spaces and
-        // caps at ~100 runes, so neither is recoverable from it). Decoding
-        // every text entry is cheap: expiry keeps the db to O(100) entries
-        // (~0.25s to decode all 81 at time of writing). Absent for images and
-        // non-text binary entries.
-        let stats = if e.thumb || e.preview.trim_start().starts_with("[[ binary data") {
-            None
-        } else {
-            let raw = decode(&e.id);
-            (!raw.is_empty()).then(|| {
-                let text = String::from_utf8_lossy(&raw);
-                let trimmed = text.trim_end_matches(['\n', '\r']);
-                (trimmed.chars().count(), trimmed.lines().count().max(1))
-            })
-        };
         let fields: serde_json::Map<String, serde_json::Value> =
             e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
         let line = json!({
@@ -206,8 +190,6 @@ fn print_list(entries: &[Entry]) {
             "haystack": e.haystack,
             "thumb": e.thumb,
             "fields": fields,
-            "chars": stats.map(|(c, _)| c),
-            "lines": stats.map(|(_, l)| l),
         });
         let _ = writeln!(out, "{line}");
     }
@@ -263,6 +245,31 @@ fn main() {
                 }
                 let text = String::from_utf8_lossy(&raw).into_owned();
                 let _ = writeln!(out, "{}", json!({"id": id, "text": text}));
+                let _ = out.flush();
+            }
+        }
+        Some("stats") => {
+            // `{id,chars,lines}` of the full decoded text per id, streamed as
+            // each decodes -- for the row's size badge (cliphist's preview
+            // flattens newlines and caps at ~100 runes, so neither is
+            // recoverable from `list`). Kept out of `list` on purpose:
+            // decoding every entry there delayed the picker's first paint
+            // (reported 2026-09-19); the frontend fires this after `list`
+            // and merges results in as they arrive. Ids that don't decode to
+            // text (images, empty) are simply skipped.
+            let mut out = std::io::stdout().lock();
+            for id in args {
+                let raw = decode(&id);
+                if raw.is_empty() || raw.starts_with(b"\x89PNG") || raw.starts_with(b"\xff\xd8") {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&raw);
+                let trimmed = text.trim_end_matches(['\n', '\r']);
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    json!({"id": id, "chars": trimmed.chars().count(), "lines": trimmed.lines().count().max(1)})
+                );
                 let _ = out.flush();
             }
         }
