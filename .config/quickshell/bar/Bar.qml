@@ -1292,16 +1292,18 @@ Item {
     Rectangle {
         id: wsThumbPopup
         readonly property var src: workspaces
-        readonly property int thumbW: 140
-        readonly property int thumbH: 88
-        readonly property int cellGap: 8
+        readonly property int canvasW: 220
+        // Falls back to a plain 4:3-ish box before the first real capture
+        // has told us the monitor's own aspect ratio.
+        readonly property real canvasH: src.thumbMonitorW > 0
+            ? canvasW * src.thumbMonitorH / src.thumbMonitorW : 130
+        readonly property real scale: src.thumbMonitorW > 0 ? canvasW / src.thumbMonitorW : 0
         readonly property int hpad: 8
         readonly property int vpad: 6
-        readonly property int labelH: 16
 
         visible: src.thumbHovering && src.thumbWindows.length > 0
-        width: src.thumbWindows.length * thumbW + Math.max(0, src.thumbWindows.length - 1) * cellGap + hpad * 2
-        height: wsLabel.implicitHeight + 4 + thumbH + 4 + labelH + vpad * 2
+        width: canvasW + hpad * 2
+        height: wsLabel.implicitHeight + 4 + canvasH + vpad * 2
         x: Math.max(4, Math.min(src.thumbAnchor.x, root.screen.width - width - 4))
         y: src.thumbAnchor.y + 6
         z: 100
@@ -1322,55 +1324,74 @@ Item {
             font.pixelSize: Theme.fontSize - 2
         }
 
-        Row {
+        // A monitor-shaped canvas (scaled from the hovered workspace's real
+        // monitor size) with each window's capture placed at its own real
+        // position/size within it -- reads as "this workspace's actual
+        // layout" rather than a same-size-thumbnails filmstrip.
+        Rectangle {
+            id: canvas
             anchors.top: wsLabel.bottom
             anchors.topMargin: 4
             anchors.left: parent.left
             anchors.leftMargin: wsThumbPopup.hpad
-            spacing: wsThumbPopup.cellGap
+            width: wsThumbPopup.canvasW
+            height: wsThumbPopup.canvasH
+            clip: true
+            radius: 4
+            color: Qt.rgba(0, 0, 0, 0.35)
+            border.color: Qt.rgba(1, 1, 1, 0.18)
+            border.width: 1
 
             Repeater {
                 model: wsThumbPopup.src.thumbWindows
 
-                Column {
+                Item {
                     id: cell
                     required property var modelData
-                    spacing: 2
+                    readonly property real s: wsThumbPopup.scale
+                    x: modelData.relX * s
+                    y: modelData.relY * s
+                    width: Math.max(1, modelData.relW * s)
+                    height: Math.max(1, modelData.relH * s)
+                    clip: true
 
                     Rectangle {
-                        width: wsThumbPopup.thumbW
-                        height: wsThumbPopup.thumbH
-                        radius: 4
-                        color: Qt.rgba(1, 1, 1, 0.02)
-                        border.color: Qt.rgba(1, 1, 1, 0.18)
+                        anchors.fill: parent
+                        color: Qt.rgba(1, 1, 1, 0.03)
+                        border.color: Qt.rgba(1, 1, 1, 0.25)
                         border.width: 1
-
-                        Image {
-                            anchors.fill: parent
-                            anchors.margins: 2
-                            fillMode: Image.PreserveAspectFit
-                            asynchronous: true
-                            cache: false
-                            // Gated on thumbReadySeq rather than bound
-                            // straight to modelData.path -- see
-                            // Workspaces.qml's thumbReadySeq comment for why
-                            // a not-yet-existing path can't just be
-                            // reassigned once the file lands.
-                            source: wsThumbPopup.src.thumbReadySeq === cell.modelData.seq
-                                ? "file://" + cell.modelData.path : ""
-                        }
                     }
 
+                    Image {
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        fillMode: Image.Stretch
+                        asynchronous: true
+                        cache: false
+                        // Gated on thumbReadySeq rather than bound straight
+                        // to modelData.path -- see Workspaces.qml's
+                        // thumbReadySeq comment for why a not-yet-existing
+                        // path can't just be reassigned once the file lands.
+                        source: wsThumbPopup.src.thumbReadySeq === cell.modelData.seq
+                            ? "file://" + cell.modelData.path : ""
+                    }
+
+                    // Only worth labeling a window big enough on the canvas
+                    // to actually hold readable text.
                     Text {
-                        width: wsThumbPopup.thumbW
-                        height: wsThumbPopup.labelH
+                        visible: cell.width > 44 && cell.height > 18
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.margins: 2
+                        width: parent.width - 4
                         text: cell.modelData.title
                         elide: Text.ElideRight
                         maximumLineCount: 1
-                        horizontalAlignment: Text.AlignHCenter
-                        color: Theme.textDim
+                        color: "white"
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 3
+                        font.pixelSize: 9
+                        style: Text.Outline
+                        styleColor: Qt.rgba(0, 0, 0, 0.8)
                     }
                 }
             }
