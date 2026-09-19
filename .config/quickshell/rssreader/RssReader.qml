@@ -290,6 +290,10 @@ PanelWindow {
 
     function _acCandidates() {
         const t = search.text;
+        // "//path" is the default-verb spelling of "/fv/path" (query-dsl.md
+        // "Default verb"); match the stage regexes against the expanded form,
+        // but keep building replacement text from `t` (only the tail differs).
+        const tm = t.replace(/(^|\s)\/\/(?=[a-z.]*(?:\s|$))/g, "$1/fv/");
 
         if (root.acVerbMulti) {
             if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
@@ -312,7 +316,7 @@ PanelWindow {
 
         // value stage, via form:  ".../fv/<field> <frag>"
         // value stage, colon form: ".../fv <field>:<frag>"
-        const val = t.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
+        const val = tm.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
         if (val) {
             const field = (val[1] || val[3]).toLowerCase();
             const frag = (val[2] !== undefined ? val[2] : val[4]).toLowerCase();
@@ -331,7 +335,7 @@ PanelWindow {
         }
 
         // type-path stage, via form:  ".../fv/<frag>" / ".../s/<frag>"
-        const vp = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
+        const vp = tm.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
         if (vp) {
             const frag = vp[2];
             const base = t.slice(0, t.length - frag.length); // includes ".../fv/"

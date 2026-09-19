@@ -575,6 +575,10 @@ Rectangle {
 
     function _acCandidates() {
         const t = root.searchText;
+        // "//path" is the default-verb spelling of "/fv/path" (query-dsl.md
+        // "Default verb"); match the stage regexes against the expanded form,
+        // but keep building replacement text from `t` (only the tail differs).
+        const tm = t.replace(/(^|\s)\/\/(?=[a-z.]*(?:\s|$))/g, "$1/fv/");
 
         if (root.acVerbMulti) {
             if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
@@ -594,7 +598,7 @@ Rectangle {
             return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
         }
 
-        const val = t.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
+        const val = tm.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
         if (val) {
             const field = (val[1] || val[3]).toLowerCase();
             const frag = (val[2] !== undefined ? val[2] : val[4]).toLowerCase();
@@ -611,7 +615,7 @@ Rectangle {
                 .map(d => ({ text: base + d, label: d, alias: "", desc: "" }));
         }
 
-        const vp = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
+        const vp = tm.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
         if (vp) {
             const frag = vp[2];
             const base = t.slice(0, t.length - frag.length);

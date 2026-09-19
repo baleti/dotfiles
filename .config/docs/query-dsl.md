@@ -119,6 +119,7 @@ token is either:
 ```
 /verb arg...       a command - verb is exact-matched against the table below
 /verb/path arg...  same command, with its type path glued on via a 2nd / (see Via paths)
+//path arg...      the verb left empty: shorthand for /fv/path arg... (see Default verb)
 "phrase"           quoted literal - never a command, always row-filter text
 bareword           anything else - an implicit /filter-value argument
 ```
@@ -180,7 +181,9 @@ around and never gives up, no matter how the rest of it grows: the old
 registered `/claude`, `/claude.title` etc. as their own verbs) both made
 a type name sit in the same position a command would, so every new type
 risked colliding with the verb vocabulary. Exact-matching the verb token
-itself - always these twelve spellings, nothing more - keeps that
+itself - always these twelve spellings, plus the one empty spelling
+`//` (see Default verb, below) that only ever appears with a via `/`
+after it, never as a fuzzy match - keeps that
 ambiguity closed permanently; it's a *typed argument*'s (or, now, a *via
 path*'s - see below) own substring resolution that's allowed to be fuzzy,
 precisely because argument position and verb position are kept so
@@ -276,6 +279,55 @@ values pooled across every field (not just one), narrowed by whatever's
 typed so far, the same corpus `/fv path:` completion already draws from.
 `/at`, `/rt`, and `/s` don't get this fallback - an unresolvable via path
 there stays the existing no-op / narrows-to-nothing behaviour.
+
+### Default verb (`//`)
+
+`/fv` is the **default verb of the via operator**: leave the verb slot
+empty and the second `/` still introduces a path, to `/fv`.
+
+```
+//claude ovh          =  /fv/claude ovh
+//claude.title ovh    =  /fv/claude.title ovh
+//                    =  /fv/     (nothing typed after the via yet)
+```
+
+So the whole via family costs one character less to reach for the most
+common command: `//` reads as "filter, via ...". This is the *only*
+default the grammar has - `//` always means `/fv/`, never `/ft/` or
+`/s/`; the other path-taking verbs still have to be named
+(`/ft/claude`, `/s/tokens`). It also only exists in via position: a lone
+`/` followed by a path word is still an unrecognised verb, and a
+`/verb/path` token whose verb *is* named is unaffected.
+
+Everything that holds for `/fv/path` holds for `//path` unchanged - it is
+a spelling, resolved at tokenizing time, not a new command:
+
+- **Arity, no-op and existence rules** are `/fv/path`'s (see Via paths):
+  `//tokens` alone is a no-op, `//claude` alone (a group) is the
+  existence filter, `//claude ovh` scopes to every subfield.
+- **Auto-show** triggers the same way (Auto-shown filter fields), and the
+  empty via (`//` alone) is "nothing typed yet" exactly like `/fv/`.
+- **Inline coloring** treats `//...` as a valid command token.
+- **Verb matching stays exact.** The empty spelling is not a prefix
+  match on anything; `/xyz/path` with an unknown `xyz` is still inert.
+- **Quoting still escapes it**: `"//foo"` is literal text. A pasted
+  `//host/share` or similar is now read as a filter via `host/share`
+  (which resolves to nothing and narrows to nothing) - quote it to
+  search for the literal text.
+- **Completion**: `//` + Tab is the type-path stage of `/fv/` (every
+  field, narrowed by whatever follows the second `/`), and a value
+  stage follows a resolved `//path ` the way it does for `/fv/path `.
+  Accepting a type path keeps the `//` spelling that was typed.
+
+**Where it's implemented.** Every consumer that parses via paths at all:
+the shared launcher `QueryDsl.qml` (app-launcher, rss-reader,
+claude-usage), `WinSwitchQueryDsl.qml`, `ClipboardQueryDsl.qml`,
+`focus-picker.py`, `claude-history` (`QUERY_ELEM_RE`, including the
+negated `!//field word` form) and the Android app's `QueryDsl.kt`. It
+does **not** apply to `picker.rs` (notification-picker) or
+`window-search.py`, which have no via-path parser at all (see the
+maturity note above) - `//x` there is plain literal text, same as any
+other via spelling. The unused `query.rs` was left alone.
 
 ### Type paths
 
@@ -684,6 +736,33 @@ Same rollout as Verb-stage depth, same day: winswitch first
 (clipboard-picker/notification-picker) and each QML consumer
 (app-launcher, rss-reader, claude-usage) by hand.
 
+**The fzf-native completion popup (focus-picker, claude-history) picked
+this up 2026-09-13**, once it had a real popup at all (see Verb-stage
+depth's own rollout note, above) - `Ctrl+Space` is bound there to fzf's
+own `put( )` action (insert a literal space into fzf's *own* query box,
+without accepting), the same functional outcome as the GTK/QML families'
+custom AND-narrowing logic, but for a structurally different reason:
+this popup has no separate "Space accepts" rule to work around in the
+first place (`Enter` is what accepts here, plain `Tab`/`Space` do fzf's
+own ordinary things - moving the highlight and typing a literal
+character, respectively - see Shared popup UI, below, for why this
+family never got the other two's "Space also accepts" convention), so
+plain `Space` already inserts a literal space and narrows same as
+`Ctrl+Space` would; the binding exists anyway so the *key* matches
+winswitch's, not because the space needed rescuing from an accept
+binding. The AND-narrowing itself needs no DSL code either: this popup
+runs fzf's own untouched fuzzy matcher already (see Search-box history,
+below, for why that's deliberate here and not the grammar's usual
+substring rule), which already ANDs space-separated fragments together
+natively - typing a second fragment after any space, `Ctrl+Space`-typed
+or not, was already narrowing further before this change; `put( )` only
+adds the specific keystroke. Not scoped to a "Verb stage" the way
+winswitch's is, either - this popup only ever shows one flat candidate
+list per Tab press (Verb-stage depth already flattens verb and path
+together into one popup - see above), so there's no separate stage for
+it to be inert in. window-search has no completion popup at all to
+extend this into (see the maturity note at the top of Autocompletion).
+
 ## Auto-shown filter fields
 
 Added 2026-09-11-12, alongside Verb-stage depth: a field actively
@@ -764,11 +843,12 @@ What "shown" means is necessarily picker-specific:
   comment), so there is nothing hidden left to surface.
 
 Scoped to consumers that support a Tab-triggered popup at all - window-search,
-focus-picker and claude-history stay out of scope for *this* feature and for
-Ctrl+Space above (see the maturity note at the top of Autocompletion), even
-though focus-picker and claude-history did pick up Verb-stage depth itself
-2026-09-13 (see its own Rollout note) - the two features landed separately,
-not as a package.
+focus-picker and claude-history stay out of scope for *this* feature (see
+the maturity note at the top of Autocompletion), even though focus-picker
+and claude-history did pick up both Verb-stage depth and Ctrl+Space
+themselves 2026-09-13 (see each feature's own Rollout note) - all three
+features landed separately, not as one package, and this one specifically
+hasn't been ported to the fzf-native completion popup yet.
 
 **A group subfield's auto-shown line is labeled with the subfield's own
 name, and gated per row once the scoping term is a bare group.** Added
@@ -875,6 +955,19 @@ current command/entry). It's consumed only while the popup is showing;
 with no popup open, `Space` types a literal space into the query exactly
 as it always did.
 
+- **fzf-native pickers** (focus-picker, claude-history - a nested fzf
+  process, not an in-layout widget the picker itself draws and can
+  rebind at will): `Enter` accepts, fzf's own ordinary default; `Tab`
+  moves the highlight down (fzf's stock `toggle+down`, not a custom
+  bind - the "toggle" half is a no-op without `--multi`) and `Space`
+  types a literal space into fzf's *own* query box, neither one
+  repurposed to accept. This family never adopted the other two's
+  "Space also accepts" convention above - there was nothing to add a
+  bind *for*, since accepting was already one keystroke (`Enter`) away
+  and every other key already does something fzf-native and useful
+  (`Space` narrowing further is what Ctrl+Space AND-narrowing, above,
+  builds on directly).
+
 `Escape` dismisses just the popup, never the picker. In
 a picker where Tab already meant something else while nothing's open
 (clipboard-picker/notification-picker's and the RSS reader's search-list
@@ -888,7 +981,7 @@ to reveal it - every row/label has to be shown explicitly and the list
 revealed with a direct `.show()`.
 
 **Inline command-validity coloring.** As a command is typed, the whole
-`/verb` (or `/verb/via`) token is colored to show whether it currently
+`/verb` (or `/verb/via`, or `//via`) token is colored to show whether it currently
 resolves to a real command, not left in the query's ordinary text color:
 one color once it's a recognized verb, a distinctly different one while
 it isn't (an unrecognized verb, or a genuinely-wrong-looking `/xyz` that
@@ -1017,10 +1110,12 @@ with no new mechanism to learn.
     on every keystroke (recompute-in-place, reset highlight to top, close
     on zero matches - see Autocompletion, above; nothing new to invent
     here either).
-  - **Accept** (Enter, and Space/Tab per the existing Shared popup UI
-    conventions) replaces the **entire** search-box text with the chosen
-    history entry, cursor at the end - a whole-line replace, not an
-    insert at cursor, matching zsh's own `LBUFFER=$selected`.
+  - **Accept** (Enter - the fzf-native family's own accept key, see
+    Shared popup UI's fzf-native bullet, above; not Space/Tab, which do
+    fzf's own ordinary things in this popup too) replaces the **entire**
+    search-box text with the chosen history entry, cursor at the end - a
+    whole-line replace, not an insert at cursor, matching zsh's own
+    `LBUFFER=$selected`.
   - **Escape** dismisses just the popup, search box left exactly as it
     was before Ctrl+R was pressed - same as every other popup in this
     DSL.

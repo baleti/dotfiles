@@ -79,7 +79,10 @@ QtObject {
         const rest = tok.v.slice(1);
         const slash = rest.indexOf("/");
         if (slash >= 0) {
-            const v = root._canonName(rest.slice(0, slash));
+            // "//path" -- empty verb slot before the via "/" defaults to /fv
+            // (query-dsl.md "Default verb"): "//claude" == "/fv/claude".
+            const name = rest.slice(0, slash);
+            const v = name === "" ? "/fv" : root._canonName(name);
             return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
         }
         const v = root._canonName(rest);
@@ -106,6 +109,7 @@ QtObject {
         const rest = tok.v.slice(1);
         const slash = rest.indexOf("/");
         const name = slash >= 0 ? rest.slice(0, slash) : rest;
+        if (slash >= 0 && name === "") return true; // "//path": default /fv
         return root._canonName(name) !== null || root.isVerbPrefix(rest);
     }
 
