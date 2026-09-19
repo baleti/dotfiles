@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# Fail loudly instead of quietly operating on wrong paths (e.g. "/.cache/...") if this
+# is ever run from a stripped environment. Cronie's PAM session sets HOME normally.
+: "${HOME:?HOME not set}"
 # ~/.cache is excluded wholesale (rebuildable, and its own btrfs subvolume), so the small
 # service state files that live there are listed as explicit FILE targets (a file or glob-expanded
 # file is never excluded, but everything inside a directory target would be, hence the globs).
@@ -11,23 +14,23 @@
 # NOT included on purpose: cliphist (clipboard history, has its own expiry timer), rssd/media,
 # newsdigest-server models/tts-cache, notifyd (ephemeral), all build/tool caches.
 restic backup \
-    /home/user1 \
-    /home/user1/music/host3 \
-    /home/user1/notes \
+    "$HOME" \
+    "$HOME/music/host3" \
+    "$HOME/notes" \
     /var/spool/cron \
-    "/home/user1/gdrive/part 3" \
-    /home/user1/.cache/rssd/items.jsonl \
-    /home/user1/.cache/rssd/seen.json \
-    /home/user1/.cache/rssd/read.json \
-    /home/user1/.cache/claude-usage/state.json \
-    /home/user1/.cache/newsdigest/*.jsonl \
-    /home/user1/.cache/newsdigest/cursors/* \
-    /home/user1/.cache/newsdigest-server/digest/*.json \
-    /home/user1/.cache/quickshell/launcher-history.json \
-    /home/user1/.cache/quickshell/launcher-query-history.json \
-    /home/user1/.cache/quickshell/winswitch-query-history.json \
-    /home/user1/.cache/tmux-focus-picker-history \
-    /home/user1/.cache/claude-history-query-history \
+    "$HOME/gdrive/part 3" \
+    "$HOME/.cache/rssd/items.jsonl" \
+    "$HOME/.cache/rssd/seen.json" \
+    "$HOME/.cache/rssd/read.json" \
+    "$HOME/.cache/claude-usage/state.json" \
+    "$HOME"/.cache/newsdigest/*.jsonl \
+    "$HOME"/.cache/newsdigest/cursors/* \
+    "$HOME"/.cache/newsdigest-server/digest/*.json \
+    "$HOME/.cache/quickshell/launcher-history.json" \
+    "$HOME/.cache/quickshell/launcher-query-history.json" \
+    "$HOME/.cache/quickshell/winswitch-query-history.json" \
+    "$HOME/.cache/tmux-focus-picker-history" \
+    "$HOME/.cache/claude-history-query-history" \
     /etc/fstab \
     /etc/pacman.conf \
     /etc/systemd/system/paccache.service \
@@ -44,28 +47,33 @@ restic backup \
     /etc/udev/rules.d \
     /etc/modprobe.d \
     /etc/firewalld/zones/wgtunnel.xml \
-    --exclude /home/user1/.cache \
-    --exclude /home/user1/.pyenv \
-    --exclude /home/user1/src \
-    --exclude /home/user1/temp \
-    --exclude /home/user1/Downloads \
-    --exclude /home/user1/virtual-machines \
-    --exclude /home/user1/.local/share/fsearch \
-    --exclude '/home/user1/.thunderbird/*/ImapMail' \
+    --exclude "$HOME/.cache" \
+    --exclude "$HOME/.pyenv" \
+    --exclude "$HOME/src" \
+    --exclude "$HOME/temp" \
+    --exclude "$HOME/Downloads" \
+    --exclude "$HOME/virtual-machines" \
+    --exclude "$HOME/.local/share/fsearch" \
+    --exclude "$HOME/.thunderbird/*/ImapMail" \
     --one-file-system \
     --repo rclone:gdrive:backups/host3-restic \
-    --password-file=/home/user1/.config/restic/password-file-host3 \
+    --password-file="$HOME/.config/restic/password-file-host3" \
     --tag systemd.timer
 
+# forget only (no --prune): cheap metadata-only op, safe to run every cycle. It retires
+# the snapshot list on schedule; the data behind aged-out snapshots isn't actually
+# reclaimed until the weekly backup-restic-prune.sh runs. See that script for why
+# --prune is split out (restic's own advice: forget often, prune rarely - it repacks
+# data and is heavy on a remote/rclone backend).
 systemctl stop --user mount-backup-host3.service
 
 restic unlock --repo rclone:gdrive:backups/host3-restic \
-    --password-file=/home/user1/.config/restic/password-file-host3
+    --password-file="$HOME/.config/restic/password-file-host3"
 
 restic forget --tag systemd.timer \
     --keep-daily 7 --keep-weekly 3 --keep-monthly 6 --keep-yearly 10 \
-    --prune --repo rclone:gdrive:backups/host3-restic \
-    --password-file=/home/user1/.config/restic/password-file-host3
+    --repo rclone:gdrive:backups/host3-restic \
+    --password-file="$HOME/.config/restic/password-file-host3"
 
 sleep 10
 systemctl start --user mount-backup-host3.service --no-block
