@@ -77,6 +77,11 @@ PanelWindow {
     // Deliberately kept across opens: an id's content never changes, so a
     // reopen shows badges immediately and only decodes ids not yet seen.
     property var _stats: ({})
+    // Roughly how many chars of a single line fit in a row (box is half the
+    // screen; ~0.6em average glyph). One shared binding rather than measuring
+    // text per row: per-row TextMetrics on long previews froze the picker on
+    // open, and "approximately fits" is all the badge needs.
+    readonly property int _fitChars: root.screen ? Math.floor(root.screen.width * 0.5 / (Theme.fontSize * 0.6)) : 100
     property var _statsPending: ({})
 
     // cliphist's own `list` preview hard-truncates at a fixed rune count
@@ -182,19 +187,29 @@ PanelWindow {
     // preview already reads.
     Process {
         id: textsProc
+        property var pending: ({})
         stdout: SplitParser {
             onRead: line => {
                 try {
                     const m = JSON.parse(line);
                     const full = m.text.replace(/\s+/g, " ").trim();
-                    if (!full) return;
-                    const idx = root._entries.findIndex(e => e.id === m.id);
-                    if (idx < 0) return;
-                    const next = root._entries.slice();
-                    next[idx] = Object.assign({}, next[idx], { preview: full, haystack: full.toLowerCase() });
-                    root._entries = next;
+                    if (full) textsProc.pending[m.id] = full;
                 } catch (e) { /* skip */ }
             }
+        }
+        // Applied once, when the stream ends, not per line: every `_entries`
+        // assignment re-filters `results`, which resets the ListView and
+        // rebuilds every delegate, so one reassignment per long entry (dozens
+        // in a row) is what made the picker re-render repeatedly and go
+        // unresponsive on open (reported 2026-09-19).
+        onRunningChanged: {
+            if (running) return;
+            const pend = textsProc.pending;
+            textsProc.pending = ({});
+            if (Object.keys(pend).length === 0) return;
+            root._entries = root._entries.map(e => pend[e.id]
+                ? Object.assign({}, e, { preview: pend[e.id], haystack: pend[e.id].toLowerCase() })
+                : e);
         }
     }
 
@@ -649,27 +664,30 @@ PanelWindow {
                     // badge -- only when the entry holds more than the one
                     // line shows: several lines (cliphist flattens newlines
                     // to spaces in the preview), or a single line wider than
-                    // the row. Fit is measured with TextMetrics on the full
-                    // preview against the *unreserved* row width, not via
-                    // previewText.truncated, so reserving room for the badge
-                    // can't feed back into whether it's shown (binding loop).
+                    // the row (estimated once via root._fitChars, no per-row
+                    // text measuring).
                     Item {
                         id: previewRow
                         visible: !row.modelData.thumb
                         width: col.width
                         height: previewText.implicitHeight
 
-                        TextMetrics {
-                            id: previewMetrics
-                            font: previewText.font
-                            text: row.modelData.preview
-                        }
+                        // Bounded on purpose: textsProc swaps in the *full*
+                        // flattened text (up to tens of KB) and shaping all
+                        // of that per row, again on every batch of preview
+                        // updates, froze the picker on open. No row is
+                        // wide enough to show _previewCap chars, so a
+                        // capped slice decides "wider than the row" just as
+                        // well.
+                        readonly property int _previewCap: 300
+                        readonly property string shownPreview: row.modelData.preview.length > previewRow._previewCap
+                            ? row.modelData.preview.slice(0, previewRow._previewCap) : row.modelData.preview
 
                         readonly property string sizeInfo: {
                             const m = root._stats[row.modelData.id];
                             if (!m) return "";
                             const lines = m.lines || 1;
-                            if (lines <= 1 && previewMetrics.advanceWidth <= previewRow.width) return "";
+                            if (lines <= 1 && m.chars <= root._fitChars) return "";
                             const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0) + " chars";
                             return lines > 1 ? (lines + " lines · " + chars) : chars;
                         }
@@ -680,7 +698,7 @@ PanelWindow {
                             width: previewRow.sizeInfo.length > 0
                                    ? previewRow.width - sizeText.implicitWidth - 10
                                    : previewRow.width
-                            text: row.modelData.preview
+                            text: previewRow.shownPreview
                             elide: Text.ElideRight
                             maximumLineCount: 1
                             font.family: Theme.fontFamily
