@@ -327,7 +327,57 @@ pub enum Snapshot {
     Net { #[serde(default = "default_full")] full: bool, interfaces: Vec<IfaceHistory> },
     // `total` is the aggregate line (unchanged shape for old clients);
     // `cores` is one history per logical CPU, for a stacked per-core view.
-    Cpu { #[serde(default = "default_full")] full: bool, total: Vec<f64>, cores: Vec<Vec<f64>> },
+    //
+    // Three power lines added 2026-09-19, same split as GPU's util_pct/
+    // vram_pct/power_pct (a history percent array) + temp_c/power_w/...
+    // (point-in-time detail scalars, always sent fresh whether full or
+    // delta -- never diffed/streamed like the history arrays):
+    //   - `power_pct`/`power_w`/`power_limit_w`: CPU package (RAPL
+    //     `intel-rapl:0`). `power_limit_w` is the package's *short-term*
+    //     (PL2/turbo) limit, not the sustained PL1 one -- PL1 is routinely
+    //     exceeded under boost (seen ~30W against a 15W PL1 on this
+    //     machine), which would clip the line at the graph's fixed 0-100
+    //     axis (values are clamped, not auto-scaled -- see Graph.qml);
+    //     PL2 is the actual firmware-enforced ceiling, so it can't.
+    //   - `psys_pct`/`psys_w`/`psys_limit_w`: the RAPL "platform" zone
+    //     (`intel-rapl:1`), when present -- on hardware that populates it,
+    //     covers more than just the package (confirmed 2026-09-19: ~20W
+    //     psys against ~9W package at the same instant on this laptop).
+    //     Has its own, separate PL2 (its own `constraint_1`), not the
+    //     package's.
+    //   - `battery_pct`/`battery_w`: battery discharge power (V x A from
+    //     BAT0), the only true whole-machine figure available on hardware
+    //     with no wall/PSU telemetry -- but only while actually running on
+    //     battery; 0 while charging/full/on AC (not NO_DATA -- see lib.rs's
+    //     own comment on NO_DATA only ever being inserted wholesale via
+    //     push_gap, never blended into push_raw's per-tier averaging).
+    //     `battery_pct` normalizes against `psys_limit_w` as a stand-in
+    //     "whole system" ceiling, since there's no natural limit for a
+    //     battery-discharge figure the way RAPL zones have one.
+    // All `#[serde(default)]` so an older client/daemon pairing just sees
+    // empty/zero power lines rather than failing to parse.
+    Cpu {
+        #[serde(default = "default_full")]
+        full: bool,
+        total: Vec<f64>,
+        cores: Vec<Vec<f64>>,
+        #[serde(default)]
+        power_pct: Vec<f64>,
+        #[serde(default)]
+        power_w: f64,
+        #[serde(default)]
+        power_limit_w: f64,
+        #[serde(default)]
+        psys_pct: Vec<f64>,
+        #[serde(default)]
+        psys_w: f64,
+        #[serde(default)]
+        psys_limit_w: f64,
+        #[serde(default)]
+        battery_pct: Vec<f64>,
+        #[serde(default)]
+        battery_w: f64,
+    },
     Temp { #[serde(default = "default_full")] full: bool, celsius: Vec<f64> },
     // `used_pct` excludes reclaimable cache (same calc as before, matches
     // MemAvailable); `cached_pct` is Buffers+Cached, overlaid separately so

@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -542,6 +542,18 @@ struct PersistedHistory {
     cpu_total: PersistedSeries,
     cpu_cores: Vec<PersistedSeries>,
     temp_c: PersistedSeries,
+    // CPU power lines (percent-of-own-PL2), same `#[serde(default)]`
+    // reasoning as swap_used_pct below -- added later than the file format
+    // was. `power_w` (the pre-normalization field name) is deliberately
+    // NOT kept as an alias: a couple hours of not-yet-normalized history
+    // isn't worth migrating, same philosophy as PersistedGpu's own comment
+    // on dropping fields across a format change.
+    #[serde(default)]
+    power_pct: PersistedSeries,
+    #[serde(default)]
+    psys_pct: PersistedSeries,
+    #[serde(default)]
+    battery_pct: PersistedSeries,
     mem_used_pct: PersistedSeries,
     mem_cached_pct: PersistedSeries,
     // `#[serde(default)]` so a history.json saved before swap tracking
@@ -666,6 +678,26 @@ struct History {
     // bar's overlay per-core view.
     cpu_cores: Vec<TieredSeries>,
     temp_c: TieredSeries,
+    // Three power history lines (percent-of-own-PL2, see lib.rs's
+    // `Snapshot::Cpu` doc comment for the full design) -- empty/flat 0
+    // line (never erroring) wherever the underlying source isn't
+    // available (RAPL permission not yet live, psys zone absent, or not
+    // currently on battery).
+    power_pct: TieredSeries,
+    psys_pct: TieredSeries,
+    battery_pct: TieredSeries,
+    // Latest raw-watt readings + each RAPL zone's own PL2 ceiling, for the
+    // point-in-time detail scalars `serve_client` sends fresh every
+    // message (same treatment as GPU's `GpuLatest` scalars) -- the *_pct
+    // series above are what's actually plotted, these are what a hover/
+    // label shows as an actual watts number. Limits are hardware
+    // constants, read once at startup (world-readable, no permission
+    // dependency) rather than persisted.
+    power_w_now: f64,
+    cpu_power_limit_w: f64,
+    psys_w_now: f64,
+    psys_power_limit_w: f64,
+    battery_w_now: f64,
     mem_used_pct: TieredSeries,
     mem_cached_pct: TieredSeries,
     swap_used_pct: TieredSeries,
@@ -762,6 +794,14 @@ impl History {
             cpu_total: TieredSeries::new(),
             cpu_cores: (0..n_cores).map(|_| TieredSeries::new()).collect(),
             temp_c: TieredSeries::new(),
+            power_pct: TieredSeries::new(),
+            psys_pct: TieredSeries::new(),
+            battery_pct: TieredSeries::new(),
+            power_w_now: 0.0,
+            cpu_power_limit_w: read_rapl_zone_limit_w("intel-rapl:0"),
+            psys_w_now: 0.0,
+            psys_power_limit_w: read_rapl_zone_limit_w("intel-rapl:1"),
+            battery_w_now: 0.0,
             mem_used_pct: TieredSeries::new(),
             mem_cached_pct: TieredSeries::new(),
             swap_used_pct: TieredSeries::new(),
@@ -809,6 +849,12 @@ impl History {
         self.cpu_total.apply_downtime_gap(gap_secs);
         self.temp_c.load_persisted(&p.temp_c);
         self.temp_c.apply_downtime_gap(gap_secs);
+        self.power_pct.load_persisted(&p.power_pct);
+        self.power_pct.apply_downtime_gap(gap_secs);
+        self.psys_pct.load_persisted(&p.psys_pct);
+        self.psys_pct.apply_downtime_gap(gap_secs);
+        self.battery_pct.load_persisted(&p.battery_pct);
+        self.battery_pct.apply_downtime_gap(gap_secs);
         self.mem_used_pct.load_persisted(&p.mem_used_pct);
         self.mem_used_pct.apply_downtime_gap(gap_secs);
         self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
@@ -860,6 +906,9 @@ impl History {
             cpu_total: self.cpu_total.to_persisted(),
             cpu_cores: self.cpu_cores.iter().map(TieredSeries::to_persisted).collect(),
             temp_c: self.temp_c.to_persisted(),
+            power_pct: self.power_pct.to_persisted(),
+            psys_pct: self.psys_pct.to_persisted(),
+            battery_pct: self.battery_pct.to_persisted(),
             mem_used_pct: self.mem_used_pct.to_persisted(),
             mem_cached_pct: self.mem_cached_pct.to_persisted(),
             swap_used_pct: self.swap_used_pct.to_persisted(),
@@ -1088,6 +1137,100 @@ fn find_cpu_thermal_zone() -> Option<std::path::PathBuf> {
         }
     }
     fallback
+}
+
+/// A RAPL zone's energy counter, `/sys/class/powercap/<zone>/energy_uj` --
+/// root:root 0400 by default, so this returns `None` (graceful absence,
+/// same treatment as `find_cpu_thermal_zone`'s fallback chain and the GPU/
+/// nethogs paths) unless a udev rule has chgrp'd it to the `power` group
+/// and this session is a member of that group (see the dotfiles
+/// conversation 2026-09-19, "are we able to read current power usage" --
+/// `95-rapl-power.rules` + `usermod -aG power`; takes a fresh login to
+/// apply to sysmond's own systemd --user session). That line simply
+/// doesn't appear client-side until then, instead of sysmond failing.
+/// `zone` is e.g. `"intel-rapl:0"` (package) or `"intel-rapl:1"` (psys,
+/// the "platform" zone -- present and populated on this hardware,
+/// confirmed 2026-09-19, but not guaranteed on every machine).
+fn find_rapl_zone_energy(zone: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(format!("/sys/class/powercap/{zone}/energy_uj"));
+    fs::read_to_string(&path).ok()?;
+    Some(path)
+}
+
+/// A zone's wraparound point, read once at startup -- at typical power
+/// draw this wraps roughly every several seconds, safely longer than the
+/// 1s sample interval, so a single-wrap correction (see `sample_loop`'s
+/// use of this) is enough.
+fn read_rapl_zone_max_range(zone: &str) -> u64 {
+    fs::read_to_string(format!("/sys/class/powercap/{zone}/max_energy_range_uj"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// A zone's own short-term (PL2/turbo) power limit in watts, via
+/// `constraint_1_power_limit_uw` -- world-readable (0644) unlike
+/// `energy_uj`, so this needs no group/udev setup. Deliberately the
+/// *short-term* constraint, not `constraint_0`'s long-term/sustained one:
+/// package power routinely exceeds the sustained limit under boost (seen
+/// ~30W against a 15W PL1 on this machine), which would clip the graph
+/// line at its fixed 0-100 axis (values are clamped, not auto-scaled);
+/// PL2 is the actual firmware-enforced ceiling, so normalizing against it
+/// can't clip. Each RAPL zone has its own independent PL2 (psys's is
+/// separate from -- and higher than -- the package's on this hardware).
+/// 0.0 (line hidden client-side, same as GPU's power_limit_w <= 0 case)
+/// if the constraint file isn't there.
+fn read_rapl_zone_limit_w(zone: &str) -> f64 {
+    fs::read_to_string(format!("/sys/class/powercap/{zone}/constraint_1_power_limit_uw"))
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map(|uw| uw / 1_000_000.0)
+        .unwrap_or(0.0)
+}
+
+/// Reads a RAPL zone's energy counter and folds it into a watts reading
+/// against the previous sample, wraparound-corrected (see
+/// `read_rapl_zone_max_range`'s comment on why a single-wrap correction
+/// is enough at a 1s sample interval). Shared by the package and psys
+/// samples in `sample_loop`, which each keep their own `path`/`max_range`/
+/// `prev` baseline -- the two zones are independent counters.
+fn sample_rapl_zone(path: &Path, max_range: u64, prev: &mut Option<(u64, Instant)>, now: Instant) -> f64 {
+    let Some(cur_e) = fs::read_to_string(path).ok().and_then(|s| s.trim().parse::<u64>().ok()) else {
+        return 0.0;
+    };
+    let watts = match *prev {
+        Some((prev_e, prev_t)) => {
+            let elapsed = now.duration_since(prev_t).as_secs_f64().max(0.001);
+            let delta_uj = if cur_e >= prev_e { cur_e - prev_e } else { (max_range - prev_e) + cur_e };
+            delta_uj as f64 / 1_000_000.0 / elapsed
+        }
+        None => 0.0,
+    };
+    *prev = Some((cur_e, now));
+    watts
+}
+
+/// Battery discharge power (watts) from BAT0's V x A -- the only true
+/// whole-machine draw figure available on hardware with no wall/PSU
+/// telemetry, but ONLY while actually discharging: every other status
+/// (Charging/Full/Not charging/AC) means the battery isn't supplying the
+/// load, so `current_now` is a near-zero trickle that would misrepresent
+/// system draw as ~0W rather than "not applicable right now" (confirmed
+/// 2026-09-19: ~1mA trickle while Full on AC). Returns 0.0 (not attempted
+/// on a desktop with no BAT0) rather than failing.
+fn read_battery_discharge_w() -> f64 {
+    let base = "/sys/class/power_supply/BAT0";
+    let status = fs::read_to_string(format!("{base}/status")).unwrap_or_default();
+    if status.trim() != "Discharging" {
+        return 0.0;
+    }
+    let read_uv = |name: &str| -> Option<f64> {
+        fs::read_to_string(format!("{base}/{name}")).ok().and_then(|s| s.trim().parse::<f64>().ok())
+    };
+    match (read_uv("voltage_now"), read_uv("current_now")) {
+        (Some(v), Some(a)) => (v * a) / 1_000_000_000_000.0,
+        _ => 0.0,
+    }
 }
 
 fn list_pids() -> Vec<i32> {
@@ -2263,6 +2406,12 @@ fn proc_persist_loop(history: Arc<Mutex<History>>) {
 
 fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, nethogs_pool: Arc<Mutex<NethogsPool>>) {
     let thermal_zone = find_cpu_thermal_zone();
+    let rapl_pkg_path = find_rapl_zone_energy("intel-rapl:0");
+    let rapl_pkg_max_range = read_rapl_zone_max_range("intel-rapl:0");
+    let mut prev_rapl_pkg: Option<(u64, Instant)> = None;
+    let rapl_psys_path = find_rapl_zone_energy("intel-rapl:1");
+    let rapl_psys_max_range = read_rapl_zone_max_range("intel-rapl:1");
+    let mut prev_rapl_psys: Option<(u64, Instant)> = None;
     let disk_names = whole_disk_names();
     let mut prev_cpu_lines = read_all_cpu_lines();
     let mut prev_net: HashMap<String, (u64, u64, Instant)> = HashMap::new();
@@ -2303,6 +2452,22 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
             .unwrap_or(0.0);
 
         let now = Instant::now();
+
+        // CPU power (watts): package + psys RAPL zones, plus battery
+        // discharge -- see lib.rs's `Snapshot::Cpu` doc comment for what
+        // each represents and why. First tick after a path was found has
+        // no baseline yet, so `sample_rapl_zone` reports 0 rather than a
+        // bogus spike.
+        let power_w = rapl_pkg_path
+            .as_ref()
+            .map(|p| sample_rapl_zone(p, rapl_pkg_max_range, &mut prev_rapl_pkg, now))
+            .unwrap_or(0.0);
+        let psys_w = rapl_psys_path
+            .as_ref()
+            .map(|p| sample_rapl_zone(p, rapl_psys_max_range, &mut prev_rapl_psys, now))
+            .unwrap_or(0.0);
+        let battery_w = read_battery_discharge_w();
+
         let current = read_all_iface_bytes();
         let mut rates: Vec<(String, f64, f64)> = Vec::with_capacity(current.len());
         for (name, (rx, tx)) in &current {
@@ -2472,6 +2637,14 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
         let mut h = history.lock().unwrap();
         h.cpu_total.push_raw(cpu_total);
         h.temp_c.push_raw(temp_c);
+        let pct_of_limit = |w: f64, limit: f64| if limit > 0.0 { (100.0 * w / limit).max(0.0) } else { 0.0 };
+        let (cpu_limit, psys_limit) = (h.cpu_power_limit_w, h.psys_power_limit_w);
+        h.power_pct.push_raw(pct_of_limit(power_w, cpu_limit));
+        h.psys_pct.push_raw(pct_of_limit(psys_w, psys_limit));
+        h.battery_pct.push_raw(pct_of_limit(battery_w, psys_limit));
+        h.power_w_now = power_w;
+        h.psys_w_now = psys_w;
+        h.battery_w_now = battery_w;
         h.mem_used_pct.push_raw(mem_used_pct);
         h.mem_cached_pct.push_raw(mem_cached_pct);
         h.swap_used_pct.push_raw(swap_used_pct);
@@ -2668,6 +2841,9 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
     // "_since" value is a prior `TieredSeries::total_pushed()` reading (see
     // `delta_since`); tick 0 always goes out full, seeding all of these.
     let mut cpu_total_since: u64 = 0;
+    let mut cpu_power_since: u64 = 0;
+    let mut cpu_psys_since: u64 = 0;
+    let mut cpu_battery_since: u64 = 0;
     let mut cpu_cores_since: Vec<u64> = Vec::new();
     let mut temp_since: u64 = 0;
     let mut mem_since: (u64, u64, u64, u64, u64) = (0, 0, 0, 0, 0);
@@ -2782,13 +2958,34 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
                 Metric::Cpu => {
                     let full = resync || cpu_cores_since.len() != h.cpu_cores.len();
                     let total_since = if full { 0 } else { cpu_total_since };
+                    let power_since = if full { 0 } else { cpu_power_since };
+                    let psys_since = if full { 0 } else { cpu_psys_since };
+                    let battery_since = if full { 0 } else { cpu_battery_since };
                     let cores_since: Vec<u64> = if full { vec![0; h.cpu_cores.len()] } else { cpu_cores_since.clone() };
                     let total = h.cpu_total.delta_since(tier, total_since);
+                    let power_pct = h.power_pct.delta_since(tier, power_since);
+                    let psys_pct = h.psys_pct.delta_since(tier, psys_since);
+                    let battery_pct = h.battery_pct.delta_since(tier, battery_since);
                     let cores: Vec<Vec<f64>> =
                         h.cpu_cores.iter().zip(cores_since.iter()).map(|(c, &s)| c.delta_since(tier, s)).collect();
                     cpu_total_since = h.cpu_total.total_pushed(tier);
+                    cpu_power_since = h.power_pct.total_pushed(tier);
+                    cpu_psys_since = h.psys_pct.total_pushed(tier);
+                    cpu_battery_since = h.battery_pct.total_pushed(tier);
                     cpu_cores_since = h.cpu_cores.iter().map(|c| c.total_pushed(tier)).collect();
-                    Snapshot::Cpu { full, total, cores }
+                    Snapshot::Cpu {
+                        full,
+                        total,
+                        cores,
+                        power_pct,
+                        power_w: h.power_w_now,
+                        power_limit_w: h.cpu_power_limit_w,
+                        psys_pct,
+                        psys_w: h.psys_w_now,
+                        psys_limit_w: h.psys_power_limit_w,
+                        battery_pct,
+                        battery_w: h.battery_w_now,
+                    }
                 }
                 Metric::Temp => {
                     let full = resync;
