@@ -22,9 +22,9 @@ restic_dir="$HOME/.config/restic"
 [ -n "$(find "$store" -name '*.gpg' -not -path "$store/.coffin/*" -print -quit)" ] || exit 0
 
 # entry name in the store -> source file
-declare -A src=([backup/rclone.conf]="$conf")
+declare -A src=([rclone.conf]="$conf")
 for f in "$restic_dir"/*; do
-    [ -f "$f" ] && src[backup/restic/$(basename "$f")]="$f"
+    [ -f "$f" ] && src[restic-$(basename "$f")]="$f"
 done
 
 # rclone rewrites its OAuth "token =" lines on every refresh; ignore them so only real
