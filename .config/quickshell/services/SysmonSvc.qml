@@ -185,6 +185,23 @@ QtObject {
     // One history array per logical CPU, index = core number.
     readonly property var cpuCores: cpuSock.data.cores ?? []
 
+    // Power lines (2026-09-19): each *Pct is percent-of-that-zone's-own-
+    // PL2, already normalized server-side (sysmond.rs) so it plots on the
+    // same 0-100 axis as cpuTotal/cpuCores without clipping. The matching
+    // *W/*LimitW are point-in-time watts for the compact-pill/legend
+    // readout, not history. psys ("platform") and battery (discharge,
+    // only nonzero while actually on battery) sit at a flat 0 line
+    // wherever the underlying source isn't available -- see
+    // rapl_cpu_power_monitoring memory / lib.rs's Snapshot::Cpu comment.
+    readonly property list<real> cpuPowerPct: cpuSock.data.power_pct ?? []
+    readonly property real cpuPowerW: cpuSock.data.power_w ?? 0
+    readonly property real cpuPowerLimitW: cpuSock.data.power_limit_w ?? 0
+    readonly property list<real> cpuPsysPct: cpuSock.data.psys_pct ?? []
+    readonly property real cpuPsysW: cpuSock.data.psys_w ?? 0
+    readonly property real cpuPsysLimitW: cpuSock.data.psys_limit_w ?? 0
+    readonly property list<real> cpuBatteryPct: cpuSock.data.battery_pct ?? []
+    readonly property real cpuBatteryW: cpuSock.data.battery_w ?? 0
+
     readonly property list<real> tempC: tempSock.data.celsius ?? []
 
     readonly property list<real> memUsedPct: memSock.data.used_pct ?? []

@@ -122,9 +122,15 @@ Rectangle {
     // own y-axis unit -- just temp, whose ring is cpu's (no per-process
     // temperature exists) so its value is a CPU %, not °C.
     property var procHistHeaderFmt: null
-    // Passthrough to Graph.lineHoverHighlight -- off for the CPU pill (a
-    // dozen unlabelled per-core lines, nothing to match a bolded one to).
+    // Passthrough to Graph.lineHoverHighlight.
     property bool lineHoverHighlight: true
+    // Puts the legend on the same line as the tier (10m..7mo) buttons
+    // instead of its own line above them (request 2026-09-19, CPU pill) --
+    // opt-in, not the default, since a long legend (net's interface list,
+    // GPU's per-GPU names) would get squeezed by the tier buttons sharing
+    // its line; only worth it for a short, fixed-length legend like CPU's
+    // three power lines.
+    property bool legendSharesTierLine: false
 
     readonly property bool hoverTipActive: root.expanded && graph.hoveredIndex >= 0
 
@@ -702,11 +708,12 @@ Rectangle {
             }
 
             // Legend, wrapping across as many lines as it needs -- directly
-            // under the graph's x-axis.
+            // under the graph's x-axis. Own line above the tier buttons
+            // unless `legendSharesTierLine` (see below).
             Flow {
                 width: parent.width
                 spacing: 10
-                visible: root.legendItems.length > 0
+                visible: root.legendItems.length > 0 && !root.legendSharesTierLine
 
                 Repeater {
                     model: root.legendItems
@@ -737,17 +744,34 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                         }
+
+                        // Optional extra column (2026-09-19, CPU pill's
+                        // watt readout) -- the legend line itself plots a
+                        // normalized percent, not the metric's real unit
+                        // (see cpuPowerLines' own comment on why), so a
+                        // legend entry that wants to show the actual
+                        // number sets `value`; every other pill's legend
+                        // items leave it unset and get nothing extra.
+                        Text {
+                            visible: !!legendRow.modelData.value
+                            text: legendRow.modelData.value ?? ""
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                        }
                     }
                 }
             }
 
             // Time-range toggle on its own line below the legend, hard
-            // right, so a long legend never squeezes it.
+            // right, so a long legend never squeezes it -- unless
+            // `legendSharesTierLine`, where the combined row below does
+            // both jobs instead.
             Row {
                 anchors.right: parent.right
                 spacing: 6
                 layoutDirection: Qt.RightToLeft
-                visible: root.tierCodes.length > 0
+                visible: root.tierCodes.length > 0 && !root.legendSharesTierLine
 
                 Repeater {
                     model: root.tierCodes
@@ -777,6 +801,102 @@ Rectangle {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.tierRequested(tierBtn.modelData)
+                        }
+                    }
+                }
+            }
+
+            // `legendSharesTierLine` variant: legend left, tier buttons
+            // hard right, both on one row -- same two blocks as above,
+            // just combined into a single line instead of stacked. Kept as
+            // a separate duplicated block (rather than reparenting the
+            // same items) since QML can't cleanly toggle an item between
+            // two different layout parents at runtime.
+            Item {
+                width: parent.width
+                height: Math.max(legendFlow2.implicitHeight, tierRow2.height)
+                visible: root.legendSharesTierLine && (root.legendItems.length > 0 || root.tierCodes.length > 0)
+
+                Flow {
+                    id: legendFlow2
+                    anchors.left: parent.left
+                    anchors.right: tierRow2.left
+                    anchors.rightMargin: 10
+                    spacing: 10
+
+                    Repeater {
+                        model: root.legendItems
+
+                        Row {
+                            id: legendRow2
+                            spacing: 5
+                            required property var modelData
+                            readonly property bool hovered: legendRow2.modelData.name === graph.hoveredLegendName
+
+                            Rectangle {
+                                width: 9
+                                height: 9
+                                radius: 2
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: legendRow2.modelData.color
+                            }
+
+                            Text {
+                                text: legendRow2.modelData.name
+                                color: legendRow2.hovered ? Theme.text : Theme.textDim
+                                font.bold: legendRow2.hovered
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                            }
+
+                            // Extra column -- see the other legend block's
+                            // own comment on `value`.
+                            Text {
+                                visible: !!legendRow2.modelData.value
+                                text: legendRow2.modelData.value ?? ""
+                                color: Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    id: tierRow2
+                    anchors.right: parent.right
+                    spacing: 6
+                    layoutDirection: Qt.RightToLeft
+
+                    Repeater {
+                        model: root.tierCodes
+
+                        Rectangle {
+                            id: tierBtn2
+                            required property string modelData
+                            readonly property bool active: modelData === root.tier
+
+                            width: tierLabel2.implicitWidth + 10
+                            height: tierLabel2.implicitHeight + 4
+                            radius: Theme.rounding - 4
+                            color: active ? Theme.cyan : "transparent"
+                            border.color: Theme.border
+                            border.width: active ? 0 : 1
+
+                            Text {
+                                id: tierLabel2
+                                anchors.centerIn: parent
+                                text: tierBtn2.modelData
+                                color: tierBtn2.active ? Theme.bg : Theme.textDim
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.tierRequested(tierBtn2.modelData)
+                            }
                         }
                     }
                 }

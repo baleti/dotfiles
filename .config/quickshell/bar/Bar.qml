@@ -464,13 +464,37 @@ Item {
         return rx + tx;
     }
 
+    // Named power lines (2026-09-19) appended after the per-core ones --
+    // core lines stay unlabelled/uncounted against the legend (see the
+    // comment below), these three are the only entries `cpuLegend`
+    // matches by name. Already normalized (percent-of-own-PL2) server-side
+    // by sysmond, so they share the per-core lines' 0-100 axis without a
+    // second y-axis or any client-side math -- see rapl_cpu_power_
+    // monitoring memory / lib.rs's Snapshot::Cpu comment for why PL2 (not
+    // PL1) is the safe normalization ceiling.
+    readonly property var cpuPowerLines: cpuPill.expanded ? [
+        { data: SysmonSvc.cpuPowerPct, color: Theme.orange, dashed: false, name: qsTr("Power") },
+        { data: SysmonSvc.cpuPsysPct, color: Theme.cyan, dashed: false, name: qsTr("Platform") },
+        { data: SysmonSvc.cpuBatteryPct, color: Theme.green, dashed: false, name: qsTr("Battery") }
+    ] : []
+    // `value` is the extra watts column (2026-09-19) -- the legend's own
+    // colored line plots percent-of-PL2 (see cpuPowerLines' comment), not
+    // watts, so this is the only place the actual number shows.
+    readonly property var cpuLegend: [
+        { name: qsTr("Power"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W" },
+        { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W" },
+        { name: qsTr("Battery"), color: Theme.green, value: SysmonSvc.cpuBatteryW.toFixed(1) + " W" }
+    ]
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
     // confusing; separate overlaid lines show each core's own load clearly.
-    // No legend for CPU (12+ cores would be unwieldy) -- name is still set
-    // per core (request 2026-09-10) so each line has a stable identity to
-    // hover-bold by; it just never gets matched against a legend row here.
-    readonly property var cpuOverlayList: cpuPill.expanded ? SysmonSvc.cpuCores.map((c, i) => ({ data: c, color: root.palette[i % root.palette.length], dashed: false, name: qsTr("core %1").arg(i) })) : []
+    // No legend row for per-core lines (12+ cores would be unwieldy) --
+    // name is still set per core (request 2026-09-10) so each line has a
+    // stable identity to hover-bold by; it just never gets matched against
+    // a legend row (`cpuLegend` above only lists the three power lines).
+    readonly property var cpuOverlayList: cpuPill.expanded
+        ? SysmonSvc.cpuCores.map((c, i) => ({ data: c, color: root.palette[i % root.palette.length], dashed: false, name: qsTr("core %1").arg(i) })).concat(root.cpuPowerLines)
+        : []
 
     readonly property var memLegend: [
         { name: qsTr("Used"), color: Theme.green },
@@ -819,14 +843,27 @@ Item {
             valueLabel: compactText
             mode: "overlay"
             seriesList: root.cpuOverlayList
-            // No line-hover bolding here -- a dozen unlabelled per-core
-            // lines, nothing to match a bolded one back to (unlike net/
-            // disk/gpu/mem, which have legends).
-            lineHoverHighlight: false
+            // Hover-bolding was off here (a dozen unlabelled per-core
+            // lines, nothing to match a bolded one back to) until the
+            // three named power lines (2026-09-19) gave the pill a real
+            // legend -- hovering a core line still just sets no matching
+            // legend row (harmless, same as net/disk/gpu/mem with a line
+            // that isn't legend-worthy), hovering a power line bolds it.
+            lineHoverHighlight: true
+            legendItems: root.cpuLegend
+            // Legend shares the tier-button row instead of sitting on its
+            // own line above it (request 2026-09-19) -- fine here since
+            // CPU's legend is always exactly 3 short entries, unlike net/
+            // disk/gpu's variable-length ones (see GraphPill's own comment
+            // on why this isn't the default).
+            legendSharesTierLine: true
             // Thinner (request 2026-09-06) -- one line per logical core
             // (a dozen-plus on this machine), where thin lines were
             // already the whole point of not stacking per-core fills
-            // into mud (see Graph.qml's own "many" comment).
+            // into mud (see Graph.qml's own "many" comment). The three
+            // power lines share this same width -- GraphPill has one
+            // lineWidth per pill, not per-series -- distinguished by
+            // color + the legend instead of extra thickness.
             lineWidth: 0.7
             maxValue: 100
             valueFraction: root.last(SysmonSvc.cpuTotal) / 100
