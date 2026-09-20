@@ -73,8 +73,8 @@ PanelWindow {
             Qt.callLater(root._claimFocus);
     }
 
-    function hide() {
-        WinSwitchState.close();
+    function hide(reason) {
+        WinSwitchState.close(reason || "hide");
     }
     function confirm(i) {
         // query-dsl.md's "Search-box history": a real accept records the
@@ -515,8 +515,18 @@ PanelWindow {
         id: focusGrab
         windows: [root]
         onCleared: {
-            if (root._grabSession === WinSwitchState.sessionId)
-                root.hide();
+            if (root._grabSession !== WinSwitchState.sessionId)
+                return;
+            // Alt still held (unlocked cycling): the grab clearing is not the
+            // user leaving. Under load the grab can be cleared by focus
+            // churn around the grid's own mapping; closing here dropped the
+            // session, so the next Tab restarted from the focused window and
+            // landed on the second entry again. The Alt release ends it.
+            if (WinSwitchState.altHeld && !WinSwitchState.locked) {
+                console.log("winswitch: focus grab cleared while Alt held, ignoring");
+                return;
+            }
+            root.hide("grab-cleared");
         }
     }
 

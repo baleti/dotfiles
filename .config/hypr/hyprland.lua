@@ -132,7 +132,10 @@ hl.on("hyprland.start", function()
     -- built from scratch after trying and reverting caelestia-shell. Revert:
     -- uncomment this line, and kill/disable `qs -n -d` if it's running.
     -- hl.exec_cmd("waybar")
-    hl.exec_cmd("qs -n -d")
+    -- Not `-d`: daemonizing forks, and mlock (below) doesn't survive a fork.
+    -- LD_PRELOAD pins Quickshell's pages in RAM so the first alt-tab after
+    -- hours of idle isn't a swap-in storm; see mlockself/mlockself.c.
+    hl.exec_cmd("LD_PRELOAD=$HOME/.config/hypr/mlockself/mlockself.so qs -n")
 
     for _, app in ipairs(apps) do
         pending_hide[app.class] = app.slug
