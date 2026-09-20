@@ -25,24 +25,16 @@ case "$action" in
 esac
 
 # Ask the phone to drop the headphones. Wireless debugging's port changes on
-# every toggle/reboot: try the last known one, else scan for it.
+# every toggle/reboot, so ask the Companion app on the phone (it learns the
+# port from adbd's mDNS advert) instead of scanning.
 phone_release() {
     [ -n "${PHONE_HOST:-}" ] || return 0
     command -v adb >/dev/null || return 0
-    # Bail fast if the phone is off the tunnel (a scan of a dead host is slow).
-    timeout 3 ping -c1 -W2 "$PHONE_HOST" >/dev/null 2>&1 || return 1
-    local cache="${XDG_RUNTIME_DIR:-/tmp}/headphones-phone-port" port serial=""
-    port="$(cat "$cache" 2>/dev/null)"
-    if [ -n "$port" ] && timeout 5 adb connect "$PHONE_HOST:$port" 2>&1 | grep -q '^\(already \)\?connected'; then
-        serial="$PHONE_HOST:$port"
-    else
-        for port in $(timeout 20 nmap -Pn -n -p 30000-50000 --open -T4 --max-retries 1 "$PHONE_HOST" 2>/dev/null | awk -F/ '/\/tcp.*open/{print $1}'); do
-            if timeout 5 adb connect "$PHONE_HOST:$port" 2>&1 | grep -q '^\(already \)\?connected'; then
-                serial="$PHONE_HOST:$port"; echo "$port" > "$cache"; break
-            fi
-        done
-    fi
-    [ -n "$serial" ] || return 1
+    local port serial
+    port="$(curl -sf -m 2 -H 'X-Peer-Agent: 1' "http://$PHONE_HOST:8788/adb-port")" || return 1
+    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    serial="$PHONE_HOST:$port"
+    timeout 5 adb connect "$serial" 2>&1 | grep -q '^\(already \)\?connected' || return 1
     timeout 10 adb -s "$serial" push "$dir/phone-bt/btdisc.dex" /data/local/tmp/btdisc.dex >/dev/null 2>&1 || return 1
     timeout 15 adb -s "$serial" shell "CLASSPATH=/data/local/tmp/btdisc.dex app_process /system/bin BtDisconnect $HEADPHONES_ID disconnect" >/dev/null 2>&1
     sleep 1   # let the headset go back to connectable
