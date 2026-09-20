@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Connect / disconnect the Bluetooth headphones named in
-# ~/.config/hypr/headphones.conf (HEADPHONES_ID=<MAC>).
+# ~/.config/hypr/bluetooth-headphones.conf (HEADPHONES_ID=<MAC>).
 # usage: headphones.sh connect|disconnect
 set -uo pipefail
 
-conf="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/headphones.conf"
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bluetooth-headphones.conf"
 action="${1:?usage: headphones.sh connect|disconnect}"
 
 # shellcheck disable=SC1090
