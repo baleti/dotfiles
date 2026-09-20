@@ -15,6 +15,7 @@ needed a real MPRIS name on the bus to select.
 No new dependency: dbus-python + PyGObject/GLib are both already installed.
 """
 import json
+import os
 import time
 import urllib.parse
 import urllib.request
@@ -47,6 +48,13 @@ KNOWN_APPS = {
     "com.google.android.apps.podcasts": "Podcasts",
 }
 
+
+# Cover art fetched from the Companion app's GET /art, one file per track (a
+# fresh path each time so anything caching by URL never shows the last cover).
+# Notification cards and the notifyd history keep pointing at these paths, so
+# they live in the cache dir, pruned to the newest ART_KEEP.
+ART_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "pixel6-mpris")
+ART_KEEP = 40
 
 NOTIFY_BUS = "org.freedesktop.Notifications"
 NOTIFY_PATH = "/org/freedesktop/Notifications"
@@ -82,6 +90,12 @@ def command(name, params=None):
     return _request("POST", f"/command/{name}", params)
 
 
+def fetch_art():
+    """GET /art -> JPEG bytes, or None (no art / phone unreachable)."""
+    body = _request("GET", "/art")
+    return body if body else None
+
+
 def fetch_status():
     """GET /status on the Companion app - already the bare status JSON."""
     body = _request("GET", "/status")
@@ -97,6 +111,9 @@ class Pixel6Player(dbus.service.Object):
     def __init__(self, bus):
         super().__init__(bus, OBJECT_PATH)
         self._bus = bus
+        self._art_key = None  # track key the cached cover below belongs to
+        self._art_path = None
+        self._art_seq = 0
         self._notified_ready = False  # False until the first fetch, so a restart doesn't notify
         self._status = None  # last-fetched status dict, or None if unreachable
         self._status_mono = None  # time.monotonic() at that fetch, for Position interpolation
@@ -167,6 +184,8 @@ class Pixel6Player(dbus.service.Object):
                 "xesam:album": s.get("album") or "",
                 "mpris:length": dbus.Int64(max(0, int(s.get("duration", 0))) * 1000),
             }
+            if self._art_path and self._art_key == self._track_key(s):
+                metadata["mpris:artUrl"] = "file://" + self._art_path
             playback_status = {
                 "playing": "Playing",
                 "paused": "Paused",
@@ -333,17 +352,46 @@ class Pixel6Player(dbus.service.Object):
             return None
         return (status.get("title") or "", status.get("artist") or "", status.get("album") or "")
 
+    def _update_art(self, status):
+        """Fetch + cache the cover once per track (retrying on later polls while the
+        phone says it has art but we don't yet). Returns True if the cover changed."""
+        key = self._track_key(status)
+        if key is None:
+            return False
+        if key != self._art_key:
+            self._art_key, self._art_path = key, None
+        if self._art_path or not status.get("art"):
+            return False
+        data = fetch_art()
+        if not data:
+            return False
+        try:
+            os.makedirs(ART_DIR, exist_ok=True)
+            self._art_seq += 1
+            path = os.path.join(ART_DIR, "%d-%d.jpg" % (int(time.time()), self._art_seq))
+            with open(path, "wb") as f:
+                f.write(data)
+            olds = sorted(os.listdir(ART_DIR))[:-ART_KEEP]
+            for name in olds:
+                os.unlink(os.path.join(ART_DIR, name))
+        except OSError:
+            return False
+        self._art_path = path
+        return True
+
     def _notify_track(self, status):
-        """Same card mpDris2 posts for mpd (app, 'by artist', 'sound' icon, normal-low
-        urgency, no replaces_id so each track gets its own history entry), for the phone."""
+        """Same card mpDris2 posts for mpd (app, 'by artist', normal-low urgency, no
+        replaces_id so each track gets its own history entry), for the phone. The
+        icon is the track's cover when the phone has one, else mpDris2's 'sound'."""
         title = status.get("title") or "Unknown Title"
         body = "by %s" % (status.get("artist") or "Unknown Artist")
+        icon = self._art_path or "sound"
         if status.get("state") == "paused":
             body += " (Paused)"
         try:
             self._bus.call_async(
                 NOTIFY_BUS, NOTIFY_PATH, NOTIFY_BUS, "Notify", "susssasa{sv}i",
-                (friendly_app_name(status.get("package")), dbus.UInt32(0), "sound", title, body,
+                (friendly_app_name(status.get("package")), dbus.UInt32(0), icon, title, body,
                  dbus.Array([], signature="s"),
                  dbus.Dictionary({"urgency": dbus.Byte(0)}, signature="sv"),
                  dbus.Int32(-1)),
@@ -357,8 +405,11 @@ class Pixel6Player(dbus.service.Object):
         # Notify on a track change, like mpDris2 does for mpd. Skipped on the very
         # first fetch (bridge restart) and when the phone is unreachable/inactive.
         new_key = self._track_key(new_status)
-        if self._notified_ready and new_key and new_key != self._track_key(self._status):
+        is_new_track = new_key and new_key != self._track_key(self._status)
+        art_changed = self._update_art(new_status)
+        if self._notified_ready and is_new_track:
             self._notify_track(new_status)
+        changed = changed or art_changed
         self._notified_ready = True
         self._status = new_status
         self._status_mono = time.monotonic()
