@@ -67,6 +67,10 @@ QtObject {
     signal lockedTab(string direction)
 
     property bool _capturePending: false
+    // True from a tab press until the compositor's Alt-release poll emits
+    // `altup`. Lua is the only authority on Alt: while this is set, the user
+    // is still mid-cycle, whatever happens to the grid's keyboard focus.
+    property bool altHeld: false
 
     readonly property Connections _events: Connections {
         target: Hyprland
@@ -111,6 +115,8 @@ QtObject {
                 return;
             root._startSession(list);
         }
+        root.altHeld = true;
+        console.log(`winswitch: tab ${direction} session=${root.sessionId} shown=${root.shown} selected=${root.selected}`);
         if (root.locked)
             root.lockedTab(direction);
         else
@@ -118,6 +124,8 @@ QtObject {
     }
 
     function _onAltUp() {
+        root.altHeld = false;
+        console.log(`winswitch: altup active=${root.active} locked=${root.locked} shown=${root.shown} selected=${root.selected}`);
         if (root.active && !root.locked)
             root.confirm(root.selected);
     }
@@ -171,9 +179,10 @@ QtObject {
             root.focusWindow(w.address);
     }
 
-    function close() {
+    function close(reason) {
         if (!root.active)
             return;
+        console.log(`winswitch: close (${reason || "confirm"}) session=${root.sessionId} shown=${root.shown} altHeld=${root.altHeld}`);
         showTimer.stop();
         captureTimer.stop();
         root._capturePending = false;
