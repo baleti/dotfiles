@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bluetooth headphones handover (host3 &lt;-&gt; phone) · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="../assets/style.css">
+<script>window.SITE_ROOT="../";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="../index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-09-20 15:08 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-09-20 15:08 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="../index.html">shared</a><a href="../wsl/index.html">wsl</a><a href="index.html" class="on">host3</a><a href="../host6/index.html">host6</a><a href="../qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">host3</p><ul class="navlist"><li><a href="index.html">Overview</a></li><li><a href="hyprland.html">Hyprland</a></li><li><a href="rust-tools.html">Rust tools</a></li><li><a href="quickshell-bar.html">quickshell bar</a></li><li><a href="claude-usage.html">Claude usage widget</a></li><li><a href="theming.html">Theming pipeline</a></li><li><a href="desktop-apps.html">Desktop apps</a></li><li><a href="bluetooth-headphones.html" aria-current="page">Headphones handover</a></li><li><a href="tmux-disaster-recovery.html">tmux-disaster-recovery</a></li><li><a href="redact-video-ocr.html">redact-video-ocr</a></li><li><a href="google-cloud-oauth.html">google-cloud-oauth</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="../tmux.html">tmux</a></li><li><a href="../zsh-and-terminal.html">zsh & terminal</a></li><li><a href="../claude-history.html">claude-history</a></li><li><a href="../query-dsl.html">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    <p class="crumb">host3</p>
+    <article class="doc">
+<h1 id="bluetooth-headphones-handover-host3---phone">Bluetooth
+headphones handover (host3 &lt;-&gt; phone)</h1>
+<p><code>mod+b</code> / <code>mod+ctrl+b</code> move one pair of
+Bluetooth headphones between this machine (host3, BlueZ) and the Android
+phone, which both have them paired. A headset held by one refuses the
+other, so each key first makes the current holder let go.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mod+b</code></td>
+<td>phone releases the headphones, then host3 connects them</td>
+</tr>
+<tr>
+<td><code>mod+ctrl+b</code></td>
+<td>host3 disconnects them, then the phone connects them</td>
+</tr>
+</tbody>
+</table>
+<h2 id="files">Files</h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>~/.config/hypr/bluetooth-headphones.conf</code></td>
+<td><code>HEADPHONES_ID=&lt;MAC&gt;</code> (the
+<code>bluetoothctl</code> address) and
+<code>PHONE_HOST=&lt;ip&gt;</code> (empty = skip the phone step)</td>
+</tr>
+<tr>
+<td><code>~/.config/hypr/scripts/headphones.sh</code></td>
+<td><code>connect</code> / <code>disconnect</code>; the whole handover,
+driven from host3</td>
+</tr>
+<tr>
+<td><code>~/.config/hypr/scripts/phone-bt/BtDisconnect.java</code>,
+<code>btdisc.dex</code></td>
+<td>tiny helper run <strong>on the phone</strong> as adb's
+<code>shell</code> user; <code>README.md</code> there has the rebuild
+recipe</td>
+</tr>
+<tr>
+<td><code>~/.config/hypr/keybinds.lua</code></td>
+<td>the two binds (they appear in the <code>mod+?</code>
+cheat-sheet)</td>
+</tr>
+<tr>
+<td>PeerAgent Companion app
+(<code>github.com/baleti/peeragent-android</code>)</td>
+<td>lends out Wireless debugging: <code>GET /adb-port</code>,
+<code>POST /adb/enable</code>, <code>POST /adb/release</code> on
+<code>:8788</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="why-it-needs-adb">Why it needs adb</h2>
+<p>Connecting or disconnecting a single Bluetooth device needs
+<code>BLUETOOTH_PRIVILEGED</code>, which no normal app can hold (being
+the default assistant or a notification listener does not help). Android
+13+ also blocks apps from toggling Bluetooth at all. The one privileged
+identity a user can reach is adb's <code>shell</code> user, so host3
+talks to the phone over adb (via WireGuard) and runs
+<code>BtDisconnect</code> there through <code>app_process</code>. It
+calls the hidden <code>BluetoothDevice.connect()</code> /
+<code>disconnect()</code> by reflection. Shizuku was considered and is
+not needed: it is just a longer-lived bridge to the same adb shell.</p>
+<h2 id="the-handover-dance">The handover ("dance")</h2>
+<pre><code>host3                                          phone (Companion app)
+  |-- POST /adb/enable -----------------------&gt;  Wireless debugging on if it was off
+  |&lt;-------------------------- port ----------   (port learned from adbd&#39;s mDNS advert)
+  |-- adb connect &lt;ip&gt;:&lt;port&gt;
+  |-- adb push btdisc.dex ; adb shell app_process ... BtDisconnect &lt;MAC&gt; disconnect|connect
+  |-- POST /adb/release --------------------&gt;   off again, only if /adb/enable turned it on
+  |-- bluetoothctl connect|disconnect &lt;MAC&gt;</code></pre>
+<p>The Wireless debugging port changes on every toggle and reboot, which
+is why the app reports it instead of host3 scanning for it (an
+<code>nmap</code> sweep works but is slow, and useless when it is off).
+If the caller never releases, the app switches it off itself after 90
+s.</p>
+<h2 id="one-time-setup">One-time setup</h2>
+<ol type="1">
+<li>Pair host3's adb key with the phone once: phone &gt; Developer
+options &gt; Wireless debugging &gt; <em>Pair device with pairing
+code</em>, then
+<code>adb pair &lt;ip&gt;:&lt;pair port&gt; &lt;code&gt;</code>.</li>
+<li>Let the app write the setting (lost if the app is uninstalled):
+<code>adb shell pm grant dev.local.peeragent android.permission.WRITE_SECURE_SETTINGS</code></li>
+<li>Put the addresses in <code>bluetooth-headphones.conf</code>.</li>
+</ol>
+<h2 id="failure-behaviour">Failure behaviour</h2>
+<p>The phone step is best-effort: if the phone is unreachable or
+Wireless debugging cannot come up, it is skipped and the headphones are
+still connected/disconnected on host3. If the port is open but adb's TLS
+handshake is rejected (<code>adb connect</code> prints
+<code>failed to connect</code>, not <code>cannot connect</code>), the
+phone no longer trusts host3's key and a critical notification says so,
+with the re-pairing steps. Runs are serialised with <code>flock</code>
+so two presses do not race.</p>
+<h2 id="gotchas-found-while-building-it">Gotchas found while building
+it</h2>
+<ul>
+<li><code>timeout adbq ...</code> fails silently when <code>adbq</code>
+is a shell function; call the real binary.</li>
+<li>The adb background server, if first started inside the locked
+section, inherits the lock fd and holds it forever. Every adb call
+closes fd 9 (<code>9&gt;&amp;-</code>).</li>
+<li>adbd re-advertises under the <strong>same mDNS service name</strong>
+with a new port on each toggle, so a late "service lost" can erase the
+new port. The app restarts discovery when it turns Wireless debugging on
+and only reports a port that is really listening. A discovery listener
+object cannot be reused (<code>listener already in use</code>); each run
+makes a fresh one.</li>
+<li>A bare <code>app_process</code> on Android 17 gets a
+<code>null</code> <code>BluetoothAdapter</code> until
+<code>ActivityThread.initializeMainlineModules()</code> has been called;
+the helper calls it first.</li>
+<li><code>bluetoothctl</code> colours its output even when piped; strip
+the escapes before putting it in a notification.</li>
+</ul>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#files">Files</a></li><li class="lvl2"><a href="#why-it-needs-adb">Why it needs adb</a></li><li class="lvl2"><a href="#the-handover-dance">The handover ("dance")</a></li><li class="lvl2"><a href="#one-time-setup">One-time setup</a></li><li class="lvl2"><a href="#failure-behaviour">Failure behaviour</a></li><li class="lvl2"><a href="#gotchas-found-while-building-it">Gotchas found while building it</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>
