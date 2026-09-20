@@ -68,6 +68,7 @@ ORDER = [
     "README.md", "hyprland.md", "rust-tools.md", "quickshell-bar.md",
     "claude-usage.md", "theming.md", "tmux.md", "zsh-and-terminal.md",
     "desktop-apps.md", "claude-history.md", "query-dsl.md",
+    "bluetooth-headphones.md",
 ]
 LABELS = {
     "README.md":           "Overview",
@@ -81,6 +82,7 @@ LABELS = {
     "desktop-apps.md":      "Desktop apps",
     "claude-history.md":    "claude-history",
     "query-dsl.md":         "Picker query DSL",
+    "bluetooth-headphones.md": "Headphones handover",
 }
 
 MD_LINK_RE = re.compile(r'href="(?!(?:[a-z]+:)?//|/|#|mailto:)([^"#]+?)\.md(#[^"]*)?"')
