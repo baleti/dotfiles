@@ -31,9 +31,9 @@ case "$action" in
     *) echo "usage: headphones.sh connect|disconnect" >&2; exit 2 ;;
 esac
 
-# adb may start its background server from inside the locked section; keep it
-# from inheriting the lock fd (fd 9), or it would hold the lock forever.
-adbq() { adb "$@" 9>&-; }
+# adb may start its background server from inside the locked section; every adb
+# call below closes the lock fd (9>&-) so the server can't inherit it and hold
+# the lock forever.
 peer() { curl -sf -m "$1" -X POST -H 'X-Peer-Agent: 1' "http://$PHONE_HOST:8788$2"; }
 
 # usage: phone_do disconnect|connect   (what the PHONE should do with the headphones)
@@ -50,7 +50,7 @@ phone_do() {
 
     [[ "$port" =~ ^[0-9]+$ ]] || return 1
     serial="$PHONE_HOST:$port"
-    out="$(timeout 8 adbq connect "$serial" 2>&1)"
+    out="$(timeout 8 adb connect "$serial" 2>&1 9>&-)"
     if ! grep -q '^\(already \)\?connected' <<<"$out"; then
         # Port is open but the TLS handshake was rejected: the phone no longer
         # trusts this host's adb key (adb prints "failed to connect", not
@@ -63,8 +63,8 @@ adb pair $PHONE_HOST:<pair port> <code>"
         fi
         return 1
     fi
-    timeout 10 adbq -s "$serial" push "$dir/phone-bt/btdisc.dex" /data/local/tmp/btdisc.dex >/dev/null 2>&1 || return 1
-    timeout 15 adbq -s "$serial" shell "CLASSPATH=/data/local/tmp/btdisc.dex app_process /system/bin BtDisconnect $HEADPHONES_ID $op" >/dev/null 2>&1
+    timeout 10 adb -s "$serial" push "$dir/phone-bt/btdisc.dex" /data/local/tmp/btdisc.dex >/dev/null 2>&1 9>&- || return 1
+    timeout 15 adb -s "$serial" shell "CLASSPATH=/data/local/tmp/btdisc.dex app_process /system/bin BtDisconnect $HEADPHONES_ID $op" >/dev/null 2>&1 9>&-
 }
 
 [ "$action" = connect ] && { phone_do disconnect; sleep 1; }   # let the headset become connectable
