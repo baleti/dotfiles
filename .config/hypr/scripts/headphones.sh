@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Connect / disconnect the Bluetooth headphones named in
-# ~/.config/hypr/bluetooth-headphones.conf (HEADPHONES_ID=<MAC>).
+# Move the Bluetooth headphones named in ~/.config/hypr/bluetooth-headphones.conf
+# (HEADPHONES_ID=<MAC>) between this host and the phone (PHONE_HOST).
 # usage: headphones.sh connect|disconnect
 #
-# connect first makes the phone (PHONE_HOST) release the headphones, since a
-# headset held by the phone refuses this host. That step is best-effort: if the
-# phone is unreachable or adb isn't paired, it is skipped.
+#   connect     phone releases the headphones, then this host connects them
+#   disconnect  this host disconnects them, then the phone connects them
+#
+# The phone step is best-effort: if the phone is unreachable it is skipped.
+# Only the adb `shell` user may connect/disconnect a single Bluetooth device
+# on Android, so this host drives adb; the Companion app on the phone
+# (:8788) only lends out Wireless debugging for the duration ("dance"):
+#   POST /adb/enable  -> turns Wireless debugging on if it was off, returns port
+#   ...adb: run phone-bt/BtDisconnect <MAC> disconnect|connect as shell...
+#   POST /adb/release -> turns it back off, only if /adb/enable turned it on
 set -uo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,29 +31,50 @@ case "$action" in
     *) echo "usage: headphones.sh connect|disconnect" >&2; exit 2 ;;
 esac
 
-# Ask the phone to drop the headphones. Wireless debugging's port changes on
-# every toggle/reboot, so ask the Companion app on the phone (it learns the
-# port from adbd's mDNS advert) instead of scanning.
-phone_release() {
-    [ -n "${PHONE_HOST:-}" ] || return 0
-    command -v adb >/dev/null || return 0
-    local port serial
-    port="$(curl -sf -m 2 -H 'X-Peer-Agent: 1' "http://$PHONE_HOST:8788/adb-port")" || return 1
+peer() { curl -sf -m "$1" -X POST -H 'X-Peer-Agent: 1' "http://$PHONE_HOST:8788$2"; }
+
+# usage: phone_do disconnect|connect   (what the PHONE should do with the headphones)
+phone_do() {
+    local op="$1" port serial out
+    [ -n "${PHONE_HOST:-}" ] && command -v adb >/dev/null || return 0
+
+    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/headphones-phone.lock"
+    flock -w 30 9 || return 1
+
+    port="$(peer 15 /adb/enable)" || return 1     # unreachable / app down: skip
+    # Always give Wireless debugging back, however the rest goes.
+    trap 'peer 5 /adb/release >/dev/null 2>&1' RETURN
+
     [[ "$port" =~ ^[0-9]+$ ]] || return 1
     serial="$PHONE_HOST:$port"
-    timeout 5 adb connect "$serial" 2>&1 | grep -q '^\(already \)\?connected' || return 1
+    out="$(timeout 8 adb connect "$serial" 2>&1)"
+    if ! grep -q '^\(already \)\?connected' <<<"$out"; then
+        # Port is open but the TLS handshake was rejected: the phone no longer
+        # trusts this host's adb key (adb prints "failed to connect", not
+        # "cannot connect ... refused/timed out", in that case).
+        if grep -q '^failed to connect' <<<"$out"; then
+            notify-send -u critical -t 0 "Headphones: phone needs re-pairing" \
+"The phone no longer trusts this computer's adb key, so it can't hand the headphones over. Headphones still connect/disconnect on this computer.
+Fix: on the phone open Settings > Developer options > Wireless debugging > 'Pair device with pairing code', then run here:
+adb pair $PHONE_HOST:<pair port> <code>"
+        fi
+        return 1
+    fi
     timeout 10 adb -s "$serial" push "$dir/phone-bt/btdisc.dex" /data/local/tmp/btdisc.dex >/dev/null 2>&1 || return 1
-    timeout 15 adb -s "$serial" shell "CLASSPATH=/data/local/tmp/btdisc.dex app_process /system/bin BtDisconnect $HEADPHONES_ID disconnect" >/dev/null 2>&1
-    sleep 1   # let the headset go back to connectable
+    timeout 15 adb -s "$serial" shell "CLASSPATH=/data/local/tmp/btdisc.dex app_process /system/bin BtDisconnect $HEADPHONES_ID $op" >/dev/null 2>&1
 }
 
-[ "$action" = connect ] && phone_release
+[ "$action" = connect ] && { phone_do disconnect; sleep 1; }   # let the headset become connectable
 
 # bluetoothctl colours its output even when piped; strip the ANSI escapes.
 out="$(timeout 15 bluetoothctl "$action" "$HEADPHONES_ID" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"
 if grep -q "successful" <<<"$out"; then
     notify-send -t 2500 "Headphones" "${action^}ed $HEADPHONES_ID"
+    rc=0
 else
     notify-send -u critical "Headphones: $action failed" "$(grep -m1 -i 'fail' <<<"$out" || tail -n1 <<<"$out")"
-    exit 1
+    rc=1
 fi
+
+[ "$action" = disconnect ] && [ "$rc" = 0 ] && { sleep 1; phone_do connect; }
+exit "$rc"
