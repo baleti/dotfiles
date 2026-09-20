@@ -285,7 +285,9 @@ hl.bind(mainMod .. " + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh
 hl.bind("CTRL + ALT + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleClaudeUsage"), { description = "Toggle the Claude Code usage panel" })
 
 -- bluetooth
-hl.bind(mainMod .. " + CTRL + b", hl.dsp.exec_cmd("bluetoothctl disconnect"), { description = "Disconnect Bluetooth" })
+-- Headphone address lives in ~/.config/hypr/headphones.conf (HEADPHONES_ID).
+hl.bind(mainMod .. " + b",          hl.dsp.exec_cmd("~/.config/hypr/scripts/headphones.sh connect"),    { description = "Connect Bluetooth headphones" })
+hl.bind(mainMod .. " + CTRL + b",   hl.dsp.exec_cmd("~/.config/hypr/scripts/headphones.sh disconnect"), { description = "Disconnect Bluetooth headphones" })
 
 -- music
 hl.bind("ALT + CTRL + m", hl.dsp.exec_cmd("alacritty -e ncmpcpp"), { description = "Open ncmpcpp" })
