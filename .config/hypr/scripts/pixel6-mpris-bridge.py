@@ -48,6 +48,10 @@ KNOWN_APPS = {
 }
 
 
+NOTIFY_BUS = "org.freedesktop.Notifications"
+NOTIFY_PATH = "/org/freedesktop/Notifications"
+
+
 def friendly_app_name(pkg):
     if not pkg:
         return "pixel6"
@@ -92,6 +96,8 @@ def fetch_status():
 class Pixel6Player(dbus.service.Object):
     def __init__(self, bus):
         super().__init__(bus, OBJECT_PATH)
+        self._bus = bus
+        self._notified_ready = False  # False until the first fetch, so a restart doesn't notify
         self._status = None  # last-fetched status dict, or None if unreachable
         self._status_mono = None  # time.monotonic() at that fetch, for Position interpolation
 
@@ -320,9 +326,40 @@ class Pixel6Player(dbus.service.Object):
     # polling
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _track_key(status):
+        """(title, artist, album) of the current track, None if nothing is playing."""
+        if not status or not status.get("active"):
+            return None
+        return (status.get("title") or "", status.get("artist") or "", status.get("album") or "")
+
+    def _notify_track(self, status):
+        """Same card mpDris2 posts for mpd (app, 'by artist', 'sound' icon, normal-low
+        urgency, no replaces_id so each track gets its own history entry), for the phone."""
+        title = status.get("title") or "Unknown Title"
+        body = "by %s" % (status.get("artist") or "Unknown Artist")
+        if status.get("state") == "paused":
+            body += " (Paused)"
+        try:
+            self._bus.call_async(
+                NOTIFY_BUS, NOTIFY_PATH, NOTIFY_BUS, "Notify", "susssasa{sv}i",
+                (friendly_app_name(status.get("package")), dbus.UInt32(0), "sound", title, body,
+                 dbus.Array([], signature="s"),
+                 dbus.Dictionary({"urgency": dbus.Byte(0)}, signature="sv"),
+                 dbus.Int32(-1)),
+                lambda *_: None, lambda *_: None)
+        except dbus.DBusException:
+            pass
+
     def refresh(self, force=False):
         new_status = fetch_status()
         changed = new_status != self._status
+        # Notify on a track change, like mpDris2 does for mpd. Skipped on the very
+        # first fetch (bridge restart) and when the phone is unreachable/inactive.
+        new_key = self._track_key(new_status)
+        if self._notified_ready and new_key and new_key != self._track_key(self._status):
+            self._notify_track(new_status)
+        self._notified_ready = True
         self._status = new_status
         self._status_mono = time.monotonic()
         if changed or force:
