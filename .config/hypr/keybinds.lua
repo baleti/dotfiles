@@ -286,8 +286,8 @@ hl.bind("CTRL + ALT + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh 
 
 -- bluetooth
 -- Headphone address lives in ~/.config/hypr/bluetooth-headphones.conf (HEADPHONES_ID).
-hl.bind(mainMod .. " + b",          hl.dsp.exec_cmd("~/.config/hypr/scripts/headphones.sh connect"),    { description = "Connect Bluetooth headphones" })
-hl.bind(mainMod .. " + CTRL + b",   hl.dsp.exec_cmd("~/.config/hypr/scripts/headphones.sh disconnect"), { description = "Disconnect Bluetooth headphones" })
+hl.bind(mainMod .. " + b",          hl.dsp.exec_cmd("~/.config/hypr/scripts/headphones.sh connect"),    { description = "Bluetooth headphones: take over from phone and connect here" })
+hl.bind(mainMod .. " + CTRL + b",   hl.dsp.exec_cmd("~/.config/hypr/scripts/headphones.sh disconnect"), { description = "Bluetooth headphones: disconnect here and hand back to phone" })
 
 -- music
 hl.bind("ALT + CTRL + m", hl.dsp.exec_cmd("alacritty -e ncmpcpp"), { description = "Open ncmpcpp" })
