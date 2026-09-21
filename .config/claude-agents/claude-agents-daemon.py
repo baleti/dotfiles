@@ -496,8 +496,27 @@ def _pane_input_box_text(pane_target):
 
 def send_to_pane(pane_target, text):
     try:
-        subprocess.run(["tmux", "send-keys", "-t", pane_target, "-l", "--", text],
-                        check=True, timeout=5)
+        # tmux's own send-keys -l has a real limit on how long a single
+        # literal argument can be -- confirmed live 2026-09-14: spawning a
+        # session with a full news-digest article (several KB) as the
+        # initial message failed with tmux itself printing "command too
+        # long" and exiting non-zero (not a Python/OS argv limit -- this
+        # tmux build enforces its own smaller cap on a -l argument).
+        # Anything past a safe threshold goes through a paste buffer
+        # instead: load-buffer reads the text from stdin (no per-argument
+        # size constraint at all, since it's never a single exec()
+        # argument), then paste-buffer injects it into the pane the same
+        # way a real terminal paste would. -d drops the buffer immediately
+        # after use so these don't accumulate in tmux's buffer list.
+        if len(text.encode("utf-8")) > 2000:
+            buf_name = f"claude_agents_send_{uuid_mod.uuid4().hex[:8]}"
+            subprocess.run(["tmux", "load-buffer", "-b", buf_name, "-"],
+                            input=text.encode("utf-8"), check=True, timeout=10)
+            subprocess.run(["tmux", "paste-buffer", "-b", buf_name, "-t", pane_target, "-d"],
+                            check=True, timeout=10)
+        else:
+            subprocess.run(["tmux", "send-keys", "-t", pane_target, "-l", "--", text],
+                            check=True, timeout=5)
         # A bare "Enter" sent immediately after the literal-text paste can
         # race Claude Code's own TUI (still processing the bracketed-paste
         # block) and get silently swallowed -- confirmed live 2026-09-09: a
@@ -799,6 +818,42 @@ def resume_session(session_id, initial_text):
             return None, "session resumed but initial message failed to send"
 
         return session_id, None
+
+
+def restart_session(session_id):
+    """Interrupts the live tmux pane running this conversation (Ctrl-C,
+    same as a person pressing it at the keyboard) and relaunches `claude
+    --resume <session_id> --dangerously-skip-permissions` in that SAME
+    pane -- asked for explicitly 2026-09-21, for kicking a stuck/hung
+    session without losing the pane/window it's running in. Unlike
+    resume_session (which always opens a brand-new tmux session for a
+    conversation with no live pane at all), this only ever acts on an
+    already-live one and reuses its existing pane on purpose.
+
+    Does NOT reuse send_to_pane() for the relaunch command -- that
+    helper's Enter-submission retry loop is specifically built around
+    detecting Claude Code's own TUI input box (_pane_input_box_text),
+    which won't exist once Ctrl-C has returned the pane to a plain shell
+    prompt. This just types the command and presses Enter once, the same
+    as a person would.
+
+    Returns (ok, error); error is None on success."""
+    live = get_live_sessions().get(session_id)
+    if not live:
+        return False, "conversation is not live"
+    pane = live["pane"]
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", pane, "C-c"], check=True, timeout=5)
+        time.sleep(1.5)
+        cmd = f"{CLAUDE_BIN} --resume {session_id} --dangerously-skip-permissions"
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", "--", cmd], check=True, timeout=5)
+        time.sleep(0.15)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True, timeout=5)
+    except Exception as e:
+        log(f"restart: failed for {session_id} in {pane}: {e}")
+        return False, "failed to restart session"
+    log(f"restart: interrupted+relaunched {session_id} in {pane}")
+    return True, None
 
 
 def live_scan_loop():
@@ -1568,6 +1623,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             record_send_result(msg_id, session_id, result)
             log(f"resume: relaunched {session_id} for {ip}")
             return self._ok(result)
+
+        m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/restart$", path)
+        if m:
+            # Same "starts a real Claude Code process" cost/risk as
+            # /spawn and /resume, so it shares that tighter rate bucket
+            # rather than plain /send's.
+            if rate_limited(ip, "spawn", limit=5, window=60):
+                log(f"deny: restart rate limited {ip}")
+                return self._reject(429, "rate limited")
+            session_id = m.group(1)
+            ok, err = restart_session(session_id)
+            if not ok:
+                log(f"restart: failed for {session_id} from {ip}: {err}")
+                return self._reject(500, err)
+            log(f"restart: done for {session_id} from {ip}")
+            return self._ok({"restarted": True})
 
         m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/send$", path)
         if m:
