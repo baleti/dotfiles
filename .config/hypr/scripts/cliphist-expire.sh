@@ -90,3 +90,22 @@ if [[ -f "$SIZES" ]]; then
     fi
     rm -f "$SIZES.ids"
 fi
+
+# Oversized entries (cliphist-store-logged.sh) live as files under large/,
+# named by sha256, referenced from a cliphist placeholder's last line. Delete
+# any file no live placeholder references. The >2 min age guard covers the
+# window where the store script has written the file but cliphist store
+# hasn't landed the placeholder yet; stale .part files (interrupted copy)
+# go after 10 min.
+LARGE="$STATE_DIR/large"
+if [[ -d "$LARGE" ]]; then
+    refs=$(mktemp)
+    while IFS= read -r id; do
+        "${CLIPHIST[@]}" decode "$id" 2>/dev/null | tail -n 1 | sed -n 's/^overflow://p'
+    done < <("${CLIPHIST[@]}" list 2>/dev/null | grep -F ' overflow:' | cut -f1) > "$refs"
+    find "$LARGE" -maxdepth 1 -type f -name '*.part' -mmin +10 -delete
+    while IFS= read -r f; do
+        grep -qxF "$(basename "$f")" "$refs" || { rm -f "$f"; printf 'removed unreferenced large/%s\n' "$(basename "$f")"; }
+    done < <(find "$LARGE" -maxdepth 1 -type f ! -name '*.part' -mmin +2)
+    rm -f "$refs"
+fi
