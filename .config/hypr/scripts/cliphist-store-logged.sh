@@ -46,9 +46,38 @@ touch "$LOG"
 exec 9>"$LOCK"
 flock 9
 
+
 tmp=$(mktemp "${TMPDIR:-/tmp}/cliphist-store.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 cat > "$tmp"
+
+# An empty read (wl-paste --watch delivered nothing, e.g. the source failed to
+# serve a large image) must not be stored or re-asserted: wl-copy of empty
+# input would replace the source app's still-valid selection with an empty
+# one, so paste elsewhere finds no data at all.
+#
+# Large images from Thunderbird hit this: wl-paste's own type inference
+# fails on its offer (image/png, image/bmp, ... SAVE_TARGETS, no text), so
+# wl-paste --watch hands us 0 bytes even though asking for a type explicitly
+# returns the full image at once (17 MB PNG in 0.3s, checked live). So on an
+# empty read, pick a type ourselves - image/png if offered, else the first
+# real type - and read that. Never accept the untyped `wl-paste` here: it
+# returned 1 stray byte once and that got re-asserted over the image.
+if [[ ! -s "$tmp" ]]; then
+    types=$(timeout 2 wl-paste --list-types 2>/dev/null)
+    pick=$(grep -m1 -x 'image/png' <<<"$types" \
+        || grep -m1 -v -x -E 'SAVE_TARGETS|TARGETS|TIMESTAMP|MULTIPLE' <<<"$types")
+    if [[ -n "$pick" ]]; then
+        for _ in 1 2 3 4 5 6; do
+            timeout 15 wl-paste -t "$pick" > "$tmp" 2>/dev/null
+            [[ -s "$tmp" ]] && break
+            sleep 0.5
+        done
+    fi
+fi
+if [[ ! -s "$tmp" ]]; then
+    exit 0
+fi
 
 # Deliberately overriding wl-paste's CLIPBOARD_STATE=sensitive skip here
 # too, same as the inline command this replaced - see hyprland.lua's
