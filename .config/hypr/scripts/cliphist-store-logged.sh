@@ -40,6 +40,10 @@ LOG="$STATE_DIR/timestamps"
 LOCK="$STATE_DIR/store.lock"
 SELF_HASH="$STATE_DIR/last-selfcopy-sha256"
 SIZES="$STATE_DIR/sizes"
+LARGE="$STATE_DIR/large"
+# cliphist store silently drops entries above ~5 MB (returns 0, keeps nothing;
+# 5 MB kept, 6 MB dropped, checked live) - anything over this goes to $LARGE.
+OVERFLOW_MIN=4000000
 mkdir -p "$STATE_DIR"
 touch "$LOG"
 
@@ -83,7 +87,39 @@ fi
 # too, same as the inline command this replaced - see hyprland.lua's
 # comment on why (retention is time-bounded by cliphist-expire.sh instead).
 unset CLIPBOARD_STATE
-cliphist store < "$tmp"
+
+hash=$(sha256sum "$tmp" | cut -d' ' -f1)
+
+# Oversized data: keep the real bytes in a private (700/600) file named by
+# content hash, and give cliphist a small placeholder instead so ordering,
+# the 750-item cap, expiry and dedup all keep working. The placeholder's
+# last line is `overflow:<sha256>`; clipboard-picker's decode() resolves it
+# back to the file, and cliphist-expire.sh deletes blobs no live entry
+# references. The first line copies cliphist's own binary-data preview so the
+# picker treats it as an image row.
+store_src="$tmp"
+if (( $(stat -c %s "$tmp") > OVERFLOW_MIN )); then
+    if ( umask 077; mkdir -p "$LARGE" && chmod 700 "$LARGE" \
+            && { [[ -e "$LARGE/$hash" ]] || { cp "$tmp" "$LARGE/$hash.part" && mv "$LARGE/$hash.part" "$LARGE/$hash"; }; } \
+            && touch "$LARGE/$hash" ); then
+        bytes=$(stat -c %s "$tmp")
+        mib=$(( (bytes + 524288) / 1048576 ))
+        mime=$(file -b --mime-type "$tmp")
+        if [[ "$mime" == image/* ]]; then
+            sub=${mime#image/}; sub=${sub#x-}
+            dims=$(file -b "$tmp" | grep -oE '[0-9]+ ?x ?[0-9]+' | tail -1 | tr -d ' ')
+            label="[[ binary data $mib MiB $sub${dims:+ $dims} ]]"
+        elif [[ "$mime" == text/* ]]; then
+            label="$(head -c 200 "$tmp" | iconv -f UTF-8 -t UTF-8 -c | tr -s '[:space:]' ' ') [$mib MiB]"
+        else
+            label="[[ binary data $mib MiB ${mime#*/} ]]"
+        fi
+        store_src=$(mktemp "${TMPDIR:-/tmp}/cliphist-store.XXXXXX")
+        printf '%s\noverflow:%s\n' "$label" "$hash" > "$store_src"
+        trap 'rm -f "$tmp" "$store_src"' EXIT
+    fi
+fi
+cliphist store < "$store_src"
 
 id=$(cliphist list 2>/dev/null | head -1 | cut -f1)
 new_id=""
@@ -92,7 +128,6 @@ if [[ "$id" =~ ^[0-9]+$ ]]; then
     printf '%s\t%s\n' "$(date +%s)" "$id" >> "$LOG"
 fi
 
-hash=$(sha256sum "$tmp" | cut -d' ' -f1)
 last_hash=""
 [[ -f "$SELF_HASH" ]] && last_hash=$(<"$SELF_HASH")
 

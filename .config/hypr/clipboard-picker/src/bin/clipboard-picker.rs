@@ -108,10 +108,14 @@ fn cliphist_list() -> Vec<Entry> {
         .lines()
         .filter(|l| !l.is_empty())
         .map(|line| {
-            let (id, preview) = match line.split_once('\t') {
+            let (id, mut preview) = match line.split_once('\t') {
                 Some((a, b)) => (a.to_string(), b.to_string()),
                 None => (line.to_string(), String::new()),
             };
+            // Overflow placeholder (see resolve_overflow): hide the hash line.
+            if let Some(i) = preview.find(" overflow:") {
+                preview.truncate(i);
+            }
             let is_image = looks_like_image(&preview);
             let mut fields = vec![("type", (if is_image { "image" } else { "text" }).to_string())];
             if let Some(&ts) = timestamps.get(&id) {
@@ -128,12 +132,32 @@ fn cliphist_list() -> Vec<Entry> {
         .collect()
 }
 
+/// cliphist silently drops entries above ~5 MB, so cliphist-store-logged.sh
+/// keeps bigger ones as private files under `large/` and stores a small
+/// placeholder whose last line is `overflow:<sha256>`. Resolve that back to
+/// the real bytes; anything else passes through untouched.
+fn resolve_overflow(raw: Vec<u8>) -> Vec<u8> {
+    if raw.len() > 4096 {
+        return raw;
+    }
+    let text = String::from_utf8_lossy(&raw);
+    let hash = match text.lines().last().and_then(|l| l.strip_prefix("overflow:")) {
+        Some(h) => h.trim(),
+        None => return raw,
+    };
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return raw;
+    }
+    fs::read(cliphist_state_dir().join("large").join(hash)).unwrap_or_default()
+}
+
 fn decode(id: &str) -> Vec<u8> {
-    Command::new("cliphist")
+    let raw = Command::new("cliphist")
         .args(["decode", id])
         .output()
         .map(|o| o.stdout)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    resolve_overflow(raw)
 }
 
 /// Scaled pixbuf for an image entry, cached on disk. None if undecodable.
@@ -174,6 +198,11 @@ fn load_thumb(id: &str) -> Option<Pixbuf> {
     let dir = picker::cache_dir(PROGRAM_NAME);
     let _ = fs::create_dir_all(&dir);
     let _ = pb.savev(&cached, "png", &[]);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        let _ = fs::set_permissions(&cached, fs::Permissions::from_mode(0o600));
+    }
     Some(pb)
 }
 
