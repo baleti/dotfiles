@@ -107,6 +107,7 @@ if [[ -f "$SELF_HASH" && "$(<"$SELF_HASH")" == "$hash" ]] \
 fi
 
 store_src="$tmp"
+overflow_file=""
 if (( $(stat -c %s "$tmp") > OVERFLOW_MIN )); then
     if ( umask 077; mkdir -p "$LARGE" && chmod 700 "$LARGE" \
             && { [[ -e "$LARGE/$hash" ]] || { cp "$tmp" "$LARGE/$hash.part" && mv "$LARGE/$hash.part" "$LARGE/$hash"; }; } \
@@ -121,7 +122,9 @@ if (( $(stat -c %s "$tmp") > OVERFLOW_MIN )); then
         elif [[ "$mime" == text/* ]]; then
             label="$(head -c 200 "$tmp" | iconv -f UTF-8 -t UTF-8 -c | tr -s '[:space:]' ' ') [$mib MiB]"
         else
-            label="[[ binary data $mib MiB ${mime#*/} ]]"
+            sub=${mime#*/}; sub=${sub#x-}; sub=${sub##*[.+]}
+            label="[[ binary data $mib MiB $sub ]]"
+            overflow_file=1
         fi
         store_src=$(mktemp "${TMPDIR:-/tmp}/cliphist-store.XXXXXX")
         printf '%s\noverflow:%s\n' "$label" "$hash" > "$store_src"
@@ -156,7 +159,7 @@ fi
 
 # Pre-generate the picker thumbnail now, off the critical path, so opening
 # mod+v finds it cached instead of decoding a multi-MB image on the spot.
-if [[ -n "$new_id" && "$(file -b --mime-type "$tmp")" == image/* ]]; then
+if [[ -n "$new_id" && ( -n "$overflow_file" || "$(file -b --mime-type "$tmp")" == image/* ) ]]; then
     setsid -f "$HOME/.config/hypr/clipboard-picker/target/release/clipboard-picker" thumbs "$new_id" >/dev/null 2>&1
 fi
 

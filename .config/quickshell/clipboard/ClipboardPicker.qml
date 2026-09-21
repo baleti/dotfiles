@@ -61,6 +61,8 @@ PanelWindow {
             root._hideSuggestions();
             root._entries = [];
             root._thumbPaths = ({});
+            root._animPaths = ({});
+            root._noThumb = ({});
             root._refresh();
             Qt.callLater(() => query.forceActiveFocus());
         }
@@ -72,6 +74,8 @@ PanelWindow {
     property var _entries: []
     property var _thumbPaths: ({}) // id -> cached PNG path, once resolved
     property var _thumbMeta: ({})  // id -> {width, height} of that cached PNG (its real pixels)
+    property var _animPaths: ({})  // id -> small looping GIF (backend re-encoded), played on the selected row only
+    property var _noThumb: ({})    // id -> true once the backend found no way to thumbnail it (row falls back to text)
     // id -> {chars, lines} for the size badge. Streamed in by statsProc after
     // `list` (decoding every entry inside `list` itself delayed first paint).
     // Deliberately kept across opens: an id's content never changes, so a
@@ -163,6 +167,18 @@ PanelWindow {
             onRead: line => {
                 try {
                     const m = JSON.parse(line);
+                    if (m.anim) {
+                        const a = Object.assign({}, root._animPaths);
+                        a[m.id] = m.anim;
+                        root._animPaths = a;
+                        return;
+                    }
+                    if (m.nothumb) {
+                        const n = Object.assign({}, root._noThumb);
+                        n[m.id] = true;
+                        root._noThumb = n;
+                        return;
+                    }
                     const paths = Object.assign({}, root._thumbPaths);
                     paths[m.id] = m.path;
                     root._thumbPaths = paths;
@@ -674,7 +690,7 @@ PanelWindow {
                     // never upscale.
                     Item {
                         id: thumbBox
-                        visible: row.modelData.thumb
+                        visible: row.modelData.thumb && !root._noThumb[row.modelData.id]
                         readonly property var _nat: root._thumbMeta[row.modelData.id]
                         readonly property real _scale: thumbBox._nat
                             ? Math.min(root.thumbMaxWidth / thumbBox._nat.width, root.thumbHeight / thumbBox._nat.height, 1)
@@ -691,6 +707,18 @@ PanelWindow {
                             asynchronous: true
                             smooth: true
                             mipmap: true
+                        }
+
+                        // Only the selected/hovered row loads and plays its
+                        // animation; every other GIF row stays the still above.
+                        AnimatedImage {
+                            anchors.fill: parent
+                            readonly property string _path: root._animPaths[row.modelData.id] || ""
+                            source: (row.index === root.selectedIndex && _path) ? ("file://" + _path) : ""
+                            visible: source != "" && status === Image.Ready
+                            playing: visible
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
                         }
                     }
 

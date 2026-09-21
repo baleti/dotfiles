@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -113,17 +114,24 @@ fn cliphist_list() -> Vec<Entry> {
                 None => (line.to_string(), String::new()),
             };
             // Overflow placeholder (see resolve_overflow): hide the hash line.
+            let mut overflow = false;
             if let Some(i) = preview.find(" overflow:") {
                 preview.truncate(i);
+                overflow = true;
             }
             let is_image = looks_like_image(&preview);
-            let mut fields = vec![("type", (if is_image { "image" } else { "text" }).to_string())];
+            // A non-image binary overflow (pdf, video, office doc...) is
+            // offered a thumbnail optimistically; `thumbs` answers `nothumb`
+            // if no thumbnailer can make one and the row reverts to text.
+            let is_file = overflow && !is_image && preview.starts_with("[[");
+            let kind = if is_image { "image" } else if is_file { "file" } else { "text" };
+            let mut fields = vec![("type", kind.to_string())];
             if let Some(&ts) = timestamps.get(&id) {
                 fields.push(("date", picker::humanize_ago(ts, now)));
             }
             Entry {
                 haystack: preview.to_lowercase(),
-                thumb: is_image,
+                thumb: is_image || is_file,
                 fields,
                 id,
                 preview,
@@ -160,6 +168,126 @@ fn decode(id: &str) -> Vec<u8> {
     resolve_overflow(raw)
 }
 
+fn pixbuf_from(bytes: &[u8]) -> Option<Pixbuf> {
+    let loader = PixbufLoader::new();
+    if loader.write(bytes).is_err() || loader.close().is_err() {
+        return None;
+    }
+    loader.pixbuf()
+}
+
+/// Exec line of the first freedesktop `.thumbnailer` that claims `mime`.
+fn find_thumbnailer(mime: &str) -> Option<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dirs = [format!("{home}/.local/share/thumbnailers"), "/usr/share/thumbnailers".to_string()];
+    for d in dirs {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        let mut files: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        files.sort();
+        for f in files {
+            if f.extension().and_then(|e| e.to_str()) != Some("thumbnailer") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&f) else { continue };
+            let (mut exec, mut mimes) = (None, false);
+            for l in text.lines() {
+                if let Some(v) = l.strip_prefix("Exec=") {
+                    exec = Some(v.trim().to_string());
+                } else if let Some(v) = l.strip_prefix("MimeType=") {
+                    mimes = v.split(';').any(|m| m.trim() == mime);
+                }
+            }
+            if let (Some(e), true) = (exec, mimes) {
+                return Some(e);
+            }
+        }
+    }
+    None
+}
+
+/// PNG thumbnail for non-image data (PDF, office docs, video, audio...) via
+/// the system's freedesktop thumbnailers. These are big decoders (poppler,
+/// ffmpeg, libgsf), so each runs inside bubblewrap with no network, no
+/// access to $HOME, only the one input file (read-only) and a scratch output
+/// dir, under a hard timeout and address-space/CPU limits.
+fn external_thumb(id: &str, raw: &[u8]) -> Option<Vec<u8>> {
+    if raw.is_empty() || raw.len() > 512 * 1024 * 1024 {
+        return None;
+    }
+    let dir = picker::cache_dir(PROGRAM_NAME);
+    let work = dir.join(format!("{id}.tw"));
+    let _ = fs::remove_dir_all(&work);
+    fs::create_dir_all(work.join("out")).ok()?;
+    let cleanup = |r: Option<Vec<u8>>| {
+        let _ = fs::remove_dir_all(&work);
+        r
+    };
+    let src = work.join("in");
+    let wrote = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&src)
+        .and_then(|mut f| f.write_all(raw));
+    if wrote.is_err() {
+        return cleanup(None);
+    }
+    let mime = Command::new("file")
+        .args(["-b", "--mime-type"])
+        .arg(&src)
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let Some(exec) = find_thumbnailer(&mime) else { return cleanup(None) };
+
+    let size = THUMB_HEIGHT.to_string();
+    let argv: Vec<String> = exec
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches('"')
+                .replace("%%", "\0")
+                .replace("%i", "/w/in")
+                .replace("%u", "file:///w/in")
+                .replace("%o", "/w/out/thumb.png")
+                .replace("%s", &size)
+                .replace('\0', "%")
+        })
+        .collect();
+    if argv.is_empty() {
+        return cleanup(None);
+    }
+    let status = Command::new("timeout")
+        .args(["25", "prlimit", "--as=4294967296", "--cpu=20", "bwrap"])
+        .args([
+            "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
+            "--setenv", "HOME", "/tmp", "--setenv", "PATH", "/usr/bin", "--setenv", "XDG_CACHE_HOME", "/tmp",
+            "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
+            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+        ])
+        .arg("--ro-bind")
+        .arg(&src)
+        .arg("/w/in")
+        .arg("--bind")
+        .arg(work.join("out"))
+        .arg("/w/out")
+        .arg("--")
+        .args(&argv)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let png = if status.map(|s| s.success()).unwrap_or(false) {
+        fs::read(work.join("out/thumb.png")).ok().filter(|b| !b.is_empty() && b.len() < 32 * 1024 * 1024)
+    } else {
+        None
+    };
+    cleanup(png)
+}
+
 /// Scaled pixbuf for an image entry, cached on disk. None if undecodable.
 fn load_thumb(id: &str) -> Option<Pixbuf> {
     let cached = picker::cache_dir(PROGRAM_NAME).join(format!("{id}.png"));
@@ -174,11 +302,8 @@ fn load_thumb(id: &str) -> Option<Pixbuf> {
     if raw.is_empty() {
         return None;
     }
-    let loader = PixbufLoader::new();
-    if loader.write(&raw).is_err() || loader.close().is_err() {
-        return None;
-    }
-    let pb = loader.pixbuf()?;
+    let pb = pixbuf_from(&raw)
+        .or_else(|| external_thumb(id, &raw).and_then(|png| pixbuf_from(&png)))?;
 
     // Scale on height, then clamp very wide images. Unlike wofi we don't fit a
     // square, so panoramic screenshots don't shrink to nothing.
@@ -204,6 +329,88 @@ fn load_thumb(id: &str) -> Option<Pixbuf> {
         let _ = fs::set_permissions(&cached, fs::Permissions::from_mode(0o600));
     }
     Some(pb)
+}
+
+/// Small looping preview for animated GIFs, cached as `<id>.anim.gif`; None
+/// for anything that isn't a multi-frame GIF. The quickshell process never
+/// decodes the original: ImageMagick re-encodes it in a throwaway subprocess
+/// (explicit `gif:` coder so it can't be talked into another format, resource
+/// limits, hard timeout, frame cap) and QML only loads that clean output, so a
+/// malformed clipboard GIF can at worst kill a short-lived child. A
+/// `<id>.noanim` marker records "checked, not animated" so opening the picker
+/// never re-decodes the same entry.
+fn ensure_anim(id: &str) -> Option<PathBuf> {
+    let dir = picker::cache_dir(PROGRAM_NAME);
+    let out = dir.join(format!("{id}.anim.gif"));
+    if out.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        return Some(out);
+    }
+    let marker = dir.join(format!("{id}.noanim"));
+    if marker.exists() {
+        return None;
+    }
+    let _ = fs::create_dir_all(&dir);
+    let mark_none = || {
+        let _ = fs::write(&marker, b"");
+        None
+    };
+
+    let raw = decode(id);
+    if !(raw.starts_with(b"GIF87a") || raw.starts_with(b"GIF89a")) {
+        return mark_none();
+    }
+    let src = dir.join(format!("{id}.src.gif"));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&src)
+        .and_then(|mut f| f.write_all(&raw));
+    if written.is_err() {
+        let _ = fs::remove_file(&src);
+        return None;
+    }
+    let tmp_out = dir.join(format!("{id}.anim.tmp.gif"));
+    let status = Command::new("timeout")
+        .args(["15", "magick"])
+        .args([
+            "-limit", "memory", "256MiB", "-limit", "map", "256MiB", "-limit", "disk", "512MiB",
+            "-limit", "area", "200MP", "-limit", "width", "16KP", "-limit", "height", "16KP",
+            "-limit", "time", "10", "-limit", "thread", "2",
+        ])
+        .arg(format!("gif:{}[0-59]", src.display()))
+        .args(["-coalesce", "-resize", "360x120>", "-layers", "OptimizePlus", "-loop", "0"])
+        .arg(format!("gif:{}", tmp_out.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = fs::remove_file(&src);
+    let ok = status.map(|s| s.success()).unwrap_or(false);
+    let frames = if ok {
+        Command::new("identify")
+            .args(["-format", "%n\n"])
+            .arg(format!("gif:{}", tmp_out.display()))
+            .stdin(Stdio::null())
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().next().and_then(|l| l.trim().parse::<u32>().ok()))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if frames < 2 {
+        let _ = fs::remove_file(&tmp_out);
+        return if ok { mark_none() } else { None };
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(&tmp_out, fs::Permissions::from_mode(0o600));
+    if fs::rename(&tmp_out, &out).is_err() {
+        let _ = fs::remove_file(&tmp_out);
+        return None;
+    }
+    Some(out)
 }
 
 fn copy_entry(id: &str) {
@@ -275,6 +482,14 @@ fn main() {
                         "{}",
                         json!({"id": id, "path": path.display().to_string(), "width": pb.width(), "height": pb.height()})
                     );
+                    let _ = out.flush();
+                    // Second line, after the still is already on screen.
+                    if let Some(a) = ensure_anim(&id) {
+                        let _ = writeln!(out, "{}", json!({"id": id, "anim": a.display().to_string()}));
+                        let _ = out.flush();
+                    }
+                } else {
+                    let _ = writeln!(out, "{}", json!({"id": id, "nothumb": true}));
                     let _ = out.flush();
                 }
             }
