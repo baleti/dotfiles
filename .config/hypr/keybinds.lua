@@ -210,6 +210,11 @@ hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("~/.config/hypr/clipboard-pick
 -- doc comments in notifyd/src/main.rs).
 hl.bind("CTRL + ALT + z", hl.dsp.exec_cmd("~/.config/hypr/notifyd/target/release/notifyctl close-all"), { description = "Clear all on-screen notification cards" })
 
+-- Desktop dictation (same ai1 GPU whisper-medium server dictate-android
+-- uses) -- press once to start recording, press again to stop, transcribe,
+-- copy to clipboard, and type into whatever window has focus.
+hl.bind(mainMod .. " + CTRL + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/dictate-toggle.sh"), { description = "Toggle desktop dictation (start/stop recording)" })
+
 -- system monitor popups (~/.config/hypr/sysmon): small graph overlay for the
 -- last 10 minutes of network/temperature/memory, replacing the KDE
 -- alt+n network widget. sysmond (autostarted in hyprland.lua) samples
