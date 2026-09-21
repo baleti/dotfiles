@@ -97,6 +97,15 @@ hash=$(sha256sum "$tmp" | cut -d' ' -f1)
 # back to the file, and cliphist-expire.sh deletes blobs no live entry
 # references. The first line copies cliphist's own binary-data preview so the
 # picker treats it as an image row.
+# Our own wl-copy re-assert below re-fires wl-paste --watch. Recognise that
+# echo (same content, within seconds of our own re-assert) and skip it whole:
+# storing again would only delete this entry and reissue it under a new id,
+# orphaning the thumbnail generated for the first one.
+if [[ -f "$SELF_HASH" && "$(<"$SELF_HASH")" == "$hash" ]] \
+        && (( $(date +%s) - $(stat -c %Y "$SELF_HASH") < 5 )); then
+    exit 0
+fi
+
 store_src="$tmp"
 if (( $(stat -c %s "$tmp") > OVERFLOW_MIN )); then
     if ( umask 077; mkdir -p "$LARGE" && chmod 700 "$LARGE" \
@@ -140,8 +149,15 @@ last_hash=""
 exec 9>&-
 
 if [[ "$hash" != "$last_hash" ]]; then
-    wl-copy < "$tmp"
+    # Hash first: the echo run can start before wl-copy returns.
     echo "$hash" > "$SELF_HASH"
+    wl-copy < "$tmp"
+fi
+
+# Pre-generate the picker thumbnail now, off the critical path, so opening
+# mod+v finds it cached instead of decoding a multi-MB image on the spot.
+if [[ -n "$new_id" && "$(file -b --mime-type "$tmp")" == image/* ]]; then
+    setsid -f "$HOME/.config/hypr/clipboard-picker/target/release/clipboard-picker" thumbs "$new_id" >/dev/null 2>&1
 fi
 
 # Per-entry `id<TAB>chars<TAB>lines` for the mod+v picker's size badge, read
