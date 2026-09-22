@@ -6,13 +6,13 @@ Wants=graphical-session.target
 [Service]
 Type=simple
 # resurrect-interval: kept at the original 300 -- the 19:02 2026-09-22
-# CPU/memory spike (see sysmond history) was driven by save.sh's per-pane
-# cost (full-scrollback capture + a full-system `ps` dump per pane, see
-# ~/.tmux.conf's @resurrect-pane-contents-area / @resurrect-save-command-
-# strategy comments), not by the interval itself. Fixed the per-pane cost
-# there instead of trading away snapshot freshness; session count here is
-# expected to stay high long-term, so regular 300s recovery granularity
-# matters more than it would for a short-lived spike in pane count.
+# CPU/memory spike (see sysmond history) was driven by save.sh's default
+# save-command-strategy running a full-system `ps` dump per pane, not by
+# scrollback size or the interval itself (see ~/.tmux.conf's
+# @resurrect-save-command-strategy comment, which fixes the actual cause
+# and keeps full pane-content capture). Session count here is expected to
+# stay high long-term, so regular 300s recovery granularity matters more
+# than it would for a short-lived spike in pane count.
 ExecStart=/usr/bin/python3 %h/.config/desktop-snapshot/snapshot.py daemon --interval 300 --resurrect-interval 300
 Restart=always
 RestartSec=10
