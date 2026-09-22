@@ -5,7 +5,15 @@ Wants=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 %h/.config/desktop-snapshot/snapshot.py daemon --interval 300 --resurrect-interval 300
+# resurrect-interval widened 300->900 on 2026-09-22: save.sh forks a
+# ps+tmux subprocess per pane (dump_panes/dump_windows) regardless of
+# @resurrect-pane-contents-area, and pane count has grown ~3x past the
+# threshold that already caused one documented subprocess-burst incident
+# (see ~/.tmux.conf's @resurrect-capture-pane-contents comment) -- this
+# was the direct cause of the 19:02 2026-09-22 CPU/memory spike (see
+# sysmond history). --interval (plain metadata capture, ~0.5s wall) is
+# unaffected and stays at 300.
+ExecStart=/usr/bin/python3 %h/.config/desktop-snapshot/snapshot.py daemon --interval 300 --resurrect-interval 900
 Restart=always
 RestartSec=10
 Nice=15
