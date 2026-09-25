@@ -176,6 +176,95 @@ fn pixbuf_from(bytes: &[u8]) -> Option<Pixbuf> {
     loader.pixbuf()
 }
 
+/// Scale on height, then clamp very wide images. Unlike wofi we don't fit a
+/// square, so panoramic screenshots don't shrink to nothing.
+fn scale_thumb(pb: Pixbuf) -> Option<Pixbuf> {
+    let (w, h) = (pb.width(), pb.height());
+    if h <= 0 {
+        return Some(pb);
+    }
+    let mut tw = ((w as f64) * (THUMB_HEIGHT as f64) / (h as f64)).round() as i32;
+    let mut th = THUMB_HEIGHT;
+    if tw > THUMB_MAX_WIDTH {
+        th = ((h as f64) * (THUMB_MAX_WIDTH as f64) / (w as f64)).round() as i32;
+        tw = THUMB_MAX_WIDTH;
+    }
+    pb.scale_simple(tw.max(1), th.max(1), InterpType::Bilinear)
+}
+
+/// argv for `timeout N prlimit --as=CAP bwrap ...` sandboxing a re-exec of
+/// this same binary as `<self> __pixbuf-thumb <in> <out>`, or an external
+/// tool given directly as `argv`. `as_cap` bounds total address space: a
+/// GIF/PNG/etc. lying about its dimensions (e.g. a fabricated 65535x65535
+/// canvas, confirmed live to otherwise stall the process trying to satisfy
+/// gdk-pixbuf's allocation) hits ENOMEM immediately here instead of thrashing
+/// the whole machine, and `timeout` bounds anything that isn't a single big
+/// allocation (e.g. a decompression loop). Every untrusted-data decoder in
+/// this file goes through one of these two forms - none run un-sandboxed.
+fn sandbox_cmd(timeout_secs: &str, as_cap: &str, cpu_secs: &str) -> Command {
+    let mut cmd = Command::new("timeout");
+    cmd.args([timeout_secs, "prlimit", &format!("--as={as_cap}"), &format!("--cpu={cpu_secs}"), "bwrap"]);
+    cmd.args([
+        "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
+        "--setenv", "HOME", "/tmp", "--setenv", "PATH", "/usr/bin", "--setenv", "XDG_CACHE_HOME", "/tmp",
+        "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
+        "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
+        "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
+        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+    ]);
+    cmd
+}
+
+/// Decode arbitrary (untrusted) image bytes and write a scaled PNG to
+/// `out_path`, entirely inside sandbox_cmd - a re-exec of this same binary's
+/// `__pixbuf-thumb` subcommand is what actually calls gdk-pixbuf, so a
+/// malicious image can at worst crash or get OOM-killed inside that one
+/// throwaway child. Used both for the clipboard's own bytes and for a
+/// freedesktop thumbnailer's PNG output (also untrusted-derived) - one path,
+/// no un-sandboxed gdk-pixbuf call anywhere. Returns the final (width,
+/// height) on success.
+fn sandboxed_pixbuf_thumb(raw: &[u8], out_path: &std::path::Path) -> Option<(i32, i32)> {
+    if raw.is_empty() {
+        return None;
+    }
+    let self_exe = std::env::current_exe().ok()?;
+    let dir = picker::cache_dir(PROGRAM_NAME);
+    let work = dir.join(format!("pxb-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&work);
+    fs::create_dir_all(work.join("out")).ok()?;
+    let cleanup = |r: Option<(i32, i32)>| {
+        let _ = fs::remove_dir_all(&work);
+        r
+    };
+    let src = work.join("in");
+    if fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&src)
+        .and_then(|mut f| f.write_all(raw)).is_err() {
+        return cleanup(None);
+    }
+    let output = sandbox_cmd("10", "1073741824", "10")
+        .arg("--ro-bind").arg(&self_exe).arg("/w/self")
+        .arg("--ro-bind").arg(&src).arg("/w/in")
+        .arg("--bind").arg(work.join("out")).arg("/w/out")
+        .arg("--")
+        .args(["/w/self", "__pixbuf-thumb", "/w/in", "/w/out/thumb.png"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(output) = output else { return cleanup(None) };
+    if !output.status.success() {
+        return cleanup(None);
+    }
+    let dims = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .split_once(' ')
+        .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)));
+    let Some((w, h)) = dims else { return cleanup(None) };
+    if fs::rename(work.join("out/thumb.png"), out_path).is_err() {
+        return cleanup(None);
+    }
+    cleanup(Some((w, h)))
+}
+
 /// Exec line of the first freedesktop `.thumbnailer` that claims `mime`.
 fn find_thumbnailer(mime: &str) -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -258,16 +347,7 @@ fn external_thumb(id: &str, raw: &[u8]) -> Option<Vec<u8>> {
     if argv.is_empty() {
         return cleanup(None);
     }
-    let status = Command::new("timeout")
-        .args(["25", "prlimit", "--as=4294967296", "--cpu=20", "bwrap"])
-        .args([
-            "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
-            "--setenv", "HOME", "/tmp", "--setenv", "PATH", "/usr/bin", "--setenv", "XDG_CACHE_HOME", "/tmp",
-            "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
-            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
-            "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
-            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-        ])
+    let status = sandbox_cmd("25", "4294967296", "20")
         .arg("--ro-bind")
         .arg(&src)
         .arg("/w/in")
@@ -288,12 +368,20 @@ fn external_thumb(id: &str, raw: &[u8]) -> Option<Vec<u8>> {
     cleanup(png)
 }
 
-/// Scaled pixbuf for an image entry, cached on disk. None if undecodable.
-fn load_thumb(id: &str) -> Option<Pixbuf> {
-    let cached = picker::cache_dir(PROGRAM_NAME).join(format!("{id}.png"));
+/// Scaled thumbnail PNG for an image entry, cached on disk as (id).png with
+/// its real pixel dimensions alongside it as (id).png.dims (avoids a second,
+/// even-if-trusted gdk-pixbuf decode of our own output just to answer a size
+/// question). None if nothing could thumbnail it.
+fn load_thumb(id: &str) -> Option<(i32, i32)> {
+    let dir = picker::cache_dir(PROGRAM_NAME);
+    let cached = dir.join(format!("{id}.png"));
+    let dims_file = dir.join(format!("{id}.png.dims"));
     if cached.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-        if let Ok(pb) = Pixbuf::from_file(&cached) {
-            return Some(pb);
+        if let Some(dims) = fs::read_to_string(&dims_file).ok().and_then(|t| {
+            let (a, b) = t.trim().split_once(' ')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        }) {
+            return Some(dims);
         }
         let _ = fs::remove_file(&cached);
     }
@@ -302,33 +390,16 @@ fn load_thumb(id: &str) -> Option<Pixbuf> {
     if raw.is_empty() {
         return None;
     }
-    let pb = pixbuf_from(&raw)
-        .or_else(|| external_thumb(id, &raw).and_then(|png| pixbuf_from(&png)))?;
+    fs::create_dir_all(&dir).ok()?;
+    let dims = sandboxed_pixbuf_thumb(&raw, &cached)
+        .or_else(|| external_thumb(id, &raw).and_then(|png| sandboxed_pixbuf_thumb(&png, &cached)))?;
 
-    // Scale on height, then clamp very wide images. Unlike wofi we don't fit a
-    // square, so panoramic screenshots don't shrink to nothing.
-    let (w, h) = (pb.width(), pb.height());
-    let pb = if h > 0 {
-        let mut tw = ((w as f64) * (THUMB_HEIGHT as f64) / (h as f64)).round() as i32;
-        let mut th = THUMB_HEIGHT;
-        if tw > THUMB_MAX_WIDTH {
-            th = ((h as f64) * (THUMB_MAX_WIDTH as f64) / (w as f64)).round() as i32;
-            tw = THUMB_MAX_WIDTH;
-        }
-        pb.scale_simple(tw.max(1), th.max(1), InterpType::Bilinear)?
-    } else {
-        pb
-    };
-
-    let dir = picker::cache_dir(PROGRAM_NAME);
-    let _ = fs::create_dir_all(&dir);
-    let _ = pb.savev(&cached, "png", &[]);
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-        let _ = fs::set_permissions(&cached, fs::Permissions::from_mode(0o600));
-    }
-    Some(pb)
+    let _ = fs::write(&dims_file, format!("{} {}", dims.0, dims.1));
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    let _ = fs::set_permissions(&cached, fs::Permissions::from_mode(0o600));
+    let _ = fs::set_permissions(&dims_file, fs::Permissions::from_mode(0o600));
+    Some(dims)
 }
 
 /// Small looping preview for animated GIFs, cached as `<id>.anim.gif`; None
@@ -372,31 +443,63 @@ fn ensure_anim(id: &str) -> Option<PathBuf> {
         return None;
     }
     let tmp_out = dir.join(format!("{id}.anim.tmp.gif"));
-    let status = Command::new("timeout")
-        .args(["15", "magick"])
-        .args([
-            "-limit", "memory", "256MiB", "-limit", "map", "256MiB", "-limit", "disk", "512MiB",
-            "-limit", "area", "200MP", "-limit", "width", "16KP", "-limit", "height", "16KP",
-            "-limit", "time", "10", "-limit", "thread", "2",
-        ])
-        .arg(format!("gif:{}[0-59]", src.display()))
-        .args(["-coalesce", "-resize", "360x120>", "-layers", "OptimizePlus", "-loop", "0"])
-        .arg(format!("gif:{}", tmp_out.display()))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    // Bubblewrapped like external_thumb below: a GIF decoder bug is a
+    // memory-safety bug, not just a resource-usage one, and ImageMagick's
+    // own -limit flags (kept as defense in depth) don't stop that class of
+    // bug. Sandbox root is thrown away each call, so /w/in and /w/out are
+    // the only paths that exist inside it.
+    let sbox_argv = |argv: &[String], capture: bool| -> (bool, Vec<u8>) {
+        let mut cmd = Command::new("timeout");
+        cmd.args(["15", "bwrap"]).args([
+            "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
+            "--setenv", "HOME", "/tmp", "--setenv", "PATH", "/usr/bin", "--setenv", "XDG_CACHE_HOME", "/tmp",
+            "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
+            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+        ]);
+        cmd.arg("--ro-bind").arg(&src).arg("/w/in");
+        cmd.arg("--bind").arg(&dir).arg("/w/out");
+        cmd.arg("--").args(argv);
+        cmd.stdin(Stdio::null()).stderr(Stdio::null());
+        if capture {
+            match cmd.output() {
+                Ok(o) => (o.status.success(), o.stdout),
+                Err(_) => (false, Vec::new()),
+            }
+        } else {
+            (cmd.stdout(Stdio::null()).status().map(|s| s.success()).unwrap_or(false), Vec::new())
+        }
+    };
+    let out_name = format!("{id}.anim.tmp.gif");
+    let (ok, _) = sbox_argv(
+        &[
+            "magick".into(),
+            "-limit".into(), "memory".into(), "256MiB".into(),
+            "-limit".into(), "map".into(), "256MiB".into(),
+            "-limit".into(), "disk".into(), "512MiB".into(),
+            "-limit".into(), "area".into(), "200MP".into(),
+            "-limit".into(), "width".into(), "16KP".into(),
+            "-limit".into(), "height".into(), "16KP".into(),
+            "-limit".into(), "time".into(), "10".into(),
+            "-limit".into(), "thread".into(), "2".into(),
+            "gif:/w/in[0-59]".into(),
+            "-coalesce".into(), "-resize".into(), "360x120>".into(), "-layers".into(), "OptimizePlus".into(), "-loop".into(), "0".into(),
+            format!("gif:/w/out/{out_name}"),
+        ],
+        false,
+    );
     let _ = fs::remove_file(&src);
-    let ok = status.map(|s| s.success()).unwrap_or(false);
     let frames = if ok {
-        Command::new("identify")
-            .args(["-format", "%n\n"])
-            .arg(format!("gif:{}", tmp_out.display()))
-            .stdin(Stdio::null())
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().next().and_then(|l| l.trim().parse::<u32>().ok()))
-            .unwrap_or(0)
+        let (fok, stdout) = sbox_argv(
+            &["identify".into(), "-format".into(), "%n\n".into(), format!("gif:/w/out/{out_name}")],
+            true,
+        );
+        if fok {
+            String::from_utf8_lossy(&stdout).lines().next().and_then(|l| l.trim().parse::<u32>().ok()).unwrap_or(0)
+        } else {
+            0
+        }
     } else {
         0
     };
@@ -454,6 +557,25 @@ fn print_list(entries: &[Entry]) {
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
+        Some("__pixbuf-thumb") => {
+            // Sandboxed re-exec target only (see sandboxed_pixbuf_thumb) -
+            // never invoked directly. Deliberately does not touch cliphist,
+            // the cache dir, or anything outside its two argv paths: it only
+            // ever runs inside the sandbox, where nothing else is reachable
+            // anyway, but staying self-contained means it stays safe even if
+            // that assumption is ever wrong.
+            let (Some(inp), Some(outp)) = (args.next(), args.next()) else {
+                std::process::exit(1);
+            };
+            let raw = match fs::read(&inp) {
+                Ok(b) => b,
+                Err(_) => std::process::exit(1),
+            };
+            let ok = pixbuf_from(&raw)
+                .and_then(scale_thumb)
+                .map(|pb| pb.savev(&outp, "png", &[]).is_ok() && println!("{} {}", pb.width(), pb.height()) == ());
+            std::process::exit(if ok.unwrap_or(false) { 0 } else { 1 });
+        }
         Some("thumb") => {
             let Some(id) = args.next() else {
                 eprintln!("usage: {PROGRAM_NAME} thumb <id>");
@@ -475,12 +597,12 @@ fn main() {
             // as winswitch's own `output.rs::thumbnail`.
             let mut out = std::io::stdout().lock();
             for id in args {
-                if let Some(pb) = load_thumb(&id) {
+                if let Some((w, h)) = load_thumb(&id) {
                     let path = picker::cache_dir(PROGRAM_NAME).join(format!("{id}.png"));
                     let _ = writeln!(
                         out,
                         "{}",
-                        json!({"id": id, "path": path.display().to_string(), "width": pb.width(), "height": pb.height()})
+                        json!({"id": id, "path": path.display().to_string(), "width": w, "height": h})
                     );
                     let _ = out.flush();
                     // Second line, after the still is already on screen.
