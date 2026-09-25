@@ -55,6 +55,9 @@ enum UiMsg {
     Dismiss(u32),
     /// quickshell right-click, or `notifyctl close-all`.
     CloseAll,
+    /// Pointer entered/left a card -- hold or restart its countdown.
+    HoverStart(u32),
+    HoverEnd(u32),
 }
 
 const INTROSPECTION_XML: &str = r#"
@@ -119,6 +122,16 @@ const INTROSPECTION_XML: &str = r#"
       <arg type="s" name="json" direction="out"/>
     </method>
     <method name="CloseAll"/>
+    <!-- Pointer entered/left a card (quickshell hover, via `notifyctl
+         hover-start`/`hover-end`): hold the countdown while hovered, then
+         restart it at its full duration on leave -- a reset, not a resume.
+         A no-op for an id with no active timer. -->
+    <method name="HoverStart">
+      <arg type="u" name="id" direction="in"/>
+    </method>
+    <method name="HoverEnd">
+      <arg type="u" name="id" direction="in"/>
+    </method>
   </interface>
 </node>
 "#;
@@ -488,6 +501,28 @@ fn handle_control_call(
             let _ = ui_tx.send(UiMsg::CloseAll);
             invocation.return_value(None);
         }
+        "HoverStart" => {
+            let Some((id,)): Option<(u32,)> = parameters.get() else {
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.InvalidArgs",
+                    "HoverStart: unexpected argument shape",
+                );
+                return;
+            };
+            let _ = ui_tx.send(UiMsg::HoverStart(id));
+            invocation.return_value(None);
+        }
+        "HoverEnd" => {
+            let Some((id,)): Option<(u32,)> = parameters.get() else {
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.InvalidArgs",
+                    "HoverEnd: unexpected argument shape",
+                );
+                return;
+            };
+            let _ = ui_tx.send(UiMsg::HoverEnd(id));
+            invocation.return_value(None);
+        }
         other => {
             invocation.return_dbus_error(
                 "org.freedesktop.DBus.Error.UnknownMethod",
@@ -582,6 +617,8 @@ fn main() {
                 UiMsg::Close(id) => render::close_silent(&render, id),
                 UiMsg::Dismiss(id) => render::fire_close(&render, id, close_reason::DISMISSED),
                 UiMsg::CloseAll => render::close_all(&render, close_reason::DISMISSED),
+                UiMsg::HoverStart(id) => render::hover_start(&render, id),
+                UiMsg::HoverEnd(id) => render::hover_end(&render, id),
             }
             glib::ControlFlow::Continue
         });
