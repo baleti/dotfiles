@@ -9,7 +9,7 @@ use notifyd::dbus_names::{BUS_NAME, CONTROL_INTERFACE, OBJECT_PATH};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: notifyctl <invoke-last | invoke ID | invoke-action ID KEY | dismiss ID | actions [ID] | list | close-all>"
+        "usage: notifyctl <invoke-last | invoke ID | invoke-action ID KEY | dismiss ID | actions [ID] | list | close-all | hover-start ID | hover-end ID>"
     );
     std::process::exit(2);
 }
@@ -100,6 +100,14 @@ fn main() {
         }
         Some("close-all") if args.len() == 1 => {
             call_unit(&connection, "CloseAll", None);
+        }
+        Some("hover-start") if args.len() == 2 => {
+            let id = parse_id(&args[1]);
+            call_unit(&connection, "HoverStart", Some(&(id,).to_variant()));
+        }
+        Some("hover-end") if args.len() == 2 => {
+            let id = parse_id(&args[1]);
+            call_unit(&connection, "HoverEnd", Some(&(id,).to_variant()));
         }
         _ => usage(),
     }
