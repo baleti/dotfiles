@@ -14,16 +14,33 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::close_reason;
 use crate::config::Config;
 use crate::state::SharedState;
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub struct RenderManager {
     /// Front = newest = top of the on-screen stack.
     order: Vec<u32>,
     timers: HashMap<u32, glib::SourceId>,
+    /// id -> (expires_at unix ms, total duration ms). Only holds entries for
+    /// notifications with a real timeout -- quickshell's countdown bar reads
+    /// this via write_file(); an id absent here (urgency/expire_timeout says
+    /// "never") gets no bar.
+    expiry: HashMap<u32, (u64, u32)>,
+    /// id -> total duration ms, for a notification whose timer is currently
+    /// held by a card hover (see `hover_start`/`hover_end`). Removed from
+    /// `expiry` while held -- no `expires_at_ms` means no countdown bar, so
+    /// the card visibly stops ticking down instead of showing a frozen one.
+    paused: HashMap<u32, u32>,
     config: Rc<Config>,
     state: SharedState,
     /// `(id, reason)` -> emit NotificationClosed. Same callback popup.rs took.
@@ -40,6 +57,8 @@ pub fn new_manager(
     Rc::new(RefCell::new(RenderManager {
         order: Vec::new(),
         timers: HashMap::new(),
+        expiry: HashMap::new(),
+        paused: HashMap::new(),
         config: Rc::new(config),
         state,
         on_close: Box::new(on_close),
@@ -77,6 +96,12 @@ impl RenderManager {
                         .action_pairs()
                         .map(|(k, l)| serde_json::json!({ "key": k, "label": l }))
                         .collect();
+                    // Absent (null) for a notification with no timeout
+                    // (expire_timeout == 0, or its urgency's configured
+                    // timeout is 0/"never") -- quickshell skips the
+                    // countdown bar for those instead of showing one stuck
+                    // at some fixed position.
+                    let exp = self.expiry.get(&n.id);
                     serde_json::json!({
                         "id": n.id,
                         "app_name": n.app_name,
@@ -92,6 +117,8 @@ impl RenderManager {
                         "timestamp": n.timestamp,
                         "actions": actions,
                         "default_action": n.default_action_key(),
+                        "expires_at_ms": exp.map(|(e, _)| *e),
+                        "timeout_ms": exp.map(|(_, d)| *d),
                     })
                 })
                 .collect();
@@ -120,12 +147,29 @@ impl RenderManager {
     }
 }
 
+/// Arms (or re-arms) the expiry timer for `id` at `ms` from now. Caller must
+/// have already cancelled any existing timer for `id`.
+fn arm_timer(render: &SharedRender, id: u32, ms: u32) {
+    render.borrow_mut().expiry.insert(id, (now_ms() + ms as u64, ms));
+
+    let render2 = render.clone();
+    let src = glib::timeout_add_local(Duration::from_millis(ms as u64), move || {
+        // Clear our own handle first -- we unregister by returning Break,
+        // so a later cancel_timer() must not also remove us.
+        render2.borrow_mut().timers.remove(&id);
+        fire_close(&render2, id, close_reason::EXPIRED);
+        glib::ControlFlow::Break
+    });
+    render.borrow_mut().timers.insert(id, src);
+}
+
 /// Show a new popup, or refresh an already-shown one in place (replaces_id):
 /// same stack position, re-armed timeout.
 pub fn show(render: &SharedRender, id: u32, urgency: u8, expire_timeout: i32) {
     {
         let mut mgr = render.borrow_mut();
         mgr.cancel_timer(id);
+        mgr.paused.remove(&id);
         if !mgr.order.contains(&id) {
             if mgr.order.len() >= mgr.config.notification_limit {
                 // dunstrc: notification_limit -- still in history, just no
@@ -138,18 +182,41 @@ pub fn show(render: &SharedRender, id: u32, urgency: u8, expire_timeout: i32) {
 
     let cfg = render.borrow().config.clone();
     if let Some(ms) = timeout_ms(urgency, expire_timeout, &cfg) {
-        let render2 = render.clone();
-        let src = glib::timeout_add_local(Duration::from_millis(ms as u64), move || {
-            // Clear our own handle first -- we unregister by returning Break,
-            // so a later cancel_timer() must not also remove us.
-            render2.borrow_mut().timers.remove(&id);
-            fire_close(&render2, id, close_reason::EXPIRED);
-            glib::ControlFlow::Break
-        });
-        render.borrow_mut().timers.insert(id, src);
+        arm_timer(render, id, ms);
+    } else {
+        render.borrow_mut().expiry.remove(&id);
     }
 
     render.borrow().write_file();
+}
+
+/// Card hover started (quickshell `notifyctl hover-start`): cancel the
+/// countdown so it can't expire out from under the pointer, and remember its
+/// full duration to restart on `hover_end`. A no-op for an id with no timer
+/// (already paused, or never had a timeout).
+pub fn hover_start(render: &SharedRender, id: u32) {
+    let dur = {
+        let mut mgr = render.borrow_mut();
+        if !mgr.timers.contains_key(&id) {
+            return;
+        }
+        mgr.cancel_timer(id);
+        mgr.expiry.remove(&id).map(|(_, dur)| dur)
+    };
+    if let Some(dur) = dur {
+        render.borrow_mut().paused.insert(id, dur);
+        render.borrow().write_file();
+    }
+}
+
+/// Card hover ended (`notifyctl hover-end`): restart the timer at its full
+/// original duration -- a reset, not a resume from wherever it left off.
+pub fn hover_end(render: &SharedRender, id: u32) {
+    let dur = render.borrow_mut().paused.remove(&id);
+    if let Some(dur) = dur {
+        arm_timer(render, id, dur);
+        render.borrow().write_file();
+    }
 }
 
 /// Emit NotificationClosed and drop the popup. Every removal path except a
@@ -159,6 +226,8 @@ pub fn fire_close(render: &SharedRender, id: u32, reason: u32) {
     {
         let mut mgr = render.borrow_mut();
         mgr.cancel_timer(id);
+        mgr.expiry.remove(&id);
+        mgr.paused.remove(&id);
         mgr.order.retain(|&x| x != id);
     }
     render.borrow().on_close.as_ref()(id, reason);
@@ -171,6 +240,8 @@ pub fn close_silent(render: &SharedRender, id: u32) {
     {
         let mut mgr = render.borrow_mut();
         mgr.cancel_timer(id);
+        mgr.expiry.remove(&id);
+        mgr.paused.remove(&id);
         mgr.order.retain(|&x| x != id);
     }
     render.borrow().write_file();
@@ -182,6 +253,8 @@ pub fn close_all(render: &SharedRender, reason: u32) {
         let mut mgr = render.borrow_mut();
         for &id in &ids {
             mgr.cancel_timer(id);
+            mgr.expiry.remove(&id);
+            mgr.paused.remove(&id);
         }
         mgr.order.clear();
     }

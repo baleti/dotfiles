@@ -30,7 +30,37 @@ Rectangle {
     readonly property var buttonActions:
         (notification.actions ?? []).filter(a => a.key !== "default")
 
+    // Countdown bar: notifyd includes these only when the notification has a
+    // real timeout (see render.rs's `expiry` map) -- persistent ones (no
+    // auto-dismiss) get no bar rather than one stuck at some fixed position.
+    readonly property var expiresAtMs: notification.expires_at_ms ?? null
+    readonly property var timeoutMs: notification.timeout_ms ?? null
+    readonly property bool hasCountdown:
+        root.expiresAtMs !== null && root.timeoutMs !== null && root.timeoutMs > 0
+    // Recomputed from the absolute expiry each tick (not animated down from
+    // 1 on creation) so it stays correct even if this delegate gets torn
+    // down and rebuilt mid-countdown -- the Repeater's array model does that
+    // on any unrelated notification change.
+    property real remainingFraction: 1
+    // Set only while the pointer is actually over the card -- lets
+    // onDestruction below release notifyd's hover-hold if this delegate gets
+    // torn down mid-hover (Repeater rebuilds on unrelated model changes;
+    // Exited never fires for a destroyed item).
+    property bool hovering: false
+
+    Timer {
+        interval: 100
+        running: root.hasCountdown
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            const remaining = root.expiresAtMs - Date.now();
+            root.remainingFraction = Math.max(0, Math.min(1, remaining / root.timeoutMs));
+        }
+    }
+
     width: cardWidth
+    clip: true
     implicitHeight: {
         let bottom = bodyFlick.y + (bodyFlick.visible ? bodyFlick.height : 0);
         if (leadImage.visible)
@@ -237,6 +267,11 @@ Rectangle {
         cursorShape: Qt.PointingHandCursor
         // Sit behind the buttons / body links.
         z: -1
+        // Hold notifyd's countdown while the pointer is over the card, and
+        // restart it at full duration on leave -- a reset, not a resume, so
+        // reading a notification never lets it expire mid-glance.
+        onEntered: { root.hovering = true; NotifSvc.hoverStart(root.notification.id); }
+        onExited: { root.hovering = false; NotifSvc.hoverEnd(root.notification.id); }
         onClicked: mouse => {
             if (mouse.button === Qt.LeftButton) {
                 if (root.defaultAction.length > 0)
@@ -254,5 +289,9 @@ Rectangle {
 
     opacity: 0
     Component.onCompleted: opacity = 1
+    Component.onDestruction: {
+        if (root.hovering)
+            NotifSvc.hoverEnd(root.notification.id);
+    }
     Behavior on opacity { NumberAnimation { duration: 120 } }
 }
