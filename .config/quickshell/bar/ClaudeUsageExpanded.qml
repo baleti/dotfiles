@@ -1160,7 +1160,7 @@ Rectangle {
     }
 
     function focusHyprWindow(row) {
-        if (!row.hypr_address)
+        if (!row.hypr_address && !row.tmux_session)
             return;
         // query-dsl.md's "Search-box history": a real accept records the
         // query, same as fzf's own --history flag does for the tmux
@@ -1170,15 +1170,25 @@ Rectangle {
             tmuxSelectProc.exec(["tmux", "select-window", "-t", "@" + row.tmux_window]);
         if (row.tmux_pane)
             tmuxSelectPaneProc.exec(["tmux", "select-pane", "-t", "%" + row.tmux_pane]);
-        const addr = row.hypr_address;
-        const script = "local ws = hl.get_windows({})\n"
-            + "for i, w in ipairs(ws) do\n"
-            + "    if tostring(w.address) == \"" + addr + "\" then\n"
-            + "        hl.dispatch(hl.dsp.focus({ window = w }))\n"
-            + "        break\n"
-            + "    end\n"
-            + "end";
-        focusProc.exec(["hyprctl", "repl", script]);
+        if (row.hypr_address) {
+            const addr = row.hypr_address;
+            const script = "local ws = hl.get_windows({})\n"
+                + "for i, w in ipairs(ws) do\n"
+                + "    if tostring(w.address) == \"" + addr + "\" then\n"
+                + "        hl.dispatch(hl.dsp.focus({ window = w }))\n"
+                + "        break\n"
+                + "    end\n"
+                + "end";
+            focusProc.exec(["hyprctl", "repl", script]);
+        } else {
+            // No live Hyprland window for this session -- open a new
+            // terminal attached to it on the current workspace, same
+            // fallback notify-summon.sh's claude-stop: path uses for a
+            // detached session. The tmux select-window/-pane calls above
+            // already pointed the session at this row's window/pane, so
+            // attach lands looking at the right one.
+            spawnAttachProc.exec(["alacritty", "-e", "tmux", "attach", "-t", "$" + row.tmux_session]);
+        }
         // Deliberately stays open after focusing -- picking a window here
         // is meant to feel like clicking it in a normal alt-tab-ish list,
         // not a one-shot action that closes the panel behind it (reverted
@@ -1288,6 +1298,7 @@ Rectangle {
     Process { id: focusProc }
     Process { id: tmuxSelectProc }
     Process { id: tmuxSelectPaneProc }
+    Process { id: spawnAttachProc }
 
     // Single table now -- one header block, not one per (formerly
     // foldable) account group. The process list itself no longer
@@ -2213,7 +2224,7 @@ Rectangle {
                     // own area first; every other cell falls through here.
                     MouseArea {
                         anchors.fill: parent
-                        cursorShape: procRow.modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        cursorShape: (procRow.modelData.hypr_address || procRow.modelData.tmux_session) ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: root.focusHyprWindow(procRow.modelData)
                     }
 
@@ -2237,7 +2248,7 @@ Rectangle {
                             MouseArea {
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                cursorShape: procRow.modelData.hypr_address ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                cursorShape: (procRow.modelData.hypr_address || procRow.modelData.tmux_session) ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onEntered: {
                                     root.showHint(modelData.account);
                                     root.moveHint(acctCell.mapToItem(root, mouseX, mouseY));
