@@ -26,6 +26,76 @@ Row {
 
     Process { id: switchProc }
 
+    // ---- rename (right-click a pill) -------------------------------------
+    //
+    // `hl.dsp.workspace.rename` takes { workspace = <id>, name = <string> }
+    // (discovered live via `hyprctl repl` -- undocumented; `id`/`newname`/
+    // `newName` are all silently accepted but no-ops, only `workspace`+
+    // `name` actually take effect).
+    //
+    // -1 (not any real Hyprland workspace id, which are always >0 or the
+    // special/scratch negatives -- see the ScriptModel filter below) means
+    // "nothing being renamed".
+    // Per-bar override so Bar.qml can shrink the pills when the bar runs
+    // out of room (workspaces vs media pill overlap).
+    property int fontSize: Theme.fontSize
+    property int renamingId: -1
+    readonly property bool renaming: renamingId >= 0
+    // Set on a blocked commit (name collides with another workspace) so the
+    // input can flag it inline; cleared on the next edit so the flag never
+    // outlives the text that caused it.
+    property bool renameCollision: false
+
+    function startRename(ws) {
+        // Right-clicking mid-hover disables that pill's MouseArea below
+        // (see isRenaming-gated `enabled` there), which isn't guaranteed to
+        // fire onExited on its own -- clear the hover-preview state
+        // explicitly so it can't get stuck showing.
+        root.cancelHoverPreview();
+        root.renamingId = ws.id;
+        root.renameCollision = false;
+    }
+
+    function cancelRename() {
+        root.renamingId = -1;
+        root.renameCollision = false;
+    }
+
+    // Hyprland workspace names are unique cluster-wide (not just on one
+    // monitor), so the collision check has to cover every workspace
+    // Hyprland knows about, not just this bar's own screen -- matches the
+    // scope `Hyprland.workspaces.values` already has, unlike the Repeater's
+    // model above which is filtered to root.screen.
+    function commitRename(ws, newName) {
+        // TextInput is single-line already, but a paste can still smuggle
+        // in \r/\n/\t -- collapse those before anything else so the name
+        // that gets compared/dispatched can't contain them.
+        const trimmed = newName.replace(/[\r\n\t]/g, " ").trim();
+        if (trimmed === "" || trimmed === ws.name) {
+            root.cancelRename();
+            return;
+        }
+        const collision = Hyprland.workspaces.values.some(w => w.id !== ws.id && w.name === trimmed);
+        if (collision) {
+            // Block it: leave the field open (with the offending text
+            // still in it) so the user can pick a different name instead
+            // of silently losing the edit or renaming over another
+            // workspace.
+            root.renameCollision = true;
+            return;
+        }
+        // Goes through `hyprctl repl`'s Lua eval the same as switchToWorkspace
+        // above, but this string is user-typed (unlike a numeric id), so it
+        // has to be escaped as a Lua string literal rather than concatenated
+        // raw -- an unescaped `"` or `\` in the name would otherwise break
+        // out of the string and either error or run arbitrary Lua.
+        const escaped = trimmed.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+        renameProc.exec(["hyprctl", "repl", "hl.dispatch(hl.dsp.workspace.rename({ workspace = " + ws.id + ", name = \"" + escaped + "\" }))"]);
+        root.cancelRename();
+    }
+
+    Process { id: renameProc }
+
     // ---- hover-preview capture -----------------------------------------
     //
     // Reuses the claude-usage panel's thumb-capture binary (address-keyed
@@ -201,8 +271,9 @@ Row {
 
             readonly property bool isActive: modelData.active
             readonly property bool isUrgent: modelData.urgent
+            readonly property bool isRenaming: root.renamingId === modelData.id
 
-            implicitWidth: label.implicitWidth + 16
+            implicitWidth: (isRenaming ? Math.max(renameInput.implicitWidth, 30) : label.implicitWidth) + 16
             implicitHeight: 24
             width: implicitWidth
             height: implicitHeight
@@ -211,19 +282,72 @@ Row {
 
             Text {
                 id: label
+                visible: !wsBtn.isRenaming
                 anchors.centerIn: parent
                 text: wsBtn.modelData.name
                 color: wsBtn.isActive || wsBtn.isUrgent ? "#1a1a1a" : Theme.muted
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize
+                font.pixelSize: root.fontSize
+            }
+
+            TextInput {
+                id: renameInput
+                visible: wsBtn.isRenaming
+                anchors.centerIn: parent
+                color: root.renameCollision ? Theme.red : (wsBtn.isActive || wsBtn.isUrgent ? "#1a1a1a" : Theme.text)
+                selectionColor: Theme.cyan
+                selectByMouse: true
+                font.family: Theme.fontFamily
+                font.pixelSize: root.fontSize
+
+                // Sets `text` imperatively here rather than a one-way
+                // `text: wsBtn.modelData.name` binding: typing into a
+                // TextInput assigns straight to its own `text` property,
+                // which permanently breaks a declarative binding on that
+                // property -- the first edit would otherwise leave every
+                // later rename of this same pill pre-filled with whatever
+                // was last typed instead of the workspace's current name.
+                onVisibleChanged: if (visible) {
+                    text = wsBtn.modelData.name;
+                    forceActiveFocus();
+                    selectAll();
+                }
+                onTextChanged: root.renameCollision = false;
+
+                Keys.onPressed: event => {
+                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        root.commitRename(wsBtn.modelData, text);
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Escape) {
+                        root.cancelRename();
+                        event.accepted = true;
+                    }
+                }
+                // Covers click-away: losing real focus while still the
+                // active rename target (as opposed to losing it because
+                // commit/cancel already flipped isRenaming off and hid this
+                // field out from under itself) means the user clicked
+                // somewhere else entirely.
+                onActiveFocusChanged: if (!activeFocus && wsBtn.isRenaming) root.cancelRename();
             }
 
             MouseArea {
                 id: hover
                 anchors.fill: parent
+                // Disabled while renaming so clicks/drags reach renameInput
+                // underneath (cursor placement, click-drag selection)
+                // instead of being swallowed by this MouseArea sitting on
+                // top of it.
+                enabled: !wsBtn.isRenaming
                 hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.switchToWorkspace(wsBtn.modelData.id)
+                onClicked: mouse => {
+                    if (mouse.button === Qt.RightButton)
+                        root.startRename(wsBtn.modelData);
+                    else
+                        root.switchToWorkspace(wsBtn.modelData.id);
+                }
                 onEntered: {
                     const p = wsBtn.mapToItem(null, 0, wsBtn.height);
                     root.requestHoverPreview(wsBtn.modelData, p.x, p.y);
