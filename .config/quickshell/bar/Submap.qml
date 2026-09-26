@@ -10,6 +10,9 @@ import "../theme"
 Rectangle {
     id: root
 
+    // Per-bar override (Bar.qml shrinks it when the bar runs out of room).
+    property int fontSize: Theme.fontSize
+
     property string submap: ""
 
     visible: submap.length > 0
@@ -30,7 +33,7 @@ Rectangle {
         font.italic: true
         color: Theme.green
         font.family: Theme.fontFamily
-        font.pixelSize: Theme.fontSize
+        font.pixelSize: root.fontSize
     }
 
     Connections {

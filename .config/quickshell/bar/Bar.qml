@@ -28,7 +28,7 @@ Item {
     readonly property int openPanelCount: (mediaExpanded.expanded ? 1 : 0) + (calendarExpanded.expanded ? 1 : 0)
         + (netPill.expanded ? 1 : 0) + (cpuPill.expanded ? 1 : 0) + (memPill.expanded ? 1 : 0)
         + (diskPill.expanded ? 1 : 0) + (tempPill.expanded ? 1 : 0) + (gpuPill.expanded ? 1 : 0)
-        + (claudeUsageExpanded.expanded ? 1 : 0)
+        + (claudeUsageExpanded.expanded ? 1 : 0) + (workspaces.renaming ? 1 : 0)
 
     // Always focus-eligible -- actual keyboard delivery is already gated at
     // the window level by shell.qml's WlrLayershell.keyboardFocus/
@@ -752,7 +752,7 @@ Item {
     TextMetrics {
         id: gpuCompactMetrics
         font.family: Theme.fontFamily
-        font.pixelSize: Theme.fontSize
+        font.pixelSize: root.pillFont
         // Mirrors gpuCompactText's own prefix rule -- see its comment.
         text: SysmonSvc.gpuList.map(g => (SysmonSvc.gpuList.length > 1 ? (g.vendor === "intel" ? "i " : "d ") : "") + "88 %").join(" ")
     }
@@ -765,7 +765,28 @@ Item {
     // down along with it as that height changes.
     readonly property real pillTopMargin: 5
 
+    // Shrink the workspace + media pill fonts when the left and right rows
+    // would collide. The shrunk state changes the widths being compared, so
+    // the full-size width is estimated by scaling the two shrinkable pills
+    // back up rather than re-measured (avoids flip-flopping).
+    readonly property int fullFont: Theme.fontSize
+    property int pillFont: fullFont
+    function recheckCrowding(): void {
+        // Content width scales ~linearly with font size, so pick the largest
+        // size whose scaled-up/down estimate fits. Padding doesn't scale, so
+        // the estimate is conservative, which keeps this from oscillating.
+        const total = leftRow.width + rightRow.width + 12;
+        const avail = width - 6;
+        let g = fullFont;
+        while (g > 8 && total * g / pillFont > avail)
+            g--;
+        if (g !== pillFont)
+            pillFont = g;
+    }
+    onWidthChanged: recheckCrowding()
+
     Row {
+        id: leftRow
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.leftMargin: 3
@@ -773,10 +794,23 @@ Item {
         spacing: 6
 
         Pill {
-            Workspaces { id: workspaces; screen: root.screen }
+            Workspaces {
+                id: workspaces
+                screen: root.screen
+                fontSize: root.pillFont
+                // Rename's own TextInput grabs real QML focus itself
+                // (Workspaces.qml's onVisibleChanged), so this only needs
+                // to hand focus back on close -- same as the graph pills'
+                // reclaimGraphFocus, not the root.forceActiveFocus() side
+                // of the media/calendar pattern.
+                onRenamingChanged: if (!renaming) root.refocusActivePanel()
+            }
         }
-        Submap {}
+        Submap { fontSize: root.pillFont }
     }
+
+    Connections { target: leftRow; function onWidthChanged() { root.recheckCrowding(); } }
+    Connections { target: rightRow; function onWidthChanged() { root.recheckCrowding(); } }
 
     Row {
         id: rightRow
@@ -790,11 +824,12 @@ Item {
         Loader {
             id: mediaLoader
             active: !!Players.active
-            sourceComponent: Media {}
+            sourceComponent: Media { fontSize: root.pillFont }
         }
 
         GraphPill {
             id: netPill
+            fontSize: root.pillFont
             icon: Icons.network
             title: qsTr("Network")
             compactText: root.fmtRate(root.netTotalNow)
@@ -837,6 +872,7 @@ Item {
 
         GraphPill {
             id: cpuPill
+            fontSize: root.pillFont
             icon: Icons.cpu
             title: qsTr("CPU")
             compactText: Math.round(root.last(SysmonSvc.cpuTotal)) + "%"
@@ -890,6 +926,7 @@ Item {
 
         GraphPill {
             id: memPill
+            fontSize: root.pillFont
             icon: Icons.memory
             title: qsTr("Memory")
             compactText: Math.round(root.last(SysmonSvc.memUsedPct)) + "%"
@@ -944,6 +981,7 @@ Item {
 
         GraphPill {
             id: diskPill
+            fontSize: root.pillFont
             // One disk glyph total (not one per side of the divider, like
             // memPill's mem/swap icons) -- it leads the pill like every
             // other pill's primary icon, ahead of both readings.
@@ -997,6 +1035,7 @@ Item {
 
         GraphPill {
             id: tempPill
+            fontSize: root.pillFont
             icon: Icons.temp
             title: qsTr("Temperature")
             compactText: Math.round(root.last(SysmonSvc.tempC)) + "°C"
@@ -1044,12 +1083,13 @@ Item {
         // (keybinds.lua -> bar-toggle.sh toggleGpu).
         GraphPill {
             id: gpuPill
+            fontSize: root.pillFont
             visible: SysmonSvc.gpuPresent
             icon: Icons.gpu
             // The MDI expansion-card glyph draws small in its em box --
             // bump it to sit at the same visual height as the FA icons on
             // the other pills.
-            iconPixelSize: Theme.fontSize + 7
+            iconPixelSize: root.pillFont + 7
             title: qsTr("GPU")
             compactText: root.gpuCompactText
             compactTextWidth: Math.ceil(gpuCompactMetrics.width) + 2
@@ -1110,10 +1150,11 @@ Item {
             expandWidth: root.widthFor("gpu")
         }
 
-        BatteryPill {}
+        BatteryPill { fontSize: root.pillFont }
 
         ClaudeUsagePill {
             id: claudeUsagePill
+            fontSize: root.pillFont
             onToggled: root.toggleClaudeUsagePin()
         }
 
@@ -1121,7 +1162,7 @@ Item {
             id: clockLoader
             active: true
             sourceComponent: Pill {
-                Clock { id: clockText }
+                Clock { id: clockText; fontSize: root.pillFont }
             }
         }
     }

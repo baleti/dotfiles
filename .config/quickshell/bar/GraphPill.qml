@@ -10,13 +10,16 @@ import "../components"
 Rectangle {
     id: root
 
+    // Per-bar override (Bar.qml shrinks it when the bar runs out of room).
+    property int fontSize: Theme.fontSize
+
     property string icon: ""
     // Per-pill override for the compact icon's pixel size -- some glyph sets
     // (Material Design's expansion-card, say) draw much smaller than Font
     // Awesome's inside the same em box, so a pill can bump this to match the
     // others visually. Only the primary icon; the secondary stays at
     // Theme.fontSize.
-    property real iconPixelSize: Theme.fontSize
+    property real iconPixelSize: fontSize
     property string compactText: ""
     // > 0 fixes the compact value's width (right-aligned) so widgets whose
     // text length varies with magnitude (byte rates: "8 KB/s" vs "1.2
@@ -488,7 +491,7 @@ Rectangle {
         Text {
             text: root.compactText
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: root.fontSize
             color: root.gradedColor
             // compactTextWidth pins a minimum so the pill doesn't jitter on
             // routine value changes, but content wider than it (a byte rate
@@ -497,7 +500,7 @@ Rectangle {
             // against the pill's trailing edge -- icon leads on the left
             // (see above), value trails on the right, any padding slack
             // falls in between instead of next to either one.
-            width: root.compactTextWidth > 0 ? Math.max(root.compactTextWidth, implicitWidth) : implicitWidth
+            width: root.compactTextWidth > 0 ? Math.max(root.compactTextWidth * root.fontSize / Theme.fontSize, implicitWidth) : implicitWidth
             horizontalAlignment: Text.AlignRight
             anchors.verticalCenter: parent.verticalCenter
         }
@@ -527,7 +530,7 @@ Rectangle {
             visible: root.secondaryIcon.length > 0
             text: root.secondaryIcon
             font.family: Theme.iconFontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: root.fontSize
             color: root.secondaryColor
             anchors.verticalCenter: parent.verticalCenter
         }
@@ -536,7 +539,7 @@ Rectangle {
             visible: root.secondaryText.length > 0
             text: root.secondaryText
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: root.fontSize
             color: root.secondaryColor
             anchors.verticalCenter: parent.verticalCenter
         }

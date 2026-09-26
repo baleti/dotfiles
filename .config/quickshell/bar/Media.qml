@@ -16,6 +16,8 @@ import "../services"
 Rectangle {
     id: root
 
+    property int fontSize: Theme.fontSize
+
     color: Theme.bgAlpha
     border.color: Theme.border
     border.width: 1
@@ -101,14 +103,14 @@ Rectangle {
         Text {
             text: root.hasPlayer && root.player.isPlaying ? Icons.play : Icons.pause
             font.family: Theme.iconFontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: fontSize
             color: root.hasPlayer && root.player.isPlaying ? Theme.cyan : Theme.muted
         }
 
         Text {
             text: root.trackText
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: fontSize
             color: root.hasPlayer && root.player.isPlaying ? Theme.text : Theme.muted
         }
 
@@ -116,7 +118,7 @@ Rectangle {
             visible: root.timeText.length > 0
             text: root.timeText
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize - 1
+            font.pixelSize: fontSize - 1
             color: Theme.textDim
         }
     }
