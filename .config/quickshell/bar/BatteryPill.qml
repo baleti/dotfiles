@@ -10,6 +10,9 @@ import "../services"
 Rectangle {
     id: root
 
+    // Per-bar override (Bar.qml shrinks it when the bar runs out of room).
+    property int fontSize: Theme.fontSize
+
     visible: BatterySvc.present && BatterySvc.onBattery
     implicitWidth: visible ? row.implicitWidth + Theme.pillPadH * 2 : 0
     implicitHeight: Theme.barHeight - 10
@@ -35,7 +38,7 @@ Rectangle {
 
         Text {
             font.family: Theme.iconFontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: root.fontSize
             color: root.batColor
             text: Icons.levelIcon(Icons.batteryLevels, BatterySvc.percent / 100)
         }
@@ -43,7 +46,7 @@ Rectangle {
         Text {
             text: Math.round(BatterySvc.percent) + "%"
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: root.fontSize
             color: root.batColor
         }
     }

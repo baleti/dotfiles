@@ -15,6 +15,9 @@ import "../services"
 Rectangle {
     id: root
 
+    // Per-bar override (Bar.qml shrinks it when the bar runs out of room).
+    property int fontSize: Theme.fontSize
+
     signal toggled
     readonly property alias hovered: mouseArea.containsMouse
 
@@ -128,7 +131,7 @@ Rectangle {
                     ? Math.round(modelData.session_pct) + "%"
                     : "--"
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize
+                font.pixelSize: root.fontSize
                 font.bold: true
                 // Stale (carried-forward-after-an-error) reading -- dimmed
                 // rather than hidden, since it's still the best number we
@@ -146,7 +149,7 @@ Rectangle {
             visible: !ClaudeUsageSvc.hasData
             text: "--"
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize
+            font.pixelSize: root.fontSize
             color: Theme.muted
             anchors.verticalCenter: parent.verticalCenter
         }
