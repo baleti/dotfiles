@@ -135,14 +135,15 @@ Singleton {
     }
 
     // Matches NotifLayer's real geometry exactly: PanelWindow height is
-    // screen.height - Theme.barHeight, and the card Column starts 12px into
-    // that (its anchors.topMargin) with nothing reserved below the last
-    // card. Anything more conservative here just strands an extra card on
-    // the overflow monitor that would have fit fine.
+    // screen.height - Theme.barHeight, and the card Column starts 6px into
+    // that (its anchors.topMargin, matching Bar.qml's pill spacing) with
+    // nothing reserved below the last card. Anything more conservative
+    // here just strands an extra card on the overflow monitor that would
+    // have fit fine.
     function _availableHeight(monitorName) {
         for (const s of Quickshell.screens) {
             if (s.name === monitorName)
-                return s.height - Theme.barHeight - 12;
+                return s.height - Theme.barHeight - 6;
         }
         return 600;
     }

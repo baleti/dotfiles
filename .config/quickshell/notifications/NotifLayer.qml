@@ -30,6 +30,15 @@ PanelWindow {
         top: true
         right: true
     }
+    // ExclusionMode.Ignore below means this surface doesn't respect the
+    // bar's exclusive zone on its own -- without an explicit top margin the
+    // surface's top edge sits at the real screen edge (y=0), under the bar,
+    // not below it. Shrinking implicitHeight alone (below) only trims the
+    // bottom edge; it was never enough on its own, it just went unnoticed
+    // on bigger/higher-res screens where the overlap was a thin sliver.
+    margins {
+        top: Theme.barHeight
+    }
     implicitWidth: 400
     implicitHeight: root.screen.height - Theme.barHeight
     color: "transparent"
@@ -55,7 +64,7 @@ PanelWindow {
         id: stack
         anchors.top: parent.top
         anchors.right: parent.right
-        anchors.topMargin: 12
+        anchors.topMargin: 6 // matches Bar.qml's pill spacing
         anchors.rightMargin: 12
         spacing: 8
         visible: root.cards.length > 0
