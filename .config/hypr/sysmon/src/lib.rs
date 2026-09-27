@@ -345,12 +345,20 @@ pub enum Snapshot {
     //     not auto-scaled -- see Graph.qml): sysmond grows the max to at
     //     least this tick's reading BEFORE dividing by it, every tick, so
     //     the numerator can never exceed the denominator.
-    //   - `psys_pct`/`psys_w`/`psys_limit_w`: the RAPL "platform" zone
-    //     (`intel-rapl:1`), when present -- on hardware that populates it,
-    //     covers more than just the package (confirmed 2026-09-19: ~20W
-    //     psys against ~9W package at the same instant on this laptop).
-    //     Same all-time-max-based `psys_limit_w` treatment, tracked
-    //     separately from the package's own.
+    //   - `psys_pct`/`psys_w`/`psys_limit_w`: NOT the raw RAPL "platform"
+    //     zone (`intel-rapl:1`) reading -- psys is Intel's whole-SoC
+    //     domain, DEFINED to already include the package as a subset
+    //     (confirmed 2026-09-19: ~20W psys against ~9W package at the same
+    //     instant on this laptop, i.e. psys = package + everything else,
+    //     not a separate rail). Request 2026-09-27 ("make platform read
+    //     not include cpu") wants "Platform" to read as a genuinely
+    //     separate, additive quantity instead, so sysmond subtracts:
+    //     `psys_w = (raw_psys_w - power_w).max(0.0)` -- voltage
+    //     regulators, memory controller, and other board rails, with the
+    //     package portion of the raw reading removed. Same all-time-max-
+    //     based `psys_limit_w` treatment as `power_limit_w`, tracked
+    //     against this now-exclusive quantity, separately from the
+    //     package's own.
     // (a third line, battery discharge (V x A from BAT0), was added
     // alongside these two 2026-09-19 and removed 2026-09-27 as redundant
     // once package+platform power were both already on the graph.)
