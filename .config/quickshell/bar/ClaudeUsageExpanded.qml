@@ -21,6 +21,12 @@ import "../launcher" // QueryDsl -- shared picker DSL, see query-dsl.md
 Rectangle {
     id: root
 
+    // Emitted by focusHyprWindow() once a row's window has been focused --
+    // Bar.qml owns closing the panel from this (it also has to clear
+    // claudeUsagePinned, not just this component's own `expanded`; see the
+    // comment there).
+    signal picked()
+
     property bool expanded: false
     // Set from Bar.qml (root.screen, this bar instance's own monitor) --
     // used only to find that monitor's own currently-active workspace
@@ -1195,8 +1201,11 @@ Rectangle {
         // route around an ALT+Tab/mod+Tab-can't-switch-away issue, but that
         // was a winswitch-side focus-grab interaction since fixed by
         // winswitch's own socket2 rework, so nothing depends on staying
-        // open anymore.
-        root.expanded = false;
+        // open anymore. Signal rather than `root.expanded = false` directly
+        // -- Bar.qml also has to clear claudeUsagePinned, or CTRL+ALT+c's
+        // pin-toggle desyncs from the now-false `expanded` and needs two
+        // presses to reopen (reported 2026-09-27).
+        root.picked();
     }
 
     // ---- keyboard row navigation --------------------------------------
