@@ -473,11 +473,17 @@ Item {
     // shown) appended after the per-core ones -- core lines stay
     // unlabelled/uncounted against the legend (see the comment below),
     // these two are the only entries `cpuLegend` matches by name. Already
-    // normalized (percent-of-own-PL2) server-side by sysmond, so they
-    // share the per-core lines' 0-100 axis without a second y-axis or any
-    // client-side math -- see rapl_cpu_power_monitoring memory / lib.rs's
-    // Snapshot::Cpu comment for why PL2 (not PL1) is the safe
-    // normalization ceiling.
+    // normalized server-side by sysmond as percent of the highest watt
+    // reading EVER SEEN for that zone (2026-09-27, replacing an earlier
+    // percent-of-PL2 -- PL2 is a firmware ceiling rarely approached in
+    // practice, so real draw sat low against it and read as tangled with
+    // the per-core lines down there; an auto-scaling all-time peak instead
+    // rides higher and separates from them, at the cost of the axis no
+    // longer meaning a fixed, hardware-documented ceiling -- see cpuLegend's
+    // `desc` for the number itself). Still shares the per-core lines'
+    // plain 0-100 axis without a second y-axis or any client-side math --
+    // see rapl_cpu_power_monitoring memory / lib.rs's Snapshot::Cpu comment
+    // for the normalization's safety property (can't clip either way).
     // `noFill` (2026-09-27): keeps these out of the per-core envelope fill
     // (Graph.qml's fillEnvelope maxes across every primary series, so
     // without this a power spike widened the shared grey wash under the
@@ -491,18 +497,22 @@ Item {
         { data: SysmonSvc.cpuPowerPct, color: Theme.orange, dashed: false, noFill: true, dash: [4, 3], name: qsTr("Power") },
         { data: SysmonSvc.cpuPsysPct, color: Theme.cyan, dashed: false, noFill: true, dash: [4, 3], name: qsTr("Platform") }
     ] : []
-    // `value` is the extra watts column (2026-09-19) -- the legend's own
-    // colored line plots percent-of-PL2 (see cpuPowerLines' comment), not
-    // watts, so this is the only place the actual number shows. `dash: true`
-    // (2026-09-27) swaps the legend's filled-square swatch for a dashed-line
-    // one, matching how these two actually render on the graph. `desc`
-    // (2026-09-27) is a hover-tooltip explanation (GraphPill.qml) -- neither
-    // name alone says what it actually covers.
+    // `value` is the extra watts column (2026-09-19) -- the plotted line
+    // itself is percent-of-all-time-peak-watts (see cpuPowerLines'
+    // comment), not watts, so this is the only place the actual number
+    // shows. `dash: true` (2026-09-27) swaps the legend's filled-square
+    // swatch for a dashed-line one, matching how these two actually render
+    // on the graph. `desc` (2026-09-27) is a hover-tooltip explanation
+    // (GraphPill.qml) -- neither name alone says what it actually covers,
+    // and since 2026-09-27 it also states the current auto-scaling peak
+    // (`cpuPowerLimitW`/`cpuPsysLimitW` -- unused for their old PL2-display
+    // purpose until now, see cpuPowerLines' own comment) so hovering
+    // answers "100% on this graph means what, exactly, right now".
     readonly property var cpuLegend: [
         { name: qsTr("Power"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W", dash: true,
-          desc: qsTr("CPU package power (RAPL \"package\" zone) -- cores, cache, and on-die logic only.") },
+          desc: qsTr("CPU package power (RAPL \"package\" zone) -- cores, cache, and on-die logic only. Line height is percent of the highest reading ever seen (%1 W so far), not a fixed hardware limit.").arg(SysmonSvc.cpuPowerLimitW.toFixed(1)) },
         { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W", dash: true,
-          desc: qsTr("RAPL \"psys\" zone -- power for the whole platform (package plus voltage regulators, memory controller, and other board rails), always ≥ package.") }
+          desc: qsTr("RAPL \"psys\" zone -- power for the whole platform (package plus voltage regulators, memory controller, and other board rails), always ≥ package. Line height is percent of the highest reading ever seen (%1 W so far), not a fixed hardware limit.").arg(SysmonSvc.cpuPsysLimitW.toFixed(1)) }
     ]
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
