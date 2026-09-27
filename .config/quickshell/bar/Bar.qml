@@ -389,8 +389,21 @@ Item {
         return minX;
     }
 
+    // Mirrors Graph.qml's own `_noData` (sysmon::NO_DATA in lib.rs) -- a
+    // sentinel sysmond writes into a tier for seconds it has no real sample
+    // for (startup, a downtime gap, a not-yet-primed baseline), never a
+    // genuine byte-rate/percent reading. Graph.qml already treats it as a
+    // gap for drawing; `last()`/`avgLast()` below feed the compact pill text
+    // instead (e.g. the disk pill's collapsed "B/s" readout) and previously
+    // read it as a literal -1, so two gapped series summed (disk read +
+    // write both gapped) rendered as "-2 B/s" (reported 2026-09-27).
+    readonly property real _noData: -1
+
     function last(arr: var): real {
-        return arr.length > 0 ? arr[arr.length - 1] : 0;
+        if (arr.length === 0)
+            return 0;
+        const v = arr[arr.length - 1];
+        return v === root._noData ? 0 : v;
     }
 
     // Average of the last `n` raw samples, not just the single most recent
@@ -400,14 +413,22 @@ Item {
     // /proc/vmstat sampling, ~10-35% of seconds nonzero even under real
     // swap pressure). Smoothing over a short window keeps it representative
     // of "activity right now" without hiding real activity between polls.
+    // Gap (NO_DATA) samples are excluded from both the sum and the count
+    // they're averaged over, not counted as 0 -- otherwise a window
+    // straddling a real gap would read artificially low instead of just
+    // averaging over the samples that actually exist.
     function avgLast(arr: var, n: int): real {
         if (arr.length === 0)
             return 0;
         const count = Math.min(n, arr.length);
-        let sum = 0;
-        for (let i = arr.length - count; i < arr.length; i++)
+        let sum = 0, have = 0;
+        for (let i = arr.length - count; i < arr.length; i++) {
+            if (arr[i] === root._noData)
+                continue;
             sum += arr[i];
-        return sum / count;
+            have++;
+        }
+        return have > 0 ? sum / have : 0;
     }
 
     function fmtRate(bps: real): string {
