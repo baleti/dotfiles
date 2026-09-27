@@ -683,7 +683,19 @@ Item {
                     procSnaps: SysmonSvc.procHistSnaps("gpu:" + g.name + ":vram"), procMerge: false,
                     headerFmt: v => Math.round(v) + " MB",
                 });
-            if ((g.power_pct?.length ?? 0) > 0)
+            // `power_w > 0`, not just `power_pct.length > 0` (request
+            // 2026-09-27: "show iGPU power only when it's actually reading
+            // meaningful data") -- a history array existing only proves
+            // *something* got pushed, not that it's a real reading; the
+            // live watt scalar is what the detail row below already keys
+            // off (`(g.power_w ?? 0) > 0`), so this now agrees with that
+            // standard instead of a weaker one. No behavior change on this
+            // hardware (the iGPU's `power_pct` is permanently `[]` -- see
+            // this function's own comment above -- so it was already
+            // excluded either way), but this also covers a source that
+            // pushes a placeholder history without ever having a real
+            // reading, on GPUs/drivers this doesn't apply to today.
+            if ((g.power_w ?? 0) > 0 && (g.power_pct?.length ?? 0) > 0)
                 group.push({ data: g.power_pct, dashed: false, role: "primary", name: tag + " " + qsTr("power"), procSnaps: utilSnaps });
             group.forEach(l => out.push(Object.assign(l, { color: root.gpuShadeColor(g.vendor, l.role) })));
         }
