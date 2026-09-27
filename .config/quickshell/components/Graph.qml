@@ -9,11 +9,19 @@ import "../theme"
 // Two usage modes:
 //  - single: set `series`/`color1`.
 //  - overlay (network rx/tx per interface, or one line per CPU core): set
-//    `seriesList` to [{data, color, dashed}, ...]. `dashed` no longer means
-//    a dash pattern (that read as "the line broke up" on steep spikes,
-//    2026-08-29) -- it now marks a secondary/de-emphasised series (tx,
-//    disk-write, mem-cached): same hue, drawn at a lower alpha with no
-//    fill, so it still reads as "the quieter twin" of its solid partner.
+//    `seriesList` to [{data, color, dashed, noFill, dash}, ...]. `dashed`
+//    no longer means a dash pattern (that read as "the line broke up" on
+//    steep spikes, 2026-08-29) -- it now marks a secondary/de-emphasised
+//    series (tx, disk-write, mem-cached): same hue, drawn at a lower alpha
+//    with no fill, so it still reads as "the quieter twin" of its solid
+//    partner. `noFill` (2026-09-27) independently drops a PRIMARY series
+//    out of the fill pass only (envelope or individual) while keeping its
+//    full-alpha, on-top stroke -- the CPU pill's power/platform/battery
+//    lines use this so they don't add to the grey wash under the per-core
+//    envelope. `dash` (2026-09-27) is an actual canvas setLineDash() array,
+//    opt-in per series -- safe for smooth lines like those same three
+//    power lines, still avoided for the spiky per-sample metrics that
+//    prompted `dashed` to stop doing this in the first place.
 Canvas {
     id: root
 
@@ -392,7 +400,7 @@ Canvas {
         }
     }
 
-    function strokeSeries(ctx, rawData, rawColor, lineWidth, strokeAlpha) {
+    function strokeSeries(ctx, rawData, rawColor, lineWidth, strokeAlpha, dash = []) {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
@@ -404,6 +412,11 @@ Canvas {
         const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
         ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, strokeAlpha);
         ctx.lineWidth = lineWidth;
+        // Always set explicitly (even to [], the solid default) rather than
+        // relying on the default param alone -- every call shares this one
+        // canvas context, so a dashed series drawn earlier this frame would
+        // otherwise leak its dash into the next plain stroke.
+        ctx.setLineDash(dash);
         for (const run of runs) {
             if (run.length < 2)
                 continue;
@@ -442,10 +455,17 @@ Canvas {
             // envelope and the per-core lines carry the detail. With just
             // a couple (mem used/cached) the individual fills are fine.
             if (root.fillOverlay) {
+                // `noFill` (2026-09-27, the CPU pill's power/platform/
+                // battery lines): excluded from BOTH the shared envelope's
+                // per-x max and individual per-line fills -- a line marked
+                // this way never contributes any grey area underneath,
+                // whether it's sharing the cores' envelope wash or would
+                // otherwise get its own fill in the few-series branch.
+                const fillable = primary.filter(s => !s.noFill);
                 if (many)
-                    fillEnvelope(ctx, primary, color1, 0.14);
+                    fillEnvelope(ctx, fillable, color1, 0.14);
                 else
-                    for (const s of primary)
+                    for (const s of fillable)
                         fillSeries(ctx, s.data, s.color, 0.22);
             }
 
@@ -456,8 +476,8 @@ Canvas {
             // cached/VRAM) at 0.62 alpha, not much below primary's 0.9:
             // lower still and it looked like a thinner line rather than a
             // quieter one.
-            const strokeSecondary = () => { for (const s of secondary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.62); };
-            const strokePrimary = () => { for (const s of primary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.9); };
+            const strokeSecondary = () => { for (const s of secondary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.62, s.dash ?? []); };
+            const strokePrimary = () => { for (const s of primary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.9, s.dash ?? []); };
             if (root.secondaryOnTop) {
                 strokePrimary();
                 strokeSecondary();
@@ -483,7 +503,7 @@ Canvas {
         if (root.hoveredName.length > 0) {
             for (const s of root._hitTestSeries())
                 if ((s.name ?? "") === root.hoveredName)
-                    strokeSeries(ctx, s.data, s.color, root.lineWidth * 2.2, 1.0);
+                    strokeSeries(ctx, s.data, s.color, root.lineWidth * 2.2, 1.0, s.dash ?? []);
         }
     }
 }
