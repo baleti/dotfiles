@@ -476,18 +476,29 @@ Item {
     // second y-axis or any client-side math -- see rapl_cpu_power_
     // monitoring memory / lib.rs's Snapshot::Cpu comment for why PL2 (not
     // PL1) is the safe normalization ceiling.
+    // `noFill` (2026-09-27): keeps these out of the per-core envelope fill
+    // (Graph.qml's fillEnvelope maxes across every primary series, so
+    // without this a power spike widened the shared grey wash under the
+    // cores too) -- still `dashed: false`/primary otherwise, so they keep
+    // full-alpha strokes drawn on top of (not under) the core lines. `dash`
+    // is the actual canvas dash pattern (request 2026-09-27) -- safe here
+    // since these three are smooth normalized-% lines, not the spiky
+    // per-sample metrics that made dashing unreadable elsewhere (see
+    // Graph.qml's header comment on why `dashed` itself no longer dashes).
     readonly property var cpuPowerLines: cpuPill.expanded ? [
-        { data: SysmonSvc.cpuPowerPct, color: Theme.orange, dashed: false, name: qsTr("Power") },
-        { data: SysmonSvc.cpuPsysPct, color: Theme.cyan, dashed: false, name: qsTr("Platform") },
-        { data: SysmonSvc.cpuBatteryPct, color: Theme.green, dashed: false, name: qsTr("Battery") }
+        { data: SysmonSvc.cpuPowerPct, color: Theme.orange, dashed: false, noFill: true, dash: [4, 3], name: qsTr("Power") },
+        { data: SysmonSvc.cpuPsysPct, color: Theme.cyan, dashed: false, noFill: true, dash: [4, 3], name: qsTr("Platform") },
+        { data: SysmonSvc.cpuBatteryPct, color: Theme.green, dashed: false, noFill: true, dash: [4, 3], name: qsTr("Battery") }
     ] : []
     // `value` is the extra watts column (2026-09-19) -- the legend's own
     // colored line plots percent-of-PL2 (see cpuPowerLines' comment), not
-    // watts, so this is the only place the actual number shows.
+    // watts, so this is the only place the actual number shows. `dash: true`
+    // (2026-09-27) swaps the legend's filled-square swatch for a dashed-line
+    // one, matching how these three actually render on the graph.
     readonly property var cpuLegend: [
-        { name: qsTr("Power"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W" },
-        { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W" },
-        { name: qsTr("Battery"), color: Theme.green, value: SysmonSvc.cpuBatteryW.toFixed(1) + " W" }
+        { name: qsTr("Power"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W", dash: true },
+        { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W", dash: true },
+        { name: qsTr("Battery"), color: Theme.green, value: SysmonSvc.cpuBatteryW.toFixed(1) + " W", dash: true }
     ]
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
