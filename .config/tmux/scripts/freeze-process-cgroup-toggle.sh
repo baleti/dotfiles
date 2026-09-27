@@ -57,6 +57,20 @@ else
 fi
 
 if [ "$current" = "1" ]; then
+	# Keystrokes typed while frozen don't vanish - they queue up in the
+	# pty's own kernel input buffer (nobody's reading them, since the
+	# process isn't scheduled at all) and get delivered all at once,
+	# instantly, the moment it resumes reading - confirmed live, including
+	# a stray Ctrl-C landing and firing right on thaw. Flush that queue
+	# (tcflush/TCIFLUSH - discards received-but-unread input) right before
+	# unfreezing, so it resumes into a clean prompt instead.
+	pane_tty=$(tmux display-message -p -t "$pane_id" "#{pane_tty}")
+	python3 -c "
+import sys, os, termios
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+termios.tcflush(fd, termios.TCIFLUSH)
+os.close(fd)
+" "$pane_tty"
 	echo 0 > "$dir/cgroup.freeze"
 	tmux set-option -p -t "$pane_id" @frozen 0
 else
