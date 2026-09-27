@@ -328,7 +328,7 @@ pub enum Snapshot {
     // `total` is the aggregate line (unchanged shape for old clients);
     // `cores` is one history per logical CPU, for a stacked per-core view.
     //
-    // Three power lines added 2026-09-19, same split as GPU's util_pct/
+    // Two power lines added 2026-09-19, same split as GPU's util_pct/
     // vram_pct/power_pct (a history percent array) + temp_c/power_w/...
     // (point-in-time detail scalars, always sent fresh whether full or
     // delta -- never diffed/streamed like the history arrays):
@@ -345,15 +345,9 @@ pub enum Snapshot {
     //     psys against ~9W package at the same instant on this laptop).
     //     Has its own, separate PL2 (its own `constraint_1`), not the
     //     package's.
-    //   - `battery_pct`/`battery_w`: battery discharge power (V x A from
-    //     BAT0), the only true whole-machine figure available on hardware
-    //     with no wall/PSU telemetry -- but only while actually running on
-    //     battery; 0 while charging/full/on AC (not NO_DATA -- see lib.rs's
-    //     own comment on NO_DATA only ever being inserted wholesale via
-    //     push_gap, never blended into push_raw's per-tier averaging).
-    //     `battery_pct` normalizes against `psys_limit_w` as a stand-in
-    //     "whole system" ceiling, since there's no natural limit for a
-    //     battery-discharge figure the way RAPL zones have one.
+    // (a third line, battery discharge (V x A from BAT0), was added
+    // alongside these two 2026-09-19 and removed 2026-09-27 as redundant
+    // once package+platform power were both already on the graph.)
     // All `#[serde(default)]` so an older client/daemon pairing just sees
     // empty/zero power lines rather than failing to parse.
     Cpu {
@@ -373,10 +367,6 @@ pub enum Snapshot {
         psys_w: f64,
         #[serde(default)]
         psys_limit_w: f64,
-        #[serde(default)]
-        battery_pct: Vec<f64>,
-        #[serde(default)]
-        battery_w: f64,
     },
     Temp { #[serde(default = "default_full")] full: bool, celsius: Vec<f64> },
     // `used_pct` excludes reclaimable cache (same calc as before, matches
