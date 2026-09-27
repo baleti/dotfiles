@@ -60,6 +60,46 @@ PanelWindow {
         height: root.cards.length > 0 ? stack.height : 0
     }
 
+    // root.cards is a fresh JS array every time NotifSvc.pages recomputes --
+    // including on a hover-only change (hover-start/-end just edit one
+    // notification's expiry and rewrite state.json). Binding the Repeater
+    // straight to that array made it treat every recompute as a brand-new
+    // model and tear down + recreate *all* cards, replaying each one's
+    // fade-in on any single card's hover. stackModel is kept in sync by id
+    // (insert/move/set, mirroring NotifSvc._sync()) so a hover elsewhere
+    // only updates that one row's data instead of rebuilding every delegate.
+    ListModel {
+        id: stackModel
+        dynamicRoles: true
+    }
+
+    function _syncStack() {
+        const wanted = root.cards;
+        const wantedIds = wanted.map(n => n.id);
+
+        for (let i = stackModel.count - 1; i >= 0; i--) {
+            if (wantedIds.indexOf(stackModel.get(i).n.id) < 0)
+                stackModel.remove(i);
+        }
+        for (let j = 0; j < wanted.length; j++) {
+            const n = wanted[j];
+            let at = -1;
+            for (let k = 0; k < stackModel.count; k++) {
+                if (stackModel.get(k).n.id === n.id) { at = k; break; }
+            }
+            if (at < 0) {
+                stackModel.insert(j, { n: n });
+            } else {
+                if (at !== j)
+                    stackModel.move(at, j, 1);
+                if (JSON.stringify(stackModel.get(j).n) !== JSON.stringify(n))
+                    stackModel.set(j, { n: n });
+            }
+        }
+    }
+    onCardsChanged: root._syncStack()
+    Component.onCompleted: root._syncStack()
+
     Column {
         id: stack
         anchors.top: parent.top
@@ -72,12 +112,13 @@ PanelWindow {
         Repeater {
             // Newest-first; the newest card sits at the top, closest to the
             // screen edge, same as notifyd's old reflow(). Which ids land
-            // here (and on which monitor) comes from NotifSvc.cardsFor().
-            model: root.cards
+            // here (and on which monitor) comes from NotifSvc.cardsFor(),
+            // synced into stackModel above.
+            model: stackModel
 
             NotifCard {
-                required property var modelData
-                notification: modelData
+                required property var model
+                notification: model.n
                 cardWidth: 360
             }
         }
