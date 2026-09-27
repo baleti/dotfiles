@@ -109,7 +109,7 @@ Item {
             calendarExpanded.handleKey(event);
         } else if (claudeUsageExpanded.expanded) {
             if (event.key === Qt.Key_Escape) {
-                claudeUsageExpanded.expanded = false;
+                root.closeClaudeUsagePanel();
                 event.accepted = true;
             } else if (event.key === Qt.Key_Slash) {
                 // Real keyboard focus moves into the search box itself here
@@ -1320,8 +1320,20 @@ Item {
         }
     }
 
+    // Shared by Escape and ClaudeUsageExpanded.picked() (row click/Enter) --
+    // both have to clear claudeUsagePinned as well as `expanded`, or a
+    // later CTRL+ALT+c toggle desyncs from the pin flag and needs two
+    // presses to reopen (reported 2026-09-27).
+    function closeClaudeUsagePanel(): void {
+        claudeUsageHoverOutTimer.stop();
+        claudeUsagePinned = false;
+        claudeUsageExpanded.expanded = false;
+    }
+
     ClaudeUsageExpanded {
         id: claudeUsageExpanded
+
+        onPicked: root.closeClaudeUsagePanel()
 
         screen: root.screen
         panelWidth: root.widthFor("claudeUsage")
