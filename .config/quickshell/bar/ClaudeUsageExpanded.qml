@@ -248,6 +248,8 @@ Rectangle {
         "busy": Theme.red,
         "waiting": Theme.orange,
         "idle": Theme.muted,
+        "frozen": Theme.cyan,
+        "stopped": Theme.textDim,
     })
     function statusColor(status) {
         return root.statusColors[status] || Theme.textDim;
@@ -260,6 +262,8 @@ Rectangle {
         "busy": qsTr("busy"),
         "waiting": qsTr("wait"),
         "idle": qsTr("idle"),
+        "frozen": qsTr("froz"),
+        "stopped": qsTr("stop"),
     })
     function statusLabel(status) {
         return root.statusLabels[status] || status || "?";
