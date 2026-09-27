@@ -79,6 +79,31 @@ if [[ ! -s "$tmp" ]]; then
         done
     fi
 fi
+
+# A non-empty read can still be the wrong type: browsers offering an image
+# copy (e.g. Facebook's "Copy image") also offer text/html / text/x-moz-url
+# sidecar types for pasting into rich text editors, and wl-paste --watch's
+# own inference sometimes grabs one of those sidecars instead of image/png -
+# text/x-moz-url is UTF-16, so this stored null-interleaved garbled bytes in
+# place of the image (caught live 2026-09-27, no image/png entry at all).
+# Gate on "not already image/*", not on the sidecar looking text-ish: file(1)
+# calls this particular UTF-16 garbage application/octet-stream (embedded
+# NULs read as binary), not text/*, so a text/* gate missed it entirely -
+# and our own wl-copy reassert below then re-served that same
+# application/octet-stream guess as the clipboard's only type, stomping
+# Brave's real offer (caught live: GIMP paste failing right after).
+if [[ -s "$tmp" ]] && [[ "$(file -b --mime-type "$tmp")" != image/* ]]; then
+    types=${types:-$(timeout 2 wl-paste --list-types 2>/dev/null)}
+    if grep -qx 'image/png' <<<"$types"; then
+        : > "$tmp"
+        for _ in 1 2 3 4 5 6; do
+            timeout 15 wl-paste -t image/png > "$tmp" 2>/dev/null
+            [[ -s "$tmp" ]] && break
+            sleep 0.5
+        done
+    fi
+fi
+
 if [[ ! -s "$tmp" ]]; then
     exit 0
 fi
