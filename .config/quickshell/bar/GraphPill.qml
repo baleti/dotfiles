@@ -1431,6 +1431,18 @@ Rectangle {
     // sitting directly on top of the pointer and blocking it. `parent:
     // root` for the same reason as `hoverTip` below -- escapes
     // `expandPanel`'s `clip: true`.
+    //
+    // BUG FIXED 2026-09-27 (still reported "on the side" after the first
+    // cursor-tracking fix): this used to clamp x/y against `root.width`/
+    // `root.height` -- but `root` is the whole pill, sized to just the
+    // COMPACT display (`width: implicitWidth`, a line of icon+text tens of
+    // px wide), not the expanded panel (`expandPanel`, its own much wider
+    // child with its own `width: expandWidth`). Clamping into root's tiny
+    // nominal size forced the tooltip back near root's origin regardless
+    // of where the legend row (deep inside expandPanel) or the cursor
+    // actually were. `hoverTip` right below never had this bug -- its own
+    // comment already says "no left-flip and no right-edge clamp", which
+    // this now matches.
     Rectangle {
         id: legendTip
         parent: root
@@ -1438,7 +1450,7 @@ Rectangle {
         z: 100
         width: Math.min(240, legendTipText.implicitWidth + 16)
         height: legendTipText.implicitHeight + 12
-        x: Math.max(4, Math.min(root._legendHoverPos.x - width / 2, root.width - width - 4))
+        x: root._legendHoverPos.x - width / 2
         y: root._legendHoverPos.y - height - 10
         color: Theme.bg
         border.color: Theme.border
