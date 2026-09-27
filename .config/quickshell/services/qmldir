@@ -16,3 +16,4 @@ singleton ClipboardPickerState 1.0 ClipboardPickerState.qml
 singleton ShottyState 1.0 ShottyState.qml
 singleton VolumeOsdSvc 1.0 VolumeOsdSvc.qml
 singleton HyprGaps 1.0 HyprGaps.qml
+singleton HyprDecoration 1.0 HyprDecoration.qml
