@@ -20,6 +20,7 @@ Rectangle {
 
     required property var notification
     property real cardWidth: 360
+    property real cornerRadius: Theme.rounding
 
     readonly property int urgency: notification.urgency ?? 1
     readonly property bool critical: urgency === 2
@@ -69,7 +70,7 @@ Rectangle {
             bottom = buttons.y + buttons.height;
         return Math.max(bottom + 12, icon.y + icon.height + 12);
     }
-    radius: Theme.rounding
+    radius: root.cornerRadius
     color: root.critical ? Qt.rgba(0.11, 0.06, 0.06, 0.94) : Theme.bgAlpha
     border.width: 2
     border.color: root.critical ? Theme.red : (root.low ? Theme.muted : Theme.cyan)

@@ -100,16 +100,34 @@ PanelWindow {
     onCardsChanged: root._syncStack()
     Component.onCompleted: root._syncStack()
 
+    // How much further in than a bare window edge the card stack sits --
+    // purely a notifications-only aesthetic nudge, but it also feeds
+    // cardRadius below (see there).
+    readonly property int extraInset: 6
+    // Two offsets stacked, both in the literal AutoCAD sense (curve
+    // offset by a distance d moves a straight edge by d and changes an
+    // arc's radius by d):
+    //  1. HyprDecoration.outerRadius is a window's own corner curve
+    //     offset OUTWARD from the bare `rounding` config value by the
+    //     border thickness (Hyprland draws the border outside the content
+    //     rect -- see that property's own comment).
+    //  2. The card sits a further `extraInset` INWARD from where a
+    //     window's edge would be (see topMargin/rightMargin below), so
+    //     its corner is that same curve offset inward by extraInset,
+    //     which shrinks the radius by that same amount.
+    // Skipping either term made the corner numerically-adjacent but
+    // visually wrong: outerRadius alone (no step 2) looked bigger than a
+    // window's despite the card sitting further inside the corner; bare
+    // `rounding` minus extraInset (no step 1) undershot the border term
+    // and came out too tight.
+    readonly property real cardRadius: Math.max(0, HyprDecoration.outerRadius - root.extraInset)
+
     Column {
         id: stack
         anchors.top: parent.top
         anchors.right: parent.right
-        // A few extra px past the bare window gap -- pulls the cards in
-        // from the corner a bit further than a tiled window would sit,
-        // purely a notifications-only aesthetic nudge (not applied to
-        // Bar.qml/its popup panels).
-        anchors.topMargin: HyprGaps.top + 6
-        anchors.rightMargin: HyprGaps.right + 6
+        anchors.topMargin: HyprGaps.top + root.extraInset
+        anchors.rightMargin: HyprGaps.right + root.extraInset
         spacing: 8
         visible: root.cards.length > 0
 
@@ -124,6 +142,7 @@ PanelWindow {
                 required property var model
                 notification: model.n
                 cardWidth: 360
+                cornerRadius: root.cardRadius
             }
         }
     }
