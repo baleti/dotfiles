@@ -495,10 +495,14 @@ Item {
     // colored line plots percent-of-PL2 (see cpuPowerLines' comment), not
     // watts, so this is the only place the actual number shows. `dash: true`
     // (2026-09-27) swaps the legend's filled-square swatch for a dashed-line
-    // one, matching how these two actually render on the graph.
+    // one, matching how these two actually render on the graph. `desc`
+    // (2026-09-27) is a hover-tooltip explanation (GraphPill.qml) -- neither
+    // name alone says what it actually covers.
     readonly property var cpuLegend: [
-        { name: qsTr("Power"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W", dash: true },
-        { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W", dash: true }
+        { name: qsTr("Power"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W", dash: true,
+          desc: qsTr("CPU package power (RAPL \"package\" zone) -- cores, cache, and on-die logic only.") },
+        { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W", dash: true,
+          desc: qsTr("RAPL \"psys\" zone -- power for the whole platform (package plus voltage regulators, memory controller, and other board rails), always ≥ package.") }
     ]
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
@@ -624,7 +628,17 @@ Item {
     // both the graph series and the legend derive from, so their colours
     // can't drift apart. Every line is labelled "<tag> <metric>" in full.
     // The iGPU's "memory" is shared system RAM (no dedicated VRAM), and it
-    // has no board-power line -- CometLake exposes no RAPL GPU domain.
+    // has no power line -- confirmed 2026-09-27 (request: "i dont see igpu
+    // power graph, are we unable to access it") that this is a genuine
+    // hardware gap, not a bug: i915's fdinfo exposes no wattage field at
+    // all, and this Alder Lake iGPU has no separate RAPL "uncore"/GPU
+    // energy domain the way the CPU package/psys zones do (see
+    // rapl_cpu_power_monitoring memory). `intel_gpu_loop` (sysmond.rs)
+    // simply never touches `GpuHist::power` for an intel entry, so
+    // `g.power_pct` stays permanently empty and the `if
+    // (g.power_pct?.length ?? 0) > 0` gate below already omits the line/
+    // legend/detail-row -- nothing left to "remove", it was never wired up
+    // because there's nothing to read.
     readonly property var gpuLines: {
         const out = [];
         for (const g of SysmonSvc.gpuList) {
