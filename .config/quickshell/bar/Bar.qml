@@ -208,8 +208,12 @@ Item {
 
     // Shared Y for every panel -- all their trigger pills sit in the same
     // row at the same height, and every popup panel now stays on that one
-    // row too (see below), so there's only ever this one Y.
-    readonly property real panelY: rightRow.y + (Theme.barHeight - 10) + 6
+    // row too (see below), so there's only ever this one Y. Sits exactly
+    // HyprGaps.top below the bar's own reserved exclusiveZone, same as a
+    // real tiled window's top edge below the bar (they used to disagree --
+    // panels sat almost flush against the bar while windows got the full
+    // gaps_out gap).
+    readonly property real panelY: Theme.barHeight + HyprGaps.top
 
     // Hard ceiling on how tall a popup panel may render: shell.qml sizes the
     // layer-shell surface to the full monitor height, so a panel can grow
@@ -789,7 +793,7 @@ Item {
         id: leftRow
         anchors.left: parent.left
         anchors.top: parent.top
-        anchors.leftMargin: 3
+        anchors.leftMargin: HyprGaps.left
         anchors.topMargin: root.pillTopMargin
         spacing: 6
 
@@ -816,7 +820,7 @@ Item {
         id: rightRow
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.rightMargin: 3
+        anchors.rightMargin: HyprGaps.right
         anchors.topMargin: root.pillTopMargin
         spacing: 6
 
