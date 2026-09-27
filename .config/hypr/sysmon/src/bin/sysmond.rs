@@ -2430,10 +2430,23 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
             .as_ref()
             .map(|p| sample_rapl_zone(p, rapl_pkg_max_range, &mut prev_rapl_pkg, now))
             .unwrap_or(0.0);
-        let psys_w = rapl_psys_path
+        let psys_raw_w = rapl_psys_path
             .as_ref()
             .map(|p| sample_rapl_zone(p, rapl_psys_max_range, &mut prev_rapl_psys, now))
             .unwrap_or(0.0);
+        // psys is Intel's whole-SoC RAPL domain, DEFINED to already include
+        // the package domain (`power_w` above) as a subset -- request
+        // 2026-09-27 ("make platform read not include cpu") wants the
+        // "Platform" line to be a genuinely separate, additive quantity
+        // (voltage regulators, memory controller, other board rails) that
+        // reads alongside "CPU" rather than always containing it. `.max
+        // (0.0)`: the two zones are independent counters sampled a few
+        // instructions apart, so a momentary read where the raw psys
+        // sample undershoots this tick's package sample (should be rare,
+        // psys has never read below package here) subtracts to a tiny
+        // negative rather than a real platform-only draw -- floor it
+        // instead of reporting nonsense.
+        let psys_w = (psys_raw_w - power_w).max(0.0);
 
         let current = read_all_iface_bytes();
         let mut rates: Vec<(String, f64, f64)> = Vec::with_capacity(current.len());

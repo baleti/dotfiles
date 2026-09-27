@@ -196,9 +196,13 @@ QtObject {
     // legend readout); `*LimitW`, DESPITE THE NAME (kept for wire
     // compatibility with the old PL2 meaning), is now that same all-time
     // peak -- what `*Pct` is actually measured against, surfaced in
-    // Bar.qml's cpuLegend `desc` tooltip. psys ("platform") sits at a flat
-    // 0 line wherever the underlying source isn't available -- see
-    // rapl_cpu_power_monitoring memory / lib.rs's Snapshot::Cpu comment.
+    // Bar.qml's cpuLegend `desc` tooltip. `cpuPsysW`/`cpuPsysPct` are NOT
+    // the raw psys zone (2026-09-27, "make platform read not include cpu")
+    // -- sysmond subtracts `power_w` out server-side first, so this is
+    // "platform minus CPU package", additive with `cpuPowerW` rather than
+    // inclusive of it. Sits at a flat 0 line wherever the underlying
+    // source isn't available -- see rapl_cpu_power_monitoring memory /
+    // lib.rs's Snapshot::Cpu comment.
     readonly property list<real> cpuPowerPct: cpuSock.data.power_pct ?? []
     readonly property real cpuPowerW: cpuSock.data.power_w ?? 0
     readonly property real cpuPowerLimitW: cpuSock.data.power_limit_w ?? 0
