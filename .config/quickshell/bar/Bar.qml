@@ -495,15 +495,22 @@ Item {
     // unlabelled/uncounted against the legend (see the comment below),
     // these two are the only entries `cpuLegend` matches by name. Already
     // normalized server-side by sysmond as percent of the highest watt
-    // reading EVER SEEN for that zone (2026-09-27, replacing an earlier
-    // percent-of-PL2 -- PL2 is a firmware ceiling rarely approached in
-    // practice, so real draw sat low against it and read as tangled with
-    // the per-core lines down there; an auto-scaling all-time peak instead
-    // rides higher and separates from them, at the cost of the axis no
-    // longer meaning a fixed, hardware-documented ceiling -- see cpuLegend's
-    // `desc` for the number itself). Still shares the per-core lines'
-    // plain 0-100 axis without a second y-axis or any client-side math --
-    // see rapl_cpu_power_monitoring memory / lib.rs's Snapshot::Cpu comment
+    // reading EVER SEEN, SHARED between both zones -- not each its own
+    // (2026-09-27, replacing an earlier percent-of-PL2 -- PL2 is a
+    // firmware ceiling rarely approached in practice, so real draw sat
+    // low against it and read as tangled with the per-core lines down
+    // there; an auto-scaling all-time peak instead rides higher and
+    // separates from them). A SHARED ceiling rather than each zone's own
+    // separate one (also 2026-09-27, fixing "platform graph line is
+    // incorrect, its at 25W but reading is only about 10W") -- two
+    // independent ceilings made a given line height mean a different
+    // number of watts depending which line you looked at, so the CPU
+    // pill's `rightAxisFormatter` column could only ever be correct for
+    // one of the two lines at a time; now either line's height reads
+    // correctly off it, and whichever zone's own peak is lower just never
+    // visually reaches 100%. Still shares the per-core lines' plain 0-100
+    // axis without a second y-axis or any client-side math -- see
+    // rapl_cpu_power_monitoring memory / lib.rs's Snapshot::Cpu comment
     // for the normalization's safety property (can't clip either way).
     // `noFill` (2026-09-27): keeps these out of the per-core envelope fill
     // (Graph.qml's fillEnvelope maxes across every primary series, so
@@ -988,15 +995,21 @@ Item {
             yAxisFormatter: v => Math.round(v) + "%"
             // Second axis column (request 2026-09-27: "second column
             // besides percentages showing actual wattage ... scaled to
-            // maximum readings ever") -- CPU's watts at this same fraction
-            // of its own all-time-max (cpuPowerLimitW, see cpuPowerLines'
-            // comment on why there's no single shared scale to reuse
-            // yAxisFormatter's maxValue-multiply approach for). CPU only,
-            // not "CPU/Platform" (request 2026-09-27: "don't put two
-            // figures... just show 11W") -- CPU is the pill's primary
-            // line (first in the legend, first in cpuPowerLines' draw
-            // order); Platform's current watts are still visible via its
-            // own legend row/tooltip below, just not mirrored onto this
+            // maximum readings ever") -- watts at this same fraction of
+            // the shared CPU/Platform ceiling (cpuPowerLimitW ==
+            // cpuPsysLimitW now, see cpuPowerLines' own comment on why
+            // sysmond normalizes both lines against the SAME max rather
+            // than each its own -- that mismatch was exactly what made an
+            // earlier, per-zone-max version of this axis misleadingly
+            // wrong for whichever line it wasn't currently reading off of:
+            // "platform graph line is incorrect, its at 25W but reading is
+            // only about 10W"). Reads correctly for EITHER line now.
+            // Shows CPU's own reading specifically, not "CPU/Platform"
+            // (request 2026-09-27: "don't put two figures... just show
+            // 11W") -- CPU is the pill's primary line (first in the
+            // legend, first in cpuPowerLines' draw order); Platform's
+            // current watts are still visible via its own legend row/
+            // tooltip below, just not mirrored onto this
             // axis too.
             rightAxisFormatter: f => Math.round(f * SysmonSvc.cpuPowerLimitW) + "W"
             procHistSnaps: SysmonSvc.procHistSnaps("cpu")
