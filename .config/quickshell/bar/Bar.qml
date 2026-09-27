@@ -520,23 +520,27 @@ Item {
     ] : []
     // `value` is the extra watts column (2026-09-19) -- the plotted line
     // itself is percent-of-all-time-peak-watts (see cpuPowerLines'
-    // comment), not watts, so this is the only place the actual number
-    // shows. `dash: true` (2026-09-27) swaps the legend's filled-square
-    // swatch for a dashed-line one, matching how these two actually render
-    // on the graph. `desc` (2026-09-27, shortened same day per request
-    // "shorten the tooltips" -- the full backstory of the PL2/all-time-max
-    // and psys/CPU-subtraction changes lives in this file's git history
-    // and the rapl_cpu_power_monitoring memory, not in the tooltip itself)
-    // is a one-line hover explanation (GraphPill.qml). "Power" renamed to
+    // comment), not watts, so this was the only place the actual number
+    // showed until the CPU pill's `rightAxisFormatter` gave the graph its
+    // own watts column (2026-09-27). `dash: true` (2026-09-27) swaps the
+    // legend's filled-square swatch for a dashed-line one, matching how
+    // these two actually render on the graph. `desc` is a one-line hover
+    // explanation (GraphPill.qml) -- just what each line physically is,
+    // not the scaling mechanics (dropped "% of highest ever seen (N W)"
+    // once the right-axis column started showing that same figure
+    // directly, per request 2026-09-27: "remove from tooltip... just show
+    // a second column"; the full PL2/all-time-max/psys-subtraction
+    // backstory lives in this file's git history and the
+    // rapl_cpu_power_monitoring memory either way). "Power" renamed to
     // "CPU" (request 2026-09-27) to read as a matching pair with
     // "Platform"; per that same request, sysmond now subtracts CPU's own
     // reading out of the raw psys sample server-side, so the two are
     // genuinely separate/additive rather than Platform including CPU.
     readonly property var cpuLegend: [
         { name: qsTr("CPU"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W", dash: true,
-          desc: qsTr("Package power (cores, cache). % of highest ever seen (%1 W).").arg(SysmonSvc.cpuPowerLimitW.toFixed(1)) },
+          desc: qsTr("Package power (cores, cache).") },
         { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W", dash: true,
-          desc: qsTr("Rest of the board (VRMs, RAM ctrl) -- separate from CPU. % of highest ever seen (%1 W).").arg(SysmonSvc.cpuPsysLimitW.toFixed(1)) }
+          desc: qsTr("Rest of the board (VRMs, RAM ctrl) -- separate from CPU.") }
     ]
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
@@ -982,6 +986,16 @@ Item {
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             yAxisFormatter: v => Math.round(v) + "%"
+            // Second axis column (request 2026-09-27: "second column
+            // besides percentages showing actual wattage ... scaled to
+            // maximum readings ever") -- CPU's and Platform's watts at
+            // this same fraction of THEIR OWN respective all-time-max
+            // (cpuPowerLimitW/cpuPsysLimitW, see cpuPowerLines' comment on
+            // why there's no single shared scale to reuse yAxisFormatter's
+            // maxValue-multiply approach for). Order matches the legend's
+            // (CPU first, Platform second) and cpuPowerLines' own draw
+            // order.
+            rightAxisFormatter: f => Math.round(f * SysmonSvc.cpuPowerLimitW) + "/" + Math.round(f * SysmonSvc.cpuPsysLimitW) + "W"
             procHistSnaps: SysmonSvc.procHistSnaps("cpu")
             procHistValueFmt: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes

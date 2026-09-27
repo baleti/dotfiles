@@ -75,6 +75,17 @@ Rectangle {
     // string for net/disk, "N°C" for temperature).
     property var yAxisFormatter: v => Math.round(v)
     readonly property var gridFractions: [0, 0.25, 0.5, 0.75, 1.0]
+    // Optional second axis column, opposite the percent one (request
+    // 2026-09-27, CPU pill: "second column ... showing actual wattage
+    // figures scaled to maximum readings ever"). null (default, every
+    // other pill) means no column at all -- takes the SAME 0..1 fraction
+    // the left axis's `gridFractions` already uses, not a raw value, since
+    // the CPU pill's two power lines each auto-scale against their OWN
+    // independently-tracked all-time-max (see cpuPowerLines' comment) --
+    // there's no single shared "maxValue" a formatter here could multiply
+    // by the way `yAxisFormatter` does; the fraction lets Bar.qml apply
+    // each line's own max itself.
+    property var rightAxisFormatter: null
 
     // [{name, color}] -- shown under the graph when non-empty. An entry may
     // also set `desc` (2026-09-27, CPU pill's Power/Platform rows) -- plain
@@ -667,6 +678,7 @@ Rectangle {
                 Graph {
                     id: graph
                     width: parent.width - yAxis.width - parent.spacing
+                        - (rightAxis.visible ? rightAxis.width + parent.spacing : 0)
                     height: parent.height
                     series: root.mode === "single" ? root.series : []
                     seriesList: root.mode === "overlay" ? root.seriesList : []
@@ -689,6 +701,40 @@ Rectangle {
                         height: graph.height
                         color: Theme.text
                         opacity: 0.28
+                    }
+                }
+
+                // Right axis (see `rightAxisFormatter`'s own comment) --
+                // same layout recipe as `yAxis` (label per grid fraction,
+                // width sized off the 100% row, its own widest), mirrored
+                // to the graph's other side. Entirely absent -- not just
+                // empty -- when unset, so every other pill's graph keeps
+                // its full width; Row skips invisible children in layout.
+                Item {
+                    id: rightAxis
+                    visible: !!root.rightAxisFormatter
+                    width: visible ? Math.max(30, rightAxisMetrics.width + 6) : 0
+                    height: parent.height
+
+                    TextMetrics {
+                        id: rightAxisMetrics
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 4
+                        text: root.rightAxisFormatter ? root.rightAxisFormatter(1.0) : ""
+                    }
+
+                    Repeater {
+                        model: root.rightAxisFormatter ? root.gridFractions : []
+
+                        Text {
+                            required property real modelData
+                            y: (1 - modelData) * (rightAxis.height - implicitHeight)
+                            anchors.left: rightAxis.left
+                            text: root.rightAxisFormatter(modelData)
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 4
+                        }
                     }
                 }
             }
