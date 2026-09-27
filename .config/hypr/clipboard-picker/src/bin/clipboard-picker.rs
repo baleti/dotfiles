@@ -18,7 +18,22 @@
 //!   texts <id>...    full decoded text for ids whose `list` preview
 //!                    cliphist itself truncated -- one `{id,text}` NDJSON
 //!                    line per id, streamed
-//!   activate <id>    decode `<id>` and push it to the clipboard (wl-copy)
+//!   activate <id>    push `<id>` to the clipboard. If cliphist-store-logged.sh
+//!                    captured a multi-format bundle for it (state dir's
+//!                    formats-index -> formats/<hash>/manifest), serves every
+//!                    retained representation at once via wl-clipboard-rs's
+//!                    copy_multi - the same "keep everything, let the pasting
+//!                    app pick" approach KDE's Klipper uses (its
+//!                    historymodel.cpp/updateclipboardjob.cpp persist every
+//!                    offered format, not just one). Falls back to the old
+//!                    single-representation wl-copy for entries with no
+//!                    bundle (pre-existing entries, or plain single-format
+//!                    copies).
+//!   reassert-bundle <hash>
+//!                    same copy_multi serving, keyed by content hash instead
+//!                    of cliphist id - used by cliphist-store-logged.sh in
+//!                    place of `wl-copy` to re-assert a fresh copy's full
+//!                    bundle after the source app may have closed.
 
 use std::collections::HashMap;
 use std::fs;
@@ -31,6 +46,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gdk_pixbuf::prelude::*;
 use gdk_pixbuf::{InterpType, Pixbuf, PixbufLoader};
 use serde_json::json;
+use wl_clipboard_rs::copy::{MimeSource, MimeType, Options as CopyOptions, Source as CopySource};
 
 use clipboard_picker::picker::{self, Entry};
 
@@ -166,6 +182,89 @@ fn decode(id: &str) -> Vec<u8> {
         .map(|o| o.stdout)
         .unwrap_or_default();
     resolve_overflow(raw)
+}
+
+/// id -> bundle hash, from cliphist-store-logged.sh's `formats-index` (append-
+/// only, one line per store). An id can appear more than once across a
+/// dedup-driven re-store (cliphist itself issues a fresh id but keeps the
+/// same content hash, so the same bundle dir gets reused) - keep the last
+/// line per id, same "later wins" contract as reading `sizes` elsewhere.
+fn formats_index() -> HashMap<String, String> {
+    let Ok(text) = fs::read_to_string(cliphist_state_dir().join("formats-index")) else {
+        return HashMap::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let (id, hash) = line.split_once('\t')?;
+            Some((id.to_string(), hash.to_string()))
+        })
+        .collect()
+}
+
+/// Every representation cliphist-store-logged.sh managed to fetch for a
+/// bundle, as `wl-clipboard-rs` MimeSources ready for `copy_multi` - one
+/// retained per offered MIME type, mirroring what KDE's Klipper keeps per
+/// history entry rather than the single blob cliphist itself is limited to.
+fn bundle_sources(hash: &str) -> Vec<MimeSource> {
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Vec::new();
+    }
+    let dir = cliphist_state_dir().join("formats").join(hash);
+    let Ok(manifest) = fs::read_to_string(dir.join("manifest")) else {
+        return Vec::new();
+    };
+    manifest
+        .lines()
+        .filter_map(|line| {
+            let (file, mime) = line.split_once('\t')?;
+            let bytes = fs::read(dir.join(file)).ok()?;
+            Some(MimeSource { source: CopySource::Bytes(bytes.into()), mime_type: MimeType::Specific(mime.to_string()) })
+        })
+        .collect()
+}
+
+/// Offers every source at once and keeps serving paste requests until some
+/// other application takes over the clipboard - the multi-type equivalent of
+/// how `wl-copy` itself daemonizes (its own crate's documented pattern:
+/// prepare in the foreground, fork, serve only in the child). Must run
+/// before any GTK/GLib init in this process; none of the callers here do.
+fn daemonize_and_serve(sources: Vec<MimeSource>) {
+    if sources.is_empty() {
+        return;
+    }
+    let mut opts = CopyOptions::new();
+    opts.foreground(true);
+    let prepared = match opts.prepare_copy_multi(sources) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{PROGRAM_NAME}: prepare_copy_multi failed: {e}");
+            return;
+        }
+    };
+    match unsafe { libc::fork() } {
+        -1 => eprintln!("{PROGRAM_NAME}: fork failed"),
+        0 => {
+            // Detach from the caller's session so serving outlives it, same
+            // reason cliphist-store-logged.sh closes its flock fd before
+            // spawning the old wl-copy daemon.
+            unsafe {
+                libc::setsid();
+            }
+            let _ = prepared.serve();
+            std::process::exit(0);
+        }
+        _ => {
+            // Parent: `prepared` holds the live Wayland connection the child
+            // needs to keep using post-fork (both share the fd after fork).
+            // A normal return here would drop it in the parent too - caught
+            // live: that dropped only one of two offered MIME types and
+            // killed the child's connection outright. std::process::exit
+            // skips local Drop impls entirely, so the parent's copy just
+            // goes away at the OS level (fd refcount only, no protocol-level
+            // teardown) and the child's connection is left untouched.
+            std::process::exit(0);
+        }
+    }
 }
 
 fn pixbuf_from(bytes: &[u8]) -> Option<Pixbuf> {
@@ -517,6 +616,16 @@ fn ensure_anim(id: &str) -> Option<PathBuf> {
 }
 
 fn copy_entry(id: &str) {
+    if let Some(hash) = formats_index().get(id) {
+        let sources = bundle_sources(hash);
+        if !sources.is_empty() {
+            daemonize_and_serve(sources);
+            return;
+        }
+    }
+    // No bundle (pre-existing entry from before this existed, or the bundle
+    // fetch came up empty) - fall back to the single representation cliphist
+    // itself holds, same as before bundles existed.
     let data = decode(id);
     if data.is_empty() {
         return;
@@ -672,6 +781,18 @@ fn main() {
                 std::process::exit(1);
             };
             copy_entry(&id);
+        }
+        Some("reassert-bundle") => {
+            let Some(hash) = args.next() else {
+                eprintln!("usage: {PROGRAM_NAME} reassert-bundle <hash>");
+                std::process::exit(1);
+            };
+            let sources = bundle_sources(&hash);
+            if sources.is_empty() {
+                eprintln!("{PROGRAM_NAME}: no bundle for {hash}");
+                std::process::exit(1);
+            }
+            daemonize_and_serve(sources);
         }
         None | Some("list") => print_list(&cliphist_list()),
         Some(other) => {
