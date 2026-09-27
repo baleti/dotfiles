@@ -732,7 +732,29 @@ Rectangle {
                         // legend row and one name).
                         readonly property bool hovered: legendRow.modelData.name === graph.hoveredLegendName
 
+                        // `dash: true` (2026-09-27, CPU pill's power lines)
+                        // swaps the usual filled-square swatch for a
+                        // dashed-line one, matching how the line itself
+                        // actually renders on the graph -- Row skips
+                        // invisible children in layout, so only one of
+                        // these two ever takes up space.
+                        Row {
+                            visible: !!legendRow.modelData.dash
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+                            Repeater {
+                                model: 3
+                                Rectangle {
+                                    width: 3
+                                    height: 2
+                                    radius: 1
+                                    color: legendRow.modelData.color
+                                }
+                            }
+                        }
+
                         Rectangle {
+                            visible: !legendRow.modelData.dash
                             width: 9
                             height: 9
                             radius: 2
@@ -836,7 +858,25 @@ Rectangle {
                             required property var modelData
                             readonly property bool hovered: legendRow2.modelData.name === graph.hoveredLegendName
 
+                            // See the other legend block's own comment on
+                            // `dash` -- same swap, same reasoning.
+                            Row {
+                                visible: !!legendRow2.modelData.dash
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 2
+                                Repeater {
+                                    model: 3
+                                    Rectangle {
+                                        width: 3
+                                        height: 2
+                                        radius: 1
+                                        color: legendRow2.modelData.color
+                                    }
+                                }
+                            }
+
                             Rectangle {
+                                visible: !legendRow2.modelData.dash
                                 width: 9
                                 height: 9
                                 radius: 2
