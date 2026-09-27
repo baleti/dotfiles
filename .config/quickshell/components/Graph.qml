@@ -124,25 +124,39 @@ Canvas {
     property real hoveredPixelX: 0
     property real hoveredPixelY: 0
 
-    // Marching-ants animation for dashed lines (request 2026-09-27): a
-    // dash pattern redrawn every tick with the same fixed phase reads as
-    // printed onto the line rather than flowing with it. Offsetting the
-    // phase a constant few px/tick and repainting makes dashed series
-    // visibly crawl leftward -- the same direction the graph itself
-    // scrolls as data ages -- so they read as part of the line's motion,
-    // not a static overlay. Gated on actually having a dashed series so
-    // every other pill (nothing sets `dash`) never pays for the extra
-    // timer/repaint churn.
+    // Dash-phase animation for dashed lines (request 2026-09-27), take 2.
+    // First attempt used a wall-clock Timer nudging the phase at a fixed
+    // px/sec regardless of the data -- reported back as "dashes feel fixed
+    // in place, the line just moves through them", and that's exactly what
+    // a clock-driven phase gives you: `downsample()` maps array INDEX to x
+    // on a fixed width/historyLen grid, so once a tiered buffer is full,
+    // index 0 sits at the same x every single repaint -- only the VALUE
+    // sitting in each index/column changes as new samples push in and old
+    // ones drop off (a shift register, not a literal geometric slide).
+    // `strokeSeries` calls `ctx.moveTo(run[0].x, ...)` fresh every paint,
+    // so the dash pattern's phase-zero is re-anchored to that same
+    // roughly-fixed screen x every time -- an offset that changes with
+    // WALL-CLOCK TIME has no relationship to when a new sample actually
+    // lands in a given column, so the dashes drift at their own pace while
+    // the line's actual shape only steps once per real sample.
+    //
+    // Fix: advance the phase by exactly one column-width (`width /
+    // historyLen`, i.e. `downsample`'s own pxPerSample) each time this
+    // series' data genuinely changes (`onSeriesListChanged`/
+    // `onSeriesChanged`, which fire once per incoming sample while a panel
+    // is open -- see TieredSocket.qml), not on a fixed timer. A value that
+    // was one column now sits one column to the left; nudging the phase by
+    // exactly one column's worth in the same tick keeps whichever dash was
+    // drawn over it lined up with that same value as it ages -- the dash
+    // now travels WITH the data instead of the screen. (One caveat: a
+    // wholesale resync -- tier switch, panel first opening -- replaces the
+    // whole buffer in one jump, not "+1 sample", so the phase can visibly
+    // hiccup right at that moment; harmless and over in the next tick.)
     readonly property bool _hasDashedSeries: seriesList.filter(s => s.dash && s.dash.length > 0).length > 0
     property real _dashPhase: 0
-    Timer {
-        interval: 40
-        repeat: true
-        running: root._hasDashedSeries
-        onTriggered: {
-            root._dashPhase -= 0.8;
-            root.requestPaint();
-        }
+    function _advanceDashPhase() {
+        if (root._hasDashedSeries && root.width > 0)
+            root._dashPhase -= root.width / root.historyLen;
     }
 
     function _pointCount() {
@@ -152,7 +166,7 @@ Canvas {
     }
 
     onSeriesChanged: requestPaint()
-    onSeriesListChanged: requestPaint()
+    onSeriesListChanged: { _advanceDashPhase(); requestPaint(); }
     onMaxValueChanged: requestPaint()
     onFillOverlayChanged: requestPaint()
     onSecondaryOnTopChanged: requestPaint()
