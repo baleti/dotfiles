@@ -515,8 +515,8 @@ Item {
     // per-sample metrics that made dashing unreadable elsewhere (see
     // Graph.qml's header comment on why `dashed` itself no longer dashes).
     readonly property var cpuPowerLines: cpuPill.expanded ? [
-        { data: SysmonSvc.cpuPowerPct, color: Theme.orange, dashed: false, noFill: true, dash: [6, 4], width: 1.5, name: qsTr("CPU") },
-        { data: SysmonSvc.cpuPsysPct, color: Theme.cyan, dashed: false, noFill: true, dash: [6, 4], width: 1.5, name: qsTr("Platform") }
+        { data: SysmonSvc.cpuPowerPct, color: Theme.orange, dashed: false, noFill: true, dash: [3, 2], width: 1.0, name: qsTr("CPU") },
+        { data: SysmonSvc.cpuPsysPct, color: Theme.cyan, dashed: false, noFill: true, dash: [3, 2], width: 1.0, name: qsTr("Platform") }
     ] : []
     // `value` is the extra watts column (2026-09-19) -- the plotted line
     // itself is percent-of-all-time-peak-watts (see cpuPowerLines'
