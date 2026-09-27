@@ -2,7 +2,6 @@ import QtQuick
 import Quickshell
 import "../theme"
 import "../services"
-
 // One notification card. notifyd (headless) owns the lifetime -- this just
 // draws whatever's in NotifSvc.popups and forwards clicks. Visuals port the
 // old notifyd.toml: 2px frame in the cyan accent (red for critical),
