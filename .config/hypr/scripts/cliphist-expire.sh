@@ -109,3 +109,30 @@ if [[ -d "$LARGE" ]]; then
     done < <(find "$LARGE" -maxdepth 1 -type f ! -name '*.part' -mmin +2)
     rm -f "$refs"
 fi
+
+# Multi-format bundles (cliphist-store-logged.sh, added 2026-09-27): every
+# other MIME representation a copy offered, kept alongside the cliphist
+# blob under formats/<sha256 of the primary blob>/, referenced by an
+# id<TAB>hash line per entry in formats-index. Same reference-scan pattern
+# as large/ above: prune the index to ids cliphist still has, then delete
+# any formats/ dir whose hash is no longer referenced by what's left. The
+# >2 min age guard covers the same store-in-progress race as large/'s (the
+# index line lands after the bundle dir is written, but before that,
+# nothing yet references the hash).
+FORMATS="$STATE_DIR/formats"
+FORMATS_INDEX="$STATE_DIR/formats-index"
+if [[ -f "$FORMATS_INDEX" ]]; then
+    cliphist list 2>/dev/null | cut -f1 > "$FORMATS_INDEX.ids"
+    if [[ -s "$FORMATS_INDEX.ids" ]]; then
+        awk -F'\t' 'NR==FNR{k[$1]=1;next} ($1 in k)' "$FORMATS_INDEX.ids" "$FORMATS_INDEX" > "$FORMATS_INDEX.tmp" \
+            && mv "$FORMATS_INDEX.tmp" "$FORMATS_INDEX"
+    fi
+    rm -f "$FORMATS_INDEX.ids"
+fi
+if [[ -d "$FORMATS" ]]; then
+    live_hashes=$(cut -f2 "$FORMATS_INDEX" 2>/dev/null | sort -u)
+    while IFS= read -r d; do
+        h=$(basename "$d")
+        grep -qxF "$h" <<<"$live_hashes" || { rm -rf "$d"; printf 'removed unreferenced formats/%s\n' "$h"; }
+    done < <(find "$FORMATS" -mindepth 1 -maxdepth 1 -type d -mmin +2)
+fi
