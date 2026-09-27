@@ -450,9 +450,9 @@ Canvas {
         ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, strokeAlpha);
         ctx.lineWidth = lineWidth;
         ctx.lineJoin = "round";
-        ctx.lineCap = "round";
 
         if (dash.length === 0) {
+            ctx.lineCap = "round";
             for (const run of runs) {
                 if (run.length < 2)
                     continue;
@@ -465,32 +465,52 @@ Canvas {
             return;
         }
 
+        // "butt", not "round" -- a round cap adds a soft semicircular bump
+        // to both ends of every short dash segment, disproportionate at
+        // these dash lengths. Flat, perpendicular-cut ends instead.
+        ctx.lineCap = "butt";
+
         // Hand-rolled dashing (see `_dashOn`'s own comment on why not
-        // `ctx.setLineDash`) -- walk each run's points, and every time the
-        // on/off state flips, close out the current path segment (stroking
-        // it only if it was "on") and start a fresh one from that same
-        // point, so consecutive same-state points share one path/stroke
-        // call rather than one per point.
+        // `ctx.setLineDash`). First cut at this (request 2026-09-27)
+        // connected every raw point inside each "on" window with lineTo,
+        // i.e. traced the real, noisy per-sample wiggle within that few-px
+        // span -- zoomed screenshots showed the result wasn't blur at all,
+        // it was SHAPE: each "dash" came out as a tiny jagged hook/comma at
+        // a near-random angle instead of a clean tick, because a handful of
+        // raw samples with normal tick-to-tick jitter rarely form a
+        // straight line over just a few px. Fix: draw each dash as ONE
+        // straight chord from the window's first point to its last,
+        // skipping whatever the raw samples did in between -- still
+        // following the line's real trend (the chord's endpoints are real
+        // data), just not re-litigating every intermediate wiggle inside a
+        // mark that's only a few px long anyway.
         for (const run of runs) {
             if (run.length < 2)
                 continue;
             let on = root._dashOn(run[0].x, dash);
-            ctx.beginPath();
-            ctx.moveTo(run[0].x, yOf(run[0].v));
+            let segStartX = run[0].x, segStartY = yOf(run[0].v);
             for (let i = 1; i < run.length; i++) {
                 const x = run[i].x, y = yOf(run[i].v);
                 const nowOn = root._dashOn(x, dash);
-                ctx.lineTo(x, y);
                 if (nowOn !== on) {
-                    if (on)
+                    if (on) {
+                        ctx.beginPath();
+                        ctx.moveTo(segStartX, segStartY);
+                        ctx.lineTo(x, y);
                         ctx.stroke();
-                    ctx.beginPath();
-                    ctx.moveTo(x, y);
+                    }
+                    segStartX = x;
+                    segStartY = y;
                     on = nowOn;
                 }
             }
-            if (on)
+            if (on) {
+                const last = run[run.length - 1];
+                ctx.beginPath();
+                ctx.moveTo(segStartX, segStartY);
+                ctx.lineTo(last.x, yOf(last.v));
                 ctx.stroke();
+            }
         }
     }
 
