@@ -752,15 +752,27 @@ Rectangle {
                         // Row has to lay out, it just hit-tests its parent's
                         // existing bounds.
                         HoverHandler {
+                            id: legendHover
                             onHoveredChanged: {
-                                if (hovered && legendRow.modelData.desc) {
-                                    const p = legendRow.mapToItem(root, 0, 0);
-                                    root._legendHoverPos = Qt.point(p.x, p.y);
+                                if (hovered && legendRow.modelData.desc)
                                     root._legendHoverDesc = legendRow.modelData.desc;
-                                } else {
+                                else
                                     root._legendHoverDesc = "";
-                                }
                             }
+                        }
+
+                        // Keeps `_legendHoverPos` tracking the actual
+                        // cursor (request 2026-09-27: "appear over the
+                        // cursor instead of on the side") rather than a
+                        // one-shot corner captured on hover-enter -- a
+                        // `Binding` re-evaluates live as `point.position`
+                        // moves, `onHoveredChanged` above only fires once
+                        // per enter/exit.
+                        Binding {
+                            target: root
+                            property: "_legendHoverPos"
+                            when: legendHover.hovered
+                            value: legendRow.mapToItem(root, legendHover.point.position.x, legendHover.point.position.y)
                         }
 
                         // `dash: true` (2026-09-27, CPU pill's power lines)
@@ -892,15 +904,23 @@ Rectangle {
                             // See the other legend block's own comment on
                             // `desc` -- same tooltip, same reasoning.
                             HoverHandler {
+                                id: legendHover2
                                 onHoveredChanged: {
-                                    if (hovered && legendRow2.modelData.desc) {
-                                        const p = legendRow2.mapToItem(root, 0, 0);
-                                        root._legendHoverPos = Qt.point(p.x, p.y);
+                                    if (hovered && legendRow2.modelData.desc)
                                         root._legendHoverDesc = legendRow2.modelData.desc;
-                                    } else {
+                                    else
                                         root._legendHoverDesc = "";
-                                    }
                                 }
+                            }
+
+                            // See the other legend block's own comment on
+                            // the position `Binding` -- same live cursor
+                            // tracking, same reasoning.
+                            Binding {
+                                target: root
+                                property: "_legendHoverPos"
+                                when: legendHover2.hovered
+                                value: legendRow2.mapToItem(root, legendHover2.point.position.x, legendHover2.point.position.y)
                             }
 
                             // See the other legend block's own comment on
@@ -1403,11 +1423,14 @@ Rectangle {
 
     // Legend-row tooltip (request 2026-09-27, CPU pill's Power/Platform
     // labels) -- plain explanatory text for a legend entry that sets
-    // `desc` (see `legendItems`' own comment), positioned just ABOVE the
-    // hovered row since the legend always sits near the panel's bottom
-    // edge (its own line, or sharing the tier-button row). `parent: root`
-    // for the same reason as `hoverTip` below -- escapes `expandPanel`'s
-    // `clip: true`.
+    // `desc` (see `legendItems`' own comment). `_legendHoverPos` tracks the
+    // live cursor position (see the `Binding`s next to each row's
+    // HoverHandler above), and this centers on it horizontally, just
+    // ABOVE it vertically -- "over the cursor" per request 2026-09-27
+    // ("appear over the cursor instead of on the side"), without the box
+    // sitting directly on top of the pointer and blocking it. `parent:
+    // root` for the same reason as `hoverTip` below -- escapes
+    // `expandPanel`'s `clip: true`.
     Rectangle {
         id: legendTip
         parent: root
@@ -1415,8 +1438,8 @@ Rectangle {
         z: 100
         width: Math.min(240, legendTipText.implicitWidth + 16)
         height: legendTipText.implicitHeight + 12
-        x: Math.max(4, Math.min(root._legendHoverPos.x, root.width - width - 4))
-        y: root._legendHoverPos.y - height - 6
+        x: Math.max(4, Math.min(root._legendHoverPos.x - width / 2, root.width - width - 4))
+        y: root._legendHoverPos.y - height - 10
         color: Theme.bg
         border.color: Theme.border
         border.width: 1
