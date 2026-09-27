@@ -173,7 +173,9 @@ Canvas {
     }
 
     // Adds the "on" pieces of one run to the current path as subpaths
-    // (single stroke() for the whole series by the caller).
+    // (single stroke() for the whole series by the caller). Dash edges are
+    // cut at exact interpolated points along the arc, so spacing stays
+    // regular through steep rises/falls.
     function _dashRun(ctx, run, arc, dash) {
         const on = dash[0], cycle = dash[0] + dash[1];
         const phase = s => ((s % cycle) + cycle) % cycle;
@@ -195,6 +197,10 @@ Canvas {
                     break;
                 const t = (next - s0) / len;
                 const x = p0.x + (p1.x - p0.x) * t, y = p0.y + (p1.y - p0.y) * t;
+                // Each dash is ONE straight chord from its start cut to its
+                // end cut (aab8b8a): intermediate vertices are never
+                // lineTo'd, so sample jitter can't bend a mark only a few
+                // px long into a hook.
                 if (penDown)
                     ctx.lineTo(x, y);
                 else
@@ -203,8 +209,10 @@ Canvas {
                 // Nudge past the boundary so phase() lands in the next state.
                 s = next + 1e-6;
             }
-            if (penDown)
-                ctx.lineTo(p1.x, p1.y);
+        }
+        if (penDown) {
+            const last = run[run.length - 1];
+            ctx.lineTo(last.x, last.y);
         }
     }
 
@@ -526,10 +534,26 @@ Canvas {
         const newest = points[points.length - 1].k;
         const commitBelow = newest - root._uncommitted + 1;
         ctx.beginPath();
+        // Measure arc length on a DECIMATED polyline -- vertices only at
+        // samples whose absolute index is a multiple of `step` (~3px apart),
+        // plus the newest point. Raw 0.5px-spaced samples carry enough
+        // jitter to inflate arc length unevenly (flat-but-noisy stretches
+        // would get visibly shorter dashes than clean slopes); the
+        // decimated line keeps the real trend, and since vertices are
+        // chosen by absolute index they scroll with the data. Points before
+        // a run's first vertex are dropped (at most `step` samples at the
+        // left edge / a gap boundary).
+        const step = Math.max(1, Math.round(3 / (width / root.historyLen)));
         for (const run of runs) {
-            if (run.length < 2)
+            const pts = [];
+            for (let i = 0; i < run.length; i++) {
+                const p = run[i];
+                const isVertex = ((p.k % step) + step) % step === 0;
+                if (isVertex || (i === run.length - 1 && pts.length > 0))
+                    pts.push({ x: p.x, y: yOf(p.v), k: p.k });
+            }
+            if (pts.length < 2)
                 continue;
-            const pts = run.map(p => ({ x: p.x, y: yOf(p.v), k: p.k }));
             root._dashRun(ctx, pts, root._arcPositions(pts, m, commitBelow), dash);
         }
         ctx.stroke();
