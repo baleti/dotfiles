@@ -988,14 +988,17 @@ Item {
             yAxisFormatter: v => Math.round(v) + "%"
             // Second axis column (request 2026-09-27: "second column
             // besides percentages showing actual wattage ... scaled to
-            // maximum readings ever") -- CPU's and Platform's watts at
-            // this same fraction of THEIR OWN respective all-time-max
-            // (cpuPowerLimitW/cpuPsysLimitW, see cpuPowerLines' comment on
-            // why there's no single shared scale to reuse yAxisFormatter's
-            // maxValue-multiply approach for). Order matches the legend's
-            // (CPU first, Platform second) and cpuPowerLines' own draw
-            // order.
-            rightAxisFormatter: f => Math.round(f * SysmonSvc.cpuPowerLimitW) + "/" + Math.round(f * SysmonSvc.cpuPsysLimitW) + "W"
+            // maximum readings ever") -- CPU's watts at this same fraction
+            // of its own all-time-max (cpuPowerLimitW, see cpuPowerLines'
+            // comment on why there's no single shared scale to reuse
+            // yAxisFormatter's maxValue-multiply approach for). CPU only,
+            // not "CPU/Platform" (request 2026-09-27: "don't put two
+            // figures... just show 11W") -- CPU is the pill's primary
+            // line (first in the legend, first in cpuPowerLines' draw
+            // order); Platform's current watts are still visible via its
+            // own legend row/tooltip below, just not mirrored onto this
+            // axis too.
+            rightAxisFormatter: f => Math.round(f * SysmonSvc.cpuPowerLimitW) + "W"
             procHistSnaps: SysmonSvc.procHistSnaps("cpu")
             procHistValueFmt: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
