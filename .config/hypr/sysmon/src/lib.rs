@@ -333,18 +333,24 @@ pub enum Snapshot {
     // (point-in-time detail scalars, always sent fresh whether full or
     // delta -- never diffed/streamed like the history arrays):
     //   - `power_pct`/`power_w`/`power_limit_w`: CPU package (RAPL
-    //     `intel-rapl:0`). `power_limit_w` is the package's *short-term*
-    //     (PL2/turbo) limit, not the sustained PL1 one -- PL1 is routinely
-    //     exceeded under boost (seen ~30W against a 15W PL1 on this
-    //     machine), which would clip the line at the graph's fixed 0-100
-    //     axis (values are clamped, not auto-scaled -- see Graph.qml);
-    //     PL2 is the actual firmware-enforced ceiling, so it can't.
+    //     `intel-rapl:0`). `power_limit_w`, DESPITE THE NAME (kept for wire
+    //     compatibility), is no longer PL2 -- it's `power_max_w`, the
+    //     highest watt reading this zone has ever produced (2026-09-27:
+    //     "percentages there dont make sense... adjust based on whatever
+    //     maximum readout ever was" -- PL2 is a firmware ceiling rarely
+    //     approached in practice, e.g. this package's 55W against a ~44W
+    //     observed peak under an actual stress test, so real draw sat low
+    //     on the graph's fixed 0-100 axis and read as tangled with the
+    //     per-core lines down there). Still can't clip (values are clamped,
+    //     not auto-scaled -- see Graph.qml): sysmond grows the max to at
+    //     least this tick's reading BEFORE dividing by it, every tick, so
+    //     the numerator can never exceed the denominator.
     //   - `psys_pct`/`psys_w`/`psys_limit_w`: the RAPL "platform" zone
     //     (`intel-rapl:1`), when present -- on hardware that populates it,
     //     covers more than just the package (confirmed 2026-09-19: ~20W
     //     psys against ~9W package at the same instant on this laptop).
-    //     Has its own, separate PL2 (its own `constraint_1`), not the
-    //     package's.
+    //     Same all-time-max-based `psys_limit_w` treatment, tracked
+    //     separately from the package's own.
     // (a third line, battery discharge (V x A from BAT0), was added
     // alongside these two 2026-09-19 and removed 2026-09-27 as redundant
     // once package+platform power were both already on the graph.)
