@@ -156,14 +156,39 @@ Canvas {
     // Arc positions for one run of screen points ({x, y, k}), via/into the
     // cache map `m` (absolute index -> arc px).
     function _arcPositions(run, m, commitBelow) {
-        const out = new Array(run.length);
-        const k0 = run[0].k;
-        out[0] = m[k0] ?? 0;
-        if (run[0].k < commitBelow)
-            m[k0] = out[0];
-        for (let i = 1; i < run.length; i++) {
-            const seg = Math.hypot(run[i].x - run[i - 1].x, run[i].y - run[i - 1].y);
-            const want = out[i - 1] + seg;
+        const n = run.length;
+        const seg = new Array(n).fill(0);
+        for (let i = 1; i < n; i++)
+            seg[i] = Math.hypot(run[i].x - run[i - 1].x, run[i].y - run[i - 1].y);
+        const fits = (i) => {
+            const a = m[run[i - 1].k], b = m[run[i].k];
+            return a !== undefined && b !== undefined && Math.abs(b - a - seg[i]) < 0.25;
+        };
+        // Anchor on the first pair of cached vertices that still agree with
+        // the actual geometry -- NOT blindly on the leftmost point: smooth()
+        // averages fewer neighbours at the buffer's left edge, so the
+        // oldest vertices' y drifts as samples drop off, and anchoring
+        // there re-derived (and so shifted) every dash on screen each time
+        // a new vertex reached the edge -- the "dashes shift every few
+        // seconds" report. Points left of the anchor are derived backwards
+        // from it and never cached.
+        let anchor = -1;
+        for (let i = 1; i < n && anchor < 0; i++)
+            if (fits(i))
+                anchor = i - 1;
+        const out = new Array(n);
+        if (anchor < 0) {
+            anchor = 0;
+            out[0] = m[run[0].k] ?? 0;
+        } else {
+            out[anchor] = m[run[anchor].k];
+        }
+        for (let i = anchor - 1; i >= 0; i--)
+            out[i] = out[i + 1] - seg[i + 1];
+        if (run[anchor].k < commitBelow)
+            m[run[anchor].k] = out[anchor];
+        for (let i = anchor + 1; i < n; i++) {
+            const want = out[i - 1] + seg[i];
             const have = m[run[i].k];
             out[i] = (have !== undefined && Math.abs(have - want) < 0.25) ? have : want;
             if (run[i].k < commitBelow)
@@ -171,6 +196,7 @@ Canvas {
         }
         return out;
     }
+
 
     // Adds the "on" pieces of one run to the current path as subpaths
     // (single stroke() for the whole series by the caller). Dash edges are
@@ -197,10 +223,11 @@ Canvas {
                     break;
                 const t = (next - s0) / len;
                 const x = p0.x + (p1.x - p0.x) * t, y = p0.y + (p1.y - p0.y) * t;
-                // Each dash is ONE straight chord from its start cut to its
-                // end cut (aab8b8a): intermediate vertices are never
-                // lineTo'd, so sample jitter can't bend a mark only a few
-                // px long into a hook.
+                // A dash follows the DECIMATED vertices it spans (~1.5px
+                // apart, see strokeSeries), never the raw 0.8px samples --
+                // tracing raw jitter bent short dashes into hooks
+                // (aab8b8a), while a single chord per dash cut straight
+                // across peaks and read as low-resolution.
                 if (penDown)
                     ctx.lineTo(x, y);
                 else
@@ -209,10 +236,8 @@ Canvas {
                 // Nudge past the boundary so phase() lands in the next state.
                 s = next + 1e-6;
             }
-        }
-        if (penDown) {
-            const last = run[run.length - 1];
-            ctx.lineTo(last.x, last.y);
+            if (penDown)
+                ctx.lineTo(p1.x, p1.y);
         }
     }
 
@@ -535,7 +560,7 @@ Canvas {
         const commitBelow = newest - root._uncommitted + 1;
         ctx.beginPath();
         // Measure arc length on a DECIMATED polyline -- vertices only at
-        // samples whose absolute index is a multiple of `step` (~3px apart),
+        // samples whose absolute index is a multiple of `step` (~1.5px apart),
         // plus the newest point. Raw 0.5px-spaced samples carry enough
         // jitter to inflate arc length unevenly (flat-but-noisy stretches
         // would get visibly shorter dashes than clean slopes); the
@@ -543,7 +568,7 @@ Canvas {
         // chosen by absolute index they scroll with the data. Points before
         // a run's first vertex are dropped (at most `step` samples at the
         // left edge / a gap boundary).
-        const step = Math.max(1, Math.round(3 / (width / root.historyLen)));
+        const step = Math.max(1, Math.round(1.5 / (width / root.historyLen)));
         for (const run of runs) {
             const pts = [];
             for (let i = 0; i < run.length; i++) {
