@@ -542,16 +542,27 @@ struct PersistedHistory {
     cpu_total: PersistedSeries,
     cpu_cores: Vec<PersistedSeries>,
     temp_c: PersistedSeries,
-    // CPU power lines (percent-of-own-PL2), same `#[serde(default)]`
-    // reasoning as swap_used_pct below -- added later than the file format
-    // was. `power_w` (the pre-normalization field name) is deliberately
-    // NOT kept as an alias: a couple hours of not-yet-normalized history
-    // isn't worth migrating, same philosophy as PersistedGpu's own comment
-    // on dropping fields across a format change.
+    // CPU power lines (percent of all-time-max watts, see History's own
+    // comment), same `#[serde(default)]` reasoning as swap_used_pct below
+    // -- added later than the file format was. `power_w` (the
+    // pre-normalization field name) is deliberately NOT kept as an alias:
+    // a couple hours of not-yet-normalized history isn't worth migrating,
+    // same philosophy as PersistedGpu's own comment on dropping fields
+    // across a format change.
     #[serde(default)]
     power_pct: PersistedSeries,
     #[serde(default)]
     psys_pct: PersistedSeries,
+    // The running peak-ever-seen watt readings the two series above
+    // normalize against (2026-09-27) -- persisted so a restart doesn't
+    // reset the scale back to 0 and briefly replot early post-restart
+    // readings as ~100% until a new peak re-establishes it. `#[serde(
+    // default)]`: missing on any history.json saved before this existed,
+    // same as every other field on this struct added after launch.
+    #[serde(default)]
+    power_max_w: f64,
+    #[serde(default)]
+    psys_max_w: f64,
     mem_used_pct: PersistedSeries,
     mem_cached_pct: PersistedSeries,
     // `#[serde(default)]` so a history.json saved before swap tracking
@@ -676,23 +687,30 @@ struct History {
     // bar's overlay per-core view.
     cpu_cores: Vec<TieredSeries>,
     temp_c: TieredSeries,
-    // Two power history lines (percent-of-own-PL2, see lib.rs's
-    // `Snapshot::Cpu` doc comment for the full design) -- empty/flat 0
-    // line (never erroring) wherever the underlying source isn't
-    // available (RAPL permission not yet live, psys zone absent).
+    // Two power history lines -- percent of the ALL-TIME HIGHEST watt
+    // reading ever seen for that zone (`power_max_w`/`psys_max_w` below),
+    // not percent-of-PL2 (request 2026-09-27: "percentages there dont make
+    // sense... adjust based on whatever maximum readout ever was" -- PL2 is
+    // a firmware ceiling rarely approached in practice, e.g. package's
+    // 55W against a ~44W observed peak under an actual stress test, so
+    // real draw sat low on the shared 0-100 axis and read as visually
+    // tangled with the per-core lines down there). Empty/flat 0 line
+    // (never erroring) wherever the underlying source isn't available
+    // (RAPL permission not yet live, psys zone absent).
     power_pct: TieredSeries,
     psys_pct: TieredSeries,
-    // Latest raw-watt readings + each RAPL zone's own PL2 ceiling, for the
-    // point-in-time detail scalars `serve_client` sends fresh every
+    // Latest raw-watt readings + each zone's running peak-ever-seen, for
+    // the point-in-time detail scalars `serve_client` sends fresh every
     // message (same treatment as GPU's `GpuLatest` scalars) -- the *_pct
     // series above are what's actually plotted, these are what a hover/
-    // label shows as an actual watts number. Limits are hardware
-    // constants, read once at startup (world-readable, no permission
-    // dependency) rather than persisted.
+    // label shows as an actual watts number. `power_max_w`/`psys_max_w`
+    // only ever grow (see `sample_loop`'s `.max()`) and are persisted (see
+    // `PersistedHistory`) so a fresh restart doesn't reset the scale back
+    // down to 0 and briefly plot every early reading as ~100%.
     power_w_now: f64,
-    cpu_power_limit_w: f64,
+    power_max_w: f64,
     psys_w_now: f64,
-    psys_power_limit_w: f64,
+    psys_max_w: f64,
     mem_used_pct: TieredSeries,
     mem_cached_pct: TieredSeries,
     swap_used_pct: TieredSeries,
@@ -792,9 +810,9 @@ impl History {
             power_pct: TieredSeries::new(),
             psys_pct: TieredSeries::new(),
             power_w_now: 0.0,
-            cpu_power_limit_w: read_rapl_zone_limit_w("intel-rapl:0"),
+            power_max_w: 0.0,
             psys_w_now: 0.0,
-            psys_power_limit_w: read_rapl_zone_limit_w("intel-rapl:1"),
+            psys_max_w: 0.0,
             mem_used_pct: TieredSeries::new(),
             mem_cached_pct: TieredSeries::new(),
             swap_used_pct: TieredSeries::new(),
@@ -846,6 +864,8 @@ impl History {
         self.power_pct.apply_downtime_gap(gap_secs);
         self.psys_pct.load_persisted(&p.psys_pct);
         self.psys_pct.apply_downtime_gap(gap_secs);
+        self.power_max_w = p.power_max_w;
+        self.psys_max_w = p.psys_max_w;
         self.mem_used_pct.load_persisted(&p.mem_used_pct);
         self.mem_used_pct.apply_downtime_gap(gap_secs);
         self.mem_cached_pct.load_persisted(&p.mem_cached_pct);
@@ -899,6 +919,8 @@ impl History {
             temp_c: self.temp_c.to_persisted(),
             power_pct: self.power_pct.to_persisted(),
             psys_pct: self.psys_pct.to_persisted(),
+            power_max_w: self.power_max_w,
+            psys_max_w: self.psys_max_w,
             mem_used_pct: self.mem_used_pct.to_persisted(),
             mem_cached_pct: self.mem_cached_pct.to_persisted(),
             swap_used_pct: self.swap_used_pct.to_persisted(),
@@ -1156,26 +1178,6 @@ fn read_rapl_zone_max_range(zone: &str) -> u64 {
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(u64::MAX)
-}
-
-/// A zone's own short-term (PL2/turbo) power limit in watts, via
-/// `constraint_1_power_limit_uw` -- world-readable (0644) unlike
-/// `energy_uj`, so this needs no group/udev setup. Deliberately the
-/// *short-term* constraint, not `constraint_0`'s long-term/sustained one:
-/// package power routinely exceeds the sustained limit under boost (seen
-/// ~30W against a 15W PL1 on this machine), which would clip the graph
-/// line at its fixed 0-100 axis (values are clamped, not auto-scaled);
-/// PL2 is the actual firmware-enforced ceiling, so normalizing against it
-/// can't clip. Each RAPL zone has its own independent PL2 (psys's is
-/// separate from -- and higher than -- the package's on this hardware).
-/// 0.0 (line hidden client-side, same as GPU's power_limit_w <= 0 case)
-/// if the constraint file isn't there.
-fn read_rapl_zone_limit_w(zone: &str) -> f64 {
-    fs::read_to_string(format!("/sys/class/powercap/{zone}/constraint_1_power_limit_uw"))
-        .ok()
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .map(|uw| uw / 1_000_000.0)
-        .unwrap_or(0.0)
 }
 
 /// Reads a RAPL zone's energy counter and folds it into a watts reading
@@ -2603,9 +2605,16 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
         h.cpu_total.push_raw(cpu_total);
         h.temp_c.push_raw(temp_c);
         let pct_of_limit = |w: f64, limit: f64| if limit > 0.0 { (100.0 * w / limit).max(0.0) } else { 0.0 };
-        let (cpu_limit, psys_limit) = (h.cpu_power_limit_w, h.psys_power_limit_w);
-        h.power_pct.push_raw(pct_of_limit(power_w, cpu_limit));
-        h.psys_pct.push_raw(pct_of_limit(psys_w, psys_limit));
+        // Grow each ceiling to at least this tick's reading BEFORE
+        // dividing by it -- so `power_w`/`psys_w` can never exceed their
+        // own denominator and this can't clip the graph's fixed 0-100 axis,
+        // same safety property PL2 used to give, just self-adjusting to
+        // real observed peaks instead of a firmware constant.
+        h.power_max_w = h.power_max_w.max(power_w);
+        h.psys_max_w = h.psys_max_w.max(psys_w);
+        let (power_max, psys_max) = (h.power_max_w, h.psys_max_w);
+        h.power_pct.push_raw(pct_of_limit(power_w, power_max));
+        h.psys_pct.push_raw(pct_of_limit(psys_w, psys_max));
         h.power_w_now = power_w;
         h.psys_w_now = psys_w;
         h.mem_used_pct.push_raw(mem_used_pct);
@@ -2938,10 +2947,10 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
                         cores,
                         power_pct,
                         power_w: h.power_w_now,
-                        power_limit_w: h.cpu_power_limit_w,
+                        power_limit_w: h.power_max_w,
                         psys_pct,
                         psys_w: h.psys_w_now,
-                        psys_limit_w: h.psys_power_limit_w,
+                        psys_limit_w: h.psys_max_w,
                     }
                 }
                 Metric::Temp => {

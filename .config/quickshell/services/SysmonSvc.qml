@@ -188,12 +188,16 @@ QtObject {
     readonly property real cpuSampleSeq: cpuSock.sampleSeq
 
     // Power lines (2026-09-19; battery-discharge line removed 2026-09-27 as
-    // redundant with package+platform): each *Pct is percent-of-that-
-    // zone's-own-PL2, already normalized server-side (sysmond.rs) so it
-    // plots on the same 0-100 axis as cpuTotal/cpuCores without clipping.
-    // The matching *W/*LimitW are point-in-time watts for the compact-
-    // pill/legend readout, not history. psys ("platform") sits at a flat 0
-    // line wherever the underlying source isn't available -- see
+    // redundant with package+platform): each *Pct is percent of that
+    // zone's own ALL-TIME-HIGHEST watt reading (2026-09-27, replacing an
+    // earlier percent-of-PL2), already normalized server-side (sysmond.rs)
+    // so it plots on the same 0-100 axis as cpuTotal/cpuCores without
+    // clipping. `*W` is the current point-in-time watts (compact-pill/
+    // legend readout); `*LimitW`, DESPITE THE NAME (kept for wire
+    // compatibility with the old PL2 meaning), is now that same all-time
+    // peak -- what `*Pct` is actually measured against, surfaced in
+    // Bar.qml's cpuLegend `desc` tooltip. psys ("platform") sits at a flat
+    // 0 line wherever the underlying source isn't available -- see
     // rapl_cpu_power_monitoring memory / lib.rs's Snapshot::Cpu comment.
     readonly property list<real> cpuPowerPct: cpuSock.data.power_pct ?? []
     readonly property real cpuPowerW: cpuSock.data.power_w ?? 0
