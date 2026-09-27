@@ -116,6 +116,50 @@ hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }), { descr
 hl.bind("CTRL + ALT + h", hl.dsp.focus({ workspace = "r-1" }), { repeating = false, description = "Previous workspace on this monitor" })
 hl.bind("CTRL + ALT + l", hl.dsp.focus({ workspace = "r+1" }), { repeating = false, description = "Next workspace on this monitor" })
 
+-- ALT+CTRL+SHIFT+[h/l]: jump straight to the next/previous workspace that
+-- actually has windows on it, skipping empty numeric gaps. "r-1"/"r+1" above
+-- walk workspace *numbers* one at a time, so from 6 with 7 empty and 8
+-- occupied, CTRL+ALT+l lands on (creating) 7 instead of 8. This walks the
+-- sorted set of workspace ids seen on any window instead.
+local function occupied_workspace_ids()
+    local ids, seen = {}, {}
+    for _, w in ipairs(hl.get_windows({})) do
+        local id = w.workspace and w.workspace.id
+        if id and id > 0 and not seen[id] then
+            seen[id] = true
+            table.insert(ids, id)
+        end
+    end
+    table.sort(ids)
+    return ids
+end
+
+local function jump_to_occupied_workspace(forward)
+    return function()
+        local cur = hl.get_active_workspace()
+        local cur_id = cur and cur.id or 1
+        local ids = occupied_workspace_ids()
+        if forward then
+            for _, id in ipairs(ids) do
+                if id > cur_id then
+                    hl.dispatch(hl.dsp.focus({ workspace = id }))
+                    return
+                end
+            end
+        else
+            for i = #ids, 1, -1 do
+                if ids[i] < cur_id then
+                    hl.dispatch(hl.dsp.focus({ workspace = ids[i] }))
+                    return
+                end
+            end
+        end
+    end
+end
+
+hl.bind("ALT + CTRL + SHIFT + h", jump_to_occupied_workspace(false), { repeating = false, description = "Previous occupied workspace" })
+hl.bind("ALT + CTRL + SHIFT + l", jump_to_occupied_workspace(true),  { repeating = false, description = "Next occupied workspace" })
+
 -- Move the active window along with you to the prev/next workspace on this monitor.
 hl.bind(mainMod .. " + CTRL + SHIFT + h", hl.dsp.window.move({ workspace = "r-1" }), { repeating = false, description = "Move window to previous workspace on this monitor" })
 hl.bind(mainMod .. " + CTRL + SHIFT + l", hl.dsp.window.move({ workspace = "r+1" }), { repeating = false, description = "Move window to next workspace on this monitor" })
