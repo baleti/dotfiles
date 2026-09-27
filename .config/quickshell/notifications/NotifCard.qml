@@ -72,7 +72,9 @@ Rectangle {
     }
     radius: root.cornerRadius
     color: root.critical ? Qt.rgba(0.11, 0.06, 0.06, 0.94) : Theme.bgAlpha
-    border.width: 2
+    // Matches AppLauncher.qml's card border (the mod-key-alone launcher
+    // popup) -- was 2, visibly thicker than every other popup card here.
+    border.width: 1
     border.color: root.critical ? Theme.red : (root.low ? Theme.muted : Theme.cyan)
 
     // notifyd already resolved the icon to a themed name, an absolute path,
