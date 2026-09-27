@@ -107,9 +107,7 @@ Item {
                      power_pct: root._tail(src.power_pct, cap),
                      power_w: src.power_w, power_limit_w: src.power_limit_w,
                      psys_pct: root._tail(src.psys_pct, cap),
-                     psys_w: src.psys_w, psys_limit_w: src.psys_limit_w,
-                     battery_pct: root._tail(src.battery_pct, cap),
-                     battery_w: src.battery_w };
+                     psys_w: src.psys_w, psys_limit_w: src.psys_limit_w };
         case "temp":
             return { metric: "temp", celsius: root._tail(src.celsius, cap) };
         case "mem":
@@ -186,13 +184,11 @@ Item {
                 root._pushTrim(d.cores[i], (msg.cores ?? [])[i], cap);
             root._pushTrim(d.power_pct, msg.power_pct, cap);
             root._pushTrim(d.psys_pct, msg.psys_pct, cap);
-            root._pushTrim(d.battery_pct, msg.battery_pct, cap);
             // Point-in-time, never deltas -- always take the incoming value.
             d.power_w = msg.power_w;
             d.power_limit_w = msg.power_limit_w;
             d.psys_w = msg.psys_w;
             d.psys_limit_w = msg.psys_limit_w;
-            d.battery_w = msg.battery_w;
             break;
         case "temp":
             root._pushTrim(d.celsius, msg.celsius, cap);
