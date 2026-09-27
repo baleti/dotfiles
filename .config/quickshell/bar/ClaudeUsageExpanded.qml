@@ -254,16 +254,16 @@ Rectangle {
     function statusColor(status) {
         return root.statusColors[status] || Theme.textDim;
     }
-    // "waiting" is visibly wider than "busy"/"idle" -- abbreviated so the
-    // fixed-width status column in each single-line process row doesn't
-    // have it run into the pid field right after it with no gap (a real
-    // bug the first version of this row layout had).
+    // "waiting" was abbreviated for a fixed-width status column that no
+    // longer exists -- statusNaturalW below now sizes the column to the
+    // widest label actually present, so it's kept short here only because
+    // it's already established, not because a longer word would overflow.
     readonly property var statusLabels: ({
         "busy": qsTr("busy"),
         "waiting": qsTr("wait"),
         "idle": qsTr("idle"),
-        "frozen": qsTr("froz"),
-        "stopped": qsTr("stop"),
+        "frozen": qsTr("frozen"),
+        "stopped": qsTr("stopped"),
     })
     function statusLabel(status) {
         return root.statusLabels[status] || status || "?";
