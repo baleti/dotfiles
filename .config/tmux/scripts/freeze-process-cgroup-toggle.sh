@@ -14,30 +14,32 @@ pane_pid="$1"
 pane_id="$2"
 
 # #{pane_pid} is the pane's own top-level process, which in the common case
-# (claude typed into an ordinary interactive shell) is the shell, not
-# claude - freezing the shell alone does nothing, since claude is a
-# separate process in its own right and simply keeps running unaffected.
-# Walk the process tree (BFS, via /proc/<pid>/task/<pid>/children) for the
-# nearest descendant actually named "claude" and target that instead; if
-# none is found (this pane isn't running claude), fall back to pane_pid
-# itself so the toggle still works for any other long-running foreground
-# process.
-find_claude_pid() {
-	level="$1"
-	while [ -n "$level" ]; do
-		next=""
-		for p in $level; do
-			if [ "$(cat "/proc/$p/comm" 2>/dev/null)" = "claude" ]; then
-				echo "$p"
-				return 0
-			fi
-			next="$next $(cat "/proc/$p/task/$p/children" 2>/dev/null)"
-		done
-		level="$next"
-	done
-	return 1
-}
-pid=$(find_claude_pid "$pane_pid") || pid="$pane_pid"
+# (a program typed into an ordinary interactive shell) is the shell, not
+# whatever's actually running - freezing the shell alone does nothing,
+# since the real foreground program is a separate process that simply
+# keeps running unaffected (confirmed live for both claude and htop).
+#
+# The generic, program-agnostic fix: read the pty's current foreground
+# process group (tpgid, /proc/<pid>/stat field 8 - using the same
+# skip-past-comm approach as this daemon's _read_proc_state/_is_cgroup_
+# frozen, since the comm field can itself contain spaces or parens) rather
+# than searching for a specific program by name. In ordinary job control, a
+# job's pgid equals the pid of its leading process, so tpgid IS that
+# process's own pid directly - this is exactly what tcgetpgrp() would
+# report, i.e. "whichever program the shell has currently ceded the
+# terminal to", with no knowledge of what that program is. Falls back to
+# pane_pid itself if this can't be read (e.g. pid raced and already
+# exited), which for an idle shell prompt is the correct target anyway -
+# the shell itself is what's in the foreground when nothing else is
+# running. Does not handle a multi-process pipeline job whose leading
+# process has since exited (rare for an interactive foreground program).
+rest=$(awk -F')' '{print $NF}' "/proc/$pane_pid/stat" 2>/dev/null) || rest=""
+tpgid=$(echo "$rest" | awk '{print $6}')
+if [ -n "$tpgid" ] && [ -d "/proc/$tpgid" ]; then
+	pid="$tpgid"
+else
+	pid="$pane_pid"
+fi
 
 cgroup_line=$(grep '^0::' "/proc/$pid/cgroup") || {
 	echo "freeze-process-cgroup-toggle: /proc/$pid/cgroup has no cgroup v2 line" >&2
