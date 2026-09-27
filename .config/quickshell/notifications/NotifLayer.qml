@@ -65,7 +65,7 @@ PanelWindow {
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.topMargin: 6 // matches Bar.qml's pill spacing
-        anchors.rightMargin: 12
+        anchors.rightMargin: 3 // matches Bar.qml rightRow's anchors.rightMargin
         spacing: 8
         visible: root.cards.length > 0
 
