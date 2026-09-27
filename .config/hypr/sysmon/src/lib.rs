@@ -334,31 +334,37 @@ pub enum Snapshot {
     // delta -- never diffed/streamed like the history arrays):
     //   - `power_pct`/`power_w`/`power_limit_w`: CPU package (RAPL
     //     `intel-rapl:0`). `power_limit_w`, DESPITE THE NAME (kept for wire
-    //     compatibility), is no longer PL2 -- it's `power_max_w`, the
-    //     highest watt reading this zone has ever produced (2026-09-27:
-    //     "percentages there dont make sense... adjust based on whatever
-    //     maximum readout ever was" -- PL2 is a firmware ceiling rarely
-    //     approached in practice, e.g. this package's 55W against a ~44W
-    //     observed peak under an actual stress test, so real draw sat low
-    //     on the graph's fixed 0-100 axis and read as tangled with the
-    //     per-core lines down there). Still can't clip (values are clamped,
-    //     not auto-scaled -- see Graph.qml): sysmond grows the max to at
-    //     least this tick's reading BEFORE dividing by it, every tick, so
-    //     the numerator can never exceed the denominator.
+    //     compatibility), is no longer PL2 (2026-09-27: "percentages there
+    //     dont make sense... adjust based on whatever maximum readout ever
+    //     was" -- PL2 is a firmware ceiling rarely approached in practice,
+    //     so real draw sat low on the graph's fixed 0-100 axis and read as
+    //     tangled with the per-core lines down there). Still can't clip
+    //     (values are clamped, not auto-scaled -- see Graph.qml): sysmond
+    //     grows each zone's own running max to at least this tick's
+    //     reading before ever dividing by anything.
     //   - `psys_pct`/`psys_w`/`psys_limit_w`: NOT the raw RAPL "platform"
     //     zone (`intel-rapl:1`) reading -- psys is Intel's whole-SoC
     //     domain, DEFINED to already include the package as a subset
     //     (confirmed 2026-09-19: ~20W psys against ~9W package at the same
-    //     instant on this laptop, i.e. psys = package + everything else,
-    //     not a separate rail). Request 2026-09-27 ("make platform read
+    //     instant on this laptop). Request 2026-09-27 ("make platform read
     //     not include cpu") wants "Platform" to read as a genuinely
     //     separate, additive quantity instead, so sysmond subtracts:
     //     `psys_w = (raw_psys_w - power_w).max(0.0)` -- voltage
     //     regulators, memory controller, and other board rails, with the
-    //     package portion of the raw reading removed. Same all-time-max-
-    //     based `psys_limit_w` treatment as `power_limit_w`, tracked
-    //     against this now-exclusive quantity, separately from the
-    //     package's own.
+    //     package portion removed.
+    //
+    //     BOTH `power_pct` and `psys_pct` normalize against the SAME
+    //     shared ceiling -- `power_max_w.max(psys_max_w)`, also what both
+    //     `power_limit_w` and `psys_limit_w` report -- not each its own
+    //     zone's max (reported 2026-09-27: "platform graph line is
+    //     incorrect, its at 25W but reading is only about 10W", from the
+    //     CPU pill's single right-hand watts axis only ever being correct
+    //     for whichever line's OWN max it happened to be reading off of,
+    //     when the two lines' independent maxes differed). A shared
+    //     ceiling makes line height directly comparable between the two
+    //     AND makes one shared axis correctly readable for both -- whoever
+    //     has the lower peak just never visually reaches 100%, which is
+    //     accurate.
     // (a third line, battery discharge (V x A from BAT0), was added
     // alongside these two 2026-09-19 and removed 2026-09-27 as redundant
     // once package+platform power were both already on the graph.)

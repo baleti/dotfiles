@@ -188,15 +188,23 @@ QtObject {
     readonly property real cpuSampleSeq: cpuSock.sampleSeq
 
     // Power lines (2026-09-19; battery-discharge line removed 2026-09-27 as
-    // redundant with package+platform): each *Pct is percent of that
-    // zone's own ALL-TIME-HIGHEST watt reading (2026-09-27, replacing an
-    // earlier percent-of-PL2), already normalized server-side (sysmond.rs)
-    // so it plots on the same 0-100 axis as cpuTotal/cpuCores without
-    // clipping. `*W` is the current point-in-time watts (compact-pill/
-    // legend readout); `*LimitW`, DESPITE THE NAME (kept for wire
-    // compatibility with the old PL2 meaning), is now that same all-time
-    // peak -- what `*Pct` is actually measured against, surfaced in
-    // Bar.qml's cpuLegend `desc` tooltip. `cpuPsysW`/`cpuPsysPct` are NOT
+    // redundant with package+platform): each *Pct is percent of the HIGHER
+    // of the two zones' all-time-highest watt readings -- a SHARED
+    // ceiling, not each zone's own separate one (2026-09-27, fixing
+    // "platform graph line is incorrect, its at 25W but reading is only
+    // about 10W": two independent ceilings made line height mean a
+    // different number of watts depending which line you looked at, so
+    // Bar.qml's single right-hand watts axis could only ever be correct
+    // for one of the two at a time). Already normalized server-side
+    // (sysmond.rs) so it plots on the same 0-100 axis as cpuTotal/
+    // cpuCores without clipping -- whichever zone's own peak is lower
+    // just never visually reaches 100%, which is accurate. `*W` is the
+    // current point-in-time watts (compact-pill/legend readout);
+    // `*LimitW`, DESPITE THE NAME (kept for wire compatibility with the
+    // old PL2 meaning) and despite being named per-zone, both carry that
+    // SAME shared ceiling now -- what `*Pct` is actually measured against,
+    // surfaced in Bar.qml's cpuLegend `desc` tooltip and rightAxisFormatter.
+    // `cpuPsysW`/`cpuPsysPct` are NOT
     // the raw psys zone (2026-09-27, "make platform read not include cpu")
     // -- sysmond subtracts `power_w` out server-side first, so this is
     // "platform minus CPU package", additive with `cpuPowerW` rather than
