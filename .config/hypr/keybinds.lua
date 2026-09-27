@@ -120,12 +120,15 @@ hl.bind("CTRL + ALT + l", hl.dsp.focus({ workspace = "r+1" }), { repeating = fal
 -- actually has windows on it, skipping empty numeric gaps. "r-1"/"r+1" above
 -- walk workspace *numbers* one at a time, so from 6 with 7 empty and 8
 -- occupied, CTRL+ALT+l lands on (creating) 7 instead of 8. This walks the
--- sorted set of workspace ids seen on any window instead.
-local function occupied_workspace_ids()
+-- sorted set of workspace ids seen on any window instead, restricted to the
+-- current monitor (like "r-1"/"r+1") so it never hops to a workspace shown
+-- on a different monitor.
+local function occupied_workspace_ids(monitor_id)
     local ids, seen = {}, {}
     for _, w in ipairs(hl.get_windows({})) do
         local id = w.workspace and w.workspace.id
-        if id and id > 0 and not seen[id] then
+        local mon = w.workspace and w.workspace.monitor
+        if id and id > 0 and mon and mon.id == monitor_id and not seen[id] then
             seen[id] = true
             table.insert(ids, id)
         end
@@ -138,7 +141,8 @@ local function jump_to_occupied_workspace(forward)
     return function()
         local cur = hl.get_active_workspace()
         local cur_id = cur and cur.id or 1
-        local ids = occupied_workspace_ids()
+        local monitor_id = cur and cur.monitor and cur.monitor.id
+        local ids = occupied_workspace_ids(monitor_id)
         if forward then
             for _, id in ipairs(ids) do
                 if id > cur_id then
