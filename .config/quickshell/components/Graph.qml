@@ -22,10 +22,9 @@ import "../theme"
 //    safe for smooth lines like those same two power lines, still avoided
 //    for the spiky per-sample metrics that prompted `dashed` to stop
 //    meaning a visual dash pattern in the first place. Hand-rolled in
-//    `strokeSeries`/`_dashOn` below rather than `ctx.setLineDash` -- see
-//    `sampleSeq`'s own comment for why the canvas-native version
-//    couldn't be made to travel with the data no matter which way its
-//    offset was nudged.
+//    `strokeSeries`/`_dashRun` below rather than `ctx.setLineDash` -- see
+//    `_arcPositions`' comment; the canvas-native version couldn't be made
+//    to travel with the data.
 Canvas {
     id: root
 
@@ -128,37 +127,85 @@ Canvas {
     property real hoveredPixelX: 0
     property real hoveredPixelY: 0
 
-    // Dash-phase animation for dashed lines (request 2026-09-27), take 4.
-    //
-    // Goal: dashes belong to the DATA -- they scroll left with the line and
-    // new ones appear at the right edge, rather than the line sliding
-    // through a fixed "field of dashes". Takes 1-2 (wall-clock timer, then
-    // `ctx.lineDashOffset`) are in git history. Take 3 got the geometry
-    // right (on/off computed by hand from each point's absolute x plus a
-    // phase, see `_dashOn`) but bumped the phase once per
-    // `seriesListChanged` -- and a derived seriesList (the CPU pill's
-    // cores + power lines, built from several SysmonSvc properties) fires
-    // that more than once per sample, so the phase outran the data and
-    // the dashes still didn't sit still relative to the line.
-    //
-    // Take 4 takes the phase from `sampleSeq`, a count of samples actually
-    // appended (TieredSocket.qml), not from change signals: a value at slot
-    // s from the right sits at x = width - s*px, and phase = seq*px, so
-    // x + phase = width + (seq - s)*px -- `seq - s` is that sample's own
-    // absolute index, constant for its whole life on screen, hence so is
-    // its dash state.
+    // Samples-appended counter from TieredSocket.qml -- gives every point
+    // an absolute index (`downsample`'s `k`) that stays with it as it
+    // scrolls, which is what anchors dashes to the data (`_arcPositions`).
     property real sampleSeq: 0
-    readonly property real _dashPhase: sampleSeq * width / historyLen
-    // Whether canvas x `x` is in the "on" part of a simple [onLen, offLen]
-    // dash pattern, given the shared `_dashPhase`. JS `%` can return
-    // negative for a negative dividend (`_dashPhase` only ever grows here,
-    // but `x` plus a very stale phase after e.g. a long-idle panel could
-    // still land either side of zero before the first wrap) -- the double
-    // `% cycle + cycle) % cycle` normalizes into [0, cycle).
-    function _dashOn(x, dash) {
-        const cycle = dash[0] + dash[1];
-        const d = ((x + root._dashPhase) % cycle + cycle) % cycle;
-        return d < dash[0];
+
+    // Arc-length dashing (2026-09-27, take 5). Take 4 decided on/off from
+    // each point's x alone, so a steep rise/fall -- a lot of line over very
+    // little x -- came out as one long unbroken "dash", and state could only
+    // flip at sample vertices. Now the pattern runs along the line's true
+    // length and every dash edge is cut at its exact interpolated point.
+    //
+    // To keep dashes travelling WITH the data, each sample's arc position is
+    // cached by its absolute index (`sampleSeq` - slot from the right) the
+    // first time it's seen, and reused while it scrolls: segment lengths
+    // are translation-invariant, so a cached chain stays valid. Each reuse
+    // is checked against the actual segment length, and a mismatch (tier
+    // switch, mis-inferred resync shift) rebuilds the chain from that point
+    // on -- self-healing rather than trusting the counter blindly. The
+    // newest `_uncommitted` points aren't cached: the moving-average in
+    // `smooth()` still changes them as the next samples arrive.
+    property var _arcCache: ({})
+    readonly property int _uncommitted: 3
+    function _resetArcCache() { root._arcCache = ({}); }
+    onWidthChanged: _resetArcCache()
+    onHeightChanged: _resetArcCache()
+
+    // Arc positions for one run of screen points ({x, y, k}), via/into the
+    // cache map `m` (absolute index -> arc px).
+    function _arcPositions(run, m, commitBelow) {
+        const out = new Array(run.length);
+        const k0 = run[0].k;
+        out[0] = m[k0] ?? 0;
+        if (run[0].k < commitBelow)
+            m[k0] = out[0];
+        for (let i = 1; i < run.length; i++) {
+            const seg = Math.hypot(run[i].x - run[i - 1].x, run[i].y - run[i - 1].y);
+            const want = out[i - 1] + seg;
+            const have = m[run[i].k];
+            out[i] = (have !== undefined && Math.abs(have - want) < 0.25) ? have : want;
+            if (run[i].k < commitBelow)
+                m[run[i].k] = out[i];
+        }
+        return out;
+    }
+
+    // Adds the "on" pieces of one run to the current path as subpaths
+    // (single stroke() for the whole series by the caller).
+    function _dashRun(ctx, run, arc, dash) {
+        const on = dash[0], cycle = dash[0] + dash[1];
+        const phase = s => ((s % cycle) + cycle) % cycle;
+        let penDown = phase(arc[0]) < on;
+        if (penDown)
+            ctx.moveTo(run[0].x, run[0].y);
+        for (let i = 1; i < run.length; i++) {
+            const p0 = run[i - 1], p1 = run[i];
+            const s0 = arc[i - 1], s1 = arc[i];
+            const len = s1 - s0;
+            if (len <= 0)
+                continue;
+            // Walk every dash boundary inside (s0, s1).
+            let s = s0;
+            while (true) {
+                const ph = phase(s);
+                const next = s + (ph < on ? on - ph : cycle - ph);
+                if (next >= s1)
+                    break;
+                const t = (next - s0) / len;
+                const x = p0.x + (p1.x - p0.x) * t, y = p0.y + (p1.y - p0.y) * t;
+                if (penDown)
+                    ctx.lineTo(x, y);
+                else
+                    ctx.moveTo(x, y);
+                penDown = !penDown;
+                // Nudge past the boundary so phase() lands in the next state.
+                s = next + 1e-6;
+            }
+            if (penDown)
+                ctx.lineTo(p1.x, p1.y);
+        }
     }
 
     function _pointCount() {
@@ -169,7 +216,7 @@ Canvas {
 
     onSeriesChanged: requestPaint()
     onSeriesListChanged: requestPaint()
-    onMaxValueChanged: requestPaint()
+    onMaxValueChanged: { _resetArcCache(); requestPaint(); }
     onFillOverlayChanged: requestPaint()
     onSecondaryOnTopChanged: requestPaint()
     onLineWidthChanged: requestPaint()
@@ -254,7 +301,8 @@ Canvas {
         const points = new Array(n);
         for (let i = 0; i < n; i++) {
             const slotFromRight = n - 1 - i;
-            points[i] = { x: width - slotFromRight * pxPerSample, v: smoothed[i] };
+            // `k`: absolute sample index -- see `_arcPositions`.
+            points[i] = { x: width - slotFromRight * pxPerSample, v: smoothed[i], k: Math.round(root.sampleSeq) - slotFromRight };
         }
         return points;
     }
@@ -437,7 +485,7 @@ Canvas {
         }
     }
 
-    function strokeSeries(ctx, rawData, rawColor, lineWidth, strokeAlpha, dash = []) {
+    function strokeSeries(ctx, rawData, rawColor, lineWidth, strokeAlpha, dash = [], cacheKey = "") {
         if (rawData.length < 2)
             return;
         const points = root.downsample(rawData);
@@ -470,48 +518,26 @@ Canvas {
         // these dash lengths. Flat, perpendicular-cut ends instead.
         ctx.lineCap = "butt";
 
-        // Hand-rolled dashing (see `_dashOn`'s own comment on why not
-        // `ctx.setLineDash`). First cut at this (request 2026-09-27)
-        // connected every raw point inside each "on" window with lineTo,
-        // i.e. traced the real, noisy per-sample wiggle within that few-px
-        // span -- zoomed screenshots showed the result wasn't blur at all,
-        // it was SHAPE: each "dash" came out as a tiny jagged hook/comma at
-        // a near-random angle instead of a clean tick, because a handful of
-        // raw samples with normal tick-to-tick jitter rarely form a
-        // straight line over just a few px. Fix: draw each dash as ONE
-        // straight chord from the window's first point to its last,
-        // skipping whatever the raw samples did in between -- still
-        // following the line's real trend (the chord's endpoints are real
-        // data), just not re-litigating every intermediate wiggle inside a
-        // mark that's only a few px long anyway.
+        // Dashed: arc-length pattern (see `_arcPositions`). Butt caps --
+        // round caps on short dashes bulge each one into a blob -- and one
+        // stroke() over every dash as subpaths so they antialias alike.
+        ctx.lineCap = "butt";
+        const m = root._arcCache[cacheKey] ?? (root._arcCache[cacheKey] = ({}));
+        const newest = points[points.length - 1].k;
+        const commitBelow = newest - root._uncommitted + 1;
+        ctx.beginPath();
         for (const run of runs) {
             if (run.length < 2)
                 continue;
-            let on = root._dashOn(run[0].x, dash);
-            let segStartX = run[0].x, segStartY = yOf(run[0].v);
-            for (let i = 1; i < run.length; i++) {
-                const x = run[i].x, y = yOf(run[i].v);
-                const nowOn = root._dashOn(x, dash);
-                if (nowOn !== on) {
-                    if (on) {
-                        ctx.beginPath();
-                        ctx.moveTo(segStartX, segStartY);
-                        ctx.lineTo(x, y);
-                        ctx.stroke();
-                    }
-                    segStartX = x;
-                    segStartY = y;
-                    on = nowOn;
-                }
-            }
-            if (on) {
-                const last = run[run.length - 1];
-                ctx.beginPath();
-                ctx.moveTo(segStartX, segStartY);
-                ctx.lineTo(last.x, yOf(last.v));
-                ctx.stroke();
-            }
+            const pts = run.map(p => ({ x: p.x, y: yOf(p.v), k: p.k }));
+            root._dashRun(ctx, pts, root._arcPositions(pts, m, commitBelow), dash);
         }
+        ctx.stroke();
+        // Drop cache entries that have scrolled off the left.
+        const oldest = points[0].k;
+        for (const key in m)
+            if (key < oldest)
+                delete m[key];
     }
 
     onPaint: {
@@ -560,8 +586,11 @@ Canvas {
             // cached/VRAM) at 0.62 alpha, not much below primary's 0.9:
             // lower still and it looked like a thinner line rather than a
             // quieter one.
-            const strokeSecondary = () => { for (const s of secondary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.62, s.dash ?? []); };
-            const strokePrimary = () => { for (const s of primary) strokeSeries(ctx, s.data, s.color, root.lineWidth, 0.9, s.dash ?? []); };
+            // Per-series `width` overrides root.lineWidth -- the CPU pill's
+            // dashed power lines need more than the cores' 0.7px, where a
+            // dash is too thin to read as anything but a smear.
+            const strokeSecondary = () => { for (const s of secondary) strokeSeries(ctx, s.data, s.color, s.width ?? root.lineWidth, 0.62, s.dash ?? [], s.name ?? ""); };
+            const strokePrimary = () => { for (const s of primary) strokeSeries(ctx, s.data, s.color, s.width ?? root.lineWidth, 0.9, s.dash ?? [], s.name ?? ""); };
             if (root.secondaryOnTop) {
                 strokePrimary();
                 strokeSecondary();
@@ -587,7 +616,7 @@ Canvas {
         if (root.hoveredName.length > 0) {
             for (const s of root._hitTestSeries())
                 if ((s.name ?? "") === root.hoveredName)
-                    strokeSeries(ctx, s.data, s.color, root.lineWidth * 2.2, 1.0, s.dash ?? []);
+                    strokeSeries(ctx, s.data, s.color, s.width ? s.width * 1.5 : root.lineWidth * 2.2, 1.0, s.dash ?? [], s.name ?? "");
         }
     }
 }
