@@ -74,8 +74,17 @@ Rectangle {
     property var yAxisFormatter: v => Math.round(v)
     readonly property var gridFractions: [0, 0.25, 0.5, 0.75, 1.0]
 
-    // [{name, color}] -- shown under the graph when non-empty.
+    // [{name, color}] -- shown under the graph when non-empty. An entry may
+    // also set `desc` (2026-09-27, CPU pill's Power/Platform rows) -- plain
+    // explanatory text shown in a hover tooltip over that legend row, for a
+    // metric whose name alone doesn't say what it actually measures.
     property var legendItems: []
+    // Shared by both legend Flow blocks below -- which row's tooltip (if
+    // any) is showing, and where to anchor it. Set by each row's own
+    // HoverHandler, read by the one tooltip Rectangle near the bottom of
+    // this file.
+    property string _legendHoverDesc: ""
+    property point _legendHoverPos: Qt.point(0, 0)
     // [{name, pcent}] -- shown as a labelled bar per entry, under the graph
     // (above legendItems/topProcs) when non-empty. Percent-of-capacity
     // readings (e.g. disk space used) rather than the graph's own
@@ -732,6 +741,25 @@ Rectangle {
                         // legend row and one name).
                         readonly property bool hovered: legendRow.modelData.name === graph.hoveredLegendName
 
+                        // `desc` tooltip (see `legendItems`' own comment) --
+                        // a HoverHandler rather than a MouseArea since it
+                        // needs no `anchors.fill` (disallowed on a direct
+                        // Row child, which manages its children's x itself)
+                        // to cover the row: a pointer handler isn't an Item
+                        // Row has to lay out, it just hit-tests its parent's
+                        // existing bounds.
+                        HoverHandler {
+                            onHoveredChanged: {
+                                if (hovered && legendRow.modelData.desc) {
+                                    const p = legendRow.mapToItem(root, 0, 0);
+                                    root._legendHoverPos = Qt.point(p.x, p.y);
+                                    root._legendHoverDesc = legendRow.modelData.desc;
+                                } else {
+                                    root._legendHoverDesc = "";
+                                }
+                            }
+                        }
+
                         // `dash: true` (2026-09-27, CPU pill's power lines)
                         // swaps the usual filled-square swatch for a
                         // dashed-line one, matching how the line itself
@@ -857,6 +885,20 @@ Rectangle {
                             spacing: 5
                             required property var modelData
                             readonly property bool hovered: legendRow2.modelData.name === graph.hoveredLegendName
+
+                            // See the other legend block's own comment on
+                            // `desc` -- same tooltip, same reasoning.
+                            HoverHandler {
+                                onHoveredChanged: {
+                                    if (hovered && legendRow2.modelData.desc) {
+                                        const p = legendRow2.mapToItem(root, 0, 0);
+                                        root._legendHoverPos = Qt.point(p.x, p.y);
+                                        root._legendHoverDesc = legendRow2.modelData.desc;
+                                    } else {
+                                        root._legendHoverDesc = "";
+                                    }
+                                }
+                            }
 
                             // See the other legend block's own comment on
                             // `dash` -- same swap, same reasoning.
@@ -1354,6 +1396,39 @@ Rectangle {
             }
         }
 
+    }
+
+    // Legend-row tooltip (request 2026-09-27, CPU pill's Power/Platform
+    // labels) -- plain explanatory text for a legend entry that sets
+    // `desc` (see `legendItems`' own comment), positioned just ABOVE the
+    // hovered row since the legend always sits near the panel's bottom
+    // edge (its own line, or sharing the tier-button row). `parent: root`
+    // for the same reason as `hoverTip` below -- escapes `expandPanel`'s
+    // `clip: true`.
+    Rectangle {
+        id: legendTip
+        parent: root
+        visible: root._legendHoverDesc.length > 0
+        z: 100
+        width: Math.min(240, legendTipText.implicitWidth + 16)
+        height: legendTipText.implicitHeight + 12
+        x: Math.max(4, Math.min(root._legendHoverPos.x, root.width - width - 4))
+        y: root._legendHoverPos.y - height - 6
+        color: Theme.bg
+        border.color: Theme.border
+        border.width: 1
+        radius: Theme.rounding
+
+        Text {
+            id: legendTipText
+            anchors.fill: parent
+            anchors.margins: 6
+            text: root._legendHoverDesc
+            wrapMode: Text.WordWrap
+            color: Theme.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSize - 3
+        }
     }
 
     // Graph-hover tooltip -- the top processes at the graph point under the

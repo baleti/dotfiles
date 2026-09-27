@@ -124,6 +124,27 @@ Canvas {
     property real hoveredPixelX: 0
     property real hoveredPixelY: 0
 
+    // Marching-ants animation for dashed lines (request 2026-09-27): a
+    // dash pattern redrawn every tick with the same fixed phase reads as
+    // printed onto the line rather than flowing with it. Offsetting the
+    // phase a constant few px/tick and repainting makes dashed series
+    // visibly crawl leftward -- the same direction the graph itself
+    // scrolls as data ages -- so they read as part of the line's motion,
+    // not a static overlay. Gated on actually having a dashed series so
+    // every other pill (nothing sets `dash`) never pays for the extra
+    // timer/repaint churn.
+    readonly property bool _hasDashedSeries: seriesList.filter(s => s.dash && s.dash.length > 0).length > 0
+    property real _dashPhase: 0
+    Timer {
+        interval: 40
+        repeat: true
+        running: root._hasDashedSeries
+        onTriggered: {
+            root._dashPhase -= 0.8;
+            root.requestPaint();
+        }
+    }
+
     function _pointCount() {
         if (root.seriesList.length > 0)
             return root.seriesList[0] && root.seriesList[0].data ? root.seriesList[0].data.length : 0;
@@ -415,8 +436,11 @@ Canvas {
         // Always set explicitly (even to [], the solid default) rather than
         // relying on the default param alone -- every call shares this one
         // canvas context, so a dashed series drawn earlier this frame would
-        // otherwise leak its dash into the next plain stroke.
+        // otherwise leak its dash into the next plain stroke. The offset
+        // only matters while dash is non-empty (irrelevant for a solid
+        // line) but is harmless to always set.
         ctx.setLineDash(dash);
+        ctx.lineDashOffset = root._dashPhase;
         for (const run of runs) {
             if (run.length < 2)
                 continue;
