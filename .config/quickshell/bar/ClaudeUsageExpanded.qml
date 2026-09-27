@@ -1189,13 +1189,14 @@ Rectangle {
             // attach lands looking at the right one.
             spawnAttachProc.exec(["alacritty", "-e", "tmux", "attach", "-t", "$" + row.tmux_session]);
         }
-        // Deliberately stays open after focusing -- picking a window here
-        // is meant to feel like clicking it in a normal alt-tab-ish list,
-        // not a one-shot action that closes the panel behind it (reverted
-        // 2026-09-12; the ALT+Tab/mod+Tab-can't-switch-away issue this used
-        // to work around was a winswitch-side focus-grab interaction, since
-        // fixed by winswitch's own socket2 rework rather than by closing
-        // this panel).
+        // Closes on pick (2026-09-27) -- picking a window here is a
+        // one-shot "go there" action, not a hover-ish alt-tab list. Used to
+        // deliberately stay open (reverted 2026-09-12, see git history) to
+        // route around an ALT+Tab/mod+Tab-can't-switch-away issue, but that
+        // was a winswitch-side focus-grab interaction since fixed by
+        // winswitch's own socket2 rework, so nothing depends on staying
+        // open anymore.
+        root.expanded = false;
     }
 
     // ---- keyboard row navigation --------------------------------------
