@@ -731,12 +731,30 @@ Rectangle {
                 visible: root.legendItems.length > 0 && !root.legendSharesTierLine
 
                 Repeater {
-                    model: root.legendItems
+                    // `legendItems.length`, not `legendItems` itself
+                    // (request 2026-09-27: "tooltip over cpu label
+                    // disappears after a while") -- `legendItems` is a
+                    // fresh array every time any watt reading it embeds
+                    // updates (every incoming sample, ~1/sec), and a plain
+                    // JS-array model gives Repeater no way to tell "same
+                    // rows, new values" from "all-new rows": it destroys
+                    // and recreates every delegate on ANY change. That
+                    // silently killed this row's HoverHandler mid-hover --
+                    // a freshly created handler doesn't know the cursor
+                    // was already sitting over it, so the tooltip vanished
+                    // without a real mouse-leave. An integer model instead
+                    // only changes (so only reallocates) when the ROW
+                    // COUNT changes, never on a value update -- `modelData`
+                    // below reads live off `root.legendItems[index]`
+                    // instead of being handed a frozen copy, still fully
+                    // reactive, but through a delegate that now persists.
+                    model: root.legendItems.length
 
                     Row {
                         id: legendRow
                         spacing: 5
-                        required property var modelData
+                        required property int index
+                        readonly property var modelData: root.legendItems[index]
                         // Matched by name against whichever line is under
                         // the cursor (request 2026-09-10) -- see
                         // Graph.hoveredLegendName's own comment for why
@@ -893,12 +911,15 @@ Rectangle {
                     spacing: 10
 
                     Repeater {
-                        model: root.legendItems
+                        // See the other legend block's own comment on why
+                        // this is `.length`, not the array itself.
+                        model: root.legendItems.length
 
                         Row {
                             id: legendRow2
                             spacing: 5
-                            required property var modelData
+                            required property int index
+                            readonly property var modelData: root.legendItems[index]
                             readonly property bool hovered: legendRow2.modelData.name === graph.hoveredLegendName
 
                             // See the other legend block's own comment on
