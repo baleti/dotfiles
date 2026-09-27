@@ -184,6 +184,8 @@ QtObject {
     readonly property list<real> cpuTotal: cpuSock.data.total ?? []
     // One history array per logical CPU, index = core number.
     readonly property var cpuCores: cpuSock.data.cores ?? []
+    // Samples-appended counter, for Graph.qml's data-anchored dash phase.
+    readonly property real cpuSampleSeq: cpuSock.sampleSeq
 
     // Power lines (2026-09-19; battery-discharge line removed 2026-09-27 as
     // redundant with package+platform): each *Pct is percent-of-that-

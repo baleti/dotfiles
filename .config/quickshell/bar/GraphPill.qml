@@ -32,6 +32,8 @@ Rectangle {
     property string mode: "single"
     property list<real> series: []
     property var seriesList: []
+    // Forwarded to Graph.qml -- see its `sampleSeq` comment (dash phase).
+    property real sampleSeq: 0
     property real maxValue: 100
     // Overlay mode only -- passthrough to Graph.fillOverlay. Off for the
     // GPU pill (request 2026-09-06), on (default) everywhere else.
@@ -668,6 +670,7 @@ Rectangle {
                     height: parent.height
                     series: root.mode === "single" ? root.series : []
                     seriesList: root.mode === "overlay" ? root.seriesList : []
+                    sampleSeq: root.sampleSeq
                     maxValue: root.maxValue
                     color1: root.color1
                     fillOverlay: root.fillOverlay

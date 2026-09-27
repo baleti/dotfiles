@@ -920,6 +920,7 @@ Item {
             valueLabel: compactText
             mode: "overlay"
             seriesList: root.cpuOverlayList
+            sampleSeq: SysmonSvc.cpuSampleSeq
             // Hover-bolding was off here (a dozen unlabelled per-core
             // lines, nothing to match a bolded one back to) until the
             // named power lines (2026-09-19) gave the pill a real legend --
