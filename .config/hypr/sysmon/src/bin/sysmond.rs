@@ -2618,16 +2618,30 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
         h.cpu_total.push_raw(cpu_total);
         h.temp_c.push_raw(temp_c);
         let pct_of_limit = |w: f64, limit: f64| if limit > 0.0 { (100.0 * w / limit).max(0.0) } else { 0.0 };
-        // Grow each ceiling to at least this tick's reading BEFORE
-        // dividing by it -- so `power_w`/`psys_w` can never exceed their
-        // own denominator and this can't clip the graph's fixed 0-100 axis,
-        // same safety property PL2 used to give, just self-adjusting to
-        // real observed peaks instead of a firmware constant.
+        // Grow each zone's own ceiling to at least this tick's reading
+        // BEFORE dividing by it -- so `power_w`/`psys_w` can never exceed
+        // their own denominator and this can't clip the graph's fixed
+        // 0-100 axis, same safety property PL2 used to give, just
+        // self-adjusting to real observed peaks instead of a firmware
+        // constant.
         h.power_max_w = h.power_max_w.max(power_w);
         h.psys_max_w = h.psys_max_w.max(psys_w);
-        let (power_max, psys_max) = (h.power_max_w, h.psys_max_w);
-        h.power_pct.push_raw(pct_of_limit(power_w, power_max));
-        h.psys_pct.push_raw(pct_of_limit(psys_w, psys_max));
+        // ...but BOTH lines are normalized against the HIGHER of the two
+        // (not each its own), and both report that same shared value as
+        // their `power_limit_w`/`psys_limit_w` -- reported 2026-09-27:
+        // "platform graph line is incorrect, its at 25W but reading is
+        // only about 10W". Each line normalizing against its own separate
+        // max made a given height mean a DIFFERENT number of watts
+        // depending on which line you were looking at, so the CPU pill's
+        // single right-hand axis (added the same day) was only ever
+        // correct for one of the two lines at a time. A shared ceiling
+        // makes height directly comparable AND makes one axis correctly
+        // readable for both -- the line whose own peak is lower just
+        // never visually reaches 100%, which is accurate (it hasn't drawn
+        // as many watts as the other one's worst moment).
+        let shared_max = h.power_max_w.max(h.psys_max_w);
+        h.power_pct.push_raw(pct_of_limit(power_w, shared_max));
+        h.psys_pct.push_raw(pct_of_limit(psys_w, shared_max));
         h.power_w_now = power_w;
         h.psys_w_now = psys_w;
         h.mem_used_pct.push_raw(mem_used_pct);
@@ -2960,10 +2974,13 @@ fn serve_client(stream: UnixStream, history: Arc<Mutex<History>>, demand: Demand
                         cores,
                         power_pct,
                         power_w: h.power_w_now,
-                        power_limit_w: h.power_max_w,
+                        // Both report the SAME shared ceiling (see
+                        // sample_loop's own comment on `shared_max`) --
+                        // whichever zone's own peak is higher.
+                        power_limit_w: h.power_max_w.max(h.psys_max_w),
                         psys_pct,
                         psys_w: h.psys_w_now,
-                        psys_limit_w: h.psys_max_w,
+                        psys_limit_w: h.power_max_w.max(h.psys_max_w),
                     }
                 }
                 Metric::Temp => {
