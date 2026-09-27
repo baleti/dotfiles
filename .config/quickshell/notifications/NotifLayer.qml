@@ -64,8 +64,8 @@ PanelWindow {
         id: stack
         anchors.top: parent.top
         anchors.right: parent.right
-        anchors.topMargin: 6 // matches Bar.qml's pill spacing
-        anchors.rightMargin: 3 // matches Bar.qml rightRow's anchors.rightMargin
+        anchors.topMargin: HyprGaps.top // matches a real window's gap below the bar
+        anchors.rightMargin: HyprGaps.right // matches Bar.qml rightRow's anchors.rightMargin
         spacing: 8
         visible: root.cards.length > 0
 
