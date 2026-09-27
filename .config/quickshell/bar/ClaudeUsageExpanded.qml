@@ -782,10 +782,17 @@ Rectangle {
         root.thumbReady = false;
         root.mouseMovedSinceOpen = false;
         root._hoverSettled = false;
-        if (root.expanded)
+        if (root.expanded) {
             hoverSettleTimer.restart();
-        else
+            // Preselect the row for whatever Hyprland window currently has
+            // focus, if any of the visible rows map to it -- async, so it
+            // lands a beat after the plain "first row" default just above;
+            // _selectAddressIfPresent no-ops if the panel's since closed
+            // again or nothing matches (request 2026-09-27).
+            activeWindowProc.exec(["hyprctl", "-j", "activewindow"]);
+        } else {
             hoverSettleTimer.stop();
+        }
         // root.searchText alone doesn't clear the box -- searchInput.text
         // only flows one way into it (onTextChanged), so the TextInput's
         // own text needs setting directly too (reported 2026-09-01: box
@@ -1288,6 +1295,38 @@ Rectangle {
             if (row)
                 root.focusHyprWindow(row);
             event.accepted = true;
+        }
+    }
+
+    // Called from activeWindowProc once `hyprctl -j activewindow` answers.
+    // Guarded on root.expanded since the query is async and the panel may
+    // have closed again (or reopened past this row set) by the time it
+    // lands; a non-match (address blank, or no row of this session table
+    // maps to it) just leaves the plain first-row default from
+    // onExpandedChanged in place.
+    function _selectAddressIfPresent(addr) {
+        if (!root.expanded || !addr)
+            return;
+        const idx = root.sortedProcs.findIndex(r => r.hypr_address === addr);
+        if (idx >= 0) {
+            root.selIndex = idx;
+            root.selActive = true;
+            root._ensureSelVisible();
+        }
+    }
+
+    Process {
+        id: activeWindowProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    root._selectAddressIfPresent(JSON.parse(text).address || "");
+                } catch (e) {
+                    // Not running inside a live Hyprland session, or
+                    // hyprctl's output shape changed -- keep the plain
+                    // first-row default.
+                }
+            }
         }
     }
 
