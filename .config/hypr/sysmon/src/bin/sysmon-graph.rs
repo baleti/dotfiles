@@ -121,8 +121,6 @@ fn merge_snapshot(existing: Option<Snapshot>, incoming: Snapshot) -> Snapshot {
             psys_pct,
             psys_w,
             psys_limit_w,
-            battery_pct,
-            battery_w,
         } => Snapshot::Cpu {
             full: true,
             total,
@@ -133,8 +131,6 @@ fn merge_snapshot(existing: Option<Snapshot>, incoming: Snapshot) -> Snapshot {
             psys_pct,
             psys_w,
             psys_limit_w,
-            battery_pct,
-            battery_w,
         },
         Snapshot::Cpu {
             full: false,
@@ -146,19 +142,16 @@ fn merge_snapshot(existing: Option<Snapshot>, incoming: Snapshot) -> Snapshot {
             psys_pct: d_psys_pct,
             psys_w,
             psys_limit_w,
-            battery_pct: d_battery_pct,
-            battery_w,
         } => {
-            let (mut total, mut cores, mut power_pct, mut psys_pct, mut battery_pct) = match existing {
-                Some(Snapshot::Cpu { total, cores, power_pct, psys_pct, battery_pct, .. }) => {
-                    (total, cores, power_pct, psys_pct, battery_pct)
+            let (mut total, mut cores, mut power_pct, mut psys_pct) = match existing {
+                Some(Snapshot::Cpu { total, cores, power_pct, psys_pct, .. }) => {
+                    (total, cores, power_pct, psys_pct)
                 }
-                _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             };
             append_trim(&mut total, d_total);
             append_trim(&mut power_pct, d_power_pct);
             append_trim(&mut psys_pct, d_psys_pct);
-            append_trim(&mut battery_pct, d_battery_pct);
             if cores.len() != d_cores.len() {
                 cores = vec![Vec::new(); d_cores.len()];
             }
@@ -175,8 +168,6 @@ fn merge_snapshot(existing: Option<Snapshot>, incoming: Snapshot) -> Snapshot {
                 psys_pct,
                 psys_w,
                 psys_limit_w,
-                battery_pct,
-                battery_w,
             }
         }
         Snapshot::Temp { full: true, celsius } => Snapshot::Temp { full: true, celsius },
