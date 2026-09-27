@@ -16,12 +16,16 @@ import "../theme"
 //    with no fill, so it still reads as "the quieter twin" of its solid
 //    partner. `noFill` (2026-09-27) independently drops a PRIMARY series
 //    out of the fill pass only (envelope or individual) while keeping its
-//    full-alpha, on-top stroke -- the CPU pill's power/platform/battery
-//    lines use this so they don't add to the grey wash under the per-core
-//    envelope. `dash` (2026-09-27) is an actual canvas setLineDash() array,
-//    opt-in per series -- safe for smooth lines like those same three
-//    power lines, still avoided for the spiky per-sample metrics that
-//    prompted `dashed` to stop doing this in the first place.
+//    full-alpha, on-top stroke -- the CPU pill's power/platform lines use
+//    this so they don't add to the grey wash under the per-core envelope.
+//    `dash` (2026-09-27) is a `[onLen, offLen]` pair, opt-in per series --
+//    safe for smooth lines like those same two power lines, still avoided
+//    for the spiky per-sample metrics that prompted `dashed` to stop
+//    meaning a visual dash pattern in the first place. Hand-rolled in
+//    `strokeSeries`/`_dashOn` below rather than `ctx.setLineDash` -- see
+//    `_advanceDashPhase`'s own comment for why the canvas-native version
+//    couldn't be made to travel with the data no matter which way its
+//    offset was nudged.
 Canvas {
     id: root
 
@@ -124,39 +128,52 @@ Canvas {
     property real hoveredPixelX: 0
     property real hoveredPixelY: 0
 
-    // Dash-phase animation for dashed lines (request 2026-09-27), take 2.
-    // First attempt used a wall-clock Timer nudging the phase at a fixed
-    // px/sec regardless of the data -- reported back as "dashes feel fixed
-    // in place, the line just moves through them", and that's exactly what
-    // a clock-driven phase gives you: `downsample()` maps array INDEX to x
-    // on a fixed width/historyLen grid, so once a tiered buffer is full,
-    // index 0 sits at the same x every single repaint -- only the VALUE
-    // sitting in each index/column changes as new samples push in and old
-    // ones drop off (a shift register, not a literal geometric slide).
-    // `strokeSeries` calls `ctx.moveTo(run[0].x, ...)` fresh every paint,
-    // so the dash pattern's phase-zero is re-anchored to that same
-    // roughly-fixed screen x every time -- an offset that changes with
-    // WALL-CLOCK TIME has no relationship to when a new sample actually
-    // lands in a given column, so the dashes drift at their own pace while
-    // the line's actual shape only steps once per real sample.
+    // Dash-phase animation for dashed lines (request 2026-09-27), take 3.
     //
-    // Fix: advance the phase by exactly one column-width (`width /
-    // historyLen`, i.e. `downsample`'s own pxPerSample) each time this
-    // series' data genuinely changes (`onSeriesListChanged`/
-    // `onSeriesChanged`, which fire once per incoming sample while a panel
-    // is open -- see TieredSocket.qml), not on a fixed timer. A value that
-    // was one column now sits one column to the left; nudging the phase by
-    // exactly one column's worth in the same tick keeps whichever dash was
-    // drawn over it lined up with that same value as it ages -- the dash
-    // now travels WITH the data instead of the screen. (One caveat: a
-    // wholesale resync -- tier switch, panel first opening -- replaces the
-    // whole buffer in one jump, not "+1 sample", so the phase can visibly
-    // hiccup right at that moment; harmless and over in the next tick.)
+    // Take 1 used a wall-clock Timer nudging the phase at a fixed px/sec
+    // regardless of the data -- reported back as "dashes feel fixed in
+    // place, the line just moves through them". Take 2 tied the phase to
+    // actual data updates instead of the clock (right idea) but still
+    // drove `ctx.lineDashOffset`, whose sign convention is "distance along
+    // THIS FRAME's path from its moveTo point" -- since `strokeSeries`
+    // calls `ctx.moveTo(run[0].x, ...)` fresh every repaint, and
+    // `downsample()` maps array INDEX to x on a fixed width/historyLen
+    // grid (so once a tiered buffer is full, a given index sits at the
+    // same x every single repaint -- only the VALUE occupying it changes
+    // as new samples push in and old ones drop off, a shift register, not
+    // a literal geometric slide), that "distance from path start" is
+    // itself ~constant across repaints regardless of which way the offset
+    // was nudged -- still reported as not right.
+    //
+    // Take 3 drops `ctx.setLineDash`/`lineDashOffset` for these series
+    // entirely and computes on/off state by hand from each point's own
+    // absolute canvas x plus a shared phase (`_dashOn` below), sidestepping
+    // the ambiguity above completely: a value that was at x now sits at
+    // x - pxPerSample once it's aged one column left (see the `downsample`
+    // comment above); advancing the phase by the SAME pxPerSample each
+    // time keeps `x + phase` constant FOR THAT VALUE across the
+    // transition, so its on/off state -- and whichever dash was drawn over
+    // it -- never flips. Verifiable by direct substitution, unlike the
+    // canvas-native attempts above. (One caveat: a wholesale resync --
+    // tier switch, panel first opening -- replaces the whole buffer in one
+    // jump, not "+1 sample", so the phase can visibly hiccup right at that
+    // moment; harmless and over in the next tick.)
     readonly property bool _hasDashedSeries: seriesList.filter(s => s.dash && s.dash.length > 0).length > 0
     property real _dashPhase: 0
     function _advanceDashPhase() {
         if (root._hasDashedSeries && root.width > 0)
-            root._dashPhase -= root.width / root.historyLen;
+            root._dashPhase += root.width / root.historyLen;
+    }
+    // Whether canvas x `x` is in the "on" part of a simple [onLen, offLen]
+    // dash pattern, given the shared `_dashPhase`. JS `%` can return
+    // negative for a negative dividend (`_dashPhase` only ever grows here,
+    // but `x` plus a very stale phase after e.g. a long-idle panel could
+    // still land either side of zero before the first wrap) -- the double
+    // `% cycle + cycle) % cycle` normalizes into [0, cycle).
+    function _dashOn(x, dash) {
+        const cycle = dash[0] + dash[1];
+        const d = ((x + root._dashPhase) % cycle + cycle) % cycle;
+        return d < dash[0];
     }
 
     function _pointCount() {
@@ -447,24 +464,48 @@ Canvas {
         const yOf = v => h - Math.max(0, Math.min(1, v / root.maxValue)) * h;
         ctx.strokeStyle = Qt.rgba(rgb.r, rgb.g, rgb.b, strokeAlpha);
         ctx.lineWidth = lineWidth;
-        // Always set explicitly (even to [], the solid default) rather than
-        // relying on the default param alone -- every call shares this one
-        // canvas context, so a dashed series drawn earlier this frame would
-        // otherwise leak its dash into the next plain stroke. The offset
-        // only matters while dash is non-empty (irrelevant for a solid
-        // line) but is harmless to always set.
-        ctx.setLineDash(dash);
-        ctx.lineDashOffset = root._dashPhase;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+
+        if (dash.length === 0) {
+            for (const run of runs) {
+                if (run.length < 2)
+                    continue;
+                ctx.beginPath();
+                ctx.moveTo(run[0].x, yOf(run[0].v));
+                for (let i = 1; i < run.length; i++)
+                    ctx.lineTo(run[i].x, yOf(run[i].v));
+                ctx.stroke();
+            }
+            return;
+        }
+
+        // Hand-rolled dashing (see `_dashOn`'s own comment on why not
+        // `ctx.setLineDash`) -- walk each run's points, and every time the
+        // on/off state flips, close out the current path segment (stroking
+        // it only if it was "on") and start a fresh one from that same
+        // point, so consecutive same-state points share one path/stroke
+        // call rather than one per point.
         for (const run of runs) {
             if (run.length < 2)
                 continue;
+            let on = root._dashOn(run[0].x, dash);
             ctx.beginPath();
-            ctx.lineJoin = "round";
-            ctx.lineCap = "round";
             ctx.moveTo(run[0].x, yOf(run[0].v));
-            for (let i = 1; i < run.length; i++)
-                ctx.lineTo(run[i].x, yOf(run[i].v));
-            ctx.stroke();
+            for (let i = 1; i < run.length; i++) {
+                const x = run[i].x, y = yOf(run[i].v);
+                const nowOn = root._dashOn(x, dash);
+                ctx.lineTo(x, y);
+                if (nowOn !== on) {
+                    if (on)
+                        ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(x, y);
+                    on = nowOn;
+                }
+            }
+            if (on)
+                ctx.stroke();
         }
     }
 
