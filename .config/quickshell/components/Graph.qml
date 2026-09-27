@@ -23,7 +23,7 @@ import "../theme"
 //    for the spiky per-sample metrics that prompted `dashed` to stop
 //    meaning a visual dash pattern in the first place. Hand-rolled in
 //    `strokeSeries`/`_dashOn` below rather than `ctx.setLineDash` -- see
-//    `_advanceDashPhase`'s own comment for why the canvas-native version
+//    `sampleSeq`'s own comment for why the canvas-native version
 //    couldn't be made to travel with the data no matter which way its
 //    offset was nudged.
 Canvas {
@@ -128,42 +128,27 @@ Canvas {
     property real hoveredPixelX: 0
     property real hoveredPixelY: 0
 
-    // Dash-phase animation for dashed lines (request 2026-09-27), take 3.
+    // Dash-phase animation for dashed lines (request 2026-09-27), take 4.
     //
-    // Take 1 used a wall-clock Timer nudging the phase at a fixed px/sec
-    // regardless of the data -- reported back as "dashes feel fixed in
-    // place, the line just moves through them". Take 2 tied the phase to
-    // actual data updates instead of the clock (right idea) but still
-    // drove `ctx.lineDashOffset`, whose sign convention is "distance along
-    // THIS FRAME's path from its moveTo point" -- since `strokeSeries`
-    // calls `ctx.moveTo(run[0].x, ...)` fresh every repaint, and
-    // `downsample()` maps array INDEX to x on a fixed width/historyLen
-    // grid (so once a tiered buffer is full, a given index sits at the
-    // same x every single repaint -- only the VALUE occupying it changes
-    // as new samples push in and old ones drop off, a shift register, not
-    // a literal geometric slide), that "distance from path start" is
-    // itself ~constant across repaints regardless of which way the offset
-    // was nudged -- still reported as not right.
+    // Goal: dashes belong to the DATA -- they scroll left with the line and
+    // new ones appear at the right edge, rather than the line sliding
+    // through a fixed "field of dashes". Takes 1-2 (wall-clock timer, then
+    // `ctx.lineDashOffset`) are in git history. Take 3 got the geometry
+    // right (on/off computed by hand from each point's absolute x plus a
+    // phase, see `_dashOn`) but bumped the phase once per
+    // `seriesListChanged` -- and a derived seriesList (the CPU pill's
+    // cores + power lines, built from several SysmonSvc properties) fires
+    // that more than once per sample, so the phase outran the data and
+    // the dashes still didn't sit still relative to the line.
     //
-    // Take 3 drops `ctx.setLineDash`/`lineDashOffset` for these series
-    // entirely and computes on/off state by hand from each point's own
-    // absolute canvas x plus a shared phase (`_dashOn` below), sidestepping
-    // the ambiguity above completely: a value that was at x now sits at
-    // x - pxPerSample once it's aged one column left (see the `downsample`
-    // comment above); advancing the phase by the SAME pxPerSample each
-    // time keeps `x + phase` constant FOR THAT VALUE across the
-    // transition, so its on/off state -- and whichever dash was drawn over
-    // it -- never flips. Verifiable by direct substitution, unlike the
-    // canvas-native attempts above. (One caveat: a wholesale resync --
-    // tier switch, panel first opening -- replaces the whole buffer in one
-    // jump, not "+1 sample", so the phase can visibly hiccup right at that
-    // moment; harmless and over in the next tick.)
-    readonly property bool _hasDashedSeries: seriesList.filter(s => s.dash && s.dash.length > 0).length > 0
-    property real _dashPhase: 0
-    function _advanceDashPhase() {
-        if (root._hasDashedSeries && root.width > 0)
-            root._dashPhase += root.width / root.historyLen;
-    }
+    // Take 4 takes the phase from `sampleSeq`, a count of samples actually
+    // appended (TieredSocket.qml), not from change signals: a value at slot
+    // s from the right sits at x = width - s*px, and phase = seq*px, so
+    // x + phase = width + (seq - s)*px -- `seq - s` is that sample's own
+    // absolute index, constant for its whole life on screen, hence so is
+    // its dash state.
+    property real sampleSeq: 0
+    readonly property real _dashPhase: sampleSeq * width / historyLen
     // Whether canvas x `x` is in the "on" part of a simple [onLen, offLen]
     // dash pattern, given the shared `_dashPhase`. JS `%` can return
     // negative for a negative dividend (`_dashPhase` only ever grows here,
@@ -183,7 +168,7 @@ Canvas {
     }
 
     onSeriesChanged: requestPaint()
-    onSeriesListChanged: { _advanceDashPhase(); requestPaint(); }
+    onSeriesListChanged: requestPaint()
     onMaxValueChanged: requestPaint()
     onFillOverlayChanged: requestPaint()
     onSecondaryOnTopChanged: requestPaint()
