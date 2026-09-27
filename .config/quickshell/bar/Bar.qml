@@ -523,32 +523,20 @@ Item {
     // comment), not watts, so this is the only place the actual number
     // shows. `dash: true` (2026-09-27) swaps the legend's filled-square
     // swatch for a dashed-line one, matching how these two actually render
-    // on the graph. `desc` (2026-09-27) is a hover-tooltip explanation
-    // (GraphPill.qml) -- neither name alone says what it actually covers,
-    // and since 2026-09-27 it also states the current auto-scaling peak
-    // (`cpuPowerLimitW`/`cpuPsysLimitW` -- unused for their old PL2-display
-    // purpose until now, see cpuPowerLines' own comment) so hovering
-    // answers "100% on this graph means what, exactly, right now". "Power"
-    // renamed to "CPU" (request 2026-09-27) to read as a matching pair
-    // with "Platform".
-    //
-    // Platform vs CPU (request 2026-09-27, "are they separate or does
-    // platform also include cpu power draw" then "make platform read not
-    // include cpu"): psys ("Platform") is Intel's whole-SoC RAPL domain,
-    // DEFINED to include the package domain ("CPU") as a subset -- NOT a
-    // separate rail (confirmed: psys has never once read below package on
-    // this hardware). Rather than show that overlap (Platform's line
-    // always sitting on top of/above CPU's, since it structurally contains
-    // it), sysmond now subtracts CPU's own reading out of the raw psys
-    // value server-side (see lib.rs's Snapshot::Cpu comment) so `Platform`
-    // here means "everything on the platform EXCEPT the CPU package" --
-    // voltage regulators, memory controller, other board rails -- and the
-    // two lines are genuinely additive/separate again.
+    // on the graph. `desc` (2026-09-27, shortened same day per request
+    // "shorten the tooltips" -- the full backstory of the PL2/all-time-max
+    // and psys/CPU-subtraction changes lives in this file's git history
+    // and the rapl_cpu_power_monitoring memory, not in the tooltip itself)
+    // is a one-line hover explanation (GraphPill.qml). "Power" renamed to
+    // "CPU" (request 2026-09-27) to read as a matching pair with
+    // "Platform"; per that same request, sysmond now subtracts CPU's own
+    // reading out of the raw psys sample server-side, so the two are
+    // genuinely separate/additive rather than Platform including CPU.
     readonly property var cpuLegend: [
         { name: qsTr("CPU"), color: Theme.orange, value: SysmonSvc.cpuPowerW.toFixed(1) + " W", dash: true,
-          desc: qsTr("CPU package power (RAPL \"package\" zone) -- cores, cache, and on-die logic only. Line height is percent of the highest reading ever seen (%1 W so far), not a fixed hardware limit.").arg(SysmonSvc.cpuPowerLimitW.toFixed(1)) },
+          desc: qsTr("Package power (cores, cache). % of highest ever seen (%1 W).").arg(SysmonSvc.cpuPowerLimitW.toFixed(1)) },
         { name: qsTr("Platform"), color: Theme.cyan, value: SysmonSvc.cpuPsysW.toFixed(1) + " W", dash: true,
-          desc: qsTr("Everything on the platform EXCEPT the CPU package above -- voltage regulators, memory controller, and other board rails (RAPL \"psys\" zone minus CPU's own reading, subtracted server-side). Separate from CPU, not inclusive of it. Line height is percent of the highest reading ever seen (%1 W so far), not a fixed hardware limit.").arg(SysmonSvc.cpuPsysLimitW.toFixed(1)) }
+          desc: qsTr("Rest of the board (VRMs, RAM ctrl) -- separate from CPU. % of highest ever seen (%1 W).").arg(SysmonSvc.cpuPsysLimitW.toFixed(1)) }
     ]
     // Overlay (one line per core), not stacked -- stacking summed
     // percentages across cores into an arbitrary "200%"-tall shape read as
