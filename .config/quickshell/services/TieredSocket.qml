@@ -41,6 +41,60 @@ Item {
     // 600 while a panel wants history, 1 otherwise (see historyWanted).
     readonly property int _cap: root.historyWanted ? root._tierCapacity : 1
 
+    // Monotonic count of samples this connection has seen appended to the
+    // buffer (request 2026-09-27) -- Graph.qml's dash phase is
+    // `sampleSeq * pxPerSample`, which pins each dash to the SAMPLE it's
+    // drawn over rather than to a screen x, so dashes scroll left with the
+    // line and new ones appear at the right edge. Counted from the data
+    // itself, not from change signals: a derived seriesList (CPU's cores +
+    // power lines) can re-fire several times per tick, which is what threw
+    // the previous per-signal phase bump off. Only the phase *mod the dash
+    // cycle* matters, so the absolute value (and any reset) is harmless.
+    property real sampleSeq: 0
+
+    // One series per metric used to count/estimate how many new samples
+    // arrived -- every series in a metric shares one ring-buffer clock.
+    function _refSeries(d) {
+        if (!d)
+            return null;
+        switch (root.metricName) {
+        case "cpu": return d.total;
+        case "temp": return d.celsius;
+        case "mem": return d.used_pct;
+        case "net": return ((d.interfaces ?? [])[0] ?? {}).rx_bps;
+        case "disk": return ((d.devices ?? [])[0] ?? {}).read_bps;
+        case "gpu": return ((d.gpus ?? [])[0] ?? {}).util_pct;
+        }
+        return null;
+    }
+
+    // A `full` message carries no "how many are new" count, so infer the
+    // shift k where old[k..] lines up with new[0..]. 1 is tried first (one
+    // message per sample is the common case, and a flat line matches every
+    // k), then 0 (coarse tier, no new sample yet), then larger jumps. An
+    // old buffer too short to compare (panel just expanded from the
+    // length-1 collapsed cache) returns 0 -- a one-off hiccup at open.
+    function _inferShift(a, b) {
+        if (!a || !b || a.length < 8 || b.length < 8)
+            return 0;
+        // Still filling (sysmond's own buffer below capacity): nothing
+        // drops off the front, the new points just extend it.
+        if (b.length > a.length)
+            return b.length - a.length;
+        for (const k of [1, 0, 2, 3, 4, 5, 6, 7, 8]) {
+            // Compare the newest n overlapping points: b[j] === a[j + k].
+            const n = Math.min(a.length - k, 32);
+            if (n < 4)
+                continue;
+            let ok = true;
+            for (let j = a.length - k - n; j < a.length - k && ok; j++)
+                ok = a[j + k] === b[j];
+            if (ok)
+                return k;
+        }
+        return 0;
+    }
+
     function socketPath(): string {
         return `${Quickshell.env("XDG_RUNTIME_DIR")}/sysmond.sock`;
     }
@@ -173,9 +227,12 @@ Item {
         const d = root.data;
         const fresh = msg.full || !d || Object.keys(d).length === 0 || d.metric !== msg.metric;
         if (fresh) {
+            root.sampleSeq += root._inferShift(root._refSeries(d), root._refSeries(msg));
             root.data = root._reshape(msg, cap);
             return;
         }
+
+        root.sampleSeq += (root._refSeries(msg) ?? []).length;
 
         switch (root.metricName) {
         case "cpu":
