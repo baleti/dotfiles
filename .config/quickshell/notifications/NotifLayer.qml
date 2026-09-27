@@ -104,8 +104,12 @@ PanelWindow {
         id: stack
         anchors.top: parent.top
         anchors.right: parent.right
-        anchors.topMargin: HyprGaps.top // matches a real window's gap below the bar
-        anchors.rightMargin: HyprGaps.right // matches Bar.qml rightRow's anchors.rightMargin
+        // A few extra px past the bare window gap -- pulls the cards in
+        // from the corner a bit further than a tiled window would sit,
+        // purely a notifications-only aesthetic nudge (not applied to
+        // Bar.qml/its popup panels).
+        anchors.topMargin: HyprGaps.top + 6
+        anchors.rightMargin: HyprGaps.right + 6
         spacing: 8
         visible: root.cards.length > 0
 
