@@ -23,8 +23,8 @@ add a new consumer, add its row here too.
 | claude-history | tmux prefix+C-c | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
 | focus-picker | tmux prefix+w | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
 | winswitch | Alt+Tab (hold) | `~/.config/quickshell/winswitch/WinSwitchQueryDsl.qml` + `WinSwitch.qml` (grammar ported off `~/.config/hypr/winswitch/src/query.rs`, unused since the 2026-09-09 GTK->Quickshell UI rewrite) | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
-| clipboard-picker | mod+v | `~/.config/hypr/clipboard-picker/src/picker.rs` | cliphist clipboard history, list layout |
-| notification-picker | (notifyd action) | same `picker.rs`, `src/bin/notification-picker.rs` | notifyd's retained notification history |
+| clipboard-picker | mod+v | `~/.config/quickshell/clipboard/ClipboardPicker.qml` (headless backend: `~/.config/hypr/clipboard-picker/src/bin/clipboard-picker.rs`) | cliphist clipboard history, list layout |
+| notification-picker | mod+CTRL+n | `~/.config/quickshell/notifications/NotificationPicker.qml` (headless backend: `~/.config/hypr/clipboard-picker/src/bin/notification-picker.rs`; imports `ClipboardQueryDsl.qml` directly rather than an 8th hand-port) | notifyd's retained notification history |
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 | claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
