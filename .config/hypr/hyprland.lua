@@ -84,7 +84,23 @@ hl.on("hyprland.start", function()
     -- linkedin-engagement-bot.service/reddit-architecture-bot.service -
     -- there's nothing to import when Hyprland genuinely isn't up. Those
     -- guard their own hyprctl calls separately instead.
-    hl.exec_cmd("systemctl --user import-environment HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY")
+    -- The import alone only fixes units that start (or restart) AFTER it
+    -- runs. A unit gated on graphical-session.target isn't guaranteed to
+    -- start after it -- only after Hyprland itself is up enough to reach
+    -- that target -- so on a fast boot (confirmed live 2026-09-27: 9s from
+    -- power-on to claude-usage.service's own start) these two units can
+    -- both win the race and launch with neither var in their environment,
+    -- with NRestarts=0 for the rest of the session since nothing else ever
+    -- prompts a respawn. hyprctl then fails every call inside them (caught
+    -- by a broad except, so silently) -- for claude-usage-daemon.py this
+    -- meant hypr_address stayed null for every row forever, so
+    -- notify_turn_done's "skip if that window is already focused" check
+    -- could never match, and it fired a desktop notification on every turn
+    -- regardless of focus. Restarting both right here, every Hyprland
+    -- start, guarantees they always fork after the import has landed --
+    -- chained with && in one exec_cmd (not a second call) so the restart
+    -- can't itself race ahead of the import completing.
+    hl.exec_cmd("systemctl --user import-environment HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY && systemctl --user restart claude-usage.service desktop-snapshot.service")
     -- wl-paste tags copies flagged x-kde-passwordManagerHint=secret (app
     -- passwords, generated passwords, TOTP codes, etc.) with
     -- CLIPBOARD_STATE=sensitive, and cliphist silently skips storing those.

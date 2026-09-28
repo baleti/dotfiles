@@ -42,9 +42,11 @@ here - see parse_query/phrase_re). Two orthogonal rules: quotes mean exact,
   !foo           drop windows containing foo (prefix-expanded, so !log also
                  drops logs/login - use !"log" to be exact)
   !"foo bar"     drop windows containing that exact phrase
-  /fv title:foo  field-scoped term: foo must appear in that field (also
-                 /filter-value; field name substring-resolved). !/fv ... to
-                 negate. Fields: session, window, title, body.
+  /fv tmux.title:foo  field-scoped term: foo must appear in that field
+                 (also /filter-value; field name substring-resolved, so
+                 the old bare "title:foo" still reaches tmux.title too).
+                 !/fv ... to negate. Fields: tmux.session, tmux.window,
+                 tmux.title, body.
 
 `/fv` is the one DSL verb this picker uses. The column verbs (/ft, /at,
 /rt) and order verbs (/s, /rv) from the shared grammar
@@ -132,7 +134,7 @@ def tokenize(text):
 # alternation doesn't let `/s` swallow the `s` of `/sort`.
 QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
-    r'/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
+    r'/(?:filter-value|fv)\s+([a-zA-Z.]+):(\S+)'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
     r'|/(?:reverse|rv)'
     r'|"([^"]*)"'
@@ -151,27 +153,52 @@ MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
 # On top of the base language below, a field-scoped term: `/fv field:word`
 # restricts word to one field instead of the whole document. field is
 # substring-resolved - any FIELD_NAMES entry *containing* it is searched,
-# unioned - so `/fv sess:foo` and `/fv s:foo` both reach only "session",
-# while `/fv ti:foo` reaches "title" only here (there's no second field
+# unioned - so `/fv sess:foo` and `/fv s:foo` both reach only "tmux.session",
+# while `/fv ti:foo` reaches "tmux.title" only here (there's no second field
 # containing "ti", unlike claude-history's path/tmux/session/window/pane/
-# title/time/body set). An unresolvable field name degrades to a plain
-# bare-word search over the literal "field:word" text, same "still usable
-# half-typed" principle as the rest of this language.
+# title/time/body set); a bare `/fv tmux:foo` reaches all three tmux.*
+# fields together (same ambiguous-path-segment union every other type path
+# in this grammar gets - query-dsl.md's Type paths). An unresolvable field
+# name degrades to a plain bare-word search over the literal "field:word"
+# text, same "still usable half-typed" principle as the rest of this
+# language.
 #
-#   session  the tmux session name
-#   window   the window name
-#   title    the active pane's title
-#   body     scrollback content (the plain unscoped search's main field)
+#   tmux.session  the tmux session name
+#   tmux.window   the window name
+#   tmux.title    the active pane's title
+#   body          scrollback content (the plain unscoped search's main
+#                 field) - flat, not tmux.body: unlike session/window/
+#                 title it has no winswitch counterpart to name-match, so
+#                 there was nothing to gain grouping it (query-dsl.md's
+#                 "Group and flat-type names are each picker's own
+#                 vocabulary"). tmux.session/tmux.window/tmux.title
+#                 themselves are plain flat strings that happen to
+#                 contain a "." (2026-09-13, matching winswitch's naming
+#                 for cross-picker consistency - see focus-picker.py's
+#                 own FILTER_FIELDS for the sibling picker that did this
+#                 first), not real nested-group machinery: no /at//rt//ft
+#                 column-toggling exists for them (this picker renders a
+#                 single ranked line, no columns at all - see the module
+#                 docstring), and there's no via-path support at all yet
+#                 to steer toward either (see QUERY_ELEM_RE below - the
+#                 colon form is the only spelling this picker parses).
 #
-# session is a short structured string - $session:33 is a plain
-# case-insensitive substring test, not tokenized/ranked. window/title/body
-# are real BM25-scored fields, the same prefix-expansion-against-
-# vocabulary treatment an unscoped bare word already gets, just scoped to
-# that field's own vocabulary (see build_snapshot's per-field df/vocab)
-# instead of the combined one.
-FIELD_NAMES = ["session", "window", "title", "body"]
-BM25_FIELDS = {"window", "title", "body"}
-FILTER_FIELDS = {"session"}
+# tmux.session is a short structured string - $tmux.session:33 (or the
+# still-working old bare $session:33 - "session" is a substring of
+# "tmux.session" same as it always resolved to itself) is a plain
+# case-insensitive substring test, not tokenized/ranked. tmux.window/
+# tmux.title/body are real BM25-scored fields, the same prefix-expansion-
+# against-vocabulary treatment an unscoped bare word already gets, just
+# scoped to that field's own vocabulary (see build_snapshot's per-field
+# df/vocab) instead of the combined one.
+FIELD_NAMES = ["tmux.session", "tmux.window", "tmux.title", "body"]
+BM25_FIELDS = {"tmux.window", "tmux.title", "body"}
+FILTER_FIELDS = {"tmux.session"}
+# The internal snapshot/vocab key each public FIELD_NAMES entry reads from
+# (build_snapshot's own naming: "vocab_window", "tf_title", "doclen_body",
+# ...) - unrelated to and unchanged by the tmux.* public renaming above,
+# so this is the one place that translates between them.
+FIELD_KEY = {"tmux.session": "session", "tmux.window": "window", "tmux.title": "title", "body": "body"}
 
 Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms")
 
@@ -693,7 +720,7 @@ def field_term_matches(fields, subtoks, w, filter_text, vocabs):
         if not found:
             for f in fields:
                 if f in BM25_FIELDS and any(
-                        w[f"tf_{f}"].get(t) for t in expand_prefix(subtok, vocabs[f])):
+                        w[f"tf_{FIELD_KEY[f]}"].get(t) for t in expand_prefix(subtok, vocabs[f])):
                     found = True
                     break
         if not found:
@@ -706,10 +733,10 @@ def field_term_score(fields, subtoks, w, vocabs, dfs, avgdls, n):
     for f in fields:
         if f not in BM25_FIELDS:
             continue
-        dl = w[f"doclen_{f}"]
+        dl = w[f"doclen_{FIELD_KEY[f]}"]
         for subtok in subtoks:
             for t in expand_prefix(subtok, vocabs[f]):
-                tf = w[f"tf_{f}"].get(t, 0)
+                tf = w[f"tf_{FIELD_KEY[f]}"].get(t, 0)
                 if tf:
                     score += bm25_term_score(tf, dfs[f].get(t, 0), dl, n, avgdls[f])
     return score
@@ -746,9 +773,9 @@ def search(snapshot_path, query):
     # tokenizing/lowering doesn't depend on any one window
     field_terms = [(fields, tokenize(term)) for fields, term in q.field_terms]
     neg_field_terms = [(fields, tokenize(term)) for fields, term in q.neg_field_terms]
-    vocabs = {"window": snap["vocab_window"], "title": snap["vocab_title"], "body": snap["vocab_body"]}
-    dfs = {"window": snap["df_window"], "title": snap["df_title"], "body": snap["df_body"]}
-    avgdls = {"window": snap["avgdl_window"], "title": snap["avgdl_title"], "body": snap["avgdl_body"]}
+    vocabs = {"tmux.window": snap["vocab_window"], "tmux.title": snap["vocab_title"], "body": snap["vocab_body"]}
+    dfs = {"tmux.window": snap["df_window"], "tmux.title": snap["df_title"], "body": snap["df_body"]}
+    avgdls = {"tmux.window": snap["avgdl_window"], "tmux.title": snap["avgdl_title"], "body": snap["avgdl_body"]}
 
     rxs = [phrase_re(p) for p in q.phrases]
     neg_rxs = [phrase_re(p) for p in q.neg_phrases]
@@ -777,7 +804,7 @@ def search(snapshot_path, query):
         if MATCH_MODE == "all" and not all(
                 any(w["tf"].get(t) for t in g) for g in groups):
             continue
-        filter_text = {"session": w["session"].lower()}
+        filter_text = {"tmux.session": w["session"].lower()}
         if any(field_term_matches(fields, subtoks, w, filter_text, vocabs)
                for fields, subtoks in neg_field_terms):
             continue
@@ -803,10 +830,10 @@ def search(snapshot_path, query):
         # survivors from here, not whether one survives. A pure `s > 0`
         # gate used to double as that inclusion check too, which broke the
         # moment a field-term could legitimately match without ever
-        # contributing score: session is a filter-only field (see
+        # contributing score: tmux.session is a filter-only field (see
         # field_term_score, which only scores BM25_FIELDS) - a real
-        # "$session:foo" match would otherwise vanish here even though it
-        # had already survived field_term_matches above.
+        # "$tmux.session:foo" match would otherwise vanish here even though
+        # it had already survived field_term_matches above.
         for wid, (counts, _, soft_counts) in hits.items():
             w = windows[wid]
             s = bm25_score(w, terms, df, n, avgdl)

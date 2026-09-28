@@ -193,6 +193,29 @@ PanelWindow {
                 }
             }
 
+            // Whole-object formatting only (bold/underline toggle for the
+            // entire text, not per-character rich text) -- QML has no
+            // exposed QTextDocument-style API to do real per-selection
+            // formatting from pure QML, and faking it would be more likely
+            // to be buggy than useful.
+            function drawText(ctx, shape) {
+                const fontSize = Math.max(16, shape.width * 3);
+                ctx.font = `${shape.bold ? "bold " : ""}${fontSize}px sans-serif`;
+                ctx.fillStyle = shape.color;
+                ctx.textBaseline = "top";
+                const lx = root.toLocalX(shape.x1), ly = root.toLocalY(shape.y1);
+                ctx.fillText(shape.text, lx, ly);
+                if (shape.underline) {
+                    const w = ctx.measureText(shape.text).width;
+                    ctx.strokeStyle = shape.color;
+                    ctx.lineWidth = Math.max(1, fontSize * 0.06);
+                    ctx.beginPath();
+                    ctx.moveTo(lx, ly + fontSize * 1.05);
+                    ctx.lineTo(lx + w, ly + fontSize * 1.05);
+                    ctx.stroke();
+                }
+            }
+
             onPaint: {
                 const ctx = getContext("2d");
                 ctx.reset();
@@ -221,14 +244,22 @@ PanelWindow {
                     }
                 }
 
-                for (const shape of ShottyState.shapes) {
-                    drawShape(ctx,
-                        shape.tool, shape.color, shape.width || 3,
-                        root.toLocalX(shape.x1), root.toLocalY(shape.y1),
-                        root.toLocalX(shape.x2), root.toLocalY(shape.y2));
+                for (let i = 0; i < ShottyState.shapes.length; i++) {
+                    const shape = ShottyState.shapes[i];
+                    if (shape.tool === "text") {
+                        // The shape currently being typed into has a live
+                        // TextEdit showing it already -- skip here, or it'd
+                        // render twice.
+                        if (i !== ShottyState.editingShapeIndex) drawText(ctx, shape);
+                    } else {
+                        drawShape(ctx,
+                            shape.tool, shape.color, shape.width || 3,
+                            root.toLocalX(shape.x1), root.toLocalY(shape.y1),
+                            root.toLocalX(shape.x2), root.toLocalY(shape.y2));
+                    }
                 }
 
-                if (ShottyState.phase === "drawing") {
+                if (ShottyState.phase === "drawing" && ShottyState.currentTool !== "text") {
                     drawShape(ctx,
                         ShottyState.currentTool, ShottyState.currentColor, ShottyState.currentWidth,
                         root.toLocalX(ShottyState.drawX1), root.toLocalY(ShottyState.drawY1),
@@ -340,7 +371,11 @@ PanelWindow {
                     ShottyState.beginSelect(gx, gy); // replaces the current selection
                 }
             } else if (ShottyState.phase === "drawing") {
-                ShottyState.beginDraw(gx, gy);
+                if (ShottyState.currentTool === "text") {
+                    ShottyState.placeText(gx, gy); // single click, not a drag -- no update/release needed
+                } else {
+                    ShottyState.beginDraw(gx, gy);
+                }
             }
         }
         onDoubleClicked: mouse => {
@@ -361,11 +396,25 @@ PanelWindow {
             if (ShottyState.phase === "selecting") {
                 ShottyState.updateSelect(gx, gy);
             } else if (ShottyState.phase === "toolbar") {
-                if (mainArea.editingPoint !== 0) ShottyState.updateEditPoint(mainArea.editingPoint, gx, gy);
-                else if (mainArea.resizingEdge !== "") ShottyState.updateResize(gx, gy);
-                else if (ShottyState.movingShapeIndex >= 0) ShottyState.updateMoveShape(gx, gy);
-                else if (mainArea.panning) ShottyState.updatePan(gx, gy);
-                else ShottyState.updateSelect(gx, gy);
+                // placeText() jumps phase to "toolbar" mid-press (a text
+                // placement is a single click, not a drag) -- without this,
+                // any residual mouse movement before release would fall
+                // through to updateSelect() and corrupt the selection.
+                if (ShottyState.editingShapeIndex >= 0 && mainArea.editingPoint === 0) {
+                    // editing a shape but not dragging one of its 2 points
+                    // (either just placed text, or clicked to edit but
+                    // haven't grabbed a point yet) -- nothing to update.
+                } else if (mainArea.editingPoint !== 0) {
+                    ShottyState.updateEditPoint(mainArea.editingPoint, gx, gy);
+                } else if (mainArea.resizingEdge !== "") {
+                    ShottyState.updateResize(gx, gy);
+                } else if (ShottyState.movingShapeIndex >= 0) {
+                    ShottyState.updateMoveShape(gx, gy);
+                } else if (mainArea.panning) {
+                    ShottyState.updatePan(gx, gy);
+                } else {
+                    ShottyState.updateSelect(gx, gy);
+                }
             } else if (ShottyState.phase === "drawing") {
                 ShottyState.updateDraw(gx, gy, !!(mouse.modifiers & Qt.ControlModifier));
             }
@@ -374,7 +423,10 @@ PanelWindow {
             if (ShottyState.phase === "selecting") {
                 ShottyState.endSelect();
             } else if (ShottyState.phase === "toolbar") {
-                if (mainArea.editingPoint !== 0) {
+                if (ShottyState.editingShapeIndex >= 0 && mainArea.editingPoint === 0) {
+                    // see the matching guard in onPositionChanged -- just
+                    // placed text (or mid-click-to-edit), nothing to end.
+                } else if (mainArea.editingPoint !== 0) {
                     mainArea.editingPoint = 0;
                 } else if (mainArea.resizingEdge !== "") {
                     ShottyState.endResize();
@@ -479,7 +531,10 @@ PanelWindow {
     // double-clicked into edit mode. Also purely visual; dragging is
     // handled in mainArea the same way as every other handle here.
     Repeater {
-        model: ShottyState.editingShapeIndex >= 0 ? [1, 2] : []
+        // Not for "text" -- a placed text object has one point, not two,
+        // and is edited by retyping (double-click reopens the TextEdit
+        // below), not by dragging endpoints.
+        model: (ShottyState.editingShapeIndex >= 0 && ShottyState.shapes[ShottyState.editingShapeIndex].tool !== "text") ? [1, 2] : []
         Rectangle {
             id: editHandle
             required property int modelData
@@ -493,6 +548,58 @@ PanelWindow {
             border.width: 2
             border.color: Theme.cyan
             z: 16
+        }
+    }
+
+    // Live text editing: a real QML TextEdit gives real cursor/selection/
+    // IME for free, positioned at the text shape's own point. Gated to
+    // whichever ONE panel actually contains that point -- unlike every
+    // other per-panel element here, a TextEdit genuinely grabs Wayland
+    // keyboard focus, so creating it in all 3 panels at once would have
+    // them fight each other for focus.
+    Loader {
+        id: textEditLoader
+        active: {
+            if (ShottyState.editingShapeIndex < 0) return false;
+            const s = ShottyState.shapes[ShottyState.editingShapeIndex];
+            if (s.tool !== "text") return false;
+            const scr = root.screen;
+            return s.x1 >= scr.x && s.x1 < scr.x + scr.width && s.y1 >= scr.y && s.y1 < scr.y + scr.height;
+        }
+        z: 17
+        sourceComponent: TextEdit {
+            id: textEdit
+            readonly property var shape: ShottyState.shapes[ShottyState.editingShapeIndex]
+            x: root.toLocalX(shape.x1)
+            y: root.toLocalY(shape.y1)
+            width: Math.max(150, root.width - x - 10)
+            font.pixelSize: Math.max(16, shape.width * 3)
+            font.bold: shape.bold
+            font.underline: shape.underline
+            color: shape.color
+            selectByMouse: true
+            wrapMode: TextEdit.NoWrap
+            Component.onCompleted: {
+                text = shape.text;
+                forceActiveFocus();
+            }
+            onTextChanged: ShottyState.updateTextContent(text)
+            // Ctrl+B/Ctrl+U (whole-object bold/underline toggle -- see
+            // ShottyState's own comment on why not per-selection) and
+            // Escape need handling here specifically: once this has active
+            // focus, escCatcher's Keys.onPressed no longer fires at all.
+            Keys.onPressed: event => {
+                if (event.key === Qt.Key_Escape) {
+                    ShottyState.escapeAction();
+                    event.accepted = true;
+                } else if (event.key === Qt.Key_B && (event.modifiers & Qt.ControlModifier)) {
+                    ShottyState.toggleTextBold();
+                    event.accepted = true;
+                } else if (event.key === Qt.Key_U && (event.modifiers & Qt.ControlModifier)) {
+                    ShottyState.toggleTextUnderline();
+                    event.accepted = true;
+                }
+            }
         }
     }
 
@@ -558,6 +665,11 @@ PanelWindow {
                 iconType: "line"; tooltip: "Line (L)"
                 active: ShottyState.currentTool === "line" && ShottyState.phase === "drawing"
                 onActivated: ShottyState.pickTool("line")
+            }
+            ToolButton {
+                iconType: "text"; tooltip: "Text (T)"
+                active: ShottyState.currentTool === "text" && ShottyState.phase === "drawing"
+                onActivated: ShottyState.pickTool("text")
             }
 
             Rectangle { width: 1; height: 28; color: Theme.border }
@@ -743,6 +855,7 @@ PanelWindow {
                 if (event.key === Qt.Key_A) ShottyState.pickTool("arrow");
                 else if (event.key === Qt.Key_R) ShottyState.pickTool("rect");
                 else if (event.key === Qt.Key_L) ShottyState.pickTool("line");
+                else if (event.key === Qt.Key_T) ShottyState.pickTool("text");
                 else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9) {
                     const idx = event.key - Qt.Key_1;
                     if (idx < ShottyState.palette.length) ShottyState.pickColor(ShottyState.palette[idx]);
