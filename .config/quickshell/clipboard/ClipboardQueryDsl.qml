@@ -6,15 +6,21 @@ import QtQuick
 // 7th time -- for the Quickshell clipboard-picker (mod+v), the UI move
 // winswitch made first (see 753e505). This is its own copy, not an import
 // of the launcher's QueryDsl.qml: clipboard-picker's grammar differs from
-// every other QML consumer in two ways query-dsl.md documents explicitly --
+// every other QML consumer in one way query-dsl.md documents explicitly --
+// bare words join into ONE space-separated phrase matched as a single
+// contiguous substring against the haystack (picker.rs's `Query::text`),
+// not independent AND'd terms the way the launcher/winswitch treat them.
 //
-//   - bare words join into ONE space-separated phrase matched as a single
-//     contiguous substring against the haystack (picker.rs's `Query::text`),
-//     not independent AND'd terms the way the launcher/winswitch treat them;
-//   - only `/fv`/`/filter-value` (and bare text, the same thing) does
-//     anything -- `/ft` `/at` `/rt` `/s` `/rv` are recognised (so their
-//     tokens don't leak into the free-text phrase) but otherwise inert, this
-//     picker has no columns and no re-sort.
+// `/ft` `/at` `/rt` `/s` `/rv` (columns + sort) went live 2026-09-28 --
+// through 2026-09-27 these were recognised (so their tokens didn't leak
+// into the free-text phrase) but otherwise inert, matching picker.rs's own
+// GTK engine, which had no column/re-sort machinery at all. Both pickers
+// on this grammar are flat (no groups the way winswitch's `claude`/`tmux`
+// are), so "type path" here just means `resolveFields`'s ordinary
+// substring match against `fieldNames` -- see `activeColumns`/`applySort`
+// below, closest in spirit to focus-picker.py's own flat column/sort
+// implementation (query-dsl.md's Verb-stage depth rollout note) rather
+// than winswitch's group-aware one.
 //
 // One deliberate divergence from picker.rs (2026-09-12): picker.rs has no
 // via-path parser at all (see its own accept_suggestion comment), so its
@@ -218,11 +224,42 @@ QtObject {
     // an empty-value fieldTerm can still narrow away entries that lack the
     // field entirely - fine for a real colon typed on purpose, but not
     // something an incomplete via path should risk.
+    // Direction token for `/sort` -- substring-matches "ascending" or
+    // "descending" the same way every other fragment match in this file
+    // does (query-dsl.md: "asc / desc / de all work"). Returns null if
+    // `tok` doesn't match either, so the caller knows to leave it
+    // unconsumed (falls through to plain phrase text -- see `parse`).
+    function _sortDirection(tok) {
+        if (tok.length === 0) return null;
+        if (root.substr(tok, "ascending")) return "ascending";
+        if (root.substr(tok, "descending")) return "descending";
+        return null;
+    }
+
+    // picker.rs's parse_query -- {fieldTerms:[{fields,value}], text}. `text`
+    // is every bare word joined into ONE lowercased phrase (this picker's
+    // own pre-DSL behaviour, kept as-is -- see this file's header), not
+    // independent terms. A `/fv`/`/filter-value` argument with no `:`
+    // becomes a phrase word too (query-dsl.md's `/fv text` == bare `text`).
+    //
+    // `/ft`/`/at`/`/rt` each swallow one type-path argument into
+    // `columnOps` (`{verb, path}`, in left-to-right order -- see
+    // `activeColumns`); `/sort`/`/s` swallows its path chain (space form:
+    // one path plus an optional direction token; via form: `/`-chained
+    // paths, e.g. `/s/tokens/title`, with the same optional direction
+    // token following) into `sort` (`{paths, direction}`, last one wins);
+    // `/reverse`/`/rv` just flips `reverse` (idempotent -- any count is
+    // the same as one). See `activeColumns`/`applySort` for how these are
+    // actually applied; `parse` only ever records raw path text, same
+    // "resolve later" split `fieldTerms`/`matches` already keeps.
     function parse(text, fieldNames) {
         const toks = root.tokenize(text);
         const fieldTerms = [];
         const words = [];
         const openFields = [];
+        const columnOps = [];
+        let sort = null;
+        let reverse = false;
         let i = 0;
         while (i < toks.length) {
             const tok = toks[i];
@@ -250,9 +287,22 @@ QtObject {
                     // as an ambiguous fragment to union across.
                     for (const f of root.resolveFields(tv.via, fieldNames))
                         if (openFields.indexOf(f) < 0) openFields.push(f);
+                } else if (tv.verb === "ft" || tv.verb === "at" || tv.verb === "rt") {
+                    if (tv.via.length > 0) columnOps.push({ verb: tv.verb, path: tv.via });
+                } else if (tv.verb === "s" && tv.via.length > 0) {
+                    const paths = tv.via.split("/").filter(p => p.length > 0);
+                    let direction = "ascending";
+                    if (i < toks.length && !root.startsCmd(toks[i])) {
+                        const d = root._sortDirection(toks[i].text.toLowerCase());
+                        if (d !== null) { direction = d; i++; }
+                    }
+                    if (paths.length > 0) sort = { paths: paths, direction: direction };
+                } else if (tv.verb === "rv") {
+                    reverse = true;
                 }
-                // else: some other verb's via (recognised, inert either
-                // way) -- nothing to swallow past the one token itself.
+                // else: an empty via on ft/at/rt/s (nothing typed after
+                // the second "/" yet) -- stays inert, same "nothing typed
+                // yet" reasoning as fv's empty-via guard above.
                 continue;
             }
             if (tv.verb === "fv") {
@@ -262,11 +312,35 @@ QtObject {
                 }
                 continue;
             }
-            const n = tv.verb === "rv" ? 0 : 1;
-            let c = 0;
-            while (c < n && i < toks.length && !root.startsCmd(toks[i])) { i++; c++; }
+            if (tv.verb === "ft" || tv.verb === "at" || tv.verb === "rt") {
+                if (i < toks.length && !root.startsCmd(toks[i])) {
+                    columnOps.push({ verb: tv.verb, path: toks[i].text });
+                    i++;
+                }
+                continue;
+            }
+            if (tv.verb === "s") {
+                if (i < toks.length && !root.startsCmd(toks[i])) {
+                    const path = toks[i].text;
+                    i++;
+                    let direction = "ascending";
+                    if (i < toks.length && !root.startsCmd(toks[i])) {
+                        const d = root._sortDirection(toks[i].text.toLowerCase());
+                        if (d !== null) { direction = d; i++; }
+                    }
+                    sort = { paths: [path], direction: direction };
+                }
+                continue;
+            }
+            if (tv.verb === "rv") {
+                reverse = true;
+                continue;
+            }
         }
-        return { fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), openFields: openFields };
+        return {
+            fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), openFields: openFields,
+            columnOps: columnOps, sort: sort, reverse: reverse
+        };
     }
 
     // True if `entry` (shape: {haystack, fields:{name:value}}) survives
@@ -299,6 +373,84 @@ QtObject {
         for (const f of (query.openFields || []))
             if (out.indexOf(f) < 0) out.push(f);
         return out;
+    }
+
+    // query-dsl.md's `/ft`/`/at`/`/rt` semantics: one running ordered set
+    // that starts at `defaultColumns`, then each `columnOps` entry applied
+    // left to right (`ft` intersects, `at` unions onto the end, `rt`
+    // subtracts) - "adding a column that's already shown, or
+    // removing/filtering one that's not, is a silent no-op" falls out of
+    // using plain array membership throughout. `referencedFields` (Auto-
+    // shown filter fields) is folded in last and is always additive, never
+    // a replacement, same as every other consumer.
+    function activeColumns(query, fieldNames, defaultColumns) {
+        let cols = defaultColumns.slice();
+        for (const op of query.columnOps) {
+            const matched = root.resolveFields(op.path, fieldNames);
+            if (op.verb === "ft") cols = cols.filter(c => matched.indexOf(c) >= 0);
+            else if (op.verb === "at") { for (const m of matched) if (cols.indexOf(m) < 0) cols.push(m); }
+            else if (op.verb === "rt") cols = cols.filter(c => matched.indexOf(c) < 0);
+        }
+        for (const f of root.referencedFields(query))
+            if (cols.indexOf(f) < 0) cols.push(f);
+        return cols;
+    }
+
+    function _isPlainInt(v) { return /^\d+$/.test(v); }
+    function _isAgeBucket(v) { return /^\d+[smhd]$/.test(v); }
+    function _ageSeconds(v) {
+        return parseInt(v, 10) * ({ s: 1, m: 60, h: 3600, d: 86400 })[v[v.length - 1]];
+    }
+
+    // query-dsl.md's "Sort comparison, precisely" -- `compare_field_values`.
+    // Both sides sniffed by shape: plain integers compare numerically (a
+    // display-formatted string like "58k" doesn't match `_isPlainInt` and
+    // falls through to lexicographic, same as the spec calls out), age
+    // buckets ("5m", "3h") compare by real seconds, everything else
+    // lexicographic. A field missing on one side (`entry.fields` contract:
+    // absent, not empty) sorts last regardless of direction -- there's no
+    // "the trap" (below) equivalent for "nothing to compare".
+    function compareFieldValues(a, b) {
+        if (a === undefined && b === undefined) return 0;
+        if (a === undefined) return 1;
+        if (b === undefined) return -1;
+        if (root._isAgeBucket(a) && root._isAgeBucket(b)) return root._ageSeconds(a) - root._ageSeconds(b);
+        if (root._isPlainInt(a) && root._isPlainInt(b)) return parseInt(a, 10) - parseInt(b, 10);
+        return a < b ? -1 : (a > b ? 1 : 0);
+    }
+
+    // query-dsl.md's `/sort`/`/reverse` application -- `entries` already
+    // filtered (`matches`), returns a new re-ordered array. An unresolvable
+    // or ambiguous sort path (any chain segment not resolving to exactly
+    // one field) makes the *whole* `/sort` inert, per spec -- falls back to
+    // `entries`' own incoming order (backend recency), which `/reverse` can
+    // still flip on its own.
+    function applySort(entries, query, fieldNames) {
+        let result = entries;
+        if (query.sort) {
+            const keys = query.sort.paths.map(p => root.resolveFields(p, fieldNames));
+            if (keys.every(k => k.length === 1)) {
+                const flatKeys = keys.map(k => k[0]);
+                const dirSign = query.sort.direction === "descending" ? -1 : 1;
+                result = entries.slice().sort((ea, eb) => {
+                    for (const k of flatKeys) {
+                        const a = ea.fields[k], b = eb.fields[k];
+                        // The direction trap (query-dsl.md): an age-bucket
+                        // field's stored value is seconds-*ago*, so
+                        // "ascending" (oldest first, chronological) is
+                        // *descending* by that raw number - invert the
+                        // requested direction whenever either side looks
+                        // like an age bucket.
+                        const ageShaped = (a !== undefined && root._isAgeBucket(a)) || (b !== undefined && root._isAgeBucket(b));
+                        const cmp = root.compareFieldValues(a, b) * (ageShaped ? -dirSign : dirSign);
+                        if (cmp !== 0) return cmp;
+                    }
+                    return 0;
+                });
+            }
+        }
+        if (query.reverse) result = result.slice().reverse();
+        return result;
     }
 
     // winswitch's _replay, trimmed to this picker's one live verb -- replays
@@ -338,15 +490,24 @@ QtObject {
         return open;
     }
 
+    // Verbs that take exactly one type-path argument and nothing else --
+    // `/fv` also takes a path but continues on into a value stage, so it's
+    // handled on its own below.
+    readonly property var _pathOnlyVerbs: ["ft", "at", "rt", "s"]
+
     // picker.rs's completion_context, extended with via-path stages --
     // null (nothing to complete), or one of:
     //   {kind:"verb", start, frag}
-    //   {kind:"field", start, frag, via}      -- typing the field name
-    //   {kind:"value", start, frag, field}    -- typing "field:value"'s value
-    //   {kind:"bareValue", start, frag, field} -- typing a via-typed value
+    //   {kind:"field", start, frag, via, verb}  -- typing a field/path name
+    //   {kind:"value", start, frag, field}      -- typing "field:value"'s value
+    //   {kind:"bareValue", start, frag, field}  -- typing a via-typed value
     // `via` distinguishes the two ways to reach "field" stage: `/fv frag`
     // (space form, GTK pickers land the ":" form on accept) vs `/fv/frag`
     // (via form, still forming its own path segment) -- see acceptText.
+    // `verb` is which verb the field/path belongs to: `/fv`'s field stage
+    // leads into a value (colon or bareValue); `/ft`/`/at`/`/rt`/`/s`'s
+    // path stage is terminal -- a bare field name, no value ever follows
+    // (added 2026-09-28 alongside those verbs going live -- see acceptText).
     function completionContext(text, fieldNames) {
         const toks = root.tokenize(text);
         if (toks.length === 0) return null;
@@ -365,14 +526,26 @@ QtObject {
             const slash = rest.indexOf("/");
             if (slash >= 0) {
                 const name = rest.slice(0, slash), viaFrag = rest.slice(slash + 1);
-                if (root._canon(name) !== "fv") return null; // only /fv does anything here
-                return { kind: "field", start: start + 1 + name.length + 1, frag: viaFrag, via: true };
+                const verb = root._canon(name);
+                // /fv and the four column/sort path-taking verbs all reach
+                // a field/path stage this way; /reverse takes no path, and
+                // an unrecognised verb name isn't a command at all.
+                if (verb !== "fv" && root._pathOnlyVerbs.indexOf(verb) < 0) return null;
+                return { kind: "field", start: start + 1 + name.length + 1, frag: viaFrag, via: true, verb: verb };
             }
             return { kind: "verb", start: start, frag: rest };
         }
 
         const open = root._replay(context);
-        if (open === null || open.verb !== "fv") return null; // fresh phrase text, or some other (inert) verb
+        if (open === null) return null; // fresh phrase text
+        if (open.verb !== "fv") {
+            // /ft, /at, /rt, /s (space form): one bare path argument, no
+            // value stage -- once it has one (open.args.length === 1, from
+            // _replay closing the verb the instant it sees an argument
+            // token), there's nothing left to complete.
+            if (root._pathOnlyVerbs.indexOf(open.verb) < 0 || open.args.length !== 0) return null;
+            return { kind: "field", start: start, frag: frag, via: false, verb: open.verb };
+        }
         if (open.args.length === 1) {
             // Via form already supplied the field via args[0] -- resolve it
             // the same substring way a typed field name would.
@@ -386,17 +559,19 @@ QtObject {
             if (resolved.length !== 1) return null; // ambiguous/unresolved -- no single value set
             return { kind: "value", start: start, field: resolved[0], frag: frag.slice(colon + 1) };
         }
-        return { kind: "field", start: start, frag: frag, via: false };
+        return { kind: "field", start: start, frag: frag, via: false, verb: "fv" };
     }
 
-    // picker.rs's verb_stage_universe -- the six bare verb shorts
-    // (ft/at/rt/s/rv recognised-but-inert here, kept so they still complete
-    // rather than falling into free text) plus `/fv` crossed with every
-    // field name -- `/fv` is the only verb here a deep candidate turns into
-    // a working command (query-dsl.md "Verb-stage depth").
+    // picker.rs's verb_stage_universe, extended once `/ft`/`/at`/`/rt`/`/s`
+    // went live (2026-09-28): the six bare verb shorts, plus every
+    // path-taking verb (all but `/reverse`, which takes no path) crossed
+    // with every field name (query-dsl.md "Verb-stage depth" -- this
+    // picker's flat `fieldNames` stands in for the type registry a
+    // group-aware consumer like winswitch draws deep candidates from).
     function verbStageUniverse(fieldNames) {
         const out = ["fv", "ft", "at", "rt", "s", "rv"];
-        for (const f of fieldNames) out.push("fv/" + f);
+        for (const v of ["fv", "ft", "at", "rt", "s"])
+            for (const f of fieldNames) out.push(v + "/" + f);
         return out;
     }
 
@@ -454,6 +629,11 @@ QtObject {
             // "/" + chosen + " " lands "/ft " or "/fv/type " alike.
             return prefix + "/" + chosen + " ";
         case "field":
+            // /ft, /at, /rt, /s take a bare path with no value to follow --
+            // always land a trailing space, via or space form alike, never
+            // the colon /fv's field stage lands (that colon exists only to
+            // introduce /fv's own value stage, which these verbs don't have).
+            if (ctx.verb !== "fv") return prefix + chosen + " ";
             return prefix + chosen + (ctx.via ? " " : ":");
         case "value": {
             const value = /\s/.test(chosen) ? "\"" + chosen + "\"" : chosen;

@@ -10,11 +10,12 @@ import "../services"
 // winswitch GTK->Quickshell move (753e505). The Rust binary becomes a
 // headless backend (`list`/`thumbs`/`activate` subcommands, NDJSON out --
 // see its own module doc) that just talks to cliphist/wl-copy; this file
-// owns the search box, the `/fv`-only DSL (ClipboardQueryDsl.qml, its own
-// hand-port -- see that file's header for why it's not a shared import),
-// keyboard nav and thumbnail rendering. `notification-picker` (this same
-// crate's other bin) is untouched and still the GTK `picker::run` engine --
-// only mod+v moved.
+// owns the search box, the DSL (ClipboardQueryDsl.qml, its own hand-port --
+// see that file's header for why it's not a shared import, and for why
+// `/ft`/`/at`/`/rt`/`/sort`/`/reverse` are real here as of 2026-09-28, not
+// just recognised-but-inert), keyboard nav, column rendering and
+// thumbnails. `notification-picker` (this same crate's other bin) made its
+// own GTK->Quickshell move on 2026-09-28.
 //
 // Deliberately keeps two things this port could have "modernized" away,
 // because query-dsl.md documents them as this picker's actual behaviour,
@@ -33,11 +34,23 @@ PanelWindow {
 
     property bool open: false
 
-    readonly property var fieldNames: ["type", "date"]
+    readonly property var fieldNames: ["type", "date", "chars", "lines"]
     readonly property var fieldDescs: ({
         "type": "text or image",
-        "date": "how long ago it was copied"
+        "date": "how long ago it was copied",
+        "chars": "character count",
+        "lines": "line count"
     })
+    // `chars`/`lines` default on -- this picker's old always-on size badge,
+    // now real columns instead (query-dsl.md's `/ft`/`/at`/`/rt`). `type`/
+    // `date` stay hidden until `/at`'d or Auto-shown by a `/fv` filter,
+    // same as before this feature existed.
+    readonly property var defaultColumns: ["chars", "lines"]
+    readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l" })
+    readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34 })
+    function _colWidth(name) { return root.columnWidths[name] || 70; }
+    readonly property var activeColumns: ClipboardQueryDsl.activeColumns(root.parsed, root.fieldNames, root.defaultColumns)
+    readonly property real _columnsWidth: root.activeColumns.reduce((sum, c) => sum + root._colWidth(c), 0)
     // Shrunk from the GTK version's 160/480 (reported too big after the
     // first live test).
     readonly property int thumbHeight: 120
@@ -76,11 +89,13 @@ PanelWindow {
     property var _thumbMeta: ({})  // id -> {width, height} of that cached PNG (its real pixels)
     property var _animPaths: ({})  // id -> small looping GIF (backend re-encoded), played on the selected row only
     property var _noThumb: ({})    // id -> true once the backend found no way to thumbnail it (row falls back to text)
-    // id -> {chars, lines} for the size badge. Streamed in by statsProc after
-    // `list` (decoding every entry inside `list` itself delayed first paint).
-    // Deliberately kept across opens: an id's content never changes, so a
-    // reopen shows badges immediately and only decodes ids not yet seen.
-    property var _stats: ({})
+    // id -> {chars, lines} (as strings) waiting to be merged into the
+    // matching `_entries` row's `fields.chars`/`fields.lines`, streamed in
+    // by statsProc after `list` (decoding every entry inside `list` itself
+    // delayed first paint). Merged in batches (statsFlush): reassigning
+    // `_entries` re-filters `results` and rebuilds every delegate, so doing
+    // that per line would itself stall the UI, same reasoning textsProc
+    // below already documents.
     property var _statsPending: ({})
 
     // cliphist's own `list` preview hard-truncates at a fixed rune count
@@ -117,7 +132,7 @@ PanelWindow {
                     thumbsProc.command = [root._bin, "thumbs"].concat(thumbIds);
                     thumbsProc.running = true;
                 }
-                const statIds = rows.filter(e => !e.thumb && (e.chars === null || e.chars === undefined) && !root._stats[e.id]).map(e => e.id);
+                const statIds = rows.filter(e => !e.thumb && e.fields.chars === undefined).map(e => e.id);
                 if (statIds.length > 0 && !statsProc.running) {
                     statsProc.command = [root._bin, "stats"].concat(statIds);
                     statsProc.running = true;
@@ -131,16 +146,15 @@ PanelWindow {
         }
     }
 
-    // Stats stream in one NDJSON line per entry, but are merged in batches
-    // (statsFlush): replacing `_stats` re-evaluates every row's badge
-    // binding, so doing that per line would itself stall the UI.
+    // Stats stream in one NDJSON line per entry, but are merged into
+    // `_entries` in batches (statsFlush) -- see `_statsPending`'s own doc.
     Process {
         id: statsProc
         stdout: SplitParser {
             onRead: line => {
                 try {
                     const m = JSON.parse(line);
-                    root._statsPending[m.id] = { chars: m.chars, lines: m.lines };
+                    root._statsPending[m.id] = { chars: String(m.chars), lines: String(m.lines) };
                     statsFlush.start();
                 } catch (e) { /* skip */ }
             }
@@ -152,9 +166,12 @@ PanelWindow {
         interval: 80
         function triggerFlush() {
             statsFlush.stop();
-            if (Object.keys(root._statsPending).length === 0) return;
-            root._stats = Object.assign({}, root._stats, root._statsPending);
+            const pend = root._statsPending;
+            if (Object.keys(pend).length === 0) return;
             root._statsPending = ({});
+            root._entries = root._entries.map(e => pend[e.id]
+                ? Object.assign({}, e, { fields: Object.assign({}, e.fields, pend[e.id]) })
+                : e);
         }
         onTriggered: triggerFlush()
     }
@@ -241,7 +258,10 @@ PanelWindow {
     // ---- query -> results (ClipboardQueryDsl.parse's bare-words-join-into-
     // one-phrase semantics, picker.rs's own pre-DSL behaviour) -----------
     property var parsed: ClipboardQueryDsl.parse(query.text, root.fieldNames)
-    readonly property var results: root._entries.filter(e => ClipboardQueryDsl.matches(e, root.parsed))
+    readonly property var results: {
+        const filtered = root._entries.filter(e => ClipboardQueryDsl.matches(e, root.parsed));
+        return ClipboardQueryDsl.applySort(filtered, root.parsed, root.fieldNames);
+    }
 
     // Selection tracked by entry id, not index -- a row filtered out of view
     // clears the selection instead of silently re-pointing at whatever now
@@ -336,7 +356,7 @@ PanelWindow {
         else if (ctx.kind === "field") items = ClipboardQueryDsl.fieldSuggestions(root.fieldNames, ctx.frag);
         else items = ClipboardQueryDsl.valueSuggestions(root._entries, ctx.field, ctx.frag);
         if (items.length === 0) return null;
-        return { start: ctx.start, kind: ctx.kind, field: ctx.field, via: ctx.via, items: items };
+        return { start: ctx.start, kind: ctx.kind, field: ctx.field, via: ctx.via, verb: ctx.verb, items: items };
     }
 
     // Clears what's shown but leaves the session (`acActive`) alone -- used
@@ -355,7 +375,7 @@ PanelWindow {
     }
 
     function _applyCandidates(cand) {
-        root._acCtx = { start: cand.start, kind: cand.kind, field: cand.field, via: cand.via };
+        root._acCtx = { start: cand.start, kind: cand.kind, field: cand.field, via: cand.via, verb: cand.verb };
         root.acSel = 0;
         root.acItems = cand.items;
     }
@@ -428,7 +448,7 @@ PanelWindow {
         // height and kept reading as "too close to the border" even bumped
         // up several times -- this reserves the gap at the box level
         // instead, so it can't be eaten by anything list-internal).
-        height: header.height + (ac.visible ? ac.height : 0) + list.height + box.bottomPad
+        height: header.height + (ac.visible ? ac.height : 0) + (colHeader.visible ? colHeader.height : 0) + list.height + box.bottomPad
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.cyan
@@ -642,11 +662,44 @@ PanelWindow {
             }
         }
 
+        // Column headers (query-dsl.md's `/ft`/`/at`/`/rt`-driven column
+        // set, `activeColumns`) -- right-anchored so it sits flush above
+        // the same column cells each row draws at its own right edge, with
+        // no separate placeholder needed for the (unlabeled) preview
+        // column to its left. Replaces the old always-on "N ch · M l"
+        // badge, which repeated its own units on every row -- see
+        // `defaultColumns`.
+        Row {
+            id: colHeader
+            visible: root.activeColumns.length > 0
+            anchors {
+                top: ac.visible ? ac.bottom : header.bottom
+                right: parent.right
+                rightMargin: 16
+            }
+            height: visible ? 18 : 0
+            spacing: 10
+
+            Repeater {
+                model: root.activeColumns
+                Text {
+                    required property string modelData
+                    width: root._colWidth(modelData)
+                    horizontalAlignment: Text.AlignRight
+                    text: root.columnLabels[modelData] || modelData
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 2
+                    opacity: 0.55
+                    color: Theme.text
+                }
+            }
+        }
+
         ListView {
             id: list
-            anchors.top: ac.visible ? ac.bottom : header.bottom
+            anchors.top: colHeader.visible ? colHeader.bottom : (ac.visible ? ac.bottom : header.bottom)
             width: parent.width
-            height: Math.max(0, Math.min(contentHeight, box._maxTotal - header.height - (ac.visible ? ac.height : 0) - box.bottomPad))
+            height: Math.max(0, Math.min(contentHeight, box._maxTotal - header.height - (ac.visible ? ac.height : 0) - (colHeader.visible ? colHeader.height : 0) - box.bottomPad))
             clip: true
             model: root.results
             boundsBehavior: Flickable.StopAtBounds
@@ -661,12 +714,6 @@ PanelWindow {
                 height: col.implicitHeight + 4
                 color: row.index === root.selectedIndex
                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16) : "transparent"
-
-                readonly property string extraText: {
-                    const fields = ClipboardQueryDsl.referencedFields(root.parsed);
-                    const vals = fields.map(f => row.modelData.fields[f]).filter(v => !!v);
-                    return vals.join("  ·  ");
-                }
 
                 Column {
                     id: col
@@ -722,13 +769,18 @@ PanelWindow {
                         }
                     }
 
-                    // Preview line plus, at its right, an "M ch · N l"
-                    // badge on every text entry (images have no counts).
-                    Item {
+                    // Preview (flexes) + one right-aligned cell per active
+                    // column, ending flush with colHeader's own labels
+                    // above -- replaces the old inline "N ch · M l" badge
+                    // and the separate dim "extraText" line (query-dsl.md's
+                    // Auto-shown filter fields are folded into
+                    // activeColumns now, so there's nothing left for a
+                    // separate line to show).
+                    Row {
                         id: previewRow
                         visible: !row.modelData.thumb
                         width: col.width
-                        height: previewText.implicitHeight
+                        spacing: 10
 
                         // Bounded on purpose: textsProc swaps in the *full*
                         // flattened text (up to tens of KB) and shaping all
@@ -741,23 +793,10 @@ PanelWindow {
                         readonly property string shownPreview: row.modelData.preview.length > previewRow._previewCap
                             ? row.modelData.preview.slice(0, previewRow._previewCap) : row.modelData.preview
 
-                        readonly property string sizeInfo: {
-                            // `list` already carries chars/lines (logged at copy
-                            // time); _stats only covers entries with none yet.
-                            const m = (row.modelData.chars !== null && row.modelData.chars !== undefined)
-                                ? row.modelData : root._stats[row.modelData.id];
-                            if (!m) return "";
-                            const lines = m.lines || 1;
-                            const chars = m.chars.toLocaleString(Qt.locale("en_GB"), "f", 0);
-                            return chars + " ch \u00b7 " + lines + " l";
-                        }
-
                         Text {
                             id: previewText
-                            anchors.left: parent.left
-                            width: previewRow.sizeInfo.length > 0
-                                   ? previewRow.width - sizeText.implicitWidth - sizeText.anchors.rightMargin - 10
-                                   : previewRow.width
+                            width: previewRow.width - root._columnsWidth
+                                   - (root.activeColumns.length > 0 ? previewRow.spacing * root.activeColumns.length : 0)
                             text: previewRow.shownPreview
                             elide: Text.ElideRight
                             maximumLineCount: 1
@@ -766,31 +805,21 @@ PanelWindow {
                             color: Theme.text
                         }
 
-                        Text {
-                            id: sizeText
-                            visible: previewRow.sizeInfo.length > 0
-                            anchors.right: parent.right
-                            // Clear of the scrollbar (drawn over the row's
-                            // right edge, ~8px wide incl. its own margin).
-                            anchors.rightMargin: 10
-                            anchors.verticalCenter: previewText.verticalCenter
-                            text: previewRow.sizeInfo
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            opacity: 0.55
-                            color: Theme.text
+                        Repeater {
+                            model: root.activeColumns
+                            Text {
+                                required property string modelData
+                                width: root._colWidth(modelData)
+                                anchors.verticalCenter: previewText.verticalCenter
+                                horizontalAlignment: Text.AlignRight
+                                text: row.modelData.fields[modelData] || ""
+                                elide: Text.ElideRight
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                opacity: 0.55
+                                color: Theme.text
+                            }
                         }
-                    }
-
-                    Text {
-                        visible: row.extraText.length > 0
-                        width: col.width
-                        text: row.extraText
-                        elide: Text.ElideRight
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 2
-                        opacity: 0.55
-                        color: Theme.text
                     }
                 }
 

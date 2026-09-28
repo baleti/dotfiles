@@ -438,9 +438,14 @@ Defaults per picker:
   wasn't a useful column or filter key, so it was dropped from the type
   registry entirely (it still contributes to the free-text haystack
   alongside `title`, same as always - see `/filter-value`, above).
-- **clipboard-picker / notification-picker**: nothing beyond the entry's
-  own preview text or thumbnail. `type`/`date`/`app` appear only once
-  added.
+- **clipboard-picker**: `chars`/`lines` (the row's old always-on size
+  badge, now real columns instead - see below). `type`/`date` are hidden
+  until `/at`'d or Auto-shown by a `/fv` filter, same as before this
+  feature existed (2026-09-28).
+- **notification-picker**: `app`/`date`, both on from open - there was no
+  pre-existing "always shown" info to preserve the way clipboard-picker's
+  size badge was, so defaulting both on is what makes the table useful
+  immediately.
 - **fzf pickers**: focus-picker renders columns and honours all three
   verbs; window-search / claude-history render a single ranked line and
   ignore column verbs (inert, not an error).
@@ -486,9 +491,9 @@ Reorder the survivors; never filter or hide.
   second `/sort` and accept the last-wins replacement (see next). Only
   the **last** `/sort` in a query takes effect (replace, not stack).
   Absent entirely, the picker's own default order stands (MRU, cliphist
-  recency, winswitch focus-history, BM25 score). Honoured by winswitch
-  and focus-picker; inert in clipboard-picker / notification-picker (no
-  re-sort machinery) and the BM25 pickers (score *is* the order).
+  recency, winswitch focus-history, BM25 score). Honoured by winswitch,
+  focus-picker, clipboard-picker and notification-picker (2026-09-28);
+  inert in the BM25 pickers (score *is* the order).
 - **`/reverse`** - flips whatever order is in effect (default, or a
   `/sort`, chained or not - reverses the whole ordered sequence, not any
   one key within it). No arguments. Idempotent: any number of `/reverse`
