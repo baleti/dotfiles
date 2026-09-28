@@ -672,14 +672,19 @@ PanelWindow {
         // no separate placeholder needed for the (unlabeled) preview
         // column to its left. Replaces the old always-on "N ch · M l"
         // badge, which repeated its own units on every row -- see
-        // `defaultColumns`.
+        // `defaultColumns`. `rightMargin` must match the delegate's `col`
+        // (below, 8) exactly -- it used to say 16, which put the header
+        // row's own right edge 8px left of where the row cells actually
+        // end, so headers looked shifted relative to the (correctly
+        // aligned among themselves) values instead of flush with them
+        // (reported 2026-09-28).
         Row {
             id: colHeader
             visible: root.activeColumns.length > 0
             anchors {
                 top: ac.visible ? ac.bottom : header.bottom
                 right: parent.right
-                rightMargin: 16
+                rightMargin: 8
             }
             height: visible ? 18 : 0
             spacing: 10
