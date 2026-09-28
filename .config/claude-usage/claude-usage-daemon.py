@@ -1087,7 +1087,24 @@ def main() -> None:
             write_state(accounts_data, sessions_data, mode, interval)
 
         if inotify_fd >= 0:
-            ready, _, _ = select.select([inotify_fd], [], [], CHECK_GRANULARITY)
+            # Bounded by next_sessions, not just CHECK_GRANULARITY: a nudge
+            # (see nudge_claude_usage_panel) pulls next_sessions forward
+            # (below) to respect SESSIONS_MIN_GAP after the *previous*
+            # recompute, but that pulled-forward value only mattered before
+            # if a further inotify event happened to arrive and wake this
+            # select() early - otherwise the loop blocked here for the
+            # full, fixed CHECK_GRANULARITY (15s) regardless of how soon
+            # next_sessions actually was, then only noticed it was already
+            # due once that timeout finally elapsed on its own. Confirmed
+            # live: two toggles inside SESSIONS_MIN_GAP of each other (e.g.
+            # thaw immediately followed by freeze) - the first's recompute
+            # landed fast, but the second's own pulled-forward
+            # next_sessions (~3s away) got stranded behind a fresh, blind
+            # 15s wait with nothing else to interrupt it, landing at
+            # extremely close to next_sessions + CHECK_GRANULARITY instead
+            # of next_sessions itself.
+            timeout = max(0.0, min(CHECK_GRANULARITY, next_sessions - time.time()))
+            ready, _, _ = select.select([inotify_fd], [], [], timeout)
             if ready and drain_inotify(inotify_fd):
                 # A session's status file changed -- recompute soon, but
                 # never sooner than SESSIONS_MIN_GAP after the last real
