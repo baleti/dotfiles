@@ -598,20 +598,33 @@ Tab-gated to *open*, never live. An always-on popup that repainted on
 every keystroke was tried first and dropped: it read as obtrusive, and
 once in a while it stole a focus/resize cycle at exactly the wrong moment.
 
-**`Ctrl+Space` also opens it, same as Tab - clipboard-picker/
-notification-picker only, added 2026-09-28.** A second way to ask "what
-could this become," bound to the closed-popup state specifically: once a
-popup is already open on a Verb-stage completion, `Ctrl+Space` instead
-AND-narrows it (see "Ctrl+Space AND-narrows a Verb-stage popup," below) -
-the same key does either job depending on whether there's already
-something open to narrow, never both at once. Landed only in these two
-pickers' `Keys.onPressed` so far (`ClipboardPicker.qml`/
-`NotificationPicker.qml`, both share the identical handler by hand, not
-by import); not yet ported to winswitch, app-launcher, rss-reader,
-claude-usage, focus-picker or claude-history the way Verb-stage depth and
-Ctrl+Space AND-narrowing themselves were (see each's own rollout note) -
-add it to a picker's key handler alongside its existing Tab case if this
-is ever wanted more broadly.
+**`Ctrl+Space` also opens it, same as Tab.** Landed first in
+clipboard-picker/notification-picker (2026-09-28), then ported everywhere
+else with a Tab-triggered popup at all, same day. A second way to ask
+"what could this become," bound to the closed-popup state specifically:
+once a popup is already open on a Verb-stage completion, `Ctrl+Space`
+instead AND-narrows it (see "Ctrl+Space AND-narrows a Verb-stage popup,"
+below) - the same key does either job depending on whether there's
+already something open to narrow, never both at once. Implemented as one
+extra `else if` branch guarded on the popup being *closed*
+(`!acPopup.visible`/`!ac.visible`/`!root.acOpen`, picker to picker),
+calling the exact same completion-trigger function Tab's own closed-popup
+branch already calls - no new function, no grammar change, purely a
+second key reaching the same door. Landed in: `ClipboardPicker.qml`/
+`NotificationPicker.qml` (`Keys.onPressed`, the reference implementation,
+both share the identical handler by hand, not by import); `WinSwitch.qml`
+(`_triggerCompletion()`); `AppLauncher.qml` (`_triggerCompletion()`);
+`RssReader.qml` (`_triggerCompletion()`); `ClaudeUsageExpanded.qml`
+(`triggerCompletion()`, no underscore - this file's own naming, unrelated
+to the feature). focus-picker and claude-history have no `acOpen`-style
+flag to gate on - their "popup" is a nested fzf process, not a QML
+Rectangle - so there the outer fzf's own `--bind` gains a second
+`ctrl-space:execute(complete_cmd)+transform-query(...)` line, byte-for-byte
+the same action `tab:execute(...)` already runs; the nested completion
+fzf's own `ctrl-space:put( )` binding (its AND-narrowing) is untouched,
+since it's a different fzf process with a different query box. window-search
+stays out of scope, as it has no completion popup at all to extend (see the
+maturity note at the top of this section).
 
 **Once open, typing further narrows it instead of closing it** (changed
 2026-09-10 - the original rule closed the popup on the next keystroke,

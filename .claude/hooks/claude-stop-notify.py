@@ -31,6 +31,8 @@ MATCH_SCRIPT = os.path.expanduser(
 DEBUG_FLAG = os.path.expanduser("~/.cache/claude-stop-notify-debug")
 DEBUG_LOG = os.path.expanduser("~/.cache/claude-stop-notify-debug.log")
 SESSION_MAP_CACHE = os.path.expanduser("~/.cache/claude-stop-notify-session-map.json")
+ICON_PATH = os.path.expanduser("~/.config/quickshell/bar/assets/claude-logo.png")
+USAGE_STATE_FILE = os.path.expanduser("~/.cache/claude-usage/state.json")
 BODY_BUDGET = 200
 TAIL_INITIAL_BYTES = 65536
 TAIL_MAX_BYTES = 8 * 1024 * 1024
@@ -64,16 +66,16 @@ def _save_session_map_cache(cache):
         pass
 
 
-def _tmux_and_name(sf):
+def _tmux_name_and_pid(sf):
     tmux = sf.get("tmux")
-    if not tmux:
-        return None, sf.get("name")
-    return tmux.split(":", 1)[0], sf.get("name")
+    session_name = tmux.split(":", 1)[0] if tmux else None
+    return session_name, sf.get("name"), sf.get("pid")
 
 
 def resolve_tmux_session(session_id):
-    """Session name from this session_id's own ~/.claude*/sessions/<pid>.json
-    'tmux' field ("<session>:@<win>.%<pane>"), or None.
+    """(tmux session name, registry display name, pid) from this
+    session_id's own ~/.claude*/sessions/<pid>.json 'tmux' field
+    ("<session>:@<win>.%<pane>"), or (None, None, None).
 
     A session fires this hook once per turn, always with the same
     session_id, so a persistent sessionId->path cache turns every
@@ -87,12 +89,12 @@ def resolve_tmux_session(session_id):
             with open(cached_path) as f:
                 sf = json.load(f)
             if sf.get("sessionId") == session_id:
-                return _tmux_and_name(sf)
+                return _tmux_name_and_pid(sf)
         except (OSError, json.JSONDecodeError):
             pass  # stale entry -- fall through to a full rescan
 
     new_cache = {}
-    result = (None, None)
+    result = (None, None, None)
     for path in glob.glob(os.path.expanduser("~/.claude*/sessions/*.json")):
         try:
             with open(path) as f:
@@ -104,7 +106,7 @@ def resolve_tmux_session(session_id):
             continue
         new_cache[sid] = path
         if sid == session_id:
-            result = _tmux_and_name(sf)
+            result = _tmux_name_and_pid(sf)
     _save_session_map_cache(new_cache)
     return result
 
@@ -140,6 +142,56 @@ def matched_window_address(session_name):
         return None
     addr = out.stdout.strip()
     return addr or None
+
+
+def fmt_tokens(n):
+    """274308 -> '274k', 850 -> '850' -- same rule as
+    ClaudeUsageExpanded.qml's fmtTokens, for consistency with the panel."""
+    if not isinstance(n, (int, float)):
+        return None
+    if n < 1000:
+        return str(int(n))
+    return f"{n / 1000:.1f}k" if n < 10000 else f"{int(n / 1000)}k"
+
+
+def usage_row(pid):
+    """This session's row from the Claude Code usage-panel daemon's own
+    snapshot (~/.cache/claude-usage/state.json, ctrl+alt+c panel) -- a
+    small precomputed file the daemon already refreshes on a poll
+    interval, so reading it here is one cheap JSON parse, not a fresh
+    computation. (account, row dict) or (None, None)."""
+    if not pid:
+        return None, None
+    try:
+        with open(USAGE_STATE_FILE) as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    for account, rows in state.get("sessions", {}).items():
+        for row in rows:
+            if row.get("pid") == pid:
+                return account, row
+    return None, None
+
+
+def usage_footer(account, row):
+    """Compact 'tokens · win/pane · workspace · account' line, same fields
+    as the ctrl+alt+c panel's tokens/tmux/wks/acct columns -- only the
+    parts that actually resolved, so a stub/edge-case session just omits
+    what it doesn't have rather than showing placeholders."""
+    if not row:
+        return ""
+    parts = []
+    tokens = fmt_tokens(row.get("context_tokens"))
+    if tokens:
+        parts.append(f"{tokens} tok")
+    if row.get("tmux_window") and row.get("tmux_pane"):
+        parts.append(f"win {row['tmux_window']} pane {row['tmux_pane']}")
+    if row.get("hypr_workspace"):
+        parts.append(f"wks {row['hypr_workspace']}")
+    if account:
+        parts.append(account)
+    return " · ".join(parts)
 
 
 def active_window_address():
@@ -220,10 +272,10 @@ def main():
     transcript_path = payload.get("transcript_path", "")
 
     try:
-        session_name, registry_name = resolve_tmux_session(session_id)
+        session_name, registry_name, pid = resolve_tmux_session(session_id)
         if not session_name:
             session_name = resolve_tmux_session_from_env()
-            registry_name = None
+            registry_name, pid = None, None
         if not session_name:
             debug_log(f"session_id={session_id}: no resolvable tmux session, skipping")
             sys.exit(0)
@@ -239,11 +291,16 @@ def main():
         if len(body) > BODY_BUDGET:
             body = body[:BODY_BUDGET].rstrip() + "…"
 
+        account, row = usage_row(pid)
+        footer = usage_footer(account, row)
+        if footer:
+            body = f"{body}\n\n{footer}" if body else footer
+
         subprocess.run(
-            ["notify-send", "-a", f"claude-stop:{session_name}", title, body],
+            ["notify-send", "-i", ICON_PATH, "-a", f"claude-stop:{session_name}", title, body],
             timeout=3,
         )
-        debug_log(f"session={session_name}: notified (title={title!r})")
+        debug_log(f"session={session_name}: notified (title={title!r}, footer={footer!r})")
     except Exception as e:
         debug_log(f"exception: {e!r}")
         sys.exit(0)

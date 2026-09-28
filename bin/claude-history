@@ -1964,6 +1964,13 @@ def drive():
         # re-triggers `change` (a query change always does) so results
         # refresh against the completed query.
         "--bind", f"tab:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
+        # ctrl-space also opens completion, same as tab (query-dsl.md
+        # Autocompletion section - ClipboardPicker.qml/NotificationPicker.qml's
+        # reference implementation, ported here). Only meaningful at this
+        # outer level, where no popup is open yet to AND-narrow - the nested
+        # fzf spawned by complete_cmd already binds its own ctrl-space to
+        # put( ) for that (see the "complete> " fzf above).
+        "--bind", f"ctrl-space:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
         # Search-box history (query-dsl.md): ctrl-p/ctrl-n cycle
         # submitted queries via fzf's own --history below; ctrl-r opens
         # the fuzzy history popup, same execute+transform-query split as

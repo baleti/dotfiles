@@ -17,12 +17,52 @@
 #   * the pid behind <dbus-sender> (resolved via busctl) -- catches apps
 #     that send notifications directly (not through xdg-desktop-portal,
 #     whose pid would just be the portal and match no window).
+#   * app_name = "claude-stop:<tmux-session>" (from
+#     ~/.claude/hooks/claude-stop-notify.py's Stop-hook notification): match
+#     by tmux session tty instead of window class -- focus the existing
+#     window running that session, or open a new terminal attached to it if
+#     the session has no live window (a detached background session).
 #
 # Dispatch goes through `hyprctl eval` because this Hyprland is the
 # Lua-config build -- plain `hyprctl dispatch` doesn't work here (see the
 # hyprland-lua-binding-dispatch-syntax note).
 
 app=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+
+case "$app" in
+    claude-stop:*)
+        # Strip the prefix from the ORIGINAL (not lowercased) $1 -- tmux
+        # session names are case-sensitive.
+        session="${1#*:}"
+        match_script="$HOME/.config/hypr/scripts/lib/tmux-window-match.py"
+        addr=$(python3 "$match_script" "$session" 2>/dev/null)
+        if [ -n "$addr" ]; then
+            aesc=$(printf '%s' "$addr" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            hyprctl eval "(function()
+              local target_addr = \"$aesc\"
+              local primary
+              for _, w in ipairs(hl.get_windows({})) do
+                if w.address == target_addr then primary = w end
+              end
+              if not primary then return 'none' end
+              if primary.workspace and primary.workspace.special then
+                local cur = hl.get_active_workspace()
+                hl.dispatch(hl.dsp.window.move({ workspace = cur, window = primary, follow = false }))
+              end
+              hl.dispatch(hl.dsp.focus({ window = primary }))
+              return 'ok'
+            end)()" >/dev/null 2>&1
+            exit 0
+        fi
+        # No live window for this session -- if it still exists, open a new
+        # terminal attached to it; otherwise it's a stale notification.
+        if tmux has-session -t "$session" 2>/dev/null; then
+            alacritty -e tmux attach -t "$session" &
+        fi
+        exit 0
+        ;;
+esac
+
 # escape for a Lua "..." literal
 esc=$(printf '%s' "$app" | sed 's/\\/\\\\/g; s/"/\\"/g')
 

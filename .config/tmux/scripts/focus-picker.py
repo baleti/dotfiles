@@ -67,7 +67,7 @@ MRU-ordered; /sort and /reverse are opt-in on top of that.
   /rt ssh              remove matching columns (mirror of /at).
   /ft host             narrow the displayed extra columns to matches.
   /s tmux.title [desc]  order the list by tmux.session / tmux.window /
-  /sort ...             tmux.title / time, optional ascending/descending
+  /sort ...             tmux.title / age, optional ascending/descending
                        (substring-matched). /s/tmux.title is the via
                        spelling; single-key only - this picker's /sort
                        never grew the doc's multi-key via chaining
@@ -175,7 +175,7 @@ LOC_WIDTH = 10  # "session:index" - session names here are short (tmux's own
 # numeric ids, or short custom ones); see claude-history's row() for what
 # happens when a column like this overflows in practice
 NAME_WIDTH = 16
-TIME_WIDTH = 4  # "99d" etc - a pane not yet hit by any hook (see drive())
+AGE_WIDTH = 4  # "99d" etc - a pane not yet hit by any hook (see drive())
 # has no log entry at all, shown as "-" rather than left blank so the
 # column stays aligned
 
@@ -360,15 +360,15 @@ def ssh_info(pane_pid):
 FILTER_FIELDS = ["tmux.session", "tmux.window", "tmux.title"]
 FIELD_KEY = {"tmux.session": "session", "tmux.window": "window_name", "tmux.title": "pane_title"}
 
-# Sortable types for /sort: the three tmux.* text fields plus focus time.
-# `time` is the raw ts (absolute, so "descending" = newest first, applied
-# literally - no age-bucket direction trap here) and stays flat - it has
-# no winswitch counterpart to mirror the naming of.
+# Sortable types for /sort: the three tmux.* text fields plus focus age.
+# `age` sorts by the raw ts (absolute, so "descending" = newest first,
+# applied literally - no age-bucket direction trap here) and stays flat -
+# it has no winswitch counterpart to mirror the naming of.
 SORT_KEYS = {
     "tmux.session": lambda p: p["session"].lower(),
     "tmux.window": lambda p: p["window_name"].lower(),
     "tmux.title": lambda p: p["pane_title"].lower(),
-    "time": lambda p: p["ts"],
+    "age": lambda p: p["ts"],
 }
 
 # The verb command DSL - one grammar shared (by hand, not import) with
@@ -379,7 +379,7 @@ SORT_KEYS = {
 #   /ft /filter-type   narrow the displayed extra columns to matches
 #   /s  /sort          order the (MRU) list by a type [+ direction]
 #   /rv /reverse       reverse the current order
-# The base TIME/SESSION/NAME/TITLE columns are always shown; only the
+# The base AGE/SESSION/NAME/TITLE columns are always shown; only the
 # tracked group columns (COLUMN_GROUPS) are toggled by /at//rt//ft.
 VERB_SHORTS = ["fv", "ft", "at", "rt", "s", "rv"]
 VERB_FORMS = VERB_SHORTS + ["filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"]
@@ -739,7 +739,7 @@ def row(p, active_cols):
     loc = f'{p["session"]}:{p["window_index"]}'
     name = p["window_name"] + p["window_flags"]
     when = humanize_ago(p["ts"])
-    parts = [f'{when:>{TIME_WIDTH}}', f'{loc:<{LOC_WIDTH}}', f'{name:<{NAME_WIDTH}}']
+    parts = [f'{when:>{AGE_WIDTH}}', f'{loc:<{LOC_WIDTH}}', f'{name:<{NAME_WIDTH}}']
     for col in active_cols:
         val = "-"
         info = p.get(col[0])  # e.g. p["ssh"], or None if not that kind of pane
@@ -751,7 +751,7 @@ def row(p, active_cols):
 
 
 def header_line(active_cols):
-    parts = [f'{"TIME":>{TIME_WIDTH}}', f'{"SESSION:WIN":<{LOC_WIDTH}}', f'{"NAME":<{NAME_WIDTH}}']
+    parts = [f'{"AGE":>{AGE_WIDTH}}', f'{"SESSION:WIN":<{LOC_WIDTH}}', f'{"NAME":<{NAME_WIDTH}}']
     for col in active_cols:
         parts.append(f'{COLUMN_LABELS[col]:<{COLUMN_WIDTHS[col]}}')
     parts.append("TITLE")
@@ -1211,6 +1211,14 @@ def drive():
                 # anything by default in single-select mode (no --multi
                 # here), so this doesn't shadow existing behaviour.
                 "--bind", f"tab:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
+                # ctrl-space also opens completion, same as tab (query-dsl.md
+                # Autocompletion section - ClipboardPicker.qml/
+                # NotificationPicker.qml's reference implementation, ported
+                # here). Only meaningful here at this outer level, where no
+                # popup is open yet to AND-narrow - the nested fzf spawned by
+                # complete() already binds its own ctrl-space to put( ) for
+                # that (see complete(), above).
+                "--bind", f"ctrl-space:execute({complete_cmd})+transform-query(cat {shlex.quote(complete_path)})",
                 "--bind", f"ctrl-r:execute({history_cmd})+transform-query(cat {shlex.quote(history_path)})",
                 "--bind", f"result:transform:{resize_on_result}",
                 # `result` alone only re-runs this on a filtering change - a
