@@ -41,6 +41,18 @@ PanelWindow {
         "app": "the sending application",
         "date": "how long ago it arrived"
     })
+    // Shown as real columns from open, not gated behind Auto-shown filter
+    // fields (query-dsl.md) the way clipboard-picker's `type`/`date` still
+    // are -- there's no "unconditional" info this picker showed before
+    // (clipboard-picker's `chars`/`lines` badge was), so defaulting both
+    // on is what makes the table useful the moment it opens. `/rt app`
+    // still drops either.
+    readonly property var defaultColumns: ["app", "date"]
+    readonly property var columnLabels: ({ app: "app", date: "date" })
+    readonly property var columnWidths: ({ app: 120, date: 46 })
+    function _colWidth(name) { return root.columnWidths[name] || 70; }
+    readonly property var activeColumns: ClipboardQueryDsl.activeColumns(root.parsed, root.fieldNames, root.defaultColumns)
+    readonly property real _columnsWidth: root.activeColumns.reduce((sum, c) => sum + root._colWidth(c), 0)
     readonly property string _bin: Quickshell.env("HOME") + "/.config/hypr/clipboard-picker/target/release/notification-picker"
 
     function _recompute() {
@@ -109,7 +121,10 @@ PanelWindow {
     // ---- query -> results (ClipboardQueryDsl.parse's bare-words-join-into-
     // one-phrase semantics, picker.rs's own pre-DSL behaviour) -----------
     property var parsed: ClipboardQueryDsl.parse(query.text, root.fieldNames)
-    readonly property var results: root._entries.filter(e => ClipboardQueryDsl.matches(e, root.parsed))
+    readonly property var results: {
+        const filtered = root._entries.filter(e => ClipboardQueryDsl.matches(e, root.parsed));
+        return ClipboardQueryDsl.applySort(filtered, root.parsed, root.fieldNames);
+    }
 
     // Selection tracked by entry id, not index -- a row filtered out of view
     // clears the selection instead of silently re-pointing at whatever now
@@ -204,7 +219,7 @@ PanelWindow {
         else if (ctx.kind === "field") items = ClipboardQueryDsl.fieldSuggestions(root.fieldNames, ctx.frag);
         else items = ClipboardQueryDsl.valueSuggestions(root._entries, ctx.field, ctx.frag);
         if (items.length === 0) return null;
-        return { start: ctx.start, kind: ctx.kind, field: ctx.field, via: ctx.via, items: items };
+        return { start: ctx.start, kind: ctx.kind, field: ctx.field, via: ctx.via, verb: ctx.verb, items: items };
     }
 
     // Clears what's shown but leaves the session (`acActive`) alone -- used
@@ -223,7 +238,7 @@ PanelWindow {
     }
 
     function _applyCandidates(cand) {
-        root._acCtx = { start: cand.start, kind: cand.kind, field: cand.field, via: cand.via };
+        root._acCtx = { start: cand.start, kind: cand.kind, field: cand.field, via: cand.via, verb: cand.verb };
         root.acSel = 0;
         root.acItems = cand.items;
     }
@@ -294,7 +309,7 @@ PanelWindow {
         // bottomPad is real structural space below the list, not just
         // ListView's own bottomMargin (which lives *inside* its computed
         // height) -- see ClipboardPicker.qml, same reasoning.
-        height: header.height + (ac.visible ? ac.height : 0) + list.height + box.bottomPad
+        height: header.height + (ac.visible ? ac.height : 0) + (colHeader.visible ? colHeader.height : 0) + list.height + box.bottomPad
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.cyan
@@ -489,11 +504,42 @@ PanelWindow {
             }
         }
 
+        // Column headers (query-dsl.md's `/ft`/`/at`/`/rt`-driven column
+        // set, `activeColumns`) -- right-anchored so it sits flush above
+        // the same column cells each row draws at its own right edge,
+        // with no separate placeholder needed for the (unlabeled) preview
+        // column to its left.
+        Row {
+            id: colHeader
+            visible: root.activeColumns.length > 0
+            anchors {
+                top: ac.visible ? ac.bottom : header.bottom
+                right: parent.right
+                rightMargin: 16
+            }
+            height: visible ? 18 : 0
+            spacing: 10
+
+            Repeater {
+                model: root.activeColumns
+                Text {
+                    required property string modelData
+                    width: root._colWidth(modelData)
+                    horizontalAlignment: Text.AlignRight
+                    text: root.columnLabels[modelData] || modelData
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 2
+                    opacity: 0.55
+                    color: Theme.text
+                }
+            }
+        }
+
         ListView {
             id: list
-            anchors.top: ac.visible ? ac.bottom : header.bottom
+            anchors.top: colHeader.visible ? colHeader.bottom : (ac.visible ? ac.bottom : header.bottom)
             width: parent.width
-            height: Math.max(0, Math.min(contentHeight, box._maxTotal - header.height - (ac.visible ? ac.height : 0) - box.bottomPad))
+            height: Math.max(0, Math.min(contentHeight, box._maxTotal - header.height - (ac.visible ? ac.height : 0) - (colHeader.visible ? colHeader.height : 0) - box.bottomPad))
             clip: true
             model: root.results
             boundsBehavior: Flickable.StopAtBounds
@@ -505,28 +551,28 @@ PanelWindow {
                 required property var modelData
                 required property int index
                 width: list.width
-                height: col.implicitHeight + 4
+                height: rowContent.implicitHeight + 4
                 color: row.index === root.selectedIndex
                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16) : "transparent"
 
-                readonly property string extraText: {
-                    const fields = ClipboardQueryDsl.referencedFields(root.parsed);
-                    const vals = fields.map(f => row.modelData.fields[f]).filter(v => !!v);
-                    return vals.join("  ·  ");
-                }
-
-                Column {
-                    id: col
+                // preview (flexes) + one right-aligned cell per active
+                // column, ending flush with colHeader's own labels above --
+                // replaces the old dim "extraText" line (query-dsl.md's
+                // Auto-shown filter fields are folded into activeColumns
+                // now, so there's nothing left for a separate line to show).
+                Row {
+                    id: rowContent
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.leftMargin: 8
-                    anchors.rightMargin: 8
+                    anchors.rightMargin: 16
                     y: 2
-                    spacing: 2
+                    spacing: 10
 
                     Text {
                         id: previewText
-                        width: col.width
+                        width: rowContent.width - root._columnsWidth
+                               - (root.activeColumns.length > 0 ? rowContent.spacing * root.activeColumns.length : 0)
                         text: row.modelData.preview
                         elide: Text.ElideRight
                         maximumLineCount: 1
@@ -535,15 +581,20 @@ PanelWindow {
                         color: Theme.text
                     }
 
-                    Text {
-                        visible: row.extraText.length > 0
-                        width: col.width
-                        text: row.extraText
-                        elide: Text.ElideRight
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 2
-                        opacity: 0.55
-                        color: Theme.text
+                    Repeater {
+                        model: root.activeColumns
+                        Text {
+                            required property string modelData
+                            width: root._colWidth(modelData)
+                            anchors.verticalCenter: previewText.verticalCenter
+                            horizontalAlignment: Text.AlignRight
+                            text: row.modelData.fields[modelData] || ""
+                            elide: Text.ElideRight
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            opacity: 0.55
+                            color: Theme.text
+                        }
                     }
                 }
 

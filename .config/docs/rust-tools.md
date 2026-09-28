@@ -27,13 +27,16 @@ backend** and `src/picker.rs` only holds what's still genuinely shared:
   preview truncated; `activate` pushes an entry back to the clipboard,
   replaying every representation a multi-format bundle captured at copy
   time (see `cliphist-store-logged.sh`) rather than just cliphist's single
-  stored one. Its `type`/`date` fields (QML-side DSL, not this binary) are
-  `type:image`/`type:text` derived from cliphist's own preview shape, and
-  `date:` read from `~/.local/state/cliphist-expire/timestamps`, a log
+  stored one. Its `type`/`date`/`chars`/`lines` fields (QML-side DSL, not
+  this binary) are `type:image`/`type:text` derived from cliphist's own
+  preview shape; `date:` read from
+  `~/.local/state/cliphist-expire/timestamps`, a log
   `cliphist-store-logged.sh` (wired into hyprland.lua's `wl-paste --watch`)
   appends an exact copy-time to on every store — cliphist itself keeps
-  none. `cliphist-expire.sh` prunes this log in step with whatever entries
-  it expires.
+  none; `chars`/`lines` from that same state dir's `sizes` log, backfilled
+  by the `stats` subcommand for any entry not logged yet.
+  `cliphist-expire.sh` prunes the timestamp log in step with whatever
+  entries it expires.
 - **`src/bin/notification-picker.rs`** (bound to `mainMod+CTRL+n`, UI in
   `~/.config/quickshell/notifications/NotificationPicker.qml`) — `list`
   prints one NDJSON line per retained notification (`notifyctl list`);
@@ -43,13 +46,15 @@ backend** and `src/picker.rs` only holds what's still genuinely shared:
   fields need no side-log the way clipboard-picker's `date` does —
   `notifyctl list` already reports a real per-notification `timestamp`.
 
-The `/fv field:value` selector DSL, its autocomplete, and keyboard nav all
-live in QML now (`ClipboardQueryDsl.qml`, imported by both pickers' UI —
-see query-dsl.md for why notification-picker doesn't hand-port its own
-copy). Second press of the launching keybind still closes the open
-picker, now just a boolean toggle in a per-picker `*PickerState.qml`
-singleton rather than the old pidfile+SIGTERM convention (still used by
-sysmon-graph below).
+The `/fv field:value` selector DSL, its autocomplete, keyboard nav, and
+(as of 2026-09-28) the `/ft`/`/at`/`/rt` column system and `/sort`/
+`/reverse` re-sort all live in QML now (`ClipboardQueryDsl.qml`, imported
+by both pickers' UI — see query-dsl.md for why notification-picker
+doesn't hand-port its own copy, and for each picker's default columns).
+Second press of the launching keybind still closes the open picker, now
+just a boolean toggle in a per-picker `*PickerState.qml` singleton rather
+than the old pidfile+SIGTERM convention (still used by sysmon-graph
+below).
 
 ## notifyd
 
