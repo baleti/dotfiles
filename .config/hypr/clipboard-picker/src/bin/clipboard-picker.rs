@@ -640,25 +640,36 @@ fn copy_entry(id: &str) {
 }
 
 /// One NDJSON line per entry: `{id, preview, haystack, thumb, fields}`,
-/// `fields` an object keyed by field name (`type`, optionally `date`) --
-/// same field set `cliphist_list` always built, just serialized instead of
-/// stuffed into a GTK row. QML's ClipboardQueryDsl.qml is the field-name
-/// registry now (was `FIELD_NAMES`/`field_descs` here).
+/// `fields` an object keyed by field name (`type`, optionally `date`,
+/// `chars`/`lines` once known from the `sizes` log) -- same field set
+/// `cliphist_list` always built plus whatever `read_sizes` already has
+/// cached, just serialized instead of stuffed into a GTK row. QML's
+/// ClipboardQueryDsl.qml is the field-name registry now (was
+/// `FIELD_NAMES`/`field_descs` here). `chars`/`lines` used to be separate
+/// top-level NDJSON keys purely for the row's old always-on size badge;
+/// folded into `fields` (as strings, like every other field) once they
+/// became real `/fv`/`/ft`/`/at`/`/rt`/`/sort`-able columns (2026-09-28) --
+/// an entry with no cached size yet simply has no `chars`/`lines` key,
+/// same "absent, not empty" contract every field already keeps, and picks
+/// one up later via `stats`' own NDJSON (unchanged, still
+/// `{id,chars,lines}`), merged into the QML-side entry's `fields` by id --
+/// see ClipboardPicker.qml's `statsProc`.
 fn print_list(entries: &[Entry]) {
     let mut out = std::io::stdout().lock();
     let sizes = read_sizes();
     for e in entries {
-        let size = sizes.get(&e.id);
-        let fields: serde_json::Map<String, serde_json::Value> =
+        let mut fields: serde_json::Map<String, serde_json::Value> =
             e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
+        if let Some(&(chars, lines)) = sizes.get(&e.id) {
+            fields.insert("chars".to_string(), json!(chars.to_string()));
+            fields.insert("lines".to_string(), json!(lines.to_string()));
+        }
         let line = json!({
             "id": e.id,
             "preview": e.preview,
             "haystack": e.haystack,
             "thumb": e.thumb,
             "fields": fields,
-            "chars": size.map(|s| s.0),
-            "lines": size.map(|s| s.1),
         });
         let _ = writeln!(out, "{line}");
     }
