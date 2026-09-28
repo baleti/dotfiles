@@ -41,18 +41,33 @@ else
 	pid="$pane_pid"
 fi
 
+# Always a fixed location under app.slice, never nested inside wherever
+# the pid's tmux pane happens to live (tmux-spawn-<uuid>.scope, a
+# systemd-managed scope unit). That nesting was the original design here,
+# and it's genuinely dangerous: systemd reconciles cgroup state within
+# units it manages, and a burst of activity (confirmed live with a
+# ~100-session desktop restore) can have it silently reset or tear down a
+# foreign, unrecognized cgroup.freeze=1 it finds nested inside one of its
+# own scopes - it never froze that cgroup itself, so it doesn't expect it
+# to be frozen. A plain slice like app.slice has no such reconciliation:
+# unlike a scope/service, systemd tracks no "this job's expected process
+# set" for a slice at all, it's purely an accounting container - matching
+# every earlier ad-hoc test in this codebase's history (including a 5-hour
+# soak) that lived under app.slice and never spontaneously unfroze.
+FREEZE_PARENT="/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+dir="$FREEZE_PARENT/tmux-freeze-$pid"
+
 cgroup_line=$(grep '^0::' "/proc/$pid/cgroup") || {
 	echo "freeze-process-cgroup-toggle: /proc/$pid/cgroup has no cgroup v2 line" >&2
 	exit 1
 }
 relpath="${cgroup_line#0::}"
-base=$(basename "$relpath")
 
-if [ "$base" = "tmux-freeze-$pid" ]; then
-	dir="/sys/fs/cgroup$relpath"
+if [ "/sys/fs/cgroup$relpath" = "$dir" ]; then
+	already_here=1
 	current=$(cat "$dir/cgroup.freeze" 2>/dev/null || echo 0)
 else
-	dir="/sys/fs/cgroup$relpath/tmux-freeze-$pid"
+	already_here=0
 	current=0
 fi
 
@@ -106,7 +121,7 @@ os.close(fd)
 	tmux set-option -p -t "$pane_id" @frozen 0
 	nudge_claude_usage_panel
 else
-	if [ "$base" != "tmux-freeze-$pid" ]; then
+	if [ "$already_here" != "1" ]; then
 		mkdir -p "$dir"
 		echo "$pid" > "$dir/cgroup.procs"
 	fi
