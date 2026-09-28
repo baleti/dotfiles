@@ -64,10 +64,13 @@ the real count this sends rather than silently dropping data.
 
 State is written atomically to ~/.cache/claude-usage/state.json.
 """
+import ctypes
 import json
 import os
+import select
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -118,6 +121,30 @@ SESSIONS_KEEP = 100
 # this only escalates for a session whose last turn had a huge tool result
 # between it and EOF.
 TOKEN_SEARCH_WINDOWS = (200_000, 1_500_000, None)  # None = whole file
+
+# ---- turn-done desktop notification (replaces ~/.claude/hooks/
+# claude-stop-notify.py's Stop hook, disabled 2026-09-20) -----------------
+# That hook ran synchronously inside Claude Code's own turn-completion
+# path, forked 3 subprocesses, and was subject to a 5s hook timeout -- all
+# things that get worse, not better, exactly when the system is already
+# under the kind of memory pressure that motivated moving this out. This
+# daemon already recomputes every session's live status/tmux/hyprland/
+# token state every SESSIONS_INTERVAL; inotify (below) just makes that
+# recompute happen right after a session's status file actually changes
+# instead of waiting up to SESSIONS_INTERVAL, and the transition-detect
+# step here (main()'s prev_status dict) fires the notification.
+ICON_PATH = Path.home() / ".config/quickshell/bar/assets/claude-logo.png"
+NOTIFY_BODY_BUDGET = 200
+# Floor between two inotify-triggered session recomputes, regardless of how
+# many events arrive in between (they're drained and coalesced into one).
+# Without this, a burst of near-simultaneous status-file writes across many
+# live sessions -- e.g. the exact "many active sessions at once" scenario
+# that caused the original CPU incident -- would fire the full (tmux +
+# hyprland + per-session transcript tail-read) recompute back-to-back with
+# no rate limit, reintroducing the same class of problem this replaces.
+# Still far below SESSIONS_INTERVAL's 30s, so a real status change is
+# noticed within a couple of seconds instead of up to 30.
+SESSIONS_MIN_GAP = 3
 
 
 def log(msg: str) -> None:
@@ -426,6 +453,29 @@ def _read_proc_state(pid: int):
     return rest[0] if rest else None
 
 
+def _is_cgroup_frozen(pid: int) -> bool:
+    """True if this pid was suspended via ~/.config/tmux/scripts/
+    freeze-process-cgroup-toggle.sh (prefix+Ctrl-f / :freeze-process-cgroup-toggle),
+    i.e. it currently lives in a "tmux-freeze-<pid>" cgroup v2 directory
+    with cgroup.freeze == 1. Unlike _read_proc_state's 'T' check, this
+    process is NOT stopped from the kernel scheduler's point of view (no
+    signal was ever sent) -- /proc/<pid>/stat still reports 'S', so this
+    is the only way to detect it."""
+    try:
+        line = Path(f"/proc/{pid}/cgroup").read_text().splitlines()[0]
+    except (OSError, IndexError):
+        return False
+    if not line.startswith("0::"):
+        return False
+    relpath = line[3:]
+    if Path(relpath).name != f"tmux-freeze-{pid}":
+        return False
+    try:
+        return Path(f"/sys/fs/cgroup{relpath}/cgroup.freeze").read_text().strip() == "1"
+    except OSError:
+        return False
+
+
 def _read_all_proc() -> dict:
     """pid -> (ppid, tty_nr) for every live process, one /proc sweep --
     the same shape winswitch's enrich.rs::read_all_proc() builds, used the
@@ -630,15 +680,30 @@ def list_sessions(base: Path, tty_panes: dict, procs: dict, hypr_by_session: dic
         hypr = hypr_by_session.get(tmux_session) if tmux_session else None
 
         # Live process state takes precedence over the CLI's own
-        # self-reported "status" - a stopped process can't write to its
-        # own session file to say so (see _read_proc_state's docstring).
-        status = "stopped" if _read_proc_state(pid) == "T" else data.get("status")
+        # self-reported "status" - a stopped/frozen process can't write to
+        # its own session file to say so (see _read_proc_state's and
+        # _is_cgroup_frozen's docstrings). Checked in this order since a
+        # cgroup-frozen process still reports proc state 'S', not 'T'.
+        if _is_cgroup_frozen(pid):
+            status = "frozen"
+        elif _read_proc_state(pid) == "T":
+            status = "stopped"
+        else:
+            status = data.get("status")
 
         rows.append({
             "pid": pid,
             "status": status,
             "title": title,
             "cwd": cwd,
+            # Both only for notify_turn_done() below, not consumed by the
+            # quickshell panel: session_id to rebuild the transcript path
+            # without re-reading this registry file a second time, and the
+            # self-reported "tmux" name (not tmux_session below, which is
+            # the live #{session_id} -- notify-summon.sh's "claude-stop:"
+            # click-to-focus branch matches by session *name*).
+            "session_id": session_id,
+            "tmux_self_session": (data.get("tmux") or "").split(":", 1)[0] or None,
             "tmux_session": tmux_session,
             "tmux_window": tmux_window,
             "tmux_pane": tmux_pane,
@@ -675,85 +740,363 @@ def write_state(accounts_data: list, sessions_data: dict, mode: str, interval: i
     tmp.replace(STATE_FILE)
 
 
-def main() -> None:
-    log("claude-usage-daemon starting")
+def notify_fields_for(transcript_path: Path):
+    """(ai_title, last_assistant_text) for the desktop notification --
+    same growing-tail-window approach as context_tokens_for/
+    last_message_ts_ms above (most recent record of each type is always
+    near EOF), so this never loads a multi-MB transcript fully into
+    memory. (None, "") if neither is found."""
+    try:
+        size = transcript_path.stat().st_size
+    except OSError:
+        return None, ""
+
+    for window in TOKEN_SEARCH_WINDOWS:
+        take = size if window is None else min(window, size)
+        try:
+            with transcript_path.open("rb") as fh:
+                fh.seek(size - take)
+                data = fh.read().decode("utf-8", errors="ignore")
+        except OSError:
+            return None, ""
+
+        title = None
+        body = ""
+        for line in reversed(data.split("\n")):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            rtype = rec.get("type")
+            if title is None and rtype == "ai-title":
+                title = rec.get("aiTitle")
+            elif not body and rtype == "assistant":
+                content = (rec.get("message") or {}).get("content")
+                if isinstance(content, str):
+                    body = content
+                elif isinstance(content, list):
+                    parts = [c.get("text", "") for c in content
+                             if isinstance(c, dict) and c.get("type") == "text"]
+                    body = " ".join(p for p in parts if p)
+            if title is not None and body:
+                return title, body
+
+        if take >= size:
+            return title, body
+    return None, ""
+
+
+def fmt_tokens(n):
+    """274308 -> '274k', 850 -> '850' -- same rule as
+    ClaudeUsageExpanded.qml's fmtTokens, for consistency with the panel."""
+    if not isinstance(n, (int, float)):
+        return None
+    if n < 1000:
+        return str(int(n))
+    return f"{n / 1000:.1f}k" if n < 10000 else f"{int(n / 1000)}k"
+
+
+def notify_footer(account: str, row: dict) -> str:
+    """'146k tok · win 103 pane 111 · wks 16 · claude' -- same fields as
+    the ctrl+alt+c panel's tokens/tmux/wks/acct columns, only the parts
+    that actually resolved for this row."""
+    parts = []
+    tokens = fmt_tokens(row.get("context_tokens"))
+    if tokens:
+        parts.append(f"{tokens} tok")
+    if row.get("tmux_window") and row.get("tmux_pane"):
+        parts.append(f"win {row['tmux_window']} pane {row['tmux_pane']}")
+    if row.get("hypr_workspace"):
+        parts.append(f"wks {row['hypr_workspace']}")
+    if account:
+        parts.append(account)
+    return " · ".join(parts)
+
+
+def active_window_address():
+    try:
+        out = subprocess.run(
+            ["hyprctl", "activewindow", "-j"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return json.loads(out.stdout).get("address")
+    except Exception:
+        return None
+
+
+def notify_turn_done(account: str, base: Path, row: dict) -> None:
+    """Fire the desktop notification for a session that just went from
+    busy to waiting/idle (main()'s prev_status transition check) -- same
+    icon/footer/skip-if-focused shape as the old Stop hook, just driven by
+    this daemon's own already-fresh per-row data instead of a hook
+    subprocess forked from inside Claude Code's turn-completion path."""
+    try:
+        if row.get("hypr_address") and row["hypr_address"] == active_window_address():
+            return  # already looking at that window -- no point interrupting
+
+        session_id, cwd = row.get("session_id"), row.get("cwd")
+        transcript = base / "projects" / cwd_to_slug(cwd) / f"{session_id}.jsonl" if session_id and cwd else None
+        ai_title, body = notify_fields_for(transcript) if transcript else (None, "")
+
+        title = ai_title or row.get("title") or (Path(cwd).name if cwd else None) or "Claude Code"
+        body = body.strip()
+        if len(body) > NOTIFY_BODY_BUDGET:
+            body = body[:NOTIFY_BODY_BUDGET].rstrip() + "…"
+        footer = notify_footer(account, row)
+        if footer:
+            body = f"{body}\n\n{footer}" if body else footer
+
+        app_name = f"claude-stop:{row['tmux_self_session']}" if row.get("tmux_self_session") else "claude-stop:"
+        subprocess.run(
+            ["notify-send", "-i", str(ICON_PATH), "-a", app_name, title, body],
+            timeout=3,
+        )
+    except Exception as e:
+        log(f"notify_turn_done: pid={row.get('pid')}: {e!r}")
+
+
+# ---- inotify (ctypes, no third-party dependency) -------------------------
+# Watches each account's sessions/ dir for CLOSE_WRITE/MOVED_TO so a status
+# change (Claude Code rewriting its own sessions/<pid>.json, see
+# list_sessions' docstring) triggers a session recompute promptly instead
+# of waiting up to SESSIONS_INTERVAL. Deliberately doesn't parse individual
+# inotify_event payloads -- every consumer here just wants to know
+# "something changed", not which file, so a raw drain is enough.
+_libc = ctypes.CDLL("libc.so.6", use_errno=True)
+_libc.inotify_init1.restype = ctypes.c_int
+_libc.inotify_add_watch.restype = ctypes.c_int
+_INOTIFY_MASK = 0x00000008 | 0x00000080  # IN_CLOSE_WRITE | IN_MOVED_TO
+
+
+def setup_inotify() -> tuple[int, int]:
+    """(fd, watch_count). fd is -1 if inotify_init1 itself failed (caller
+    falls back to plain polling); watch_count is how many of the 3
+    accounts' sessions/ dirs actually got a watch (0 also means "fall back
+    to polling for freshness", but the fd may still be valid)."""
+    fd = _libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if fd < 0:
+        errno = ctypes.get_errno()
+        log(f"inotify_init1 failed ({os.strerror(errno)}), falling back to {SESSIONS_INTERVAL}s polling")
+        return -1, 0
+    watched = 0
+    for _name, base in ACCOUNTS:
+        sessions_dir = base / "sessions"
+        if not sessions_dir.is_dir():
+            continue
+        wd = _libc.inotify_add_watch(fd, str(sessions_dir).encode(), _INOTIFY_MASK)
+        if wd < 0:
+            errno = ctypes.get_errno()
+            log(f"inotify_add_watch({sessions_dir}) failed: {os.strerror(errno)}")
+            continue
+        watched += 1
+    return fd, watched
+
+
+def drain_inotify(fd: int) -> bool:
+    """True if at least one event was read. Reads until EAGAIN so a burst
+    of events (many sessions' files changing near-simultaneously) collapses
+    into a single wake rather than one per event."""
+    saw_any = False
+    while True:
+        try:
+            data = os.read(fd, 64 * 1024)
+        except BlockingIOError:
+            return saw_any
+        except OSError:
+            return saw_any
+        if not data:
+            return saw_any
+        saw_any = True
+
+
+# ---- network usage-% fetch, on its own thread -----------------------------
+# fetch_usage()'s urlopen(timeout=8) and the 2 * ACCOUNT_STAGGER (5s) pacing
+# sleeps between the 3 accounts are both genuinely blocking - up to ~34s
+# worst case per fetch cycle, which used to run on the same thread/loop as
+# session recompute and inotify handling. A freeze/thaw notification (see
+# freeze-process-cgroup-toggle.sh's nudge_claude_usage_panel) landing
+# anywhere in that window sat queued, unread, until the fetch cycle
+# finished and the loop came back around to select()-ing the inotify fd -
+# confirmed live: a status stuck stale for over 15s despite the actual
+# cgroup state having flipped immediately, with the delay traced to a
+# fetch_usage() call itself (an interruptible wait around just the stagger
+# sleeps closed part of the gap, but not that). Running the fetch
+# independently removes the main loop's session/inotify responsiveness
+# from this entirely - communicated back purely through _fetch_shared
+# under _fetch_lock, a plain dict rather than anything fancier since it's
+# one writer (this thread) and one reader (main()'s loop).
+_fetch_lock = threading.Lock()
+_fetch_shared = {
+    "accounts_data": [{"account": name} for name, _ in ACCOUNTS],
+    "mode": "idle",
+    "interval": INTERVAL_IDLE,
+    "dirty": False,
+}
+
+
+def fetch_loop() -> None:
     next_fetch = 0.0
-    next_sessions = 0.0
     backoff_until = 0.0
     consecutive_429 = 0
     # account name -> last successful fetch_usage() result (no "account" key)
     last_good: dict[str, dict] = {}
+    mode, interval = "idle", INTERVAL_IDLE
+
+    while True:
+        now = time.time()
+
+        if now < backoff_until:
+            new_mode, new_interval = "backoff", int(backoff_until - now)
+            if (mode, interval) != (new_mode, new_interval):
+                mode, interval = new_mode, new_interval
+                with _fetch_lock:
+                    _fetch_shared["mode"] = mode
+                    _fetch_shared["interval"] = interval
+                    _fetch_shared["dirty"] = True
+            time.sleep(min(1.0, backoff_until - now))
+            continue
+
+        if now < next_fetch:
+            time.sleep(min(1.0, next_fetch - now))
+            continue
+
+        mode, interval = current_tier()
+        accounts_data = []
+        hit_429 = False
+        retry_after_max = 0.0
+        for i, (name, base) in enumerate(ACCOUNTS):
+            if i > 0:
+                time.sleep(ACCOUNT_STAGGER)
+            result = fetch_usage(base / ".credentials.json")
+
+            if result.get("http_status") == 429:
+                hit_429 = True
+                retry_after_max = max(retry_after_max, result.get("retry_after") or 0.0)
+
+            if "error" in result:
+                prev = last_good.get(name)
+                row = dict(prev) if prev else {}
+                row["account"] = name
+                row["error"] = result["error"]
+                row["stale"] = prev is not None
+                accounts_data.append(row)
+                if result["error"] != "http 429":
+                    log(f"{name}: {result['error']}")
+            else:
+                result["account"] = name
+                last_good[name] = {k: v for k, v in result.items() if k != "account"}
+                accounts_data.append(result)
+
+        if hit_429:
+            consecutive_429 += 1
+            backoff_s = min(
+                BACKOFF_MAX,
+                max(BACKOFF_MIN, retry_after_max) * (2 ** (consecutive_429 - 1)),
+            )
+            backoff_until = time.time() + backoff_s
+            mode = "backoff"
+            interval = int(backoff_s)
+            log(f"hit 429 (consecutive={consecutive_429}), backing off {backoff_s:.0f}s")
+        else:
+            consecutive_429 = 0
+
+        next_fetch = time.time() + interval
+
+        with _fetch_lock:
+            _fetch_shared["accounts_data"] = accounts_data
+            _fetch_shared["mode"] = mode
+            _fetch_shared["interval"] = interval
+            _fetch_shared["dirty"] = True
+
+
+def main() -> None:
+    log("claude-usage-daemon starting")
+    next_sessions = 0.0
+    last_sessions_run = 0.0
     accounts_data = [{"account": name} for name, _ in ACCOUNTS]
     sessions_data = {name: [] for name, _ in ACCOUNTS}
     mode, interval = "idle", INTERVAL_IDLE
+    # pid -> last-seen status, for the busy->waiting/idle transition that
+    # means "a turn just finished" (notify_turn_done below). Deliberately
+    # in-memory only -- a daemon restart just means the next real
+    # transition after restart is the first one noticed, same cold-start
+    # behavior the old Stop hook had (nothing to resume mid-turn either).
+    prev_status: dict[int, str] = {}
+
+    inotify_fd, watched = setup_inotify()
+    if inotify_fd >= 0 and watched == 0:
+        log("no sessions/ dirs to watch yet, falling back to polling")
+
+    # See fetch_loop's own docstring/comment for why this runs independently
+    # rather than sharing this loop: its blocking network calls must never
+    # delay this loop's own session-recompute/inotify responsiveness.
+    threading.Thread(target=fetch_loop, daemon=True).start()
 
     while True:
         now = time.time()
         dirty = False
 
         # Session/process listing: local-only, its own cadence, runs even
-        # during a network backoff window.
+        # during a network backoff window. Also the trigger point for
+        # turn-done notifications (see prev_status above) since this is
+        # where each row's current status is known.
         if now >= next_sessions:
             procs = _read_all_proc()
             tty_panes = _tmux_panes_by_tty()
             hypr_by_session = hyprland_windows_by_tmux_session(procs)
             sessions_data = {name: list_sessions(base, tty_panes, procs, hypr_by_session) for name, base in ACCOUNTS}
-            next_sessions = time.time() + SESSIONS_INTERVAL
+            last_sessions_run = time.time()
+            next_sessions = last_sessions_run + SESSIONS_INTERVAL
             dirty = True
 
-        if now < backoff_until:
-            new_mode, new_interval = "backoff", int(backoff_until - now)
-            if (mode, interval) != (new_mode, new_interval):
-                mode, interval = new_mode, new_interval
+            base_by_name = dict(ACCOUNTS)
+            seen_pids = set()
+            for name, rows in sessions_data.items():
+                for row in rows:
+                    pid = row.get("pid")
+                    if pid is None:
+                        continue
+                    seen_pids.add(pid)
+                    was, status = prev_status.get(pid), row.get("status")
+                    if was == "busy" and status in ("waiting", "idle"):
+                        notify_turn_done(name, base_by_name[name], row)
+                    prev_status[pid] = status
+            # Drop exited pids rather than let this grow forever across a
+            # long-running daemon -- a reused pid getting treated as a
+            # continuation of an unrelated old session is already an
+            # accepted (and here, harmless-worst-case: a missed or
+            # spurious notification) edge case elsewhere in this file.
+            for pid in list(prev_status):
+                if pid not in seen_pids:
+                    del prev_status[pid]
+
+        # Just picks up whatever fetch_loop most recently produced -- never
+        # blocks, never does any network I/O on this thread.
+        with _fetch_lock:
+            if _fetch_shared["dirty"]:
+                accounts_data = _fetch_shared["accounts_data"]
+                mode = _fetch_shared["mode"]
+                interval = _fetch_shared["interval"]
+                _fetch_shared["dirty"] = False
                 dirty = True
-        elif now >= next_fetch:
-            mode, interval = current_tier()
-            accounts_data = []
-            hit_429 = False
-            retry_after_max = 0.0
-            for i, (name, base) in enumerate(ACCOUNTS):
-                if i > 0:
-                    time.sleep(ACCOUNT_STAGGER)
-                result = fetch_usage(base / ".credentials.json")
-
-                if result.get("http_status") == 429:
-                    hit_429 = True
-                    retry_after_max = max(retry_after_max, result.get("retry_after") or 0.0)
-
-                if "error" in result:
-                    prev = last_good.get(name)
-                    row = dict(prev) if prev else {}
-                    row["account"] = name
-                    row["error"] = result["error"]
-                    row["stale"] = prev is not None
-                    accounts_data.append(row)
-                    if result["error"] != "http 429":
-                        log(f"{name}: {result['error']}")
-                else:
-                    result["account"] = name
-                    last_good[name] = {k: v for k, v in result.items() if k != "account"}
-                    accounts_data.append(result)
-
-            if hit_429:
-                consecutive_429 += 1
-                backoff_s = min(
-                    BACKOFF_MAX,
-                    max(BACKOFF_MIN, retry_after_max) * (2 ** (consecutive_429 - 1)),
-                )
-                backoff_until = time.time() + backoff_s
-                mode = "backoff"
-                interval = int(backoff_s)
-                log(f"hit 429 (consecutive={consecutive_429}), backing off {backoff_s:.0f}s")
-            else:
-                consecutive_429 = 0
-
-            next_fetch = time.time() + interval
-            dirty = True
 
         if dirty:
             write_state(accounts_data, sessions_data, mode, interval)
 
-        time.sleep(CHECK_GRANULARITY)
+        if inotify_fd >= 0:
+            ready, _, _ = select.select([inotify_fd], [], [], CHECK_GRANULARITY)
+            if ready and drain_inotify(inotify_fd):
+                # A session's status file changed -- recompute soon, but
+                # never sooner than SESSIONS_MIN_GAP after the last real
+                # recompute (see that constant's comment: this is the
+                # guard against a recompute storm under many simultaneously
+                # active sessions).
+                next_sessions = min(next_sessions, max(time.time(), last_sessions_run + SESSIONS_MIN_GAP))
+        else:
+            time.sleep(CHECK_GRANULARITY)
 
 
 if __name__ == "__main__":
