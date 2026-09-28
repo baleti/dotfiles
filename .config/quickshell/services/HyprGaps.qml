@@ -24,6 +24,16 @@ QtObject {
     // top, should sit below the bar by too.
     property int top: 5
 
+    // How much further in than a bare tiled-window edge a *deliberately
+    // inset* surface should sit -- notification cards (NotifLayer.qml,
+    // where this originated) and, as of 2026-09-28, the clipboard/
+    // notification pickers' own box. A pure aesthetic nudge on top of the
+    // real gap above, not a Hyprland-reported value -- `left + extraInset`
+    // is "one visible step in from a real window's edge," not "a real
+    // window's edge." Also feeds NotifLayer's own cardRadius (see there
+    // for why the corner needs the same inset folded in).
+    readonly property int extraInset: 6
+
     // hyprctl reports gaps_out as a CSS-margin-shorthand string ("top
     // right bottom left", or fewer values per CSS shorthand rules).
     // bottom is parsed but unused -- nothing here anchors to it.
