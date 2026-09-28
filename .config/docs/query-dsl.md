@@ -439,9 +439,11 @@ Defaults per picker:
   registry entirely (it still contributes to the free-text haystack
   alongside `title`, same as always - see `/filter-value`, above).
 - **clipboard-picker**: `chars`/`lines` (the row's old always-on size
-  badge, now real columns instead - see below). `type`/`date` are hidden
-  until `/at`'d or Auto-shown by a `/fv` filter, same as before this
-  feature existed (2026-09-28).
+  badge, now real columns instead - see below). `type`/`date`/`mime`
+  (comma-separated MIME types offered, added 2026-09-28 - see
+  `cliphist-store-logged.sh`'s multi-format bundle manifest in
+  rust-tools.md) are hidden until `/at`'d or Auto-shown by a `/fv` filter,
+  same as before this feature existed (2026-09-28).
 - **notification-picker**: `app`/`date`, both on from open - there was no
   pre-existing "always shown" info to preserve the way clipboard-picker's
   size badge was, so defaulting both on is what makes the table useful
@@ -573,6 +575,21 @@ claude-history spawns/dismisses a nested fzf (see below) - always
 Tab-gated to *open*, never live. An always-on popup that repainted on
 every keystroke was tried first and dropped: it read as obtrusive, and
 once in a while it stole a focus/resize cycle at exactly the wrong moment.
+
+**`Ctrl+Space` also opens it, same as Tab - clipboard-picker/
+notification-picker only, added 2026-09-28.** A second way to ask "what
+could this become," bound to the closed-popup state specifically: once a
+popup is already open on a Verb-stage completion, `Ctrl+Space` instead
+AND-narrows it (see "Ctrl+Space AND-narrows a Verb-stage popup," below) -
+the same key does either job depending on whether there's already
+something open to narrow, never both at once. Landed only in these two
+pickers' `Keys.onPressed` so far (`ClipboardPicker.qml`/
+`NotificationPicker.qml`, both share the identical handler by hand, not
+by import); not yet ported to winswitch, app-launcher, rss-reader,
+claude-usage, focus-picker or claude-history the way Verb-stage depth and
+Ctrl+Space AND-narrowing themselves were (see each's own rollout note) -
+add it to a picker's key handler alongside its existing Tab case if this
+is ever wanted more broadly.
 
 **Once open, typing further narrows it instead of closing it** (changed
 2026-09-10 - the original rule closed the popup on the next keystroke,
