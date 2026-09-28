@@ -852,9 +852,18 @@ Item {
     readonly property real pillTopMargin: 5
 
     // Shrink the workspace + media pill fonts when the left and right rows
-    // would collide. The shrunk state changes the widths being compared, so
-    // the full-size width is estimated by scaling the two shrinkable pills
-    // back up rather than re-measured (avoids flip-flopping).
+    // would collide. Every decision below is driven by leftRow.width +
+    // rightRow.width at the CURRENTLY applied pillFont -- the real,
+    // already-rendered width, never a projection of what some other font
+    // size would render. An earlier version tried to estimate the width at
+    // other sizes by scaling this one linearly, which was wrong often
+    // enough to either hang (padding folded into the estimate made it
+    // overshoot and cycle between two sizes forever -- a real Qt Quick
+    // layout infinite loop, confirmed live via gdb) or, after a history-array
+    // hack capped that cycling, leave the bar stuck oversized: the estimate
+    // would claim full size fit, apply it, find (for real) that it didn't,
+    // then refuse to correct back down because that size was already
+    // "tried" earlier in the same untouched history (reported 2026-09-28).
     readonly property int fullFont: Theme.fontSize
     property int pillFont: fullFont
     // 1 at full size, shrinking below that as pillFont does -- drives the
@@ -862,47 +871,55 @@ Item {
     // between pills, since at the floor font size (8px) those fixed
     // margins are what's left causing the two rows to collide.
     readonly property real pillScale: pillFont / fullFont
-    // Bounded history of pillFont values tried in the current settling
-    // episode (reset on a genuine external width change below, kept across
-    // the internal leftRow/rightRow-triggered recomputes within one).
-    // fullFont is 13 and the loop floors at g>8, so there are only 6
-    // possible values total (8..13) -- pigeonhole guarantees any possible
-    // cycle repeats within 6 steps, so this always catches one.
-    property var _crowdHistory: []
+
+    // pillFont values GROWN INTO (attempted, not merely passed through while
+    // shrinking) since the last genuine root-width change -- reset only
+    // there. Shrinking below is never gated on this: a measured, real
+    // overflow must always be correctable, unconditionally (refusing to
+    // shrink because the target size was "already tried" is exactly what
+    // left the bar stuck oversized earlier -- 2026-09-28). Only the
+    // speculative grow-by-one-step direction is gated, and by exact value,
+    // not by comparing `total` -- a version that compared total instead
+    // (tried first) still hung, pegging a core solid with zero further log
+    // output: `total` can read slightly differently across rapid reentrant
+    // calls within the same Qt Quick positioner relayout pass (this whole
+    // mechanism exists because Row's width-changed signal can fire WHILE
+    // its own positioner is still laying out, so recheckCrowding can reenter
+    // before a previous pass has settled -- confirmed via gdb on the
+    // original hang, showing QQuickBasePositioner continuously re-entering
+    // its own relayout), so a guard that trusts that value isn't reliable.
+    // Exact integer membership doesn't depend on `total` being accurate at
+    // all -- fullFont is 13 and the floor is 8, so there are at most 5
+    // distinct grow targets (9..13) ever, and pigeonhole guarantees this
+    // stops growth within 5 steps no matter how many times recheckCrowding
+    // reenters, which is what actually guarantees termination.
+    property var growVisited: []
+
     function recheckCrowding(): void {
-        // Content width scales ~linearly with font size, so pick the largest
-        // size whose scaled-up/down estimate fits. This used to be
-        // conservative-by-construction because padding didn't scale (see
-        // pillScale's own comment for why it now does) -- once padding is
-        // folded into `total` too, the linear estimate below can overshoot
-        // enough that the resulting width re-picks a size we just left,
-        // and that size's own width re-picks the one before it: a real
-        // Qt Quick layout infinite loop, not just visual jitter (confirmed
-        // live: pegged a core at ~100% indefinitely, every fresh quickshell
-        // launch, via a live gdb backtrace showing QQuickBasePositioner
-        // stuck re-entering its own relayout). _crowdHistory below breaks
-        // that deterministically rather than trying to make the estimate
-        // itself exactly right.
         const total = leftRow.width + rightRow.width + 12;
         const avail = width - 6;
-        let g = fullFont;
-        while (g > 8 && total * g / pillFont > avail)
-            g--;
-        if (g === pillFont)
-            return;
-        if (root._crowdHistory.includes(g)) {
-            // Revisiting a size already tried this episode -- we're
-            // cycling. Stop adjusting rather than alternate forever; the
-            // current size is still a valid (if not perfectly optimal)
-            // fit, chosen while genuinely trying to shrink toward the
-            // available width.
+
+        if (total > avail) {
+            // Doesn't fit at the real, currently-rendered size -- shrink one
+            // step. Always correct because it's a measurement, not a guess;
+            // if one step isn't enough, this same branch fires again off the
+            // width change that step itself causes, until it fits or bottoms
+            // out at 8.
+            if (pillFont > 8)
+                pillFont -= 1;
             return;
         }
-        root._crowdHistory.push(pillFont);
-        pillFont = g;
+
+        if (pillFont < fullFont) {
+            const nextFont = pillFont + 1;
+            if (root.growVisited.includes(nextFont))
+                return;
+            root.growVisited.push(nextFont);
+            pillFont = nextFont;
+        }
     }
     onWidthChanged: {
-        root._crowdHistory = [];
+        growVisited = [];
         recheckCrowding();
     }
 
