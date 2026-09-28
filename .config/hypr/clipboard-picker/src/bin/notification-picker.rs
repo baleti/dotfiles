@@ -1,8 +1,10 @@
-//! Picker over notifyd's retained notification history (`notifyctl list`),
-//! built on the shared `picker` engine (see picker.rs, extracted from
-//! clipboard-picker). Bound to CTRL+mod+n as the "browse all past
-//! notifications" counterpart to mod+n's "act on the last one"
-//! (`notifyctl invoke-last`, see ~/.config/hypr/scripts/).
+//! notifyd retained-notification-history picker headless backend. UI moved
+//! to Quickshell/QML (~/.config/quickshell/notifications/NotificationPicker.qml,
+//! mirroring clipboard-picker's own GTK->Quickshell move, 2026-09-11) on
+//! 2026-09-28; this binary now just talks to `notifyctl` and prints NDJSON,
+//! the same split clipboard-picker.rs settled on. Bound to CTRL+mod+n as
+//! the "browse all past notifications" counterpart to mod+n's "act on the
+//! last one" (`notifyctl invoke-last`, see ~/.config/hypr/scripts/).
 //!
 //! This used to work around dunst by redisplaying a notification
 //! (`history-pop`) before invoking its action, because dunst invalidates a
@@ -12,24 +14,29 @@
 //! the entire reason notifyd exists; see
 //! ~/.claude2/plans/silly-percolating-rose.md) -- so activating a row here
 //! is just `notifyctl invoke <id>`, no redisplay dance needed.
+//!
+//! Subcommands:
+//!   list          one NDJSON line per retained notification, then exit
+//!   activate <id> invoke that notification's default action
 
+use std::io::Write;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use clipboard_picker::picker::{self, Entry, PickerConfig};
+use clipboard_picker::picker::{self, Entry};
 
 const NOTIFYCTL: &str = "/home/user1/.config/hypr/notifyd/target/release/notifyctl";
-/// `/fv field:value`-selectable fields, offered by the autocomplete popup.
-const FIELD_NAMES: [&str; 2] = ["app", "date"];
+const PROGRAM_NAME: &str = "notification-picker";
 
 fn get_str(obj: &Value, key: &str) -> String {
     obj.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
 }
 
-/// `notifyctl list` returns newest-first already (see main.rs's
-/// list_history_json), so entries are kept in the order notifyd gives them.
+/// `notifyctl list` returns newest-first already (see notifyd's own
+/// `list_history_json`), so entries are kept in the order notifyd gives
+/// them.
 fn history_entries() -> Vec<Entry> {
     let out = match Command::new(NOTIFYCTL).arg("list").output() {
         Ok(o) => o.stdout,
@@ -78,27 +85,45 @@ fn history_entries() -> Vec<Entry> {
     entries
 }
 
-fn activate(entry: &Entry) {
-    let _ = Command::new(NOTIFYCTL).args(["invoke", &entry.id]).status();
+/// One NDJSON line per entry: `{id, preview, haystack, fields}` --
+/// NotificationPicker.qml is the field-name registry now (was
+/// notification-picker's own `FIELD_NAMES`/`field_descs` here, before the
+/// GTK engine went away). No `thumb`/`chars`/`lines` the way
+/// clipboard-picker's NDJSON carries -- notifications have no image
+/// payload and no size badge to show.
+fn print_list(entries: &[Entry]) {
+    let mut out = std::io::stdout().lock();
+    for e in entries {
+        let fields: serde_json::Map<String, serde_json::Value> =
+            e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
+        let line = json!({
+            "id": e.id,
+            "preview": e.preview,
+            "haystack": e.haystack,
+            "fields": fields,
+        });
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+fn activate(id: &str) {
+    let _ = Command::new(NOTIFYCTL).args(["invoke", id]).status();
 }
 
 fn main() {
-    let entries = history_entries();
-
-    let config = PickerConfig {
-        program_name: "notification-picker",
-        field_names: FIELD_NAMES.to_vec(),
-        field_descs: vec![
-            ("app", "the sending application"),
-            ("date", "how long ago it arrived"),
-        ],
-        placeholder: "search notifications   ·   $app:  $date:".to_string(),
-        width_fraction: 0.5,
-        height_fraction: 0.8,
-        thumb_height: 0,
-        initial_rows: 60,
-        chunk_rows: 120,
-    };
-
-    picker::run(entries, config, None, Box::new(activate));
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("activate") => {
+            let Some(id) = args.next() else {
+                eprintln!("usage: {PROGRAM_NAME} activate <id>");
+                std::process::exit(1);
+            };
+            activate(&id);
+        }
+        None | Some("list") => print_list(&history_entries()),
+        Some(other) => {
+            eprintln!("{PROGRAM_NAME}: unknown subcommand {other:?}");
+            std::process::exit(1);
+        }
+    }
 }

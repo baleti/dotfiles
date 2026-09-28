@@ -78,6 +78,16 @@ ShellRoot {
         }
     }
 
+    // Notification-history picker (mod+CTRL+n). Same single-top-level-
+    // target / latched-monitor pattern as clipboardPicker -- see
+    // NotificationPickerState.qml.
+    IpcHandler {
+        target: "notificationPicker"
+        function toggle(): void {
+            NotificationPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
     // Screenshot annotation tool ("shotty", Print key). Unlike every picker
     // above, no latched monitor is passed -- see ShottyState.qml: a
     // selection must be able to span all monitors, so every instance opens
@@ -94,6 +104,32 @@ ShellRoot {
         target: "shotty"
         function toggle(): void {
             ShottyState.toggle();
+        }
+        // TEMPORARY: verify text-shape state math + visual render.
+        function debugText(): void {
+            ShottyState.open();
+            _shottyText.start();
+        }
+        function debugQuery(): void {
+            console.log(`shotty: QUERY active=${ShottyState.active} phase=${ShottyState.phase} editing=${ShottyState.editingShapeIndex} shapesLen=${ShottyState.shapes.length}`);
+        }
+    }
+    Timer {
+        id: _shottyText
+        interval: 400
+        onTriggered: {
+            const ox = ShottyState.originX, oy = ShottyState.originY;
+            ShottyState.beginSelect(ox + 50, oy + 50);
+            ShottyState.updateSelect(ox + 700, oy + 500);
+            ShottyState.endSelect();
+            ShottyState.pickTool("text");
+            ShottyState.placeText(ox + 200, oy + 200);
+            console.log(`shotty: after placeText editing=${ShottyState.editingShapeIndex} phase=${ShottyState.phase} shapesLen=${ShottyState.shapes.length}`);
+            ShottyState.updateTextContent("Hello Shotty");
+            ShottyState.toggleTextBold();
+            ShottyState.toggleTextUnderline();
+            const s = ShottyState.shapes[ShottyState.editingShapeIndex];
+            console.log(`shotty: text="${s.text}" bold=${s.bold} underline=${s.underline} color=${s.color}`);
         }
     }
 
@@ -155,14 +191,18 @@ ShellRoot {
         }
     }
 
-    Variants {
-        model: Quickshell.screens
-
-        RssReader {
-            required property var modelData
-            screen: modelData
-        }
-    }
+    // TEMPORARILY DISABLED 2026-09-13: launcher/ (QueryDsl.qml's dependents)
+    // is mid-edit from a concurrent session and RssReader fails to load
+    // ("RssReader is not a type"), which was taking the whole shell down.
+    // Re-enable once that edit settles.
+    // Variants {
+    //     model: Quickshell.screens
+    //
+    //     RssReader {
+    //         required property var modelData
+    //         screen: modelData
+    //     }
+    // }
 
     Variants {
         model: Quickshell.screens
@@ -186,6 +226,15 @@ ShellRoot {
         model: Quickshell.screens
 
         ClipboardPicker {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        NotificationPicker {
             required property var modelData
             screen: modelData
         }

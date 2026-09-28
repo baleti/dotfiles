@@ -192,8 +192,8 @@ hl.bind("XF86AudioForward", hl.dsp.exec_cmd("playerctl position 5+"), { locked =
 -- Moved to Quickshell 2026-09-11 (same GTK->Quickshell move winswitch made
 -- first, 753e505): ~/.config/quickshell/clipboard/ClipboardPicker.qml is
 -- now the UI, the `clipboard-picker` binary a headless
--- list/thumbs/activate backend. notification-picker (CTRL+mod+n, below) is
--- untouched, still the GTK+layer-shell `picker::run` engine.
+-- list/thumbs/activate backend. notification-picker (CTRL+mod+n, below)
+-- made the same move on 2026-09-28.
 hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("qs ipc call clipboardPicker toggle"), { description = "Clipboard history picker" })
 -- shotty (custom Quickshell screenshot tool, replacing hyprshot+satty
 -- 2026-09-12): instant multi-monitor freeze, drag-select (can cross
@@ -248,9 +248,11 @@ hl.bind(mainMod .. " + SHIFT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/notif
 
 -- notifications: browse/search all retained notification history and
 -- invoke the chosen one's default action -- no redisplay needed, unlike
--- the old dunst-backed version of this picker. Shares the clipboard-picker's
--- GTK+layer-shell picker engine (~/.config/hypr/clipboard-picker/src/picker.rs).
-hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("~/.config/hypr/clipboard-picker/target/release/notification-picker"), { description = "Search all notification history" })
+-- the old dunst-backed version of this picker. Moved to Quickshell
+-- 2026-09-28 (same GTK->Quickshell move mod+v made on 2026-09-11):
+-- ~/.config/quickshell/notifications/NotificationPicker.qml is now the UI,
+-- the `notification-picker` binary a headless list/activate backend.
+hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("qs ipc call notificationPicker toggle"), { description = "Search all notification history" })
 
 -- notifications: clear all on-screen cards without touching history --
 -- notifyctl close-all only drops the render order, it never removes

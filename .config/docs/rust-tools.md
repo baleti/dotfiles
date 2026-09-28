@@ -9,53 +9,47 @@ take" confusion here.
 
 ## clipboard-picker
 
-`~/.config/hypr/clipboard-picker/` — GTK3 + wlr-layer-shell picker engine,
-two binaries sharing it:
+`~/.config/hypr/clipboard-picker/` — used to be a shared GTK3 +
+wlr-layer-shell picker engine (`src/picker.rs`) behind two binaries; both
+have since moved their UI to Quickshell/QML (clipboard-picker on
+2026-09-11, notification-picker on 2026-09-28, see
+[query-dsl.md](query-dsl.md)), so each binary is now a **headless NDJSON
+backend** and `src/picker.rs` only holds what's still genuinely shared:
+`Entry` (the row shape both bins' `list` output serializes),
+`humanize_ago` (both pickers' `$date:` bucketing), and `cache_dir`
+(clipboard-picker's thumbnail cache).
 
-- **`src/picker.rs`** — the shared engine: a search box over a `GtkListBox`
-  with a `$field:value` selector DSL (autocompleted, see below), keyboard
-  nav, and an activate callback. Extracted from the original clipboard
-  picker so other pickers can reuse the same window/search/filter
-  machinery. `Entry::fields` is where a caller's named data lives (e.g.
-  clipboard-picker's `type`/`date`, notification-picker's `app`/`date`);
-  `PickerConfig::field_names` is what `$`-autocomplete offers. The DSL
-  itself is a by-hand port of winswitch's `query.rs` (quote-aware
-  tokenizing, subsequence field/value matching, the same
-  `trailing_field_fragment`/`trailing_value_fragment`/`*_suggestions`
-  shape) — see [query-dsl.md](query-dsl.md) for the full spec and for the
-  one place this diverges from winswitch: bare (non-`$`) free words here
-  join into a single literal phrase rather than ANDing independently, the
-  original clipboard-picker behaviour, left as-is. Selection also follows
-  a shared convention now: the list opens with nothing selected, the first
-  arrow/Tab lands on the top visible entry, and `Enter` with nothing
-  explicitly selected still activates it (see query-dsl.md's Design
-  principles). The window carries a 1px accent frame (`window { border }`
-  in the `CssProvider`, colour interpolated from `scheme.json`'s `primary`
-  via `load_accent_hex` — GTK's `@accent_color` lives in the theme's own
-  provider and won't resolve from here) so every picker built on the
-  engine matches the quickshell launcher / rss reader cards.
-- **`src/bin/clipboard-picker.rs`** (bound to `mainMod+V`) — cliphist picker
-  on top of the engine; a Rust port of the older `scripts/clipboard-picker.py`
-  that skips ~140ms of Python/GObject-introspection interpreter startup.
-  Its `$type:image`/`$type:text` field is derived from cliphist's preview
-  text (cliphist itself only distinguishes images, see `looks_like_image`).
-  Its `$date:` field reads `~/.local/state/cliphist-expire/timestamps`, a
-  log `cliphist-store-logged.sh` (wired into hyprland.lua's
-  `wl-paste --watch`, replacing a direct `cliphist store` call) appends an
-  exact copy-time to on every store — cliphist itself keeps none, see that
-  script's own comment for how it correlates a log line to the id cliphist
-  just assigned. `cliphist-expire.sh` prunes this log in step with
-  whatever entries it expires.
-- **`src/bin/notification-picker.rs`** (bound to `mainMod+CTRL+n`) — browses
-  notifyd's retained notification history (`notifyctl list`) and invokes a
-  chosen entry's action. Doesn't need dunst's old "redisplay before invoke"
-  workaround since notifyd never discards a notification's actions on close.
-  Its `$app:` field replaces what used to be a bare `$appname` selector;
-  `$date:` needed no new plumbing since `notifyctl list` already reports a
-  real per-notification `timestamp`.
+- **`src/bin/clipboard-picker.rs`** (bound to `mainMod+V`, UI in
+  `~/.config/quickshell/clipboard/ClipboardPicker.qml`) — `list` prints one
+  NDJSON line per cliphist entry; `thumb`/`thumbs` decode and cache a
+  scaled PNG (plus a small looping GIF for the selected row) for image
+  entries; `texts` returns the full decoded text for entries cliphist's own
+  preview truncated; `activate` pushes an entry back to the clipboard,
+  replaying every representation a multi-format bundle captured at copy
+  time (see `cliphist-store-logged.sh`) rather than just cliphist's single
+  stored one. Its `type`/`date` fields (QML-side DSL, not this binary) are
+  `type:image`/`type:text` derived from cliphist's own preview shape, and
+  `date:` read from `~/.local/state/cliphist-expire/timestamps`, a log
+  `cliphist-store-logged.sh` (wired into hyprland.lua's `wl-paste --watch`)
+  appends an exact copy-time to on every store — cliphist itself keeps
+  none. `cliphist-expire.sh` prunes this log in step with whatever entries
+  it expires.
+- **`src/bin/notification-picker.rs`** (bound to `mainMod+CTRL+n`, UI in
+  `~/.config/quickshell/notifications/NotificationPicker.qml`) — `list`
+  prints one NDJSON line per retained notification (`notifyctl list`);
+  `activate` invokes a chosen entry's default action via `notifyctl
+  invoke`. No redisplay dance needed the way dunst required, since notifyd
+  never discards a notification's actions on close. Its `app`/`date`
+  fields need no side-log the way clipboard-picker's `date` does —
+  `notifyctl list` already reports a real per-notification `timestamp`.
 
-Second press of the launching keybind closes the open picker (pidfile +
-SIGTERM convention, shared with sysmon-graph below).
+The `/fv field:value` selector DSL, its autocomplete, and keyboard nav all
+live in QML now (`ClipboardQueryDsl.qml`, imported by both pickers' UI —
+see query-dsl.md for why notification-picker doesn't hand-port its own
+copy). Second press of the launching keybind still closes the open
+picker, now just a boolean toggle in a per-picker `*PickerState.qml`
+singleton rather than the old pidfile+SIGTERM convention (still used by
+sysmon-graph below).
 
 ## notifyd
 

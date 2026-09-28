@@ -23,10 +23,17 @@ import QtQuick
 // looking wrong. This file adds real `/fv/path value` parsing (mirroring
 // winswitch's `tokVerb`/via handling, ported below) so accepting a deep
 // candidate can actually produce `/fv/type ` and have it mean what it
-// looks like. `notification-picker` still runs the unmodified GTK engine,
-// so this is the one place the two now differ -- everything else (bare-
-// phrase joining, GTK-family Tab/Ctrl+j/k keyboard handling, no /ft /at /rt
-// /s /rv support) stays identical on purpose.
+// looks like.
+//
+// notification-picker (mod+CTRL+n) made its own GTK->Quickshell move on
+// 2026-09-28 and imports this same singleton directly (`import
+// "../clipboard"` from NotificationPicker.qml) rather than getting an 8th
+// hand-port: it was built on the identical `picker.rs` engine and shares
+// this grammar byte-for-byte, and every entry point below already takes
+// `fieldNames`/`fieldDescs` as plain arguments -- there was nothing
+// clipboard-specific baked in here to port around. The `/fv/path value`
+// divergence above is no longer clipboard-only; notification-picker gets
+// it too, for free.
 //
 // Ported from picker.rs's own functions (named in each comment below) --
 // keep both in sync by hand if either changes, same "copy-pasted on
