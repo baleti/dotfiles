@@ -85,8 +85,19 @@ PanelWindow {
         font.pixelSize: Theme.fontSize - 2
         text: root._longestMimeValue
     }
+    // +24, not +8: verified via an isolated qs -p test that TextMetrics.width
+    // and the actual rendered Text.implicitWidth agree almost exactly at
+    // 1.0 scale (off by under a pixel), but that test couldn't reproduce a
+    // real anchored PanelWindow on this screen's fractional scale (eDP-1,
+    // 1.5x -- `hyprctl monitors`) - fractional scaling is a known rough
+    // edge for sub-pixel text-layout rounding in Qt/Wayland, and a report
+    // 2026-09-28 of the longest live entry (81 chars, multiple comma-
+    // joined MIME types) still eliding at +8 is consistent with exactly
+    // that, not a logic error in the width formula itself (re-derived by
+    // hand and confirmed correct at 1.0 scale). Generous flat padding
+    // instead of chasing an exact per-glyph rounding correction.
     readonly property real _mimeColWidth: Math.max(root.columnWidths.mime,
-        Math.min(box.width * 0.5, mimeMetrics.width + 8))
+        Math.min(box.width * 0.5, mimeMetrics.width + 24))
     // Shrunk from the GTK version's 160/480 (reported too big after the
     // first live test).
     readonly property int thumbHeight: 120
@@ -928,10 +939,19 @@ PanelWindow {
                     // and the separate dim "extraText" line (query-dsl.md's
                     // Auto-shown filter fields are folded into
                     // activeColumns now, so there's nothing left for a
-                    // separate line to show).
+                    // separate line to show). Always visible, thumb rows
+                    // included -- `chars`/`lines` correctly render blank
+                    // for those (see below), but `mime` doesn't: an image
+                    // has one too, and hiding the whole row hid it right
+                    // along with the columns that legitimately don't apply
+                    // (reported 2026-09-28). Row/Column positioners skip
+                    // invisible children entirely, which would have
+                    // shifted the column cells to fill the gap and broken
+                    // their alignment with colHeader -- so previewText
+                    // itself goes blank for thumb rows instead (below),
+                    // keeping its width reserved.
                     Row {
                         id: previewRow
-                        visible: !row.modelData.thumb
                         width: col.width
                         spacing: 10
 
@@ -943,8 +963,9 @@ PanelWindow {
                         // capped slice decides "wider than the row" just as
                         // well.
                         readonly property int _previewCap: 300
-                        readonly property string shownPreview: row.modelData.preview.length > previewRow._previewCap
-                            ? row.modelData.preview.slice(0, previewRow._previewCap) : row.modelData.preview
+                        readonly property string shownPreview: row.modelData.thumb ? ""
+                            : (row.modelData.preview.length > previewRow._previewCap
+                               ? row.modelData.preview.slice(0, previewRow._previewCap) : row.modelData.preview)
 
                         Text {
                             id: previewText
