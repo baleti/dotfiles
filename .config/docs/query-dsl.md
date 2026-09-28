@@ -459,7 +459,12 @@ Defaults per picker:
   see below; `mime`: comma-separated MIME types offered, trimmed of any
   `;parameter` such as `;charset=utf-8` for display - see
   `cliphist-store-logged.sh`'s multi-format bundle manifest in
-  rust-tools.md). `type`/`date` are hidden until `/at`'d or Auto-shown by
+  rust-tools.md). `mime` is the one column with a content-fitted width
+  (`TextMetrics` against the longest value among the currently-shown
+  rows) rather than a fixed one - comma-joined multi-format entries can
+  run long - capped at half the box width so it can never crowd the
+  preview text out entirely; every other column stays a fixed width.
+  `type`/`date` are hidden until `/at`'d or Auto-shown by
   a `/fv` filter, same as before this feature existed (2026-09-28).
 - **notification-picker**: `app`/`date`, both on from open - there was no
   pre-existing "always shown" info to preserve the way clipboard-picker's
