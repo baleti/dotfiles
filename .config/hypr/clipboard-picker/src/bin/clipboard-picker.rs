@@ -3,8 +3,9 @@
 //! GTK->Quickshell move) on 2026-09-11; this binary now just talks to
 //! cliphist/wl-copy and prints NDJSON, the same split winswitch's
 //! output.rs/main.rs settled on. `notification-picker` (this crate's other
-//! bin) is untouched and still the GTK+layer-shell `picker::run` engine --
-//! only mod+v moved.
+//! bin) made the same move on 2026-09-28, so `picker.rs` (this crate's
+//! `lib.rs`) no longer holds a GTK engine at all -- just the `Entry`/
+//! `humanize_ago`/`cache_dir` helpers both bins still share.
 //!
 //! Subcommands:
 //!   list             one NDJSON line per cliphist entry, then exit
