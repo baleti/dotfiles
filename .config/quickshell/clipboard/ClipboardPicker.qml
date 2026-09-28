@@ -48,6 +48,10 @@ PanelWindow {
     readonly property var defaultColumns: ["chars", "lines"]
     readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l" })
     readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34 })
+    // Which column header (if any) is currently hovered, and where to
+    // center its tooltip (box-local x) -- see colHeader/headerTip below.
+    property string _headerHoverName: ""
+    property real _headerHoverCenterX: 0
     function _colWidth(name) { return root.columnWidths[name] || 70; }
     readonly property var activeColumns: ClipboardQueryDsl.activeColumns(root.parsed, root.fieldNames, root.defaultColumns)
     readonly property real _columnsWidth: root.activeColumns.reduce((sum, c) => sum + root._colWidth(c), 0)
@@ -683,6 +687,7 @@ PanelWindow {
             Repeater {
                 model: root.activeColumns
                 Text {
+                    id: headerCell
                     required property string modelData
                     width: root._colWidth(modelData)
                     horizontalAlignment: Text.AlignRight
@@ -691,7 +696,58 @@ PanelWindow {
                     font.pixelSize: Theme.fontSize - 2
                     opacity: 0.55
                     color: Theme.text
+
+                    // Explains what a short column label means (e.g. "l =
+                    // line count") -- see headerTip below. Guards clearing
+                    // `_headerHoverName` on the way out against a value
+                    // another cell's HoverHandler already moved on to (the
+                    // outgoing cell's `hovered -> false` can fire after the
+                    // incoming one's `hovered -> true` when the cursor
+                    // crosses straight from one cell into the next).
+                    HoverHandler {
+                        id: headerHover
+                        onHoveredChanged: {
+                            if (headerHover.hovered) {
+                                root._headerHoverName = headerCell.modelData;
+                                root._headerHoverCenterX = colHeader.x + headerCell.x + headerCell.width / 2;
+                            } else if (root._headerHoverName === headerCell.modelData) {
+                                root._headerHoverName = "";
+                            }
+                        }
+                    }
                 }
+            }
+        }
+
+        // Tooltip for the hovered column header -- "label = description"
+        // (query-dsl.md's fieldDescs, e.g. "l = line count"). Positioned
+        // just under the header row rather than above it: the header row
+        // sits close to the box's own top edge, with no guaranteed room
+        // above it to grow into.
+        Rectangle {
+            id: headerTip
+            visible: root._headerHoverName.length > 0
+            z: 50
+            width: Math.min(220, headerTipText.implicitWidth + 16)
+            height: headerTipText.implicitHeight + 10
+            x: Math.max(4, Math.min(box.width - width - 4, root._headerHoverCenterX - width / 2))
+            y: colHeader.y + colHeader.height + 4
+            radius: Theme.rounding
+            color: Theme.bg
+            border.color: Theme.border
+            border.width: 1
+
+            Text {
+                id: headerTipText
+                anchors.fill: parent
+                anchors.margins: 6
+                text: root._headerHoverName.length > 0
+                      ? (root.columnLabels[root._headerHoverName] || root._headerHoverName) + " = " + (root.fieldDescs[root._headerHoverName] || "")
+                      : ""
+                wrapMode: Text.WordWrap
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 3
             }
         }
 
