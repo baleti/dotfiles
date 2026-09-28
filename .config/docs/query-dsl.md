@@ -386,7 +386,23 @@ Filters which rows survive. Three forms:
   `/fv keywords:`), because substring-matching prose mid-word turned
   `/fv ala` into a hit on "sc**ala**ble" and "b**ala**nce".
 - **`/fv path:value`** - scope: keep rows where a type matching `path`
-  has a value containing `value` (substring, case-insensitive).
+  has a value containing `value` (substring, case-insensitive). **`value`
+  prefixed with `>` `<` `>=` `<=` compares instead of substring-matching**
+  (clipboard-picker/notification-picker only, added 2026-09-28 -
+  `/fv lines:>4`, or via, `//lines >4`) - reuses `/sort`'s own comparator
+  (`compareFieldValues`; see "Sort comparison, precisely" below) so a
+  filter and a sort never disagree about what "greater" means for the
+  same field. Only means anything when *both* the row's value and the
+  operand are one of the two shapes that comparator recognises - plain
+  integers (`chars:>500`) or age buckets (`date:>3h`, meaning "older than
+  3h" - the operator compares the raw stored age, larger is further in
+  the past, no direction-trap inversion the way `/sort ascending` needs);
+  anything else (a non-numeric field, or an operand that isn't) never
+  matches, rather than falling back to `>4` as literal substring text
+  (which would almost always also match nothing, but for the wrong
+  reason). No `=` operator - plain `field:value` substring already covers
+  loose equality, and exact numeric equality wasn't asked for. Not yet
+  ported to any other consumer.
 - **`/fv path`** (no colon), where `path` resolves to a **group** - an
   *existence* filter: keep rows that have any non-empty value anywhere in
   that group. `/fv claude` narrows to claude-hosting windows before a
