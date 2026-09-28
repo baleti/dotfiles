@@ -1265,6 +1265,26 @@ Rectangle {
             root.thumbKeyboardActive = false;
         }
     }
+    // Hold-to-repeat for list/popup navigation (Ctrl+J/K, arrows,
+    // PageUp/Down): the held key re-fires its own step on a timer rather
+    // than relying on whichever surface currently holds focus (this
+    // panel, or searchInput inside it) forwarding Qt's own key-repeat,
+    // which isn't guaranteed -- same reasoning as the CTRL+ALT+h/l
+    // Hyprland-side repeat fix and the ClipboardPicker/NotificationPicker
+    // DSL pickers' identical mechanism.
+    property var _navRepeatFn: null
+    Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
+    Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (root._navRepeatFn) root._navRepeatFn() }
+    function _startNavRepeat(fn) {
+        root._navRepeatFn = fn;
+        fn();
+        navRepeatDelay.restart();
+    }
+    function _stopNavRepeat() {
+        navRepeatDelay.stop();
+        navRepeatTimer.stop();
+        root._navRepeatFn = null;
+    }
     // Up/Down move the selection (first press lands on the top row);
     // Space/Enter focuses the selected row's window, identical to
     // clicking it. Escape and "/" are handled upstream in Bar.qml before
@@ -1280,20 +1300,29 @@ Rectangle {
         // searchInput's own Keys.onPressed, which forwards Ctrl+J/Ctrl+K
         // here explicitly the same way it already forwards Enter).
         if (event.key === Qt.Key_Down || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
-            root.selIndex = root.selActive ? Math.min(n - 1, root.selIndex + 1) : 0;
-            root.selActive = true;
-            root._syncKeyboardThumb();
-            // query-dsl.md's "Search-box history": moving the selection
-            // after typing counts as "acted on" too, not just a full
-            // accept - record() no-ops on an empty query, so this is
-            // harmless while the search box was never touched.
-            ClaudeUsageQueryHistory.record(root.searchText);
+            if (!event.isAutoRepeat) root._startNavRepeat(() => {
+                const n2 = root.sortedProcs.length;
+                if (n2 === 0) return;
+                root.selIndex = root.selActive ? Math.min(n2 - 1, root.selIndex + 1) : 0;
+                root.selActive = true;
+                root._syncKeyboardThumb();
+                // query-dsl.md's "Search-box history": moving the
+                // selection after typing counts as "acted on" too, not
+                // just a full accept - record() no-ops on an empty query,
+                // so this is harmless while the search box was never
+                // touched.
+                ClaudeUsageQueryHistory.record(root.searchText);
+            });
             event.accepted = true;
         } else if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
-            root.selIndex = root.selActive ? Math.max(0, root.selIndex - 1) : 0;
-            root.selActive = true;
-            root._syncKeyboardThumb();
-            ClaudeUsageQueryHistory.record(root.searchText);
+            if (!event.isAutoRepeat) root._startNavRepeat(() => {
+                const n2 = root.sortedProcs.length;
+                if (n2 === 0) return;
+                root.selIndex = root.selActive ? Math.max(0, root.selIndex - 1) : 0;
+                root.selActive = true;
+                root._syncKeyboardThumb();
+                ClaudeUsageQueryHistory.record(root.searchText);
+            });
             event.accepted = true;
         } else if (event.key === Qt.Key_Home) {
             root.selIndex = 0;
@@ -1666,6 +1695,13 @@ Rectangle {
                             root.triggerCompletion();
                         }
                         event.accepted = true;
+                    } else if (event.key === Qt.Key_Space && !root.acOpen && (event.modifiers & Qt.ControlModifier)) {
+                        // Ctrl+Space also opens completion, same as Tab
+                        // (query-dsl.md Autocompletion section) -
+                        // ClipboardPicker.qml/NotificationPicker.qml's
+                        // reference implementation, ported here.
+                        root.triggerCompletion();
+                        event.accepted = true;
                     } else if (event.key === Qt.Key_Space && root.acOpen && (event.modifiers & Qt.ControlModifier)) {
                         // AND-narrows instead of accepting (query-dsl.md) -
                         // see AppLauncher.qml's identical handler for the
@@ -1688,10 +1724,10 @@ Rectangle {
                         root._triggerHistorySearch();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Down && root.acOpen) {
-                        root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                        if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Up && root.acOpen) {
-                        root.acSel = Math.max(0, root.acSel - 1);
+                        if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Down) {
                         // Popup closed: history-cycle instead of letting
@@ -1706,18 +1742,20 @@ Rectangle {
                         root._historyPrev();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
-                        if (root.acOpen) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                        else root.handleKey(event);
+                        if (root.acOpen) {
+                            if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
+                        } else root.handleKey(event);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
-                        if (root.acOpen) root.acSel = Math.max(0, root.acSel - 1);
-                        else root.handleKey(event);
+                        if (root.acOpen) {
+                            if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
+                        } else root.handleKey(event);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageDown && root.acOpen) {
-                        root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
+                        if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7); });
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageUp && root.acOpen) {
-                        root.acSel = Math.max(0, root.acSel - 7);
+                        if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 7); });
                         event.accepted = true;
                     } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !root.acOpen) {
                         // TextInput would otherwise just swallow Return/Enter
@@ -1729,6 +1767,7 @@ Rectangle {
                         root.handleKey(event);
                     }
                 }
+                Keys.onReleased: event => { root._stopNavRepeat(); }
             }
         }
 

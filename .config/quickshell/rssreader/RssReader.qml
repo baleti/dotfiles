@@ -541,23 +541,43 @@ PanelWindow {
         anchors.fill: parent
         focus: root.open
 
+        // Hold-to-repeat for article-list navigation (j/k, arrows,
+        // PageUp/Down): the held key re-fires its own step on a timer
+        // rather than relying on this layer-shell surface forwarding Qt's
+        // own key-repeat, which isn't guaranteed -- same reasoning as the
+        // CTRL+ALT+h/l Hyprland-side repeat fix.
+        property var _navRepeatFn: null
+        Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
+        Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (keyScope._navRepeatFn) keyScope._navRepeatFn() }
+        function _startNavRepeat(fn) {
+            keyScope._navRepeatFn = fn;
+            fn();
+            navRepeatDelay.restart();
+        }
+        function _stopNavRepeat() {
+            navRepeatDelay.stop();
+            navRepeatTimer.stop();
+            keyScope._navRepeatFn = null;
+        }
+        Keys.onReleased: event => { keyScope._stopNavRepeat(); }
+
         Keys.onPressed: event => {
             const k = event.key;
             if (k === Qt.Key_Escape) {
                 root.hide();
             } else if (k === Qt.Key_J || k === Qt.Key_Down) {
-                root.move(1);
+                if (!event.isAutoRepeat) keyScope._startNavRepeat(() => root.move(1));
             } else if (k === Qt.Key_K || k === Qt.Key_Up) {
-                root.move(-1);
+                if (!event.isAutoRepeat) keyScope._startNavRepeat(() => root.move(-1));
             } else if (k === Qt.Key_G) {
                 root.selected = (event.modifiers & Qt.ShiftModifier)
                     ? root.view.length - 1 : 0;
                 listView.positionViewAtIndex(root.selected, ListView.Contain);
                 dwell.restart();
             } else if (k === Qt.Key_PageDown) {
-                root.move(10);
+                if (!event.isAutoRepeat) keyScope._startNavRepeat(() => root.move(10));
             } else if (k === Qt.Key_PageUp) {
-                root.move(-10);
+                if (!event.isAutoRepeat) keyScope._startNavRepeat(() => root.move(-10));
             } else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_O) {
                 root.openCurrent();
             } else if (k === Qt.Key_M) {
@@ -723,6 +743,26 @@ PanelWindow {
                                 // Tab opens the popup; every Tab after that
                                 // just moves the highlight, same as Down;
                                 // Enter is the one key that accepts.
+                                // Hold-to-repeat for the autocomplete popup
+                                // highlight (Down/Up while it's open): same
+                                // mechanism as keyScope's above, scoped to
+                                // this TextInput since it owns its own
+                                // Keys.onPressed.
+                                property var _navRepeatFn: null
+                                Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
+                                Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (search._navRepeatFn) search._navRepeatFn() }
+                                function _startNavRepeat(fn) {
+                                    _navRepeatFn = fn;
+                                    fn();
+                                    navRepeatDelay.restart();
+                                }
+                                function _stopNavRepeat() {
+                                    navRepeatDelay.stop();
+                                    navRepeatTimer.stop();
+                                    _navRepeatFn = null;
+                                }
+                                Keys.onReleased: e => { _stopNavRepeat(); }
+
                                 Keys.onPressed: e => {
                                     if (e.key === Qt.Key_Escape) {
                                         if (root.acOpen) { root.acDismissed = true; root.acVerbMulti = false; }
@@ -741,6 +781,15 @@ PanelWindow {
                                     } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
                                         if (root.acOpen) root.acAccept();
                                         else root._returnFocusToList();
+                                        e.accepted = true;
+                                    } else if (e.key === Qt.Key_Space && !root.acOpen && (e.modifiers & Qt.ControlModifier)) {
+                                        // Ctrl+Space also opens completion,
+                                        // same as Tab (query-dsl.md
+                                        // Autocompletion section) -
+                                        // ClipboardPicker.qml/
+                                        // NotificationPicker.qml's reference
+                                        // implementation, ported here.
+                                        root._triggerCompletion();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Space && root.acOpen && (e.modifiers & Qt.ControlModifier)) {
                                         // AND-narrows instead of accepting
@@ -773,12 +822,14 @@ PanelWindow {
                                         // history-cycle instead of returning
                                         // focus to the list - Tab/Escape
                                         // already do that, so nothing is lost.
-                                        if (root.acOpen) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                                        else root._historyNext();
+                                        if (root.acOpen) {
+                                            if (!e.isAutoRepeat) _startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
+                                        } else root._historyNext();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Up) {
-                                        if (root.acOpen) root.acSel = Math.max(0, root.acSel - 1);
-                                        else root._historyPrev();
+                                        if (root.acOpen) {
+                                            if (!e.isAutoRepeat) _startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
+                                        } else root._historyPrev();
                                         e.accepted = true;
                                     }
                                 }
