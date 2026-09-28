@@ -1479,7 +1479,11 @@ Item {
     Rectangle {
         id: claudeUsageThumb
         readonly property var src: claudeUsageExpanded
-        visible: (src.thumbHovering || src.thumbKeyboardActive) && src.thumbReady && src.thumbAddress !== ""
+        // Keyboard-selection-only (src.thumbKeyboardActive) -- mouse hover
+        // used to drive this too (src.thumbHovering, OR'd in here) but was
+        // removed entirely on the QML side 2026-09-28, see
+        // ClaudeUsageExpanded.qml's startThumbCapture comment for why.
+        visible: src.thumbKeyboardActive && src.thumbReady && src.thumbAddress !== ""
         width: claudeUsageThumbImg.implicitWidth > 0 ? Math.min(280, claudeUsageThumbImg.implicitWidth) + 4 : 4
         height: claudeUsageThumbImg.implicitHeight > 0
             ? (width - 4) * (claudeUsageThumbImg.implicitHeight / claudeUsageThumbImg.implicitWidth) + 4 : 4

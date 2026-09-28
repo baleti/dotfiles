@@ -782,7 +782,6 @@ Rectangle {
         // arrow press).
         root.selActive = root.expanded;
         root.thumbKeyboardActive = false;
-        root.thumbHovering = false;
         root.thumbReady = false;
         root.mouseMovedSinceOpen = false;
         root._hoverSettled = false;
@@ -936,8 +935,8 @@ Rectangle {
     // its own "hyprland" group header; both dropped 2026-09-08, monitor
     // wasn't worth the width and the group header was redundant once it
     // was the only sub-column left). The window's own Hyprland address
-    // (what the hover-thumbnail/click-to-focus feature on this cell keys
-    // off, see root.hyprHoverEntered) is kept on the row data
+    // (what the keyboard-thumbnail/click-to-focus feature on this cell
+    // keys off, see root.startThumbCapture) is kept on the row data
     // (modelData.hypr_address) but deliberately not rendered as its own
     // column: it's a long opaque hex string with no value as a glanceable
     // readout, unlike workspace. Labeled "wks" (hover for a "hyprland
@@ -1136,9 +1135,9 @@ Rectangle {
     property string thumbAddress: ""   // which window the current capture/display is for
     property string thumbImagePath: ""
     property bool thumbReady: false
-    property bool thumbHovering: false
-    // Set while the keyboard selection (not the pointer) is driving the
-    // thumbnail -- thumbPopup.visible is the OR of the two.
+    // Set while the keyboard selection is driving the thumbnail -- the only
+    // way it gets driven now (see startThumbCapture's own comment for why
+    // mouse hover no longer triggers it at all).
     property bool thumbKeyboardActive: false
     // Y (in root's own coordinate space) of the top of the row the
     // thumbnail is for -- the popup pins its own top here rather than
@@ -1147,8 +1146,29 @@ Rectangle {
     property real thumbAnchorY: 0
 
     // Kick off an async capture of `address` into a fresh PNG (thumbProc's
-    // onExited flips thumbReady once it lands). Shared by the row-hover
-    // path and the keyboard-selection path.
+    // onExited flips thumbReady once it lands). Keyboard-selection-only now
+    // (see _syncKeyboardThumb) -- mouse hover used to drive this too (a
+    // HoverHandler on each row calling this on every enter), removed
+    // entirely 2026-09-28. Each call spawns a fresh thumb-capture process
+    // (a fresh Wayland client), and Hyprland's DynamicPermissionManager --
+    // despite an explicit allow-rule for this exact binary in
+    // environment.lua -- started popping its interactive "Permission
+    // request" dialog ("Unknown application") on real mouse hovering,
+    // reliably enough to be disruptive, even after debouncing the
+    // once-per-row-boundary-crossed burst a fast mouse sweep produces down
+    // to one spawn per settled row (that debounce code is gone too -- it
+    // cut the frequency but the dialog still showed up eventually on
+    // ordinary hovering). Root cause not pinned down (suspected: some
+    // per-spawn race in Hyprland's own permission resolution, not
+    // reproducible via manual/scripted invocation of the exact same
+    // binary+args -- see thumb-capture's own doc comment). Keyboard
+    // Up/Down never showed it, presumably just because it produces far
+    // fewer distinct spawns per minute than casually gliding the mouse
+    // over rows -- so keyboard-only sidesteps the problem rather than
+    // fixing it. The real fix would be turning thumb-capture into a
+    // persistent resident process (bind the Hyprland permission once at
+    // startup, like winswitch already does) instead of a fresh client per
+    // request; revisit if keyboard-only turns out to not be enough.
     function startThumbCapture(address) {
         if (!address) {
             root.thumbReady = false;
@@ -1166,15 +1186,6 @@ Rectangle {
     }
     property string _pendingOutPath: ""
     property string _pendingAddress: ""
-
-    function hyprHoverEntered(address, rowTopY) {
-        root.thumbHovering = true;
-        root.thumbAnchorY = rowTopY;
-        root.startThumbCapture(address);
-    }
-    function hyprHoverExited() {
-        root.thumbHovering = false;
-    }
 
     function focusHyprWindow(row) {
         if (!row.hypr_address && !row.tmux_session)
@@ -2249,24 +2260,21 @@ Rectangle {
                             ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
                             : "transparent")
 
-                    // Hovering anywhere on the row (not just the "wks" cell)
-                    // shows that window's thumbnail, same as arrow-key
-                    // selection does (request). A HoverHandler, not a
-                    // MouseArea, so it still reports hovered while the
-                    // cursor is over the "acct" cell's own child MouseArea.
-                    // Gated on mouseMovedSinceOpen so a panel opened under
-                    // the pointer doesn't pop a thumbnail with no input.
+                    // Only drives the row-tint highlight below now (via its
+                    // own intrinsic `hovered` property) -- does NOT trigger
+                    // the thumbnail preview. That used to happen here too
+                    // (hovering anywhere on the row called into
+                    // root.hyprHoverEntered/hyprHoverExited, same as
+                    // arrow-key selection still does via
+                    // _syncKeyboardThumb), but mouse-triggered capture was
+                    // removed entirely 2026-09-28 -- see startThumbCapture's
+                    // own comment for why. Thumbnail preview is
+                    // keyboard-selection-only now; a HoverHandler (rather
+                    // than a plain MouseArea) is still needed here so the
+                    // tint keeps reporting hovered while the cursor is over
+                    // the "acct" cell's own child MouseArea.
                     HoverHandler {
                         id: procRowHover
-                        onHoveredChanged: {
-                            if (!root.mouseMovedSinceOpen)
-                                return;
-                            if (hovered)
-                                root.hyprHoverEntered(procRow.modelData.hypr_address,
-                                                      procRow.mapToItem(root, 0, 0).y);
-                            else
-                                root.hyprHoverExited();
-                        }
                     }
 
                     // Click anywhere on the row focuses that session's
@@ -2374,13 +2382,14 @@ Rectangle {
                         }
                         Item { Layout.preferredWidth: root.handleW }
                         // hyprland cell: which real window is showing this
-                        // session, if any (see root.hyprHoverEntered's own
+                        // session, if any (see root.startThumbCapture's own
                         // comment for why it's address-keyed rather than
                         // title/appId-matched). Just the "wks" column now
-                        // (monitor dropped, request 2026-09-08). Hover
-                        // (thumbnail) and click (focus) are both handled at
-                        // row level now -- see procRowHover / the row
-                        // MouseArea above -- so this is a plain text cell.
+                        // (monitor dropped, request 2026-09-08). Click
+                        // (focus) is handled at row level -- see the row
+                        // MouseArea above; thumbnail preview is keyboard-
+                        // selection-only now (procRowHover only drives the
+                        // row tint) -- so this is a plain text cell.
                         Item {
                             id: hyprCell
                             Layout.preferredWidth: root.colHyprWorkspaceW
