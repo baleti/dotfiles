@@ -405,7 +405,12 @@ PanelWindow {
                         // picker.rs (only Ctrl+j/k move the popup highlight).
                     }
 
-                    if (event.key === Qt.Key_Tab) {
+                    // Ctrl+Space opens completion too, same as Tab -- not
+                    // just the AND-narrowing space it inserts once a
+                    // Verb-stage popup is already open (see above). Query-
+                    // dsl.md's Autocompletion section documents this as a
+                    // second trigger key, not a replacement for Tab.
+                    if (event.key === Qt.Key_Tab || (ctrl && event.key === Qt.Key_Space)) {
                         root._triggerCompletion();
                         event.accepted = true; return; // consumed either way
                     }

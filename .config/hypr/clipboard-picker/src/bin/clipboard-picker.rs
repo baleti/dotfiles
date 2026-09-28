@@ -19,6 +19,9 @@
 //!   texts <id>...    full decoded text for ids whose `list` preview
 //!                    cliphist itself truncated -- one `{id,text}` NDJSON
 //!                    line per id, streamed
+//!   mimes <id>...    backfills `mime` for ids `list` had no bundle
+//!                    manifest for -- one `{id,mime}` NDJSON line per id
+//!                    that resolves to something, streamed
 //!   activate <id>    push `<id>` to the clipboard. If cliphist-store-logged.sh
 //!                    captured a multi-format bundle for it (state dir's
 //!                    formats-index -> formats/<hash>/manifest), serves every
@@ -200,6 +203,55 @@ fn formats_index() -> HashMap<String, String> {
             Some((id.to_string(), hash.to_string()))
         })
         .collect()
+}
+
+/// Every distinct MIME type cliphist-store-logged.sh's bundle manifest
+/// retained for a content hash, in manifest order, deduplicated -- the
+/// `mime` field's value for entries that went through the bundle system.
+/// Only reads the manifest's own second column (unlike `bundle_sources`
+/// below, which also reads every representation's bytes) - cheap enough to
+/// call for every row in `print_list`, no subprocess involved. `None` if
+/// there's no bundle for this hash (formats-index miss) or its manifest is
+/// unreadable/empty - callers fall back to `mime_via_file_cmd` for those.
+fn bundle_mimes(hash: &str) -> Option<Vec<String>> {
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let manifest = fs::read_to_string(cliphist_state_dir().join("formats").join(hash).join("manifest")).ok()?;
+    let mut mimes = Vec::new();
+    for line in manifest.lines() {
+        if let Some((_, mime)) = line.split_once('\t') {
+            if !mimes.iter().any(|m: &String| m == mime) {
+                mimes.push(mime.to_string());
+            }
+        }
+    }
+    if mimes.is_empty() { None } else { Some(mimes) }
+}
+
+/// `file -b --mime-type` over stdin (no temp file -- unlike
+/// `external_thumb`'s own use of the same tool, this never hands the bytes
+/// to a second, potentially untrusted thumbnailer program afterwards, so
+/// there's nothing here that needs `external_thumb`'s sandboxing). Fallback
+/// for entries `bundle_mimes` has nothing for: pre-existing entries from
+/// before the bundle system existed, or a single-format copy it never
+/// captured a manifest for.
+fn mime_via_file_cmd(raw: &[u8]) -> Option<String> {
+    if raw.is_empty() {
+        return None;
+    }
+    let mut child = Command::new("file")
+        .args(["-b", "--mime-type", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(raw);
+    }
+    let out = child.wait_with_output().ok()?;
+    let mime = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if mime.is_empty() { None } else { Some(mime) }
 }
 
 /// Every representation cliphist-store-logged.sh managed to fetch for a
@@ -657,12 +709,21 @@ fn copy_entry(id: &str) {
 fn print_list(entries: &[Entry]) {
     let mut out = std::io::stdout().lock();
     let sizes = read_sizes();
+    let formats = formats_index();
     for e in entries {
         let mut fields: serde_json::Map<String, serde_json::Value> =
             e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
         if let Some(&(chars, lines)) = sizes.get(&e.id) {
             fields.insert("chars".to_string(), json!(chars.to_string()));
             fields.insert("lines".to_string(), json!(lines.to_string()));
+        }
+        // Cheap (manifest read, no subprocess) so it belongs directly in
+        // `list`, unlike `mime_via_file_cmd`'s subprocess fallback for
+        // entries with no bundle -- those pick up their `mime` value later
+        // via the `mimes` subcommand, same lazy-backfill shape `stats`
+        // already uses for `chars`/`lines`.
+        if let Some(mimes) = formats.get(&e.id).and_then(|h| bundle_mimes(h)) {
+            fields.insert("mime".to_string(), json!(mimes.join(",")));
         }
         let line = json!({
             "id": e.id,
@@ -785,6 +846,28 @@ fn main() {
                 }
                 let _ = writeln!(out, "{}", json!({"id": id, "chars": chars, "lines": lines}));
                 let _ = out.flush();
+            }
+        }
+        Some("mimes") => {
+            // Backfills `mime` for ids `list` left it off (no bundle) --
+            // `print_list` already fills it in directly for ids that have
+            // one (cheap, no subprocess). Falls back to `mime_via_file_cmd`
+            // on the decoded bytes, one `file` invocation per id, so this
+            // is deliberately lazy/backgrounded rather than folded into
+            // `list`, same reasoning as `stats`. Ids that decode to
+            // nothing, or that `file` can't classify, are simply skipped.
+            let index = formats_index();
+            let mut out = std::io::stdout().lock();
+            for id in args {
+                let mime = index
+                    .get(&id)
+                    .and_then(|h| bundle_mimes(h))
+                    .map(|v| v.join(","))
+                    .or_else(|| mime_via_file_cmd(&decode(&id)));
+                if let Some(m) = mime {
+                    let _ = writeln!(out, "{}", json!({"id": id, "mime": m}));
+                    let _ = out.flush();
+                }
             }
         }
         Some("activate") => {

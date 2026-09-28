@@ -34,9 +34,14 @@ backend** and `src/picker.rs` only holds what's still genuinely shared:
   `cliphist-store-logged.sh` (wired into hyprland.lua's `wl-paste --watch`)
   appends an exact copy-time to on every store — cliphist itself keeps
   none; `chars`/`lines` from that same state dir's `sizes` log, backfilled
-  by the `stats` subcommand for any entry not logged yet.
-  `cliphist-expire.sh` prunes the timestamp log in step with whatever
-  entries it expires.
+  by the `stats` subcommand for any entry not logged yet; `mime` (comma-
+  joined if an entry offers more than one representation) read straight
+  from the entry's bundle manifest when it has one (`bundle_mimes`, no
+  subprocess), backfilled via `file -b --mime-type` (`mime_via_file_cmd`)
+  through the `mimes` subcommand for entries with no bundle — pre-existing
+  entries, or a single-format copy `cliphist-store-logged.sh` never built
+  a manifest for. `cliphist-expire.sh` prunes the timestamp log in step
+  with whatever entries it expires.
 - **`src/bin/notification-picker.rs`** (bound to `mainMod+CTRL+n`, UI in
   `~/.config/quickshell/notifications/NotificationPicker.qml`) — `list`
   prints one NDJSON line per retained notification (`notifyctl list`);
