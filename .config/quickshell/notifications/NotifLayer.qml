@@ -100,10 +100,6 @@ PanelWindow {
     onCardsChanged: root._syncStack()
     Component.onCompleted: root._syncStack()
 
-    // How much further in than a bare window edge the card stack sits --
-    // purely a notifications-only aesthetic nudge, but it also feeds
-    // cardRadius below (see there).
-    readonly property int extraInset: 6
     // Two offsets stacked, both in the literal AutoCAD sense (curve
     // offset by a distance d moves a straight edge by d and changes an
     // arc's radius by d):
@@ -111,23 +107,26 @@ PanelWindow {
     //     offset OUTWARD from the bare `rounding` config value by the
     //     border thickness (Hyprland draws the border outside the content
     //     rect -- see that property's own comment).
-    //  2. The card sits a further `extraInset` INWARD from where a
-    //     window's edge would be (see topMargin/rightMargin below), so
+    //  2. The card sits a further `HyprGaps.extraInset` INWARD from where
+    //     a window's edge would be (see topMargin/rightMargin below), so
     //     its corner is that same curve offset inward by extraInset,
     //     which shrinks the radius by that same amount.
     // Skipping either term made the corner numerically-adjacent but
     // visually wrong: outerRadius alone (no step 2) looked bigger than a
     // window's despite the card sitting further inside the corner; bare
     // `rounding` minus extraInset (no step 1) undershot the border term
-    // and came out too tight.
-    readonly property real cardRadius: Math.max(0, HyprDecoration.outerRadius - root.extraInset)
+    // and came out too tight. `extraInset` itself moved to HyprGaps.qml
+    // (was a local property here) once the clipboard/notification pickers
+    // also wanted to sit the same amount further in than a bare window
+    // edge (2026-09-28) -- see that singleton for why.
+    readonly property real cardRadius: Math.max(0, HyprDecoration.outerRadius - HyprGaps.extraInset)
 
     Column {
         id: stack
         anchors.top: parent.top
         anchors.right: parent.right
-        anchors.topMargin: HyprGaps.top + root.extraInset
-        anchors.rightMargin: HyprGaps.right + root.extraInset
+        anchors.topMargin: HyprGaps.top + HyprGaps.extraInset
+        anchors.rightMargin: HyprGaps.right + HyprGaps.extraInset
         spacing: 8
         visible: root.cards.length > 0
 

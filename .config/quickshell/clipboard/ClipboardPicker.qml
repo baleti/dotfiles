@@ -479,17 +479,21 @@ PanelWindow {
 
     Rectangle {
         id: box
-        // Full screen width minus the same edge gap the notification cards
-        // sit in from (HyprGaps.left/right -- live Hyprland gaps_out, see
-        // that singleton's own doc) rather than a fixed 0.5 fraction of
-        // screen width (reported too narrow once columns started eating
-        // into the preview text, 2026-09-28).
+        // Full screen width minus the same edge inset the notification
+        // cards sit in from -- HyprGaps.left/right (live Hyprland
+        // gaps_out) *plus* HyprGaps.extraInset, the same aesthetic nudge
+        // NotifLayer.qml applies on top of the bare gap (checked
+        // 2026-09-28: the bare gap alone sits flush with a real tiled
+        // window's edge, visibly less inset than where the cards actually
+        // sit) -- rather than a fixed 0.5 fraction of screen width
+        // (reported too narrow once columns started eating into the
+        // preview text).
         anchors {
             verticalCenter: parent.verticalCenter
             left: parent.left
             right: parent.right
-            leftMargin: HyprGaps.left
-            rightMargin: HyprGaps.right
+            leftMargin: HyprGaps.left + HyprGaps.extraInset
+            rightMargin: HyprGaps.right + HyprGaps.extraInset
         }
         // bottomPad is real structural space below the list, not just
         // ListView's own bottomMargin (which lives *inside* its computed
