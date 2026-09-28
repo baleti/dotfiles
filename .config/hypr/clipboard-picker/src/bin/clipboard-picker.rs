@@ -213,6 +213,16 @@ fn formats_index() -> HashMap<String, String> {
 /// call for every row in `print_list`, no subprocess involved. `None` if
 /// there's no bundle for this hash (formats-index miss) or its manifest is
 /// unreadable/empty - callers fall back to `mime_via_file_cmd` for those.
+///
+/// Drops any `;parameter` (`text/plain;charset=utf-8` -> `text/plain`) --
+/// display-only trimming for the picker's own compact `mime` column;
+/// `bundle_sources` (the actual `activate`/`reassert-bundle` paste path)
+/// reads the manifest separately and keeps every parameter verbatim, since
+/// an app pasting a representation needs the real, complete MIME string.
+/// Dedup runs on the trimmed value, so e.g. `text/plain;charset=utf-8` and
+/// `text/plain;charset=ascii` (two representations the manifest can
+/// genuinely hold) collapse into the one `text/plain` a reader cares about
+/// here.
 fn bundle_mimes(hash: &str) -> Option<Vec<String>> {
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -221,8 +231,9 @@ fn bundle_mimes(hash: &str) -> Option<Vec<String>> {
     let mut mimes = Vec::new();
     for line in manifest.lines() {
         if let Some((_, mime)) = line.split_once('\t') {
-            if !mimes.iter().any(|m: &String| m == mime) {
-                mimes.push(mime.to_string());
+            let base = mime.split(';').next().unwrap_or(mime).trim();
+            if !mimes.iter().any(|m: &String| m == base) {
+                mimes.push(base.to_string());
             }
         }
     }

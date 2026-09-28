@@ -45,11 +45,15 @@ PanelWindow {
     // `chars`/`lines` default on -- this picker's old always-on size badge,
     // now real columns instead (query-dsl.md's `/ft`/`/at`/`/rt`). `mime`
     // defaults on too (requested 2026-09-28, right after it was added --
-    // opt-in read as "not showing" rather than "hidden on purpose"). `type`/
-    // `date` still stay hidden until `/at`'d or Auto-shown by a `/fv` filter.
-    readonly property var defaultColumns: ["mime", "chars", "lines"]
+    // opt-in read as "not showing" rather than "hidden on purpose"), last
+    // rather than first -- `chars`/`lines` keep the old badge's rightmost
+    // position, `mime` trails behind them. `type`/`date` still stay hidden
+    // until `/at`'d or Auto-shown by a `/fv` filter.
+    readonly property var defaultColumns: ["chars", "lines", "mime"]
     readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l", mime: "mime" })
-    readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34, mime: 160 })
+    // `mime` shrunk from 160 (values are trimmed to the bare type now --
+    // `bundle_mimes` drops `;charset=...` -- so they rarely need more).
+    readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34, mime: 90 })
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
     property string _headerHoverName: ""
