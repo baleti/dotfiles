@@ -68,6 +68,7 @@ import ctypes
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import threading
@@ -476,6 +477,59 @@ def _is_cgroup_frozen(pid: int) -> bool:
         return False
 
 
+def _reap_if_orphaned(pid: int) -> bool:
+    """A pid frozen via freeze-process-cgroup-toggle.sh is a child of the
+    pane's shell, not the pane's own process tree root - the shell itself
+    is deliberately left unfrozen (see that script's header comment for
+    why: only the foreground job is suspended). If that shell exits - its
+    tmux pane/session gets killed - while its child is still frozen, the
+    child is orphaned: reparented to systemd --user (this host's
+    subreaper), but being frozen, it is not scheduled at all and can never
+    notice its parent is gone or exit on its own. Nothing left in the
+    process tree could ever thaw or kill it again - it would sit there
+    forever, still fully resident (see ~/frozen-claude-orphan-bug.md,
+    found live: 13 such orphans had accumulated from this feature's own
+    development, each with a tmux_self_session name for a session no
+    longer in `tmux list-sessions`).
+
+    Detected by ppid: a pid whose parent is systemd --user itself, not a
+    real shell, has unambiguously been reparented to the subreaper - a
+    live pane's frozen process always has the pane's actual shell as its
+    parent. Only called on a pid already confirmed cgroup-frozen (see
+    call site) - checking ppid for every live session pid on every cycle
+    would be wasted work for the overwhelmingly common non-frozen case.
+
+    Thaws first (a frozen task may not process a signal at all until
+    unfrozen) then kills it. True if this pid was reaped - caller should
+    not add a row for it, it no longer exists."""
+    try:
+        rest = Path(f"/proc/{pid}/stat").read_text()
+        ppid = int(rest[rest.rfind(")") + 2:].split()[1])
+        pcomm = Path(f"/proc/{ppid}/comm").read_text().strip()
+    except (OSError, IndexError, ValueError):
+        return False
+    if pcomm != "systemd":
+        return False
+
+    try:
+        line = Path(f"/proc/{pid}/cgroup").read_text().splitlines()[0]
+        relpath = line[3:] if line.startswith("0::") else None
+    except (OSError, IndexError):
+        relpath = None
+    if relpath and Path(relpath).name == f"tmux-freeze-{pid}":
+        try:
+            Path(f"/sys/fs/cgroup{relpath}/cgroup.freeze").write_text("0")
+        except OSError:
+            pass
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+        log(f"reaped orphaned frozen pid {pid} (parent was systemd --user, pid {ppid})")
+    except ProcessLookupError:
+        pass
+    return True
+
+
 def _read_all_proc() -> dict:
     """pid -> (ppid, tty_nr) for every live process, one /proc sweep --
     the same shape winswitch's enrich.rs::read_all_proc() builds, used the
@@ -643,6 +697,8 @@ def list_sessions(base: Path, tty_panes: dict, procs: dict, hypr_by_session: dic
             continue
         pid = data.get("pid")
         if not is_pid_alive(pid):
+            continue
+        if _is_cgroup_frozen(pid) and _reap_if_orphaned(pid):
             continue
 
         session_id = data.get("sessionId")
