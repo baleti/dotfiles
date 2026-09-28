@@ -2251,30 +2251,38 @@ Rectangle {
                     implicitHeight: procRowLayout.implicitHeight
                     height: implicitHeight
                     radius: 3
-                    // Keyboard selection wins over the hover highlight (a
-                    // touch stronger tint so it reads as "picked", not just
-                    // "pointed at").
+                    // One highlight now, one selection state -- mouse hover
+                    // moves root.selIndex/selActive exactly like Up/Down
+                    // does (see procRowHover below), so there's no separate
+                    // lighter "just pointed at" tint anymore to reconcile
+                    // against the keyboard one (request 2026-09-28: "moving
+                    // mouse should modify it, same as up down keys").
                     color: (root.selActive && procRow.index === root.selIndex)
                         ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.22)
-                        : (root.mouseMovedSinceOpen && procRowHover.hovered
-                            ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15)
-                            : "transparent")
+                        : "transparent"
 
-                    // Only drives the row-tint highlight below now (via its
-                    // own intrinsic `hovered` property) -- does NOT trigger
-                    // the thumbnail preview. That used to happen here too
-                    // (hovering anywhere on the row called into
-                    // root.hyprHoverEntered/hyprHoverExited, same as
-                    // arrow-key selection still does via
-                    // _syncKeyboardThumb), but mouse-triggered capture was
-                    // removed entirely 2026-09-28 -- see startThumbCapture's
-                    // own comment for why. Thumbnail preview is
-                    // keyboard-selection-only now; a HoverHandler (rather
-                    // than a plain MouseArea) is still needed here so the
-                    // tint keeps reporting hovered while the cursor is over
-                    // the "acct" cell's own child MouseArea.
+                    // Moves the selection cursor to this row on hover, same
+                    // selIndex/selActive Up/Down sets in handleKey -- but
+                    // deliberately does NOT call _syncKeyboardThumb/
+                    // startThumbCapture (request: "only up down keys should
+                    // trigger preview pane"). Thumbnail capture spawns a
+                    // fresh thumb-capture process per call, and routing
+                    // mouse hover into that (first as a direct call, then
+                    // even after debouncing) is what made Hyprland's
+                    // permission dialog show up reliably on real hovering,
+                    // removed 2026-09-28 -- see startThumbCapture's own
+                    // comment. A HoverHandler (rather than a plain
+                    // MouseArea) is still needed here so this keeps
+                    // reporting hovered while the cursor is over the "acct"
+                    // cell's own child MouseArea.
                     HoverHandler {
                         id: procRowHover
+                        onHoveredChanged: {
+                            if (!hovered || !root.mouseMovedSinceOpen)
+                                return;
+                            root.selIndex = procRow.index;
+                            root.selActive = true;
+                        }
                     }
 
                     // Click anywhere on the row focuses that session's
@@ -2387,9 +2395,10 @@ Rectangle {
                         // title/appId-matched). Just the "wks" column now
                         // (monitor dropped, request 2026-09-08). Click
                         // (focus) is handled at row level -- see the row
-                        // MouseArea above; thumbnail preview is keyboard-
-                        // selection-only now (procRowHover only drives the
-                        // row tint) -- so this is a plain text cell.
+                        // MouseArea above; thumbnail preview only fires on
+                        // Up/Down (procRowHover moves the selection cursor
+                        // on hover too, but not the thumbnail) -- so this
+                        // is a plain text cell.
                         Item {
                             id: hyprCell
                             Layout.preferredWidth: root.colHyprWorkspaceW
