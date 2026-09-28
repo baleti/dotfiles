@@ -438,11 +438,11 @@ Defaults per picker:
   wasn't a useful column or filter key, so it was dropped from the type
   registry entirely (it still contributes to the free-text haystack
   alongside `title`, same as always - see `/filter-value`, above).
-- **clipboard-picker**: `chars`/`lines` (the row's old always-on size
-  badge, now real columns instead - see below). `type`/`date`/`mime`
-  (comma-separated MIME types offered, added 2026-09-28 - see
-  `cliphist-store-logged.sh`'s multi-format bundle manifest in
-  rust-tools.md) are hidden until `/at`'d or Auto-shown by a `/fv` filter,
+- **clipboard-picker**: `mime`/`chars`/`lines`, in that order (`mime`:
+  comma-separated MIME types offered - see `cliphist-store-logged.sh`'s
+  multi-format bundle manifest in rust-tools.md; `chars`/`lines`: the
+  row's old always-on size badge, now real columns instead - see below).
+  `type`/`date` are hidden until `/at`'d or Auto-shown by a `/fv` filter,
   same as before this feature existed (2026-09-28).
 - **notification-picker**: `app`/`date`, both on from open - there was no
   pre-existing "always shown" info to preserve the way clipboard-picker's
