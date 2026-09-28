@@ -113,8 +113,8 @@ hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }), { descr
 -- it skips workspaces bound to any other monitor, so this never hops to a
 -- workspace currently shown elsewhere, and creates a new one past the end
 -- with no manual per-monitor bookkeeping needed.
-hl.bind("CTRL + ALT + h", hl.dsp.focus({ workspace = "r-1" }), { repeating = false, description = "Previous workspace on this monitor" })
-hl.bind("CTRL + ALT + l", hl.dsp.focus({ workspace = "r+1" }), { repeating = false, description = "Next workspace on this monitor" })
+hl.bind("CTRL + ALT + h", hl.dsp.focus({ workspace = "r-1" }), { repeating = true, description = "Previous workspace on this monitor" })
+hl.bind("CTRL + ALT + l", hl.dsp.focus({ workspace = "r+1" }), { repeating = true, description = "Next workspace on this monitor" })
 
 -- ALT+CTRL+SHIFT+[h/l]: jump straight to the next/previous workspace that
 -- actually has windows on it, skipping empty numeric gaps. "r-1"/"r+1" above
