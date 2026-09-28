@@ -343,16 +343,60 @@ QtObject {
         };
     }
 
+    // `/fv field:>4` (or via, `//field >4`) -- a fieldTerm's value prefixed
+    // with `>` `<` `>=` `<=` compares numerically/by-age instead of
+    // substring-matching, added 2026-09-28. `{op, operand}` if `value`
+    // starts with one of the four (longest first, so `>=`/`<=` aren't
+    // mistaken for `>`/`<` plus a leading `=`), else null -- a value with
+    // no operator prefix is entirely unaffected, still plain `substr`.
+    function _parseComparison(value) {
+        if (value.startsWith(">=")) return { op: ">=", operand: value.slice(2) };
+        if (value.startsWith("<=")) return { op: "<=", operand: value.slice(2) };
+        if (value.startsWith(">")) return { op: ">", operand: value.slice(1) };
+        if (value.startsWith("<")) return { op: "<", operand: value.slice(1) };
+        return null;
+    }
+
+    // Reuses `/sort`'s own comparator (`compareFieldValues`) so a value and
+    // an operand agree on what "greater" means the same way a sort and a
+    // filter should never disagree about it (query-dsl.md's "any sort UI a
+    // picker offers must share this one comparator" - the reverse case of
+    // that rule: one comparator, every numeric-shaped operation). Only
+    // means anything for the two shapes `compareFieldValues` itself
+    // recognises (plain integers, age buckets); `false` for anything else
+    // (a comparison against a field that isn't currently that shape, or an
+    // operand that isn't) - degrades to "never matches" rather than
+    // silently falling back to a literal `">4"` substring search, which
+    // would almost always also be "never matches" in practice but for the
+    // wrong reason.
+    function _compareMatches(v, op, operand) {
+        const comparable = (root._isPlainInt(v) && root._isPlainInt(operand))
+            || (root._isAgeBucket(v) && root._isAgeBucket(operand));
+        if (!comparable) return false;
+        const cmp = root.compareFieldValues(v, operand);
+        switch (op) {
+        case ">": return cmp > 0;
+        case "<": return cmp < 0;
+        case ">=": return cmp >= 0;
+        case "<=": return cmp <= 0;
+        }
+        return false;
+    }
+
     // True if `entry` (shape: {haystack, fields:{name:value}}) survives
     // `query` (picker.rs's listbox filter_func). `fields[f]` absent (not
     // just empty) never matches -- same "absent, not empty" contract
     // Entry::fields keeps throughout.
     function matches(entry, query) {
         for (const t of query.fieldTerms) {
+            const cmp = root._parseComparison(t.value);
             let ok = false;
             for (const f of t.fields) {
                 const v = entry.fields[f];
-                if (v !== undefined && root.substr(t.value, v)) { ok = true; break; }
+                if (v === undefined) continue;
+                if (cmp !== null ? root._compareMatches(v, cmp.op, cmp.operand) : root.substr(t.value, v)) {
+                    ok = true; break;
+                }
             }
             if (!ok) return false;
         }
