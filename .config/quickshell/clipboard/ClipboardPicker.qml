@@ -479,8 +479,18 @@ PanelWindow {
 
     Rectangle {
         id: box
-        anchors.centerIn: parent
-        width: root.screen ? Math.round(root.screen.width * 0.5) : 800
+        // Full screen width minus the same edge gap the notification cards
+        // sit in from (HyprGaps.left/right -- live Hyprland gaps_out, see
+        // that singleton's own doc) rather than a fixed 0.5 fraction of
+        // screen width (reported too narrow once columns started eating
+        // into the preview text, 2026-09-28).
+        anchors {
+            verticalCenter: parent.verticalCenter
+            left: parent.left
+            right: parent.right
+            leftMargin: HyprGaps.left
+            rightMargin: HyprGaps.right
+        }
         // bottomPad is real structural space below the list, not just
         // ListView's own bottomMargin (which lives *inside* its computed
         // height and kept reading as "too close to the border" even bumped
