@@ -56,6 +56,35 @@ else
 	current=0
 fi
 
+# claude-usage-daemon.py otherwise only learns about this on its next
+# regular 30s poll: freezing/thawing touches cgroupfs and a tmux pane
+# option, neither of which it watches (a tmux pane option isn't backed by
+# any file at all - it lives in the server's own memory). It does already
+# inotify-watch each account's sessions/ dir for IN_CLOSE_WRITE, to react
+# promptly when the CLI itself rewrites its own sessions/<pid>.json - so
+# rather than teaching it to separately watch cgroup.freeze (verified live
+# that cgroup pseudo-files do support real inotify, e.g. writing
+# cgroup.freeze fires IN_MODIFY - but every freeze cgroup lives at a
+# different, dynamically-created path, so watching them all would mean
+# adding/removing a watch per freeze/thaw), nudge_claude_usage_panel below
+# gives the daemon a reason to recompute right now through the exact
+# mechanism it already has: open the target's own sessions/<pid>.json for
+# write and close it without changing a single byte - confirmed live that
+# this alone fires IN_CLOSE_WRITE, same as if the CLI had rewritten it.
+# Bounded by the daemon's existing SESSIONS_MIN_GAP (3s) floor, not
+# instant, but far better than up to 30s - and every other status
+# transition already goes through the same floor, so this isn't a new
+# risk. Silently does nothing for a pid with no session file at all (e.g.
+# freezing htop or less). Called after the state change actually lands,
+# not before, so the daemon's recompute never races a still-mid-transition
+# cgroup.
+nudge_claude_usage_panel() {
+	for d in "$HOME/.claude" "$HOME/.claude2" "$HOME/.claude3"; do
+		f="$d/sessions/$pid.json"
+		[ -f "$f" ] && python3 -c "open('$f', 'r+').close()" 2>/dev/null
+	done
+}
+
 if [ "$current" = "1" ]; then
 	# Keystrokes typed while frozen don't vanish - they queue up in the
 	# pty's own kernel input buffer (nobody's reading them, since the
@@ -73,6 +102,7 @@ os.close(fd)
 " "$pane_tty"
 	echo 0 > "$dir/cgroup.freeze"
 	tmux set-option -p -t "$pane_id" @frozen 0
+	nudge_claude_usage_panel
 else
 	if [ "$base" != "tmux-freeze-$pid" ]; then
 		mkdir -p "$dir"
@@ -80,4 +110,5 @@ else
 	fi
 	echo 1 > "$dir/cgroup.freeze"
 	tmux set-option -p -t "$pane_id" @frozen 1
+	nudge_claude_usage_panel
 fi
