@@ -857,19 +857,54 @@ Item {
     // back up rather than re-measured (avoids flip-flopping).
     readonly property int fullFont: Theme.fontSize
     property int pillFont: fullFont
+    // 1 at full size, shrinking below that as pillFont does -- drives the
+    // same shrink on the workspace/media pills' own padding and the gap
+    // between pills, since at the floor font size (8px) those fixed
+    // margins are what's left causing the two rows to collide.
+    readonly property real pillScale: pillFont / fullFont
+    // Bounded history of pillFont values tried in the current settling
+    // episode (reset on a genuine external width change below, kept across
+    // the internal leftRow/rightRow-triggered recomputes within one).
+    // fullFont is 13 and the loop floors at g>8, so there are only 6
+    // possible values total (8..13) -- pigeonhole guarantees any possible
+    // cycle repeats within 6 steps, so this always catches one.
+    property var _crowdHistory: []
     function recheckCrowding(): void {
         // Content width scales ~linearly with font size, so pick the largest
-        // size whose scaled-up/down estimate fits. Padding doesn't scale, so
-        // the estimate is conservative, which keeps this from oscillating.
+        // size whose scaled-up/down estimate fits. This used to be
+        // conservative-by-construction because padding didn't scale (see
+        // pillScale's own comment for why it now does) -- once padding is
+        // folded into `total` too, the linear estimate below can overshoot
+        // enough that the resulting width re-picks a size we just left,
+        // and that size's own width re-picks the one before it: a real
+        // Qt Quick layout infinite loop, not just visual jitter (confirmed
+        // live: pegged a core at ~100% indefinitely, every fresh quickshell
+        // launch, via a live gdb backtrace showing QQuickBasePositioner
+        // stuck re-entering its own relayout). _crowdHistory below breaks
+        // that deterministically rather than trying to make the estimate
+        // itself exactly right.
         const total = leftRow.width + rightRow.width + 12;
         const avail = width - 6;
         let g = fullFont;
         while (g > 8 && total * g / pillFont > avail)
             g--;
-        if (g !== pillFont)
-            pillFont = g;
+        if (g === pillFont)
+            return;
+        if (root._crowdHistory.includes(g)) {
+            // Revisiting a size already tried this episode -- we're
+            // cycling. Stop adjusting rather than alternate forever; the
+            // current size is still a valid (if not perfectly optimal)
+            // fit, chosen while genuinely trying to shrink toward the
+            // available width.
+            return;
+        }
+        root._crowdHistory.push(pillFont);
+        pillFont = g;
     }
-    onWidthChanged: recheckCrowding()
+    onWidthChanged: {
+        root._crowdHistory = [];
+        recheckCrowding();
+    }
 
     Row {
         id: leftRow
@@ -877,13 +912,16 @@ Item {
         anchors.top: parent.top
         anchors.leftMargin: HyprGaps.left
         anchors.topMargin: root.pillTopMargin
-        spacing: 6
+        spacing: Math.max(3, Math.round(6 * root.pillScale))
 
         Pill {
+            hPad: Math.max(5, Math.round(Theme.pillPadH * root.pillScale))
             Workspaces {
                 id: workspaces
                 screen: root.screen
                 fontSize: root.pillFont
+                btnGap: Math.max(1, Math.round(2 * root.pillScale))
+                btnHPad: Math.max(4, Math.round(8 * root.pillScale))
                 // Rename's own TextInput grabs real QML focus itself
                 // (Workspaces.qml's onVisibleChanged), so this only needs
                 // to hand focus back on close -- same as the graph pills'
@@ -904,13 +942,17 @@ Item {
         anchors.top: parent.top
         anchors.rightMargin: HyprGaps.right
         anchors.topMargin: root.pillTopMargin
-        spacing: 6
+        spacing: Math.max(3, Math.round(6 * root.pillScale))
 
         Tray {}
         Loader {
             id: mediaLoader
             active: !!Players.active
-            sourceComponent: Media { fontSize: root.pillFont }
+            sourceComponent: Media {
+                fontSize: root.pillFont
+                hPad: Math.max(5, Math.round(Theme.pillPadH * root.pillScale))
+                rowSpacing: Math.max(3, Math.round(6 * root.pillScale))
+            }
         }
 
         GraphPill {
@@ -993,25 +1035,6 @@ Item {
             topProcs: SysmonSvc.topCpu
             topUnit: "%"
             yAxisFormatter: v => Math.round(v) + "%"
-            // Second axis column (request 2026-09-27: "second column
-            // besides percentages showing actual wattage ... scaled to
-            // maximum readings ever") -- watts at this same fraction of
-            // the shared CPU/Platform ceiling (cpuPowerLimitW ==
-            // cpuPsysLimitW now, see cpuPowerLines' own comment on why
-            // sysmond normalizes both lines against the SAME max rather
-            // than each its own -- that mismatch was exactly what made an
-            // earlier, per-zone-max version of this axis misleadingly
-            // wrong for whichever line it wasn't currently reading off of:
-            // "platform graph line is incorrect, its at 25W but reading is
-            // only about 10W"). Reads correctly for EITHER line now.
-            // Shows CPU's own reading specifically, not "CPU/Platform"
-            // (request 2026-09-27: "don't put two figures... just show
-            // 11W") -- CPU is the pill's primary line (first in the
-            // legend, first in cpuPowerLines' draw order); Platform's
-            // current watts are still visible via its own legend row/
-            // tooltip below, just not mirrored onto this
-            // axis too.
-            rightAxisFormatter: f => Math.round(f * SysmonSvc.cpuPowerLimitW) + "W"
             procHistSnaps: SysmonSvc.procHistSnaps("cpu")
             procHistValueFmt: v => Math.round(v) + "%"
             tierCodes: SysmonSvc.tierCodes
