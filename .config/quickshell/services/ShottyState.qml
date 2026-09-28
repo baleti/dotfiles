@@ -104,9 +104,27 @@ QtObject {
     }
 
     function escapeAction(): void {
-        if (root.editingShapeIndex >= 0) root.editingShapeIndex = -1; // exit shape-edit, keep everything else
-        else if (root.phase === "drawing") root.phase = "toolbar"; // exit tool-modal, keep the selection
-        else root.close();
+        if (root.editingShapeIndex >= 0) {
+            root.discardIfEmptyText(root.editingShapeIndex);
+            root.editingShapeIndex = -1; // exit shape-edit, keep everything else
+        } else if (root.phase === "drawing") {
+            root.phase = "toolbar"; // exit tool-modal, keep the selection
+        } else {
+            root.close();
+        }
+    }
+
+    // A placed-but-never-typed-into text shape shouldn't survive as a
+    // blank/invisible object -- called wherever text editing can end
+    // (Escape, clicking away, committing/saving).
+    function discardIfEmptyText(index: int): void {
+        if (index < 0 || index >= root.shapes.length) return;
+        const s = root.shapes[index];
+        if (s.tool === "text" && s.text.trim() === "") {
+            const next = root.shapes.slice();
+            next.splice(index, 1);
+            root.shapes = next;
+        }
     }
 
     // ---- selection drag ----
@@ -155,12 +173,29 @@ QtObject {
         return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
     }
 
+    // Rough estimate only -- QML gives no font-metrics API outside an
+    // actual live Text item, so hit-testing a text shape can't know its
+    // real rendered width without one. Good enough for click detection
+    // given the generous hit radius callers already use.
+    function textBoundsWidth(s: var): real {
+        const fontSize = Math.max(16, s.width * 3);
+        return Math.max(fontSize, s.text.length * fontSize * 0.55);
+    }
+    function textBoundsHeight(s: var): real {
+        return Math.max(16, s.width * 3) * 1.3;
+    }
+
     function distToShape(s: var, px: real, py: real): real {
         if (s.tool === "rect") {
             const left = Math.min(s.x1, s.x2), right = Math.max(s.x1, s.x2);
             const top = Math.min(s.y1, s.y2), bottom = Math.max(s.y1, s.y2);
             const dx = Math.max(left - px, 0, px - right);
             const dy = Math.max(top - py, 0, py - bottom);
+            return Math.hypot(dx, dy);
+        } else if (s.tool === "text") {
+            const w = root.textBoundsWidth(s), h = root.textBoundsHeight(s);
+            const dx = Math.max(s.x1 - px, 0, px - (s.x1 + w));
+            const dy = Math.max(s.y1 - py, 0, py - (s.y1 + h));
             return Math.hypot(dx, dy);
         }
         return root.distToSegment(px, py, s.x1, s.y1, s.x2, s.y2);
@@ -218,6 +253,55 @@ QtObject {
         const next = root.shapes.slice();
         const s = Object.assign({}, next[root.editingShapeIndex]);
         if (point === 1) { s.x1 = gx; s.y1 = gy; } else { s.x2 = gx; s.y2 = gy; }
+        next[root.editingShapeIndex] = s;
+        root.shapes = next;
+    }
+
+    // ---- Stage 3: text tool. Click places a text shape and immediately
+    // starts editing its content (a real QML TextEdit -- see Shotty.qml --
+    // gives real cursor/selection/IME for free, which a hand-rolled text
+    // renderer wouldn't). x2/y2 always mirror x1/y1 (text has one point,
+    // not two) so it fits the same shape schema/move logic as every other
+    // tool without special-casing. Formatting is whole-object bold/
+    // underline toggles, not per-character rich text -- QML has no exposed
+    // QTextDocument-style API for that, and faking per-selection formatting
+    // without one would be more likely to be buggy than useful. fontSize
+    // reuses `width` (the same slider/wheel control that sets stroke
+    // thickness for every other tool), scaled up, so there's one "size"
+    // knob across all tools instead of a separate text-only control.
+    function placeText(gx: real, gy: real): void {
+        const next = root.shapes.slice();
+        next.push({
+            tool: "text", color: root.currentColor, width: root.currentWidth,
+            x1: gx, y1: gy, x2: gx, y2: gy,
+            text: "", bold: false, underline: false
+        });
+        root.shapes = next;
+        root._redoStack = [];
+        root.editingShapeIndex = next.length - 1;
+        root.phase = "toolbar";
+    }
+    function updateTextContent(newText: string): void {
+        if (root.editingShapeIndex < 0) return;
+        const next = root.shapes.slice();
+        const s = Object.assign({}, next[root.editingShapeIndex]);
+        s.text = newText;
+        next[root.editingShapeIndex] = s;
+        root.shapes = next;
+    }
+    function toggleTextBold(): void {
+        if (root.editingShapeIndex < 0) return;
+        const next = root.shapes.slice();
+        const s = Object.assign({}, next[root.editingShapeIndex]);
+        s.bold = !s.bold;
+        next[root.editingShapeIndex] = s;
+        root.shapes = next;
+    }
+    function toggleTextUnderline(): void {
+        if (root.editingShapeIndex < 0) return;
+        const next = root.shapes.slice();
+        const s = Object.assign({}, next[root.editingShapeIndex]);
+        s.underline = !s.underline;
         next[root.editingShapeIndex] = s;
         root.shapes = next;
     }

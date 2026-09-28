@@ -13,7 +13,7 @@ import "../theme"
 // emoji glyph -- those render inconsistently sized/styled across fonts.
 Rectangle {
     id: tb
-    required property string iconType // arrow | rect | line | copy | save | cancel
+    required property string iconType // arrow | rect | line | text | copy | save | cancel
     required property string tooltip
     property bool active: false
     signal activated()
@@ -78,6 +78,17 @@ Rectangle {
             color: "transparent"
             border.width: 1.2
             border.color: tb.strokeColor
+        }
+
+        // "T" glyph -- a plain Text item is already natively/crisply
+        // rendered by the scene graph, same as everything else here.
+        Text {
+            visible: tb.iconType === "text"
+            anchors.centerIn: parent
+            text: "T"
+            font.pixelSize: 13
+            font.bold: true
+            color: tb.strokeColor
         }
 
         // Line-based icons: real vector paths (Shape/ShapePath), not a
