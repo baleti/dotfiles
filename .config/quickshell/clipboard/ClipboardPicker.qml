@@ -51,16 +51,42 @@ PanelWindow {
     // until `/at`'d or Auto-shown by a `/fv` filter.
     readonly property var defaultColumns: ["chars", "lines", "mime"]
     readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l", mime: "mime" })
-    // `mime` shrunk from 160 (values are trimmed to the bare type now --
-    // `bundle_mimes` drops `;charset=...` -- so they rarely need more).
+    // `mime`'s own entry here (90) is a floor, not its real width -- see
+    // `_mimeColWidth` below, which grows it to fit whatever's actually
+    // showing (comma-joined multi-format entries can run long), capped at
+    // half the box so it can never crowd the preview out entirely.
     readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34, mime: 90 })
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
     property string _headerHoverName: ""
     property real _headerHoverCenterX: 0
-    function _colWidth(name) { return root.columnWidths[name] || 70; }
+    function _colWidth(name) { return name === "mime" ? root._mimeColWidth : (root.columnWidths[name] || 70); }
     readonly property var activeColumns: ClipboardQueryDsl.activeColumns(root.parsed, root.fieldNames, root.defaultColumns)
     readonly property real _columnsWidth: root.activeColumns.reduce((sum, c) => sum + root._colWidth(c), 0)
+
+    // Longest `mime` value among the currently-shown rows (requested
+    // 2026-09-28: comma-joined multi-format entries were eliding into
+    // near-uselessness at a fixed 90px). Sized to `results`, not the full
+    // `_entries`, so the column tracks what's actually visible -- narrows
+    // back down once a filter leaves only short-mime rows on screen,
+    // rather than staying stretched for an entry that's since scrolled
+    // out of the result set.
+    readonly property string _longestMimeValue: {
+        let longest = "";
+        for (const e of root.results) {
+            const v = e.fields.mime;
+            if (v && v.length > longest.length) longest = v;
+        }
+        return longest;
+    }
+    TextMetrics {
+        id: mimeMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 2
+        text: root._longestMimeValue
+    }
+    readonly property real _mimeColWidth: Math.max(root.columnWidths.mime,
+        Math.min(box.width * 0.5, mimeMetrics.width + 8))
     // Shrunk from the GTK version's 160/480 (reported too big after the
     // first live test).
     readonly property int thumbHeight: 120
