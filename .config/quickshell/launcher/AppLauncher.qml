@@ -644,6 +644,27 @@ PanelWindow {
                 // every Tab after that just moves the highlight, the same
                 // as Down/Ctrl+j; Enter is the one key that actually
                 // accepts the highlighted suggestion.
+                // Hold-to-repeat for list/popup navigation (Ctrl+J/K,
+                // arrows, PageUp/Down): the held key re-fires its own step
+                // on a timer rather than relying on this layer-shell
+                // surface forwarding Qt's own key-repeat, which isn't
+                // guaranteed -- same reasoning as the CTRL+ALT+h/l
+                // Hyprland-side repeat fix.
+                property var _navRepeatFn: null
+                Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
+                Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (query._navRepeatFn) query._navRepeatFn() }
+                function _startNavRepeat(fn) {
+                    _navRepeatFn = fn;
+                    fn();
+                    navRepeatDelay.restart();
+                }
+                function _stopNavRepeat() {
+                    navRepeatDelay.stop();
+                    navRepeatTimer.stop();
+                    _navRepeatFn = null;
+                }
+                Keys.onReleased: event => { _stopNavRepeat(); }
+
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
                         if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; root.acHistoryMode = false; }
@@ -658,6 +679,13 @@ PanelWindow {
                             root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
                         else
                             root._triggerCompletion();
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Space && !ac.visible && (event.modifiers & Qt.ControlModifier)) {
+                        // Ctrl+Space also opens completion, same as Tab
+                        // (query-dsl.md Autocompletion section) -
+                        // ClipboardPicker.qml/NotificationPicker.qml's
+                        // reference implementation, ported here.
+                        root._triggerCompletion();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Space && ac.visible && (event.modifiers & Qt.ControlModifier)) {
                         // AND-narrows instead of accepting (query-dsl.md):
@@ -697,37 +725,45 @@ PanelWindow {
                         else root._historyPrev();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
-                        if (ac.visible) {
-                            root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                        } else {
-                            root.selected = Math.min(root.results.length - 1, root.selected + 1);
-                            LauncherQueryHistory.record(query.text);
-                        }
+                        if (!event.isAutoRepeat) _startNavRepeat(() => {
+                            if (ac.visible) {
+                                root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                            } else {
+                                root.selected = Math.min(root.results.length - 1, root.selected + 1);
+                                LauncherQueryHistory.record(query.text);
+                            }
+                        });
                         event.accepted = true;
                     } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
-                        if (ac.visible) {
-                            root.acSel = Math.max(0, root.acSel - 1);
-                        } else {
-                            root.selected = Math.max(0, root.selected - 1);
-                            LauncherQueryHistory.record(query.text);
-                        }
+                        if (!event.isAutoRepeat) _startNavRepeat(() => {
+                            if (ac.visible) {
+                                root.acSel = Math.max(0, root.acSel - 1);
+                            } else {
+                                root.selected = Math.max(0, root.selected - 1);
+                                LauncherQueryHistory.record(query.text);
+                            }
+                        });
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageDown) {
-                        if (ac.visible) {
-                            root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
-                        } else {
-                            root.selected = Math.min(root.results.length - 1,
-                                                      root.selected + Math.max(1, Math.floor(list.height / 30)));
-                            LauncherQueryHistory.record(query.text);
-                        }
+                        if (!event.isAutoRepeat) _startNavRepeat(() => {
+                            if (ac.visible) {
+                                root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
+                            } else {
+                                root.selected = Math.min(root.results.length - 1,
+                                                          root.selected + Math.max(1, Math.floor(list.height / 30)));
+                                LauncherQueryHistory.record(query.text);
+                            }
+                        });
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageUp) {
-                        if (ac.visible) {
-                            root.acSel = Math.max(0, root.acSel - 7);
-                        } else {
-                            root.selected = Math.max(0, root.selected - Math.max(1, Math.floor(list.height / 30)));
-                            LauncherQueryHistory.record(query.text);
-                        }
+                        if (!event.isAutoRepeat) _startNavRepeat(() => {
+                            if (ac.visible) {
+                                root.acSel = Math.max(0, root.acSel - 7);
+                            } else {
+                                root.selected = Math.max(0, root.selected - Math.max(1, Math.floor(list.height / 30)));
+                                LauncherQueryHistory.record(query.text);
+                            }
+                        });
                         event.accepted = true;
                     }
                 }

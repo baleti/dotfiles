@@ -375,16 +375,37 @@ PanelWindow {
                     }
                 }
 
+                // Hold-to-repeat for list/popup navigation (Ctrl+J/K,
+                // arrows, PageUp/Down): the held key re-fires its own step
+                // on a timer rather than relying on this layer-shell
+                // surface forwarding Qt's own key-repeat, which isn't
+                // guaranteed -- same reasoning as the CTRL+ALT+h/l
+                // Hyprland-side repeat fix.
+                property var _navRepeatFn: null
+                Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
+                Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (query._navRepeatFn) query._navRepeatFn() }
+                function _startNavRepeat(fn) {
+                    _navRepeatFn = fn;
+                    fn();
+                    navRepeatDelay.restart();
+                }
+                function _stopNavRepeat() {
+                    navRepeatDelay.stop();
+                    navRepeatTimer.stop();
+                    _navRepeatFn = null;
+                }
+                Keys.onReleased: event => { _stopNavRepeat(); }
+
                 Keys.onPressed: event => {
                     const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
 
                     if (root.acItems.length > 0) {
                         if (ctrl && event.key === Qt.Key_J) {
-                            root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
+                            if (!event.isAutoRepeat) _startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
                             event.accepted = true; return;
                         }
                         if (ctrl && event.key === Qt.Key_K) {
-                            root.acSel = Math.max(0, root.acSel - 1);
+                            if (!event.isAutoRepeat) _startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
                             event.accepted = true; return;
                         }
                         // GTK-family: Tab accepts the highlighted row
@@ -449,7 +470,7 @@ PanelWindow {
                     else if (event.key === Qt.Key_PageDown) step = 20;
                     else return; // let the search entry have it
 
-                    root._move(step);
+                    if (!event.isAutoRepeat) _startNavRepeat(() => root._move(step));
                     event.accepted = true;
                 }
             }
