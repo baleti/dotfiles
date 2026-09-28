@@ -58,12 +58,14 @@ fn history_entries() -> Vec<Entry> {
 
         let app_label = if app_name.is_empty() { "(unnamed)" } else { app_name.as_str() };
 
-        let text = if !body.is_empty() && body != summary {
+        // No "[app_name]" prefix (there used to be one) -- NotificationPicker.qml
+        // shows app in its own column now (defaultColumns, 2026-09-28), so
+        // repeating it inline just wasted space and duplicated the column.
+        let preview = if !body.is_empty() && body != summary {
             format!("{summary} — {body}")
         } else {
             summary.clone()
         };
-        let preview = if app_name.is_empty() { text } else { format!("[{app_name}] {text}") };
         let haystack = format!("{app_name} {summary} {body}").to_lowercase();
 
         // Unlike clipboard-picker's $date (which needed a whole side-log,
