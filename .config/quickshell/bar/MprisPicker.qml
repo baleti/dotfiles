@@ -84,13 +84,32 @@ Item {
     anchors.fill: parent
     visible: showing
 
+    // Hold-to-repeat for the player list (Up/Down, j/k): re-fires its own
+    // step on a timer rather than relying on this layer-shell surface
+    // forwarding Qt's own key-repeat, which isn't guaranteed -- same
+    // reasoning as the CTRL+ALT+h/l Hyprland-side repeat fix.
+    property var _navRepeatFn: null
+    Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
+    Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (root._navRepeatFn) root._navRepeatFn() }
+    function _startNavRepeat(fn) {
+        root._navRepeatFn = fn;
+        fn();
+        navRepeatDelay.restart();
+    }
+    function _stopNavRepeat() {
+        navRepeatDelay.stop();
+        navRepeatTimer.stop();
+        root._navRepeatFn = null;
+    }
+    Keys.onReleased: event => { root._stopNavRepeat(); }
+
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
             MprisPickerState.close();
         } else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) {
-            root.move(-1);
+            if (!event.isAutoRepeat) root._startNavRepeat(() => root.move(-1));
         } else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) {
-            root.move(1);
+            if (!event.isAutoRepeat) root._startNavRepeat(() => root.move(1));
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             root.commit();
         } else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9) {

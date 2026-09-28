@@ -181,6 +181,26 @@ PanelWindow {
         WinSwitchQueryHistory.record(root.queryText);
     }
 
+    // Hold-to-repeat for grid/list/popup navigation (arrows, Ctrl+H/J/K/L,
+    // PageUp/Down): the held key re-fires its own step on a timer rather
+    // than relying on whichever item currently holds focus forwarding
+    // Qt's own key-repeat, which isn't guaranteed -- same reasoning as the
+    // CTRL+ALT+h/l Hyprland-side repeat fix and the ClipboardPicker/
+    // NotificationPicker DSL pickers' identical mechanism.
+    property var _navRepeatFn: null
+    Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
+    Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (root._navRepeatFn) root._navRepeatFn() }
+    function _startNavRepeat(fn) {
+        root._navRepeatFn = fn;
+        fn();
+        navRepeatDelay.restart();
+    }
+    function _stopNavRepeat() {
+        navRepeatDelay.stop();
+        navRepeatTimer.stop();
+        root._navRepeatFn = null;
+    }
+
     // ---- grid layout (ported from the old GTK ui.rs's typical_aspect /
     // grid_dims / cell_size / frame_size) ------------------------------------
     readonly property int minFrame: 64
@@ -646,6 +666,13 @@ PanelWindow {
                         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
                             root._completionTab(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
                             event.accepted = true;
+                        } else if (event.key === Qt.Key_Space && !acPopup.visible && (event.modifiers & Qt.ControlModifier)) {
+                            // Ctrl+Space also opens completion, same as Tab
+                            // (query-dsl.md Autocompletion section) -
+                            // ClipboardPicker.qml/NotificationPicker.qml's
+                            // reference implementation, ported here.
+                            root._triggerCompletion();
+                            event.accepted = true;
                         } else if (event.key === Qt.Key_Space && acPopup.visible && (event.modifiers & Qt.ControlModifier)) {
                             // AND-narrow instead of accept - see acVerbMulti
                             // above. No-op outside the Verb stage (a value/
@@ -670,20 +697,24 @@ PanelWindow {
                             // Popup open: highlight-move, unchanged. Popup
                             // closed: history-cycle instead of grid-advance -
                             // see acHistIndex's own comment.
-                            if (acPopup.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                            else root._historyNext();
+                            if (acPopup.visible) {
+                                if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
+                            } else root._historyNext();
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Up) {
-                            if (acPopup.visible) root.acSel = Math.max(0, root.acSel - 1);
-                            else root._historyPrev();
+                            if (acPopup.visible) {
+                                if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
+                            } else root._historyPrev();
                             event.accepted = true;
                         } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
-                            if (acPopup.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                            else root._advance("next");
+                            if (acPopup.visible) {
+                                if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
+                            } else if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("next"));
                             event.accepted = true;
                         } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
-                            if (acPopup.visible) root.acSel = Math.max(0, root.acSel - 1);
-                            else root._advance("prev");
+                            if (acPopup.visible) {
+                                if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
+                            } else if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("prev"));
                             event.accepted = true;
                         } else if (!acPopup.visible && event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier)) {
                             // Ctrl+H/L mirror the grid's own Left/Right (unlocked
@@ -691,19 +722,20 @@ PanelWindow {
                             // already mirror Up/Down - no popup meaning (a
                             // vertical list has no left/right), so only act while
                             // the popup isn't showing.
-                            root._advance("next");
+                            if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("next"));
                             event.accepted = true;
                         } else if (!acPopup.visible && event.key === Qt.Key_H && (event.modifiers & Qt.ControlModifier)) {
-                            root._advance("prev");
+                            if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("prev"));
                             event.accepted = true;
                         } else if (event.key === Qt.Key_PageDown && acPopup.visible) {
-                            root.acSel = Math.min(root.acItems.length - 1, root.acSel + Math.max(1, Math.floor(acList.height / 24)));
+                            if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + Math.max(1, Math.floor(acList.height / 24))); });
                             event.accepted = true;
                         } else if (event.key === Qt.Key_PageUp && acPopup.visible) {
-                            root.acSel = Math.max(0, root.acSel - Math.max(1, Math.floor(acList.height / 24)));
+                            if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - Math.max(1, Math.floor(acList.height / 24))); });
                             event.accepted = true;
                         }
                     }
+                    Keys.onReleased: event => { root._stopNavRepeat(); }
                 }
             }
 
@@ -1084,16 +1116,16 @@ PanelWindow {
                 root._advance(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
                 event.accepted = true;
             } else if (event.key === Qt.Key_Right || (event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier))) {
-                root._advance("next");
+                if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("next"));
                 event.accepted = true;
             } else if (event.key === Qt.Key_Left || (event.key === Qt.Key_H && (event.modifiers & Qt.ControlModifier))) {
-                root._advance("prev");
+                if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("prev"));
                 event.accepted = true;
             } else if (event.key === Qt.Key_Down || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
-                root._advanceRow(root.cols);
+                if (!event.isAutoRepeat) root._startNavRepeat(() => root._advanceRow(root.cols));
                 event.accepted = true;
             } else if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
-                root._advanceRow(-root.cols);
+                if (!event.isAutoRepeat) root._startNavRepeat(() => root._advanceRow(-root.cols));
                 event.accepted = true;
             } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
                 // query-dsl.md's "Search-box history": Ctrl+R works
@@ -1129,5 +1161,6 @@ PanelWindow {
                 event.accepted = true;
             }
         }
+        Keys.onReleased: event => { root._stopNavRepeat(); }
     }
 }
