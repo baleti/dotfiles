@@ -34,20 +34,21 @@ PanelWindow {
 
     property bool open: false
 
-    readonly property var fieldNames: ["type", "date", "chars", "lines"]
+    readonly property var fieldNames: ["type", "date", "chars", "lines", "mime"]
     readonly property var fieldDescs: ({
         "type": "text or image",
         "date": "how long ago it was copied",
         "chars": "character count",
-        "lines": "line count"
+        "lines": "line count",
+        "mime": "MIME type(s) offered, comma-separated if more than one"
     })
     // `chars`/`lines` default on -- this picker's old always-on size badge,
     // now real columns instead (query-dsl.md's `/ft`/`/at`/`/rt`). `type`/
-    // `date` stay hidden until `/at`'d or Auto-shown by a `/fv` filter,
-    // same as before this feature existed.
+    // `date`/`mime` stay hidden until `/at`'d or Auto-shown by a `/fv`
+    // filter, same as before this feature existed.
     readonly property var defaultColumns: ["chars", "lines"]
-    readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l" })
-    readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34 })
+    readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l", mime: "mime" })
+    readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34, mime: 160 })
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
     property string _headerHoverName: ""
@@ -93,13 +94,13 @@ PanelWindow {
     property var _thumbMeta: ({})  // id -> {width, height} of that cached PNG (its real pixels)
     property var _animPaths: ({})  // id -> small looping GIF (backend re-encoded), played on the selected row only
     property var _noThumb: ({})    // id -> true once the backend found no way to thumbnail it (row falls back to text)
-    // id -> {chars, lines} (as strings) waiting to be merged into the
-    // matching `_entries` row's `fields.chars`/`fields.lines`, streamed in
-    // by statsProc after `list` (decoding every entry inside `list` itself
-    // delayed first paint). Merged in batches (statsFlush): reassigning
-    // `_entries` re-filters `results` and rebuilds every delegate, so doing
-    // that per line would itself stall the UI, same reasoning textsProc
-    // below already documents.
+    // id -> a partial `fields` patch waiting to be merged into the matching
+    // `_entries` row -- `{chars, lines}` from statsProc, or `{mime}` from
+    // mimesProc, both streamed in after `list` (decoding/shelling out for
+    // every entry inside `list` itself delayed first paint). Merged in
+    // batches (statsFlush): reassigning `_entries` re-filters `results` and
+    // rebuilds every delegate, so doing that per line would itself stall
+    // the UI, same reasoning textsProc below already documents.
     property var _statsPending: ({})
 
     // cliphist's own `list` preview hard-truncates at a fixed rune count
@@ -141,6 +142,16 @@ PanelWindow {
                     statsProc.command = [root._bin, "stats"].concat(statIds);
                     statsProc.running = true;
                 }
+                // `mime` is already filled in directly by `list` for ids
+                // with a bundle (cheap manifest read, no subprocess) -- only
+                // backfill the rest (pre-existing entries, or a single-
+                // format copy with no manifest), same as `chars`/`lines`
+                // above but keyed on a different field.
+                const mimeIds = rows.filter(e => e.fields.mime === undefined).map(e => e.id);
+                if (mimeIds.length > 0 && !mimesProc.running) {
+                    mimesProc.command = [root._bin, "mimes"].concat(mimeIds);
+                    mimesProc.running = true;
+                }
                 const longIds = rows.filter(e => !e.thumb && root._looksTruncated(e.preview)).map(e => e.id);
                 if (longIds.length > 0) {
                     textsProc.command = [root._bin, "texts"].concat(longIds);
@@ -150,15 +161,33 @@ PanelWindow {
         }
     }
 
-    // Stats stream in one NDJSON line per entry, but are merged into
+    // Stats/mimes stream in one NDJSON line per entry, but are merged into
     // `_entries` in batches (statsFlush) -- see `_statsPending`'s own doc.
+    // Two separate Processes (different subcommands), one shared
+    // pending-map/flush-timer pair: both are "backfill one field into
+    // `_entries.fields` by id" with identical batching needs, so there's
+    // nothing process-specific about the merge step itself.
     Process {
         id: statsProc
         stdout: SplitParser {
             onRead: line => {
                 try {
                     const m = JSON.parse(line);
-                    root._statsPending[m.id] = { chars: String(m.chars), lines: String(m.lines) };
+                    root._statsPending[m.id] = Object.assign({}, root._statsPending[m.id],
+                        { chars: String(m.chars), lines: String(m.lines) });
+                    statsFlush.start();
+                } catch (e) { /* skip */ }
+            }
+        }
+        onRunningChanged: if (!running) statsFlush.triggerFlush()
+    }
+    Process {
+        id: mimesProc
+        stdout: SplitParser {
+            onRead: line => {
+                try {
+                    const m = JSON.parse(line);
+                    root._statsPending[m.id] = Object.assign({}, root._statsPending[m.id], { mime: m.mime });
                     statsFlush.start();
                 } catch (e) { /* skip */ }
             }
@@ -563,7 +592,12 @@ PanelWindow {
                         // picker.rs (only Ctrl+j/k move the popup highlight).
                     }
 
-                    if (event.key === Qt.Key_Tab) {
+                    // Ctrl+Space opens completion too, same as Tab -- not
+                    // just the AND-narrowing space it inserts once a
+                    // Verb-stage popup is already open (see above). Query-
+                    // dsl.md's Autocompletion section documents this as a
+                    // second trigger key, not a replacement for Tab.
+                    if (event.key === Qt.Key_Tab || (ctrl && event.key === Qt.Key_Space)) {
                         root._triggerCompletion();
                         event.accepted = true; return; // consumed either way
                     }
@@ -667,27 +701,40 @@ PanelWindow {
         }
 
         // Column headers (query-dsl.md's `/ft`/`/at`/`/rt`-driven column
-        // set, `activeColumns`) -- right-anchored so it sits flush above
-        // the same column cells each row draws at its own right edge, with
-        // no separate placeholder needed for the (unlabeled) preview
-        // column to its left. Replaces the old always-on "N ch · M l"
+        // set, `activeColumns`) -- replaces the old always-on "N ch · M l"
         // badge, which repeated its own units on every row -- see
-        // `defaultColumns`. `rightMargin` must match the delegate's `col`
-        // (below, 8) exactly -- it used to say 16, which put the header
-        // row's own right edge 8px left of where the row cells actually
-        // end, so headers looked shifted relative to the (correctly
-        // aligned among themselves) values instead of flush with them
-        // (reported 2026-09-28).
+        // `defaultColumns`. Spans the box the same way `col`/`previewRow`
+        // below do (left+right anchors, same 8/8 margins) with a leading
+        // invisible spacer computed by the *exact same formula*
+        // `previewText.width` uses, rather than an independently
+        // right-anchored Row kept in sync with `col`'s margin by hand --
+        // that used to be a plain `rightMargin: 16` a few pixels off from
+        // `col`'s own 8, which put every header a few px left of where its
+        // column's actual values land (reported 2026-09-28). This
+        // construction makes that class of bug structurally impossible:
+        // header cells and value cells are laid out by the same width
+        // arithmetic, so they can't drift apart again.
         Row {
             id: colHeader
             visible: root.activeColumns.length > 0
             anchors {
                 top: ac.visible ? ac.bottom : header.bottom
+                left: parent.left
                 right: parent.right
+                leftMargin: 8
                 rightMargin: 8
             }
             height: visible ? 18 : 0
             spacing: 10
+
+            Item {
+                // Mirrors previewText's width formula exactly (see below) --
+                // pushes the header cells that follow to the same x
+                // positions their column's values occupy.
+                width: colHeader.width - root._columnsWidth
+                       - (root.activeColumns.length > 0 ? colHeader.spacing * root.activeColumns.length : 0)
+                height: 1
+            }
 
             Repeater {
                 model: root.activeColumns
