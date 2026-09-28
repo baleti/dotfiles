@@ -43,10 +43,11 @@ PanelWindow {
         "mime": "MIME type(s) offered, comma-separated if more than one"
     })
     // `chars`/`lines` default on -- this picker's old always-on size badge,
-    // now real columns instead (query-dsl.md's `/ft`/`/at`/`/rt`). `type`/
-    // `date`/`mime` stay hidden until `/at`'d or Auto-shown by a `/fv`
-    // filter, same as before this feature existed.
-    readonly property var defaultColumns: ["chars", "lines"]
+    // now real columns instead (query-dsl.md's `/ft`/`/at`/`/rt`). `mime`
+    // defaults on too (requested 2026-09-28, right after it was added --
+    // opt-in read as "not showing" rather than "hidden on purpose"). `type`/
+    // `date` still stay hidden until `/at`'d or Auto-shown by a `/fv` filter.
+    readonly property var defaultColumns: ["mime", "chars", "lines"]
     readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l", mime: "mime" })
     readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34, mime: 160 })
     // Which column header (if any) is currently hovered, and where to
