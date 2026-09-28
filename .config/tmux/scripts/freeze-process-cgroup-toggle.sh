@@ -81,7 +81,9 @@ fi
 nudge_claude_usage_panel() {
 	for d in "$HOME/.claude" "$HOME/.claude2" "$HOME/.claude3"; do
 		f="$d/sessions/$pid.json"
-		[ -f "$f" ] && python3 -c "open('$f', 'r+').close()" 2>/dev/null
+		if [ -f "$f" ]; then
+			python3 -c "open('$f', 'r+').close()" 2>/dev/null || true
+		fi
 	done
 }
 
