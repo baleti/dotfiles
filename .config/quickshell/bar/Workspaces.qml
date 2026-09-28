@@ -13,7 +13,12 @@ Row {
 
     required property ShellScreen screen
 
-    spacing: 2
+    // Overridable so Bar.qml can shrink the gap between pills, and each
+    // pill's own padding, along with the font once the bar runs out of
+    // room -- see Bar.qml's pillScale.
+    property real btnGap: 2
+    property real btnHPad: 8
+    spacing: btnGap
 
     // `Hyprland.dispatch()` sends a raw `dispatch <cmd>` string over the
     // socket, which this install's Lua-scriptable Hyprland fork doesn't
@@ -273,7 +278,7 @@ Row {
             readonly property bool isUrgent: modelData.urgent
             readonly property bool isRenaming: root.renamingId === modelData.id
 
-            implicitWidth: (isRenaming ? Math.max(renameInput.implicitWidth, 30) : label.implicitWidth) + 16
+            implicitWidth: (isRenaming ? Math.max(renameInput.implicitWidth, 30) : label.implicitWidth) + root.btnHPad * 2
             implicitHeight: 24
             width: implicitWidth
             height: implicitHeight

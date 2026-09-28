@@ -17,6 +17,11 @@ Rectangle {
     id: root
 
     property int fontSize: Theme.fontSize
+    // Overridable so Bar.qml can shrink this pill's own padding/spacing
+    // along with the fonts once the bar runs out of room -- see
+    // Bar.qml's pillScale.
+    property int hPad: Theme.pillPadH
+    property real rowSpacing: 6
 
     color: Theme.bgAlpha
     border.color: Theme.border
@@ -90,7 +95,7 @@ Rectangle {
     }
 
     visible: hasPlayer
-    implicitWidth: hasPlayer ? pillRow.implicitWidth + Theme.pillPadH * 2 : 0
+    implicitWidth: hasPlayer ? pillRow.implicitWidth + root.hPad * 2 : 0
     implicitHeight: Theme.barHeight - 10
     width: implicitWidth
     height: implicitHeight
@@ -98,7 +103,7 @@ Rectangle {
     Row {
         id: pillRow
         anchors.centerIn: parent
-        spacing: 6
+        spacing: root.rowSpacing
 
         Text {
             text: root.hasPlayer && root.player.isPlaying ? Icons.play : Icons.pause
