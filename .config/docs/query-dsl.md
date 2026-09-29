@@ -462,7 +462,7 @@ Defaults per picker:
   rust-tools.md). `mime` is the one column with a content-fitted width
   (`TextMetrics` against the longest value among the currently-shown
   rows) rather than a fixed one - comma-joined multi-format entries can
-  run long - capped at half the box width so it can never crowd the
+  run long - capped at 30% of the box width so it can never crowd the
   preview text out entirely; every other column stays a fixed width.
   `type`/`date` are hidden until `/at`'d or Auto-shown by
   a `/fv` filter, same as before this feature existed (2026-09-28).

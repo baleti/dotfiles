@@ -54,7 +54,7 @@ PanelWindow {
     // `mime`'s own entry here (90) is a floor, not its real width -- see
     // `_mimeColWidth` below, which grows it to fit whatever's actually
     // showing (comma-joined multi-format entries can run long), capped at
-    // half the box so it can never crowd the preview out entirely.
+    // 30% of the box so it can never crowd the preview out entirely.
     readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34, mime: 90 })
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
@@ -97,7 +97,7 @@ PanelWindow {
     // hand and confirmed correct at 1.0 scale). Generous flat padding
     // instead of chasing an exact per-glyph rounding correction.
     readonly property real _mimeColWidth: Math.max(root.columnWidths.mime,
-        Math.min(box.width * 0.5, mimeMetrics.width + 24))
+        Math.min(box.width * 0.3, mimeMetrics.width + 24))
     // Shrunk from the GTK version's 160/480 (reported too big after the
     // first live test).
     readonly property int thumbHeight: 120
