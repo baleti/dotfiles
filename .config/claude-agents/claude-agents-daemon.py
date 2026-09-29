@@ -272,6 +272,37 @@ def is_pid_alive(pid):
         return False
 
 
+def _proc_state(pid):
+    """Single-char /proc/<pid>/stat state ('T' = job-control stopped)."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    rest = raw[raw.rfind(")") + 2:].split()
+    return rest[0] if rest else None
+
+
+def _is_cgroup_frozen(pid):
+    """True if pid was suspended by tmux's freeze-process-cgroup-toggle.sh
+    (lives in a tmux-freeze-<pid> cgroup v2 dir with cgroup.freeze == 1).
+    Not visible in /proc/<pid>/stat (still 'S'), and a frozen process can't
+    update its own sessions/<pid>.json, so the file's self-reported status
+    would keep saying busy/idle. Same check as claude-usage-daemon.py."""
+    try:
+        line = Path(f"/proc/{pid}/cgroup").read_text().splitlines()[0]
+    except (OSError, IndexError):
+        return False
+    if not line.startswith("0::"):
+        return False
+    relpath = line[3:]
+    if Path(relpath).name != f"tmux-freeze-{pid}":
+        return False
+    try:
+        return Path(f"/sys/fs/cgroup{relpath}/cgroup.freeze").read_text().strip() == "1"
+    except OSError:
+        return False
+
+
 def scan_sessions_registry():
     """Primary, authoritative live-session source: each account's own
     ~/.claudeN/sessions/<pid>.json (Claude Code's own registry of its
@@ -312,7 +343,13 @@ def scan_sessions_registry():
             m = TMUX_PANE_ID_RE.search(tmux_field)
             if not m:
                 continue
-            _record_live(result, session_id, dir_key, m.group(1), "exact", status=data.get("status"))
+            if _is_cgroup_frozen(pid):
+                status = "frozen"
+            elif _proc_state(pid) == "T":
+                status = "stopped"
+            else:
+                status = data.get("status")
+            _record_live(result, session_id, dir_key, m.group(1), "exact", status=status)
     return result
 
 
@@ -495,7 +532,28 @@ def _pane_input_box_text(pane_target):
     return None
 
 
+FREEZE_TOGGLE_SCRIPT = os.path.expanduser("~/.config/tmux/scripts/freeze-process-cgroup-toggle.sh")
+
+
+def thaw_pane_if_frozen(pane_target):
+    """A cgroup-frozen claude never reads its pty, so text sent to it would
+    just sit there and the session looks stuck. The tmux freeze script sets
+    pane option @frozen=1 and its toggle flushes stale pty input before
+    thawing, so reuse it (only when frozen -- it is a toggle)."""
+    try:
+        out = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane_target, "#{@frozen} #{pane_pid}"],
+            capture_output=True, text=True, timeout=5).stdout.split()
+        if len(out) == 2 and out[0] == "1":
+            subprocess.run(["sh", FREEZE_TOGGLE_SCRIPT, out[1], pane_target], check=True, timeout=10)
+            log(f"thawed frozen pane {pane_target} before delivering text")
+            time.sleep(0.3)
+    except Exception as e:
+        log(f"thaw_pane_if_frozen({pane_target}) failed: {e}")
+
+
 def send_to_pane(pane_target, text):
+    thaw_pane_if_frozen(pane_target)
     try:
         # tmux's own send-keys -l has a real limit on how long a single
         # literal argument can be -- confirmed live 2026-09-14: spawning a
@@ -1102,7 +1160,12 @@ def parse_transcript_line(line, line_no):
         else:
             error_type = "api_error"
         role = "error"
-    if role == "user":
+    if role == "user" and d.get("isMeta") is True:
+        # Harness-injected meta turn (e.g. the "[Image: original WxH ...]"
+        # note that follows a screenshot Read) -- role is "user" on the wire
+        # but the human never typed it; it rendered as a YOU bubble.
+        role = "tool_result"
+    elif role == "user":
         if isinstance(content, list):
             # A tool result is *also* wire-formatted as a `type: "user"`
             # line with message.role "user" -- it's the output of a
@@ -1327,7 +1390,7 @@ def list_conversations(account_filter=None):
                 continue
             live_info = live.get(meta["id"])
             if live_info:
-                meta["live"] = {"pane": live_info["pane"], "confidence": live_info["confidence"]}
+                meta["live"] = {"pane": live_info["pane"], "confidence": live_info["confidence"], "status": live_info.get("status")}
                 if meta["account"] == "unknown":
                     meta["account"] = live_info["dir_key"]
             else:
