@@ -7,6 +7,8 @@ and the plan at ~/.claude/plans/lovely-strolling-owl.md.
 
 Usage:
   peer-app-debugger-request.py diag <package>
+  peer-app-debugger-request.py logcat <package>
+  peer-app-debugger-request.py screenshot <output-path.png>
   peer-app-debugger-request.py install <package> <path-to-apk>
 
 The private key never leaves this file/host - only a signature over the
@@ -71,6 +73,32 @@ def diag(pkg: str):
         print("(client-side timeout after 65s - peeragent itself should have responded by now; check connectivity)")
 
 
+def logcat(pkg: str):
+    path_and_query = "/privileged/diagnostics?" + urllib.parse.urlencode({"pkg": pkg, "action": "LOGCAT"})
+    headers = sign_request("GET", path_and_query, b"")
+    try:
+        r = requests.get(f"http://{PHONE_HOST}:{PHONE_PORT}{path_and_query}", headers=headers, timeout=65)
+        print(r.status_code, r.text)
+    except requests.exceptions.Timeout:
+        print("(client-side timeout after 65s - peeragent itself should have responded by now; check connectivity)")
+
+
+def screenshot(output_path: str):
+    path_and_query = "/privileged/screenshot"
+    headers = sign_request("GET", path_and_query, b"")
+    try:
+        r = requests.get(f"http://{PHONE_HOST}:{PHONE_PORT}{path_and_query}", headers=headers, timeout=65)
+    except requests.exceptions.Timeout:
+        print("(client-side timeout after 65s - peeragent itself should have responded by now; check connectivity)")
+        return
+    if r.status_code != 200:
+        print(r.status_code, r.text)
+        return
+    with open(output_path, "wb") as f:
+        f.write(r.content)
+    print(f"saved {len(r.content)} bytes to {output_path}")
+
+
 def install(pkg: str, apk_path: str):
     # Fire-and-forget: installing peeragent's own package kills and restarts
     # its process partway through pm install, tearing down the very HTTP
@@ -97,6 +125,10 @@ if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "diag" and len(sys.argv) == 3:
         diag(sys.argv[2])
+    elif cmd == "logcat" and len(sys.argv) == 3:
+        logcat(sys.argv[2])
+    elif cmd == "screenshot" and len(sys.argv) == 3:
+        screenshot(sys.argv[2])
     elif cmd == "install" and len(sys.argv) == 4:
         install(sys.argv[2], sys.argv[3])
     else:
