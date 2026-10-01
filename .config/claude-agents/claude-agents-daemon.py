@@ -555,27 +555,8 @@ def thaw_pane_if_frozen(pane_target):
 def send_to_pane(pane_target, text):
     thaw_pane_if_frozen(pane_target)
     try:
-        # tmux's own send-keys -l has a real limit on how long a single
-        # literal argument can be -- confirmed live 2026-09-14: spawning a
-        # session with a full news-digest article (several KB) as the
-        # initial message failed with tmux itself printing "command too
-        # long" and exiting non-zero (not a Python/OS argv limit -- this
-        # tmux build enforces its own smaller cap on a -l argument).
-        # Anything past a safe threshold goes through a paste buffer
-        # instead: load-buffer reads the text from stdin (no per-argument
-        # size constraint at all, since it's never a single exec()
-        # argument), then paste-buffer injects it into the pane the same
-        # way a real terminal paste would. -d drops the buffer immediately
-        # after use so these don't accumulate in tmux's buffer list.
-        if len(text.encode("utf-8")) > 2000:
-            buf_name = f"claude_agents_send_{uuid_mod.uuid4().hex[:8]}"
-            subprocess.run(["tmux", "load-buffer", "-b", buf_name, "-"],
-                            input=text.encode("utf-8"), check=True, timeout=10)
-            subprocess.run(["tmux", "paste-buffer", "-b", buf_name, "-t", pane_target, "-d"],
-                            check=True, timeout=10)
-        else:
-            subprocess.run(["tmux", "send-keys", "-t", pane_target, "-l", "--", text],
-                            check=True, timeout=5)
+        subprocess.run(["tmux", "send-keys", "-t", pane_target, "-l", "--", text],
+                        check=True, timeout=5)
         # A bare "Enter" sent immediately after the literal-text paste can
         # race Claude Code's own TUI (still processing the bracketed-paste
         # block) and get silently swallowed -- confirmed live 2026-09-09: a
@@ -604,6 +585,155 @@ def send_to_pane(pane_target, text):
     except Exception as e:
         log(f"send_to_pane({pane_target}) failed: {e}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# AskUserQuestion: surfacing the pending question + answering it via keystrokes
+#
+# Sessions run with --dangerously-skip-permissions, so the only thing that
+# ever blocks on a human is the AskUserQuestion tool. Its TUI (verified live
+# 2026-10-01, claude 2.1.286): one tab per question, options numbered 1..n
+# plus "Type something" (n+1) and "Chat about this" (n+2). Single-select: the
+# digit picks AND advances. Multi-select: digits toggle, Right advances. The
+# last screen is "Review your answers" where "1" = Submit answers. Choosing
+# "Type something" and typing text then Enter supplies a free-text answer.
+# ---------------------------------------------------------------------------
+
+def find_pending_question(path, max_tail=400_000):
+    """The latest AskUserQuestion tool_use in the transcript that has no
+    tool_result yet, as {"id", "questions"}, else None. Reads only the file
+    tail -- a pending question is by definition at the very end."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - max_tail))
+            data = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return None
+    lines = data.split("\n")
+    answered = set()
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        content = (d.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_result":
+                answered.add(b.get("tool_use_id"))
+            elif b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion":
+                if b.get("id") in answered:
+                    return None
+                qs = (b.get("input") or {}).get("questions")
+                if not isinstance(qs, list) or not qs:
+                    return None
+                out = []
+                for q in qs:
+                    if not isinstance(q, dict):
+                        continue
+                    out.append({
+                        "question": str(q.get("question", "")),
+                        "header": str(q.get("header", "")),
+                        "multi": bool(q.get("multiSelect")),
+                        "options": [
+                            {"label": str(o.get("label", "")), "description": str(o.get("description", ""))}
+                            for o in (q.get("options") or []) if isinstance(o, dict)
+                        ],
+                    })
+                return {"id": b.get("id"), "questions": out}
+    return None
+
+
+def _pane_text(pane_target):
+    try:
+        return subprocess.run(["tmux", "capture-pane", "-t", pane_target, "-p"],
+                              capture_output=True, text=True, timeout=5, check=True).stdout
+    except Exception:
+        return ""
+
+
+def _tmux_keys(pane_target, *keys, literal=False):
+    cmd = ["tmux", "send-keys", "-t", pane_target]
+    if literal:
+        cmd += ["-l", "--"]
+    subprocess.run(cmd + list(keys), check=True, timeout=5)
+
+
+def answer_question(pane_target, question, answers):
+    """Drive the AskUserQuestion TUI. answers: one dict per question,
+    {"selected": [1-based option numbers], "other": "free text" | None}.
+    Returns (ok, error)."""
+    qs = question["questions"]
+    if len(answers) != len(qs):
+        return False, "answer count mismatch"
+    thaw_pane_if_frozen(pane_target)
+    screen = _pane_text(pane_target)
+    if "Esc to cancel" not in screen or "Enter to select" not in screen:
+        return False, "question not on screen"
+    for q, a in zip(qs, answers):
+        n = len(q["options"])
+        sel = [i for i in (a.get("selected") or []) if isinstance(i, int) and 1 <= i <= n]
+        other = (a.get("other") or "").strip() or None
+        if not sel and not other:
+            return False, "empty answer"
+        if not q["multi"] and len(sel) + (1 if other else 0) != 1:
+            return False, "single-select needs exactly one answer"
+    try:
+        for q, a in zip(qs, answers):
+            n = len(q["options"])
+            sel = [i for i in (a.get("selected") or []) if isinstance(i, int) and 1 <= i <= n]
+            other = (a.get("other") or "").strip() or None
+            if q["multi"]:
+                for i in sel:
+                    _tmux_keys(pane_target, str(i))
+                    time.sleep(0.15)
+                if other:
+                    _tmux_keys(pane_target, str(n + 1))
+                    time.sleep(0.2)
+                    _tmux_keys(pane_target, other, literal=True)
+                    time.sleep(0.2)
+                    _tmux_keys(pane_target, "Enter")
+                    time.sleep(0.3)
+                _tmux_keys(pane_target, "Right")
+            elif other:
+                _tmux_keys(pane_target, str(n + 1))
+                time.sleep(0.2)
+                _tmux_keys(pane_target, other, literal=True)
+                time.sleep(0.2)
+                _tmux_keys(pane_target, "Enter")
+            else:
+                _tmux_keys(pane_target, str(sel[0]))
+            time.sleep(0.4)
+        # Review screen: "1" = Submit answers. Poll rather than assume it
+        # appeared (a lone single-select may skip straight past it).
+        for _ in range(10):
+            screen = _pane_text(pane_target)
+            if "Submit answers" in screen:
+                _tmux_keys(pane_target, "1")
+                time.sleep(0.5)
+                break
+            if "Esc to cancel" not in screen:
+                break
+            time.sleep(0.3)
+    except Exception as e:
+        log(f"answer_question({pane_target}) failed: {e}")
+        return False, "tmux failed"
+    return True, None
+
+
+def dismiss_question(pane_target):
+    try:
+        _tmux_keys(pane_target, "Escape")
+        return True
+    except Exception:
+        return False
+
 
 
 def deliver_text_to_conversation(session_id, text, msg_id, ip, log_prefix="send"):
@@ -970,42 +1100,6 @@ def resume_session(session_id, initial_text):
         return session_id, None
 
 
-def restart_session(session_id):
-    """Interrupts the live tmux pane running this conversation (Ctrl-C,
-    same as a person pressing it at the keyboard) and relaunches `claude
-    --resume <session_id> --dangerously-skip-permissions` in that SAME
-    pane -- asked for explicitly 2026-09-21, for kicking a stuck/hung
-    session without losing the pane/window it's running in. Unlike
-    resume_session (which always opens a brand-new tmux session for a
-    conversation with no live pane at all), this only ever acts on an
-    already-live one and reuses its existing pane on purpose.
-
-    Does NOT reuse send_to_pane() for the relaunch command -- that
-    helper's Enter-submission retry loop is specifically built around
-    detecting Claude Code's own TUI input box (_pane_input_box_text),
-    which won't exist once Ctrl-C has returned the pane to a plain shell
-    prompt. This just types the command and presses Enter once, the same
-    as a person would.
-
-    Returns (ok, error); error is None on success."""
-    live = get_live_sessions().get(session_id)
-    if not live:
-        return False, "conversation is not live"
-    pane = live["pane"]
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", pane, "C-c"], check=True, timeout=5)
-        time.sleep(1.5)
-        cmd = f"{CLAUDE_BIN} --resume {session_id} --dangerously-skip-permissions"
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", "--", cmd], check=True, timeout=5)
-        time.sleep(0.15)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True, timeout=5)
-    except Exception as e:
-        log(f"restart: failed for {session_id} in {pane}: {e}")
-        return False, "failed to restart session"
-    log(f"restart: interrupted+relaunched {session_id} in {pane}")
-    return True, None
-
-
 def live_scan_loop():
     tick = 0
     while True:
@@ -1070,6 +1164,17 @@ def summarize_tool_use(name, tool_input):
         return f"→ {name}(`{target}`)"
     if name == "TodoWrite":
         return "→ TodoWrite(updated task list)"
+    if name == "AskUserQuestion":
+        lines = ["→ AskUserQuestion"]
+        for q in tool_input.get("questions") or []:
+            if not isinstance(q, dict):
+                continue
+            lines.append(f"**{q.get('question', '')}**")
+            for o in q.get("options") or []:
+                if isinstance(o, dict):
+                    d = o.get("description")
+                    lines.append(f"- {o.get('label', '')}" + (f" - {d}" if d else ""))
+        return "\n".join(lines)
     try:
         arg_str = json.dumps(tool_input, ensure_ascii=False)[:300]
     except Exception:
@@ -1672,6 +1777,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "messages": msgs,
                 "status": status,
                 "context_pct": meta.get("context_pct"),
+                "question": find_pending_question(p),
             })
 
         m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/queue$", path)
@@ -1727,6 +1833,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log(f"spawn: started {session_id} (account={account}) for {ip}")
             return self._ok({"session_id": session_id, "account": account})
 
+        m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/answer$", path)
+        if m:
+            session_id = m.group(1)
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 100_000:
+                return self._reject(400, "bad request")
+            try:
+                body = json.loads(self.rfile.read(length))
+            except Exception:
+                return self._reject(400, "bad json")
+            p = find_conversation_path(session_id)
+            live = get_live_sessions().get(session_id)
+            if not p or not live:
+                return self._reject(409, "session not live")
+            pending = find_pending_question(p)
+            if not pending or pending["id"] != body.get("tool_use_id"):
+                return self._reject(409, "no matching pending question")
+            if body.get("dismiss") is True:
+                ok, err = dismiss_question(live["pane"]), None
+            else:
+                answers = body.get("answers")
+                if not isinstance(answers, list):
+                    return self._reject(400, "bad answers")
+                ok, err = answer_question(live["pane"], pending, answers)
+            log(f"answer: {session_id} via {live['pane']} from {ip}: {'ok' if ok else err}")
+            if not ok:
+                return self._reject(409, err or "failed")
+            return self._ok({"ok": True})
+
         m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/resume$", path)
         if m:
             # Archive view's send action: the conversation has no live
@@ -1778,22 +1913,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             record_send_result(msg_id, session_id, result)
             log(f"resume: relaunched {session_id} for {ip}")
             return self._ok(result)
-
-        m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/restart$", path)
-        if m:
-            # Same "starts a real Claude Code process" cost/risk as
-            # /spawn and /resume, so it shares that tighter rate bucket
-            # rather than plain /send's.
-            if rate_limited(ip, "spawn", limit=5, window=60):
-                log(f"deny: restart rate limited {ip}")
-                return self._reject(429, "rate limited")
-            session_id = m.group(1)
-            ok, err = restart_session(session_id)
-            if not ok:
-                log(f"restart: failed for {session_id} from {ip}: {err}")
-                return self._reject(500, err)
-            log(f"restart: done for {session_id} from {ip}")
-            return self._ok({"restarted": True})
 
         m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/send$", path)
         if m:
