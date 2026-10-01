@@ -57,10 +57,18 @@ def sign_request(method: str, path_and_query: str, body: bytes) -> dict:
 
 
 def diag(pkg: str):
+    # Timeout must exceed peeragent's HelperBridge.WAIT_TIMEOUT_MS (60s) -
+    # a shorter one here times out client-side before peeragent itself ever
+    # gives up waiting on the helper, which looks identical to a real
+    # failure but isn't testing what it claims to (bit twice before this
+    # was fixed).
     path_and_query = "/privileged/diagnostics?" + urllib.parse.urlencode({"pkg": pkg})
     headers = sign_request("GET", path_and_query, b"")
-    r = requests.get(f"http://{PHONE_HOST}:{PHONE_PORT}{path_and_query}", headers=headers, timeout=30)
-    print(r.status_code, r.text)
+    try:
+        r = requests.get(f"http://{PHONE_HOST}:{PHONE_PORT}{path_and_query}", headers=headers, timeout=65)
+        print(r.status_code, r.text)
+    except requests.exceptions.Timeout:
+        print("(client-side timeout after 65s - peeragent itself should have responded by now; check connectivity)")
 
 
 def install(pkg: str, apk_path: str):
