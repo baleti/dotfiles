@@ -460,14 +460,20 @@ Defaults per picker:
   `;parameter` such as `;charset=utf-8` for display - see
   `cliphist-store-logged.sh`'s multi-format bundle manifest in
   rust-tools.md). `mime` and `age` both have a content-fitted width
-  (`TextMetrics` against the longest value among the currently-shown
-  rows, 2026-10-02) rather than a fixed one: `mime`'s comma-joined
+  (`TextMetrics` against the longer of the column's own header label and
+  the longest value among the currently-shown rows, 2026-10-02 - a flat
+  hardcoded floor stayed the binding constraint whenever every visible
+  value was short, reported as the column looking "twice as wide as it
+  needs to be") rather than a fixed one: `mime`'s comma-joined
   multi-format entries can run long, so it's additionally capped at 30%
   of the box width so it can never crowd the preview text out entirely;
   `age` (a `humanize_ago` bucket, `^\d+[smhd]$`) is inherently short and
-  bounded, so it auto-sizes with no percentage cap. `type`/`chars`/
-  `lines` stay fixed-width. `type`/`age` are hidden until `/at`'d or
-  Auto-shown by
+  bounded, so it auto-sizes with no percentage cap and a proportionally
+  smaller padding buffer than `mime`'s (fractional-scale sub-pixel
+  rounding error scales with glyph count - generous padding sized for an
+  81-character `mime` string roughly doubles a 2-3 character `age`
+  value). `type`/`chars`/`lines` stay fixed-width. `type`/`age` are
+  hidden until `/at`'d or Auto-shown by
   a `/fv` filter, same as before this feature existed (2026-09-28). `age`
   was `date` until 2026-10-02 - "date" read as a calendar date, the
   column actually shows elapsed time since copy, same rename reasoning

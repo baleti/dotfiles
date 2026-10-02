@@ -53,14 +53,14 @@ PanelWindow {
     // time since copy, same rename reasoning as focus-picker's time->age).
     readonly property var defaultColumns: ["chars", "lines", "mime"]
     readonly property var columnLabels: ({ type: "type", age: "age", chars: "ch", lines: "l", mime: "mime" })
-    // `mime` and `age`'s own entries here are floors, not their real
-    // widths -- see `_mimeColWidth`/`_ageColWidth` below, which grow each
-    // to fit whatever's actually showing (comma-joined multi-format `mime`
-    // entries can run long; `age` rarely needs more than its floor, but
-    // auto-sizing means a width here never quietly stops fitting). `mime`
-    // additionally caps at 30% of the box so it can never crowd the
-    // preview out entirely.
-    readonly property var columnWidths: ({ type: 60, age: 46, chars: 50, lines: 34, mime: 90 })
+    // No `age`/`mime` entries here -- see `_mimeColWidth`/`_ageColWidth`
+    // below, which size each to its own header label and currently-shown
+    // values (via TextMetrics), not a hardcoded number. A flat floor here
+    // (46/90, until 2026-10-05) stayed the *binding* constraint for `age`
+    // whenever every visible value was short - "5m"/"21m" never needed
+    // more than ~30px, but the floor kept it at 46 regardless, exactly the
+    // "twice as wide as it needs to be" this was reported as.
+    readonly property var columnWidths: ({ type: 60, chars: 50, lines: 34 })
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
     property string _headerHoverName: ""
@@ -101,6 +101,23 @@ PanelWindow {
         font.pixelSize: Theme.fontSize - 2
         text: root._longestAgeValue
     }
+    // The floor for each auto-widening column is its own header label's
+    // measured width, not a hand-picked number -- a column can never
+    // render narrower than the word sitting in colHeader above it, and
+    // this adapts on its own if a label ever changes instead of needing a
+    // matching hardcoded floor kept in sync by hand.
+    TextMetrics {
+        id: mimeHeaderMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 2
+        text: root.columnLabels.mime
+    }
+    TextMetrics {
+        id: ageHeaderMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 2
+        text: root.columnLabels.age
+    }
     // +24, not +8: verified via an isolated qs -p test that TextMetrics.width
     // and the actual rendered Text.implicitWidth agree almost exactly at
     // 1.0 scale (off by under a pixel), but that test couldn't reproduce a
@@ -112,14 +129,18 @@ PanelWindow {
     // that, not a logic error in the width formula itself (re-derived by
     // hand and confirmed correct at 1.0 scale). Generous flat padding
     // instead of chasing an exact per-glyph rounding correction.
-    readonly property real _mimeColWidth: Math.max(root.columnWidths.mime,
-        Math.min(box.width * 0.3, mimeMetrics.width + 24))
+    readonly property real _mimeColWidth: Math.min(box.width * 0.3,
+        Math.max(mimeHeaderMetrics.width, mimeMetrics.width) + 24)
     // `age` values are humanize_ago buckets (`^\d+[smhd]$`) -- inherently
     // short and bounded, so no percentage-of-box cap the way `mime` needs
     // (a stray huge value would mean a real bug upstream, not something
-    // to visually contain here). Same +24 buffer as `mime`, same
-    // fractional-scale reasoning.
-    readonly property real _ageColWidth: Math.max(root.columnWidths.age, ageMetrics.width + 24)
+    // to visually contain here). +10, not `mime`'s +24: that buffer was
+    // sized for fractional-scale sub-pixel rounding error accumulated
+    // across an 81-character string (~5% overhead there); applied flat to
+    // a 2-3 character age value it was closer to +24px on a ~20px string -
+    // nearly doubling it, reported 2026-10-02. Rounding error scales with
+    // glyph count, so a short value needs proportionally less padding.
+    readonly property real _ageColWidth: Math.max(ageHeaderMetrics.width, ageMetrics.width) + 10
     // Shrunk from the GTK version's 160/480 (reported too big after the
     // first live test).
     readonly property int thumbHeight: 120
