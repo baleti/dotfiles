@@ -13,7 +13,7 @@
 //!
 //! What's left is genuinely still shared: `Entry` is the row shape both
 //! bins' `list` NDJSON output serializes, `humanize_ago` builds both
-//! pickers' `$date:` field the same way, and `cache_dir` is where
+//! pickers' `$age:` field the same way, and `cache_dir` is where
 //! clipboard-picker's thumbnail cache lives (keyed by program name, so
 //! reused if this crate ever grows a third bin with its own cache).
 
@@ -31,7 +31,7 @@ pub struct Entry {
     /// window-search.py -- see query-dsl.md's design principles).
     pub haystack: String,
     /// Named field values this entry has, for `/fv field:value` filtering and
-    /// autocomplete -- e.g. `[("type", "image"), ("date", "5m")]`. A field
+    /// autocomplete -- e.g. `[("type", "image"), ("age", "5m")]`. A field
     /// name a caller never populates for some entries (e.g. no logged
     /// timestamp yet) is simply absent from that entry's list rather than
     /// present with an empty value.
@@ -46,7 +46,7 @@ pub struct Entry {
 /// A Unix timestamp (seconds) as a short "how long ago" bucket -- "5m",
 /// "3h", "2d", etc. Shared by any picker with a real per-entry timestamp
 /// (clipboard-picker's own copy-time log, notification-picker's already-
-/// real `timestamp` field) to build a `$date:` field: bucketing to
+/// real `timestamp` field) to build a `$age:` field: bucketing to
 /// human-granularity keeps the *value* space small and enumerable for
 /// autocomplete the same way winswitch's small, concrete field set is (see
 /// ~/.config/docs/query-dsl.md's autocompletion section) -- an exact epoch
