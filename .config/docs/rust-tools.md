@@ -16,7 +16,7 @@ have since moved their UI to Quickshell/QML (clipboard-picker on
 [query-dsl.md](query-dsl.md)), so each binary is now a **headless NDJSON
 backend** and `src/picker.rs` only holds what's still genuinely shared:
 `Entry` (the row shape both bins' `list` output serializes),
-`humanize_ago` (both pickers' `$date:` bucketing), and `cache_dir`
+`humanize_ago` (both pickers' `$age:` bucketing), and `cache_dir`
 (clipboard-picker's thumbnail cache).
 
 - **`src/bin/clipboard-picker.rs`** (bound to `mainMod+V`, UI in
@@ -27,9 +27,10 @@ backend** and `src/picker.rs` only holds what's still genuinely shared:
   preview truncated; `activate` pushes an entry back to the clipboard,
   replaying every representation a multi-format bundle captured at copy
   time (see `cliphist-store-logged.sh`) rather than just cliphist's single
-  stored one. Its `type`/`date`/`chars`/`lines` fields (QML-side DSL, not
+  stored one. Its `type`/`age`/`chars`/`lines` fields (QML-side DSL, not
   this binary) are `type:image`/`type:text` derived from cliphist's own
-  preview shape; `date:` read from
+  preview shape; `age:` (was `date:` until 2026-10-02 -- "date" read as a
+  calendar date, it's really elapsed time since copy) read from
   `~/.local/state/cliphist-expire/timestamps`, a log
   `cliphist-store-logged.sh` (wired into hyprland.lua's `wl-paste --watch`)
   appends an exact copy-time to on every store — cliphist itself keeps
@@ -47,8 +48,8 @@ backend** and `src/picker.rs` only holds what's still genuinely shared:
   prints one NDJSON line per retained notification (`notifyctl list`);
   `activate` invokes a chosen entry's default action via `notifyctl
   invoke`. No redisplay dance needed the way dunst required, since notifyd
-  never discards a notification's actions on close. Its `app`/`date`
-  fields need no side-log the way clipboard-picker's `date` does —
+  never discards a notification's actions on close. Its `app`/`age`
+  fields need no side-log the way clipboard-picker's `age` does —
   `notifyctl list` already reports a real per-notification `timestamp`.
 
 The `/fv field:value` selector DSL, its autocomplete, keyboard nav, and
