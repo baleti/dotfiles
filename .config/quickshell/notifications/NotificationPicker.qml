@@ -36,20 +36,22 @@ PanelWindow {
 
     property bool open: false
 
-    readonly property var fieldNames: ["app", "date"]
+    readonly property var fieldNames: ["app", "age"]
     readonly property var fieldDescs: ({
         "app": "the sending application",
-        "date": "how long ago it arrived"
+        "age": "how long ago it arrived"
     })
     // Shown as real columns from open, not gated behind Auto-shown filter
-    // fields (query-dsl.md) the way clipboard-picker's `type`/`date` still
+    // fields (query-dsl.md) the way clipboard-picker's `type`/`age` still
     // are -- there's no "unconditional" info this picker showed before
     // (clipboard-picker's `chars`/`lines` badge was), so defaulting both
     // on is what makes the table useful the moment it opens. `/rt app`
-    // still drops either.
-    readonly property var defaultColumns: ["app", "date"]
-    readonly property var columnLabels: ({ app: "app", date: "date" })
-    readonly property var columnWidths: ({ app: 120, date: 46 })
+    // still drops either. `age` (was `date` -- "date" read as a calendar
+    // date, the column actually shows elapsed time since arrival, same
+    // rename reasoning as focus-picker's time->age).
+    readonly property var defaultColumns: ["app", "age"]
+    readonly property var columnLabels: ({ app: "app", age: "age" })
+    readonly property var columnWidths: ({ app: 120, age: 46 })
     function _colWidth(name) { return root.columnWidths[name] || 70; }
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.

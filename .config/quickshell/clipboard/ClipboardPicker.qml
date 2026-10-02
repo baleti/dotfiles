@@ -34,10 +34,10 @@ PanelWindow {
 
     property bool open: false
 
-    readonly property var fieldNames: ["type", "date", "chars", "lines", "mime"]
+    readonly property var fieldNames: ["type", "age", "chars", "lines", "mime"]
     readonly property var fieldDescs: ({
         "type": "text or image",
-        "date": "how long ago it was copied",
+        "age": "how long ago it was copied",
         "chars": "character count",
         "lines": "line count",
         "mime": "MIME type(s) offered, comma-separated if more than one"
@@ -47,15 +47,17 @@ PanelWindow {
     // defaults on too (requested 2026-09-28, right after it was added --
     // opt-in read as "not showing" rather than "hidden on purpose"), last
     // rather than first -- `chars`/`lines` keep the old badge's rightmost
-    // position, `mime` trails behind them. `type`/`date` still stay hidden
-    // until `/at`'d or Auto-shown by a `/fv` filter.
+    // position, `mime` trails behind them. `type`/`age` still stay hidden
+    // until `/at`'d or Auto-shown by a `/fv` filter. `age` (was `date` --
+    // "date" read as a calendar date, the column actually shows elapsed
+    // time since copy, same rename reasoning as focus-picker's time->age).
     readonly property var defaultColumns: ["chars", "lines", "mime"]
-    readonly property var columnLabels: ({ type: "type", date: "date", chars: "ch", lines: "l", mime: "mime" })
+    readonly property var columnLabels: ({ type: "type", age: "age", chars: "ch", lines: "l", mime: "mime" })
     // `mime`'s own entry here (90) is a floor, not its real width -- see
     // `_mimeColWidth` below, which grows it to fit whatever's actually
     // showing (comma-joined multi-format entries can run long), capped at
     // 30% of the box so it can never crowd the preview out entirely.
-    readonly property var columnWidths: ({ type: 60, date: 46, chars: 50, lines: 34, mime: 90 })
+    readonly property var columnWidths: ({ type: 60, age: 46, chars: 50, lines: 34, mime: 90 })
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
     property string _headerHoverName: ""

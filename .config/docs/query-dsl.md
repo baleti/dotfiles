@@ -59,7 +59,7 @@ Every picker shows a **result set** (windows, panes, clipboard entries,
 scrollback-bearing windows, ...) with, potentially, several named
 **types** per entry - a "type" here is any one field that can be filtered
 on or shown as a column: a flat one (`title`, `workspace`, `pid`; `type`,
-`date`, `app`) or a subfield of a **group** (winswitch's `tmux.session`,
+`age`, `app`) or a subfield of a **group** (winswitch's `tmux.session`,
 `claude.title`, ...).
 
 **Group and flat-type names are each picker's own vocabulary, not
@@ -136,8 +136,8 @@ means **`/fv` is the fallback**: any token left over once every other
 verb has taken only the arguments it actually needs becomes a row filter,
 never silently dropped.
 
-`/sort date descending` is one command with both its args inside `/sort`'s
-arity of 2 (path, optional direction). `/filter-value foo /sort date` is
+`/sort age descending` is one command with both its args inside `/sort`'s
+arity of 2 (path, optional direction). `/filter-value foo /sort age` is
 two commands. `/sort name blender` is *two* things, not one: `/sort`
 takes `name` as its path, then looks at `blender` for a direction - but
 `blender` doesn't substring-match `ascending`/`descending`, so `/sort`
@@ -394,7 +394,7 @@ Filters which rows survive. Three forms:
   filter and a sort never disagree about what "greater" means for the
   same field. Only means anything when *both* the row's value and the
   operand are one of the two shapes that comparator recognises - plain
-  integers (`chars:>500`) or age buckets (`date:>3h`, meaning "older than
+  integers (`chars:>500`) or age buckets (`age:>3h`, meaning "older than
   3h" - the operator compares the raw stored age, larger is further in
   the past, no direction-trap inversion the way `/sort ascending` needs);
   anything else (a non-numeric field, or an operand that isn't) never
@@ -464,9 +464,12 @@ Defaults per picker:
   rows) rather than a fixed one - comma-joined multi-format entries can
   run long - capped at 30% of the box width so it can never crowd the
   preview text out entirely; every other column stays a fixed width.
-  `type`/`date` are hidden until `/at`'d or Auto-shown by
-  a `/fv` filter, same as before this feature existed (2026-09-28).
-- **notification-picker**: `app`/`date`, both on from open - there was no
+  `type`/`age` are hidden until `/at`'d or Auto-shown by
+  a `/fv` filter, same as before this feature existed (2026-09-28). `age`
+  was `date` until 2026-10-02 - "date" read as a calendar date, the
+  column actually shows elapsed time since copy, same rename reasoning
+  as focus-picker's `time` -> `age`.
+- **notification-picker**: `app`/`age`, both on from open - there was no
   pre-existing "always shown" info to preserve the way clipboard-picker's
   size badge was, so defaulting both on is what makes the table useful
   immediately.
@@ -549,14 +552,14 @@ values being compared:
   entry points disagreeing on `"100"` vs. `"2"` because only one of them
   got the numeric-sniffing treatment is the bug, not a variant worth
   keeping.
-- **Age buckets** (`date`, from `humanize_ago` - `"30s"`, `"5m"`, `"3h"`,
+- **Age buckets** (`age`, from `humanize_ago` - `"30s"`, `"5m"`, `"3h"`,
   `"2d"`): comparing the strings is nonsense across units. Both sides
   match `^\d+[smhd]$` -> convert to seconds and compare that.
 - Otherwise -> lexicographic (correct already for `title` / `app` /
   `type`).
 
-**The direction trap.** `date`'s stored value is an *age* (seconds ago) -
-smaller means more recent. `/sort date descending` means "newest first"
+**The direction trap.** `age`'s stored value is an *age* (seconds ago) -
+smaller means more recent. `/sort age descending` means "newest first"
 in the ordinary calendar sense, which is *ascending by age in seconds*.
 So for age-shaped values the requested direction is inverted before it
 reaches the numeric comparison: `ascending` (oldest first,
@@ -1367,7 +1370,7 @@ predictable, and at these corpus sizes the looseness bought nothing.
 ## Design principles
 
 - **Never flash to zero results on a valid-so-far partial keystroke.** A
-  token still being typed (`/`, `/f`, `/ft `, `/ft cla`, `/s date `, a
+  token still being typed (`/`, `/f`, `/ft `, `/ft cla`, `/s age `, a
   flat-type `/fv/path` with no value yet, an unterminated `"phrase`) is
   inert - contributes no requirement - rather than searched for literally
   as typed. A bare `/` (the empty string as the verb-name fragment) is

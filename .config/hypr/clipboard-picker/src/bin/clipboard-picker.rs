@@ -86,7 +86,7 @@ fn cliphist_state_dir() -> PathBuf {
 /// id -> exact copy-time (Unix seconds), from `cliphist-store-logged.sh`'s
 /// log. An id with no line here was copied before that wrapper existed (or
 /// its log line has since been pruned by cliphist-expire.sh once the entry
-/// itself expired) -- such entries just have no `date` field at all (see
+/// itself expired) -- such entries just have no `age` field at all (see
 /// `cliphist_list`), same "absent, not empty" contract `Entry::fields` uses
 /// throughout.
 fn read_timestamps() -> HashMap<String, u64> {
@@ -147,7 +147,7 @@ fn cliphist_list() -> Vec<Entry> {
             let kind = if is_image { "image" } else if is_file { "file" } else { "text" };
             let mut fields = vec![("type", kind.to_string())];
             if let Some(&ts) = timestamps.get(&id) {
-                fields.push(("date", picker::humanize_ago(ts, now)));
+                fields.push(("age", picker::humanize_ago(ts, now)));
             }
             Entry {
                 haystack: preview.to_lowercase(),
@@ -703,7 +703,7 @@ fn copy_entry(id: &str) {
 }
 
 /// One NDJSON line per entry: `{id, preview, haystack, thumb, fields}`,
-/// `fields` an object keyed by field name (`type`, optionally `date`,
+/// `fields` an object keyed by field name (`type`, optionally `age`,
 /// `chars`/`lines` once known from the `sizes` log) -- same field set
 /// `cliphist_list` always built plus whatever `read_sizes` already has
 /// cached, just serialized instead of stuffed into a GTK row. QML's

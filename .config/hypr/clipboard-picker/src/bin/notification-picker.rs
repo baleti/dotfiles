@@ -68,12 +68,12 @@ fn history_entries() -> Vec<Entry> {
         };
         let haystack = format!("{app_name} {summary} {body}").to_lowercase();
 
-        // Unlike clipboard-picker's $date (which needed a whole side-log,
+        // Unlike clipboard-picker's $age (which needed a whole side-log,
         // see cliphist-store-logged.sh), notifyd already tracks a real
         // per-notification `timestamp` -- nothing extra to build here.
         let mut fields = vec![("app", app_label.to_string())];
         if let Some(ts) = n.get("timestamp").and_then(|v| v.as_u64()) {
-            fields.push(("date", picker::humanize_ago(ts, now)));
+            fields.push(("age", picker::humanize_ago(ts, now)));
         }
 
         entries.push(Entry {
