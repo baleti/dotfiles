@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socketserver
 import subprocess
 import sys
@@ -512,7 +513,9 @@ def _pane_input_box_text(pane_target):
     lines = out.rstrip("\n").split("\n")
 
     def is_rule(s):
-        return bool(s) and set(s) <= {"─", "-"}
+        # Claude draws the border pure, or with a session-name label embedded
+        # ("──── helper-adb ─") -- both start with a run of rule characters.
+        return bool(s) and (set(s) <= {"─", "-"} or s.startswith("───"))
 
     # The input box is bounded by its own top and bottom horizontal-rule
     # border, always drawn even when the box is empty -- the LAST two rule
@@ -530,6 +533,46 @@ def _pane_input_box_text(pane_target):
         if stripped[:1] in ("❯", ">"):  # "❯" (Claude Code's own prompt glyph) or a plain ">"
             return stripped[1:].strip()
     return None
+
+
+def _input_box_all_text(pane_target):
+    """Every line of Claude's input box (multi-line prompts included), or
+    None if the box can't be located."""
+    out = _pane_text(pane_target)
+    lines = out.rstrip("\n").split("\n")
+
+    def is_rule(s):
+        return bool(s) and (set(s) <= {"─", "-"} or s.startswith("───"))
+
+    rules = [i for i, l in enumerate(lines) if is_rule(l.strip())]
+    if len(rules) < 2:
+        return None
+    body = [l.strip() for l in lines[rules[-2] + 1:rules[-1]]]
+    if body and body[0][:1] in ("❯", ">"):
+        body[0] = body[0][1:].strip()
+    else:
+        return None
+    text = "\n".join(body).strip()
+    # Fresh sessions show a greyed placeholder in an empty box.
+    if re.fullmatch(r'Try "[^"\n]*"', text):
+        return ""
+    return text
+
+
+def clear_input_box(pane_target, max_presses=80):
+    """Empties Claude's input box. Ctrl+U deletes just one line at a time in
+    a multi-line prompt, so repeat until the whole box reads empty. Only
+    call when anything in the box is known to be unwanted (e.g. the prompt
+    the TUI puts back after a rewind). Returns True if the box is empty."""
+    for _ in range(max_presses):
+        text = _input_box_all_text(pane_target)
+        if text is None:
+            return False
+        if not text:
+            return True
+        _tmux_keys(pane_target, "C-u")
+        time.sleep(0.08)
+    return _input_box_all_text(pane_target) == ""
 
 
 FREEZE_TOGGLE_SCRIPT = os.path.expanduser("~/.config/tmux/scripts/freeze-process-cgroup-toggle.sh")
@@ -1044,7 +1087,8 @@ def resume_session(session_id, initial_text):
     `initial_text` -- the archive view's equivalent of spawn_session for a
     brand-new conversation. Returns (session_id, error); error is None on
     success. Safe to call even if another /resume call for the same
-    session_id is racing this one -- see _resume_lock_for."""
+    session_id is racing this one -- see _resume_lock_for. initial_text=None
+    just relaunches without typing anything (used by restore)."""
     lock = _resume_lock_for(session_id)
     with lock:
         # Re-check live status under the lock: either a racing /resume call
@@ -1054,6 +1098,8 @@ def resume_session(session_id, initial_text):
         # instead of spawning a second process against the same session id.
         live = get_live_sessions().get(session_id)
         if live:
+            if initial_text is None:
+                return session_id, None
             ok = send_to_pane(live["pane"], initial_text)
             if ok:
                 return session_id, None
@@ -1091,6 +1137,8 @@ def resume_session(session_id, initial_text):
         # is interactive than a brand-new session does (load + replay the
         # whole prior transcript) -- spawn_session's 2s undershoots this
         # for anything but a short conversation.
+        if initial_text is None:
+            return session_id, None
         time.sleep(4)
 
         if not send_to_pane(f"{tmux_session}:0.0", initial_text):
@@ -1098,6 +1146,499 @@ def resume_session(session_id, initial_text):
             return None, "session resumed but initial message failed to send"
 
         return session_id, None
+
+
+_restore_lock = threading.Lock()
+RESTORE_BACKUP_DIR = HOME / ".cache" / "claude-agents" / "restore-backups"
+
+
+def _line_is_clean_boundary(d):
+    """True if a transcript can safely END right after this entry: a user
+    prompt (not a tool_result) or an assistant turn with no tool_use --
+    anything else leaves a dangling tool_use/tool_result pair that
+    `claude --resume` rejects."""
+    t = d.get("type")
+    content = (d.get("message") or {}).get("content")
+    blocks = content if isinstance(content, list) else []
+    kinds = {b.get("type") for b in blocks if isinstance(b, dict)}
+    if t == "user":
+        return "tool_result" not in kinds
+    if t == "assistant":
+        return "tool_use" not in kinds
+    return False
+
+
+def truncate_transcript_after(path, line_no):
+    """Conversation-only restore: cuts the jsonl right after message line
+    `line_no` (0-based, same numbering as parse_transcript_line), backing
+    the full original up first. Never touches any code/files. Walks back
+    to the nearest clean boundary if that line sits mid tool exchange.
+    Returns (kept_line, error)."""
+    offsets = []  # (byte_end, parsed-or-None) per line
+    with open(path, "rb") as f:
+        pos = 0
+        for raw in f:
+            pos += len(raw)
+            try:
+                d = json.loads(raw)
+            except Exception:
+                d = None
+            offsets.append((pos, d))
+    if line_no < 0 or line_no >= len(offsets):
+        return None, "line out of range"
+    first = offsets[line_no][1]
+    if not first or first.get("type") not in ("user", "assistant"):
+        return None, "not a message line"
+    keep = line_no
+    while keep >= 0:
+        d = offsets[keep][1]
+        if d and _line_is_clean_boundary(d):
+            break
+        keep -= 1
+    if keep < 0:
+        return None, "no safe restore point at or before that message"
+    if keep == len(offsets) - 1:
+        return keep, None  # already the end -- nothing to cut
+    RESTORE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backup = RESTORE_BACKUP_DIR / f"{Path(path).stem}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.jsonl"
+    shutil.copy2(path, backup)
+    os.truncate(path, offsets[keep][0])
+    log(f"restore: truncated {path} after line {keep} (requested {line_no}); backup {backup}")
+    return keep, None
+
+
+def restore_conversation(session_id, line_no):
+    """Offline-only conversation restore (never code) for a session with NO
+    live pane: cuts the transcript. A live session is rewound through its
+    own TUI instead (rewind_start/rewind_choose) -- that needs no restart.
+    Tapping a user prompt restores to the point BEFORE it (what the CLI's
+    /rewind does); tapping an assistant reply keeps everything through it."""
+    path = find_conversation_path(session_id)
+    if not path:
+        return None, "conversation not found"
+    if get_live_sessions().get(session_id):
+        return None, "session is live - use rewind"
+    try:
+        with open(path, "rb") as f:
+            raw_lines = f.readlines()
+        if 0 <= line_no < len(raw_lines) and _is_real_prompt_raw(raw_lines[line_no]):
+            line_no -= 1
+    except OSError:
+        return None, "unreadable"
+    return truncate_transcript_after(path, line_no)
+
+
+# ---------------------------------------------------------------------------
+# Transcript branch index + live rewind
+#
+# The CLI's /rewind does NOT touch the transcript file: the abandoned
+# messages stay in it and the next prompt just branches off an older
+# parentUuid. So the app must hide them itself. "Dead" lines = descendants
+# of (a) a prompt we rewound away from (recorded in REWIND_MARKS, needed
+# because before the next prompt nothing in the file shows the rewind yet)
+# or (b) a real prompt that is a sibling branch off the active chain (a
+# rewind done directly in the CLI). Only real PROMPTS root a dead branch --
+# parallel tool results are also off-chain siblings but are legitimate.
+# ---------------------------------------------------------------------------
+
+REWIND_MARKS_FILE = HOME / ".cache" / "claude-agents" / "rewinds.json"
+_marks_lock = threading.Lock()
+_rewind_version = defaultdict(int)  # session_id -> bumps whenever its dead set may change
+_UUID_RE = re.compile(rb'"uuid":"([0-9a-f-]{36})"')
+_PARENT_RE = re.compile(rb'"parentUuid":"([0-9a-f-]{36})"')
+_TYPE_RE = re.compile(rb'"type":"([a-z-]+)"')
+_chain_cache = {}
+_chain_lock = threading.Lock()
+
+
+def _is_real_prompt_raw(raw):
+    m = _TYPE_RE.search(raw)
+    return bool(m and m.group(1) == b"user" and b'"tool_result"' not in raw
+                and b'"isMeta":true' not in raw and b'"isSidechain":true' not in raw)
+
+
+def _load_marks():
+    try:
+        return json.loads(REWIND_MARKS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _add_mark(session_id, uuid):
+    with _marks_lock:
+        marks = _load_marks()
+        marks.setdefault(session_id, [])
+        if uuid not in marks[session_id]:
+            marks[session_id].append(uuid)
+        REWIND_MARKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = REWIND_MARKS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(marks))
+        os.replace(tmp, REWIND_MARKS_FILE)
+        _rewind_version[session_id] += 1
+
+
+def _chain_index(path):
+    """Incrementally maintained {uuid: (parent, line)} for one transcript,
+    regex-scanned (no json parse) and only over newly appended bytes."""
+    key = str(path)
+    with _chain_lock:
+        st = path.stat()
+        c = _chain_cache.get(key)
+        if c is None or st.st_size < c["off"]:
+            c = {"off": 0, "line": 0, "nodes": {}, "prompts": {}, "leaf": None, "dead_key": None, "dead": set()}
+            _chain_cache[key] = c
+        if st.st_size > c["off"]:
+            with open(path, "rb") as f:
+                f.seek(c["off"])
+                data = f.read()
+            end = data.rfind(b"\n") + 1
+            for raw in data[:end].split(b"\n")[:-1] if end else []:
+                ln = c["line"]
+                c["line"] += 1
+                if not raw or b'"isSidechain":true' in raw:
+                    continue
+                us = _UUID_RE.findall(raw)
+                if not us:
+                    continue
+                u = us[-1].decode()
+                pm = _PARENT_RE.search(raw)
+                c["nodes"][u] = (pm.group(1).decode() if pm else None, ln)
+                c["leaf"] = u
+                if _is_real_prompt_raw(raw):
+                    c["prompts"][u] = ln
+            c["off"] += end
+        return c
+
+
+def transcript_dead_lines(path, session_id):
+    """Set of transcript line numbers on abandoned (rewound-away) branches."""
+    try:
+        c = _chain_index(path)
+    except OSError:
+        return set()
+    marks = tuple(_load_marks().get(session_id, ()))
+    with _chain_lock:
+        key = (c["off"], marks)
+        if c["dead_key"] == key:
+            return c["dead"]
+        nodes = c["nodes"]
+        chain = set()
+        u = c["leaf"]
+        while u and u in nodes and u not in chain:
+            chain.add(u)
+            u = nodes[u][0]
+        roots = {m for m in marks if m in nodes}
+        for u in c["prompts"]:
+            if u not in chain and nodes[u][0] in chain:
+                roots.add(u)
+        dead = set()
+        if roots:
+            kids = defaultdict(list)
+            for u, (par, _) in nodes.items():
+                kids[par].append(u)
+            stack = list(roots)
+            seen = set()
+            while stack:
+                u = stack.pop()
+                if u in seen:
+                    continue
+                seen.add(u)
+                dead.add(nodes[u][1])
+                stack.extend(kids.get(u, ()))
+        c["dead_key"], c["dead"] = key, dead
+        return dead
+
+
+def active_prompts(path, session_id):
+    """[(line, uuid, text, ts)] of real user prompts on the active branch,
+    in order -- the list the TUI's rewind picker shows."""
+    dead = transcript_dead_lines(path, session_id)
+    c = _chain_index(path)
+    wanted = {ln for ln in c["prompts"].values() if ln not in dead}
+    out = []
+    with open(path, "r", errors="ignore") as f:
+        for i, line in enumerate(f):
+            if i not in wanted:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            content = (d.get("message") or {}).get("content")
+            if isinstance(content, list):
+                content = " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+            if isinstance(content, str) and content.strip():
+                out.append((i, d.get("uuid"), content, d.get("timestamp")))
+    return out
+
+
+def _norm(t):
+    return " ".join((t or "").split())
+
+
+REWIND_PICKER_MARK = "Restore the code and/or conversation to the point before"
+REWIND_CONFIRM_MARK = "Confirm you want to restore to the point before you sent this message"
+_OPTION_RE = re.compile(r"^\s*[❯↓↑]?\s*(\d+)\.\s+(.*?)\s*$")
+_AGE_RE = re.compile(r"\((\d+)([smhd]) ago\)")
+_REWIND_DESC = {
+    "Restore code and conversation": "Rewind both the chat and the files Claude edited",
+    "Restore conversation": "Rewind the chat only - files stay as they are",
+    "Restore code": "Revert files only - the chat stays as it is",
+    "Summarize from here": "Compact this message and everything after it into a summary",
+    "Summarize up to here": "Compact everything before this message into a summary",
+}
+_rewind_pending = {}  # session_id -> dict
+_rewind_lock = threading.Lock()
+REWIND_TTL = 300
+
+
+def _on_rewind_screen(screen):
+    return REWIND_PICKER_MARK in screen or REWIND_CONFIRM_MARK in screen
+
+
+def _rewind_abort(pane):
+    """Back out of the rewind UI -- ONLY while a rewind screen is actually up
+    (a stray Esc Esc on an idle prompt would open it)."""
+    for _ in range(4):
+        if not _on_rewind_screen(_pane_text(pane)):
+            return
+        _tmux_keys(pane, "Escape")
+        time.sleep(0.4)
+
+
+def _parse_confirm(screen):
+    lines = screen.split("\n")
+    try:
+        i = next(k for k, l in enumerate(lines) if REWIND_CONFIRM_MARK in l)
+    except StopIteration:
+        return None
+    quoted, info, options, age = [], [], [], None
+    for l in lines[i + 1:]:
+        t = l.strip()
+        if not t:
+            continue
+        mo = _OPTION_RE.match(l)
+        if mo:
+            options.append((int(mo.group(1)), mo.group(2)))
+        elif t.startswith("│"):
+            body = t.lstrip("│").strip()
+            ma = _AGE_RE.fullmatch(body)
+            if ma:
+                age = int(ma.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[ma.group(2)]
+                gran = {"s": 1, "m": 60, "h": 3600, "d": 86400}[ma.group(2)]
+                age = (age, gran)
+            else:
+                quoted.append(body)
+        elif t.startswith("⚠") or t.startswith("Esc") or t.startswith("Enter"):
+            continue
+        elif not options:
+            info.append(t)
+    return {"quoted": _norm(" ".join(quoted)), "age": age, "info": info, "options": options}
+
+
+def _rewind_check_status(session_id, live):
+    if not live:
+        return "session not live"
+    if live.get("status") not in (None, "idle"):
+        return f"session is {live.get('status')} - wait until it is idle"
+    return None
+
+
+def rewind_start(session_id, line_no):
+    """Open the live TUI's own rewind UI at the prompt for `line_no`, stop on
+    its confirm screen and return its options as a question-shaped dict.
+    Aborts (leaving the TUI as it was) if anything looks unexpected.
+    Returns (question, error)."""
+    path = find_conversation_path(session_id)
+    live = get_live_sessions().get(session_id)
+    if not path:
+        return None, "conversation not found"
+    err = _rewind_check_status(session_id, live)
+    if err:
+        return None, err
+    pane = live["pane"]
+    with _rewind_lock:
+        pend = _rewind_pending.get(session_id)
+        if pend and time.time() - pend["created"] < REWIND_TTL:
+            return None, "a rewind is already open for this session"
+        thaw_pane_if_frozen(pane)
+        if find_pending_question(path):
+            return None, "answer the pending question first"
+        prompts = active_prompts(path, session_id)
+        idx = next((k for k, p in enumerate(prompts) if p[0] == line_no), None)
+        if idx is None:
+            idx = next((k for k, p in enumerate(prompts) if p[0] > line_no), None)
+        if idx is None:
+            return None, "nothing to rewind after this message"
+        target = prompts[idx]
+        ups = len(prompts) - idx  # (current) -> last prompt is 1 Up
+        want = _norm(target[2])
+        screen = _pane_text(pane)
+        if _on_rewind_screen(screen) or "to interrupt" in screen:
+            return None, "session is busy or already showing a menu"
+        box = _input_box_all_text(pane)
+        if box is None:
+            return None, "can't read the input box"
+        if box:
+            return None, "input box has text - clear it first (Esc Esc would discard it)"
+        opened = False
+        try:
+            _tmux_keys(pane, "Escape")
+            time.sleep(0.25)
+            _tmux_keys(pane, "Escape")
+            for _ in range(15):
+                time.sleep(0.2)
+                screen = _pane_text(pane)
+                if REWIND_PICKER_MARK in screen:
+                    opened = True
+                    break
+            if not opened:
+                return None, "rewind menu didn't open as expected - aborted"
+            for _ in range(ups):
+                _tmux_keys(pane, "Up")
+                time.sleep(0.12)
+            time.sleep(0.2)
+            screen = _pane_text(pane)
+            cursor = next((l for l in screen.split("\n") if l.strip().startswith("❯")), "")
+            ctext = _norm(cursor.strip().lstrip("❯"))
+            n = min(len(want), 25)
+            if not ctext or want[:n] != ctext[:n]:
+                _rewind_abort(pane)
+                return None, "picker cursor isn't on the expected message - aborted"
+            _tmux_keys(pane, "Enter")
+            parsed = None
+            for _ in range(15):
+                time.sleep(0.2)
+                parsed = _parse_confirm(_pane_text(pane))
+                if parsed and parsed["options"]:
+                    break
+            if not parsed or not parsed["options"]:
+                _rewind_abort(pane)
+                return None, "confirm screen didn't appear as expected - aborted"
+            q = parsed["quoted"]
+            m = min(len(want), len(q), 40)
+            if m == 0 or want[:m] != q[:m]:
+                _rewind_abort(pane)
+                return None, "TUI is on a different message than expected - aborted"
+            if parsed["age"] and target[3]:
+                try:
+                    ts = datetime.fromisoformat(target[3].replace("Z", "+00:00")).timestamp()
+                    shown, gran = parsed["age"]
+                    if abs((time.time() - ts) - shown) > max(gran * 1.5, 45):
+                        _rewind_abort(pane)
+                        return None, "message age doesn't match - aborted"
+                except ValueError:
+                    pass
+        except Exception as e:
+            log(f"rewind_start({pane}) failed: {e}")
+            _rewind_abort(pane)
+            return None, "tmux failed"
+        opts = [(n_, lab) for n_, lab in parsed["options"] if not lab.lower().startswith("never mind")]
+        rid = "rewind:" + secrets.token_hex(6)
+        question = {
+            "id": rid,
+            "kind": "rewind",
+            "target_line": target[0],
+            "questions": [{
+                "header": "Rewind",
+                "question": "Restore to the point before you sent:\n\u201c" + (target[2].strip()[:300]) + "\u201d\n" + "\n".join(parsed["info"]),
+                "multi": False,
+                "options": [{"label": lab.split(":")[0], "description": _REWIND_DESC.get(lab.split(":")[0], "")} for _, lab in opts],
+            }],
+        }
+        _rewind_pending[session_id] = {
+            "id": rid, "pane": pane, "created": time.time(), "question": question,
+            "numbers": [n_ for n_, _ in opts], "labels": [lab for _, lab in opts],
+            "quoted": parsed["quoted"], "uuid": target[1],
+        }
+        _rewind_version[session_id] += 1
+        return question, None
+
+
+def rewind_pending_question(session_id):
+    with _rewind_lock:
+        p = _rewind_pending.get(session_id)
+        if p and time.time() - p["created"] < REWIND_TTL:
+            return p["question"]
+    return None
+
+
+def rewind_cancel(session_id, rid=None):
+    with _rewind_lock:
+        p = _rewind_pending.get(session_id)
+        if not p or (rid and p["id"] != rid):
+            return False
+        _rewind_abort(p["pane"])
+        del _rewind_pending[session_id]
+        _rewind_version[session_id] += 1
+        return True
+
+
+def rewind_expire_stale():
+    for sid in list(_rewind_pending):
+        p = _rewind_pending.get(sid)
+        if p and time.time() - p["created"] >= REWIND_TTL:
+            rewind_cancel(sid, p["id"])
+
+
+def rewind_choose(session_id, rid, choice):
+    """`choice` = 1-based index into the options the app was shown.
+    Verifies the TUI is still on the same confirm screen first."""
+    with _rewind_lock:
+        p = _rewind_pending.get(session_id)
+        if not p or p["id"] != rid:
+            return False, "no matching rewind"
+        pane = p["pane"]
+        if not isinstance(choice, int) or not 1 <= choice <= len(p["numbers"]):
+            return False, "bad choice"
+        parsed = _parse_confirm(_pane_text(pane))
+        if not parsed or parsed["quoted"] != p["quoted"] or \
+                [n for n, l in parsed["options"] if not l.lower().startswith("never mind")] != p["numbers"]:
+            del _rewind_pending[session_id]
+            _rewind_version[session_id] += 1
+            return False, "screen changed since the question was shown - nothing was done"
+        num, label = p["numbers"][choice - 1], p["labels"][choice - 1]
+        try:
+            _tmux_keys(pane, str(num))
+            done = False
+            # Summarizing makes a model call and can take a while.
+            polls = 480 if label.lower().startswith("summarize") else 40
+            for i in range(polls):
+                time.sleep(0.25)
+                screen = _pane_text(pane)
+                if REWIND_CONFIRM_MARK not in screen:
+                    done = True
+                    break
+                if i == 6:
+                    # "add context (optional)" rows need an explicit Enter
+                    cur = next((l for l in screen.split("\n") if l.strip().startswith("❯")), "")
+                    if _OPTION_RE.match(cur) and cur.strip().lstrip("❯").strip().startswith(f"{num}."):
+                        _tmux_keys(pane, "Enter")
+            if not done:
+                _rewind_abort(pane)
+                del _rewind_pending[session_id]
+                _rewind_version[session_id] += 1
+                return False, "TUI didn't accept the choice - aborted"
+        except Exception as e:
+            log(f"rewind_choose({pane}) failed: {e}")
+            _rewind_abort(pane)
+            del _rewind_pending[session_id]
+            return False, "tmux failed"
+        # The TUI drops the rewound prompt back into the input box; we required
+        # the box to be empty before opening the rewind, so whatever is there
+        # now is that prompt. Left in place, the app's next send would be
+        # typed on top of it and the two would merge.
+        try:
+            if not clear_input_box(pane):
+                log(f"rewind_choose({pane}): couldn't confirm the input box was cleared")
+        except Exception as e:
+            log(f"rewind_choose({pane}): clearing input box failed: {e}")
+        if "conversation" in label.lower() and not label.lower().startswith("summarize"):
+            if p["uuid"]:
+                _add_mark(session_id, p["uuid"])
+        del _rewind_pending[session_id]
+        _rewind_version[session_id] += 1
+        return True, None
 
 
 def live_scan_loop():
@@ -1111,6 +1652,7 @@ def live_scan_loop():
             with open(LIVE_FILE, "w") as f:
                 json.dump(sessions, f)
             drain_queue(sessions)
+            rewind_expire_stale()
             # Uploaded attachments accumulate indefinitely otherwise --
             # ~hourly is plenty (720 * 5s), no need for this on every tick.
             if tick % 720 == 0:
@@ -1513,11 +2055,12 @@ def find_conversation_path(session_id):
     return PROJECTS_DIR_glob_by_id(session_id)
 
 
-def read_messages_since(path, since_line):
+def read_messages_since(path, since_line, session_id=None):
     out = []
+    dead = transcript_dead_lines(path, session_id or Path(path).stem)
     with open(path, "r", errors="ignore") as f:
         for i, line in enumerate(f):
-            if i < since_line:
+            if i < since_line or i in dead:
                 continue
             m = parse_transcript_line(line, i)
             if m:
@@ -1724,7 +2267,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             since = int((qs.get("since") or ["0"])[0])
             meta = conversation_meta(p)
             return self._ok({
-                "messages": read_messages_since(p, since),
+                "messages": read_messages_since(p, since, session_id),
+                "dead_lines": sorted(transcript_dead_lines(p, session_id)),
                 "context_pct": meta.get("context_pct"),
             })
 
@@ -1756,6 +2300,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # request), so checking it on the same 1s tick this loop
             # already has is essentially free.
             initial_status = (get_live_sessions().get(session_id) or {}).get("status")
+            initial_rewind_ver = _rewind_version[session_id]
             while time.time() < deadline:
                 try:
                     cur_size = p.stat().st_size
@@ -1763,9 +2308,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     break
                 if cur_size != last_size:
                     last_size = cur_size
-                    msgs = read_messages_since(p, since)
+                    msgs = read_messages_since(p, since, session_id)
                     if msgs:
                         break
+                if _rewind_version[session_id] != initial_rewind_ver:
+                    break
                 cur_status = (get_live_sessions().get(session_id) or {}).get("status")
                 if cur_status != initial_status:
                     break
@@ -1777,7 +2324,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "messages": msgs,
                 "status": status,
                 "context_pct": meta.get("context_pct"),
-                "question": find_pending_question(p),
+                "dead_lines": sorted(transcript_dead_lines(p, session_id)),
+                "question": find_pending_question(p) or rewind_pending_question(session_id),
             })
 
         m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/queue$", path)
@@ -1847,6 +2395,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             live = get_live_sessions().get(session_id)
             if not p or not live:
                 return self._reject(409, "session not live")
+            rq = rewind_pending_question(session_id)
+            if rq and rq["id"] == body.get("tool_use_id"):
+                if body.get("dismiss") is True:
+                    ok = rewind_cancel(session_id, rq["id"])
+                    return self._ok({"ok": True}) if ok else self._reject(409, "no matching rewind")
+                answers = body.get("answers")
+                sel = (answers[0].get("selected") or []) if isinstance(answers, list) and answers and isinstance(answers[0], dict) else []
+                ok, err = rewind_choose(session_id, rq["id"], sel[0] if len(sel) == 1 else None)
+                log(f"rewind choose: {session_id} from {ip}: {'ok' if ok else err}")
+                return self._ok({"ok": True}) if ok else self._reject(409, err or "failed")
             pending = find_pending_question(p)
             if not pending or pending["id"] != body.get("tool_use_id"):
                 return self._reject(409, "no matching pending question")
@@ -1861,6 +2419,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not ok:
                 return self._reject(409, err or "failed")
             return self._ok({"ok": True})
+
+        m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/rewind$", path)
+        if m:
+            if rate_limited(ip, "spawn", limit=5, window=60):
+                return self._reject(429, "rate limited")
+            session_id = m.group(1)
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 10_000:
+                return self._reject(400, "bad request")
+            try:
+                body = json.loads(self.rfile.read(length))
+            except Exception:
+                return self._reject(400, "bad json")
+            line_no = body.get("line")
+            if not isinstance(line_no, int) or isinstance(line_no, bool):
+                return self._reject(400, "bad line")
+            q, err = rewind_start(session_id, line_no)
+            log(f"rewind start: {session_id} line={line_no} from {ip}: {'ok' if q else err}")
+            if err:
+                return self._reject(409, err)
+            return self._ok({"question": q})
+
+        m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/restore$", path)
+        if m:
+            if rate_limited(ip, "spawn", limit=5, window=60):
+                log(f"deny: restore rate limited {ip}")
+                return self._reject(429, "rate limited")
+            session_id = m.group(1)
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 10_000:
+                return self._reject(400, "bad request")
+            try:
+                body = json.loads(self.rfile.read(length))
+            except Exception:
+                return self._reject(400, "bad json")
+            line_no = body.get("line")
+            if not isinstance(line_no, int) or isinstance(line_no, bool):
+                return self._reject(400, "bad line")
+            with _restore_lock:  # NOT _resume_lock_for: resume_session takes that one itself
+                kept, err = restore_conversation(session_id, line_no)
+            log(f"restore: {session_id} line={line_no} from {ip}: {'ok kept=' + str(kept) if not err else err}")
+            if err and kept is None:
+                return self._reject(409, err)
+            return self._ok({"ok": True, "kept_line": kept, "warning": err})
 
         m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/resume$", path)
         if m:
