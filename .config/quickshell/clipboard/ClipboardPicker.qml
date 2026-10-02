@@ -53,39 +53,53 @@ PanelWindow {
     // time since copy, same rename reasoning as focus-picker's time->age).
     readonly property var defaultColumns: ["chars", "lines", "mime"]
     readonly property var columnLabels: ({ type: "type", age: "age", chars: "ch", lines: "l", mime: "mime" })
-    // `mime`'s own entry here (90) is a floor, not its real width -- see
-    // `_mimeColWidth` below, which grows it to fit whatever's actually
-    // showing (comma-joined multi-format entries can run long), capped at
-    // 30% of the box so it can never crowd the preview out entirely.
+    // `mime` and `age`'s own entries here are floors, not their real
+    // widths -- see `_mimeColWidth`/`_ageColWidth` below, which grow each
+    // to fit whatever's actually showing (comma-joined multi-format `mime`
+    // entries can run long; `age` rarely needs more than its floor, but
+    // auto-sizing means a width here never quietly stops fitting). `mime`
+    // additionally caps at 30% of the box so it can never crowd the
+    // preview out entirely.
     readonly property var columnWidths: ({ type: 60, age: 46, chars: 50, lines: 34, mime: 90 })
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
     property string _headerHoverName: ""
     property real _headerHoverCenterX: 0
-    function _colWidth(name) { return name === "mime" ? root._mimeColWidth : (root.columnWidths[name] || 70); }
+    function _colWidth(name) {
+        if (name === "mime") return root._mimeColWidth;
+        if (name === "age") return root._ageColWidth;
+        return root.columnWidths[name] || 70;
+    }
     readonly property var activeColumns: ClipboardQueryDsl.activeColumns(root.parsed, root.fieldNames, root.defaultColumns)
     readonly property real _columnsWidth: root.activeColumns.reduce((sum, c) => sum + root._colWidth(c), 0)
 
-    // Longest `mime` value among the currently-shown rows (requested
-    // 2026-09-28: comma-joined multi-format entries were eliding into
-    // near-uselessness at a fixed 90px). Sized to `results`, not the full
-    // `_entries`, so the column tracks what's actually visible -- narrows
-    // back down once a filter leaves only short-mime rows on screen,
-    // rather than staying stretched for an entry that's since scrolled
-    // out of the result set.
-    readonly property string _longestMimeValue: {
+    // Longest value a given field currently has among the shown rows --
+    // the basis for every auto-widening column below (`mime`, `age`).
+    // Sized to `results`, not the full `_entries`, so a column tracks
+    // what's actually visible: narrows back down once a filter leaves
+    // only short values on screen, rather than staying stretched for an
+    // entry that's since scrolled out of the result set.
+    function _longestFieldValue(name) {
         let longest = "";
         for (const e of root.results) {
-            const v = e.fields.mime;
+            const v = e.fields[name];
             if (v && v.length > longest.length) longest = v;
         }
         return longest;
     }
+    readonly property string _longestMimeValue: root._longestFieldValue("mime")
+    readonly property string _longestAgeValue: root._longestFieldValue("age")
     TextMetrics {
         id: mimeMetrics
         font.family: Theme.fontFamily
         font.pixelSize: Theme.fontSize - 2
         text: root._longestMimeValue
+    }
+    TextMetrics {
+        id: ageMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 2
+        text: root._longestAgeValue
     }
     // +24, not +8: verified via an isolated qs -p test that TextMetrics.width
     // and the actual rendered Text.implicitWidth agree almost exactly at
@@ -100,6 +114,12 @@ PanelWindow {
     // instead of chasing an exact per-glyph rounding correction.
     readonly property real _mimeColWidth: Math.max(root.columnWidths.mime,
         Math.min(box.width * 0.3, mimeMetrics.width + 24))
+    // `age` values are humanize_ago buckets (`^\d+[smhd]$`) -- inherently
+    // short and bounded, so no percentage-of-box cap the way `mime` needs
+    // (a stray huge value would mean a real bug upstream, not something
+    // to visually contain here). Same +24 buffer as `mime`, same
+    // fractional-scale reasoning.
+    readonly property real _ageColWidth: Math.max(root.columnWidths.age, ageMetrics.width + 24)
     // Shrunk from the GTK version's 160/480 (reported too big after the
     // first live test).
     readonly property int thumbHeight: 120

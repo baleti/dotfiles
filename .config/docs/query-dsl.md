@@ -459,12 +459,15 @@ Defaults per picker:
   see below; `mime`: comma-separated MIME types offered, trimmed of any
   `;parameter` such as `;charset=utf-8` for display - see
   `cliphist-store-logged.sh`'s multi-format bundle manifest in
-  rust-tools.md). `mime` is the one column with a content-fitted width
+  rust-tools.md). `mime` and `age` both have a content-fitted width
   (`TextMetrics` against the longest value among the currently-shown
-  rows) rather than a fixed one - comma-joined multi-format entries can
-  run long - capped at 30% of the box width so it can never crowd the
-  preview text out entirely; every other column stays a fixed width.
-  `type`/`age` are hidden until `/at`'d or Auto-shown by
+  rows, 2026-10-02) rather than a fixed one: `mime`'s comma-joined
+  multi-format entries can run long, so it's additionally capped at 30%
+  of the box width so it can never crowd the preview text out entirely;
+  `age` (a `humanize_ago` bucket, `^\d+[smhd]$`) is inherently short and
+  bounded, so it auto-sizes with no percentage cap. `type`/`chars`/
+  `lines` stay fixed-width. `type`/`age` are hidden until `/at`'d or
+  Auto-shown by
   a `/fv` filter, same as before this feature existed (2026-09-28). `age`
   was `date` until 2026-10-02 - "date" read as a calendar date, the
   column actually shows elapsed time since copy, same rename reasoning
@@ -472,7 +475,8 @@ Defaults per picker:
 - **notification-picker**: `app`/`age`, both on from open - there was no
   pre-existing "always shown" info to preserve the way clipboard-picker's
   size badge was, so defaulting both on is what makes the table useful
-  immediately.
+  immediately. `age` auto-sizes the same way clipboard-picker's does
+  (`app` stays fixed-width).
 - **fzf pickers**: focus-picker renders columns and honours all three
   verbs; window-search / claude-history render a single ranked line and
   ignore column verbs (inert, not an error).
