@@ -66,5 +66,25 @@ pub fn list_windows() -> Vec<Window> {
         .collect()
 }
 
+/// A variable from *Hyprland's own* environment, asked of the compositor
+/// rather than read from this process's copy of it.
+///
+/// `AQ_DRM_DEVICES` is set with `hl.env` on the live Hyprland process (see
+/// `~/.config/hypr/environment.lua`), so it only reaches a child Hyprland
+/// itself exec'd. This binary is spawned by Quickshell
+/// (`services/WinSwitchState.qml`), and Quickshell is started by
+/// `systemd --user` -- a sibling of Hyprland, not a descendant -- so our own
+/// environment never had it. Asking the compositor closes that gap without
+/// caring who spawned us. `repl` answers a bare `nil` for an unset variable;
+/// that and any failure to reach Hyprland both come back as `None`.
+pub fn hyprland_env(name: &str) -> Option<String> {
+    let out = Command::new("hyprctl")
+        .args(["repl", &format!("return os.getenv({name:?})")])
+        .output()
+        .ok()?;
+    let value = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!value.is_empty() && value != "nil").then_some(value)
+}
+
 // Alt-state tracking and focus dispatch live in ~/.config/hypr/winswitch.lua
 // (driven by services/WinSwitchState.qml) -- see main.rs's module doc.
