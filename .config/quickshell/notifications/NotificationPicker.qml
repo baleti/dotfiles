@@ -51,10 +51,12 @@ PanelWindow {
     // rename reasoning as focus-picker's time->age).
     readonly property var defaultColumns: ["app", "age"]
     readonly property var columnLabels: ({ app: "app", age: "age" })
-    // `age`'s own entry here (46) is a floor, not its real width -- see
-    // `_ageColWidth` below, which grows it to fit whatever's actually
-    // showing (ClipboardPicker.qml's identical mechanism and reasoning).
-    readonly property var columnWidths: ({ app: 120, age: 46 })
+    // No `age` entry here -- see `_ageColWidth` below, which sizes it to
+    // its own header label and currently-shown values (via TextMetrics),
+    // not a hardcoded number (ClipboardPicker.qml's identical mechanism;
+    // a flat 46px floor here was the "twice as wide as it needs to be"
+    // bug reported 2026-10-02 whenever every visible age was short).
+    readonly property var columnWidths: ({ app: 120 })
     function _colWidth(name) { return name === "age" ? root._ageColWidth : (root.columnWidths[name] || 70); }
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
@@ -80,11 +82,22 @@ PanelWindow {
         font.pixelSize: Theme.fontSize - 2
         text: root._longestAgeValue
     }
+    // The floor is the header label's own measured width, not a
+    // hand-picked number -- see ClipboardPicker.qml's identical
+    // mimeHeaderMetrics/ageHeaderMetrics for why.
+    TextMetrics {
+        id: ageHeaderMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 2
+        text: root.columnLabels.age
+    }
     // `age` values are humanize_ago buckets (`^\d+[smhd]$`) -- inherently
     // short and bounded, no percentage-of-box cap needed (see
-    // ClipboardPicker.qml's identical `_ageColWidth`). +24 buffer for the
-    // same fractional-scale reasoning documented there.
-    readonly property real _ageColWidth: Math.max(root.columnWidths.age, ageMetrics.width + 24)
+    // ClipboardPicker.qml's identical `_ageColWidth`). +10, not `mime`'s
+    // +24 -- see that file's `_ageColWidth` for why a short value needs
+    // proportionally less fractional-scale rounding padding than an
+    // 81-character `mime` string does.
+    readonly property real _ageColWidth: Math.max(ageHeaderMetrics.width, ageMetrics.width) + 10
     readonly property string _bin: Quickshell.env("HOME") + "/.config/hypr/clipboard-picker/target/release/notification-picker"
 
     function _recompute() {
