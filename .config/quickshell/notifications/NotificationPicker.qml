@@ -51,14 +51,40 @@ PanelWindow {
     // rename reasoning as focus-picker's time->age).
     readonly property var defaultColumns: ["app", "age"]
     readonly property var columnLabels: ({ app: "app", age: "age" })
+    // `age`'s own entry here (46) is a floor, not its real width -- see
+    // `_ageColWidth` below, which grows it to fit whatever's actually
+    // showing (ClipboardPicker.qml's identical mechanism and reasoning).
     readonly property var columnWidths: ({ app: 120, age: 46 })
-    function _colWidth(name) { return root.columnWidths[name] || 70; }
+    function _colWidth(name) { return name === "age" ? root._ageColWidth : (root.columnWidths[name] || 70); }
     // Which column header (if any) is currently hovered, and where to
     // center its tooltip (box-local x) -- see colHeader/headerTip below.
     property string _headerHoverName: ""
     property real _headerHoverCenterX: 0
     readonly property var activeColumns: ClipboardQueryDsl.activeColumns(root.parsed, root.fieldNames, root.defaultColumns)
     readonly property real _columnsWidth: root.activeColumns.reduce((sum, c) => sum + root._colWidth(c), 0)
+
+    // Longest `age` value among the currently-shown rows -- see
+    // ClipboardPicker.qml's `_longestFieldValue` for why `results`, not
+    // the full `_entries`.
+    readonly property string _longestAgeValue: {
+        let longest = "";
+        for (const e of root.results) {
+            const v = e.fields.age;
+            if (v && v.length > longest.length) longest = v;
+        }
+        return longest;
+    }
+    TextMetrics {
+        id: ageMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSize - 2
+        text: root._longestAgeValue
+    }
+    // `age` values are humanize_ago buckets (`^\d+[smhd]$`) -- inherently
+    // short and bounded, no percentage-of-box cap needed (see
+    // ClipboardPicker.qml's identical `_ageColWidth`). +24 buffer for the
+    // same fractional-scale reasoning documented there.
+    readonly property real _ageColWidth: Math.max(root.columnWidths.age, ageMetrics.width + 24)
     readonly property string _bin: Quickshell.env("HOME") + "/.config/hypr/clipboard-picker/target/release/notification-picker"
 
     function _recompute() {
