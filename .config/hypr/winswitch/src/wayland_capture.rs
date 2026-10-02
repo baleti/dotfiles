@@ -40,9 +40,9 @@
 //! path when it can and `copy_via_shm` is the fallback, used directly when
 //! it can't and also if the dmabuf attempt itself gets rejected.
 //!
-//! This machine has a known, currently-pinned mesa bug
+//! This machine used to carry a pinned mesa bug
 //! (`mesa_26_2_2_hyprland_crash_pin` in the assistant's memory) where
-//! Hyprland's own renderer aborts the whole compositor importing a
+//! Hyprland's own renderer aborted the whole compositor importing a
 //! cross-GPU dmabuf (an NVIDIA-tiled buffer, composited on the Intel iGPU)
 //! -- `eglCreateImageKHR` failing with `EGL_BAD_MATCH`, then a *separate*,
 //! genuinely buggy fallback path inside Hyprland's frame-end EGL sync
@@ -62,6 +62,13 @@
 //! case of any of this going wrong is this background thread's own
 //! connection erroring out -- this is a separate process from Hyprland with
 //! its own GBM/EGL state; nothing here runs inside the compositor.
+//!
+//! The cross-GPU half of that hazard is gone outright since the 2026-09-19
+//! hardware swap (`laptop_replaced_2026_09_19`): one Intel iGPU, one render
+//! node, no second device to import a foreign buffer from. The reasoning
+//! above is kept because neither of its two arguments depended on the GPU
+//! count, and `primary_render_node`'s step 3 is the one place that does
+//! lean on the single-node fact -- it tests for it rather than assuming it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -121,27 +128,48 @@ fn debug_log(msg: &str) {
 
 /// The render node backing Hyprland's own primary/compositing GPU, so the
 /// GBM buffers this module allocates come from the same device Hyprland
-/// renders window content on -- resolved by matching the first entry of
-/// Hyprland's own `AQ_DRM_DEVICES` (see `~/.config/hypr/environment.lua`;
-/// set via `setenv()` on Hyprland's own live process, which is why it
-/// won't show up reading a *running* Hyprland's `/proc/<pid>/environ` --
-/// that only ever reflects the environment at the original exec, not later
-/// in-process `setenv` calls -- but is inherited correctly by anything
-/// Hyprland itself execs afterward, including this binary via its
-/// `hl.dsp.exec_cmd` keybind) to its render node via their shared
-/// `/sys/class/drm/*/device` PCI directory, rather than hardcoding a vendor
-/// or a `renderD1??` number (this machine has both an Intel and an NVIDIA
-/// node; picking the wrong one would make every dmabuf buffer allocated
-/// here a *foreign* GPU's memory as far as the compositor's copy into it is
-/// concerned). Deliberately `None`, not a guessed device, if any step of
-/// that resolution fails or `AQ_DRM_DEVICES` isn't set at all -- unlike
-/// picking a fallback render node number, "decline dmabuf capture entirely,
-/// stay on the always-safe wl_shm path" is a safe failure mode no matter
-/// which GPU a wrong guess would have landed on.
+/// renders window content on. Getting this wrong (or hardcoding a vendor or
+/// a `renderD1??` number) would make every dmabuf buffer allocated here a
+/// *foreign* GPU's memory as far as the compositor's copy into it is
+/// concerned, so each source below has to be one that cannot name the wrong
+/// device, and "decline dmabuf entirely, stay on the always-safe wl_shm
+/// path" stays the failure mode when none of them answers:
+///
+/// 1. `AQ_DRM_DEVICES` from our own environment -- free, and correct
+///    whenever Hyprland is the process that exec'd us.
+/// 2. The same variable asked of Hyprland itself. It is set with `hl.env`
+///    on the live compositor process, so it never reaches a process
+///    Hyprland did not spawn, and this binary is spawned by Quickshell (see
+///    `hyprctl::hyprland_env`, which has the full why). Skipping this step
+///    is what silently disabled dmabuf capture from the 2026-09-10 overhaul
+///    (which moved the spawn from a Hyprland keybind to Quickshell) until
+///    2026-10-02: the compositor offered a `linux_dmabuf` buffer for every
+///    frame and this module declined all of them, putting a GPU->CPU
+///    readback of every window on Hyprland's main thread instead. Measured
+///    cost of that fallback at ~80 windows: up to 638ms of main-thread
+///    stall and 33/82 thumbnails inside the deadline, versus 0ms stall and
+///    all of them on the dmabuf path.
+/// 3. The only render node in `/dev/dri`, if there is exactly one. A
+///    single-GPU machine (this one: an Intel iGPU and nothing else) has no
+///    wrong answer to pick, which is what makes a bare guess safe *here*
+///    specifically; the `exactly one` test is the whole safety argument, so
+///    a machine with a second node falls through to `None` rather than
+///    betting on a number.
+///
+/// Either variable's value is a `:`-separated card list whose first entry is
+/// the primary; a card is matched to its render node through their shared
+/// `/sys/class/drm/*/device` PCI directory.
 fn primary_render_node() -> Option<PathBuf> {
-    let devices = std::env::var("AQ_DRM_DEVICES").ok()?;
-    let first = devices.split(':').next()?;
-    let card_path = std::fs::canonicalize(first).ok()?;
+    std::env::var("AQ_DRM_DEVICES")
+        .ok()
+        .or_else(|| crate::hyprctl::hyprland_env("AQ_DRM_DEVICES"))
+        .and_then(|devices| render_node_for_card(devices.split(':').next()?))
+        .or_else(sole_render_node)
+}
+
+/// The render node sharing `card`'s PCI device directory.
+fn render_node_for_card(card: &str) -> Option<PathBuf> {
+    let card_path = std::fs::canonicalize(card).ok()?;
     let card_name = card_path.file_name()?.to_str()?;
     let card_pci = std::fs::canonicalize(format!("/sys/class/drm/{card_name}/device")).ok()?;
 
@@ -157,6 +185,18 @@ fn primary_render_node() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// `/dev/dri`'s single render node, or `None` if there is any number of them
+/// other than one -- see `primary_render_node`'s step 3 for why that count
+/// is the safety condition and not just a convenience.
+fn sole_render_node() -> Option<PathBuf> {
+    let mut nodes = std::fs::read_dir("/dev/dri")
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("render"));
+    let only = nodes.next()?;
+    nodes.next().is_none().then(|| only.path())
 }
 
 /// One finished, already-downscaled thumbnail on its way back to the caller
@@ -252,11 +292,26 @@ struct Capture {
     tx: mpsc::Sender<ThumbMsg>,
 }
 
-/// Captures outstanding with the compositor at once. Hyprland renders and
-/// reads back every requested window on its main thread (the wl_shm path),
-/// and requesting all ~50 at once stalled it for up to ~240ms -- keyboard
-/// input and the switcher grid's own frames froze with it.
-const MAX_IN_FLIGHT: usize = 3;
+/// Captures outstanding with the compositor at once.
+///
+/// This was 3, picked when every capture went the wl_shm path and Hyprland
+/// therefore rendered *and* read back each requested window on its main
+/// thread: asking for all ~50 at once stalled it for up to ~240ms and froze
+/// keyboard input along with the grid's own frames. On the dmabuf path the
+/// compositor does no readback, so that ceiling is far higher, and 3 was
+/// just leaving latency on the table once `primary_render_node` started
+/// resolving (2026-10-02).
+///
+/// Swept 3/6/12/24/48/81 against 81 open windows, 4 runs each, measuring
+/// both when thumbnails land and Hyprland's own IPC round-trip latency as a
+/// main-thread stall proxy. Time to the last thumbnail: ~580ms at 3, ~426ms
+/// at 6, ~450ms at 12, bottoming out around 390ms at 48. Time to the
+/// *first* one (the grid is already up by then, so this is when it stops
+/// looking empty): ~71ms at 3, ~73ms at 6, ~113ms at 12 and worse above.
+/// Compositor stalls stayed at zero through 24 and only reappeared at 48+
+/// (23-31ms). 6 is where the full grid gets ~27% faster for no cost in
+/// either direction; 12 buys nothing and delays the first thumbnail.
+const MAX_IN_FLIGHT: usize = 6;
 
 fn pump_captures(state: &mut Capture, qh: &QueueHandle<Capture>) {
     let Some(export_manager) = state.export_manager.clone() else { return };
