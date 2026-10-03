@@ -25,6 +25,23 @@ PanelWindow {
     // back into it.
     property bool open: false
 
+    // Ignore the pointer until it has genuinely moved since the popup
+    // opened (a stationary mouse under the popup must not select a row).
+    property var _hoverOrigin: null
+    property bool _hoverArmed: false
+    function _pointerMoved(item, mouse) {
+        if (root._hoverArmed)
+            return true;
+        const p = item.mapToItem(null, mouse.x, mouse.y);
+        if (!root._hoverOrigin) {
+            root._hoverOrigin = p;
+            return false;
+        }
+        if (Math.abs(p.x - root._hoverOrigin.x) + Math.abs(p.y - root._hoverOrigin.y) > 8)
+            root._hoverArmed = true;
+        return root._hoverArmed;
+    }
+
     // Type names filterable / sortable via the DSL. `name` and `generic`
     // are also the free-text (bare / `/fv text`) haystack; the rest are
     // scoped-only, because substring-matching prose Comment= or a
@@ -50,6 +67,8 @@ PanelWindow {
     }
 
     onOpenChanged: {
+        root._hoverOrigin = null;
+        root._hoverArmed = false;
         if (root.open) {
             query.text = "";
             root.selected = 0;
@@ -931,7 +950,8 @@ PanelWindow {
                 MouseArea {
                     anchors.fill: parent
                     hoverEnabled: true
-                    onEntered: root.selected = index
+                    id: rowHover
+                    onPositionChanged: mouse => { if (root._pointerMoved(rowHover, mouse)) root.selected = index; }
                     onClicked: root.launch(index)
                 }
             }

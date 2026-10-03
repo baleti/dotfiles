@@ -36,6 +36,23 @@ PanelWindow {
 
     property bool open: false
 
+    // Ignore the pointer until it has genuinely moved since the popup
+    // opened (a stationary mouse under the popup must not select a row).
+    property var _hoverOrigin: null
+    property bool _hoverArmed: false
+    function _pointerMoved(item, mouse) {
+        if (root._hoverArmed)
+            return true;
+        const p = item.mapToItem(null, mouse.x, mouse.y);
+        if (!root._hoverOrigin) {
+            root._hoverOrigin = p;
+            return false;
+        }
+        if (Math.abs(p.x - root._hoverOrigin.x) + Math.abs(p.y - root._hoverOrigin.y) > 8)
+            root._hoverArmed = true;
+        return root._hoverArmed;
+    }
+
     readonly property var fieldNames: ["app", "age"]
     readonly property var fieldDescs: ({
         "app": "the sending application",
@@ -111,6 +128,8 @@ PanelWindow {
     }
 
     onOpenChanged: {
+        root._hoverOrigin = null;
+        root._hoverArmed = false;
         if (root.open) {
             query.text = "";
             root.selectedId = null;
@@ -736,7 +755,8 @@ PanelWindow {
                 MouseArea {
                     anchors.fill: parent
                     hoverEnabled: true
-                    onEntered: root.selectedId = row.modelData.id
+                    id: rowHover
+                    onPositionChanged: mouse => { if (root._pointerMoved(rowHover, mouse)) root.selectedId = row.modelData.id; }
                     onClicked: root.activate(row.index)
                 }
             }
