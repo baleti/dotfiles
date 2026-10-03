@@ -635,10 +635,22 @@ def theme_hyprland_borders(out: dict) -> None:
         f'inactive_border="{inactive_border}"'
         '}}})'
     )
+    # Callers started outside Hyprland's session env (e.g. wallpaper-rotate.sh
+    # launched from a tty) have no HYPRLAND_INSTANCE_SIGNATURE; fall back to
+    # the newest instance dir under XDG_RUNTIME_DIR/hypr.
+    env = dict(os.environ)
+    if not env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        rt = Path(env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hypr"
+        try:
+            newest = max((p for p in rt.iterdir() if (p / ".socket.sock").exists()),
+                         key=lambda p: p.stat().st_mtime)
+            env["HYPRLAND_INSTANCE_SIGNATURE"] = newest.name
+        except (OSError, ValueError):
+            pass
     try:
         result = subprocess.run(
             ["hyprctl", "eval", lua],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, env=env,
         )
         if result.stdout.strip() != "ok":
             print(f"hyprctl eval border update returned unexpected output: {result.stdout!r} {result.stderr!r}", file=sys.stderr)
