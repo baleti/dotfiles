@@ -802,7 +802,25 @@ def deliver_text_to_conversation(session_id, text, msg_id, ip, log_prefix="send"
             result = {"delivered": True, "via": "tmux", "pane": live["pane"]}
             record_send_result(msg_id, session_id, result)
             return result
-        # fall through to queue on send failure
+        # fall through to resume/queue on send failure
+
+    # No live pane: relaunch the conversation via `claude --resume` and
+    # prime it with this text, so a message sent to a closed conversation
+    # (stale "live" state on the client, an upload, an older client build)
+    # starts it again instead of sitting in the queue until someone resumes
+    # it by hand. Shares /spawn's tighter rate bucket since it starts a real
+    # process; on any failure fall through to the durable queue below.
+    if find_conversation_path(session_id):
+        if rate_limited(ip, "spawn", limit=5, window=60):
+            log(f"{log_prefix}: auto-resume rate limited for {ip}, queueing instead")
+        else:
+            _, err = resume_session(session_id, text)
+            if not err:
+                log(f"{log_prefix}: auto-resumed {session_id} for {ip}")
+                result = {"delivered": True, "via": "tmux", "resumed": True}
+                record_send_result(msg_id, session_id, result)
+                return result
+            log(f"{log_prefix}: auto-resume failed for {session_id}: {err}, queueing instead")
 
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     qfile = QUEUE_DIR / f"{session_id}.jsonl"
@@ -1030,7 +1048,12 @@ def spawn_session(dir_key, initial_text):
     # booting or mid-first-response.
     deadline = time.time() + 15
     while time.time() < deadline:
-        if PROJECTS_DIR_glob_by_id(session_id):
+        path = PROJECTS_DIR_glob_by_id(session_id)
+        # The file appears with only metadata lines first, and
+        # list_conversations() hides a transcript with no user/assistant
+        # line yet -- wait for a real message so the phone's very next
+        # list sync includes this session.
+        if path and scan_transcript_stats(path)[3] > 0:
             return session_id, None
         time.sleep(0.5)
     log(f"spawn: transcript for {session_id} never appeared within 15s")
