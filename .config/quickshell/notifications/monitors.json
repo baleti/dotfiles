@@ -1,0 +1,5 @@
+{
+    "_comment": "Overflow monitor list for notification popups. The monitor Hyprland currently has focused always shows the newest notifications first; when more notifications arrive than fit on it, the rest spill onto these monitors in the order listed. If the whole set still doesn't fit even across all of them, they rotate through the remaining notifications in timed batches (see rotate_seconds). Edit freely -- picked up live, no reload needed.",
+    "monitors": ["DP-1", "HDMI-A-1"],
+    "rotate_seconds": 6
+}

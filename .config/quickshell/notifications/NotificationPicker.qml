@@ -723,9 +723,36 @@ PanelWindow {
                     y: 2
                     spacing: 10
 
+                    // notifyd already resolved `icon` to a themed name, an
+                    // absolute path, or a PNG it decoded (same rules as
+                    // NotifCard.iconSource). Fixed-width cell so it forms
+                    // an aligned first column even when an icon is missing.
+                    Item {
+                        id: iconCell
+                        width: 20
+                        height: 20
+                        anchors.verticalCenter: previewText.verticalCenter
+                        Image {
+                            anchors.fill: parent
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            asynchronous: true
+                            visible: status === Image.Ready
+                            sourceSize.width: 40
+                            sourceSize.height: 40
+                            source: {
+                                const ic = (row.modelData.icon ?? "").toString();
+                                if (ic.length === 0) return Quickshell.iconPath("dialog-information", "");
+                                if (ic.startsWith("file://")) return ic;
+                                if (ic.startsWith("/")) return "file://" + ic;
+                                return Quickshell.iconPath(ic, "dialog-information");
+                            }
+                        }
+                    }
+
                     Text {
                         id: previewText
-                        width: rowContent.width - root._columnsWidth
+                        width: rowContent.width - root._columnsWidth - iconCell.width - rowContent.spacing
                                - (root.activeColumns.length > 0 ? rowContent.spacing * root.activeColumns.length : 0)
                         text: row.modelData.preview
                         elide: Text.ElideRight
