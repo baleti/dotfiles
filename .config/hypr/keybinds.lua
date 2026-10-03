@@ -165,8 +165,8 @@ hl.bind("ALT + CTRL + SHIFT + h", jump_to_occupied_workspace(false), { repeating
 hl.bind("ALT + CTRL + SHIFT + l", jump_to_occupied_workspace(true),  { repeating = true, description = "Next occupied workspace" })
 
 -- Move the active window along with you to the prev/next workspace on this monitor.
-hl.bind(mainMod .. " + CTRL + SHIFT + h", hl.dsp.window.move({ workspace = "r-1" }), { repeating = false, description = "Move window to previous workspace on this monitor" })
-hl.bind(mainMod .. " + CTRL + SHIFT + l", hl.dsp.window.move({ workspace = "r+1" }), { repeating = false, description = "Move window to next workspace on this monitor" })
+hl.bind(mainMod .. " + CTRL + SHIFT + h", hl.dsp.window.move({ workspace = "r-1" }), { repeating = true, description = "Move window to previous workspace on this monitor" })
+hl.bind(mainMod .. " + CTRL + SHIFT + l", hl.dsp.window.move({ workspace = "r+1" }), { repeating = true, description = "Move window to next workspace on this monitor" })
 
 -- Move/resize windows with mainMod + LMB/RMB and dragging
 hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(),   { mouse = true, description = "Move window (drag with mouse)" })
@@ -383,10 +383,10 @@ hl.bind("SHIFT + ALT + k", hl.dsp.window.resize({ x = 0,   y = -80, relative = t
 hl.bind("SHIFT + ALT + l", hl.dsp.window.resize({ x = 80,  y = 0,  relative = true }), { description = "Resize window: wider" })
 
 -- hjkl focus
-hl.bind(mainMod .. " + h", hl.dsp.focus({ direction = "left" }),  { description = "Focus the window to the left" })
-hl.bind(mainMod .. " + j", hl.dsp.focus({ direction = "down" }),  { description = "Focus the window below" })
-hl.bind(mainMod .. " + k", hl.dsp.focus({ direction = "up" }),    { description = "Focus the window above" })
-hl.bind(mainMod .. " + l", hl.dsp.focus({ direction = "right" }), { description = "Focus the window to the right" })
+hl.bind(mainMod .. " + h", hl.dsp.focus({ direction = "left" }),  { repeating = true, description = "Focus the window to the left" })
+hl.bind(mainMod .. " + j", hl.dsp.focus({ direction = "down" }),  { repeating = true, description = "Focus the window below" })
+hl.bind(mainMod .. " + k", hl.dsp.focus({ direction = "up" }),    { repeating = true, description = "Focus the window above" })
+hl.bind(mainMod .. " + l", hl.dsp.focus({ direction = "right" }), { repeating = true, description = "Focus the window to the right" })
 
 -- app launcher (quickshell, ~/.config/quickshell/launcher/ -- replaced
 -- `rofi -show drun`). A second tap toggles it closed; Escape also closes.
