@@ -2402,7 +2402,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 log(f"spawn: failed for {ip}: {err}")
                 return self._reject(500, err)
             log(f"spawn: started {session_id} (account={account}) for {ip}")
-            return self._ok({"session_id": session_id, "account": account})
+            out = {"session_id": session_id, "account": account}
+            # Same row shape as the list endpoint, so the phone can show
+            # the new conversation immediately instead of waiting out a
+            # full list sync.
+            try:
+                meta = dict(conversation_meta(PROJECTS_DIR_glob_by_id(session_id)))
+                meta.pop("real_messages", None)
+                live = get_live_sessions().get(session_id)
+                meta["live"] = {"pane": live["pane"], "confidence": live["confidence"], "status": live.get("status")} if live else None
+                if meta.get("account") == "unknown":
+                    meta["account"] = account
+                out["conversation"] = meta
+            except Exception as e:
+                log(f"spawn: meta for {session_id} failed: {e}")
+            return self._ok(out)
 
         m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/answer$", path)
         if m:
