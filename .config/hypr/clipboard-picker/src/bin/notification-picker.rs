@@ -37,7 +37,7 @@ fn get_str(obj: &Value, key: &str) -> String {
 /// `notifyctl list` returns newest-first already (see notifyd's own
 /// `list_history_json`), so entries are kept in the order notifyd gives
 /// them.
-fn history_entries() -> Vec<Entry> {
+fn history_entries() -> Vec<(Entry, String)> {
     let out = match Command::new(NOTIFYCTL).arg("list").output() {
         Ok(o) => o.stdout,
         Err(_) => return Vec::new(),
@@ -76,13 +76,14 @@ fn history_entries() -> Vec<Entry> {
             fields.push(("age", picker::humanize_ago(ts, now)));
         }
 
-        entries.push(Entry {
+        let icon = get_str(n, "icon");
+        entries.push((Entry {
             id: id.to_string(),
             preview,
             haystack,
             fields,
             thumb: false,
-        });
+        }, icon));
     }
     entries
 }
@@ -93,9 +94,9 @@ fn history_entries() -> Vec<Entry> {
 /// GTK engine went away). No `thumb`/`chars`/`lines` the way
 /// clipboard-picker's NDJSON carries -- notifications have no image
 /// payload and no size badge to show.
-fn print_list(entries: &[Entry]) {
+fn print_list(entries: &[(Entry, String)]) {
     let mut out = std::io::stdout().lock();
-    for e in entries {
+    for (e, icon) in entries {
         let fields: serde_json::Map<String, serde_json::Value> =
             e.fields.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
         let line = json!({
@@ -103,6 +104,7 @@ fn print_list(entries: &[Entry]) {
             "preview": e.preview,
             "haystack": e.haystack,
             "fields": fields,
+            "icon": icon,
         });
         let _ = writeln!(out, "{line}");
     }
