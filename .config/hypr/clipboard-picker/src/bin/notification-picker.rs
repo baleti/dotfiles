@@ -108,8 +108,29 @@ fn print_list(entries: &[Entry]) {
     }
 }
 
+/// Same rule as notifyd's `default_action_key`: an action keyed "default",
+/// else the sole action. With one, invoke it; without, fall back to what a
+/// card click does -- summon the window that sent the notification (e.g. the
+/// Hyprland window running the finished claude session).
 fn activate(id: &str) {
-    let _ = Command::new(NOTIFYCTL).args(["invoke", id]).status();
+    let out = Command::new(NOTIFYCTL).arg("list").output().map(|o| o.stdout).unwrap_or_default();
+    let list: Vec<Value> = serde_json::from_slice(&out).unwrap_or_default();
+    let n = list.iter().find(|n| n.get("id").and_then(|v| v.as_u64()).map(|i| i.to_string()).as_deref() == Some(id));
+    let actions = n.and_then(|n| n.get("actions")).and_then(|a| a.as_array());
+    let has_default = actions.is_some_and(|a| {
+        a.len() == 1 || a.iter().any(|x| x.get("key").and_then(|k| k.as_str()) == Some("default"))
+    });
+    match n {
+        Some(n) if !has_default => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let _ = Command::new(format!("{home}/.config/hypr/scripts/notify-summon.sh"))
+                .args([get_str(n, "app_name"), get_str(n, "sender")])
+                .status();
+        }
+        _ => {
+            let _ = Command::new(NOTIFYCTL).args(["invoke", id]).status();
+        }
+    }
 }
 
 fn main() {
