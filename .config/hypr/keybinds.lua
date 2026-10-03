@@ -161,8 +161,8 @@ local function jump_to_occupied_workspace(forward)
     end
 end
 
-hl.bind("ALT + CTRL + SHIFT + h", jump_to_occupied_workspace(false), { repeating = false, description = "Previous occupied workspace" })
-hl.bind("ALT + CTRL + SHIFT + l", jump_to_occupied_workspace(true),  { repeating = false, description = "Next occupied workspace" })
+hl.bind("ALT + CTRL + SHIFT + h", jump_to_occupied_workspace(false), { repeating = true, description = "Previous occupied workspace" })
+hl.bind("ALT + CTRL + SHIFT + l", jump_to_occupied_workspace(true),  { repeating = true, description = "Next occupied workspace" })
 
 -- Move the active window along with you to the prev/next workspace on this monitor.
 hl.bind(mainMod .. " + CTRL + SHIFT + h", hl.dsp.window.move({ workspace = "r-1" }), { repeating = false, description = "Move window to previous workspace on this monitor" })
