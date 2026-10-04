@@ -88,19 +88,22 @@ hl.on("hyprland.start", function()
     -- runs. A unit gated on graphical-session.target isn't guaranteed to
     -- start after it -- only after Hyprland itself is up enough to reach
     -- that target -- so on a fast boot (confirmed live 2026-09-27: 9s from
-    -- power-on to claude-usage.service's own start) these two units can
-    -- both win the race and launch with neither var in their environment,
+    -- power-on to claude-usage.service's own start) these units can all
+    -- win the race and launch with neither var in their environment,
     -- with NRestarts=0 for the rest of the session since nothing else ever
     -- prompts a respawn. hyprctl then fails every call inside them (caught
     -- by a broad except, so silently) -- for claude-usage-daemon.py this
     -- meant hypr_address stayed null for every row forever, so
     -- notify_turn_done's "skip if that window is already focused" check
     -- could never match, and it fired a desktop notification on every turn
-    -- regardless of focus. Restarting both right here, every Hyprland
+    -- regardless of focus. Restarting them all right here, every Hyprland
     -- start, guarantees they always fork after the import has landed --
     -- chained with && in one exec_cmd (not a second call) so the restart
-    -- can't itself race ahead of the import completing.
-    hl.exec_cmd("systemctl --user import-environment HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY && systemctl --user restart claude-usage.service desktop-snapshot.service")
+    -- can't itself race ahead of the import completing. quickshell.service
+    -- joined this list 2026-10-04 when it moved off a bare hl.exec_cmd
+    -- autostart below -- same empty-hyprctl failure mode, visible there as
+    -- an empty workspace pill in the bar.
+    hl.exec_cmd("systemctl --user import-environment HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY && systemctl --user restart claude-usage.service desktop-snapshot.service quickshell.service")
     -- wl-paste tags copies flagged x-kde-passwordManagerHint=secret (app
     -- passwords, generated passwords, TOTP codes, etc.) with
     -- CLIPBOARD_STATE=sensitive, and cliphist silently skips storing those.
@@ -146,12 +149,24 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("~/.config/hypr/scripts/wallpaper-rotate.sh")
     -- 2026-08-27: replaced by a custom quickshell bar (~/.config/quickshell/),
     -- built from scratch after trying and reverting caelestia-shell. Revert:
-    -- uncomment this line, and kill/disable `qs -n -d` if it's running.
+    -- uncomment this line, and disable `quickshell.service` if it's running.
     -- hl.exec_cmd("waybar")
-    -- Not `-d`: daemonizing forks, and mlock (below) doesn't survive a fork.
-    -- LD_PRELOAD pins Quickshell's pages in RAM so the first alt-tab after
-    -- hours of idle isn't a swap-in storm; see mlockself/mlockself.c.
-    hl.exec_cmd("LD_PRELOAD=$HOME/.config/hypr/mlockself/mlockself.so qs -n")
+    -- quickshell itself moved to a systemd --user unit (2026-10-04, same
+    -- move notifyd/sysmond made 2026-09-13) -- see ~/.config/systemd/user/
+    -- quickshell.service for the LD_PRELOAD=mlockself env (still no `-d`:
+    -- daemonizing forks, and mlock doesn't survive a fork; Type=simple
+    -- doesn't fork either, so this is safe) and Restart=always. Root cause
+    -- this closes: restarting `qs -n` by hand from any shell that isn't a
+    -- child of Hyprland (ssh, tmux, a Claude Code session, ...) never had
+    -- HYPRLAND_INSTANCE_SIGNATURE, so the bar's workspace pill came up
+    -- empty every time (2026-10-03) -- `systemctl --user restart` always
+    -- goes through the --user manager's own imported environment instead,
+    -- regardless of which shell runs it. Added to the explicit restart
+    -- below rather than relying on graphical-session.target ordering
+    -- alone, same reasoning as claude-usage.service/desktop-snapshot.service
+    -- (quickshell calls hyprctl at startup too, so it's in the same
+    -- fast-boot race class those two are, unlike notifyd/sysmond which
+    -- aren't).
 
     for _, app in ipairs(apps) do
         pending_hide[app.class] = app.slug
