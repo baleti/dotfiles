@@ -222,11 +222,13 @@ hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"), { description
 -- winswitch.lua: they emit ordered events on Hyprland's event socket for
 -- Quickshell instead of exec'ing a process per press.
 
--- window groups (tabs) removed 2026-09-05: never used, and mod+G / mod+g
--- collide (Hyprland folds keysym case without an explicit SHIFT), so
--- mod+g is now free for the bar's GPU panel (below). The `group = {}`
--- styling block stays in appearance.lua -- harmless with no bind to form
--- a group, and there if grouping is ever wanted back.
+-- window groups (tabs): toggle with CTRL+mainMod+G (mainMod+g is the bar's
+-- GPU panel, below). Step through a group's tabs with mainMod+[ / mainMod+].
+-- Confirmed signatures in LuaBindingsDispatchers.cpp: hl.dsp.group.toggle/
+-- next/prev take no required args (they act on the active window).
+hl.bind("CTRL + " .. mainMod .. " + G",  hl.dsp.group.toggle(),  { description = "Group / ungroup the active window (tabs)" })
+hl.bind(mainMod .. " + bracketleft",     hl.dsp.group.prev(),    { description = "Previous tab in the group" })
+hl.bind(mainMod .. " + bracketright",    hl.dsp.group.next(),    { description = "Next tab in the group" })
 
 -- emacs
 hl.bind(mainMod .. " + SHIFT + e", hl.dsp.exec_cmd("alacritty -e tmux new-session emacsclient --tty"), { description = "Open Emacs (in tmux)" })
