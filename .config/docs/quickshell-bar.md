@@ -1,7 +1,19 @@
 # quickshell bar
 
-`~/.config/quickshell/` — a from-scratch QML status bar, run as
-`qs -n -d` (autostarted in `hyprland.lua`). Replaced caelestia-shell, then
+`~/.config/quickshell/` — a from-scratch QML status bar, run as `qs -n`
+(no `-d`: daemonizing forks, and the LD_PRELOAD mlock below doesn't
+survive a fork) via the `quickshell.service` systemd `--user` unit
+(`~/.config/systemd/user/quickshell.service`, `Restart=always`,
+`Environment=LD_PRELOAD=%h/.config/hypr/mlockself/mlockself.so` to pin
+its pages in RAM — see `mlockself/mlockself.c`). Moved off a bare
+`hl.exec_cmd` autostart line in `hyprland.lua` on 2026-10-04, same move
+notifyd/sysmond made 2026-09-13: a *manual* restart from any shell that
+isn't a child of Hyprland (ssh, tmux, a Claude Code session, ...) never
+had `HYPRLAND_INSTANCE_SIGNATURE`, so the workspace pill came up empty
+every time — `systemctl --user restart quickshell.service` always goes
+through the `--user` manager's own imported environment instead (see
+`hyprland.lua`'s `hl.on("hyprland.start", ...)` comment), regardless of
+which shell runs it. Replaced caelestia-shell, then
 replaced waybar (2026-08-27; waybar's own autostart line is now commented
 out — see [desktop-apps.md](desktop-apps.md#waybar-legacy)). Layout
 deliberately mirrors the old `~/.config/waybar/config.jsonc`: modules-left
@@ -165,9 +177,10 @@ root object instances. Renaming or removing a root-level `function`/
 long-running instances' meta-objects stuck with the old names — `qs log`
 shows `TypeError: Property 'x' ... is not a function` and `Unable to
 assign [undefined] to double` even though the file on disk is correct.
-Fix: `qs kill` then relaunch the same way `hyprland.lua` does
-(`qs -n -d`) — a plain value/expression change never needs this, only a
-changed function/property *signature*.
+Fix: `systemctl --user restart quickshell.service` (not a bare `qs kill`
++ manual relaunch from an arbitrary shell — see above for why) — a plain
+value/expression change never needs this, only a changed
+function/property *signature*.
 
 ## Theme
 
