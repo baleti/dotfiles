@@ -31,7 +31,12 @@ near-empty one the daemon writes right after this very script's own
 tmux.service restart. Pass --snapshot to skip the prompt.
 
 Server acquisition modes (mutually exclusive):
-  (default)        systemctl --user restart tmux.service - kills whatever
+  (default)        if a server is already running on the default socket, ADD
+                    the saved sessions it doesn't have yet (sessions already
+                    live are left completely alone: not touched, not
+                    re-placed, no claude --resume typed into them). If none
+                    is running, start a fresh one via tmux.service.
+  --restart        old default: systemctl --user restart tmux.service - kills whatever
                     is currently on the default socket and starts a
                     genuinely empty one. tmux.service has no ExecStop
                     anymore, so nothing auto-saves the outgoing state first
@@ -114,6 +119,65 @@ def acquire_default_server():
     run(["systemctl", "--user", "restart", "tmux.service"], check=True)
     time.sleep(1)
     return str(TMUX_SOCKET_DIR / "default")
+
+
+def live_sessions(socket_path):
+    """Session names on the server at socket_path, or None if no server answers there."""
+    r = subprocess.run(["tmux", "-S", socket_path, "list-sessions", "-F", "#{session_name}"],
+                        capture_output=True, text=True)
+    return set(r.stdout.split()) if r.returncode == 0 else None
+
+
+def resurrect_dir_for(socket_path):
+    r = subprocess.run(["tmux", "-S", socket_path, "show-options", "-gqv", "@resurrect-dir"],
+                        capture_output=True, text=True)
+    d = r.stdout.strip()
+    return Path(d.replace("~", str(Path.home()), 1)) if d else Path.home() / ".tmux" / "resurrect"
+
+
+class additive_restore_guard:
+    """Make restore.sh safe to run against a server that already has sessions.
+
+    restore.sh recreates every session in the layout file; for a session
+    name that already exists it would add panes to / kill panes in the live
+    one. So, for the duration of the restore only:
+      - `last` points at a copy of the layout with every pane/window line of
+        an already-live session removed, so restore.sh only creates the
+        missing sessions;
+      - @resurrect-never-overwrite is set, which stops restore.sh's
+        "server has exactly one pane, so treat it as scratch" logic from
+        overwriting that pane or killing session 0.
+    Both are put back on exit."""
+
+    def __init__(self, socket_path, existing):
+        self.sock, self.existing = socket_path, existing
+
+    def __enter__(self):
+        rdir = resurrect_dir_for(self.sock)
+        last = rdir / "last"
+        self.last, self.orig_target, self.tmp = last, os.readlink(last) if last.is_symlink() else None, None
+        kept, skipped = [], set()
+        for line in (rdir / last.resolve().name).read_text().splitlines(keepends=True):
+            f = line.split("\t")
+            if f[0] in ("pane", "window") and len(f) > 1 and f[1] in self.existing:
+                skipped.add(f[1])
+                continue
+            kept.append(line)
+        self.tmp = rdir / f".additive_{os.getpid()}.txt"
+        self.tmp.write_text("".join(kept))
+        last.unlink(missing_ok=True)
+        last.symlink_to(self.tmp.name)
+        subprocess.run(["tmux", "-S", self.sock, "set-option", "-g", "@resurrect-never-overwrite", "1"])
+        print(f"additive restore: keeping {len(skipped)} session(s) already on the server untouched")
+        return self
+
+    def __exit__(self, *exc):
+        subprocess.run(["tmux", "-S", self.sock, "set-option", "-gu", "@resurrect-never-overwrite"])
+        self.last.unlink(missing_ok=True)
+        if self.orig_target:
+            self.last.symlink_to(self.orig_target)
+        if self.tmp:
+            self.tmp.unlink(missing_ok=True)
 
 
 def acquire_own_server():
@@ -210,6 +274,9 @@ def main():
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--own-server", action="store_true", help="use a private throwaway tmux server")
     mode.add_argument("--server", metavar="ID", help="restore into an existing running server named ID (tmux -L ID)")
+    p.add_argument("--restart", action="store_true",
+                    help="default mode only: restart tmux.service first (kills the running server and "
+                         "everything in it) instead of adding the restored sessions to it")
     p.add_argument("--snapshot", default=None,
                     help="desktop-snapshot JSON to source the workspace/monitor mapping from "
                          "(default: prompt interactively - see restore_plan.choose_snapshot_interactive)")
@@ -238,8 +305,15 @@ def main():
     # server outright - including this script's own, if it's running
     # inside one of them, mid-restore. Detect and refuse rather than let
     # that happen.
+    default_socket = str(TMUX_SOCKET_DIR / "default")
+    # Default mode adds to an already-running default server and only
+    # restarts it when asked (--restart) or when there isn't one.
+    existing = None
+    if not args.own_server and not args.server and not args.restart:
+        existing = live_sessions(default_socket)
+    will_restart = not args.own_server and not args.server and existing is None
     running_inside_this_server = (
-        not args.own_server and not args.server
+        will_restart
         and os.environ.get("TMUX", "").split(",")[0] == str(TMUX_SOCKET_DIR / "default")
     )
     if running_inside_this_server:
@@ -278,8 +352,10 @@ def main():
             socket_path = acquire_own_server()
         elif args.server:
             socket_path = acquire_named_server(args.server)
-        else:
+        elif will_restart:
             socket_path = acquire_default_server()
+        else:
+            socket_path = default_socket
 
         # Repoint tmux-resurrect's own 'last'/pane_contents.tar.gz to match
         # the CHOSEN snapshot's moment, not whatever resurrect save happens
@@ -288,13 +364,19 @@ def main():
         # snapshot used to still restore the newest tmux state regardless).
         restore_plan.sync_resurrect_to_snapshot(snap.get("timestamp"), socket_path)
 
-        restore_tmux(socket_path)
+        if existing:
+            with additive_restore_guard(socket_path, existing):
+                restore_tmux(socket_path)
+        else:
+            restore_tmux(socket_path)
+        # Sessions this run created; None = everything on the server is ours.
+        new_sessions = (live_sessions(socket_path) - existing) if existing else None
 
         # restore.sh's own attempt at this (switch-client-based) fails
         # outright with no attached client - see
         # restore_active_windows_and_panes's docstring for why this redoes
         # it headlessly instead of accepting the fidelity loss.
-        restore_plan.restore_active_windows_and_panes(snap, socket_path)
+        restore_plan.restore_active_windows_and_panes(snap, socket_path, only_sessions=new_sessions)
 
         if args.no_place:
             print("--no-place given: tmux sessions restored, skipping Hyprland placement.")
@@ -309,7 +391,8 @@ def main():
 
         restore_plan.apply_tmux(snap, resume=not args.no_resume, pane_contents=args.pane_contents,
                                  exclude_session=args.exclude_session, manage_daemon=False,
-                                 confirm_full_resume=not args.no_confirm_full_resume)
+                                 confirm_full_resume=not args.no_confirm_full_resume,
+                                 only_sessions=new_sessions)
 
         if app_decisions:
             restore_plan.apply_selected(app_decisions)
