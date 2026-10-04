@@ -682,7 +682,17 @@ PanelWindow {
                     navRepeatTimer.stop();
                     _navRepeatFn = null;
                 }
-                Keys.onReleased: event => { _stopNavRepeat(); }
+                // The Wayland/Qt stack here delivers native key-repeat as a
+                // flood of RELEASE events flagged isAutoRepeat=true (not
+                // repeated press events) -- confirmed live 2026-10-04, see
+                // the mirrored PRESS/START/DELAY/dozens-of-RELEASE+STOP
+                // sequence in `journalctl --user -u quickshell.service`.
+                // Without this guard, the very first synthetic release
+                // landed within milliseconds of arming the delay timer and
+                // killed the repeat before a single tick could fire --
+                // exactly the "moves once, then nothing" symptom reported.
+                // Only a genuine key-up should actually stop it.
+                Keys.onReleased: event => { if (!event.isAutoRepeat) _stopNavRepeat(); }
 
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) {
