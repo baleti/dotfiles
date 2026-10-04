@@ -946,6 +946,13 @@ Item {
                 fontSize: root.pillFont
                 btnGap: Math.max(1, Math.round(2 * root.pillScale))
                 btnHPad: Math.max(4, Math.round(8 * root.pillScale))
+                // Room between the left edge and the right-hand pills;
+                // beyond this Workspaces.qml windows itself around the
+                // active workspace with "…+N" stubs instead of overlapping.
+                maxWidth: root.width - HyprGaps.left - HyprGaps.right - rightRow.width - 12
+                    - 2 * Math.max(5, Math.round(Theme.pillPadH * root.pillScale))
+                    - (submapItem.visible ? submapItem.width + leftRow.spacing : 0)
+                    - leftRow.spacing
                 // Rename's own TextInput grabs real QML focus itself
                 // (Workspaces.qml's onVisibleChanged), so this only needs
                 // to hand focus back on close -- same as the graph pills'
@@ -954,7 +961,7 @@ Item {
                 onRenamingChanged: if (!renaming) root.refocusActivePanel()
             }
         }
-        Submap { fontSize: root.pillFont }
+        Submap { id: submapItem; fontSize: root.pillFont }
     }
 
     Connections { target: leftRow; function onWidthChanged() { root.recheckCrowding(); } }
