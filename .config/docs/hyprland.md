@@ -25,7 +25,27 @@ Fires once per Hyprland session start (not on every config reload — that
 distinction matters for the pinned-app hide logic, see the file's own
 comments). Starts, in order:
 
-1. `wl-paste --watch scripts/cliphist-store-logged.sh` — clipboard history,
+1. `systemctl --user import-environment HYPRLAND_INSTANCE_SIGNATURE
+   WAYLAND_DISPLAY && systemctl --user restart claude-usage.service
+   desktop-snapshot.service quickshell.service` — chained with `&&` in one
+   `hl.exec_cmd` (not two calls) so the restart can't race ahead of the
+   import. This process is Hyprland's own child, so it already has both
+   vars; `import-environment` copies their current values into the
+   `systemd --user` *manager's* own environment block, which every unit
+   that manager subsequently starts or restarts inherits automatically —
+   fixes the root cause (confirmed independently for claude-usage-daemon.py
+   2026-09-08, desktop-snapshot's snapshot.py 2026-09-18, and quickshell's
+   workspace pill 2026-10-03) where a `systemd --user` unit isn't a child
+   of Hyprland and so never gets these vars on its own, and a later
+   crash/`Restart=always` respawn skips `After=graphical-session.target`
+   entirely and just re-execs against whatever the manager's environment
+   happens to be — see the handler's own comment for the fast-boot race
+   this doesn't cover (a unit racing ahead of this import on its very
+   first start) and why these three are explicitly restarted here rather
+   than relying on target ordering alone. `notifyd`/`sysmond` don't need
+   this (they don't call `hyprctl` at startup), which is why they're not
+   in that restart list.
+2. `wl-paste --watch scripts/cliphist-store-logged.sh` — clipboard history,
    with `CLIPBOARD_STATE=sensitive` deliberately overridden (inside the
    wrapper script now, not inline here) so password-manager copies are
    still retained (retention is bounded by `cliphist-expire` instead, see
@@ -33,26 +53,34 @@ comments). Starts, in order:
    copy-time per entry, since cliphist itself keeps none — see
    [rust-tools.md](rust-tools.md)'s clipboard-picker entry for what reads
    that log (`$date:` in the picker's own query DSL).
-2. `notifyd/target/release/notifyd` — see [rust-tools.md](rust-tools.md).
-3. `sysmon/target/release/sysmond` — see [rust-tools.md](rust-tools.md).
-4. `scripts/wallpaper-watch.sh` — see [theming.md](theming.md).
-5. `xrdb -merge ~/.config/nsxiv/xresources` (if present) — loads nsxiv's X
+3. `xrdb -merge ~/.config/nsxiv/xresources` (if present) — loads nsxiv's X
    resources into XWayland immediately, since wallpaper-watch.sh might not
    fire again this session.
-6. `scripts/wallpaper-rotate.sh` — rotates `~/wallpapers` every 6h (moved
+4. `scripts/wallpaper-rotate.sh` — rotates `~/wallpapers` every 6h (moved
    2026-08-29 from a 15-min "for now" testing cadence). Plain
    `hl.exec_cmd`/`sleep`-loop, not a systemd unit — see
    [theming.md](theming.md) for why, and what to reconsider if it's ever
    seen crashing.
-7. `qs -n -d` — the quickshell bar. **waybar's autostart line is commented
-   out here** (2026-08-27) in favor of this; see
-   [desktop-apps.md](desktop-apps.md#waybar-legacy) for its current status
-   and the rollback note.
-8. Every `apps.lua` entry launches hidden into its own
+5. Every `apps.lua` entry launches hidden into its own
    `special:scratch_<slug>` workspace (a one-shot class→slug table armed
    for `AUTOSTART_HIDE_GRACE_MS` = 120s, to avoid swallowing a later manual
    launch's window — see the file's comments for why arming has to happen
    inside the `hyprland.start` handler, not at file scope).
+
+`notifyd`, `sysmond`, and (2026-10-04) the quickshell bar are **not**
+started from this handler at all — they're `systemd --user` units
+(`Restart=always`, started independently via `WantedBy=default.target`
+once the graphical session is up), not `hl.exec_cmd` autostart lines. See
+[rust-tools.md](rust-tools.md) for the first two and
+[quickshell-bar.md](quickshell-bar.md) for the bar — including why
+restarting the bar by hand means `systemctl --user restart
+quickshell.service`, never a bare `qs kill` + manual relaunch from
+whatever shell you happen to be in. **waybar's own autostart line is
+commented out** right above where quickshell used to be launched inline
+(2026-08-27, in favor of the quickshell bar) — see
+[desktop-apps.md](desktop-apps.md#waybar-legacy) for its current status
+and the rollback note (now: re-enable that line, then `systemctl --user
+disable --now quickshell.service`).
 
 ## Pinned app launchers (`apps.lua` + `keybinds.lua`)
 

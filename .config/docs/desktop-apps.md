@@ -108,5 +108,6 @@ documented here rather than dropped:
   per connected monitor).
 
 **Rollback**: uncomment the `waybar` line in `hyprland.lua`'s autostart
-block and kill/disable `qs -n -d` if running (see the comment right above
-that line).
+block and `systemctl --user disable --now quickshell.service` (moved off
+a bare `qs -n -d` exec_cmd line to a systemd unit 2026-10-04 — see
+[quickshell-bar.md](quickshell-bar.md)).
