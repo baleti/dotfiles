@@ -128,9 +128,12 @@ Item {
     }
 
     // Stops ClaudeUsageExpanded's hold-to-repeat row navigation (started
-    // from handleKey() above) once the held key comes back up.
+    // from handleKey() above) once the held key comes back up. Native
+    // key-repeat here delivers a flood of RELEASE events flagged
+    // isAutoRepeat=true (confirmed live 2026-10-04, see AppLauncher.qml's
+    // identical comment) -- only a genuine key-up should actually stop it.
     Keys.onReleased: event => {
-        if (claudeUsageExpanded.expanded)
+        if (!event.isAutoRepeat && claudeUsageExpanded.expanded)
             claudeUsageExpanded._stopNavRepeat();
     }
 

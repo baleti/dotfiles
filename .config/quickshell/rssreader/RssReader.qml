@@ -559,7 +559,10 @@ PanelWindow {
             navRepeatTimer.stop();
             keyScope._navRepeatFn = null;
         }
-        Keys.onReleased: event => { keyScope._stopNavRepeat(); }
+        // Native key-repeat here delivers a flood of RELEASE events flagged
+        // isAutoRepeat=true (confirmed live 2026-10-04, see AppLauncher.qml's
+        // identical comment) -- only a genuine key-up should actually stop it.
+        Keys.onReleased: event => { if (!event.isAutoRepeat) keyScope._stopNavRepeat(); }
 
         Keys.onPressed: event => {
             const k = event.key;
@@ -761,7 +764,12 @@ PanelWindow {
                                     navRepeatTimer.stop();
                                     _navRepeatFn = null;
                                 }
-                                Keys.onReleased: e => { _stopNavRepeat(); }
+                                // Native key-repeat here delivers a flood of
+                                // RELEASE events flagged isAutoRepeat=true
+                                // (confirmed live 2026-10-04, see
+                                // AppLauncher.qml's identical comment) -- only
+                                // a genuine key-up should actually stop it.
+                                Keys.onReleased: e => { if (!e.isAutoRepeat) _stopNavRepeat(); }
 
                                 Keys.onPressed: e => {
                                     if (e.key === Qt.Key_Escape) {

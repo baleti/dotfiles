@@ -454,7 +454,11 @@ PanelWindow {
                     navRepeatTimer.stop();
                     _navRepeatFn = null;
                 }
-                Keys.onReleased: event => { _stopNavRepeat(); }
+                // Native key-repeat here delivers a flood of RELEASE events
+                // flagged isAutoRepeat=true (confirmed live 2026-10-04, see
+                // AppLauncher.qml's identical comment) -- only a genuine
+                // key-up should actually stop the repeat.
+                Keys.onReleased: event => { if (!event.isAutoRepeat) _stopNavRepeat(); }
 
                 Keys.onPressed: event => {
                     const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
