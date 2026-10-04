@@ -735,7 +735,11 @@ PanelWindow {
                             event.accepted = true;
                         }
                     }
-                    Keys.onReleased: event => { root._stopNavRepeat(); }
+                    // Native key-repeat here delivers a flood of RELEASE
+                    // events flagged isAutoRepeat=true (confirmed live
+                    // 2026-10-04, see AppLauncher.qml's identical comment)
+                    // -- only a genuine key-up should actually stop it.
+                    Keys.onReleased: event => { if (!event.isAutoRepeat) root._stopNavRepeat(); }
                 }
             }
 
@@ -1161,6 +1165,9 @@ PanelWindow {
                 event.accepted = true;
             }
         }
-        Keys.onReleased: event => { root._stopNavRepeat(); }
+        // Native key-repeat here delivers a flood of RELEASE events flagged
+        // isAutoRepeat=true (confirmed live 2026-10-04, see AppLauncher.qml's
+        // identical comment) -- only a genuine key-up should actually stop it.
+        Keys.onReleased: event => { if (!event.isAutoRepeat) root._stopNavRepeat(); }
     }
 }
