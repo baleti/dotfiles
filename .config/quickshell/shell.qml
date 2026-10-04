@@ -295,6 +295,14 @@ ShellRoot {
                     width: panel.width - bar.openPanelsLeftEdge
                     height: mprisPicker.showing ? 0 : bar.panelGridHeight
                 }
+
+                // Workspace right-click dropdown (Bar.qml's wsMenuBox).
+                Region {
+                    x: bar.wsMenuBox.x
+                    y: bar.wsMenuBox.y
+                    width: bar.wsMenuBox.visible ? bar.wsMenuBox.width : 0
+                    height: bar.wsMenuBox.visible ? bar.wsMenuBox.height : 0
+                }
             }
 
             // mod+CTRL+m (media), mod+CTRL+c (calendar), and mod+n/p/m/t/d

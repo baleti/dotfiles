@@ -57,6 +57,7 @@ Row {
         // fire onExited on its own -- clear the hover-preview state
         // explicitly so it can't get stuck showing.
         root.cancelHoverPreview();
+        root.closeMenu();
         root.renamingId = ws.id;
         root.renameCollision = false;
     }
@@ -100,6 +101,56 @@ Row {
     }
 
     Process { id: renameProc }
+
+    // ---- right-click action menu ----------------------------------------
+    //
+    // Right-click a pill to open its action list in a dropdown below it
+    // (rendered by Bar.qml, like the hover preview; shell.qml's input mask
+    // includes it while open). Closes when an action is picked, when the
+    // pill is left-clicked, or when the pointer leaves both the pill and the
+    // dropdown (a short grace timer covers the gap between the two).
+    readonly property var menuActions: [
+        { label: "rename", run: ws => root.startRename(ws) }
+    ]
+    property int menuId: -1
+    property var menuWs: null
+    // Bottom-left of the right-clicked pill, scene coordinates.
+    property point menuAnchor: Qt.point(0, 0)
+
+    function openMenu(ws, anchorX, anchorY) {
+        root.cancelHoverPreview();
+        menuCloseTimer.stop();
+        root.menuWs = ws;
+        root.menuId = ws.id;
+        root.menuAnchor = Qt.point(anchorX, anchorY);
+    }
+
+    function closeMenu() {
+        root.menuId = -1;
+        root.menuWs = null;
+    }
+
+    function scheduleMenuClose() {
+        menuCloseTimer.restart();
+    }
+
+    function cancelMenuClose() {
+        menuCloseTimer.stop();
+    }
+
+    function runMenuAction(i) {
+        const ws = root.menuWs;
+        root.closeMenu();
+        if (ws)
+            root.menuActions[i].run(ws);
+    }
+
+    Timer {
+        id: menuCloseTimer
+        interval: 150
+        repeat: false
+        onTriggered: root.closeMenu()
+    }
 
     // ---- hover-preview capture -----------------------------------------
     //
@@ -379,7 +430,6 @@ Row {
             readonly property bool isActive: modelData.active
             readonly property bool isUrgent: modelData.urgent
             readonly property bool isRenaming: root.renamingId === modelData.id
-
             implicitWidth: (isRenaming ? Math.max(renameInput.implicitWidth, 30) : label.implicitWidth) + root.btnHPad * 2
             implicitHeight: 24
             width: implicitWidth
@@ -450,16 +500,23 @@ Row {
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
                 cursorShape: Qt.PointingHandCursor
                 onClicked: mouse => {
-                    if (mouse.button === Qt.RightButton)
-                        root.startRename(wsBtn.modelData);
-                    else
-                        root.switchToWorkspace(wsBtn.modelData.id);
+                    const p = wsBtn.mapToItem(null, 0, wsBtn.height);
+                    if (mouse.button === Qt.RightButton) {
+                        root.openMenu(wsBtn.modelData, p.x, p.y);
+                        return;
+                    }
+                    root.closeMenu();
+                    root.switchToWorkspace(wsBtn.modelData.id);
                 }
                 onEntered: {
+                    root.cancelMenuClose();
                     const p = wsBtn.mapToItem(null, 0, wsBtn.height);
                     root.requestHoverPreview(wsBtn.modelData, p.x, p.y);
                 }
-                onExited: root.cancelHoverPreview()
+                onExited: {
+                    root.cancelHoverPreview();
+                    root.scheduleMenuClose();
+                }
             }
         }
     }
