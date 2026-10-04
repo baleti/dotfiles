@@ -71,7 +71,7 @@ hl.config({
         enabled = false,
     },
 
-    -- Window groups (tabs) -- see keybinds.lua for mainMod+G (toggle) and
+    -- Window groups (tabs) -- see keybinds.lua for CTRL+mainMod+G (toggle) and
     -- mainMod+bracketleft/bracketright (prev/next tab within a group).
     -- https://wiki.hypr.land/Configuring/Variables/#group
     group = {
