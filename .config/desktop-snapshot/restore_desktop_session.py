@@ -299,6 +299,8 @@ def main():
                          "snapshots, or ones from before that field existed). Not needed for a snapshot "
                          "where every claude pane already has session_id - most recent ones do.")
     p.add_argument("--exclude-session", metavar="JSONL_STEM", help="see restore_plan.py --exclude-session")
+    p.add_argument("--skip-session", action="append", default=[], metavar="UUID",
+                   help="don't resume this conversation (repeatable); transcripts ending in /exit are skipped automatically")
     args = p.parse_args()
 
     # Default mode restarts tmux.service, which kills every pane on that
@@ -392,7 +394,7 @@ def main():
         restore_plan.apply_tmux(snap, resume=not args.no_resume, pane_contents=args.pane_contents,
                                  exclude_session=args.exclude_session, manage_daemon=False,
                                  confirm_full_resume=not args.no_confirm_full_resume,
-                                 only_sessions=new_sessions)
+                                 only_sessions=new_sessions, skip_sessions=set(args.skip_session))
 
         if app_decisions:
             restore_plan.apply_selected(app_decisions)

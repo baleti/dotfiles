@@ -779,6 +779,24 @@ def transcript_exists(config_dir, session_id, cwd):
     return (base / "projects" / proj_name / f"{session_id}.jsonl").is_file()
 
 
+def transcript_ends_with_exit(config_dir, session_id, cwd):
+    """True if the transcript's last real user/assistant entries include a
+    /exit command - the conversation was deliberately closed after the
+    snapshot (or from the Android app) and shouldn't be resumed."""
+    config_dir = sanitize_config_dir(config_dir)
+    proj_name = cwd.replace("/", "-") if cwd else "-home-user1"
+    base = Path(config_dir) if config_dir else Path.home() / ".claude"
+    path = base / "projects" / proj_name / f"{session_id}.jsonl"
+    if not path.is_file():
+        return False
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        f.seek(max(0, f.tell() - 65536))
+        tail = f.read().decode(errors="replace").splitlines()[-30:]
+    real = [l for l in tail if '"type":"user"' in l or '"type":"assistant"' in l]
+    return any("<command-name>/exit</command-name>" in l for l in real[-3:])
+
+
 def account_for_config_dir(cfg_dir):
     """Mirrors snapshot.py's own account_for_config_dir() - kept as a
     small local copy rather than importing that module, since nothing
@@ -967,19 +985,19 @@ def confirm_full_session_resume(claude_idx, live):
 
 
 def apply_tmux(snap, resume=False, pane_contents=None, exclude_session=None, manage_daemon=True,
-               confirm_full_resume=True, only_sessions=None):
+               confirm_full_resume=True, only_sessions=None, skip_sessions=()):
     was_active = stop_desktop_snapshot() if manage_daemon else False
     try:
         _apply_tmux_body(snap, resume=resume, pane_contents=pane_contents,
                          exclude_session=exclude_session, confirm_full_resume=confirm_full_resume,
-                         only_sessions=only_sessions)
+                         only_sessions=only_sessions, skip_sessions=skip_sessions)
     finally:
         if manage_daemon and was_active:
             start_desktop_snapshot()
 
 
 def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=None,
-                     confirm_full_resume=True, only_sessions=None):
+                     confirm_full_resume=True, only_sessions=None, skip_sessions=()):
     hypr_state = snap.get("hyprland", {})
     mapping = build_session_workspace_map(hypr_state, snap.get("tmux", {}))
     if not mapping:
@@ -1093,6 +1111,10 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
                 continue
             for p in panes:
                 cwd = p.get("claude_cwd") or p.get("cwd")  # see build_session_workspace_map's comment
+                sid = p.get("session_id")
+                if sid and (sid in skip_sessions or transcript_ends_with_exit(p.get("config_dir"), sid, cwd)):
+                    print(f"  {sess}:{window_index}.{p['pane_index']}: {sid} was /exit-ed - not resuming")
+                    continue
                 inject_resume(sess, window_index, p["pane_index"], p.get("config_dir"), p.get("account"),
                               p.get("session_id"), cwd, get_pane_dir, exclude_jsonl)
                 # Launching 100+ claude processes back-to-back with no
@@ -1150,6 +1172,9 @@ def main():
     p.add_argument("--exclude-session", metavar="JSONL_STEM",
                    help="skip this jsonl file (by stem/uuid) when matching --resume uuids "
                         "- use this session's own id to avoid self-matching")
+    p.add_argument("--skip-session", action="append", default=[], metavar="UUID",
+                   help="with --resume: don't resume this conversation (repeatable). Conversations whose "
+                        "transcript already ends in /exit are skipped automatically.")
     p.add_argument("--no-confirm-full-resume", action="store_true",
                    help="with --resume: don't do the follow-up pass that selects 'Resume full "
                         "session as-is' (option 2) on claude's resume-from-summary menu. On by "
@@ -1175,7 +1200,7 @@ def main():
             print("--apply-tmux requires --yes (this launches processes and moves workspaces).", file=sys.stderr)
             sys.exit(1)
         apply_tmux(snap, resume=args.resume, pane_contents=args.pane_contents, exclude_session=args.exclude_session,
-                   confirm_full_resume=not args.no_confirm_full_resume)
+                   confirm_full_resume=not args.no_confirm_full_resume, skip_sessions=set(args.skip_session))
     else:
         print_plan(snap)
 
