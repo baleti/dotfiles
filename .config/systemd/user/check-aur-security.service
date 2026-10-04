@@ -1,0 +1,9 @@
+[Unit]
+Description=Check installed AUR packages for recent security incidents and email an alert if found
+
+[Service]
+Type=oneshot
+ExecStart=/home/user1/bin/cron/check-aur-security.sh
+
+[Install]
+WantedBy=default.target
