@@ -121,7 +121,7 @@ def find_best_snapshot():
     return str(best) if tmux_workspace_mapping_count(best) > 0 else str(DEFAULT)
 
 
-def restore_active_windows_and_panes(snap, socket_path):
+def restore_active_windows_and_panes(snap, socket_path, only_sessions=None):
     """Set each session's current window and each window's active pane
     using fully-qualified targets (`select-window`/`select-pane -t
     "session:window[.pane]"`) - unlike restore.sh's own attempt at this
@@ -148,7 +148,7 @@ def restore_active_windows_and_panes(snap, socket_path):
                                capture_output=True, text=True).stdout.split())
     for sess in snap.get("tmux", {}).get("sessions", []):
         name = sess["name"]
-        if name not in live:
+        if name not in live or (only_sessions is not None and name not in only_sessions):
             continue
         for win in sess.get("windows", []):
             widx = win["index"]
@@ -967,18 +967,19 @@ def confirm_full_session_resume(claude_idx, live):
 
 
 def apply_tmux(snap, resume=False, pane_contents=None, exclude_session=None, manage_daemon=True,
-               confirm_full_resume=True):
+               confirm_full_resume=True, only_sessions=None):
     was_active = stop_desktop_snapshot() if manage_daemon else False
     try:
         _apply_tmux_body(snap, resume=resume, pane_contents=pane_contents,
-                         exclude_session=exclude_session, confirm_full_resume=confirm_full_resume)
+                         exclude_session=exclude_session, confirm_full_resume=confirm_full_resume,
+                         only_sessions=only_sessions)
     finally:
         if manage_daemon and was_active:
             start_desktop_snapshot()
 
 
 def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=None,
-                     confirm_full_resume=True):
+                     confirm_full_resume=True, only_sessions=None):
     hypr_state = snap.get("hyprland", {})
     mapping = build_session_workspace_map(hypr_state, snap.get("tmux", {}))
     if not mapping:
@@ -987,6 +988,11 @@ def _apply_tmux_body(snap, resume=False, pane_contents=None, exclude_session=Non
 
     live = set(subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
                                capture_output=True, text=True).stdout.split())
+    if only_sessions is not None:
+        # Additive restore into an already-populated server: leave sessions
+        # that were live beforehand completely alone (no placement, no
+        # claude --resume typed into their panes).
+        live &= set(only_sessions)
     todo = {s: m for s, m in mapping.items() if s in live}
     missing = [s for s in mapping if s not in live]
     if missing:
