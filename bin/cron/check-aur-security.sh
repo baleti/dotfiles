@@ -13,13 +13,41 @@
 #      news (catches things reported after the fact, not via PKGBUILD change).
 #   3. Emails baleti3266@gmail.com if ANYTHING looks suspicious, in either the
 #      current installed state or a future change - not just new updates.
+#   4. Emails baleti3266@gmail.com if the check ITSELF fails to run (e.g. the
+#      claude binary not on PATH, a crash in the python helper, network
+#      down) - a silent failure here means packages go unreviewed with no
+#      visible gap, which is worse than a false negative from the review
+#      itself (see the 2026-09-06 PATH incident this is modeled on).
 set -eu
 
 STATEDIR="$HOME/.local/share/aur-security-check"
 LOGDIR="$STATEDIR/logs"
 DIFFDIR="$STATEDIR/pending-diffs"
+MAILBIN="/home/user1/.config/claude-email/mail"
 mkdir -p "$LOGDIR"
 LOGFILE="$LOGDIR/$(date +%Y-%m-%d_%H%M%S).log"
+
+on_failure() {
+  rc=$?
+  line=$1
+  set +e
+  {
+    echo "=== check-aur-security.sh FAILED at line $line (exit $rc), $(date -Is) ==="
+  } >>"$LOGFILE" 2>&1
+  tail_output=$(tail -n 60 "$LOGFILE" 2>/dev/null)
+  "$MAILBIN" send --to baleti3266@gmail.com \
+    --subject "AUR security check FAILED to run ($(date +%Y-%m-%d))" \
+    --body "The check-aur-security.sh cron job itself failed (exit $rc) at line $line, $(date -Is) - this is separate from a package being flagged suspicious.
+
+This means AUR packages were NOT reviewed this cycle. Treat their state as unreviewed/unknown, not clean, until a run succeeds - check manually if this recurs.
+
+Log file: $LOGFILE
+
+Last 60 lines of the log:
+$tail_output" >>"$LOGFILE" 2>&1
+  exit "$rc"
+}
+trap 'on_failure $LINENO' ERR
 
 {
   echo "=== deterministic PKGBUILD diff pass ==="
