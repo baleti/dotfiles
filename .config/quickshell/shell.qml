@@ -191,18 +191,14 @@ ShellRoot {
         }
     }
 
-    // TEMPORARILY DISABLED 2026-09-13: launcher/ (QueryDsl.qml's dependents)
-    // is mid-edit from a concurrent session and RssReader fails to load
-    // ("RssReader is not a type"), which was taking the whole shell down.
-    // Re-enable once that edit settles.
-    // Variants {
-    //     model: Quickshell.screens
-    //
-    //     RssReader {
-    //         required property var modelData
-    //         screen: modelData
-    //     }
-    // }
+    Variants {
+        model: Quickshell.screens
+
+        RssReader {
+            required property var modelData
+            screen: modelData
+        }
+    }
 
     Variants {
         model: Quickshell.screens

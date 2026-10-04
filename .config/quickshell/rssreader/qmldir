@@ -1,1 +1,2 @@
 singleton RssQueryHistory 1.0 RssQueryHistory.qml
+RssReader 1.0 RssReader.qml

@@ -752,16 +752,16 @@ PanelWindow {
                                 // this TextInput since it owns its own
                                 // Keys.onPressed.
                                 property var _navRepeatFn: null
-                                Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
-                                Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (search._navRepeatFn) search._navRepeatFn() }
+                                Timer { id: searchNavRepeatDelay; interval: 600; onTriggered: searchNavRepeatTimer.start() }
+                                Timer { id: searchNavRepeatTimer; interval: 40; repeat: true; onTriggered: if (search._navRepeatFn) search._navRepeatFn() }
                                 function _startNavRepeat(fn) {
                                     _navRepeatFn = fn;
                                     fn();
-                                    navRepeatDelay.restart();
+                                    searchNavRepeatDelay.restart();
                                 }
                                 function _stopNavRepeat() {
-                                    navRepeatDelay.stop();
-                                    navRepeatTimer.stop();
+                                    searchNavRepeatDelay.stop();
+                                    searchNavRepeatTimer.stop();
                                     _navRepeatFn = null;
                                 }
                                 // Native key-repeat here delivers a flood of
