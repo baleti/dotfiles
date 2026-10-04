@@ -257,16 +257,116 @@ Row {
         }
     }
 
+    // ---- overflow: ellipsis windowing -----------------------------------
+    //
+    // Bar.qml sets maxWidth to the room left between the neighbouring
+    // pills. When every workspace doesn't fit, only a window of pills
+    // around the ACTIVE workspace is shown, with a "…+N" stub on each side
+    // that has hidden workspaces (so which side(s) get cut follows the
+    // active workspace). Widths are measured with FontMetrics rather than
+    // read off the delegates, so the window can be chosen before any
+    // delegate exists (no layout feedback loop).
+    property real maxWidth: Infinity
+
+    FontMetrics {
+        id: fm
+        font.family: Theme.fontFamily
+        font.pixelSize: root.fontSize
+    }
+
+    // Exclude special/scratch workspaces (negative ids, per Hyprland
+    // convention) -- these back the mod+<key> pinned-app scratch feature in
+    // hyprland/keybinds.lua, not a real workspace to switch to. Scoped to
+    // this bar's own monitor.
+    readonly property var allWs: Hyprland.workspaces.values.filter(ws => ws.id > 0 && ws.monitor?.name === root.screen.name)
+
+    // [lo, hi] inclusive indices into allWs that stay visible.
+    readonly property var range: {
+        const list = root.allWs;
+        const n = list.length;
+        if (n === 0)
+            return [0, -1];
+        const pad = root.btnHPad * 2;
+        const gap = root.btnGap;
+        const w = list.map(ws => fm.advanceWidth(ws.name) + pad);
+        const stubW = hidden => fm.advanceWidth("+" + hidden + "\u2026") + pad;
+        function cost(lo, hi) {
+            let sum = 0;
+            for (let i = lo; i <= hi; i++)
+                sum += w[i];
+            let items = hi - lo + 1;
+            sum += gap * (items - 1);
+            if (lo > 0) {
+                sum += stubW(lo) + gap;
+            }
+            if (hi < n - 1) {
+                sum += stubW(n - 1 - hi) + gap;
+            }
+            return sum;
+        }
+        if (cost(0, n - 1) <= root.maxWidth)
+            return [0, n - 1];
+        let a = list.findIndex(ws => ws.active);
+        if (a < 0)
+            a = 0;
+        let lo = a, hi = a;
+        // Grow alternately right/left around the active workspace until
+        // neither side fits (the active one is always kept, even if the
+        // budget is smaller than that).
+        let progress = true;
+        while (progress) {
+            progress = false;
+            if (hi < n - 1 && cost(lo, hi + 1) <= root.maxWidth) {
+                hi++;
+                progress = true;
+            }
+            if (lo > 0 && cost(lo - 1, hi) <= root.maxWidth) {
+                lo--;
+                progress = true;
+            }
+        }
+        return [lo, hi];
+    }
+    readonly property int hiddenBefore: root.range[0]
+    readonly property int hiddenAfter: root.allWs.length - 1 - root.range[1]
+
+    component Stub: Rectangle {
+        id: stub
+        required property int count
+        required property int target   // workspace id to jump to on click
+        implicitHeight: 24
+        implicitWidth: stubLabel.implicitWidth + root.btnHPad * 2
+        radius: 7
+        color: stubMouse.containsMouse ? Qt.rgba(0.2, 0.8, 1, 0.15) : "transparent"
+        Text {
+            id: stubLabel
+            anchors.centerIn: parent
+            text: "+" + stub.count + "\u2026"
+            color: Theme.muted
+            font.family: Theme.fontFamily
+            font.pixelSize: root.fontSize
+        }
+        MouseArea {
+            id: stubMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.switchToWorkspace(stub.target)
+        }
+    }
+
+    Stub {
+        visible: root.hiddenBefore > 0
+        count: root.hiddenBefore
+        target: root.allWs[Math.max(0, root.hiddenBefore - 1)]?.id ?? 1
+    }
+
     Repeater {
         // ScriptModel (not a plain array) so Repeater diffs by object
         // identity -- an unrelated workspace change elsewhere used to
         // rebuild every delegate here, causing a visible flicker.
         model: ScriptModel {
-            // Exclude special/scratch workspaces (negative ids, per
-            // Hyprland convention) -- these back the mod+<key> pinned-app
-            // scratch feature in hyprland/keybinds.lua, not a real
-            // workspace to switch to. Scoped to this bar's own monitor.
-            values: Hyprland.workspaces.values.filter(ws => ws.id > 0 && ws.monitor?.name === root.screen.name)
+            values: root.allWs.slice(root.range[0], root.range[1] + 1)
         }
 
         Rectangle {
@@ -360,5 +460,11 @@ Row {
                 onExited: root.cancelHoverPreview()
             }
         }
+    }
+
+    Stub {
+        visible: root.hiddenAfter > 0
+        count: root.hiddenAfter
+        target: root.allWs[Math.min(root.allWs.length - 1, root.range[1] + 1)]?.id ?? 1
     }
 }
