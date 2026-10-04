@@ -289,7 +289,7 @@ Row {
         const pad = root.btnHPad * 2;
         const gap = root.btnGap;
         const w = list.map(ws => fm.advanceWidth(ws.name) + pad);
-        const stubW = hidden => fm.advanceWidth("+" + hidden + "\u2026") + pad;
+        const stubW = hidden => fm.advanceWidth("\u2026+" + hidden) + pad;
         function cost(lo, hi) {
             let sum = 0;
             for (let i = lo; i <= hi; i++)
@@ -334,6 +334,7 @@ Row {
         id: stub
         required property int count
         required property int target   // workspace id to jump to on click
+        property bool leftSide: false
         implicitHeight: 24
         implicitWidth: stubLabel.implicitWidth + root.btnHPad * 2
         radius: 7
@@ -341,7 +342,7 @@ Row {
         Text {
             id: stubLabel
             anchors.centerIn: parent
-            text: "+" + stub.count + "\u2026"
+            text: stub.leftSide ? "+" + stub.count + "\u2026" : "\u2026+" + stub.count
             color: Theme.muted
             font.family: Theme.fontFamily
             font.pixelSize: root.fontSize
@@ -357,6 +358,7 @@ Row {
 
     Stub {
         visible: root.hiddenBefore > 0
+        leftSide: true
         count: root.hiddenBefore
         target: root.allWs[Math.max(0, root.hiddenBefore - 1)]?.id ?? 1
     }
