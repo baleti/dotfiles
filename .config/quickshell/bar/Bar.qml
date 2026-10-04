@@ -18,6 +18,7 @@ Item {
     // keyboard-focus mode from each panel's own open/closed state.
     readonly property alias mediaPanel: mediaExpanded
     readonly property alias calendarPanel: calendarExpanded
+    readonly property alias wsMenuBox: wsMenu
     readonly property bool anyGraphExpanded: netPill.expanded || cpuPill.expanded || memPill.expanded || diskPill.expanded || tempPill.expanded || gpuPill.expanded
 
     // shell.qml watches this to tell "a panel just opened" (reclaim window
@@ -1537,6 +1538,112 @@ Item {
             asynchronous: true
             cache: false
             source: claudeUsageThumb.src.thumbReady ? "file://" + claudeUsageThumb.src.thumbImagePath : ""
+        }
+    }
+
+    // Right-click action list for a workspace pill (Workspaces.qml's
+    // openMenu). Styled after the Claude Agents Android app's message popup
+    // (Theme.showMenu there): rounded surface, 1px accent stroke, bold rows
+    // with thin dividers, and a highlight on hover. shell.qml's input mask
+    // includes this rectangle while it's shown.
+    Rectangle {
+        id: wsMenu
+        readonly property var src: workspaces
+        readonly property int fontPx: src.fontSize
+        readonly property int rowH: Math.round(fontPx * 2.6)
+        readonly property int padV: Math.max(4, Math.round(fontPx * 0.5))
+        readonly property int padH: src.btnHPad
+
+        visible: src.menuId >= 0
+        x: Math.max(4, Math.min(src.menuAnchor.x, root.screen.width - width - 4))
+        y: src.menuAnchor.y + 4
+        width: menuWidest + padH * 2 + Math.round(fontPx * 1.2)
+        height: src.menuActions.length * rowH + padV * 2
+        z: 100
+        color: Theme.bg
+        border.color: Theme.cyan
+        border.width: 1
+        radius: Theme.rounding
+
+        // Widest label sets the width, so the dropdown fits its own text.
+        readonly property real menuWidest: {
+            let w = 0;
+            for (const a of src.menuActions)
+                w = Math.max(w, menuMeasure.advanceWidth(a.label));
+            return w;
+        }
+        FontMetrics {
+            id: menuMeasure
+            font.family: Theme.fontFamily
+            font.pixelSize: wsMenu.fontPx
+            font.bold: true
+        }
+
+        function rowAt(y: real): int {
+            const i = Math.floor((y - padV) / rowH);
+            return i >= 0 && i < src.menuActions.length ? i : -1;
+        }
+
+        property int hoverIndex: -1
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: wsMenu.hoverIndex >= 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onEntered: wsMenu.src.cancelMenuClose()
+            onExited: {
+                wsMenu.hoverIndex = -1;
+                wsMenu.src.scheduleMenuClose();
+            }
+            onPositionChanged: mouse => wsMenu.hoverIndex = wsMenu.rowAt(mouse.y)
+            onClicked: mouse => {
+                const i = wsMenu.rowAt(mouse.y);
+                if (i >= 0)
+                    wsMenu.src.runMenuAction(i);
+            }
+        }
+
+        Repeater {
+            model: wsMenu.src.menuActions
+
+            Item {
+                required property var modelData
+                required property int index
+                x: 0
+                y: wsMenu.padV + index * wsMenu.rowH
+                width: wsMenu.width
+                height: wsMenu.rowH
+
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.leftMargin: 2
+                    anchors.rightMargin: 2
+                    radius: 6
+                    color: wsMenu.hoverIndex === index ? Qt.rgba(0.2, 0.8, 1, 0.15) : "transparent"
+                }
+
+                Rectangle {
+                    visible: index > 0
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: wsMenu.padH
+                    anchors.rightMargin: wsMenu.padH
+                    height: 1
+                    color: Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.2)
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: wsMenu.padH + Math.round(wsMenu.fontPx * 0.4)
+                    text: modelData.label
+                    color: Theme.cyan
+                    font.family: Theme.fontFamily
+                    font.pixelSize: wsMenu.fontPx
+                    font.bold: true
+                }
+            }
         }
     }
 
