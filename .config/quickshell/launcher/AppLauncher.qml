@@ -780,6 +780,7 @@ PanelWindow {
                             } else {
                                 root.selected = Math.min(root.results.length - 1,
                                                           root.selected + Math.max(1, Math.floor(list.height / 30)));
+                                list.positionViewAtIndex(root.selected, ListView.Contain);
                                 LauncherQueryHistory.record(query.text);
                             }
                         });
@@ -790,6 +791,7 @@ PanelWindow {
                                 root.acSel = Math.max(0, root.acSel - 7);
                             } else {
                                 root.selected = Math.max(0, root.selected - Math.max(1, Math.floor(list.height / 30)));
+                                list.positionViewAtIndex(root.selected, ListView.Contain);
                                 LauncherQueryHistory.record(query.text);
                             }
                         });
@@ -876,6 +878,11 @@ PanelWindow {
             clip: true
             model: root.results
             currentIndex: root.selected
+            // The built-in follow-current-item scroll animates over
+            // highlightMoveDuration, so a page jump's selection showed up
+            // offscreen and the view crept after it. Snap it instead; the
+            // page keys also positionViewAtIndex directly for the same reason.
+            highlightMoveDuration: 0
             boundsBehavior: Flickable.StopAtBounds
             topMargin: 4
             bottomMargin: 4
