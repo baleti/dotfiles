@@ -151,7 +151,14 @@ fn completions(q: &str, people: &[String]) -> (usize, Vec<(String, String)>) {
     let mut out = Vec::new();
     if let Some(body) = frag.strip_prefix("//") {
         // stage 1: the path (//face, //clip)
-        for (name, label) in [("face", "match a registered person's face"), ("clip", "match what the photo shows (CLIP text)")] {
+        for (name, label) in [
+            ("face", "photos showing a registered person"),
+            ("clip", "photos matching what they show (CLIP text)"),
+            ("name", "file name contains"),
+            ("path", "folder path contains"),
+            ("size", "file size, e.g. >5M or <200K"),
+            ("dm", "date modified, e.g. 2015-06 or >2015-06"),
+        ] {
             if name.starts_with(body) {
                 out.push((format!("//{name} "), label.to_string()));
             }
