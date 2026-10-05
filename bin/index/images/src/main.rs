@@ -291,7 +291,6 @@ impl App {
                 .unwrap_or(false);
             let _ = ok;
         });
-        self.close_now = true;
     }
 
     /// Thumbnail grid for zoomed-out views: square cells, score under each.
@@ -342,7 +341,6 @@ impl App {
                 }
             }
         });
-        self.close_now = true;
     }
 
     fn accept_candidate(&mut self) {
