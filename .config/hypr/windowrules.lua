@@ -53,7 +53,10 @@ hl.window_rule({
     name  = "architect-job-automation-no-focus",
     match = { class = "ArchitectJobAutomation" },
 
-    no_focus = true,
+    -- no_initial_focus, NOT no_focus: no_focus makes the window permanently
+    -- unfocusable (clicks and keys do nothing), which broke manual steps such as
+    -- solving a captcha. This only stops it grabbing focus when it first opens.
+    no_initial_focus = true,
 })
 
 -- Reddit architecture-engagement bot (systemd --user timer, 3x/day,
