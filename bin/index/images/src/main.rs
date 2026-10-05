@@ -26,6 +26,37 @@ struct Hit {
     remote: String,
     score: Option<f32>,
     thumb: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    mtime: Option<String>,
+}
+
+fn human_size(b: u64) -> String {
+    const U: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let (mut v, mut i) = (b as f64, 0);
+    while v >= 1024.0 && i < U.len() - 1 { v /= 1024.0; i += 1; }
+    if i == 0 { format!("{b} B") } else { format!("{v:.1} {}", U[i]) }
+}
+
+/// "2015-06-05T20:49:06.000Z" -> "2015-06-05 20:49"
+fn short_time(t: &str) -> String {
+    t.replace('T', " ").chars().take(16).collect()
+}
+
+/// Column x-positions for a row/header spanning [left, right]: name | path | size | modified | score.
+struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, date_x: f32, score_r: f32 }
+const NAME_W: f32 = 210.0;
+const SIZE_W: f32 = 84.0;
+const DATE_W: f32 = 140.0;
+const SCORE_W: f32 = 48.0;
+fn cols(left: f32, right: f32) -> Cols {
+    let score_r = right - 12.0;
+    let date_x = score_r - SCORE_W - 12.0 - DATE_W;
+    let size_r = date_x - 12.0;
+    let name_x = left;
+    let path_x = name_x + NAME_W + 12.0;
+    Cols { name_x, path_x, path_r: size_r - SIZE_W - 12.0, size_r, date_x, score_r }
 }
 
 #[derive(Deserialize)]
@@ -420,6 +451,17 @@ impl eframe::App for App {
                 ui.add_space(4.0);
 
                 // results list
+                if !self.hits.is_empty() {
+                    let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+                    let c = cols(hr.left() + 52.0 + 22.0, hr.right());
+                    let hp = ui.painter();
+                    let hf = egui::FontId::monospace(10.0);
+                    hp.text(egui::pos2(c.name_x, hr.top()), egui::Align2::LEFT_TOP, "NAME", hf.clone(), pal.dim);
+                    hp.text(egui::pos2(c.path_x, hr.top()), egui::Align2::LEFT_TOP, "PATH", hf.clone(), pal.dim);
+                    hp.text(egui::pos2(c.size_r, hr.top()), egui::Align2::RIGHT_TOP, "SIZE", hf.clone(), pal.dim);
+                    hp.text(egui::pos2(c.date_x, hr.top()), egui::Align2::LEFT_TOP, "MODIFIED", hf.clone(), pal.dim);
+                    hp.text(egui::pos2(c.score_r, hr.top()), egui::Align2::RIGHT_TOP, "SCORE", hf, pal.dim);
+                }
                 let hits = self.hits.clone();
                 let sel = self.selected;
                 let mut clicked: Option<usize> = None;
@@ -455,23 +497,28 @@ impl eframe::App for App {
                                     ui.painter().rect_filled(thumb_rect, 4.0, pal.border.gamma_multiply(0.5));
                                 }
                             }
-                            let name = short_name(&h.remote);
-                            let text_pos = egui::pos2(thumb_rect.right() + 12.0, rect.top() + 12.0);
-                            ui.painter().text(
-                                text_pos,
-                                egui::Align2::LEFT_TOP,
-                                name,
-                                egui::FontId::monospace(13.0),
-                                if selected { pal.text } else { pal.text.gamma_multiply(0.85) },
-                            );
+                            let c = cols(thumb_rect.right() + 12.0, rect.right());
+                            let y = rect.top() + 12.0;
+                            let short = short_name(&h.remote);
+                            let (dir, base) = match short.rsplit_once('/') {
+                                Some((d, b)) => (d.to_string(), b.to_string()),
+                                None => (String::new(), short.clone()),
+                            };
+                            let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
+                            let dim = pal.dim;
+                            let painter = ui.painter();
+                            let name_clip = egui::Rect::from_min_max(egui::pos2(c.name_x, rect.top()), egui::pos2(c.name_x + NAME_W, rect.bottom()));
+                            painter.with_clip_rect(name_clip).text(egui::pos2(c.name_x, y), egui::Align2::LEFT_TOP, base, egui::FontId::monospace(13.0), txt);
+                            let path_clip = egui::Rect::from_min_max(egui::pos2(c.path_x, rect.top()), egui::pos2(c.path_r, rect.bottom()));
+                            painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y + 2.0), egui::Align2::LEFT_TOP, dir, egui::FontId::monospace(11.0), dim);
+                            if let Some(sz) = h.size {
+                                painter.text(egui::pos2(c.size_r, y), egui::Align2::RIGHT_TOP, human_size(sz), egui::FontId::monospace(11.0), dim);
+                            }
+                            if let Some(t) = &h.mtime {
+                                painter.text(egui::pos2(c.date_x, y), egui::Align2::LEFT_TOP, short_time(t), egui::FontId::monospace(11.0), dim);
+                            }
                             if let Some(s) = h.score {
-                                ui.painter().text(
-                                    egui::pos2(rect.right() - 12.0, rect.top() + 12.0),
-                                    egui::Align2::RIGHT_TOP,
-                                    format!("{s:.2}"),
-                                    egui::FontId::monospace(12.0),
-                                    pal.accent,
-                                );
+                                painter.text(egui::pos2(c.score_r, y), egui::Align2::RIGHT_TOP, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
                             }
                             if selected {
                                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
