@@ -328,6 +328,23 @@ impl App {
             });
     }
 
+    /// Ctrl+Enter: show the photo selected in Dolphin, at its real folder on the gdrive mount.
+    fn reveal_selected(&mut self) {
+        let Some(h) = self.hits.get(self.selected).cloned() else { return };
+        let rel = short_name(&h.remote);
+        let local = format!("{}/gdrive-rclone-crypt/{}", std::env::var("HOME").unwrap_or("/home/user1".into()), rel);
+        std::thread::spawn(move || {
+            // dolphin --select opens the folder with the file highlighted; fall back to the folder alone
+            let ok = std::process::Command::new("dolphin").arg("--select").arg(&local).spawn().is_ok();
+            if !ok {
+                if let Some(dir) = Path::new(&local).parent() {
+                    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+                }
+            }
+        });
+        self.close_now = true;
+    }
+
     fn accept_candidate(&mut self) {
         if let Some((rep, _)) = self.cands.get(self.cand_sel).cloned() {
             let (start, _) = completions(&self.query, &self.people);
@@ -430,7 +447,7 @@ impl eframe::App for App {
 
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.hits.len();
-        let (down, up, left, right, pgdn, pgup, home, end, enter, esc, cj, ck) = ui.input(|i| {
+        let (down, up, left, right, pgdn, pgup, home, end, enter, ctrl_enter, esc, cj, ck) = ui.input(|i| {
             (
                 i.key_pressed(Key::ArrowDown),
                 i.key_pressed(Key::ArrowUp),
@@ -440,7 +457,8 @@ impl eframe::App for App {
                 i.key_pressed(Key::PageUp),
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::End),
-                i.key_pressed(Key::Enter),
+                i.key_pressed(Key::Enter) && !i.modifiers.ctrl,
+                i.key_pressed(Key::Enter) && i.modifiers.ctrl,
                 i.key_pressed(Key::Escape),
                 i.modifiers.ctrl && i.key_pressed(Key::J),
                 i.modifiers.ctrl && i.key_pressed(Key::K),
@@ -459,6 +477,7 @@ impl eframe::App for App {
             if end { self.selected = n - 1; }
         }
         if enter && n > 0 && !self.popup { self.open_selected(); }
+        if ctrl_enter && n > 0 && !self.popup { self.reveal_selected(); }
 
         egui::Frame::new()
             .fill(pal.bg)
