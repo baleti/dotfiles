@@ -29,6 +29,23 @@ add a new consumer, add its row here too.
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 | claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
 | claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s`, `/rv` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone) and always completes to whichever form (colon or via) is already being typed, never steers to via the way rss-reader/claude-history do |
+| images (photo search) | mod+Super_l → "Photo search" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/.cache/indexes/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
+
+**images (photo search) - its own grammar, same keys.** Not the verb grammar:
+the only forms are `//face <name>` (faces matching a registered person) and
+`//clip <text>` (CLIP text match); several `//` filters AND together, and
+bare words act as `//clip` plus any matching registered person. Keys follow
+the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
+`Home`/`End` jump, `Enter` opens, `Esc` closes.
+
+Completion: `Tab` (or `Ctrl+Space` when no popup is open) completes the
+fragment at the end of the query. One candidate completes immediately; two or
+more open a popup. Stage 1 completes `//` to `//face` / `//clip`; stage 2
+completes a person's name after `//face`. While the popup is open, typing
+narrows it in place, `Up`/`Down` or `Ctrl+j`/`Ctrl+k` move its highlight,
+`Tab` or `Enter` accepts the highlighted candidate, and `Esc` closes only the
+popup, not the window. `Ctrl+Space` does not AND-narrow here: the photo
+grammar has no verb stage to narrow.
 
 See [tmux.md](tmux.md) for the tmux bindings and [rust-tools.md](rust-tools.md)
 for winswitch and the GTK pickers.
