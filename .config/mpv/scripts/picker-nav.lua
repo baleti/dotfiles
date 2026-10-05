@@ -1,17 +1,27 @@
 -- ctrl+j / ctrl+k move the selection down / up in the built-in pickers (g p, g t, ...).
 -- console.lua binds those keys itself (submit / delete-to-eol) while it is open and they cannot be
 -- overridden from input.conf, so shadow them with later forced bindings while the console is open
--- and forward Ctrl+N / Ctrl+P, which the picker already understands.
+-- and run whatever the picker has bound to ctrl+n / ctrl+p. Injecting those keys with `keypress`
+-- does not reach the picker, so look up its script-binding command in input-bindings and call that.
 local mp = require "mp"
 
 local bound = false
 
+local function run_binding_of(key)
+    for _, b in ipairs(mp.get_property_native("input-bindings", {})) do
+        if b.section == "input_forced_console" and b.key:lower() == key then
+            mp.command(b.cmd)
+            return
+        end
+    end
+end
+
 local function bind()
     if bound then return end
     bound = true
-    mp.add_forced_key_binding("ctrl+j", "picker-nav-down", function() mp.commandv("keypress", "ctrl+n") end,
+    mp.add_forced_key_binding("ctrl+j", "picker-nav-down", function() run_binding_of("ctrl+n") end,
                               {repeatable = true})
-    mp.add_forced_key_binding("ctrl+k", "picker-nav-up", function() mp.commandv("keypress", "ctrl+p") end,
+    mp.add_forced_key_binding("ctrl+k", "picker-nav-up", function() run_binding_of("ctrl+p") end,
                               {repeatable = true})
 end
 
