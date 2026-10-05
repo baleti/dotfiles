@@ -1,0 +1,11 @@
+[Unit]
+Description=Photo search server for the images picker (CLIP + faces, 127.0.0.1:8765)
+
+[Service]
+WorkingDirectory=%h/.cache/indexes/photos
+ExecStart=%h/.cache/recoll-chroma/venv/bin/python %h/.cache/indexes/photos/search_server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
