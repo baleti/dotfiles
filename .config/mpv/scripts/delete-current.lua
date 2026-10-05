@@ -1,4 +1,4 @@
--- ctrl+x d: delete the file currently playing (not the playlist), after a y/n prompt.
+-- ctrl+x d: delete (rm) the file currently playing (not the playlist), after a y/n prompt.
 -- mpv has no native key chords, so ctrl+x arms a short-lived set of forced bindings.
 local mp = require "mp"
 
@@ -32,12 +32,12 @@ local function delete_current()
     local abs = mp.command_native({"expand-path", path})
     local pos = mp.get_property_number("playlist-pos", 0)
     local count = mp.get_property_number("playlist-count", 1)
-    local res = mp.command_native({name = "subprocess", args = {"gio", "trash", "--", abs}})
+    local res = mp.command_native({name = "subprocess", args = {"rm", "--", abs}})
     if res.status ~= 0 then
         mp.osd_message("Delete failed: " .. (res.stderr or ""):gsub("\n", " "), 3)
         return
     end
-    mp.osd_message("Trashed: " .. abs, 2)
+    mp.osd_message("Deleted: " .. abs, 2)
     if count > 1 then
         mp.commandv("playlist-remove", "current")
     else
