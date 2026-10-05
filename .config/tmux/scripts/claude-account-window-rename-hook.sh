@@ -106,6 +106,11 @@ if [ "$cur_cmd" = "claude" ]; then
     # (subagents) would otherwise be mistaken for the top-level session
     # this pane is actually running.
     claude_pid=$(pgrep -x -P "$pane_pid" claude | head -n1)
+    # tmux new-session/new-window with a command (claude-agents spawns,
+    # prefix+C-c resumes) makes claude the pane's own process, not a child.
+    if [ -z "$claude_pid" ] && [ "$(cat "/proc/$pane_pid/comm" 2>/dev/null)" = "claude" ]; then
+        claude_pid=$pane_pid
+    fi
     cfg_dir=""
     if [ -n "$claude_pid" ] && [ -r "/proc/$claude_pid/environ" ]; then
         cfg_dir=$(tr '\0' '\n' < "/proc/$claude_pid/environ" | sed -n 's/^CLAUDE_CONFIG_DIR=//p')
