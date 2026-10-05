@@ -118,6 +118,7 @@ struct App {
     query: String,
     last_sent: String,
     last_change: Instant,
+    cursor_end: bool,
     seq: u64,
     tx: Sender<Fetch>,
     rx: Receiver<Fetch>,
@@ -208,6 +209,7 @@ impl App {
             query: String::new(),
             last_sent: "\u{0}".into(), // force the first browse request
             last_change: Instant::now() - Duration::from_secs(1),
+            cursor_end: false,
             seq: 0,
             tx,
             rx,
@@ -331,6 +333,7 @@ impl App {
             let (start, _) = completions(&self.query, &self.people);
             self.query = apply(&self.query, start, &rep);
             self.last_change = Instant::now() - Duration::from_millis(200);
+            self.cursor_end = true;
         }
         self.popup = false;
     }
@@ -388,6 +391,7 @@ impl eframe::App for App {
                 1 => {
                     self.query = apply(&self.query, start, &cands[0].0);
                     self.last_change = Instant::now();
+                    self.cursor_end = true;
                 }
                 _ => {
                     self.cands = cands;
@@ -470,6 +474,16 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("󰍉").color(pal.accent).size(16.0));
+                            if self.cursor_end {
+                                // programmatic completion: park the caret after the inserted text
+                                self.cursor_end = false;
+                                let id = egui::Id::new("query");
+                                if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
+                                    let c = egui::text::CCursor::new(self.query.chars().count());
+                                    st.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                                    st.store(ui.ctx(), id);
+                                }
+                            }
                             let edit = egui::TextEdit::singleline(&mut self.query)
                                 .id(egui::Id::new("query"))
                                 .frame(egui::Frame::NONE)
