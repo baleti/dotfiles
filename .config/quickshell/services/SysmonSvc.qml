@@ -354,11 +354,14 @@ QtObject {
         root.diskUsage = out;
     }
 
-    // Wrapped in `timeout` because `df` stats every mount including the
-    // ~10 fuse.rclone / fuse.sshfs remotes here (see disk-usage-mounts.conf
-    // -- `gdrive:` is deliberately one of the surfaced mounts, so they
-    // can't just be `-x`'d out), and a stale remote wedges `df` in
-    // uninterruptible I/O indefinitely. Without the timeout a wedged run
+    // FUSE mounts are excluded (2026-10-05): a stale rclone/sshfs remote
+    // leaves `df` in uninterruptible (D state) I/O that even SIGKILL can't
+    // end, and those stuck tasks refuse to freeze, so every suspend failed
+    // ("Freezing user space processes failed", 600+ times overnight) and the
+    // machine eventually hung. Local mounts only; remotes can't be listed in
+    // disk-usage-mounts.conf any more.
+    // Still wrapped in `timeout` in case a local mount wedges: a stale
+    // remote wedges `df` in uninterruptible I/O indefinitely. Without the timeout a wedged run
     // sits at `running: true` forever: disk usage stops updating, and the
     // 60s timer firing again on top of the stuck child was orphaning
     // processes under quickshell's spawn path (observed as accumulating
@@ -366,7 +369,8 @@ QtObject {
     readonly property Process dfProc: Process {
         command: ["timeout", "-k", "2", "8",
                   "df", "--output=source,fstype,pcent,target",
-                  "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs"]
+                  "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs",
+                  "-x", "fuse", "-x", "fuse.rclone", "-x", "fuse.sshfs", "-x", "fuse.gvfsd-fuse", "-x", "fuse.portal", "-x", "fuse.mergerfs"]
         stdout: StdioCollector {
             onStreamFinished: root._parseDfOutput(text)
         }
