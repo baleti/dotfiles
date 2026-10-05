@@ -18,8 +18,7 @@ const SERVER: &str = "http://127.0.0.1:8765";
 const SCHEME: &str = "/home/user1/.local/state/quickshell/scheme.json";
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
 const TOP: usize = 150;
-const ROW_H: f32 = 64.0;
-const THUMB: f32 = 52.0;
+const GRID_BELOW: f32 = 110.0;
 
 #[derive(Deserialize, Clone)]
 struct Hit {
@@ -132,6 +131,8 @@ struct App {
     first_frame: bool,
     close_now: bool,
     people: Vec<String>,
+    /// thumbnail size in px; Ctrl+wheel / pinch changes it. Below GRID_BELOW the view is a grid.
+    thumb: f32,
     popup: bool,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
@@ -220,6 +221,7 @@ impl App {
             first_frame: true,
             close_now: false,
             people: Vec::new(),
+            thumb: 52.0,
             popup: false,
             cands: Vec::new(),
             cand_sel: 0,
@@ -290,6 +292,40 @@ impl App {
         self.close_now = true;
     }
 
+    /// Thumbnail grid for zoomed-out views: square cells, score under each.
+    fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hits: &[Hit], sel: usize,
+                 clicked: &mut Option<usize>, dbl: &mut bool) {
+        let pal = self.pal;
+        let t = self.thumb;
+        egui::ScrollArea::vertical()
+            .max_height(ui.available_height() - 28.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (idx, h) in hits.iter().enumerate() {
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + 14.0), egui::Sense::click());
+                        let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
+                        let selected = idx == sel;
+                        match self.texture(ctx, &h.thumb) {
+                            Some(tex) => { egui::Image::new(&tex).fit_to_exact_size(img.size()).paint_at(ui, img); }
+                            None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
+                        }
+                        if selected {
+                            ui.painter().rect_stroke(img.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
+                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                        }
+                        if let Some(sc) = h.score {
+                            ui.painter().text(egui::pos2(rect.left() + 2.0, img.bottom() + 1.0), egui::Align2::LEFT_TOP,
+                                format!("{sc:.2}"), egui::FontId::monospace(10.0), pal.accent);
+                        }
+                        if resp.clicked() { *clicked = Some(idx); }
+                        if resp.double_clicked() { *dbl = true; *clicked = Some(idx); }
+                    }
+                });
+            });
+    }
+
     fn accept_candidate(&mut self) {
         if let Some((rep, _)) = self.cands.get(self.cand_sel).cloned() {
             let (start, _) = completions(&self.query, &self.people);
@@ -320,6 +356,13 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let pal = self.pal;
+        // Ctrl+wheel and trackpad pinch: zoom the thumbnails, not the whole UI
+        let zd = ui.input(|i| i.zoom_delta());
+        if (zd - 1.0).abs() > 1e-4 {
+            self.thumb = (self.thumb * zd).clamp(36.0, 260.0);
+        }
+        ctx.set_zoom_factor(1.0);
+        let grid = self.thumb < GRID_BELOW;
 
         if self.close_now {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -383,10 +426,12 @@ impl eframe::App for App {
 
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.hits.len();
-        let (down, up, pgdn, pgup, home, end, enter, esc, cj, ck) = ui.input(|i| {
+        let (down, up, left, right, pgdn, pgup, home, end, enter, esc, cj, ck) = ui.input(|i| {
             (
                 i.key_pressed(Key::ArrowDown),
                 i.key_pressed(Key::ArrowUp),
+                i.key_pressed(Key::ArrowLeft),
+                i.key_pressed(Key::ArrowRight),
                 i.key_pressed(Key::PageDown),
                 i.key_pressed(Key::PageUp),
                 i.key_pressed(Key::Home),
@@ -399,8 +444,11 @@ impl eframe::App for App {
         });
         if esc && !self.popup { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         if n > 0 && !self.popup {
-            if down || cj { self.selected = (self.selected + 1).min(n - 1); }
-            if up || ck { self.selected = self.selected.saturating_sub(1); }
+            let cols = if grid { ((ui.available_width() / (self.thumb + 10.0)).floor() as usize).max(1) } else { 1 };
+            if grid && right { self.selected = (self.selected + 1).min(n - 1); }
+            if grid && left { self.selected = self.selected.saturating_sub(1); }
+            if down || cj { self.selected = (self.selected + cols).min(n - 1); }
+            if up || ck { self.selected = self.selected.saturating_sub(cols); }
             if pgdn { self.selected = (self.selected + 8).min(n - 1); }
             if pgup { self.selected = self.selected.saturating_sub(8); }
             if home { self.selected = 0; }
@@ -458,7 +506,7 @@ impl eframe::App for App {
                 ui.add_space(4.0);
 
                 // results list
-                if !self.hits.is_empty() {
+                if !self.hits.is_empty() && !grid {
                     let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
                     let c = cols(hr.left() + 52.0 + 22.0, hr.right());
                     let hp = ui.painter();
@@ -473,13 +521,18 @@ impl eframe::App for App {
                 let sel = self.selected;
                 let mut clicked: Option<usize> = None;
                 let mut dbl = false;
+                if grid {
+                    self.grid_view(ui, &ctx, &hits, sel, &mut clicked, &mut dbl);
+                } else {
                 egui::ScrollArea::vertical()
                     .max_height(ui.available_height() - 28.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        let row_h = (self.thumb + 12.0).max(64.0);
+                        let thumb = self.thumb;
                         for (idx, h) in hits.iter().enumerate() {
                             let (rect, resp) = ui.allocate_exact_size(
-                                egui::vec2(ui.available_width(), ROW_H),
+                                egui::vec2(ui.available_width(), row_h),
                                 egui::Sense::click(),
                             );
                             let selected = idx == sel;
@@ -492,8 +545,8 @@ impl eframe::App for App {
                                 );
                             }
                             let thumb_rect = egui::Rect::from_min_size(
-                                rect.min + egui::vec2(10.0, (ROW_H - THUMB) / 2.0),
-                                egui::vec2(THUMB, THUMB),
+                                rect.min + egui::vec2(10.0, (row_h - thumb) / 2.0),
+                                egui::vec2(thumb, thumb),
                             );
                             match self.texture(&ctx, &h.thumb) {
                                 Some(t) => {
@@ -538,6 +591,7 @@ impl eframe::App for App {
                             ui.label(RichText::new("no matches").color(pal.dim));
                         }
                     });
+                }
                 if let Some(i) = clicked { self.selected = i; }
                 if dbl { self.open_selected(); }
 
