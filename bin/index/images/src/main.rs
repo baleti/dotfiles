@@ -100,6 +100,57 @@ struct App {
     missing: HashSet<String>,
     first_frame: bool,
     close_now: bool,
+    people: Vec<String>,
+    popup: bool,
+    cands: Vec<(String, String)>, // (replacement text, label)
+    cand_sel: usize,
+}
+
+#[derive(Deserialize)]
+struct PeopleReply {
+    people: Vec<String>,
+}
+
+/// Completion candidates for the fragment at the end of `q`.
+/// Returns (byte index where the fragment starts, candidates).
+fn completions(q: &str, people: &[String]) -> (usize, Vec<(String, String)>) {
+    let start = q.rfind(char::is_whitespace).map(|i| i + q[i..].chars().next().unwrap().len_utf8()).unwrap_or(0);
+    let frag = &q[start..];
+    let prev = q[..start].split_whitespace().last().unwrap_or("");
+    let mut out = Vec::new();
+    if let Some(body) = frag.strip_prefix("//") {
+        // stage 1: the path (//face, //clip)
+        for (name, label) in [("face", "match a registered person's face"), ("clip", "match what the photo shows (CLIP text)")] {
+            if name.starts_with(body) {
+                out.push((format!("//{name} "), label.to_string()));
+            }
+        }
+    } else if prev == "//face" || (prev.is_empty() && !frag.is_empty() && q[..start].trim().is_empty()) {
+        // stage 2 after //face (or a bare word that could name a person)
+        if !frag.is_empty() || prev == "//face" {
+            for n in people {
+                if n.to_lowercase().contains(&frag.to_lowercase()) {
+                    out.push((format!("{n} "), "registered person".to_string()));
+                }
+            }
+        }
+    }
+    (start, out)
+}
+
+fn apply(q: &str, start: usize, replacement: &str) -> String {
+    format!("{}{}", &q[..start], replacement)
+}
+
+fn fetch_people() -> Vec<String> {
+    ureq::get(&format!("{SERVER}/people"))
+        .timeout(Duration::from_secs(3))
+        .call()
+        .ok()
+        .and_then(|r| r.into_string().ok())
+        .and_then(|b| serde_json::from_str::<PeopleReply>(&b).ok())
+        .map(|p| p.people)
+        .unwrap_or_default()
 }
 
 impl App {
@@ -130,7 +181,12 @@ impl App {
             missing: HashSet::new(),
             first_frame: true,
             close_now: false,
+            people: Vec::new(),
+            popup: false,
+            cands: Vec::new(),
+            cand_sel: 0,
         };
+        app.people = fetch_people();
         app.send_query();
         app
     }
@@ -196,6 +252,15 @@ impl App {
         self.close_now = true;
     }
 
+    fn accept_candidate(&mut self) {
+        if let Some((rep, _)) = self.cands.get(self.cand_sel).cloned() {
+            let (start, _) = completions(&self.query, &self.people);
+            self.query = apply(&self.query, start, &rep);
+            self.last_change = Instant::now() - Duration::from_millis(200);
+        }
+        self.popup = false;
+    }
+
     fn texture(&mut self, ctx: &egui::Context, path: &str) -> Option<TextureHandle> {
         if let Some(t) = self.textures.get(path) { return Some(t.clone()); }
         if self.missing.contains(path) || !Path::new(path).exists() { return None; }
@@ -232,6 +297,52 @@ impl eframe::App for App {
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
         }
 
+        // completion keys: consumed before the text edit sees them (so Tab does not move focus)
+        let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
+        let ctrl_space = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Space));
+        if (tab || ctrl_space) && !self.popup {
+            let (start, cands) = completions(&self.query, &self.people);
+            match cands.len() {
+                0 => {}
+                1 => {
+                    self.query = apply(&self.query, start, &cands[0].0);
+                    self.last_change = Instant::now();
+                }
+                _ => {
+                    self.cands = cands;
+                    self.cand_sel = 0;
+                    self.popup = true;
+                }
+            }
+        } else if tab && self.popup {
+            self.accept_candidate();
+        }
+        if self.popup {
+            // popup keys: Up/Down or Ctrl+J/K move, Enter accepts, Esc closes only the popup
+            let (down, up, enter, esc, cj, ck) = ui.input(|i| {
+                (
+                    i.key_pressed(Key::ArrowDown),
+                    i.key_pressed(Key::ArrowUp),
+                    i.key_pressed(Key::Enter),
+                    i.key_pressed(Key::Escape),
+                    i.modifiers.ctrl && i.key_pressed(Key::J),
+                    i.modifiers.ctrl && i.key_pressed(Key::K),
+                )
+            });
+            let n = self.cands.len();
+            if esc { self.popup = false; }
+            else if enter { self.accept_candidate(); }
+            else if n > 0 {
+                if down || cj { self.cand_sel = (self.cand_sel + 1) % n; }
+                if up || ck { self.cand_sel = (self.cand_sel + n - 1) % n; }
+            }
+        }
+        // typing while the popup is open narrows it in place
+        if self.popup && self.query != self.last_sent {
+            let (_, cands) = completions(&self.query, &self.people);
+            if cands.is_empty() { self.popup = false; } else { self.cands = cands; self.cand_sel = 0; }
+        }
+
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.hits.len();
         let (down, up, pgdn, pgup, home, end, enter, esc, cj, ck) = ui.input(|i| {
@@ -248,8 +359,8 @@ impl eframe::App for App {
                 i.modifiers.ctrl && i.key_pressed(Key::K),
             )
         });
-        if esc { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
-        if n > 0 {
+        if esc && !self.popup { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+        if n > 0 && !self.popup {
             if down || cj { self.selected = (self.selected + 1).min(n - 1); }
             if up || ck { self.selected = self.selected.saturating_sub(1); }
             if pgdn { self.selected = (self.selected + 8).min(n - 1); }
@@ -257,7 +368,7 @@ impl eframe::App for App {
             if home { self.selected = 0; }
             if end { self.selected = n - 1; }
         }
-        if enter && n > 0 { self.open_selected(); }
+        if enter && n > 0 && !self.popup { self.open_selected(); }
 
         egui::Frame::new()
             .fill(pal.bg)
@@ -287,6 +398,23 @@ impl eframe::App for App {
                         });
                     });
 
+                if self.popup && !self.cands.is_empty() {
+                    ui.add_space(4.0);
+                    egui::Frame::new()
+                        .fill(pal.bg)
+                        .stroke(Stroke::new(1.0, pal.accent.gamma_multiply(0.6)))
+                        .corner_radius(6.0)
+                        .inner_margin(Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            for (i, (rep, label)) in self.cands.iter().enumerate().take(8) {
+                                let sel = i == self.cand_sel;
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(rep.trim_end()).monospace().color(if sel { pal.accent } else { pal.text }));
+                                    ui.label(RichText::new(label).color(pal.dim).size(11.0));
+                                });
+                            }
+                        });
+                }
                 ui.add_space(6.0);
                 ui.label(RichText::new(&self.status).color(if self.busy { pal.dim } else { pal.dim }).size(12.0));
                 ui.add_space(4.0);
