@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Photo search
+GenericName=Photo search
+Comment=Search photos by content (CLIP) and by person (faces)
+Exec=/home/user1/bin/index/images/target/release/images
+Icon=applications-graphics
+Terminal=false
+Categories=Graphics;Photography;
+Keywords=photo;photos;image;images;face;person;clip;search;
+StartupWMClass=images

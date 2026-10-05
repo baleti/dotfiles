@@ -1,0 +1,385 @@
+//! images: live photo search picker (mod+v-style list) over the CLIP + face
+//! indexes. The query engine runs in ~/.cache/indexes/photos/search_server.py
+//! (127.0.0.1:8765, keeps models loaded); this window is only the UI.
+//!
+//! Opens on the newest photos. Typing narrows the list as you type (debounced).
+//! Syntax: //face <name>   //clip brick   //face <name> //clip brick   or bare words.
+//! Keys: type to search, Up/Down or Ctrl+j/k move, PgUp/PgDn jump, Enter opens
+//! (photo is fetched from gdrive to /tmp and opened), Esc closes.
+
+use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Key, Margin, RichText, Stroke, TextureHandle};
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
+
+const SERVER: &str = "http://127.0.0.1:8765";
+const SCHEME: &str = "/home/user1/.local/state/quickshell/scheme.json";
+const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
+const TOP: usize = 150;
+const ROW_H: f32 = 64.0;
+const THUMB: f32 = 52.0;
+
+#[derive(Deserialize, Clone)]
+struct Hit {
+    remote: String,
+    score: Option<f32>,
+    thumb: String,
+}
+
+#[derive(Deserialize)]
+struct Reply {
+    count: usize,
+    results: Vec<Hit>,
+    #[serde(default)]
+    errors: Vec<String>,
+}
+
+/// Colours from the live Material You scheme (same file the quickshell pickers read).
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: Color32,
+    text: Color32,
+    dim: Color32,
+    border: Color32,
+    accent: Color32,
+    error: Color32,
+}
+
+fn hex(s: &str) -> Option<Color32> {
+    let s = s.strip_prefix('#')?;
+    if s.len() != 6 { return None; }
+    let v = u32::from_str_radix(s, 16).ok()?;
+    Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+fn load_palette() -> Palette {
+    let fallback = Palette {
+        bg: Color32::from_rgb(0x1a, 0x1a, 0x1a),
+        text: Color32::from_rgb(0xd8, 0xde, 0xe9),
+        dim: Color32::from_rgb(0xa0, 0xa8, 0xb0),
+        border: Color32::from_rgb(0x59, 0x59, 0x59),
+        accent: Color32::from_rgb(0x33, 0xcc, 0xff),
+        error: Color32::from_rgb(0xff, 0x55, 0x55),
+    };
+    let Ok(text) = std::fs::read_to_string(SCHEME) else { return fallback };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return fallback };
+    let g = |k: &str, d: Color32| v.get(k).and_then(|x| x.as_str()).and_then(hex).unwrap_or(d);
+    Palette {
+        bg: g("surface", fallback.bg),
+        text: g("onSurface", fallback.text),
+        dim: g("onSurfaceVariant", fallback.dim),
+        border: g("outlineVariant", fallback.border),
+        accent: g("primary", fallback.accent),
+        error: g("error", fallback.error),
+    }
+}
+
+/// background query results come back tagged with the request sequence number
+struct Fetch {
+    seq: u64,
+    query: String,
+    result: Result<Reply, String>,
+}
+
+struct App {
+    pal: Palette,
+    query: String,
+    last_sent: String,
+    last_change: Instant,
+    seq: u64,
+    tx: Sender<Fetch>,
+    rx: Receiver<Fetch>,
+    hits: Vec<Hit>,
+    count: usize,
+    selected: usize,
+    status: String,
+    busy: bool,
+    textures: HashMap<String, TextureHandle>,
+    missing: HashSet<String>,
+    first_frame: bool,
+    close_now: bool,
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut fonts = FontDefinitions::default();
+        if let Ok(bytes) = std::fs::read(FONT) {
+            fonts.font_data.insert("jbmono".into(), std::sync::Arc::new(FontData::from_owned(bytes)));
+            for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+                fonts.families.entry(fam).or_default().insert(0, "jbmono".into());
+            }
+        }
+        cc.egui_ctx.set_fonts(fonts);
+        let (tx, rx) = channel();
+        let mut app = Self {
+            pal: load_palette(),
+            query: String::new(),
+            last_sent: "\u{0}".into(), // force the first browse request
+            last_change: Instant::now() - Duration::from_secs(1),
+            seq: 0,
+            tx,
+            rx,
+            hits: Vec::new(),
+            count: 0,
+            selected: 0,
+            status: "connecting to search server…".into(),
+            busy: false,
+            textures: HashMap::new(),
+            missing: HashSet::new(),
+            first_frame: true,
+            close_now: false,
+        };
+        app.send_query();
+        app
+    }
+
+    fn send_query(&mut self) {
+        self.seq += 1;
+        let seq = self.seq;
+        let q = self.query.trim().to_string();
+        self.last_sent = self.query.clone();
+        self.busy = true;
+        let tx: Sender<Fetch> = self.tx.clone();
+        std::thread::spawn(move || {
+            let url = format!("{SERVER}/query");
+            let r = ureq::get(&url)
+                .query("q", &q)
+                .query("top", &TOP.to_string())
+                .timeout(Duration::from_secs(120))
+                .call()
+                .map_err(|e| format!("search server unreachable: {e}"))
+                .and_then(|resp| resp.into_string().map_err(|e| e.to_string()))
+                .and_then(|body| serde_json::from_str::<Reply>(&body).map_err(|e| e.to_string()));
+            let _ = tx.send(Fetch { seq, query: q, result: r });
+        });
+    }
+
+    fn drain(&mut self) {
+        while let Ok(f) = self.rx.try_recv() {
+            if f.seq != self.seq { continue; } // stale: a newer query was already sent
+            self.busy = false;
+            match f.result {
+                Ok(r) => {
+                    self.count = r.count;
+                    self.hits = r.results;
+                    self.selected = self.selected.min(self.hits.len().saturating_sub(1));
+                    self.missing.clear();
+                    self.status = if !r.errors.is_empty() {
+                        r.errors.join("; ")
+                    } else if f.query.is_empty() {
+                        format!("newest {} photos", self.hits.len())
+                    } else {
+                        format!("{} matches", r.count)
+                    };
+                }
+                Err(e) => self.status = e,
+            }
+        }
+    }
+
+    fn open_selected(&mut self) {
+        let Some(h) = self.hits.get(self.selected).cloned() else { return };
+        let name = h.remote.rsplit('/').next().unwrap_or("photo.jpg").to_string();
+        let dst = format!("/tmp/images-open-{name}");
+        // fetch the full photo in the background, then hand it to xdg-open
+        std::thread::spawn(move || {
+            let ok = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("rclone cat '{}' > '{}' && xdg-open '{}'", h.remote, dst, dst))
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            let _ = ok;
+        });
+        self.close_now = true;
+    }
+
+    fn texture(&mut self, ctx: &egui::Context, path: &str) -> Option<TextureHandle> {
+        if let Some(t) = self.textures.get(path) { return Some(t.clone()); }
+        if self.missing.contains(path) || !Path::new(path).exists() { return None; }
+        let img = image::open(path).ok()?.to_rgb8();
+        let (w, h) = img.dimensions();
+        let ci = egui::ColorImage::from_rgb([w as usize, h as usize], img.as_raw());
+        let tex = ctx.load_texture(path, ci, egui::TextureOptions::LINEAR);
+        self.textures.insert(path.to_string(), tex.clone());
+        Some(tex)
+    }
+}
+
+fn short_name(remote: &str) -> String {
+    // "gdrive-crypt:photos/2015-07_Phone/20150605_204906.jpg" -> "photos/2015-07_Phone/20150605_204906.jpg"
+    remote.split_once(':').map(|(_, p)| p.trim_start_matches('/')).unwrap_or(remote).to_string()
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let pal = self.pal;
+
+        if self.close_now {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        self.drain();
+
+        // debounced live search: fire once typing pauses
+        if self.query != self.last_sent && self.last_change.elapsed() >= Duration::from_millis(160) {
+            self.send_query();
+        }
+        if self.first_frame {
+            self.first_frame = false;
+            ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+        }
+
+        // keys (only the ones the list owns; typing goes to the query box)
+        let n = self.hits.len();
+        let (down, up, pgdn, pgup, home, end, enter, esc, cj, ck) = ui.input(|i| {
+            (
+                i.key_pressed(Key::ArrowDown),
+                i.key_pressed(Key::ArrowUp),
+                i.key_pressed(Key::PageDown),
+                i.key_pressed(Key::PageUp),
+                i.key_pressed(Key::Home),
+                i.key_pressed(Key::End),
+                i.key_pressed(Key::Enter),
+                i.key_pressed(Key::Escape),
+                i.modifiers.ctrl && i.key_pressed(Key::J),
+                i.modifiers.ctrl && i.key_pressed(Key::K),
+            )
+        });
+        if esc { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+        if n > 0 {
+            if down || cj { self.selected = (self.selected + 1).min(n - 1); }
+            if up || ck { self.selected = self.selected.saturating_sub(1); }
+            if pgdn { self.selected = (self.selected + 8).min(n - 1); }
+            if pgup { self.selected = self.selected.saturating_sub(8); }
+            if home { self.selected = 0; }
+            if end { self.selected = n - 1; }
+        }
+        if enter && n > 0 { self.open_selected(); }
+
+        egui::Frame::new()
+            .fill(pal.bg)
+            .stroke(Stroke::new(1.0, pal.border))
+            .corner_radius(10.0)
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                // search row
+                egui::Frame::new()
+                    .stroke(Stroke::new(1.0, pal.border))
+                    .corner_radius(6.0)
+                    .inner_margin(Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("󰍉").color(pal.accent).size(16.0));
+                            let edit = egui::TextEdit::singleline(&mut self.query)
+                                .id(egui::Id::new("query"))
+                                .frame(egui::Frame::NONE)
+                                .hint_text(RichText::new("//face <name>   //clip brick   //face <name> //clip brick").color(pal.dim))
+                                .text_color(pal.text)
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Body);
+                            let r = ui.add(edit);
+                            if r.changed() { self.last_change = Instant::now(); }
+                            // keep focus here even after a click elsewhere in the picker
+                            if !r.has_focus() { r.request_focus(); }
+                        });
+                    });
+
+                ui.add_space(6.0);
+                ui.label(RichText::new(&self.status).color(if self.busy { pal.dim } else { pal.dim }).size(12.0));
+                ui.add_space(4.0);
+
+                // results list
+                let hits = self.hits.clone();
+                let sel = self.selected;
+                let mut clicked: Option<usize> = None;
+                let mut dbl = false;
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - 28.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (idx, h) in hits.iter().enumerate() {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), ROW_H),
+                                egui::Sense::click(),
+                            );
+                            let selected = idx == sel;
+                            if selected {
+                                ui.painter().rect_filled(rect, 6.0, pal.accent.gamma_multiply(0.18));
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+                                    1.0,
+                                    pal.accent,
+                                );
+                            }
+                            let thumb_rect = egui::Rect::from_min_size(
+                                rect.min + egui::vec2(10.0, (ROW_H - THUMB) / 2.0),
+                                egui::vec2(THUMB, THUMB),
+                            );
+                            match self.texture(&ctx, &h.thumb) {
+                                Some(t) => {
+                                    egui::Image::new(&t).fit_to_exact_size(thumb_rect.size())
+                                        .paint_at(ui, thumb_rect);
+                                }
+                                None => {
+                                    ui.painter().rect_filled(thumb_rect, 4.0, pal.border.gamma_multiply(0.5));
+                                }
+                            }
+                            let name = short_name(&h.remote);
+                            let text_pos = egui::pos2(thumb_rect.right() + 12.0, rect.top() + 12.0);
+                            ui.painter().text(
+                                text_pos,
+                                egui::Align2::LEFT_TOP,
+                                name,
+                                egui::FontId::monospace(13.0),
+                                if selected { pal.text } else { pal.text.gamma_multiply(0.85) },
+                            );
+                            if let Some(s) = h.score {
+                                ui.painter().text(
+                                    egui::pos2(rect.right() - 12.0, rect.top() + 12.0),
+                                    egui::Align2::RIGHT_TOP,
+                                    format!("{s:.2}"),
+                                    egui::FontId::monospace(12.0),
+                                    pal.accent,
+                                );
+                            }
+                            if selected {
+                                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                            }
+                            if resp.clicked() { clicked = Some(idx); }
+                            if resp.double_clicked() { dbl = true; clicked = Some(idx); }
+                        }
+                        if hits.is_empty() && !self.busy {
+                            ui.add_space(20.0);
+                            ui.label(RichText::new("no matches").color(pal.dim));
+                        }
+                    });
+                if let Some(i) = clicked { self.selected = i; }
+                if dbl { self.open_selected(); }
+
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("{} shown · ↑↓ / ^j^k move · PgUp/PgDn · Home/End · ⏎ open · esc close", self.hits.len()))
+                        .color(pal.dim).size(11.0),
+                );
+            });
+
+        // keep polling so thumbnails and results appear without input
+        ctx.request_repaint_after(Duration::from_millis(120));
+    }
+}
+
+fn main() -> eframe::Result {
+    let opts = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("images")
+            .with_inner_size([760.0, 620.0])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top(),
+        ..Default::default()
+    };
+    eframe::run_native("images", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
