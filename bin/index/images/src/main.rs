@@ -1278,7 +1278,7 @@ impl eframe::App for App {
                             if !self.list_focus && !r.has_focus() { r.request_focus(); }
                         });
                     });
-                let y = row.response.rect.bottom() - 4.0;
+                let y = row.response.rect.bottom() + 2.0;
                 ui.painter().hline(row.response.rect.left()..=row.response.rect.right(), y, Stroke::new(1.0, pal.border));
                 ui.add_space(4.0);
 
