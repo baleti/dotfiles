@@ -6,7 +6,7 @@ blob with bytes.find, maps hits back to lines with searchsorted, then checks the
 other terms per candidate. Each keystroke is one scan over RAM; nothing on disk
 is touched and no per-query process is started.
 """
-import bisect, collections, json, os, re, sqlite3, threading, time
+import bisect, collections, ctypes, json, os, re, sqlite3, subprocess, threading, time
 import numpy as np
 
 # file kinds by extension: `//mime <kind>` (any extension name also works, e.g. //mime pdf)
@@ -56,6 +56,26 @@ def hidden_folders(query):
         if not re.search(r"//path\s+" + re.escape(keyword) + r"(?=\s|$)", query, re.I):
             out.append(folder)
     return out
+
+_NATIVE = None
+
+def _native():
+    """libscan.so (scan.c): substring scans over the name blob in C. Built on first use; None if unavailable."""
+    global _NATIVE
+    if _NATIVE is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        so, src = os.path.join(here, "libscan.so"), os.path.join(here, "scan.c")
+        try:
+            if not os.path.exists(so) or os.path.getmtime(src) > os.path.getmtime(so):
+                subprocess.run(["gcc", "-O3", "-shared", "-fPIC", "-o", so, src], check=True, capture_output=True)
+            lib = ctypes.CDLL(so)
+            P, I = ctypes.c_void_p, ctypes.c_int64
+            lib.mark_lines.argtypes = [P, I, P, I, P, I, P]
+            lib.filter_lines.argtypes = [P, I, P, I, P, I, P, I, P]
+            _NATIVE = lib
+        except Exception:
+            _NATIVE = False
+    return _NATIVE or None
 
 def expand_path_value(value):
     """What a //path value means on disk, lowercased: gdrive/x -> the gdrive mount, ~/x -> home."""
@@ -205,6 +225,7 @@ class NameTable:
         self.off_masks = {}    # off-by-default folder -> bool mask over paths
         self.dirs = []         # every distinct folder, sorted (for //path completion)
         self._tm_cache = collections.OrderedDict()
+        self._last = None
         self.blob = b""
         self.starts = np.zeros(0, np.int64)
         self.sizes = []
@@ -247,6 +268,7 @@ class NameTable:
                               for f, _ in off_default_entries()}
             self.dirs = dirs
             self._tm_cache = collections.OrderedDict()
+            self._last = None
             self.sort_keys = keys
             self._cache = None
             self.dates = [d for d in dates if d]
@@ -303,6 +325,27 @@ class NameTable:
                 order = self.orders["date_desc"]
             sort_keys = self.sort_keys
             ext_codes, ext_names, size_arr = self.ext_codes, self.ext_names, self.size_arr
+        rest_key = (tuple(sorts), desc, tuple(wanted), tuple(tags["size"]), tuple(tags["path"]),
+                    tuple(tags["name"]), tuple(tags["dm"]), tuple(hidden_folders(q)))
+        with self.lock:
+            last = self._last
+        # Typing usually extends the previous query: only the new word is checked, over the previous matches
+        if last is not None and last[0] == rest_key and terms:
+            old = last[1]
+            if terms == old:
+                return last[2]
+            narrow = (len(terms) == len(old) + 1 and terms[:len(old)] == old) or \
+                     (len(terms) == len(old) and terms[:-1] == old[:-1] and bool(old) and terms[-1].startswith(old[-1]))
+            if narrow:
+                keep = self._filter_candidates(last[2], terms[-1].encode("utf-8"))
+                idx = last[2][keep]
+                if tags["name"] or tags["dm"]:
+                    rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"]}
+                    idx = np.array([i for i in idx.tolist()
+                                    if tag_ok(i, self.paths, self.sizes, self.mtimes, [], rest_tags)], np.int64)
+                with self.lock:
+                    self._last = (rest_key, terms, idx)
+                return idx
         mask = np.ones(N, bool)
         for f in hidden_folders(q):
             if f in self.off_masks:
@@ -330,6 +373,8 @@ class NameTable:
             rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"]}
             idx = np.array([i for i in idx.tolist()
                             if tag_ok(i, self.paths, self.sizes, self.mtimes, [], rest_tags)], np.int64)
+        with self.lock:
+            self._last = (rest_key, terms, idx)
         return idx
 
     def _cached_term_mask(self, term):
@@ -346,6 +391,19 @@ class NameTable:
                 self._tm_cache.popitem(last=False)
         return m
 
+    def _filter_candidates(self, cand, term):
+        """Which candidate lines (indices into paths) contain term."""
+        lib = _native()
+        if lib is not None and len(term):
+            keep = np.zeros(len(cand), np.uint8)
+            t = np.frombuffer(term, np.uint8)
+            cand = np.ascontiguousarray(cand, np.int64)
+            lib.filter_lines(self.arr.ctypes.data, len(self.arr), self.starts.ctypes.data, len(self.starts),
+                             cand.ctypes.data, len(cand), t.ctypes.data, len(term), keep.ctypes.data)
+            return keep.astype(bool)
+        return np.array([term in self.blob[int(self.starts[i]):int(self.starts[i + 1]) if i + 1 < len(self.starts) else len(self.blob)]
+                         for i in cand], bool)
+
     def _term_mask(self, term):
         """Lines containing the bytes of term (terms hold no newline, so a match stays on one line)."""
         a = self.arr
@@ -353,6 +411,12 @@ class NameTable:
         mask = np.zeros(len(self.paths), bool)
         if m == 0 or m > n:
             return mask | (m == 0)
+        lib = _native()
+        if lib is not None:
+            out = np.zeros(len(self.paths), np.uint8)
+            t = np.frombuffer(term, np.uint8)
+            lib.mark_lines(a.ctypes.data, n, self.starts.ctypes.data, len(self.paths), t.ctypes.data, m, out.ctypes.data)
+            return out.view(bool)
         cand = np.flatnonzero(a[: n - m + 1] == term[0])
         for k in range(1, m):
             cand = cand[a[cand + k] == term[k]]
