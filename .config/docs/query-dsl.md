@@ -43,10 +43,24 @@ registered person.
 verb takes the rest of the query as Recoll query-language terms (words are
 ANDed, `OR`, `"phrase"`, `-term` as in Recoll), so `/fts dgcl hwo //mime pdf`
 finds PDFs whose contents contain both words. Other `//` filters still apply
-to its results. Only files that are in the Recoll (Xapian) index can match: a
-`/fts` query never shows a file that has not been content-indexed, so there is
-no "not indexed" row to explain. Without `/fts` nothing changes; name search
-covers every file regardless of content indexing. Keys follow
+to its results. Only files that are in a Recoll (Xapian) content index can
+match: a `/fts` query never shows a file that has not been content-indexed, so
+there is no "not indexed" row to explain. Name search (no verb) covers every
+file regardless of content indexing.
+
+**Index collections (`/fts/<index>`).** Content indexes are kept as named
+collections, one per folder under `~/.cache/indexes/` (currently `part3-books`
+and `professional-reference`). The verb pivots on a collection with a slash:
+`/fts/part3-books daniel essay career cdm //mime pdf` searches only that
+collection. Shorthands are allowed, resolved like type paths: an exact name,
+else a unique prefix, else letters in order, so `/fts/p3` finds
+`part3-books` (`p` then `3`). An ambiguous or unknown name makes the result
+list empty with the reason shown in the status line. `/fts` with no pivot
+searches every collection. Completion: typing `/f` offers `/fts/`, and after
+`/fts/` the collections matching what has been typed are offered, exact and
+prefix matches first.
+
+Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 `Home`/`End` jump, `Enter` opens, `Esc` closes.
 

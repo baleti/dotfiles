@@ -73,17 +73,41 @@ NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
 
 # Recoll/Xapian content indexes (each one is a Recoll config directory) searched by /fts
 FTS_INDEXES = [os.path.expanduser(p) for p in config.CFG.get("fts", {}).get("indexes", [])]
-FTS_VERBS = ("/fts", "/full-text-search")
 _fts_cache = {}
 _fts_lock = threading.Lock()
 
-def fts_matches(terms):
-    """Paths whose contents match a Recoll query, from every content index, with sizes."""
+def fts_name(conf):
+    """An index's name is its folder: ~/.cache/indexes/part3-books/recoll -> part3-books."""
+    return os.path.basename(os.path.dirname(conf.rstrip("/")))
+
+def is_subsequence(frag, name):
+    it = iter(name)
+    return all(c in it for c in frag)
+
+def fts_resolve(token):
+    """Index confs for a name or shorthand: exact, else a prefix, else letters in order (p3 -> part3-books)."""
+    names = {fts_name(c): c for c in FTS_INDEXES}
+    t = token.lower()
+    if not t:
+        return list(FTS_INDEXES), None
+    if t in names:
+        return [names[t]], None
+    for match in (lambda n: n.startswith(t), lambda n: is_subsequence(t, n)):
+        hits = [n for n in names if match(n)]
+        if len(hits) == 1:
+            return [names[hits[0]]], None
+        if len(hits) > 1:
+            return [], "ambiguous index: " + ", ".join(sorted(hits))
+    return [], "no index named " + token
+
+def fts_matches(terms, confs):
+    """Paths whose contents match a Recoll query, from the given content indexes, with sizes."""
+    key = (terms, tuple(confs))
     with _fts_lock:
-        if terms in _fts_cache:
-            return _fts_cache[terms]
+        if key in _fts_cache:
+            return _fts_cache[key]
     rows, seen = [], set()
-    for conf in FTS_INDEXES:
+    for conf in confs:
         out = subprocess.run(["recollq", "-c", conf, "-n", "0-5000", terms], capture_output=True, text=True).stdout
         for line in out.splitlines():
             parts = line.split("\t")
@@ -97,17 +121,20 @@ def fts_matches(terms):
             rows.append({"remote": path, "size": size, "mtime": None})
     with _fts_lock:
         _fts_cache.clear()
-        _fts_cache[terms] = rows
+        _fts_cache[key] = rows
     return rows
 
-def fts_query(text, sort, desc, offset, limit):
-    """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match."""
+def fts_query(text, index_token, sort, desc, offset, limit):
+    """/fts[/index] <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match."""
     from filesearch import split_mime, split_tags, matches_mime, _size_ok
+    confs, err = fts_resolve(index_token)
+    if err:
+        return [], 0, err
     wanted, rest = split_mime(text)
     tags, terms = split_tags(rest)
     if not terms.strip():
-        return [], 0
-    rows = [r for r in fts_matches(terms.strip()) if (not wanted or matches_mime(r["remote"], wanted))
+        return [], 0, None
+    rows = [r for r in fts_matches(terms.strip(), confs) if (not wanted or matches_mime(r["remote"], wanted))
             and all(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["name"])
             and all(t.lower() in r["remote"].lower() for t in tags["path"])
             and all(_size_ok(r["size"], c) for c in tags["size"])]
@@ -116,7 +143,7 @@ def fts_query(text, sort, desc, offset, limit):
                "path": lambda r: r["remote"].lower(),
                "size": lambda r: r["size"] or 0}[sort]
         rows.sort(key=key, reverse=desc)
-    return rows[offset: offset + limit], len(rows)
+    return rows[offset: offset + limit], len(rows), None
 
 THUMBS = os.path.join(config.DATA_DIR, "thumbs")
 
@@ -190,9 +217,11 @@ class H(BaseHTTPRequestHandler):
                 sort = qs.get("sort", ["date"])[0]
                 desc = qs.get("desc", ["1"])[0] == "1"
                 offset = int(qs.get("offset", ["0"])[0])
-                verb = next((v for v in FTS_VERBS if rest.startswith(v + " ") or rest == v), None)
-                if verb:
-                    results, count = fts_query(rest[len(verb):], sort, desc, offset, top)
+                fts = re.match(r"^/(?:fts|full-text-search)(?:/(\S*))?(?:\s+|$)(.*)$", rest, re.S)
+                errors = []
+                if fts:
+                    results, count, err = fts_query(fts.group(2), fts.group(1) or "", sort, desc, offset, top)
+                    errors = [err] if err else []
                 else:
                     results, count = NAMES.query(rest, sort, desc, offset, top)
                 for r in results:
@@ -206,7 +235,7 @@ class H(BaseHTTPRequestHandler):
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
                         r["mtime"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
-                return self._json(200, {"count": count, "results": results, "errors": []})
+                return self._json(200, {"count": count, "results": results, "errors": errors})
             try:
                 with _q_lock:
                     if not q:
@@ -225,7 +254,8 @@ class H(BaseHTTPRequestHandler):
                                     "results": results, "errors": errors})
         if u.path == "/facets":
             # values for the //dm and //mime completions
-            return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS)})
+            return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),
+                                    "fts": [fts_name(c) for c in FTS_INDEXES]})
         if u.path == "/people":
             with _q_lock:
                 search._refresh()
