@@ -37,7 +37,16 @@ the filters are `//face <name>` (photos showing a registered person),
 name), `//path <text>` (folder), `//size >5M` / `<200K` (size comparison), and
 `//dm <text>` (date modified; `2015-06` substring or `>2015-06` / `<2015-06`).
 Several `//` filters AND together; bare words act as `//clip` plus any matching
-registered person. Keys follow
+registered person.
+
+**Full-text search (`/fts`, `/full-text-search`) - images picker only.** The
+verb takes the rest of the query as Recoll query-language terms (words are
+ANDed, `OR`, `"phrase"`, `-term` as in Recoll), so `/fts dgcl hwo //mime pdf`
+finds PDFs whose contents contain both words. Other `//` filters still apply
+to its results. Only files that are in the Recoll (Xapian) index can match: a
+`/fts` query never shows a file that has not been content-indexed, so there is
+no "not indexed" row to explain. Without `/fts` nothing changes; name search
+covers every file regardless of content indexing. Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 `Home`/`End` jump, `Enter` opens, `Esc` closes.
 
