@@ -778,9 +778,9 @@ impl App {
         let pal = self.pal;
         let t = self.thumb;
         let text_h = 58.0;
-        self.results_h = ui.available_height() - 28.0;
+        self.results_h = ui.available_height() - 30.0;
         egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - 28.0)
+            .max_height(ui.available_height() - 30.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
@@ -893,6 +893,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let pal = self.pal;
+        ui.painter().rect_filled(ui.max_rect(), 0.0, pal.bg);
         // Ctrl+wheel and trackpad pinch: zoom the thumbnails, not the whole UI
         let zd = ui.input(|i| i.zoom_delta());
         if (zd - 1.0).abs() > 1e-4 {
@@ -1382,9 +1383,9 @@ impl eframe::App for App {
                         right_at = Some(at);
                     }
                 } else {
-                self.results_h = ui.available_height() - 28.0;
+                self.results_h = ui.available_height() - 30.0;
                 egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - 28.0)
+                    .max_height(ui.available_height() - 30.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         // one line per result: the row is just tall enough for the thumbnail and text
