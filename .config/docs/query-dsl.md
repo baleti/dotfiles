@@ -32,11 +32,12 @@ add a new consumer, add its row here too.
 | images (photo search) | mod+Super_l → "Search files" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/.cache/indexes/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
 
 **images (photo search) - its own grammar, same keys.** Not the verb grammar:
-the filters are `//face <name>` (photos showing a registered person),
-`//clip <text>` (CLIP text match), and per-column tags `//name <text>` (file
-name), `//path <text>` (folder), `//size >5M` / `<200K` (size comparison), and
+the verbs are `/face <name>` (photos showing a registered person) and
+`/clip <text>` (CLIP text match), each its own function like `/fts` because it
+changes the search space (photos only, ranked by meaning). The per-column tags stay `//`:
+`//name <text>` (file name), `//path <text>` (folder), `//size >5M` / `<200K` (size comparison), and
 `//dm <text>` (date modified; `2015-06` substring or `>2015-06` / `<2015-06`).
-Several `//` filters AND together; bare words act as `//clip` plus any matching
+Several filters AND together; bare words act as `/clip` plus any matching
 registered person.
 
 **Full-text search (`/fts`, `/full-text-search`) - images picker only.** The

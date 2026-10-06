@@ -275,9 +275,9 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/query":
             q = (qs.get("q", [""])[0]).strip()
             top = int(qs.get("top", ["60"])[0])
-            # default: file-name search over everything the catalog knows; //clip and //face
+            # default: file-name search over everything the catalog knows; /clip and /face
             # switch to photo search; the explicit //file prefix is still accepted
-            photo_mode = ("//clip" in q) or ("//face" in q)
+            photo_mode = re.search(r"(?:^|\s)/(?:clip|face)(?:\s|$)", q) is not None
             if not photo_mode:
                 rest = q[len("//file"):].strip() if q.startswith("//file") else q
                 sort = qs.get("sort", ["date"])[0]
