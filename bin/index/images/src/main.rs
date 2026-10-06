@@ -145,6 +145,7 @@ fn query_terms(q: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip_value = false;
     for tok in q.split_whitespace() {
+        if tok == "/fts" || tok == "/full-text-search" { continue; }
         if tok.starts_with("//") { skip_value = true; continue; }
         if skip_value { skip_value = false; continue; }
         out.push(tok.to_ascii_lowercase());
