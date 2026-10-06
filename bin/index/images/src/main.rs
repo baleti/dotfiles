@@ -794,7 +794,7 @@ impl App {
             people: Vec::new(),
             facets: FacetsReply::default(),
             col_frac: load_cols(),
-            thumb: 20.0,
+            thumb: 16.0, // same as Ctrl+0 (column list)
             results_h: 400.0,
             scroll_pending: false,
             chord_key: None,
