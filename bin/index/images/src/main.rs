@@ -44,7 +44,7 @@ const FONT_BOLD: &str = "/usr/share/fonts/TTF/JetBrainsMono-Bold.ttf";
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
 /// rows fetched per request; the list only asks for the pages that are on screen
 const PAGE: usize = 200;
-const GRID_ZOOM: f32 = 110.0;
+const GRID_ZOOM: f32 = 220.0;
 
 #[derive(Deserialize, Clone)]
 struct Hit {
