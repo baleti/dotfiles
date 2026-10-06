@@ -7,11 +7,14 @@
   "scheme_file": "~/.local/state/quickshell/scheme.json",
   "sources": {
     "photos": "photos",
-    "cardiff": "cardiff",
-    "job_applications": "job applications",
-    "office_orms": "office/orms"
+    "folder_b": "folder-b",
+    "folder_c": "folder-c",
+    "folder_d": "path/to/folder"
   },
-  "server": {"host": "127.0.0.1", "port": 8765},
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
   "ai1": {
     "jump_host": "host1",
     "ssh": "ssh -o BatchMode=yes -i ~/path/to/ai1_key -p 2211 user@ai1-address",
