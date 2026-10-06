@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import hashlib, json, os, queue, subprocess, sys, threading, time
+import hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -70,6 +70,53 @@ def icon_for(path):
     _icon_state["cache"][name] = out if os.path.exists(out) else ""
     return _icon_state["cache"][name]
 NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
+
+# Recoll/Xapian content indexes (each one is a Recoll config directory) searched by /fts
+FTS_INDEXES = [os.path.expanduser(p) for p in config.CFG.get("fts", {}).get("indexes", [])]
+FTS_VERBS = ("/fts", "/full-text-search")
+_fts_cache = {}
+_fts_lock = threading.Lock()
+
+def fts_matches(terms):
+    """Paths whose contents match a Recoll query, from every content index, with sizes."""
+    with _fts_lock:
+        if terms in _fts_cache:
+            return _fts_cache[terms]
+    rows, seen = [], set()
+    for conf in FTS_INDEXES:
+        out = subprocess.run(["recollq", "-c", conf, "-n", "0-5000", terms], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 4 or not parts[1].startswith("[file://"):
+                continue
+            path = urllib.parse.unquote(parts[1][len("[file://"):-1])
+            if path in seen:
+                continue
+            seen.add(path)
+            size = int(parts[3]) if parts[3].isdigit() else None
+            rows.append({"remote": path, "size": size, "mtime": None})
+    with _fts_lock:
+        _fts_cache.clear()
+        _fts_cache[terms] = rows
+    return rows
+
+def fts_query(text, sort, desc, offset, limit):
+    """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match."""
+    from filesearch import split_mime, split_tags, matches_mime, _size_ok
+    wanted, rest = split_mime(text)
+    tags, terms = split_tags(rest)
+    if not terms.strip():
+        return [], 0
+    rows = [r for r in fts_matches(terms.strip()) if (not wanted or matches_mime(r["remote"], wanted))
+            and all(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["name"])
+            and all(t.lower() in r["remote"].lower() for t in tags["path"])
+            and all(_size_ok(r["size"], c) for c in tags["size"])]
+    if sort in ("name", "path", "size"):
+        key = {"name": lambda r: r["remote"].rsplit("/", 1)[-1].lower(),
+               "path": lambda r: r["remote"].lower(),
+               "size": lambda r: r["size"] or 0}[sort]
+        rows.sort(key=key, reverse=desc)
+    return rows[offset: offset + limit], len(rows)
 
 THUMBS = os.path.join(config.DATA_DIR, "thumbs")
 
@@ -143,7 +190,11 @@ class H(BaseHTTPRequestHandler):
                 sort = qs.get("sort", ["date"])[0]
                 desc = qs.get("desc", ["1"])[0] == "1"
                 offset = int(qs.get("offset", ["0"])[0])
-                results, count = NAMES.query(rest, sort, desc, offset, top)
+                verb = next((v for v in FTS_VERBS if rest.startswith(v + " ") or rest == v), None)
+                if verb:
+                    results, count = fts_query(rest[len(verb):], sort, desc, offset, top)
+                else:
+                    results, count = NAMES.query(rest, sort, desc, offset, top)
                 for r in results:
                     r["score"] = None
                     if r["remote"].lower().endswith(IMAGE_EXT):
