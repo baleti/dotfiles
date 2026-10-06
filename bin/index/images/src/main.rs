@@ -1451,6 +1451,8 @@ impl eframe::App for App {
         // because egui also derives the zoom step from the wheel delta
         let row_h = (self.thumb + 4.0).max(20.0);
         ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
+        // ctrl+wheel zoom: half the default step, so zooming is gentler
+        ctx.options_mut(|o| o.input_options.scroll_zoom_speed = 1.0 / 400.0);
         let scroll_boost = (row_h / 60.0).clamp(1.0, 6.0);
         ui.input_mut(|i| i.smooth_scroll_delta *= scroll_boost);
         let grid = self.thumb >= GRID_ZOOM;
