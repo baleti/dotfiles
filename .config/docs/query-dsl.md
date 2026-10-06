@@ -41,6 +41,25 @@ registered person. Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 `Home`/`End` jump, `Enter` opens, `Esc` closes.
 
+**Ordering (`/s`, `/sort`, `/rv`).** The one place this picker uses the verb
+grammar: `/s <field> [asc|desc]`, `/sort/f1/f2 [dir]` (via chain) and `/rv`
+behave as in `/sort` below, with these differences. Fields: `name`, `path`,
+`size`, `date-modified` (alias `dm`, `date`) - the four columns - plus
+`extension` and `depth` (number of path components), which have no column.
+Names resolve like type paths (exact, else unique substring; an ambiguous
+or unknown one such as `/s d` makes that `/s` inert). **Repeated `/s`
+commands stack instead of replacing**, in order: `/s date-modified /s size`
+(or `/s/date-modified/size`) sorts by date modified and, among rows with
+the same date, by size; ties on every key fall back to path order. One
+direction applies to every key (the last one given). Timestamps and sizes
+are real numbers, so `ascending` is oldest/smallest first (no age-style
+inversion); with no `/s` the order is newest first. **Clicking a column
+header edits the query**: it replaces any `/s` with `/s <column>` (a second
+click on the same column appends `desc`), so the box always shows what the
+list is sorted by and the arrow follows the first key. Photo (`//clip`,
+`//face`) results keep their score order. Sorting is done server-side
+(`filesearch.NameTable.query`, `sort=date,size`).
+
 Completion: `Tab` (or `Ctrl+Space` when no popup is open) completes the
 fragment at the end of the query. One candidate completes immediately; two or
 more open a popup. Stage 1 completes `//` to one of the tags above; stage 2
