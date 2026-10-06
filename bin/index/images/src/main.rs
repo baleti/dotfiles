@@ -1439,9 +1439,12 @@ impl eframe::App for App {
             self.thumb = (self.thumb * 1.15f32.powi(steps)).clamp(16.0, 800.0);
         }
         ctx.set_zoom_factor(1.0);
-        // wheel steps cover more rows when the rows are small (zoomed out), about 4 rows at medium zoom
+        // wheel steps cover more rows when the rows are small (zoomed out); scaled on the scroll delta only,
+        // because egui also derives the zoom step from the wheel delta
         let row_h = (self.thumb + 4.0).max(20.0);
-        ctx.options_mut(|o| o.input_options.line_scroll_speed = (60.0 * 400.0 / row_h).clamp(100.0, 800.0));
+        ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
+        let scroll_boost = (240.0 / row_h).clamp(1.0, 8.0);
+        ui.input_mut(|i| i.smooth_scroll_delta *= scroll_boost);
         let grid = self.thumb >= GRID_ZOOM;
         // the score column only exists for photo results
         let show_score = self.pages.values().flatten().any(|h| h.score.is_some());
