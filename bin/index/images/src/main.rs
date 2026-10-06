@@ -56,6 +56,17 @@ struct Hit {
     mtime: Option<String>,
 }
 
+/// 1997930 -> "1,997,930"
+fn group_digits(n: usize) -> String {
+    let d = n.to_string();
+    let mut out = String::new();
+    for (i, c) in d.chars().enumerate() {
+        if i > 0 && (d.len() - i) % 3 == 0 { out.push(','); }
+        out.push(c);
+    }
+    out
+}
+
 fn human_size(b: u64) -> String {
     const U: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let (mut v, mut i) = (b as f64, 0);
@@ -1651,7 +1662,7 @@ impl eframe::App for App {
 
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!("{} shown", self.total))
+                    RichText::new(format!("{} shown", group_digits(self.total)))
                         .color(pal.dim).size(11.0),
                 );
             });
