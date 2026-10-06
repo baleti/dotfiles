@@ -887,8 +887,7 @@ impl App {
     /// Ctrl+Enter: show the photo selected in Dolphin, at its real folder on the gdrive mount.
     fn reveal_selected(&mut self) {
         let Some(h) = self.hits.get(self.selected).cloned() else { return };
-        let rel = short_name(&h.remote);
-        let local = format!("{}/{}", cfg().mount_root, rel);
+        let local = local_path(&h.remote).to_string_lossy().into_owned();
         std::thread::spawn(move || {
             // dolphin --select opens the folder with the file highlighted; fall back to the folder alone
             let ok = std::process::Command::new("dolphin").arg("--select").arg(&local).spawn().is_ok();
