@@ -491,6 +491,24 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
         ("mime", "file kind: image, pdf, text, code, ..."),
         ("file", "file-name search mode"),
     ];
+    if let Some(rest) = frag.strip_prefix("/fts/").or_else(|| frag.strip_prefix("/full-text-search/")) {
+        // the index after /fts/: exact, prefix, or letters in order (p3 -> part3-books)
+        let verb = if frag.starts_with("/fts/") { "/fts" } else { "/full-text-search" };
+        let f = rest.to_lowercase();
+        let mut hits: Vec<(u8, &String)> = facets.fts.iter().filter_map(|n| {
+            let nl = n.to_lowercase();
+            if nl.starts_with(&f) { Some((0, n)) }
+            else if fts_subsequence(&f, &nl) { Some((1, n)) }
+            else { None }
+        }).collect();
+        hits.sort();
+        for (_, n) in hits {
+            out.push((format!("{verb}/{n} "), "full-text index".to_string()));
+        }
+        return (start, out);
+    } else if frag.len() >= 2 && !frag.starts_with("//") && frag.starts_with('/') && !frag.contains(' ') && "/fts/".starts_with(frag) {
+        out.push(("/fts/".to_string(), "full-text search, optionally pivot to an index: /fts/p3".to_string()));
+    }
     if matches!(prev, "/s" | "/sort") && !frag.starts_with('/') {
         // the field after /s, or a direction once a field is there
         let f = frag.to_lowercase();
@@ -605,6 +623,11 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
     (rest.join(" "), SortSpec { keys, desc: desc_v, explicit: explicit || reverse })
 }
 
+fn fts_subsequence(frag: &str, name: &str) -> bool {
+    let mut it = name.chars();
+    frag.chars().all(|c| it.any(|n| n == c))
+}
+
 fn apply(q: &str, start: usize, replacement: &str) -> String {
     format!("{}{}", &q[..start], replacement)
 }
@@ -615,6 +638,8 @@ struct FacetsReply {
     dates: Vec<String>,
     #[serde(default)]
     mimes: Vec<String>,
+    #[serde(default)]
+    fts: Vec<String>,
 }
 
 fn fetch_facets() -> FacetsReply {
