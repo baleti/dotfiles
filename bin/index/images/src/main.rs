@@ -14,8 +14,31 @@ use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-const SERVER: &str = "http://127.0.0.1:8765";
-const SCHEME: &str = "/home/user1/.local/state/quickshell/scheme.json";
+/// Read from ~/.config/indexes/photos.json (IMAGES_CONFIG overrides), so no paths are compiled in.
+struct Cfg { server: String, python: String, scheme: String, mount_root: String }
+fn cfg() -> &'static Cfg {
+    static C: std::sync::OnceLock<Cfg> = std::sync::OnceLock::new();
+    C.get_or_init(load_cfg)
+}
+
+fn load_cfg() -> Cfg {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let path = std::env::var("IMAGES_CONFIG").unwrap_or(format!("{home}/.config/indexes/photos.json"));
+    let v: serde_json::Value = std::fs::read_to_string(&path).ok()
+        .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null);
+    let expand = |k: &str| {
+        v.get(k).and_then(|x| x.as_str()).unwrap_or("")
+            .replace("~", &home)
+    };
+    let port = v.pointer("/server/port").and_then(|x| x.as_u64()).unwrap_or(8765);
+    let host = v.pointer("/server/host").and_then(|x| x.as_str()).unwrap_or("127.0.0.1").to_string();
+    Cfg {
+        server: format!("http://{host}:{port}"),
+        python: expand("python"),
+        scheme: expand("scheme_file"),
+        mount_root: expand("mount_root"),
+    }
+}
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
 const TOP: usize = 150;
 const GRID_BELOW: f32 = 110.0;
@@ -84,7 +107,7 @@ fn hex(s: &str) -> Option<Color32> {
     Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
-fn load_palette() -> Palette {
+fn load_palette(scheme: &str) -> Palette {
     let fallback = Palette {
         bg: Color32::from_rgb(0x1a, 0x1a, 0x1a),
         text: Color32::from_rgb(0xd8, 0xde, 0xe9),
@@ -93,7 +116,7 @@ fn load_palette() -> Palette {
         accent: Color32::from_rgb(0x33, 0xcc, 0xff),
         error: Color32::from_rgb(0xff, 0x55, 0x55),
     };
-    let Ok(text) = std::fs::read_to_string(SCHEME) else { return fallback };
+    let Ok(text) = std::fs::read_to_string(scheme) else { return fallback };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return fallback };
     let g = |k: &str, d: Color32| v.get(k).and_then(|x| x.as_str()).and_then(hex).unwrap_or(d);
     Palette {
@@ -183,7 +206,7 @@ fn apply(q: &str, start: usize, replacement: &str) -> String {
 }
 
 fn fetch_people() -> Vec<String> {
-    ureq::get(&format!("{SERVER}/people"))
+    ureq::get(&format!("{}/people", cfg().server))
         .timeout(Duration::from_secs(3))
         .call()
         .ok()
@@ -205,7 +228,7 @@ impl App {
         cc.egui_ctx.set_fonts(fonts);
         let (tx, rx) = channel();
         let mut app = Self {
-            pal: load_palette(),
+            pal: load_palette(&cfg().scheme),
             query: String::new(),
             last_sent: "\u{0}".into(), // force the first browse request
             last_change: Instant::now() - Duration::from_secs(1),
@@ -241,7 +264,7 @@ impl App {
         self.busy = true;
         let tx: Sender<Fetch> = self.tx.clone();
         std::thread::spawn(move || {
-            let url = format!("{SERVER}/query");
+            let url = format!("{}/query", cfg().server);
             let r = ureq::get(&url)
                 .query("q", &q)
                 .query("top", &TOP.to_string())
@@ -331,7 +354,7 @@ impl App {
     fn reveal_selected(&mut self) {
         let Some(h) = self.hits.get(self.selected).cloned() else { return };
         let rel = short_name(&h.remote);
-        let local = format!("{}/gdrive-rclone-crypt/{}", std::env::var("HOME").unwrap_or("/home/user1".into()), rel);
+        let local = format!("{}/{}", cfg().mount_root, rel);
         std::thread::spawn(move || {
             // dolphin --select opens the folder with the file highlighted; fall back to the folder alone
             let ok = std::process::Command::new("dolphin").arg("--select").arg(&local).spawn().is_ok();
