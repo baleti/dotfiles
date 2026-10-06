@@ -59,12 +59,13 @@ def icon_for(path):
     name = _icon_name(path)
     if name in _icon_state["cache"]:
         return _icon_state["cache"][name]
-    out = os.path.join(ICON_DIR, name + ".png")
+    # 256 px so the icons stay sharp when the picker is zoomed in
+    out = os.path.join(ICON_DIR, name + "-256.png")
     if not os.path.exists(out):
         svg = _icon_resolver()(name) or _icon_resolver()("text-x-generic")
         if svg and svg.endswith(".svg"):
             os.makedirs(ICON_DIR, exist_ok=True)
-            subprocess.run(["rsvg-convert", "-w", "64", "-h", "64", svg, "-o", out], capture_output=True)
+            subprocess.run(["rsvg-convert", "-w", "256", "-h", "256", svg, "-o", out], capture_output=True)
     _icon_state["cache"][name] = out if os.path.exists(out) else ""
     return _icon_state["cache"][name]
 NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
