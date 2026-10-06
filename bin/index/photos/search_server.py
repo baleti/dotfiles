@@ -22,6 +22,7 @@ import cv2, numpy as np  # noqa: E402
 # file-name search: the in-memory name table lives in the catalog package
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "catalog"))
 import filesearch  # noqa: E402
+from filesearch import path_matches  # noqa: E402
 
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic")
 
@@ -118,13 +119,15 @@ def split_path_tags(text):
 def fts_query(text, sort, desc, offset, limit):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match.
     Searches every content index; //path narrows by folder."""
-    from filesearch import split_mime, split_tags, matches_mime, _size_ok, path_matches
+    from filesearch import split_mime, split_tags, matches_mime, _size_ok, path_matches, hidden_folders
     wanted, rest = split_mime(text)
     paths, rest = split_path_tags(rest)
     tags, terms = split_tags(rest)
     if not terms.strip():
         return [], 0, None, None
+    hidden = hidden_folders(text)
     rows = [r for r in fts_matches(terms.strip(), FTS_INDEXES) if (not wanted or matches_mime(r["remote"], wanted))
+            and not any(r["remote"].startswith(f) for f in hidden)
             and all(path_matches(r["remote"], v) for v in paths)
             and all(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["name"])
             and all(_size_ok(r["size"], c) for c in tags["size"])]
@@ -214,6 +217,23 @@ def thumb_path(remote):
     return os.path.join(THUMBS, hashlib.sha1(remote.encode()).hexdigest()[:16] + ".jpg")
 
 FACECROPS = os.path.join(config.DATA_DIR, "facecrops")
+_paths_cache = {"frag": None, "rows": []}
+
+def display_folder(d):
+    """Mount path -> the short form people type: gdrive/..., ~/..."""
+    mount = os.path.expanduser(config.CFG["mount_root"])
+    if d.startswith(mount + "/"):
+        return "gdrive/" + d[len(mount) + 1:]
+    home = os.path.expanduser("~")
+    return "~/" + d[len(home) + 1:] if d.startswith(home + "/") else d
+
+def path_candidates(frag, offset, top):
+    """Folders matching a //path fragment, in order: (total, page)."""
+    if _paths_cache["frag"] != frag:
+        rows = [display_folder(d) for d in NAMES.dirs if path_matches(display_folder(d), frag)]
+        _paths_cache["frag"], _paths_cache["rows"] = frag, rows
+    rows = _paths_cache["rows"]
+    return len(rows), rows[offset: offset + top]
 
 def face_crop(face):
     """A square crop around one detected face, 160 px, cached; '' when the photo cannot be read."""
@@ -353,6 +373,13 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(200, {"snippets": [], "error": str(e)})
             return self._json(200, {"snippets": snips, "error": err})
+        if u.path == "/paths":
+            # folders for //path completion: a page at a time, the picker lists them virtually
+            frag = qs.get("q", [""])[0].strip().strip('"')
+            offset = int(qs.get("offset", ["0"])[0])
+            top = int(qs.get("top", ["200"])[0])
+            total, items = path_candidates(frag, offset, top)
+            return self._json(200, {"total": total, "items": items})
         if u.path == "/faces/pane":
             # random indexed faces to pick from: the picker shows the crops, no names involved
             n = int(qs.get("n", ["48"])[0])
