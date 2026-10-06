@@ -3,7 +3,7 @@
 //! (127.0.0.1:8765, keeps models loaded); this window is only the UI.
 //!
 //! Opens on the newest photos. Typing narrows the list as you type (debounced).
-//! Syntax: //face <name>   //clip brick   //face <name> //clip brick   or bare words.
+//! Syntax: /face <name>   /clip brick   /face <name> /clip brick   or bare words.
 //! Keys: type to search, Up/Down or Ctrl+j/k move, PgUp/PgDn jump, Enter opens
 //! (photo is fetched from gdrive to /tmp and opened), Esc closes.
 
@@ -162,7 +162,7 @@ fn query_terms(q: &str) -> Vec<String> {
     for tok in tokenize(q) {
         let tok = tok.as_str();
         if tok == "/fts" || tok == "/full-text-search" { continue; }
-        if tok.starts_with("//") { skip_value = true; continue; }
+        if tok == "/clip" || tok == "/face" || tok.starts_with("//") { skip_value = true; continue; }
         if skip_value { skip_value = false; continue; }
         let t = tok.replace('"', "").to_ascii_lowercase();
         if !t.is_empty() { out.push(t); }
@@ -555,9 +555,7 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
             _ => Vec::new(),
         }
     };
-    const TAGS: [(&str, &str); 8] = [
-        ("face", "photos showing a registered person"),
-        ("clip", "photos matching what they show (CLIP text)"),
+    const TAGS: [(&str, &str); 6] = [
         ("name", "file name contains"),
         ("path", "folder path contains"),
         ("size", "file size, e.g. >5M or <200K"),
@@ -582,8 +580,10 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
         return (start, out);
     } else if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 3] = [
+        const VERBS: [(&str, &str); 5] = [
             ("/fts/", "full-text search, optionally pivot to an index: /fts/p3"),
+            ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
+            ("/face ", "photos showing a registered person: /face daniel"),
             ("/sort ", "order the results by a field, e.g. /s size desc"),
             ("/reverse ", "flip the order"),
         ];
@@ -625,9 +625,9 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
                 out.push((format!("{v} "), label));
             }
         }
-    } else if prev == "//face" || (prev.is_empty() && !frag.is_empty() && q[..start].trim().is_empty()) {
-        // stage 2 after //face (or a bare word that could name a person)
-        if !frag.is_empty() || prev == "//face" {
+    } else if prev == "/face" || (prev.is_empty() && !frag.is_empty() && q[..start].trim().is_empty()) {
+        // stage 2 after /face (or a bare word that could name a person)
+        if !frag.is_empty() || prev == "/face" {
             for n in people {
                 if n.to_lowercase().contains(&frag.to_lowercase()) {
                     out.push((format!("{n} "), "registered person".to_string()));
@@ -1629,7 +1629,7 @@ impl eframe::App for App {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         if let Some(r) = &face_remote {
                             if ui.button("Search for this face").clicked() {
-                                face_query = Some(format!("//face \"@{}\"", r));
+                                face_query = Some(format!("/face \"@{}\"", r));
                                 ui.close();
                             }
                         }
