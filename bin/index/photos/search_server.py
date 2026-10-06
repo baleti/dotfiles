@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import hashlib, json, os, queue, subprocess, sys, threading
+import hashlib, json, os, queue, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -24,6 +24,49 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "catalog"))
 import filesearch  # noqa: E402
 
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic")
+
+# ---- file-type icons for non-image results (theme icons, rasterised once and cached) ----
+import mimetypes, importlib.util
+ICON_RESOLVER = os.environ.get("ICON_RESOLVER", os.path.expanduser("~/.config/quickshell/scripts/resolve-icons.py"))
+ICON_DIR = os.path.join(config.DATA_DIR, "icons")
+EXT_ICON = {"log": "text-x-log", "py": "text-x-python", "json": "application-json", "md": "text-markdown",
+            "pdf": "application-pdf", "org": "text-x-generic", "lua": "text-x-lua", "rs": "text-rust",
+            "sh": "application-x-shellscript", "zsh": "application-x-shellscript", "qml": "text-x-qml",
+            "js": "text-x-javascript", "ts": "text-x-typescript", "html": "text-html", "css": "text-css",
+            "xml": "text-xml", "yaml": "text-x-yaml", "yml": "text-x-yaml", "toml": "text-x-toml"}
+_icon_state = {"resolve": None, "cache": {}}
+
+def _icon_resolver():
+    if _icon_state["resolve"] is None:
+        spec = importlib.util.spec_from_file_location("resolve_icons", ICON_RESOLVER)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        idx, pix = mod.build_index()
+        _icon_state["resolve"] = lambda name: mod.resolve(name, idx, pix)
+    return _icon_state["resolve"]
+
+def _icon_name(path):
+    if os.path.isdir(path):
+        return "inode-directory"
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+    if ext in EXT_ICON:
+        return EXT_ICON[ext]
+    mime = mimetypes.guess_type(path)[0] or ""
+    return mime.replace("/", "-") if mime else "text-x-generic"
+
+def icon_for(path):
+    """Cached PNG path for a file's type icon ('' when no icon could be found)."""
+    name = _icon_name(path)
+    if name in _icon_state["cache"]:
+        return _icon_state["cache"][name]
+    out = os.path.join(ICON_DIR, name + ".png")
+    if not os.path.exists(out):
+        svg = _icon_resolver()(name) or _icon_resolver()("text-x-generic")
+        if svg and svg.endswith(".svg"):
+            os.makedirs(ICON_DIR, exist_ok=True)
+            subprocess.run(["rsvg-convert", "-w", "64", "-h", "64", svg, "-o", out], capture_output=True)
+    _icon_state["cache"][name] = out if os.path.exists(out) else ""
+    return _icon_state["cache"][name]
 NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
 
 THUMBS = os.path.join(config.DATA_DIR, "thumbs")
@@ -101,8 +144,15 @@ class H(BaseHTTPRequestHandler):
                     results, count = NAMES.browse(top), None
                 for r in results:
                     r["score"] = None
-                    r["thumb"] = thumb_path(r["remote"])
-                    r["ready"] = (not r["remote"].lower().endswith(IMAGE_EXT)) or enqueue(r["remote"])
+                    if r["remote"].lower().endswith(IMAGE_EXT):
+                        r["thumb"] = thumb_path(r["remote"])
+                        r["ready"] = enqueue(r["remote"])
+                    else:
+                        r["thumb"] = icon_for(r["remote"])
+                        r["ready"] = bool(r["thumb"])
+                    # the catalog stores epoch seconds; the picker expects the same ISO text photos use
+                    if isinstance(r.get("mtime"), int):
+                        r["mtime"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
                 return self._json(200, {"count": count if count is not None else len(results), "results": results, "errors": []})
             try:
                 with _q_lock:
@@ -120,6 +170,9 @@ class H(BaseHTTPRequestHandler):
                 r["ready"] = enqueue(r["remote"])
             return self._json(200, {"count": count if count is not None else len(results),
                                     "results": results, "errors": errors})
+        if u.path == "/facets":
+            # values for the //dm and //mime completions
+            return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS)})
         if u.path == "/people":
             with _q_lock:
                 search._refresh()
