@@ -106,6 +106,23 @@ fn fuzzy_match(hay: &str, needle: &str) -> bool {
     needle.chars().flat_map(|c| c.to_lowercase()).all(|n| it.any(|h| h == n))
 }
 
+/// Shortens `text` to fit `width` px in `font`, ending with an ellipsis when it had to be cut.
+fn fit_text(ui: &egui::Ui, text: &str, font: &egui::FontId, width: f32) -> String {
+    let measure = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), egui::Color32::WHITE).size().x;
+    if measure(text) <= width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // binary search for the longest prefix that still fits with the ellipsis
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        let cand: String = chars[..mid].iter().collect::<String>() + "…";
+        if measure(&cand) <= width { lo = mid; } else { hi = mid - 1; }
+    }
+    chars[..lo].iter().collect::<String>() + "…"
+}
+
 /// Counts and consumes every queued press of `key` with `mods` this frame (repeats included).
 fn take_count(ui: &mut egui::Ui, mods: egui::Modifiers, key: Key) -> usize {
     let mut c = 0;
@@ -425,7 +442,7 @@ impl App {
             first_frame: true,
             close_now: false,
             people: Vec::new(),
-            thumb: 52.0,
+            thumb: 20.0,
             grid_mode: false,
             popup: false,
             cands: Vec::new(),
@@ -718,7 +735,7 @@ impl eframe::App for App {
         // Ctrl+wheel and trackpad pinch: zoom the thumbnails, not the whole UI
         let zd = ui.input(|i| i.zoom_delta());
         if (zd - 1.0).abs() > 1e-4 {
-            self.thumb = (self.thumb * zd).clamp(36.0, 260.0);
+            self.thumb = (self.thumb * zd).clamp(16.0, 260.0);
         }
         ctx.set_zoom_factor(1.0);
         let grid = self.grid_mode;
@@ -1174,7 +1191,8 @@ impl eframe::App for App {
                     .max_height(ui.available_height() - 28.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        let row_h = (self.thumb + 12.0).max(64.0);
+                        // one line per result: the row is just tall enough for the thumbnail and text
+                        let row_h = (self.thumb + 4.0).max(20.0);
                         let thumb = self.thumb;
                         for (idx, h) in hits.iter().enumerate() {
                             let (rect, resp) = ui.allocate_exact_size(
@@ -1191,7 +1209,7 @@ impl eframe::App for App {
                                 );
                             }
                             let thumb_rect = egui::Rect::from_min_size(
-                                rect.min + egui::vec2(10.0, (row_h - thumb) / 2.0),
+                                rect.min + egui::vec2(6.0, (row_h - thumb) / 2.0),
                                 egui::vec2(thumb, thumb),
                             );
                             match self.texture(&ctx, &h.thumb) {
@@ -1204,7 +1222,7 @@ impl eframe::App for App {
                                 }
                             }
                             let c = cols(thumb_rect.right() + 12.0, rect.right());
-                            let y = rect.top() + 12.0;
+                            let y = rect.center().y;
                             let short = short_name(&h.remote);
                             let (dir, base) = match short.rsplit_once('/') {
                                 Some((d, b)) => (d.to_string(), b.to_string()),
@@ -1213,18 +1231,22 @@ impl eframe::App for App {
                             let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
                             let dim = pal.dim;
                             let painter = ui.painter();
+                            let name_font = egui::FontId::monospace(13.0);
+                            let dir_font = egui::FontId::monospace(11.0);
+                            let base = fit_text(ui, &base, &name_font, NAME_W - 4.0);
+                            let dir = fit_text(ui, &dir, &dir_font, (c.path_r - c.path_x - 4.0).max(0.0));
                             let name_clip = egui::Rect::from_min_max(egui::pos2(c.name_x, rect.top()), egui::pos2(c.name_x + NAME_W, rect.bottom()));
-                            painter.with_clip_rect(name_clip).text(egui::pos2(c.name_x, y), egui::Align2::LEFT_TOP, base, egui::FontId::monospace(13.0), txt);
+                            painter.with_clip_rect(name_clip).text(egui::pos2(c.name_x, y), egui::Align2::LEFT_CENTER, base, egui::FontId::monospace(13.0), txt);
                             let path_clip = egui::Rect::from_min_max(egui::pos2(c.path_x, rect.top()), egui::pos2(c.path_r, rect.bottom()));
-                            painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y + 2.0), egui::Align2::LEFT_TOP, dir, egui::FontId::monospace(11.0), dim);
+                            painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::monospace(11.0), dim);
                             if let Some(sz) = h.size {
-                                painter.text(egui::pos2(c.size_r, y), egui::Align2::RIGHT_TOP, human_size(sz), egui::FontId::monospace(11.0), dim);
+                                painter.text(egui::pos2(c.size_r, y), egui::Align2::RIGHT_CENTER, human_size(sz), egui::FontId::monospace(11.0), dim);
                             }
                             if let Some(t) = &h.mtime {
-                                painter.text(egui::pos2(c.date_x, y), egui::Align2::LEFT_TOP, short_time(t), egui::FontId::monospace(11.0), dim);
+                                painter.text(egui::pos2(c.date_x, y), egui::Align2::LEFT_CENTER, short_time(t), egui::FontId::monospace(11.0), dim);
                             }
                             if let (true, Some(s)) = (show_score, h.score) {
-                                painter.text(egui::pos2(c.score_r, y), egui::Align2::RIGHT_TOP, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
+                                painter.text(egui::pos2(c.score_r, y), egui::Align2::RIGHT_CENTER, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
                             }
                             if selected {
                                 ui.scroll_to_rect(rect, Some(egui::Align::Center));

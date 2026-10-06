@@ -6,7 +6,7 @@ blob with bytes.find, maps hits back to lines with searchsorted, then checks the
 other terms per candidate. Each keystroke is one scan over RAM; nothing on disk
 is touched and no per-query process is started.
 """
-import bisect, os, sqlite3, threading, time
+import bisect, os, re, sqlite3, threading, time
 import numpy as np
 
 # file kinds by extension: `//mime <kind>` (any extension name also works, e.g. //mime pdf)
@@ -48,6 +48,47 @@ def split_mime(query):
     wanted = [m.lower() for m in re.findall(r"//mime\s+(\S+)", query)]
     rest = re.sub(r"//mime\s+\S+", " ", query)
     return wanted, rest.strip()
+
+def split_tags(query):
+    """'//name x //path y //size >5M //dm >2015-06 rest' -> ({'name':[x],...}, 'rest')."""
+    tags = {"name": [], "path": [], "size": [], "dm": []}
+    for m in re.finditer(r"//(name|path|size|dm)\s+(\S+)", query, re.I):
+        tags[m.group(1).lower()].append(m.group(2))
+    rest = re.sub(r"//(name|path|size|dm)\s+\S+", " ", query, flags=re.I)
+    return tags, rest.strip()
+
+def _size_ok(sz, cond):
+    m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMGT]?)B?$", cond.strip(), re.I)
+    if not m or sz is None:
+        return False
+    mult = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}[m.group(3).upper()]
+    v = float(m.group(2)) * mult
+    return sz > v if m.group(1) == ">" else sz < v
+
+def _date_ok(mtime, cond):
+    """cond: '2015-06' (substring) or '>2015-06' / '<2015-06' (ISO prefix comparison)."""
+    if mtime is None:
+        return False
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(mtime))
+    if cond[:1] in "<>":
+        bound = cond[1:]
+        return iso[:len(bound)] > bound if cond[0] == ">" else iso[:len(bound)] < bound
+    return cond in iso
+
+def tag_ok(i, paths, sizes, mtimes, wanted, tags):
+    p = paths[i]
+    base = p.rsplit("/", 1)[-1].lower()
+    if wanted and not matches_mime(p, wanted):
+        return False
+    if any(t.lower() not in base for t in tags["name"]):
+        return False
+    if any(t.lower() not in p.lower() for t in tags["path"]):
+        return False
+    if any(not _size_ok(sizes[i], c) for c in tags["size"]):
+        return False
+    if any(not _date_ok(mtimes[i], c) for c in tags["dm"]):
+        return False
+    return True
 
 class NameTable:
     def __init__(self, db_path):
@@ -106,16 +147,24 @@ class NameTable:
         return out
 
     def search(self, query, limit=200):
+        """Substring terms (AND) plus tags: //name //path //size >N //dm <date> //mime <kind>."""
         wanted, query = split_mime(query)
+        tags, query = split_tags(query)
         terms = [t.lower() for t in query.split() if t]
-        if not terms:
-            if wanted:
-                return self.browse(limit, wanted), None
-            return [], 0
         with self.lock:
             blob, starts, paths, sizes, mtimes = self.blob, self.starts, self.paths, self.sizes, self.mtimes
+            order = self.order
+        if not terms:
+            # no substring terms: walk the newest-first order and apply the filters
+            out, count = [], 0
+            for i in order[:300000]:
+                if tag_ok(i, paths, sizes, mtimes, wanted, tags):
+                    count += 1
+                    if len(out) < limit:
+                        out.append({"remote": paths[i], "size": sizes[i], "mtime": mtimes[i]})
+            return out, count
         anchor = max(terms, key=len)          # the longest term is usually the most selective
-        others = [t for t in terms if t is not anchor][:4]
+        others = [t.encode("utf-8") for t in terms if t is not anchor][:4]
         a = anchor.encode("utf-8")
         hits, pos, seen = [], 0, set()
         while True:
@@ -125,15 +174,13 @@ class NameTable:
             line = int(np.searchsorted(starts, pos, side="right") - 1)
             if line not in seen:
                 seen.add(line)
-                s = starts[line]
-                e = blob.find(b"\n", s)
-                text = blob[s:e].decode("utf-8", "surrogatepass")
-                if all(o in text for o in others):
+                s0 = int(starts[line])
+                e0 = blob.find(b"\n", s0)
+                if all(blob.find(o, s0, e0) >= 0 for o in others):
                     hits.append(line)
-            pos = (pos + 1)
-        if wanted:
-            hits = [i for i in hits if matches_mime(paths[i], wanted)]
-        hits.sort(key=lambda i: paths[i])
+            pos += 1
+        # blob lines are in sorted path order, so hits are already sorted
+        hits = [i for i in hits if tag_ok(i, paths, sizes, mtimes, wanted, tags)]
         out = [{"remote": paths[i], "size": sizes[i], "mtime": mtimes[i]} for i in hits[:limit]]
         return out, len(hits)
 
