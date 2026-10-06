@@ -57,13 +57,14 @@ show), each with its page number when the format has pages, and the matched
 words in bold. It follows the cursor, is resizable, and is fetched from the
 search server's `/snippets` endpoint.
 
-**Folder scope (`//path`).** `/fts` searches every content index at once.
-Narrow it to a folder with `//path`, which is a folder filter like the other
-per-column tags. A value is split on `/`, and each part must appear in the
-folder path in that order, so `//path gdrive/"part 3"` matches a path that
-contains `gdrive` and then `part 3`. Quote a part that has spaces. Example:
-`/fts career essay cdm daniel //path gdrive/"part 3"`. There is no separate
-index name to pick: which index holds a file is an implementation detail.
+**Folder scope (`//path`).** A substring match on the folder path, usable on
+every search (names, `/fts`, `/clip`, `/face`). `gdrive/` stands for the gdrive
+mount and `~/` for home, so `//path gdrive/office` matches every file whose path
+contains that text, not only that folder. Quote a value that has spaces:
+`//path gdrive/"part 3"`. Example: `/fts career essay cdm daniel //path gdrive/"part 3"`.
+Folders listed as off by default in the app's config are hidden unless the query
+contains `//path` with that folder's keyword. Typing `//path` then Tab lists matching
+folders from the whole catalog, which you can page through.
 
 Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
