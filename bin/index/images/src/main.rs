@@ -40,6 +40,7 @@ fn load_cfg() -> Cfg {
         data_dir: expand("data_dir"),
     }
 }
+const FONT_BOLD: &str = "/usr/share/fonts/TTF/JetBrainsMono-Bold.ttf";
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
 /// rows fetched per request; the list only asks for the pages that are on screen
 const PAGE: usize = 200;
@@ -154,7 +155,7 @@ fn query_terms(q: &str) -> Vec<String> {
 }
 
 /// The text with every case-insensitive occurrence of a term drawn on a highlight background.
-fn name_job(text: &str, terms: &[String], font: &egui::FontId, color: Color32, hl_bg: Color32) -> egui::text::LayoutJob {
+fn name_job(text: &str, terms: &[String], font: &egui::FontId, color: Color32) -> egui::text::LayoutJob {
     let lower = text.to_ascii_lowercase();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     for t in terms.iter().filter(|t| !t.is_empty()) {
@@ -175,8 +176,8 @@ fn name_job(text: &str, terms: &[String], font: &egui::FontId, color: Color32, h
     }
     let mut job = egui::text::LayoutJob::default();
     let plain = egui::TextFormat::simple(font.clone(), color);
-    let mut hl = egui::TextFormat::simple(font.clone(), color);
-    hl.background = hl_bg;
+    // matched parts use the bold face (same advance width, so columns stay aligned)
+    let hl = egui::TextFormat::simple(egui::FontId::new(font.size, FontFamily::Name("bold".into())), color);
     let mut pos = 0;
     for (s, e) in merged {
         job.append(&text[pos..s], 0.0, plain.clone());
@@ -672,6 +673,14 @@ impl App {
                 fonts.families.entry(fam).or_default().insert(0, "jbmono".into());
             }
         }
+        let bold = std::fs::read(FONT_BOLD).ok().map(|b| FontData::from_owned(b)).map(std::sync::Arc::new);
+        // without the bold file the matches simply render in the regular face
+        let mut bold_chain = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+        if let Some(b) = bold {
+            fonts.font_data.insert("jbmono-bold".into(), b);
+            bold_chain.insert(0, "jbmono-bold".to_string()); // regular chain stays behind it for fallback glyphs
+        }
+        fonts.families.insert(FontFamily::Name("bold".into()), bold_chain);
         cc.egui_ctx.set_fonts(fonts);
         let (tx, rx) = channel();
         let mut app = Self {
@@ -1017,7 +1026,7 @@ impl App {
                             (fit_text(ui, &date_txt, &small, t), small.clone(), pal.dim),
                         ];
                         let painter = ui.painter();
-                        let name_galley = painter.layout_job(name_job(&name_text, &terms, &name_font, txt, pal.accent.gamma_multiply(0.35)));
+                        let name_galley = painter.layout_job(name_job(&name_text, &terms, &name_font, txt));
                         painter.galley(egui::pos2(rect.left(), img.bottom() + 4.0), name_galley, txt);
                         let mut y = img.bottom() + 18.0;
                         for (text, font, color) in lines {
@@ -1646,7 +1655,7 @@ impl eframe::App for App {
                             let base = fit_text(ui, &base, &name_font, (c.path_x - c.name_x - 8.0).max(0.0));
                             let dir = fit_text(ui, &dir, &dir_font, (c.path_r - c.path_x - 8.0).max(0.0));
                             let name_clip = egui::Rect::from_min_max(egui::pos2(c.name_x, rect.top()), egui::pos2(c.path_x - 4.0, rect.bottom()));
-                            let name_galley = painter.layout_job(name_job(&base, &terms, &egui::FontId::monospace(13.0), txt, pal.accent.gamma_multiply(0.35)));
+                            let name_galley = painter.layout_job(name_job(&base, &terms, &egui::FontId::monospace(13.0), txt));
                             painter.with_clip_rect(name_clip).galley(egui::pos2(c.name_x, y - name_galley.size().y / 2.0), name_galley, txt);
                             let path_clip = egui::Rect::from_min_max(egui::pos2(c.path_x, rect.top()), egui::pos2(c.path_r - 4.0, rect.bottom()));
                             painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::monospace(11.0), dim);
