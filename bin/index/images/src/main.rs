@@ -895,6 +895,7 @@ impl eframe::App for App {
             self.thumb = (self.thumb * zd).clamp(16.0, 800.0);
         }
         ctx.set_zoom_factor(1.0);
+        ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
         let grid = self.thumb >= GRID_ZOOM;
         // the score column only exists for photo results
         let show_score = self.hits.iter().any(|h| h.score.is_some());
