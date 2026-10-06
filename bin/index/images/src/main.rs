@@ -162,6 +162,11 @@ fn query_terms(q: &str) -> Vec<String> {
     for tok in tokenize(q) {
         let tok = tok.as_str();
         if tok == "/fts" || tok == "/full-text-search" { continue; }
+        // a negated term ("!word", "!//tag value") is something the results must NOT have: nothing to highlight
+        if let Some(neg) = tok.strip_prefix('!') {
+            if neg.starts_with("//") || neg == "/clip" || neg == "/face" { skip_value = true; }
+            continue;
+        }
         if tok == "/clip" || tok == "/face" || tok.starts_with("//") { skip_value = true; continue; }
         if skip_value { skip_value = false; continue; }
         let t = tok.replace('"', "").to_ascii_lowercase();
@@ -548,8 +553,11 @@ struct PeopleReply {
 /// Returns (byte index where the fragment starts, candidates).
 fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec<(String, String)>) {
     let start = q.rfind(char::is_whitespace).map(|i| i + q[i..].chars().next().unwrap().len_utf8()).unwrap_or(0);
+    // a leading "!" negates the term being typed (query-dsl.md "Negation"): complete what follows it
+    let start = if q[start..].starts_with('!') { start + 1 } else { start };
     let frag = &q[start..];
     let prev = q[..start].split_whitespace().last().unwrap_or("");
+    let prev = prev.strip_prefix('!').unwrap_or(prev);
     let mut out = Vec::new();
     // values for a tag that takes one: (value, label)
     let values_for = |tag: &str| -> Vec<(String, String)> {
@@ -770,7 +778,7 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
         i += 1;
         if t == "/rv" || t == "/reverse" { reverse = true; continue; }
         // a `//tag` owns the next token as its value, whatever it looks like (`//path /etc`, `//path /sort`)
-        if t.starts_with("//") {
+        if t.starts_with("//") || t.starts_with("!//") {
             rest.push(t);
             if i < toks.len() { rest.push(toks[i]); i += 1; }
             continue;
@@ -1439,11 +1447,11 @@ impl eframe::App for App {
             self.thumb = (self.thumb * 1.15f32.powi(steps)).clamp(16.0, 800.0);
         }
         ctx.set_zoom_factor(1.0);
-        // wheel steps cover more rows when the rows are small (zoomed out); scaled on the scroll delta only,
+        // wheel steps cover more when zoomed in (bigger rows); scaled on the scroll delta only,
         // because egui also derives the zoom step from the wheel delta
         let row_h = (self.thumb + 4.0).max(20.0);
         ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
-        let scroll_boost = (240.0 / row_h).clamp(1.0, 8.0);
+        let scroll_boost = (row_h / 60.0).clamp(1.0, 6.0);
         ui.input_mut(|i| i.smooth_scroll_delta *= scroll_boost);
         let grid = self.thumb >= GRID_ZOOM;
         // the score column only exists for photo results
@@ -2312,6 +2320,8 @@ mod sort_tests {
         assert_eq!(p("/s nonsense //name a"), ("//name a".into(), "date".into(), true));
         assert_eq!(p("/s size /rv"), ("".into(), "size".into(), true));
         assert_eq!(p("/s size \"a  /s name\" b"), ("\"a  /s name\" b".into(), "size".into(), false));
+        assert_eq!(p("!//path /etc"), ("!//path /etc".into(), "date".into(), true));
+        assert_eq!(p("!//path /sort /s size"), ("!//path /sort".into(), "size".into(), false));
         assert_eq!(p("//path /etc"), ("//path /etc".into(), "date".into(), true));
         assert_eq!(p("//path / /sort dm asc"), ("//path /".into(), "date".into(), false));
         assert_eq!(p("//path /sort /s size"), ("//path /sort".into(), "size".into(), false));
