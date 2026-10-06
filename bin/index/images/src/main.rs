@@ -1081,8 +1081,9 @@ impl eframe::App for App {
             delta += cols as i64 * (down_steps - up_steps);
             if shift_down { delta += cols as i64; extend = true; any = true; }
             if shift_up { delta -= cols as i64; extend = true; any = true; }
-            if pgdn { delta += 8; any = true; }
-            if pgup { delta -= 8; any = true; }
+            let page = if ui.input(|i| i.modifiers.ctrl) { 16 } else { 8 };
+            if pgdn { delta += page; any = true; }
+            if pgup { delta -= page; any = true; }
             if home { abs = Some(0); any = true; }
             if end { abs = Some(n - 1); any = true; }
             if any {
