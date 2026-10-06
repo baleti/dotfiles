@@ -464,6 +464,8 @@ struct App {
     /// sharp PDF first pages: remotes wanted (sent from the grid), and finished (remote, thumb path)
     hq_map: HashMap<String, String>,
     hq_asked: HashMap<String, Instant>,
+    /// columns in the thumbnail grid as laid out last frame (arrow keys move by this many)
+    grid_cols: usize,
     hq_tx: Sender<String>,
     hq_rx: Receiver<(String, String)>,
     rx: Receiver<Fetch>,
@@ -888,6 +890,7 @@ impl App {
             tx,
             hq_map: HashMap::new(),
             hq_asked: HashMap::new(),
+            grid_cols: 1,
             hq_tx,
             hq_rx,
             rx,
@@ -1253,9 +1256,13 @@ impl App {
     fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context,
                  clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
         let pal = self.pal;
-        let t = self.thumb;
         let text_h = 58.0;
-        let cols = ((ui.available_width() / (t + 10.0)).floor() as usize).max(1);
+        // columns are as many as fit the thumbnail size, and the cells are stretched so they fill the whole width
+        let gap = 10.0;
+        let avail = ui.available_width();
+        let cols = ((avail + gap) / (self.thumb + gap)).floor().max(1.0) as usize;
+        self.grid_cols = cols;
+        let t = ((avail - gap * (cols as f32 - 1.0)) / cols as f32).floor().max(16.0);
         let rows = self.total.div_ceil(cols);
         let view_h = ui.available_height() - 30.0;
         let mut area = egui::ScrollArea::vertical().max_height(view_h).auto_shrink([false, false]);
@@ -1724,7 +1731,7 @@ impl eframe::App for App {
             if key_x || ev_cut { self.copy_selection(true); }
         }
         if n > 0 && !self.popup {
-            let cols = if grid { ((ui.available_width() / (self.thumb + 10.0)).floor() as usize).max(1) } else { 1 };
+            let cols = if grid { self.grid_cols.max(1) } else { 1 };
             let shift_any = ui.input(|i| i.modifiers.shift);
             // Ctrl+H / Ctrl+L: previous / next item, in grid and list alike (consumed before the query box)
             let h_n = take_count(ui, egui::Modifiers::CTRL, Key::H);
