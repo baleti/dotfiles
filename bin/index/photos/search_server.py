@@ -129,11 +129,11 @@ def fts_query(text, index_token, sort, desc, offset, limit):
     from filesearch import split_mime, split_tags, matches_mime, _size_ok
     confs, err = fts_resolve(index_token)
     if err:
-        return [], 0, err
+        return [], 0, err, None
     wanted, rest = split_mime(text)
     tags, terms = split_tags(rest)
     if not terms.strip():
-        return [], 0, None
+        return [], 0, None, None
     rows = [r for r in fts_matches(terms.strip(), confs) if (not wanted or matches_mime(r["remote"], wanted))
             and all(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["name"])
             and all(t.lower() in r["remote"].lower() for t in tags["path"])
@@ -143,7 +143,10 @@ def fts_query(text, index_token, sort, desc, offset, limit):
                "path": lambda r: r["remote"].lower(),
                "size": lambda r: r["size"] or 0}[sort]
         rows.sort(key=key, reverse=desc)
-    return rows[offset: offset + limit], len(rows), None
+    from collections import Counter
+    kinds = Counter(filesearch.kind_of(r["remote"]) or "no ext" for r in rows).most_common(5)
+    stats = {"size": sum(r["size"] or 0 for r in rows), "kinds": [[k, n] for k, n in kinds]}
+    return rows[offset: offset + limit], len(rows), None, stats
 
 _snip_dbs = {}
 _snip_lock = threading.Lock()
@@ -283,10 +286,10 @@ class H(BaseHTTPRequestHandler):
                 fts = re.match(r"^/(?:fts|full-text-search)(?:/(\S*))?(?:\s+|$)(.*)$", rest, re.S)
                 errors = []
                 if fts:
-                    results, count, err = fts_query(fts.group(2), fts.group(1) or "", sort, desc, offset, top)
+                    results, count, err, stats = fts_query(fts.group(2), fts.group(1) or "", sort, desc, offset, top)
                     errors = [err] if err else []
                 else:
-                    results, count = NAMES.query(rest, sort, desc, offset, top)
+                    results, count, stats = NAMES.query(rest, sort, desc, offset, top)
                 for r in results:
                     r["score"] = None
                     if r["remote"].lower().endswith(IMAGE_EXT):
@@ -298,7 +301,7 @@ class H(BaseHTTPRequestHandler):
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
                         r["mtime"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
-                return self._json(200, {"count": count, "results": results, "errors": errors})
+                return self._json(200, {"count": count, "results": results, "errors": errors, "stats": stats})
             try:
                 with _q_lock:
                     if not q:

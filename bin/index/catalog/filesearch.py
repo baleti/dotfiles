@@ -217,12 +217,29 @@ class NameTable:
             cached = self._cache
         if cached is None or cached[0] != key:
             idx = self._match(q, sort, desc)
+            stats = self._stats(idx)
             with self.lock:
-                self._cache = (key, idx)
+                self._cache = (key, idx, stats)
         else:
-            idx = cached[1]
+            idx, stats = cached[1], cached[2]
         window = idx[offset: offset + limit].tolist()
-        return [{"remote": self.paths[i], "size": self.sizes[i], "mtime": self.mtimes[i]} for i in window], len(idx)
+        rows = [{"remote": self.paths[i], "size": self.sizes[i], "mtime": self.mtimes[i]} for i in window]
+        return rows, len(idx), stats
+
+    def _stats(self, idx):
+        """Totals over every match: size, date-modified range and the commonest file types."""
+        with self.lock:
+            sizes, mts, codes, names = self.size_arr[idx], self.mt_arr[idx], self.ext_codes[idx], self.ext_names
+        known = sizes >= 0
+        dated = mts > 0
+        fmt = lambda t: time.strftime("%Y-%m-%d", time.localtime(int(t)))
+        out = {"size": int(sizes[known].sum()) if known.any() else 0}
+        if dated.any():
+            out["dmin"], out["dmax"] = fmt(mts[dated].min()), fmt(mts[dated].max())
+        counts = np.bincount(codes, minlength=len(names)) if len(codes) else np.zeros(0, int)
+        top = np.argsort(-counts)[:5]
+        out["kinds"] = [[names[k] or "no ext", int(counts[k])] for k in top if counts[k] > 0]
+        return out
 
     def _match(self, q, sort, desc):
         wanted, rest = split_mime(q)
