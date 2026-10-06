@@ -194,7 +194,7 @@ def browse(top=120):
         if len(out) >= top: break
     return out
 
-def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=400):
+def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
     """Returns (results, count, errors). Raises ValueError when nothing can be searched."""
     _refresh()
     filters, bare = parse(q)

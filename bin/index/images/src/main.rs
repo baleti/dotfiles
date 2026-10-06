@@ -535,7 +535,7 @@ struct PeopleReply {
 
 /// Completion candidates for the fragment at the end of `q`.
 /// Returns (byte index where the fragment starts, candidates).
-fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<(String, String)>) {
+fn completions(q: &str, people: &[String], facets: &FacetsReply, history: &[String]) -> (usize, Vec<(String, String)>) {
     let start = q.rfind(char::is_whitespace).map(|i| i + q[i..].chars().next().unwrap().len_utf8()).unwrap_or(0);
     let frag = &q[start..];
     let prev = q[..start].split_whitespace().last().unwrap_or("");
@@ -623,6 +623,18 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
         for (v, label) in values_for(tag) {
             if v.to_lowercase().contains(&f) {
                 out.push((format!("{v} "), label));
+            }
+        }
+    } else if prev == "/clip" {
+        // the text after /clip: earlier photo searches, newest first
+        let f = frag.to_lowercase();
+        let mut seen = std::collections::HashSet::new();
+        for h in history.iter().rev() {
+            if let Some(t) = h.trim().strip_prefix("/clip ") {
+                let t = t.trim();
+                if !t.is_empty() && t.to_lowercase().contains(&f) && seen.insert(t.to_string()) {
+                    out.push((format!("{t} "), "earlier /clip search".to_string()));
+                }
             }
         }
     } else if prev == "/face" || (prev.is_empty() && !frag.is_empty() && q[..start].trim().is_empty()) {
@@ -1258,7 +1270,7 @@ impl App {
 
     fn accept_candidate(&mut self) {
         if let Some((rep, _)) = self.cands.get(self.cand_sel).cloned() {
-            let (start, _) = completions(&self.query, &self.people, &self.facets);
+            let (start, _) = completions(&self.query, &self.people, &self.facets, &self.history);
             self.query = apply(&self.query, start, &rep);
             self.last_change = Instant::now() - Duration::from_millis(200);
             self.cursor_end = true;
@@ -1387,7 +1399,7 @@ impl eframe::App for App {
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         let ctrl_space = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Space));
         if (tab || ctrl_space) && !self.popup {
-            let (start, cands) = completions(&self.query, &self.people, &self.facets);
+            let (start, cands) = completions(&self.query, &self.people, &self.facets, &self.history);
             match cands.len() {
                 0 => {}
                 1 => {
@@ -1429,7 +1441,7 @@ impl eframe::App for App {
         }
         // typing while the popup is open narrows it in place
         if self.popup && self.query != self.popup_q {
-            let (_, cands) = completions(&self.query, &self.people, &self.facets);
+            let (_, cands) = completions(&self.query, &self.people, &self.facets, &self.history);
             if cands.is_empty() { self.popup = false; } else { self.cands = cands; self.cand_sel = 0; }
         }
         self.popup_q = self.query.clone();
