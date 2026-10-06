@@ -583,7 +583,9 @@ Reorder the survivors; never filter or hide.
   chaining (use the via form above for more than one key). Order rows by
   the single type `path` resolves to.
 - **`[direction]`**, on either form: the token right after the path
-  chain, if there is one, is only taken as `direction` when it
+  chain, if there is one (the images picker also accepts it right after
+  the verb, before the path: `/s desc name` == `/s name desc`; a word that
+  resolves to a field is always read as the field first), is only taken as `direction` when it
   substring-matches `ascending` / `descending` (so `asc` / `desc` / `de`
   all work); if it doesn't match either, `/sort` stops at the path chain
   (direction defaults to `ascending`) and that token is never consumed -
@@ -672,6 +674,12 @@ and `//path "part 3"` take the whole quoted run as their value, and
 a phrase. `/s`, `/sort` and `/rv` inside quotes are plain text, never
 commands, and quoted runs keep their inner spacing when the order verbs are
 taken out of the query. An unterminated quote runs to the end of the box.
+
+A `//tag` always owns the next token as its value, whatever that token looks
+like, so `//path /etc` filters on the path `/etc` and `//path /sort` on the
+text `/sort`; neither is read as a command. A `/` token that is not
+directly after a `//tag` (`//path / /sort dm asc` - the value is the lone
+`/`, then the sort) is parsed as usual.
 Photo (`//clip`, `//face`) queries are handled by the photo engine and do
 not group quoted words.
 
