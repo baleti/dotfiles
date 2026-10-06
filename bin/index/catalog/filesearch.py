@@ -42,20 +42,47 @@ def matches_mime(path, wanted):
             return True
     return False
 
+def tokens(query):
+    """Whitespace-separated tokens; text inside double quotes (even mid-token, as in name:"a b") stays one token.
+    Quotes are kept in the token; an unterminated quote runs to the end."""
+    out, cur, inq = [], [], False
+    for ch in query:
+        if ch == '"':
+            inq = not inq
+            cur.append(ch)
+        elif ch.isspace() and not inq:
+            if cur:
+                out.append("".join(cur)); cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        out.append("".join(cur))
+    return out
+
+def unquote(tok):
+    return tok.replace('"', "")
+
+def _take_tags(query, names):
+    """Pull '//tag value' pairs (value may be "quoted text") out of a query -> ({tag: [values]}, rest tokens joined)."""
+    found = {n: [] for n in names}
+    rest, toks, i = [], tokens(query), 0
+    while i < len(toks):
+        m = re.fullmatch(r"//(%s)" % "|".join(names), toks[i], re.I)
+        if m and i + 1 < len(toks):
+            found[m.group(1).lower()].append(unquote(toks[i + 1]))
+            i += 2
+        else:
+            rest.append(toks[i]); i += 1
+    return found, " ".join(rest)
+
 def split_mime(query):
-    """'//mime image foo bar' -> (['image'], 'foo bar')."""
-    import re
-    wanted = [m.lower() for m in re.findall(r"//mime\s+(\S+)", query)]
-    rest = re.sub(r"//mime\s+\S+", " ", query)
-    return wanted, rest.strip()
+    """'//mime image foo "bar baz"' -> (['image'], 'foo "bar baz"')."""
+    found, rest = _take_tags(query, ["mime"])
+    return [m.lower() for m in found["mime"]], rest
 
 def split_tags(query):
-    """'//name x //path y //size >5M //dm >2015-06 rest' -> ({'name':[x],...}, 'rest')."""
-    tags = {"name": [], "path": [], "size": [], "dm": []}
-    for m in re.finditer(r"//(name|path|size|dm)\s+(\S+)", query, re.I):
-        tags[m.group(1).lower()].append(m.group(2))
-    rest = re.sub(r"//(name|path|size|dm)\s+\S+", " ", query, flags=re.I)
-    return tags, rest.strip()
+    """'//name x //path "y z" //size >5M //dm >2015-06 rest' -> ({'name':[x],...}, 'rest'); quotes are kept in rest."""
+    return _take_tags(query, ["name", "path", "size", "dm"])
 
 def _size_ok(sz, cond):
     m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMGT]?)B?$", cond.strip(), re.I)
@@ -200,7 +227,7 @@ class NameTable:
     def _match(self, q, sort, desc):
         wanted, rest = split_mime(q)
         tags, rest = split_tags(rest)
-        terms = [t.lower() for t in rest.split() if t]
+        terms = [unquote(t).lower() for t in tokens(rest) if unquote(t)]
         with self.lock:
             N = len(self.paths)
             sorts = [k for k in sort.split(",") if k in self.sort_keys] or ["date"]
