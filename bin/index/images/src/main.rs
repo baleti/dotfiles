@@ -573,6 +573,10 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
                 (">10M".into(), "larger than 10 MiB".into()),
                 ("<100M".into(), "smaller than 100 MiB".into()),
                 (">100M".into(), "larger than 100 MiB".into()),
+                ("<1G".into(), "smaller than 1 GiB".into()),
+                (">1G".into(), "larger than 1 GiB".into()),
+                ("<10G".into(), "smaller than 10 GiB".into()),
+                (">10G".into(), "larger than 10 GiB".into()),
             ],
             _ => Vec::new(),
         }
