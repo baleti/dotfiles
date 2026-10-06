@@ -851,9 +851,9 @@ impl App {
     fn texture(&mut self, ctx: &egui::Context, path: &str) -> Option<TextureHandle> {
         if let Some(t) = self.textures.get(path) { return Some(t.clone()); }
         if self.missing.contains(path) || !Path::new(path).exists() { return None; }
-        let img = image::open(path).ok()?.to_rgb8();
+        let img = image::open(path).ok()?.to_rgba8();
         let (w, h) = img.dimensions();
-        let ci = egui::ColorImage::from_rgb([w as usize, h as usize], img.as_raw());
+        let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
         let tex = ctx.load_texture(path, ci, egui::TextureOptions::LINEAR);
         self.textures.insert(path.to_string(), tex.clone());
         Some(tex)
