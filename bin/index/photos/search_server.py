@@ -145,6 +145,60 @@ def fts_query(text, index_token, sort, desc, offset, limit):
         rows.sort(key=key, reverse=desc)
     return rows[offset: offset + limit], len(rows), None
 
+_snip_dbs = {}
+_snip_lock = threading.Lock()
+
+class _Mark:
+    """Recoll highlight methods: control characters around each match, turned into ranges below."""
+    def startMatch(self, i): return "\x01"
+    def endMatch(self): return "\x02"
+
+def fts_snippets(remote, text):
+    """Recoll's own snippets for one file under a /fts query (its default context and occurrence limits):
+    [{"page": n|None, "text": plain text, "ranges": [[start, end], ...]}]."""
+    import html
+    from recoll import recoll
+    from filesearch import split_mime, split_tags
+    m = re.match(r"^/(?:fts|full-text-search)(?:/(\S*))?(?:\s+|$)(.*)$", text.strip(), re.S)
+    if not m:
+        return [], "not a /fts query"
+    confs, err = fts_resolve(m.group(1) or "")
+    if err:
+        return [], err
+    _, rest = split_mime(m.group(2))
+    _, terms = split_tags(rest)
+    terms = terms.strip()
+    if not terms:
+        return [], None
+    with _snip_lock:
+        for conf in confs:
+            if conf not in _snip_dbs:
+                _snip_dbs[conf] = recoll.connect(confdir=conf)
+            q = _snip_dbs[conf].query()
+            q.execute(terms)
+            for _ in range(5000):
+                doc = q.fetchone()
+                if doc is None:
+                    break
+                if urllib.parse.unquote(doc.url[len("file://"):]) != remote:
+                    continue
+                out = []
+                for page, _term, snip in q.getsnippets(doc, methods=_Mark()):
+                    snip = html.unescape(snip) if "&" in snip else snip
+                    plain, ranges, start = [], [], None
+                    for ch in snip:
+                        if ch == "\x01":
+                            start = sum(len(p.encode()) for p in plain)
+                        elif ch == "\x02":
+                            if start is not None:
+                                ranges.append([start, sum(len(p.encode()) for p in plain)])
+                            start = None
+                        else:
+                            plain.append(ch)
+                    out.append({"page": page if page and page > 0 else None, "text": "".join(plain), "ranges": ranges})
+                return out, None
+    return [], None
+
 THUMBS = os.path.join(config.DATA_DIR, "thumbs")
 
 META = {}
@@ -252,6 +306,12 @@ class H(BaseHTTPRequestHandler):
                 r["ready"] = enqueue(r["remote"])
             return self._json(200, {"count": count if count is not None else len(results),
                                     "results": results, "errors": errors})
+        if u.path == "/snippets":
+            try:
+                snips, err = fts_snippets(qs.get("remote", [""])[0], qs.get("q", [""])[0])
+            except Exception as e:
+                return self._json(200, {"snippets": [], "error": str(e)})
+            return self._json(200, {"snippets": snips, "error": err})
         if u.path == "/facets":
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),

@@ -379,6 +379,39 @@ fn fetch_page(q: &str, sort: &str, desc: bool, page: usize) -> Result<Reply, Str
 }
 
 /// background query results come back tagged with the request sequence number
+/// One Recoll snippet of a file: page (when the format has pages), text, and match byte ranges.
+#[derive(Deserialize, Clone)]
+struct Snip {
+    page: Option<i64>,
+    text: String,
+    ranges: Vec<(usize, usize)>,
+}
+#[derive(Deserialize)]
+struct SnipReply {
+    #[serde(default)]
+    snippets: Vec<Snip>,
+    #[serde(default)]
+    error: Option<String>,
+}
+enum SnipState { Loading, Done(Vec<Snip>), Failed(String) }
+
+fn fetch_snippets(remote: &str, q: &str) -> Result<Vec<Snip>, String> {
+    let url = format!("{}/snippets", cfg().server);
+    let r = ureq::get(&url).query("remote", remote).query("q", q)
+        .timeout(Duration::from_secs(60)).call()
+        .map_err(|e| format!("search server unreachable: {e}"))
+        .and_then(|resp| resp.into_string().map_err(|e| e.to_string()))
+        .and_then(|body| serde_json::from_str::<SnipReply>(&body).map_err(|e| e.to_string()))?;
+    match r.error { Some(e) => Err(e), None => Ok(r.snippets) }
+}
+
+/// True for a `/fts` (full-text search) query: those results get a snippet preview pane.
+fn is_fts(q: &str) -> bool {
+    ["/fts", "/full-text-search"].iter().any(|v| {
+        q.strip_prefix(v).map_or(false, |r| r.is_empty() || r.starts_with('/') || r.starts_with(char::is_whitespace))
+    })
+}
+
 struct Fetch {
     seq: u64,
     page: usize,
@@ -393,6 +426,10 @@ struct App {
     last_change: Instant,
     cursor_end: bool,
     seq: u64,
+    snip_tx: Sender<(String, String, Result<Vec<Snip>, String>)>,
+    snip_rx: Receiver<(String, String, Result<Vec<Snip>, String>)>,
+    /// preview pane: snippets per (file, query)
+    snips: HashMap<(String, String), SnipState>,
     tx: Sender<Fetch>,
     rx: Receiver<Fetch>,
     /// total matches for the current query and the pages fetched so far (page index -> rows)
@@ -683,6 +720,7 @@ impl App {
         fonts.families.insert(FontFamily::Name("bold".into()), bold_chain);
         cc.egui_ctx.set_fonts(fonts);
         let (tx, rx) = channel();
+        let (snip_tx, snip_rx) = channel();
         let mut app = Self {
             pal: load_palette(&cfg().scheme),
             query: String::new(),
@@ -692,6 +730,9 @@ impl App {
             seq: 0,
             tx,
             rx,
+            snip_tx,
+            snip_rx,
+            snips: HashMap::new(),
             total: 0,
             pages: HashMap::new(),
             pending: HashSet::new(),
@@ -789,6 +830,9 @@ impl App {
     }
 
     fn drain(&mut self) {
+        while let Ok((remote, q, r)) = self.snip_rx.try_recv() {
+            self.snips.insert((remote, q), match r { Ok(v) => SnipState::Done(v), Err(e) => SnipState::Failed(e) });
+        }
         while let Ok(f) = self.rx.try_recv() {
             if f.seq != self.seq { continue; } // stale: a newer query was already sent
             self.pending.remove(&f.page);
@@ -972,6 +1016,66 @@ impl App {
         let _ = std::fs::create_dir_all(PathBuf::from(&cfg().data_dir));
         let body = serde_json::json!({"cols": self.col_frac});
         let _ = std::fs::write(sort_path(), body.to_string());
+    }
+
+    /// Right-hand pane for /fts results: Recoll's snippets of the highlighted file, matches in bold.
+    fn preview_pane(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal;
+        let Some(hit) = self.hit(self.selected).cloned() else { return };
+        let key = (hit.remote.clone(), self.req_q.clone());
+        if !self.snips.contains_key(&key) {
+            self.snips.insert(key.clone(), SnipState::Loading);
+            let tx = self.snip_tx.clone();
+            let (remote, q) = key.clone();
+            std::thread::spawn(move || {
+                let r = fetch_snippets(&remote, &q);
+                let _ = tx.send((remote, q, r));
+            });
+        }
+        let bold = FontFamily::Name("bold".into());
+        egui::Panel::right("preview")
+            .resizable(true)
+            .default_size(340.0)
+            .size_range(200.0..=900.0)
+            .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(12)))
+            .show_inside(ui, |ui| {
+                let name = hit.remote.rsplit('/').next().unwrap_or(&hit.remote);
+                let dir = hit.remote.rsplit_once('/').map(|x| x.0).unwrap_or("");
+                ui.add(egui::Label::new(RichText::new(name).color(pal.accent).size(13.0).family(bold.clone())).wrap());
+                ui.add(egui::Label::new(RichText::new(dir).color(pal.dim).size(10.0)).wrap());
+                ui.add_space(8.0);
+                match self.snips.get(&key) {
+                    None | Some(SnipState::Loading) => { ui.label(RichText::new("loading…").color(pal.dim).size(11.0)); }
+                    Some(SnipState::Failed(e)) => { ui.label(RichText::new(e).color(pal.error).size(11.0)); }
+                    Some(SnipState::Done(v)) if v.is_empty() => {
+                        ui.label(RichText::new("no matching passages").color(pal.dim).size(11.0));
+                    }
+                    Some(SnipState::Done(v)) => {
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                            for sn in v {
+                                if let Some(p) = sn.page {
+                                    ui.label(RichText::new(format!("page {p}")).color(pal.dim).size(10.0));
+                                }
+                                let font = egui::FontId::proportional(12.0);
+                                let plain = egui::TextFormat::simple(font.clone(), pal.text);
+                                let hl = egui::TextFormat::simple(egui::FontId::new(12.0, bold.clone()), pal.accent);
+                                let mut job = egui::text::LayoutJob::default();
+                                job.wrap.max_width = ui.available_width();
+                                let mut pos = 0;
+                                for &(s, e) in &sn.ranges {
+                                    if s < pos || e > sn.text.len() || !sn.text.is_char_boundary(s) || !sn.text.is_char_boundary(e) { continue; }
+                                    job.append(&sn.text[pos..s], 0.0, plain.clone());
+                                    job.append(&sn.text[s..e], 0.0, hl.clone());
+                                    pos = e;
+                                }
+                                job.append(&sn.text[pos..], 0.0, plain);
+                                ui.label(job);
+                                ui.add_space(10.0);
+                            }
+                        });
+                    }
+                }
+            });
     }
 
     /// Thumbnail grid for zoomed-in views: square cells with name, path, size and date under each.
@@ -1456,6 +1560,9 @@ impl eframe::App for App {
         if self.list_focus && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
             self.list_focus = false;
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+        }
+        if is_fts(&self.req_q) && self.total > 0 && !grid {
+            self.preview_pane(ui);
         }
         egui::Frame::new()
             .fill(pal.bg)

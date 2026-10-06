@@ -48,6 +48,14 @@ match: a `/fts` query never shows a file that has not been content-indexed, so
 there is no "not indexed" row to explain. Name search (no verb) covers every
 file regardless of content indexing.
 
+**Preview pane.** While a `/fts` query is showing results (list view), a
+second pane on the right previews the highlighted file: Recoll's own
+snippets (`Query.getsnippets` with its default context-word and occurrence
+limits, so passages and stemmed matches are the ones Recoll's GUI would
+show), each with its page number when the format has pages, and the matched
+words in bold. It follows the cursor, is resizable, and is fetched from the
+search server's `/snippets` endpoint.
+
 **Index collections (`/fts/<index>`).** Content indexes are kept as named
 collections, one per folder under `~/.cache/indexes/` (the list is private config, not part of this spec). The verb pivots on a collection with a slash:
 `/fts/part3-books daniel essay career cdm //mime pdf` searches only that
