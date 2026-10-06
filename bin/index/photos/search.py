@@ -2,9 +2,9 @@
 """Unified photo search over the CLIP and face indexes.
 
 Query syntax (follows ~/.config/docs/query-dsl.md: `//path` = filter, AND across filters):
-  //face <name>           photos containing a face matching a registered person
-  //clip brick           photos whose CLIP embedding matches the text 'brick'
-  //face <name> //clip <text>   both filters (intersection)
+  /face <name>           photos containing a face matching a registered person
+  /clip brick            photos whose CLIP embedding matches the text 'brick'
+  /face <name> /clip <text>   both filters (intersection)
   brick building        bare words: CLIP text search, plus any registered person
                         whose name matches a bare word (default = both)
   "quoted phrase"       kept as one CLIP phrase
@@ -99,9 +99,9 @@ def parse(q):
     toks = tokenize(q)
     filters, bare, cur = [], [], None
     for t in toks:
-        m = re.match(r"^//(face|clip|name|path|size|dm|date)$", t)
+        m = re.match(r"^(?:/(face|clip)|//(name|path|size|dm|date))$", t)
         if m:
-            cur = m.group(1); filters.append([cur, []]); continue
+            cur = m.group(1) or m.group(2); filters.append([cur, []]); continue
         if cur is not None:
             filters[-1][1].append(t)
         else:
