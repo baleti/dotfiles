@@ -82,6 +82,92 @@ fn trashable(remote: &str) -> Option<(PathBuf, u64)> {
 
 fn human(b: u64) -> String { human_size(b) }
 
+/// True when the query text field has a non-empty selection (then Ctrl+C/X belong to the text).
+fn query_has_selection(ctx: &egui::Context) -> bool {
+    egui::TextEdit::load_state(ctx, egui::Id::new("query"))
+        .and_then(|st| st.cursor.char_range())
+        .map(|r| r.primary.index != r.secondary.index)
+        .unwrap_or(false)
+}
+
+/// Local path for a result: local rows are already paths; remote rows map through the gdrive mount.
+fn local_path(remote: &str) -> PathBuf {
+    if remote.starts_with('/') {
+        PathBuf::from(remote)
+    } else {
+        PathBuf::from(format!("{}/{}", cfg().mount_root, short_name(remote)))
+    }
+}
+
+/// Handlers for a mime type, from `gio mime`: (desktop id, display name).
+fn handlers_for(mime: &str) -> Vec<(String, String)> {
+    let out = std::process::Command::new("gio").arg("mime").arg(mime).output();
+    let Ok(out) = out else { return Vec::new() };
+    let mut v = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let t = line.trim();
+        if let Some(id) = t.strip_suffix(".desktop") {
+            let id = format!("{id}.desktop");
+            let name = desktop_name(&id).unwrap_or_else(|| id.clone());
+            if !v.iter().any(|(i, _): &(String, String)| i == &id) {
+                v.push((id, name));
+            }
+        }
+    }
+    v
+}
+
+fn desktop_name(id: &str) -> Option<String> {
+    for dir in ["/usr/share/applications", &format!("{}/.local/share/applications", std::env::var("HOME").unwrap_or_default())] {
+        if let Ok(t) = std::fs::read_to_string(format!("{dir}/{id}")) {
+            for line in t.lines() {
+                if let Some(n) = line.strip_prefix("Name=") {
+                    return Some(n.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn mime_of(path: &Path) -> String {
+    std::process::Command::new("file").arg("--mime-type").arg("-b").arg(path).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "application/octet-stream".into())
+}
+
+/// file:// URI for a local path (percent-encoding the characters that matter).
+fn file_uri(p: &Path) -> String {
+    let mut out = String::from("file://");
+    for b in p.to_string_lossy().bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Put file URIs on the Wayland clipboard so a file manager can paste them.
+fn clipboard_files(paths: &[PathBuf], cut: bool) {
+    let uris: Vec<String> = paths.iter().map(|p| file_uri(p)).collect();
+    let gnome = format!("{}\n{}", if cut { "cut" } else { "copy" }, uris.join("\n"));
+    for (mime, body) in [
+        ("x-special/gnome-copied-files", gnome),
+        ("text/uri-list", uris.join("\r\n") + "\r\n"),
+    ] {
+        if let Ok(mut child) = std::process::Command::new("wl-copy").arg("--type").arg(mime)
+            .stdin(std::process::Stdio::piped()).spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(body.as_bytes());
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
 /// Column x-positions for a row/header spanning [left, right]: name | path | size | modified | score.
 struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, date_x: f32, score_r: f32 }
 const NAME_W: f32 = 210.0;
@@ -169,6 +255,16 @@ struct App {
     /// delete confirmation: the exact local files that would be trashed, and the typed confirmation
     trash_pending: Option<Vec<(PathBuf, u64)>>,
     trash_typed: String,
+    /// context menu: where it is shown and which hit it was opened for
+    menu_at: Option<egui::Pos2>,
+    menu_hit: Option<usize>,
+    /// last drawn rectangle per hit (list view), used to place the menu for F10
+    row_rects: HashMap<usize, egui::Rect>,
+    menu_fresh: bool,
+    /// properties dialog for one hit
+    props: Option<usize>,
+    /// cached "Open with" handlers per mime type
+    handlers: HashMap<String, Vec<(String, String)>>,
     status: String,
     busy: bool,
     textures: HashMap<String, TextureHandle>,
@@ -263,6 +359,12 @@ impl App {
             anchor: None,
             trash_pending: None,
             trash_typed: String::new(),
+            menu_at: None,
+            menu_hit: None,
+            row_rects: HashMap::new(),
+            props: None,
+            menu_fresh: false,
+            handlers: HashMap::new(),
             status: "connecting to search server…".into(),
             busy: false,
             textures: HashMap::new(),
@@ -397,20 +499,26 @@ impl App {
         };
     }
 
+    fn open_hit(&mut self, idx: usize) {
+        let Some(h) = self.hits.get(idx).cloned() else { return };
+        let local = local_path(&h.remote);
+        if local.exists() {
+            std::thread::spawn(move || {
+                let _ = std::process::Command::new("xdg-open").arg(&local).status();
+            });
+        } else {
+            // remote result that is not on the mount: fetch to /tmp first
+            let name = h.remote.rsplit('/').next().unwrap_or("file").to_string();
+            let dst = format!("/tmp/images-open-{name}");
+            std::thread::spawn(move || {
+                let _ = std::process::Command::new("sh").arg("-c")
+                    .arg(format!("rclone cat '{}' > '{}' && xdg-open '{}'", h.remote, dst, dst)).status();
+            });
+        }
+    }
+
     fn open_selected(&mut self) {
-        let Some(h) = self.hits.get(self.selected).cloned() else { return };
-        let name = h.remote.rsplit('/').next().unwrap_or("photo.jpg").to_string();
-        let dst = format!("/tmp/images-open-{name}");
-        // fetch the full photo in the background, then hand it to xdg-open
-        std::thread::spawn(move || {
-            let ok = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("rclone cat '{}' > '{}' && xdg-open '{}'", h.remote, dst, dst))
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            let _ = ok;
-        });
+        self.open_hit(self.selected);
     }
 
     /// Thumbnail grid for zoomed-out views: square cells, score under each.
@@ -462,6 +570,18 @@ impl App {
                 }
             }
         });
+    }
+
+    fn copy_selection(&mut self, cut: bool) {
+        let paths: Vec<PathBuf> = self.selection().into_iter()
+            .filter_map(|i| self.hits.get(i)).map(|h| local_path(&h.remote))
+            .filter(|p| p.exists()).collect();
+        if paths.is_empty() {
+            self.status = "nothing local to copy".into();
+            return;
+        }
+        clipboard_files(&paths, cut);
+        self.status = format!("{} {} file(s) on the clipboard", if cut { "cut" } else { "copied" }, paths.len());
     }
 
     fn accept_candidate(&mut self) {
@@ -588,14 +708,32 @@ impl eframe::App for App {
                 i.key_pressed(Key::PageUp),
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::End),
-                i.key_pressed(Key::Enter) && !i.modifiers.ctrl,
+                i.key_pressed(Key::Enter) && !i.modifiers.ctrl && !i.modifiers.alt,
                 i.key_pressed(Key::Enter) && i.modifiers.ctrl,
                 i.key_pressed(Key::Escape),
                 i.modifiers.ctrl && i.key_pressed(Key::J),
                 i.modifiers.ctrl && i.key_pressed(Key::K),
             )
         });
-        if esc && !self.popup { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+        // Esc closes the innermost thing first: menu, then properties, then the window
+        if esc && !self.popup {
+            if self.menu_at.is_some() { self.menu_at = None; self.menu_hit = None; }
+            else if self.props.is_some() { self.props = None; }
+            else { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+        }
+        let alt_enter = ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.alt);
+        if alt_enter && n > 0 && !self.popup && self.trash_pending.is_none() { self.props = Some(self.selected); }
+        let f10 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F10));
+        if f10 && n > 0 && !self.popup && self.trash_pending.is_none() {
+            let at = self.row_rects.get(&self.selected).map(|r| r.left_bottom()).unwrap_or(egui::pos2(40.0, 120.0));
+            self.menu_at = Some(at);
+            self.menu_hit = Some(self.selected);
+        }
+        let qsel = query_has_selection(&ctx);
+        if !qsel && !self.popup && self.trash_pending.is_none() && self.props.is_none() && n > 0 {
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::C)) { self.copy_selection(false); }
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::X)) { self.copy_selection(true); }
+        }
         if n > 0 && !self.popup {
             let cols = if grid { ((ui.available_width() / (self.thumb + 10.0)).floor() as usize).max(1) } else { 1 };
             let (ctrl_shift_h, ctrl_shift_l, shift_any) = ui.input(|i| (
@@ -674,6 +812,79 @@ impl eframe::App for App {
             }
         }
 
+        // context menu (right-click or F10): one entry, "Open with" submenu
+        if let (Some(at), Some(hit)) = (self.menu_at, self.menu_hit) {
+            let local = self.hits.get(hit).map(|h| local_path(&h.remote));
+            let mime = local.as_ref().filter(|p| p.exists()).map(|p| mime_of(p));
+            let mut chosen: Option<(String, PathBuf)> = None;
+            let area = egui::Area::new(egui::Id::new("ctxmenu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(at)
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.menu_button("Open with", |ui| {
+                            match &mime {
+                                None => { ui.label(RichText::new("not available locally").color(pal.dim)); }
+                                Some(m) => {
+                                    let apps = self.handlers.entry(m.clone()).or_insert_with(|| handlers_for(m)).clone();
+                                    if apps.is_empty() { ui.label(RichText::new("no applications").color(pal.dim)); }
+                                    for (id, name) in apps {
+                                        if ui.button(name).clicked() {
+                                            chosen = Some((id, local.clone().unwrap()));
+                                            ui.close();
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    });
+                });
+            if let Some((id, path)) = chosen {
+                std::thread::spawn(move || {
+                    let _ = std::process::Command::new("gtk-launch").arg(&id).arg(&path).status();
+                });
+                self.menu_at = None;
+                self.menu_hit = None;
+            } else if self.menu_fresh {
+                self.menu_fresh = false;
+            } else if area.response.clicked_elsewhere() {
+                self.menu_at = None;
+                self.menu_hit = None;
+            }
+        }
+
+        // properties (Alt+Enter)
+        if let Some(idx) = self.props {
+            match self.hits.get(idx).cloned() {
+                None => self.props = None,
+                Some(h) => {
+                    let local = local_path(&h.remote);
+                    let mime = if local.exists() { mime_of(&local) } else { "not available locally".into() };
+                    let mut open = true;
+                    egui::Window::new("Properties")
+                        .open(&mut open)
+                        .collapsible(false)
+                        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                        .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
+                        .show(&ctx, |ui| {
+                            let row = |ui: &mut egui::Ui, k: &str, v: String| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("{k:<10}")).monospace().color(pal.dim));
+                                    ui.label(RichText::new(v).monospace().color(pal.text));
+                                });
+                            };
+                            row(ui, "name", local.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default());
+                            row(ui, "folder", local.parent().map(|x| x.display().to_string()).unwrap_or_default());
+                            row(ui, "size", h.size.map(human).unwrap_or_else(|| "-".into()));
+                            row(ui, "modified", h.mtime.as_deref().map(short_time).unwrap_or_else(|| "-".into()));
+                            row(ui, "type", mime);
+                            row(ui, "source", h.remote.clone());
+                        });
+                    if !open { self.props = None; }
+                }
+            }
+        }
+
         egui::Frame::new()
             .fill(pal.bg)
             .stroke(Stroke::new(1.0, pal.border))
@@ -748,6 +959,8 @@ impl eframe::App for App {
                 let sel_set: std::collections::HashSet<usize> = self.selection().into_iter().collect();
                 let mut clicked: Option<(usize, bool)> = None;
                 let mut dbl = false;
+                let mut right_at: Option<egui::Pos2> = None;
+                let mut right_hit: Option<usize> = None;
                 if grid {
                     let sel_v: Vec<usize> = self.selection();
                     self.grid_view(ui, &ctx, &hits, &sel_v, &mut clicked, &mut dbl);
@@ -812,14 +1025,26 @@ impl eframe::App for App {
                                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
                             }
                             let shift = ui.input(|i| i.modifiers.shift);
+                            self.row_rects.insert(idx, rect);
                             if resp.clicked() { clicked = Some((idx, shift)); }
                             if resp.double_clicked() { dbl = true; clicked = Some((idx, false)); }
+                            if resp.secondary_clicked() {
+                                right_at = ui.input(|i| i.pointer.interact_pos());
+                                right_hit = Some(idx);
+                            }
                         }
                         if hits.is_empty() && !self.busy {
                             ui.add_space(20.0);
                             ui.label(RichText::new("no matches").color(pal.dim));
                         }
                     });
+                }
+                if let (Some(hit), Some(at)) = (right_hit, right_at) {
+                    // right-click on a row outside the selection selects just that row first
+                    if !self.in_selection(hit) { self.anchor = None; self.selected = hit; }
+                    self.menu_at = Some(at);
+                    self.menu_hit = Some(hit);
+                    self.menu_fresh = true;
                 }
                 if let Some((i, extend)) = clicked { self.move_cursor(i, extend); }
                 if dbl { self.open_selected(); }
