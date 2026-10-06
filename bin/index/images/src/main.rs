@@ -372,6 +372,8 @@ struct App {
     col_frac: [f32; 5],
     /// thumbnail size in px; Ctrl+wheel / pinch changes it; at GRID_ZOOM and above the results show as a grid
     thumb: f32,
+    /// height of the results viewport last frame; sets how far PgUp/PgDn move
+    results_h: f32,
     popup: bool,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
@@ -538,6 +540,7 @@ impl App {
             sort_desc: load_sort().1,
             col_frac: load_cols(),
             thumb: 20.0,
+            results_h: 400.0,
             popup: false,
             cands: Vec::new(),
             cand_sel: 0,
@@ -775,6 +778,7 @@ impl App {
         let pal = self.pal;
         let t = self.thumb;
         let text_h = 58.0;
+        self.results_h = ui.available_height() - 28.0;
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - 28.0)
             .auto_shrink([false, false])
@@ -1081,7 +1085,10 @@ impl eframe::App for App {
             delta += cols as i64 * (down_steps - up_steps);
             if shift_down { delta += cols as i64; extend = true; any = true; }
             if shift_up { delta -= cols as i64; extend = true; any = true; }
-            let page = if ui.input(|i| i.modifiers.ctrl) { 16 } else { 8 };
+            let row_h = if grid { self.thumb + 68.0 } else { (self.thumb + 4.0).max(20.0) };
+            let rows = ((self.results_h / row_h).floor() as i64).max(1);
+            let per_page = if grid { rows * cols as i64 } else { rows };
+            let page = if ui.input(|i| i.modifiers.ctrl) { per_page * 2 } else { per_page };
             if pgdn { delta += page; any = true; }
             if pgup { delta -= page; any = true; }
             if home { abs = Some(0); any = true; }
@@ -1377,6 +1384,7 @@ impl eframe::App for App {
                         right_at = Some(at);
                     }
                 } else {
+                self.results_h = ui.available_height() - 28.0;
                 egui::ScrollArea::vertical()
                     .max_height(ui.available_height() - 28.0)
                     .auto_shrink([false, false])
