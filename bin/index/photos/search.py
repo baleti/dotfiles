@@ -17,6 +17,8 @@ import argparse, glob, json, os, re, shlex, sys
 import numpy as np
 
 import config
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "catalog"))
+from filesearch import path_matches
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = config.DATA_DIR
 FACES = os.path.join(DATA, "faces", "faces.jsonl")
@@ -158,7 +160,8 @@ def field_filter(kind, text, universe):
         if kind == "name":
             hay = r.rsplit("/", 1)[-1].lower()
         elif kind == "path":
-            hay = r.lower()
+            if path_matches(r, text): out[r] = 1.0
+            continue
         else:  # dm / date: substring of the ISO modified time
             hay = ((M.get(r) or (None, None))[1] or "").lower()
         if t in hay: out[r] = 1.0
@@ -207,12 +210,20 @@ def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
             ref = name_text[1:].strip()
             E, meta = _index["faces"]
             best = None
-            for i, m in enumerate(meta):
-                if m["remote"] == ref:
-                    b = m["bbox"]
-                    area = (b[2] - b[0]) * (b[3] - b[1])
-                    if best is None or area > best[0]:
-                        best = (area, i)
+            if "#" in ref:
+                # "@<photo>#<k>": the k-th face in that photo, as the picker's face pane gives it
+                ref, _, k = ref.rpartition("#")
+                own = [i for i, m in enumerate(meta) if m["remote"] == ref]
+                if not own or not k.isdigit() or int(k) >= len(own):
+                    return None, f"no indexed face {k} in {ref}"
+                best = (0, own[int(k)])
+            else:
+                for i, m in enumerate(meta):
+                    if m["remote"] == ref:
+                        b = m["bbox"]
+                        area = (b[2] - b[0]) * (b[3] - b[1])
+                        if best is None or area > best[0]:
+                            best = (area, i)
             if best is None:
                 return None, f"no indexed face in {ref}"
             sims = E @ E[best[1]]
@@ -298,3 +309,18 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def face_pane(n=48, seed=None):
+    """Random indexed faces (confident detections) for the picker's face pane: [{"id", "remote", "k", "bbox"}]."""
+    import random
+    _, meta = _index.get("faces") or load_faces()
+    per = {}
+    rows = []
+    for m in meta:
+        k = per.get(m["remote"], 0)
+        per[m["remote"]] = k + 1
+        if m["score"] >= 0.8:
+            rows.append({"id": f"{m['remote']}#{k}", "remote": m["remote"], "k": k, "bbox": m["bbox"]})
+    rnd = random.Random(seed)
+    return rnd.sample(rows, min(n, len(rows)))
