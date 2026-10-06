@@ -35,6 +35,7 @@ def kind_of(path):
     return name.rsplit(".", 1)[-1].lower()
 
 SEARCH_CFG = os.path.expanduser("~/.config/indexes/search-app.json")
+UNKNOWN_MTIME = 315532800  # 1980-01-01 00:00 UTC: the placeholder some Drive files carry
 
 def _search_cfg():
     try:
@@ -160,11 +161,17 @@ def _extras(paths, sizes, mtimes):
     mt_arr = np.array([m if m is not None else 0 for m in mtimes], np.int64)
     names = np.empty(len(paths), object)
     names[:] = [p.rsplit("/", 1)[-1].lower() for p in paths]
+    # files with no real modified date (the 1980-01-01 placeholder, or missing) sort last in both directions
+    unknown = (mt_arr < 172800) | np.isin(mt_arr, [UNKNOWN_MTIME, 123456789])  # epoch and tool placeholder dates
+    known = np.flatnonzero(~unknown)
+    unk = np.flatnonzero(unknown)
+    date_asc = known[np.argsort(mt_arr[known], kind="stable")]
     orders = {
         "path": np.arange(len(paths), dtype=np.int64),
         "name": np.argsort(names, kind="stable"),
         "size": np.argsort(size_arr, kind="stable"),
-        "date": np.argsort(mt_arr, kind="stable"),
+        "date": np.concatenate([date_asc, unk]),
+        "date_desc": np.concatenate([date_asc[::-1], unk]),
     }
     # integer sort keys per field (equal values share a rank), for multi-key sorts via lexsort
     def rank(a):
@@ -289,6 +296,8 @@ class NameTable:
             N = len(self.paths)
             sorts = [k for k in sort.split(",") if k in self.sort_keys] or ["date"]
             order = self.orders.get(sorts[0]) if len(sorts) == 1 else None
+            if order is not None and desc and sorts[0] == "date":
+                order = self.orders["date_desc"]
             sort_keys = self.sort_keys
             ext_codes, ext_names, size_arr = self.ext_codes, self.ext_names, self.size_arr
         mask = np.ones(N, bool)
@@ -303,7 +312,7 @@ class NameTable:
         for c in tags["size"]:
             mask &= _size_mask(size_arr, c)
         if order is not None:
-            if desc:
+            if desc and sorts[0] != "date":
                 order = order[::-1]
             idx = order[mask[order]]
         else:
