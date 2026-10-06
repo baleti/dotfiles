@@ -892,7 +892,7 @@ impl eframe::App for App {
         // Ctrl+wheel and trackpad pinch: zoom the thumbnails, not the whole UI
         let zd = ui.input(|i| i.zoom_delta());
         if (zd - 1.0).abs() > 1e-4 {
-            self.thumb = (self.thumb * zd).clamp(16.0, 260.0);
+            self.thumb = (self.thumb * zd).clamp(16.0, 800.0);
         }
         ctx.set_zoom_factor(1.0);
         let grid = self.thumb >= GRID_ZOOM;
