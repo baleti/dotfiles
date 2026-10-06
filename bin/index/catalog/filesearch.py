@@ -100,11 +100,15 @@ class NameTable:
         self.mtimes = []
         self.loaded_mtime = 0.0
         self.lock = threading.Lock()
+        self.dates = []
 
     def load(self):
         t0 = time.time()
         con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
         rows = con.execute("SELECT path, size, mtime FROM entries ORDER BY path").fetchall()
+        dates = [r[0] for r in con.execute(
+            "SELECT DISTINCT strftime('%Y-%m', mtime, 'unixepoch', 'localtime') d FROM entries "
+            "WHERE mtime IS NOT NULL ORDER BY d DESC")]
         con.close()
         paths, sizes, mtimes, prev = [], [], [], None
         for p, s, m in rows:            # the same path can come from several sources
@@ -123,6 +127,7 @@ class NameTable:
             self.paths, self.sizes, self.mtimes = paths, sizes, mtimes
             self.blob, self.starts = blob, starts
             self.order = order
+            self.dates = [d for d in dates if d]
             self.loaded_mtime = os.path.getmtime(self.db_path)
         print(f"name table: {len(paths)} paths, {len(blob)/1e6:.0f} MB blob, {time.time()-t0:.1f}s", flush=True)
 
