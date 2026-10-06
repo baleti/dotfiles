@@ -499,6 +499,8 @@ struct App {
     results_h: f32,
     /// set by keyboard movement; the views scroll the cursor into sight once, then clear it
     scroll_pending: bool,
+    /// Ctrl+J/K/H/L chord currently held (its auto-repeats may lose the Ctrl modifier)
+    chord_key: Option<Key>,
     /// grid scroll offset after the last frame (for keeping the grid still while the selection moves)
     grid_off: f32,
     popup: bool,
@@ -795,6 +797,7 @@ impl App {
             thumb: 20.0,
             results_h: 400.0,
             scroll_pending: false,
+            chord_key: None,
             grid_off: 0.0,
             popup: false,
             cands: Vec::new(),
@@ -1296,11 +1299,32 @@ impl eframe::App for App {
 
         // holding Ctrl+J/K (or any Ctrl chord) repeats as key events plus stray text events: drop the text
         // so a held chord never types into the query box
+        // Auto-repeat of a held Ctrl+J/K/H/L can arrive without the Ctrl modifier (and with the letter as
+        // text), so remember the chord from its first press and treat repeats of that key as the chord
+        let mut chord = self.chord_key;
         ui.input_mut(|i| {
-            if i.modifiers.ctrl || (i.modifiers.command && !i.modifiers.alt) {
-                i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+            let ctrl_now = i.modifiers.ctrl || (i.modifiers.command && !i.modifiers.alt);
+            for e in i.events.iter_mut() {
+                if let egui::Event::Key { key, pressed, modifiers, .. } = e {
+                    if !matches!(key, Key::J | Key::K | Key::H | Key::L) { continue; }
+                    if !*pressed {
+                        if chord == Some(*key) { chord = None; }
+                    } else if modifiers.ctrl {
+                        chord = Some(*key);
+                    } else if chord == Some(*key) {
+                        modifiers.ctrl = true;
+                        modifiers.command = true;
+                    }
+                }
+            }
+            if ctrl_now || chord.is_some() {
+                i.events.retain(|e| match e {
+                    egui::Event::Text(t) => !(ctrl_now || (chord.is_some() && matches!(t.as_str(), "j" | "k" | "h" | "l" | "J" | "K" | "H" | "L"))),
+                    _ => true,
+                });
             }
         });
+        self.chord_key = chord;
 
         // Delete: only when the confirmation dialog is closed
         let del = self.trash_pending.is_none() && ui.input(|i| i.key_pressed(Key::Delete));
