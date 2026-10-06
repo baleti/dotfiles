@@ -137,6 +137,52 @@ fn fuzzy_match(hay: &str, needle: &str) -> bool {
 }
 
 /// Shortens `text` to fit `width` px in `font`, ending with an ellipsis when it had to be cut.
+/// Plain words of a query (tags and the value after a tag are skipped), lowercased for matching.
+fn query_terms(q: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip_value = false;
+    for tok in q.split_whitespace() {
+        if tok.starts_with("//") { skip_value = true; continue; }
+        if skip_value { skip_value = false; continue; }
+        out.push(tok.to_ascii_lowercase());
+    }
+    out
+}
+
+/// The text with every case-insensitive occurrence of a term drawn on a highlight background.
+fn name_job(text: &str, terms: &[String], font: &egui::FontId, color: Color32, hl_bg: Color32) -> egui::text::LayoutJob {
+    let lower = text.to_ascii_lowercase();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for t in terms.iter().filter(|t| !t.is_empty()) {
+        let mut from = 0;
+        while let Some(i) = lower[from..].find(t.as_str()) {
+            let s = from + i;
+            ranges.push((s, s + t.len()));
+            from = s + t.len();
+        }
+    }
+    ranges.sort();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in ranges {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let plain = egui::TextFormat::simple(font.clone(), color);
+    let mut hl = egui::TextFormat::simple(font.clone(), color);
+    hl.background = hl_bg;
+    let mut pos = 0;
+    for (s, e) in merged {
+        job.append(&text[pos..s], 0.0, plain.clone());
+        job.append(&text[s..e], 0.0, hl.clone());
+        pos = e;
+    }
+    job.append(&text[pos..], 0.0, plain);
+    job
+}
+
 fn fit_text(ui: &egui::Ui, text: &str, font: &egui::FontId, width: f32) -> String {
     let measure = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), egui::Color32::WHITE).size().x;
     if measure(text) <= width {
@@ -778,6 +824,7 @@ impl App {
         let pal = self.pal;
         let t = self.thumb;
         let text_h = 58.0;
+        let terms = query_terms(&self.last_sent);
         self.results_h = ui.available_height() - 30.0;
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - 30.0)
@@ -808,14 +855,16 @@ impl App {
                         let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
                         let size_txt = h.size.map(human_size).unwrap_or_default();
                         let date_txt = h.mtime.as_deref().map(short_time).unwrap_or_default();
+                        let name_text = fit_text(ui, &base, &name_font, t);
                         let lines = [
-                            (fit_text(ui, &base, &name_font, t), name_font.clone(), txt),
                             (fit_text(ui, &dir, &small, t), small.clone(), pal.dim),
                             (fit_text(ui, &size_txt, &small, t), small.clone(), pal.dim),
                             (fit_text(ui, &date_txt, &small, t), small.clone(), pal.dim),
                         ];
                         let painter = ui.painter();
-                        let mut y = img.bottom() + 4.0;
+                        let name_galley = painter.layout_job(name_job(&name_text, &terms, &name_font, txt, pal.accent.gamma_multiply(0.35)));
+                        painter.galley(egui::pos2(rect.left(), img.bottom() + 4.0), name_galley, txt);
+                        let mut y = img.bottom() + 18.0;
                         for (text, font, color) in lines {
                             painter.text(egui::pos2(rect.left(), y), egui::Align2::LEFT_TOP, text, font, color);
                             y += 14.0;
@@ -1392,6 +1441,7 @@ impl eframe::App for App {
                         // one line per result: the row is just tall enough for the thumbnail and text
                         let row_h = (self.thumb + 4.0).max(20.0);
                         let thumb = self.thumb;
+                        let terms = query_terms(&self.last_sent);
                         for (idx, h) in hits.iter().enumerate() {
                             let (rect, resp) = ui.allocate_exact_size(
                                 egui::vec2(ui.available_width(), row_h),
@@ -1435,7 +1485,8 @@ impl eframe::App for App {
                             let base = fit_text(ui, &base, &name_font, (c.path_x - c.name_x - 8.0).max(0.0));
                             let dir = fit_text(ui, &dir, &dir_font, (c.path_r - c.path_x - 8.0).max(0.0));
                             let name_clip = egui::Rect::from_min_max(egui::pos2(c.name_x, rect.top()), egui::pos2(c.path_x - 4.0, rect.bottom()));
-                            painter.with_clip_rect(name_clip).text(egui::pos2(c.name_x, y), egui::Align2::LEFT_CENTER, base, egui::FontId::monospace(13.0), txt);
+                            let name_galley = painter.layout_job(name_job(&base, &terms, &egui::FontId::monospace(13.0), txt, pal.accent.gamma_multiply(0.35)));
+                            painter.with_clip_rect(name_clip).galley(egui::pos2(c.name_x, y - name_galley.size().y / 2.0), name_galley, txt);
                             let path_clip = egui::Rect::from_min_max(egui::pos2(c.path_x, rect.top()), egui::pos2(c.path_r - 4.0, rect.bottom()));
                             painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::monospace(11.0), dim);
                             if let Some(sz) = h.size {
