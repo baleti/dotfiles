@@ -15,7 +15,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 /// Read from ~/.config/indexes/photos.json (IMAGES_CONFIG overrides), so no paths are compiled in.
-struct Cfg { server: String, python: String, scheme: String, mount_root: String }
+struct Cfg { server: String, python: String, scheme: String, mount_root: String, data_dir: String }
 fn cfg() -> &'static Cfg {
     static C: std::sync::OnceLock<Cfg> = std::sync::OnceLock::new();
     C.get_or_init(load_cfg)
@@ -37,6 +37,7 @@ fn load_cfg() -> Cfg {
         python: expand("python"),
         scheme: expand("scheme_file"),
         mount_root: expand("mount_root"),
+        data_dir: expand("data_dir"),
     }
 }
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
@@ -81,6 +82,29 @@ fn trashable(remote: &str) -> Option<(PathBuf, u64)> {
 }
 
 fn human(b: u64) -> String { human_size(b) }
+
+
+/// Search-box history file (one query per line), in the picker's data directory.
+fn history_path() -> PathBuf {
+    PathBuf::from(&cfg().data_dir).join("search-files-history.txt")
+}
+
+fn load_history() -> Vec<String> {
+    std::fs::read_to_string(history_path())
+        .map(|t| t.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// Collapse whitespace runs to single spaces (shell HIST_REDUCE_BLANKS).
+fn normalize_query(q: &str) -> String {
+    q.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Case-insensitive subsequence match (fzf-style fuzzy filter for the history popup).
+fn fuzzy_match(hay: &str, needle: &str) -> bool {
+    let mut it = hay.chars().flat_map(|c| c.to_lowercase());
+    needle.chars().flat_map(|c| c.to_lowercase()).all(|n| it.any(|h| h == n))
+}
 
 /// Counts and consumes every queued press of `key` with `mods` this frame (repeats included).
 fn take_count(ui: &mut egui::Ui, mods: egui::Modifiers, key: Key) -> usize {
@@ -270,6 +294,12 @@ struct App {
     /// last drawn rectangle per hit (list view), used to place the menu for F10
     row_rects: HashMap<usize, egui::Rect>,
     menu_fresh: bool,
+    /// search history (oldest first), persisted to the data dir, one query per line
+    history: Vec<String>,
+    /// Ctrl+R / F4 popup: open flag, highlighted row, and the query text last recorded
+    hist_popup: bool,
+    hist_sel: usize,
+    last_recorded: String,
     /// mime type of the hit the menu / properties were opened for (computed once, on open)
     menu_mime: Option<String>,
     props_mime: String,
@@ -379,6 +409,10 @@ impl App {
             props: None,
             menu_fresh: false,
             menu_mime: None,
+            history: load_history(),
+            hist_popup: false,
+            hist_sel: 0,
+            last_recorded: String::new(),
             props_mime: String::new(),
             list_focus: false,
             handlers: HashMap::new(),
@@ -469,6 +503,27 @@ impl App {
             self.anchor = None;
         }
         self.selected = to;
+    }
+
+    /// History entries matching the current search text, most recent first.
+    fn hist_matches(&self) -> Vec<String> {
+        let needle = normalize_query(&self.query);
+        self.history.iter().rev()
+            .filter(|h| needle.is_empty() || fuzzy_match(h, &needle))
+            .take(10)
+            .cloned()
+            .collect()
+    }
+
+    /// Adds the current query to the history (see the DSL spec: recorded on accept / movement, not per keystroke).
+    fn record_history(&mut self) {
+        let q = normalize_query(&self.query);
+        if q.is_empty() || q == self.last_recorded { return; }
+        self.last_recorded = q.clone();
+        self.history.retain(|h| h != &q);
+        self.history.push(q);
+        let _ = std::fs::create_dir_all(PathBuf::from(&cfg().data_dir));
+        let _ = std::fs::write(history_path(), self.history.join("\n") + "\n");
     }
 
     /// Delete key: stage the selected trashable files for the confirmation dialog.
@@ -740,6 +795,36 @@ impl eframe::App for App {
 
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.hits.len();
+        // Ctrl+R / F4: search history popup, seeded from the current text
+        let hist_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::R))
+            | ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F4));
+        if hist_key && !self.hist_popup && !self.popup && self.trash_pending.is_none() && self.props.is_none() {
+            self.hist_popup = true;
+            self.hist_sel = 0;
+        }
+        if self.hist_popup {
+            let (down, up, enter, esc) = ui.input_mut(|i| (
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | i.consume_key(egui::Modifiers::CTRL, Key::J),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | i.consume_key(egui::Modifiers::CTRL, Key::K),
+                i.consume_key(egui::Modifiers::NONE, Key::Enter),
+                i.consume_key(egui::Modifiers::NONE, Key::Escape),
+            ));
+            let matches = self.hist_matches();
+            let m = matches.len();
+            if esc { self.hist_popup = false; }
+            else if enter {
+                if let Some(q) = matches.get(self.hist_sel).cloned() {
+                    self.query = q;
+                    self.last_change = Instant::now() - Duration::from_millis(200);
+                }
+                self.hist_popup = false;
+            } else if m > 0 {
+                if down { self.hist_sel = (self.hist_sel + 1).min(m - 1); }
+                if up { self.hist_sel = self.hist_sel.saturating_sub(1); }
+            }
+            self.hist_sel = self.hist_sel.min(m.saturating_sub(1));
+        }
+
         // Ctrl+J / Ctrl+K from the query box: focus the list at the first / last entry
         // Ctrl+J/K/H/L: count every queued press (holding the key auto-repeats), so holding moves smoothly
         let ctrl_j_n = take_count(ui, egui::Modifiers::CTRL, Key::J);
@@ -820,11 +905,16 @@ impl eframe::App for App {
             if home { abs = Some(0); any = true; }
             if end { abs = Some(n - 1); any = true; }
             if any {
+                // browsing results after typing counts as use, once typing has paused
+                if self.last_change.elapsed() >= Duration::from_millis(400) { self.record_history(); }
                 let target = abs.unwrap_or_else(|| (cur + delta).clamp(0, n as i64 - 1) as usize);
                 self.move_cursor(target, extend);
             }
         }
-        if enter && n > 0 && !self.popup { self.open_selected(); }
+        if enter && n > 0 && !self.popup && !self.hist_popup {
+            if self.last_change.elapsed() >= Duration::from_millis(400) { self.record_history(); }
+            self.open_selected();
+        }
         if ctrl_enter && n > 0 && !self.popup { self.reveal_selected(); }
 
         // confirmation dialog for moving files to the trash: modal, explicit, Esc cancels
@@ -879,12 +969,21 @@ impl eframe::App for App {
         if let (Some(at), Some(hit)) = (self.menu_at, self.menu_hit) {
             let local = self.hits.get(hit).map(|h| local_path(&h.remote));
             let mime = self.menu_mime.clone();
+            // photo results (they carry a score) can search for the face in them
+            let face_remote = self.hits.get(hit).filter(|h| h.score.is_some()).map(|h| h.remote.clone());
+            let mut face_query: Option<String> = None;
             let mut chosen: Option<(String, PathBuf)> = None;
             let area = egui::Area::new(egui::Id::new("ctxmenu"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(at)
                 .show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        if let Some(r) = &face_remote {
+                            if ui.button("Search for this face").clicked() {
+                                face_query = Some(format!("//face \"@{}\"", r));
+                                ui.close();
+                            }
+                        }
                         ui.menu_button("Open with", |ui| {
                             match &mime {
                                 None => { ui.label(RichText::new("not available locally").color(pal.dim)); }
@@ -902,7 +1001,12 @@ impl eframe::App for App {
                         });
                     });
                 });
-            if let Some((id, path)) = chosen {
+            if let Some(q) = face_query {
+                self.query = q;
+                self.last_change = Instant::now() - Duration::from_millis(200);
+                self.menu_at = None;
+                self.menu_hit = None;
+            } else if let Some((id, path)) = chosen {
                 std::thread::spawn(move || {
                     let _ = std::process::Command::new("gtk-launch").arg(&id).arg(&path).status();
                 });
@@ -990,6 +1094,26 @@ impl eframe::App for App {
                         });
                     });
 
+                if self.hist_popup {
+                    let items = self.hist_matches();
+                    ui.add_space(4.0);
+                    egui::Frame::new()
+                        .fill(pal.bg)
+                        .stroke(Stroke::new(1.0, pal.accent.gamma_multiply(0.6)))
+                        .corner_radius(6.0)
+                        .inner_margin(Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            if items.is_empty() {
+                                ui.label(RichText::new("no matching searches").color(pal.dim).size(11.0));
+                            }
+                            for (i, q) in items.iter().enumerate() {
+                                let sel = i == self.hist_sel;
+                                ui.label(RichText::new(q).monospace().size(12.0)
+                                    .color(if sel { pal.accent } else { pal.text }));
+                            }
+                            ui.label(RichText::new("history: enter replaces the search · esc closes").color(pal.dim).size(10.0));
+                        });
+                }
                 if self.popup && !self.cands.is_empty() {
                     ui.add_space(4.0);
                     egui::Frame::new()
