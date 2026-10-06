@@ -333,6 +333,8 @@ struct App {
     first_frame: bool,
     close_now: bool,
     people: Vec<String>,
+    /// year-months present in the index (for //dm completion) and file kinds (for //mime)
+    facets: FacetsReply,
     /// thumbnail size in px; Ctrl+wheel / pinch changes it (rows grow and shrink with it)
     thumb: f32,
     /// thumbnail grid instead of the list; toggled with Ctrl+G
@@ -345,27 +347,65 @@ struct App {
 #[derive(Deserialize)]
 struct PeopleReply {
     people: Vec<String>,
+    /// year-months present in the index (for //dm completion) and file kinds (for //mime)
+    facets: FacetsReply,
 }
 
 /// Completion candidates for the fragment at the end of `q`.
 /// Returns (byte index where the fragment starts, candidates).
-fn completions(q: &str, people: &[String]) -> (usize, Vec<(String, String)>) {
+fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<(String, String)>) {
     let start = q.rfind(char::is_whitespace).map(|i| i + q[i..].chars().next().unwrap().len_utf8()).unwrap_or(0);
     let frag = &q[start..];
     let prev = q[..start].split_whitespace().last().unwrap_or("");
     let mut out = Vec::new();
+    // values for a tag that takes one: (value, label)
+    let values_for = |tag: &str| -> Vec<(String, String)> {
+        match tag {
+            "dm" => facets.dates.iter().map(|d| (d.clone(), "modified in this month".to_string())).collect(),
+            "mime" => facets.mimes.iter().map(|m| (m.clone(), "file kind".to_string())).collect(),
+            "size" => vec![
+                (">100K".into(), "larger than 100 KiB".into()),
+                (">1M".into(), "larger than 1 MiB".into()),
+                (">10M".into(), "larger than 10 MiB".into()),
+                (">100M".into(), "larger than 100 MiB".into()),
+                ("<100K".into(), "smaller than 100 KiB".into()),
+            ],
+            _ => Vec::new(),
+        }
+    };
+    const TAGS: [(&str, &str); 8] = [
+        ("face", "photos showing a registered person"),
+        ("clip", "photos matching what they show (CLIP text)"),
+        ("name", "file name contains"),
+        ("path", "folder path contains"),
+        ("size", "file size, e.g. >5M or <200K"),
+        ("dm", "date modified, pick a month"),
+        ("mime", "file kind: image, pdf, text, code, ..."),
+        ("file", "file-name search mode"),
+    ];
     if let Some(body) = frag.strip_prefix("//") {
-        // stage 1: the path (//face, //clip)
-        for (name, label) in [
-            ("face", "photos showing a registered person"),
-            ("clip", "photos matching what they show (CLIP text)"),
-            ("name", "file name contains"),
-            ("path", "folder path contains"),
-            ("size", "file size, e.g. >5M or <200K"),
-            ("dm", "date modified, e.g. 2015-06 or >2015-06"),
-        ] {
+        // exact tag with a value list: offer the values right away
+        if let Some((tag, _)) = TAGS.iter().find(|(t, _)| *t == body) {
+            let vals = values_for(tag);
+            if !vals.is_empty() {
+                for (v, label) in vals {
+                    out.push((format!("//{tag} {v} "), label));
+                }
+                return (start, out);
+            }
+        }
+        // stage 1: the tag name
+        for (name, label) in TAGS.iter() {
             if name.starts_with(body) {
                 out.push((format!("//{name} "), label.to_string()));
+            }
+        }
+    } else if let Some(tag) = prev.strip_prefix("//").filter(|t| !values_for(t).is_empty()) {
+        // stage 2: the value after a tag (substring filter on what the user typed)
+        let f = frag.to_lowercase();
+        for (v, label) in values_for(tag) {
+            if v.to_lowercase().contains(&f) {
+                out.push((format!("{v} "), label));
             }
         }
     } else if prev == "//face" || (prev.is_empty() && !frag.is_empty() && q[..start].trim().is_empty()) {
@@ -383,6 +423,24 @@ fn completions(q: &str, people: &[String]) -> (usize, Vec<(String, String)>) {
 
 fn apply(q: &str, start: usize, replacement: &str) -> String {
     format!("{}{}", &q[..start], replacement)
+}
+
+#[derive(Deserialize, Default)]
+struct FacetsReply {
+    #[serde(default)]
+    dates: Vec<String>,
+    #[serde(default)]
+    mimes: Vec<String>,
+}
+
+fn fetch_facets() -> FacetsReply {
+    ureq::get(&format!("{}/facets", cfg().server))
+        .timeout(Duration::from_secs(5))
+        .call()
+        .ok()
+        .and_then(|r| r.into_string().ok())
+        .and_then(|b| serde_json::from_str::<FacetsReply>(&b).ok())
+        .unwrap_or_default()
 }
 
 fn fetch_people() -> Vec<String> {
@@ -442,6 +500,7 @@ impl App {
             first_frame: true,
             close_now: false,
             people: Vec::new(),
+            facets: FacetsReply::default(),
             thumb: 20.0,
             grid_mode: false,
             popup: false,
@@ -449,6 +508,7 @@ impl App {
             cand_sel: 0,
         };
         app.people = fetch_people();
+        app.facets = fetch_facets();
         app.send_query();
         app
     }
@@ -703,7 +763,7 @@ impl App {
 
     fn accept_candidate(&mut self) {
         if let Some((rep, _)) = self.cands.get(self.cand_sel).cloned() {
-            let (start, _) = completions(&self.query, &self.people);
+            let (start, _) = completions(&self.query, &self.people, &self.facets);
             self.query = apply(&self.query, start, &rep);
             self.last_change = Instant::now() - Duration::from_millis(200);
             self.cursor_end = true;
@@ -776,7 +836,7 @@ impl eframe::App for App {
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         let ctrl_space = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Space));
         if (tab || ctrl_space) && !self.popup {
-            let (start, cands) = completions(&self.query, &self.people);
+            let (start, cands) = completions(&self.query, &self.people, &self.facets);
             match cands.len() {
                 0 => {}
                 1 => {
@@ -815,7 +875,7 @@ impl eframe::App for App {
         }
         // typing while the popup is open narrows it in place
         if self.popup && self.query != self.last_sent {
-            let (_, cands) = completions(&self.query, &self.people);
+            let (_, cands) = completions(&self.query, &self.people, &self.facets);
             if cands.is_empty() { self.popup = false; } else { self.cands = cands; self.cand_sel = 0; }
         }
 
@@ -853,8 +913,9 @@ impl eframe::App for App {
 
         // Ctrl+J / Ctrl+K from the query box: focus the list at the first / last entry
         // Ctrl+J/K/H/L: count every queued press (holding the key auto-repeats), so holding moves smoothly
-        let ctrl_j_n = take_count(ui, egui::Modifiers::CTRL, Key::J);
-        let ctrl_k_n = take_count(ui, egui::Modifiers::CTRL, Key::K);
+        // while the completion popup is open, Ctrl+J/K belong to it (read further below), not the list
+        let ctrl_j_n = if self.popup { 0 } else { take_count(ui, egui::Modifiers::CTRL, Key::J) };
+        let ctrl_k_n = if self.popup { 0 } else { take_count(ui, egui::Modifiers::CTRL, Key::K) };
         let ctrl_j = ctrl_j_n > 0;
         let ctrl_k = ctrl_k_n > 0;
         let was_list = self.list_focus;
