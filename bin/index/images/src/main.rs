@@ -1238,15 +1238,11 @@ impl eframe::App for App {
         }
         egui::Frame::new()
             .fill(pal.bg)
-            .stroke(Stroke::new(1.0, pal.border))
-            .corner_radius(10.0)
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
-                // search row
-                egui::Frame::new()
-                    .stroke(Stroke::new(1.0, pal.border))
-                    .corner_radius(6.0)
-                    .inner_margin(Margin::symmetric(10, 6))
+                // search row, closed off from the results by a single rule
+                let row = egui::Frame::new()
+                    .inner_margin(Margin::symmetric(4, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if self.cursor_end {
@@ -1272,6 +1268,9 @@ impl eframe::App for App {
                             if !self.list_focus && !r.has_focus() { r.request_focus(); }
                         });
                     });
+                let y = row.response.rect.bottom();
+                ui.painter().hline(row.response.rect.left()..=row.response.rect.right(), y, Stroke::new(1.0, pal.border));
+                ui.add_space(4.0);
 
                 if self.hist_popup {
                     let items = self.hist_matches();
