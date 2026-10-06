@@ -461,6 +461,11 @@ struct App {
     /// preview pane: snippets per (file, query)
     snips: HashMap<(String, String), SnipState>,
     tx: Sender<Fetch>,
+    /// sharp PDF first pages: remotes wanted (sent from the grid), and finished (remote, thumb path)
+    hq_map: HashMap<String, String>,
+    hq_asked: HashMap<String, Instant>,
+    hq_tx: Sender<String>,
+    hq_rx: Receiver<(String, String)>,
     rx: Receiver<Fetch>,
     /// total matches for the current query and the pages fetched so far (page index -> rows)
     total: usize,
@@ -857,6 +862,21 @@ impl App {
         fonts.families.insert(FontFamily::Name("bold".into()), bold_chain);
         cc.egui_ctx.set_fonts(fonts);
         let (tx, rx) = channel();
+        let (hq_tx, hq_req) = channel::<String>();
+        let (hq_done_tx, hq_rx) = channel::<(String, String)>();
+        // one request per message; the server renders in the background and reports when the file is ready
+        std::thread::spawn(move || {
+            while let Ok(remote) = hq_req.recv() {
+                let url = format!("{}/thumb_hq", cfg().server);
+                let ready = ureq::get(&url).query("remote", &remote).timeout(Duration::from_secs(20)).call().ok()
+                    .and_then(|r| r.into_string().ok())
+                    .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+                    .and_then(|v| if v["ready"].as_bool() == Some(true) { v["thumb"].as_str().map(String::from) } else { None });
+                if let Some(path) = ready {
+                    let _ = hq_done_tx.send((remote, path));
+                }
+            }
+        });
         let (snip_tx, snip_rx) = channel();
         let mut app = Self {
             pal: load_palette(&cfg().scheme),
@@ -866,6 +886,10 @@ impl App {
             cursor_end: false,
             seq: 0,
             tx,
+            hq_map: HashMap::new(),
+            hq_asked: HashMap::new(),
+            hq_tx,
+            hq_rx,
             rx,
             snip_tx,
             snip_rx,
@@ -972,6 +996,9 @@ impl App {
     }
 
     fn drain(&mut self) {
+        while let Ok((remote, path)) = self.hq_rx.try_recv() {
+            self.hq_map.insert(remote, path);
+        }
         while let Ok((remote, q, r)) = self.snip_rx.try_recv() {
             self.snips.insert((remote, q), match r { Ok(v) => SnipState::Done(v), Err(e) => SnipState::Failed(e) });
         }
@@ -1260,7 +1287,16 @@ impl App {
                         };
                         let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
                         let selected = self.in_selection(idx);
-                        match self.texture(ctx, &h.thumb) {
+                        // large PDF cells ask for a sharp first page in the background and switch to it when ready
+                        let is_pdf = h.remote.to_lowercase().ends_with(".pdf") && h.remote.starts_with('/');
+                        // ask again at most every 2 s while the cell stays on screen; the server drops requests that stop
+                        let due = self.hq_asked.get(&h.remote).map_or(true, |t| t.elapsed() > Duration::from_secs(2));
+                        if is_pdf && t >= 180.0 && !self.hq_map.contains_key(&h.remote) && due {
+                            self.hq_asked.insert(h.remote.clone(), Instant::now());
+                            let _ = self.hq_tx.send(h.remote.clone());
+                        }
+                        let thumb_path = self.hq_map.get(&h.remote).cloned().unwrap_or_else(|| h.thumb.clone());
+                        match self.texture(ctx, &thumb_path) {
                             Some(tex) => { egui::Image::new(&tex).fit_to_exact_size(img.size()).paint_at(ui, img); }
                             None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
                         }

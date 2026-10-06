@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import hashlib, json, os, queue, random, re, subprocess, sys, threading, time, urllib.parse
+import collections, hashlib, json, os, queue, random, re, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -217,7 +217,49 @@ def thumb_path(remote):
     return os.path.join(THUMBS, hashlib.sha1(remote.encode()).hexdigest()[:16] + ".jpg")
 
 FACECROPS = os.path.join(config.DATA_DIR, "facecrops")
-_paths_cache = {"frag": None, "rows": []}
+HQ_DIR = os.path.join(config.DATA_DIR, "thumbs-hq")
+HQ_WANT_TTL = 6.0          # a render is only worth doing while the picker still asks for it
+HQ_MAX_WANTED = 64
+_hq_want = collections.OrderedDict()   # remote -> last time the picker asked (newest last)
+_hq_failed = set()
+_hq_lock = threading.Lock()
+
+def hq_path(remote):
+    return os.path.join(HQ_DIR, hashlib.sha1(remote.encode()).hexdigest()[:16] + ".jpg")
+
+def _hq_still_wanted(remote):
+    with _hq_lock:
+        t = _hq_want.get(remote)
+    return t is not None and time.time() - t < HQ_WANT_TTL
+
+def hq_worker():
+    """One background render at a time, newest request first. A render is killed as soon as the picker stops asking."""
+    while True:
+        remote = None
+        with _hq_lock:
+            for r, t in reversed(_hq_want.items()):
+                if time.time() - t < HQ_WANT_TTL and r not in _hq_failed and not os.path.exists(hq_path(r)):
+                    remote = r
+                    break
+        if remote is None:
+            time.sleep(0.2)
+            continue
+        dst = hq_path(remote)
+        os.makedirs(HQ_DIR, exist_ok=True)
+        proc = subprocess.Popen(["nice", "-n", "15", "pdftoppm", "-jpeg", "-jpegopt", "quality=90", "-f", "1", "-l", "1",
+                                 "-scale-to", "1000", "-singlefile", remote, dst[:-len(".jpg")]],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        aborted = False
+        while proc.poll() is None:
+            if not _hq_still_wanted(remote):
+                proc.kill(); proc.wait(); aborted = True
+                break
+            time.sleep(0.1)
+        if not aborted and proc.returncode != 0:
+            with _hq_lock:
+                _hq_failed.add(remote)
+        if aborted and os.path.exists(dst):
+            os.remove(dst)
 
 def display_folder(d):
     """Mount path -> the short form people type: gdrive/..., ~/..."""
@@ -390,6 +432,21 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(200, {"snippets": [], "error": str(e)})
             return self._json(200, {"snippets": snips, "error": err})
+        if u.path == "/thumb_hq":
+            # sharp first page of a PDF: ready now, or queued for the background renderer
+            remote = qs.get("remote", [""])[0]
+            if not remote.lower().endswith(".pdf") or not remote.startswith("/"):
+                return self._json(404, {"error": "not a local pdf"})
+            dst = hq_path(remote)
+            if os.path.exists(dst):
+                return self._json(200, {"ready": True, "thumb": dst})
+            with _hq_lock:
+                _hq_want.pop(remote, None)
+                _hq_want[remote] = time.time()
+                while len(_hq_want) > HQ_MAX_WANTED:
+                    _hq_want.popitem(last=False)
+                failed = remote in _hq_failed
+            return self._json(200, {"ready": False, "failed": failed})
         if u.path == "/paths":
             # folders for //path completion: a page at a time, the picker lists them virtually
             frag = qs.get("q", [""])[0].strip().strip('"')
@@ -436,6 +493,7 @@ def main():
         from clip_text import embed_texts
         embed_texts(["warm up"])            # load the text model once, up front
     threading.Thread(target=warm_face_pool, daemon=True).start()
+    threading.Thread(target=hq_worker, daemon=True).start()
     for _ in range(8):                      # thumbnails are I/O bound (rclone / FUSE reads), so run several at once
         threading.Thread(target=thumb_worker, daemon=True).start()
     print(f"search server on 127.0.0.1:{PORT}", file=sys.stderr, flush=True)
