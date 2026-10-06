@@ -350,6 +350,9 @@ Rectangle {
         return [];
     }
     function _searchMatches(row, term, account) {
+        return QueryDsl.applyNeg(term, root._searchMatchesPos(row, term, account));
+    }
+    function _searchMatchesPos(row, term, account) {
         if (term.text !== undefined) {
             const hay = (row.title + " " + row.pid + " " + (row.status || "") + " "
                          + root.shortCwd(row.cwd) + " " + account).toLowerCase();
@@ -512,13 +515,16 @@ Rectangle {
             }
             let j = i;
             while (j < text.length && text[j] !== " ") j++;
-            const tok = text.slice(i, j);
+            // A leading "!" negates the term (query-dsl.md "Negation"); it is
+            // not part of the command, so the span starts after it.
+            const bang = text[i] === "!" ? 1 : 0;
+            const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
                 if (QueryDsl.canonVerb({ q: false, v: tok })) {
-                    spans.push({ start, end: start + tok.length, valid: true });
+                    spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
-                    spans.push({ start, end: start + tok.length, valid: false });
+                    spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
                 }
             }
         }
@@ -601,7 +607,7 @@ Rectangle {
             root.acVerbMulti = false;
         }
 
-        const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
+        const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
             const prefix = t.slice(0, t.length - vm[1].length);
@@ -1706,7 +1712,7 @@ Rectangle {
                         // AND-narrows instead of accepting (query-dsl.md) -
                         // see AppLauncher.qml's identical handler for the
                         // full rationale.
-                        const vm = searchInput.text.match(/(?:^|\s)(\/[a-z-]*)$/);
+                        const vm = searchInput.text.match(/(?:^|\s|!)(\/[a-z-]*)$/);
                         if (vm || root.acVerbMulti) {
                             if (!root.acVerbMulti) {
                                 root.acVerbMulti = true;

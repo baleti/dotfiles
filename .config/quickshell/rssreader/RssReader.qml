@@ -108,6 +108,10 @@ PanelWindow {
     readonly property var _alwaysVisibleFields: ["title", "feed", "date"]
 
     function _matches(item, term) {
+        return QueryDsl.applyNeg(term, root._matchesPos(item, term));
+    }
+
+    function _matchesPos(item, term) {
         if (term.text !== undefined) {
             const hay = (item.title + " " + item.feed_title + " "
                          + (item.author || "") + " " + (item.tags || []).join(" ")).toLowerCase();
@@ -217,13 +221,16 @@ PanelWindow {
             }
             let j = i;
             while (j < text.length && text[j] !== " ") j++;
-            const tok = text.slice(i, j);
+            // A leading "!" negates the term (query-dsl.md "Negation"); it is
+            // not part of the command, so the span starts after it.
+            const bang = text[i] === "!" ? 1 : 0;
+            const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
                 if (QueryDsl.canonVerb({ q: false, v: tok })) {
-                    spans.push({ start, end: start + tok.length, valid: true });
+                    spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
-                    spans.push({ start, end: start + tok.length, valid: false });
+                    spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
                 }
                 // else: still forming - neutral, no span at all
             }
@@ -307,7 +314,7 @@ PanelWindow {
         }
 
         // verb stage: "/frag" at the end of the box
-        const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
+        const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
             const prefix = t.slice(0, t.length - vm[1].length);
@@ -804,7 +811,7 @@ PanelWindow {
                                         // (query-dsl.md) - see
                                         // AppLauncher.qml's identical handler
                                         // for the full rationale.
-                                        const vm = search.text.match(/(?:^|\s)(\/[a-z-]*)$/);
+                                        const vm = search.text.match(/(?:^|\s|!)(\/[a-z-]*)$/);
                                         if (vm || root.acVerbMulti) {
                                             if (!root.acVerbMulti) {
                                                 root.acVerbMulti = true;

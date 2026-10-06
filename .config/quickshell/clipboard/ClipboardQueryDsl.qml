@@ -126,8 +126,12 @@ QtObject {
         let start = -1;
         let leadQuote = false;
         let inQuotes = false;
+        // Leading "!" negates the token (query-dsl.md "Negation"); not part
+        // of it, so `start` stays on the char after it.
+        let neg = false;
         for (let i = 0; i < query.length; i++) {
             const c = query[i];
+            if (c === "!" && start < 0 && !neg) { neg = true; continue; }
             if (c === "\"") {
                 if (start < 0) leadQuote = true;
                 inQuotes = !inQuotes;
@@ -136,15 +140,16 @@ QtObject {
             }
             if (/\s/.test(c) && !inQuotes) {
                 if (start >= 0) {
-                    tokens.push({ start: start, text: cur, leadQuote: leadQuote });
+                    tokens.push({ start: start, text: cur, leadQuote: leadQuote, neg: neg });
                     cur = ""; start = -1; leadQuote = false;
                 }
+                neg = false;
                 continue;
             }
             if (start < 0) start = i;
             cur += c;
         }
-        if (start >= 0) tokens.push({ start: start, text: cur, leadQuote: leadQuote });
+        if (start >= 0) tokens.push({ start: start, text: cur, leadQuote: leadQuote, neg: neg });
         return tokens;
     }
 
@@ -184,10 +189,12 @@ QtObject {
         return fieldNames.filter(f => root.substr(frag, f));
     }
 
-    function _pushFvArg(arg, fieldNames, fieldTerms, words) {
+    function _pushFvArg(arg, fieldNames, fieldTerms, words, neg, negWords) {
         const colon = arg.indexOf(":");
         if (colon >= 0) {
-            fieldTerms.push({ fields: root.resolveFields(arg.slice(0, colon), fieldNames), value: arg.slice(colon + 1) });
+            fieldTerms.push({ fields: root.resolveFields(arg.slice(0, colon), fieldNames), value: arg.slice(colon + 1), neg: !!neg });
+        } else if (neg) {
+            negWords.push(arg);
         } else {
             words.push(arg);
         }
@@ -256,6 +263,7 @@ QtObject {
         const toks = root.tokenize(text);
         const fieldTerms = [];
         const words = [];
+        const negWords = []; // each "!word": the row must NOT contain it
         const openFields = [];
         const columnOps = [];
         let sort = null;
@@ -267,14 +275,25 @@ QtObject {
             if (tv === null) {
                 const rest = (!tok.leadQuote && tok.text[0] === "/") ? tok.text.slice(1) : null;
                 const midTyping = rest !== null && root.isVerbPrefix(rest);
-                if (!midTyping) words.push(tok.text); // real word, or a literal "/usr/bin"
+                if (!midTyping) (tok.neg ? negWords : words).push(tok.text); // real word, or a literal "/usr/bin"
                 i++;
                 continue;
             }
             i++;
+            // "!" only means something on a row filter: "!/s", "!/ft" ...
+            // still consume their arguments but change nothing.
+            const verbNeg = !!tok.neg;
+            if (verbNeg && tv.verb !== "fv") {
+                if (tv.via === null && tv.verb !== "rv" && i < toks.length && !root.startsCmd(toks[i])) {
+                    i++;
+                    if (tv.verb === "s" && i < toks.length && !root.startsCmd(toks[i])
+                            && root._sortDirection(toks[i].text.toLowerCase()) !== null) i++;
+                }
+                continue;
+            }
             if (tv.via !== null) {
                 if (tv.verb === "fv" && i < toks.length && !root.startsCmd(toks[i])) {
-                    root._pushFvArg(tv.via + ":" + toks[i].text, fieldNames, fieldTerms, words);
+                    root._pushFvArg(tv.via + ":" + toks[i].text, fieldNames, fieldTerms, words, verbNeg || toks[i].neg, negWords);
                     i++;
                 } else if (tv.verb === "fv" && tv.via.length > 0) {
                     // `tv.via.length > 0` matters on its own: an empty via
@@ -307,7 +326,7 @@ QtObject {
             }
             if (tv.verb === "fv") {
                 if (i < toks.length && !root.startsCmd(toks[i])) {
-                    root._pushFvArg(toks[i].text, fieldNames, fieldTerms, words);
+                    root._pushFvArg(toks[i].text, fieldNames, fieldTerms, words, verbNeg || toks[i].neg, negWords);
                     i++;
                 }
                 continue;
@@ -338,7 +357,7 @@ QtObject {
             }
         }
         return {
-            fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), openFields: openFields,
+            fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), negWords: negWords.map(w => w.toLowerCase()), openFields: openFields,
             columnOps: columnOps, sort: sort, reverse: reverse
         };
     }
@@ -398,8 +417,10 @@ QtObject {
                     ok = true; break;
                 }
             }
-            if (!ok) return false;
+            if (ok === !!t.neg) return false;
         }
+        for (const w of (query.negWords || []))
+            if (entry.haystack.indexOf(w) >= 0) return false;
         return query.text.length === 0 || entry.haystack.indexOf(query.text) >= 0;
     }
 

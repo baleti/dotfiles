@@ -47,15 +47,22 @@ QtObject {
         while (i < text.length) {
             while (i < text.length && text[i] === " ") i++;
             if (i >= text.length) break;
+            // A leading "!" negates the term (query-dsl.md "Negation"): it
+            // is stripped here and carried as `neg`, so every later stage
+            // (verb detection, arity, args) sees the plain token. `!"a b"`
+            // is a negated quoted phrase; a lone "!" becomes an empty
+            // token, which parse() drops as still-forming.
+            let neg = false;
+            if (text[i] === "!") { neg = true; i++; }
             if (text[i] === '"') {
                 const end = text.indexOf('"', i + 1);
-                if (end < 0) { out.push({ q: true, v: text.slice(i + 1) }); break; }
-                out.push({ q: true, v: text.slice(i + 1, end) });
+                if (end < 0) { out.push({ q: true, neg: neg, v: text.slice(i + 1) }); break; }
+                out.push({ q: true, neg: neg, v: text.slice(i + 1, end) });
                 i = end + 1;
             } else {
                 let j = i;
                 while (j < text.length && text[j] !== " ") j++;
-                out.push({ q: false, v: text.slice(i, j) });
+                out.push({ q: false, neg: neg, v: text.slice(i, j) });
                 i = j;
             }
         }
@@ -150,12 +157,17 @@ QtObject {
                 const t = toks[k];
                 const midTyping = !t.q && t.v[0] === "/" && root.isVerbPrefix(t.v.slice(1));
                 if (!midTyping && t.v.length > 0)
-                    res.terms.push({ text: t.v.toLowerCase(), quoted: t.q });
+                    res.terms.push({ text: t.v.toLowerCase(), quoted: t.q, neg: !!t.neg });
                 k++;
                 continue;
             }
+            const verbNeg = !!toks[k].neg;
             k++;
             const verb = tv.verb;
+            // "!" only means something on a row filter; "!/s", "!/ft" ... parse
+            // (so their arguments are still consumed) but change nothing.
+            const R = (verbNeg && verb !== "/fv")
+                ? { terms: [], sort: null, reverse: false, cols: [], openPaths: [] } : res;
 
             if (tv.via !== null) {
                 // Via form: path came glued onto the verb. Every verb still
@@ -163,8 +175,9 @@ QtObject {
                 const via = tv.via.toLowerCase();
                 if (verb === "/fv") {
                     if (k < toks.length && !root.startsCommand(toks[k])) {
-                        res.terms.push({ field: via, value: toks[k].v.toLowerCase(),
-                                         quoted: toks[k].q });
+                        R.terms.push({ field: via, value: toks[k].v.toLowerCase(),
+                                         quoted: toks[k].q,
+                                         neg: verbNeg || !!toks[k].neg });
                         k++;
                     } else {
                         // Via path alone, no value yet -- still a no-op
@@ -196,7 +209,7 @@ QtObject {
                         // existed, not get treated as an ambiguous
                         // fragment to union across every candidate.
                         if (via.length > 0)
-                            res.openPaths.push(via);
+                            R.openPaths.push(via);
                     }
                 } else if (verb === "/s") {
                     let dir = "asc";
@@ -209,12 +222,12 @@ QtObject {
                     // "/"-separated segment of the via path is its own
                     // sort key, ties on the first broken by the next, and
                     // so on. The space form stays single-key only.
-                    res.sort = { fields: via.split("/"), dir: dir };
+                    R.sort = { fields: via.split("/"), dir: dir };
                 } else if (verb === "/rv") {
-                    res.reverse = true; // via meaningless here, harmless
+                    R.reverse = true; // via meaningless here, harmless
                 } else {
                     const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
-                    res.cols.push({ op: op, path: via });
+                    R.cols.push({ op: op, path: via });
                 }
                 continue;
             }
@@ -227,25 +240,27 @@ QtObject {
                 args.push(toks[k]);
                 k++;
             }
-            root._applyVerb(res, verb, args);
+            root._applyVerb(R, verb, args, verbNeg);
         }
         return res;
     }
 
-    function _applyVerb(res, verb, args) {
+    function _applyVerb(res, verb, args, verbNeg) {
         if (verb === "/rv") { res.reverse = true; return; }
         if (args.length === 0) return; // partial -> inert
         const a0 = args[0].v;
+        const neg = !!verbNeg || !!args[0].neg;
         if (verb === "/fv") {
             const colon = a0.indexOf(":");
             if (colon >= 0) {
                 res.terms.push({
                     field: a0.slice(0, colon).toLowerCase(),
                     value: a0.slice(colon + 1).toLowerCase(),
-                    quoted: args[0].q
+                    quoted: args[0].q,
+                    neg: neg
                 });
             } else {
-                res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q });
+                res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q, neg: neg });
             }
         } else if (verb === "/s") {
             // Space form: single-key only, no chaining (see the via form
@@ -257,6 +272,13 @@ QtObject {
             const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
             res.cols.push({ op: op, path: a0.toLowerCase() });
         }
+    }
+
+    // Apply a term's negation to its match result (query-dsl.md "Negation").
+    // Every consumer's per-term matcher wraps its return in this, so an
+    // unresolved path (positive: matches nothing) negates to "keep".
+    function applyNeg(term, matched) {
+        return term.neg ? !matched : matched;
     }
 
     // Substring, case-insensitive; every match unioned. `known` is the list of

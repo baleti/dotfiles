@@ -65,6 +65,8 @@ contains that text, not only that folder. Quote a value that has spaces:
 Folders listed as off by default in the app's config are hidden unless the query
 contains `//path` with that folder's keyword. Typing `//path` then Tab lists matching
 folders from the whole catalog, which you can page through.
+`!//path gdrive/office` is the inverse: every file whose path does *not* contain that text
+(see Negation); it never opts an off-by-default folder in.
 
 Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
@@ -190,6 +192,7 @@ token is either:
 //path arg...      the verb left empty: shorthand for /fv/path arg... (see Default verb)
 "phrase"           quoted literal - never a command, always row-filter text
 bareword           anything else - an implicit /filter-value argument
+!<any of the above> negated: a leading ! inverts a row filter (see Negation)
 ```
 
 A command's arguments are the whitespace-separated tokens that follow it,
@@ -391,7 +394,7 @@ a spelling, resolved at tokenizing time, not a new command:
 the shared launcher `QueryDsl.qml` (app-launcher, rss-reader,
 claude-usage), `WinSwitchQueryDsl.qml`, `ClipboardQueryDsl.qml`,
 `focus-picker.py`, `claude-history` (`QUERY_ELEM_RE`, including the
-negated `!//field word` form) and the Android app's `QueryDsl.kt`. It
+negated `!//field word` form - see Negation) and the Android app's `QueryDsl.kt`. It
 does **not** apply to `picker.rs` (notification-picker) or
 `window-search.py`, which have no via-path parser at all (see the
 maturity note above) - `//x` there is plain literal text, same as any
@@ -489,11 +492,88 @@ space-separated phrase matched as a single contiguous run - that predates
 this DSL and is left as-is (see `picker.rs`).
 
 BM25-ranked pickers (window-search, claude-history) keep their own extra
-row-filter spelling on top of this - prefix-expanded bare words, `!token`
-negation, `"phrase"` as *required exact* text - because ranking a large
-scrollback corpus needs them and an unranked couple-dozen-window grid
-does not. Those are documented in each script's own header; everything in
+row-filter spelling on top of this - prefix-expanded bare words and
+`"phrase"` as *required exact* text - because ranking a large scrollback
+corpus needs them and an unranked couple-dozen-window grid does not.
+(`!` negation used to be on this list; it is now part of the shared
+grammar, see Negation below.) Those are documented in each script's own header; everything in
 *this* doc applies to them unchanged otherwise.
+
+### Negation (`!`)
+
+A leading `!` on a row filter inverts it: the term keeps exactly the rows
+its positive form would drop. Added 2026-10-06 to every consumer that has a
+row filter (window-search and claude-history already had it, ad hoc).
+
+```
+!alacritty                     rows whose free-text haystack does NOT contain it
+!"foo bar"                     ... does not contain the exact phrase
+!//path gdrive/office          rows where NO subfield matching "path" contains the value
+!/fv/claude.title ovh          via spelling, same thing
+!/fv claude:ovh                colon spelling
+!//claude                      existence filter inverted: rows with no claude data at all
+//lines !>4                    comparisons invert too: rows where "lines > 4" is not true
+alacritty !//path gdrive/      terms still AND: contains "alacritty", NOT under gdrive/
+```
+
+- **Where the `!` goes.** On the term's first token: the verb token
+  (`!//path x`, `!/fv x`, `!/fv/path x`), or the bare word / quoted phrase
+  (`!x`, `!"x y"`). A `!` on the *value* token (`//path !x`) means the same;
+  writing both is still one negation, not a double one.
+- **Complement, exactly.** For any term `T`, the rows matching `T` and the
+  rows matching `!T` partition the result set. In particular a group scope
+  (`!//claude ovh`) drops a row if *any* subfield contains the value (the
+  complement of the positive union rule), a path that resolves to nothing
+  (positive: narrows to nothing) negates to "keep everything", and a row
+  whose value is missing or not comparable (`!//lines >4` on a non-numeric
+  row) is kept, because the positive form did not match it.
+- **Only row filters.** `!/s`, `!/rv`, `!/ft`, `!/at`, `!/rt` parse (so their
+  arguments are still consumed and don't leak out as bare words) but do
+  nothing. Negation is not a column or order operation.
+- **Still forming is inert.** A lone `!`, or `!` followed by space, is a
+  token still being typed and changes nothing - the same "never flash to
+  zero on a partial keystroke" rule as a half-typed verb. `!//path` with no
+  value yet is the existing value-pending no-op.
+- **Literal `!`.** Quote it: `"!important"` is the text `!important`. (The
+  `!` must be the first character of the token; `a!b` is plain text.)
+- **Purely negative queries** (`!foo` alone) show everything except the
+  matches. No special case in an unranked picker.
+- **Highlighting.** A negated term has nothing to highlight in a row that
+  survives it, so match highlighting skips it.
+- **Auto-show.** `!//claude` / `!//path x` still auto-show the field they
+  scope to (Auto-shown filter fields): seeing the value that was *not*
+  matched is exactly how you check the exclusion did what you meant. The
+  per-subfield "which subfield matched this row" labelling (winswitch) is
+  positive-only and ignores negated terms.
+- **Completion and coloring** see through the `!`: it is not part of the
+  command, so `!/fv/` + Tab completes like `/fv/`, replacement keeps the
+  `!`, and the validity coloring starts after it.
+- **Off-by-default folders (images picker).** Only a *positive*
+  `//path <keyword>` opts a hidden folder in; `!//path <keyword>` excludes
+  that folder and never reveals it.
+- **Not everywhere.** Pickers whose engine can't invert a given verb leave
+  it inert rather than guess: in the images picker `/clip` and `/fts` take no
+  `!` (CLIP "not like X" has no meaning; Recoll has its own `-term` inside
+  `/fts`), while `!//path`, `!//name`, `!//size`, `!//dm`, `!//mime`,
+  `!/face <name>` (photos *without* that person) and bare name words work;
+  bare words in photo mode are CLIP text, so a `!word` there is inert.
+  notification-picker shares `ClipboardQueryDsl.qml` with clipboard-picker
+  and so has all of it; `picker.rs` no longer holds a DSL engine.
+
+**Where it's implemented.** Shared launcher `QueryDsl.qml` (`tokenize` strips
+the `!` into `neg`, `parse` carries it onto terms, `applyNeg` is what each
+consumer's matcher wraps its result in - app-launcher, rss-reader,
+claude-usage), `WinSwitchQueryDsl.qml`, `ClipboardQueryDsl.qml`
+(clipboard + notification pickers; bare negated words are a separate
+`negWords` list because positive bare words are joined into one phrase),
+`focus-picker.py` (`tokenize(query, negs)`), the Android `QueryDsl.kt`
+(`Token.neg`), and the images picker: the egui client only forwards the
+query (and skips negated terms when highlighting) while the server parses
+it - `filesearch.py` (`_take_tags` files a negated pair under the key
+`"!tag"`, so positive consumers are untouched; `split_neg_terms`;
+`NameTable._match`) and `photos/search.py` (`parse` returns a third
+`negated` field; negated filters are subtracted after the AND). `claude-history`
+and `window-search.py` keep their own earlier implementations.
 
 ### `/filter-type` (`/ft`), `/add-type` (`/at`), `/remove-type` (`/rt`)
 

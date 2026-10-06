@@ -392,26 +392,38 @@ REV_FORMS = {"rv", "reverse"}
 DIRECTIONS = ["ascending", "descending"]
 
 
-def tokenize(query):
+def tokenize(query, negs=None):
     """[(start, text, lead_quote)] - whitespace split, "..." kept whole
     (quotes dropped), unterminated quote still closes at end-of-input.
-    lead_quote marks a run that began with " (never read as a command)."""
+    lead_quote marks a run that began with " (never read as a command).
+    A "!" at the start of a token negates it (query-dsl.md "Negation"):
+    it is not part of the token (start points past it) and, when `negs`
+    is a set, the token's start offset is added to it."""
     toks, cur = [], []
     start = None
     lead_quote = in_quotes = False
+    bang = False
     for i, c in enumerate(query):
+        if c == "!" and start is None and not bang:
+            bang = True
+            continue
         if c == '"':
             if start is None:
                 start, lead_quote = i, True
             in_quotes = not in_quotes
+            if start == i and bang and negs is not None:
+                negs.add(i)
             continue
         if c.isspace() and not in_quotes:
             if start is not None:
                 toks.append((start, "".join(cur), lead_quote))
                 cur, start, lead_quote = [], None, False
+            bang = False
             continue
         if start is None:
             start = i
+            if bang and negs is not None:
+                negs.add(i)
         cur.append(c)
     if start is not None:
         toks.append((start, "".join(cur), lead_quote))
@@ -487,16 +499,16 @@ def _apply_col(verb, arg, active_cols, seen_cols):
         seen_cols.intersection_update(keep)
 
 
-def _add_filter(arg, bare_terms, field_terms):
+def _add_filter(arg, bare_terms, field_terms, neg=False):
     """One /fv argument (or a bare word): scoped when it has a colon and
     the field resolves, else a plain bare term."""
     field_pfx, sep, term = arg.partition(":")
     if sep:
         fields = resolve_by_substring(field_pfx, FILTER_FIELDS)
         if fields:
-            field_terms.append((fields, term.lower()))
+            field_terms.append((fields, term.lower(), neg))
             return
-    bare_terms.append(arg.lower())
+    bare_terms.append((arg.lower(), neg))
 
 
 def parse_query(query):
@@ -507,23 +519,28 @@ def parse_query(query):
     implicit /fv term - identical to /fv <word>. A "-led token is literal
     text; a /xyz that is neither a verb nor a verb-prefix (e.g. /usr/bin)
     is literal text too; a /prefix still on its way to a verb is inert."""
-    toks = tokenize(query)
+    negs = set()
+    toks = tokenize(query, negs)
     bare_terms, field_terms, active_cols = [], [], []
     seen_cols = set()
     sort = None
     reverse = False
     i, n = 0, len(toks)
 
+    arg_neg = False  # whether the arg take_arg() just returned carried a "!"
+
     def take_arg():
-        nonlocal i
+        nonlocal i, arg_neg
         if i < n and not starts_cmd(toks[i][1], toks[i][2]):
             a = toks[i][1]
+            arg_neg = toks[i][0] in negs
             i += 1
             return a
         return None
 
     while i < n:
-        _, text, lead_quote = toks[i]
+        tok_start, text, lead_quote = toks[i]
+        verb_neg = tok_start in negs
         i += 1
         if not lead_quote and text.startswith("/"):
             rest = text[1:]
@@ -544,7 +561,16 @@ def parse_query(query):
                 if verb_part in FV_FORMS or verb_part == "":
                     arg = take_arg()
                     if arg is not None:
-                        _add_filter(f"{via_path}:{arg}", bare_terms, field_terms)
+                        _add_filter(f"{via_path}:{arg}", bare_terms, field_terms,
+                                    verb_neg or arg_neg)
+                    continue
+                if verb_neg and verb_part not in REV_FORMS and not is_verb_prefix(verb_part):
+                    # "!" means nothing on a non-filter verb: inert (its
+                    # sort direction, if any, is still consumed below)
+                    if verb_part in SORT_FORMS and i < n \
+                            and not starts_cmd(toks[i][1], toks[i][2]) \
+                            and parse_direction(toks[i][1]) is not None:
+                        i += 1
                     continue
                 if verb_part in AT_FORMS or verb_part in RT_FORMS or verb_part in FT_FORMS:
                     _apply_col(verb_part, via_path, active_cols, seen_cols)
@@ -569,7 +595,17 @@ def parse_query(query):
             if rest in FV_FORMS:
                 arg = take_arg()
                 if arg is not None:
-                    _add_filter(arg, bare_terms, field_terms)
+                    _add_filter(arg, bare_terms, field_terms, verb_neg or arg_neg)
+                continue
+            if verb_neg and (rest in AT_FORMS or rest in RT_FORMS or rest in FT_FORMS
+                             or rest in SORT_FORMS or rest in REV_FORMS):
+                # "!" means nothing on a non-filter verb: inert, args consumed
+                if rest in REV_FORMS:
+                    continue
+                if take_arg() is not None and rest in SORT_FORMS and i < n \
+                        and not starts_cmd(toks[i][1], toks[i][2]) \
+                        and parse_direction(toks[i][1]) is not None:
+                    i += 1
                 continue
             if rest in AT_FORMS or rest in RT_FORMS or rest in FT_FORMS:
                 arg = take_arg()
@@ -595,10 +631,10 @@ def parse_query(query):
             if is_verb_prefix(rest):
                 continue  # mid-typing a verb - inert
             # a literal /usr/bin etc
-            bare_terms.append(text.lower())
+            bare_terms.append((text.lower(), verb_neg))
             continue
         # bare word or "-quoted literal
-        bare_terms.append(text.lower())
+        bare_terms.append((text.lower(), verb_neg))
     return bare_terms, field_terms, active_cols, sort, reverse
 
 
@@ -1079,10 +1115,10 @@ def search(snapshot_path, query):
         if p["ssh"]:
             haystack_parts.extend(p["ssh"].values())
         haystack = " ".join(haystack_parts).lower()
-        if bare_terms and not all(t in haystack for t in bare_terms):
+        if not all((t in haystack) != neg for t, neg in bare_terms):
             continue
-        if not all(any(term in p[FIELD_KEY[f]].lower() for f in fields)
-                   for fields, term in field_terms):
+        if not all(any(term in p[FIELD_KEY[f]].lower() for f in fields) != neg
+                   for fields, term, neg in field_terms):
             continue
         matched.append(p)
 
