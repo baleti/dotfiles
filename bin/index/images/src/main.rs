@@ -330,8 +330,22 @@ fn cols(left: f32, right: f32, f: &[f32; 5]) -> Cols {
     Cols { name_x: left, path_x: x1, path_r: x2, size_r: x2, date_x: x3, score_r: x4, right }
 }
 
+/// Totals over every match, computed by the server.
+#[derive(Deserialize, Clone, Default)]
+struct Stats {
+    size: u64,
+    #[serde(default)]
+    dmin: Option<String>,
+    #[serde(default)]
+    dmax: Option<String>,
+    #[serde(default)]
+    kinds: Vec<(String, usize)>,
+}
+
 #[derive(Deserialize)]
 struct Reply {
+    #[serde(default)]
+    stats: Option<Stats>,
     count: usize,
     results: Vec<Hit>,
     #[serde(default)]
@@ -499,6 +513,8 @@ struct App {
     results_h: f32,
     /// set by keyboard movement; the views scroll the cursor into sight once, then clear it
     scroll_pending: bool,
+    /// totals for the status bar (size, dates, file types) from the page-0 reply
+    stats: Option<Stats>,
     /// Ctrl+J/K/H/L chord currently held (its auto-repeats may lose the Ctrl modifier)
     chord_key: Option<Key>,
     /// grid scroll offset after the last frame (for keeping the grid still while the selection moves)
@@ -815,6 +831,7 @@ impl App {
             thumb: 16.0, // same as Ctrl+0 (column list)
             results_h: 400.0,
             scroll_pending: false,
+            stats: None,
             chord_key: None,
             grid_off: 0.0,
             popup: false,
@@ -888,6 +905,7 @@ impl App {
             match f.result {
                 Ok(r) => {
                     self.total = r.count;
+                    if f.page == 0 { self.stats = r.stats.clone(); }
                     self.pages.insert(f.page, r.results);
                     self.selected = self.selected.min(self.total.saturating_sub(1));
                     if f.page == 0 {
@@ -1357,10 +1375,13 @@ impl eframe::App for App {
         }
 
         // Shift+arrows extend the list selection; consume them before the query box sees them
-        let shift_down = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowDown));
-        let shift_up = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowUp));
-        let _shift_left = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowLeft));
-        let _shift_right = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowRight));
+        // (every queued press counts, so holding the key keeps extending; left/right only in the grid,
+        // in the list they stay with the query box's own shift-selection)
+        let shift_down_n = take_count(ui, egui::Modifiers::SHIFT, Key::ArrowDown);
+        let shift_up_n = take_count(ui, egui::Modifiers::SHIFT, Key::ArrowUp);
+        let (shift_left_n, shift_right_n) = if grid {
+            (take_count(ui, egui::Modifiers::SHIFT, Key::ArrowLeft), take_count(ui, egui::Modifiers::SHIFT, Key::ArrowRight))
+        } else { (0, 0) };
 
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
@@ -1519,8 +1540,11 @@ impl eframe::App for App {
             let up_steps = (up as i64) + k_n as i64;
             if down_steps + up_steps > 0 { any = true; }
             delta += cols as i64 * (down_steps - up_steps);
-            if shift_down { delta += cols as i64; extend = true; any = true; }
-            if shift_up { delta -= cols as i64; extend = true; any = true; }
+            if shift_down_n + shift_up_n + shift_left_n + shift_right_n > 0 {
+                delta += cols as i64 * (shift_down_n as i64 - shift_up_n as i64) + shift_right_n as i64 - shift_left_n as i64;
+                extend = true;
+                any = true;
+            }
             let row_h = if grid { self.thumb + 68.0 } else { (self.thumb + 4.0).max(20.0) };
             let rows = ((self.results_h / row_h).floor() as i64).max(1);
             let per_page = if grid { rows * cols as i64 } else { rows };
@@ -1923,7 +1947,20 @@ impl eframe::App for App {
 
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!("{} shown", group_digits(self.total)))
+                    RichText::new({
+                        let mut line = format!("{} shown", group_digits(self.total));
+                        if let (Some(st), true) = (&self.stats, self.total > 0) {
+                            line.push_str(&format!(" · {}", human_size(st.size)));
+                            if let (Some(a), Some(b)) = (&st.dmin, &st.dmax) {
+                                line.push_str(&if a == b { format!(" · {a}") } else { format!(" · {a} → {b}") });
+                            }
+                            if !st.kinds.is_empty() {
+                                let k: Vec<String> = st.kinds.iter().map(|(n, c)| format!("{n} {}", group_digits(*c))).collect();
+                                line.push_str(&format!(" · {}", k.join(", ")));
+                            }
+                        }
+                        line
+                    })
                         .color(pal.dim).size(11.0),
                 );
             });
