@@ -1510,7 +1510,6 @@ impl eframe::App for App {
                                 ui.label(RichText::new(q).monospace().size(12.0)
                                     .color(if sel { pal.accent } else { pal.text }));
                             }
-                            ui.label(RichText::new("history: enter replaces the search · esc closes").color(pal.dim).size(10.0));
                         });
                 }
                 if self.popup && !self.cands.is_empty() {
