@@ -565,11 +565,11 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             "dm" => facets.dates.iter().map(|d| (d.clone(), "modified in this month".to_string())).collect(),
             "mime" => facets.mimes.iter().map(|m| (m.clone(), "file kind".to_string())).collect(),
             "size" => vec![
+                ("<100K".into(), "smaller than 100 KiB".into()),
                 (">100K".into(), "larger than 100 KiB".into()),
                 (">1M".into(), "larger than 1 MiB".into()),
                 (">10M".into(), "larger than 10 MiB".into()),
                 (">100M".into(), "larger than 100 MiB".into()),
-                ("<100K".into(), "smaller than 100 KiB".into()),
             ],
             _ => Vec::new(),
         }
