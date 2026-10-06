@@ -520,6 +520,8 @@ struct App {
     /// grid scroll offset after the last frame (for keeping the grid still while the selection moves)
     grid_off: f32,
     popup: bool,
+    /// /face pane: indexed faces as crops to pick from (no names involved)
+    face_pane: Option<FacePane>,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
     /// query text as of the last frame, so the popup only re-narrows when it really changed
@@ -535,7 +537,7 @@ struct PeopleReply {
 
 /// Completion candidates for the fragment at the end of `q`.
 /// Returns (byte index where the fragment starts, candidates).
-fn completions(q: &str, people: &[String], facets: &FacetsReply, history: &[String]) -> (usize, Vec<(String, String)>) {
+fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec<(String, String)>) {
     let start = q.rfind(char::is_whitespace).map(|i| i + q[i..].chars().next().unwrap().len_utf8()).unwrap_or(0);
     let frag = &q[start..];
     let prev = q[..start].split_whitespace().last().unwrap_or("");
@@ -622,17 +624,29 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply, history: &[Stri
                 }
             }
         }
-    } else if prev == "/face" || (prev.is_empty() && !frag.is_empty() && q[..start].trim().is_empty()) {
-        // stage 2 after /face (or a bare word that could name a person)
-        if !frag.is_empty() || prev == "/face" {
-            for n in people {
-                if n.to_lowercase().contains(&frag.to_lowercase()) {
-                    out.push((format!("{n} "), "registered person".to_string()));
-                }
-            }
-        }
     }
     (start, out)
+}
+
+struct FacePane {
+    items: Vec<(String, String)>,
+    sel: usize,
+    prefix: String,
+    loading: bool,
+    rx: Receiver<Vec<(String, String)>>,
+}
+
+fn fetch_faces(seed: u64) -> Vec<(String, String)> {
+    let url = format!("{}/faces/pane?n=24&seed={seed}", cfg().server);
+    ureq::get(&url)
+        .timeout(Duration::from_secs(300))
+        .call()
+        .ok()
+        .and_then(|r| r.into_string().ok())
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["faces"].as_array().cloned())
+        .map(|fs| fs.iter().filter_map(|f| Some((f["id"].as_str()?.to_string(), f["thumb"].as_str()?.to_string()))).collect())
+        .unwrap_or_default()
 }
 
 /// Sortable fields: (name typed in `/s`, server key). The first four are the visible columns.
@@ -832,6 +846,7 @@ impl App {
             chord_key: None,
             grid_off: 0.0,
             popup: false,
+            face_pane: None,
             cands: Vec::new(),
             cand_sel: 0,
             popup_q: String::new(),
@@ -1255,7 +1270,7 @@ impl App {
 
     fn accept_candidate(&mut self) {
         if let Some((rep, _)) = self.cands.get(self.cand_sel).cloned() {
-            let (start, _) = completions(&self.query, &self.people, &self.facets, &self.history);
+            let (start, _) = completions(&self.query, &self.facets, &self.history);
             self.query = apply(&self.query, start, &rep);
             self.last_change = Instant::now() - Duration::from_millis(200);
             self.cursor_end = true;
@@ -1383,8 +1398,14 @@ impl eframe::App for App {
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         let ctrl_space = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Space));
-        if (tab || ctrl_space) && !self.popup {
-            let (start, cands) = completions(&self.query, &self.people, &self.facets, &self.history);
+        if (tab || ctrl_space) && !self.popup && self.face_pane.is_none() && self.query.trim_end().ends_with("/face") {
+            let q = self.query.trim_end().to_string();
+            let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let (tx, rx) = channel();
+            std::thread::spawn(move || { let _ = tx.send(fetch_faces(seed)); });
+            self.face_pane = Some(FacePane { items: Vec::new(), sel: 0, prefix: q[..q.len() - "/face".len()].to_string(), loading: true, rx });
+        } else if (tab || ctrl_space) && !self.popup {
+            let (start, cands) = completions(&self.query, &self.facets, &self.history);
             match cands.len() {
                 0 => {}
                 1 => {
@@ -1400,6 +1421,39 @@ impl eframe::App for App {
             }
         } else if tab && self.popup {
             self.accept_candidate();
+        }
+        if let Some(p) = self.face_pane.as_mut() {
+            if let Ok(items) = p.rx.try_recv() { p.items = items; p.loading = false; }
+        }
+        if self.face_pane.is_some() {
+            let cols = 6usize;
+            let (l, r, u, d, enter, esc) = ui.input_mut(|i| (
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft) | i.consume_key(egui::Modifiers::CTRL, Key::H),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowRight) | i.consume_key(egui::Modifiers::CTRL, Key::L),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | i.consume_key(egui::Modifiers::CTRL, Key::K),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | i.consume_key(egui::Modifiers::CTRL, Key::J),
+                i.consume_key(egui::Modifiers::NONE, Key::Enter),
+                i.consume_key(egui::Modifiers::NONE, Key::Escape),
+            ));
+            if let Some(p) = self.face_pane.as_mut() {
+                let n = p.items.len();
+                if n > 0 {
+                    if r { p.sel = (p.sel + 1).min(n - 1); }
+                    if l { p.sel = p.sel.saturating_sub(1); }
+                    if d { p.sel = (p.sel + cols).min(n - 1); }
+                    if u { p.sel = p.sel.saturating_sub(cols); }
+                }
+            }
+            if esc { self.face_pane = None; }
+            else if enter {
+                if let Some(p) = self.face_pane.take() {
+                    if let Some((id, _)) = p.items.get(p.sel) {
+                        self.query = format!("{}/face \"@{}\" ", p.prefix, id);
+                        self.last_change = Instant::now() - Duration::from_millis(400);
+                        self.cursor_end = true;
+                    }
+                }
+            }
         }
         if self.popup {
             // popup keys: Up/Down or Ctrl+J/K move, Enter accepts, Esc closes only the popup
@@ -1426,7 +1480,7 @@ impl eframe::App for App {
         }
         // typing while the popup is open narrows it in place
         if self.popup && self.query != self.popup_q {
-            let (_, cands) = completions(&self.query, &self.people, &self.facets, &self.history);
+            let (_, cands) = completions(&self.query, &self.facets, &self.history);
             if cands.is_empty() { self.popup = false; } else { self.cands = cands; self.cand_sel = 0; }
         }
         self.popup_q = self.query.clone();
@@ -1779,6 +1833,41 @@ impl eframe::App for App {
                 }
                 ui.add_space(4.0);
 
+                if let Some(p) = self.face_pane.as_ref() {
+                    let (items, sel, loading) = (p.items.clone(), p.sel, p.loading);
+                    let mut chosen: Option<usize> = None;
+                    egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(6.0)
+                        .inner_margin(Margin::same(8)).show(ui, |ui| {
+                            if loading {
+                                ui.label(RichText::new("loading faces…").color(pal.dim).size(11.0));
+                            } else if items.is_empty() {
+                                ui.label(RichText::new("no faces indexed").color(pal.dim).size(11.0));
+                            }
+                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                for (i, (_, thumb)) in items.iter().enumerate() {
+                                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(96.0, 96.0), egui::Sense::click());
+                                    if let Some(tex) = self.texture(&ctx, thumb) {
+                                        egui::Image::new(&tex).fit_to_exact_size(rect.size()).paint_at(ui, rect);
+                                    }
+                                    if i == sel {
+                                        ui.painter().rect_stroke(rect.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
+                                    }
+                                    if resp.clicked() { chosen = Some(i); }
+                                }
+                            });
+                        });
+                    if let Some(i) = chosen {
+                        if let Some(p) = self.face_pane.take() {
+                            if let Some((id, _)) = p.items.get(i) {
+                                self.query = format!("{}/face \"@{}\" ", p.prefix, id);
+                                self.last_change = Instant::now() - Duration::from_millis(400);
+                                self.cursor_end = true;
+                            }
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
                 // results list
                 if self.total > 0 && !grid {
                     let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
