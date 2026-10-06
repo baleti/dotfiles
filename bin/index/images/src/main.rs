@@ -526,7 +526,7 @@ impl App {
 
     /// Thumbnail grid for zoomed-out views: square cells, score under each.
     fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hits: &[Hit], sel: &[usize],
-                 clicked: &mut Option<(usize, bool)>, dbl: &mut bool) {
+                 clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
         let pal = self.pal;
         let t = self.thumb;
         egui::ScrollArea::vertical()
@@ -554,6 +554,9 @@ impl App {
                         let shift = ui.input(|i| i.modifiers.shift);
                         if resp.clicked() { *clicked = Some((idx, shift)); }
                         if resp.double_clicked() { *dbl = true; *clicked = Some((idx, false)); }
+                        if resp.secondary_clicked() {
+                            *right = Some((idx, ui.input(|i| i.pointer.interact_pos()).unwrap_or(resp.rect.left_bottom())));
+                        }
                     }
                 });
             });
@@ -742,8 +745,13 @@ impl eframe::App for App {
         }
         let qsel = query_has_selection(&ctx);
         if !qsel && !self.popup && self.trash_pending.is_none() && self.props.is_none() && n > 0 {
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::C)) { self.copy_selection(false); }
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::X)) { self.copy_selection(true); }
+            let key_c = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::C));
+            let key_x = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::X));
+            // egui-winit may report Ctrl+C / Ctrl+X as copy/cut events instead of key presses
+            let ev_copy = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Copy)); i.events.retain(|e| !matches!(e, egui::Event::Copy)); had });
+            let ev_cut = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Cut)); i.events.retain(|e| !matches!(e, egui::Event::Cut)); had });
+            if key_c || ev_copy { self.copy_selection(false); }
+            if key_x || ev_cut { self.copy_selection(true); }
         }
         if n > 0 && !self.popup {
             let cols = if grid { ((ui.available_width() / (self.thumb + 10.0)).floor() as usize).max(1) } else { 1 };
@@ -979,7 +987,12 @@ impl eframe::App for App {
                 let mut right_hit: Option<usize> = None;
                 if grid {
                     let sel_v: Vec<usize> = self.selection();
-                    self.grid_view(ui, &ctx, &hits, &sel_v, &mut clicked, &mut dbl);
+                    let mut grid_right: Option<(usize, egui::Pos2)> = None;
+                    self.grid_view(ui, &ctx, &hits, &sel_v, &mut clicked, &mut dbl, &mut grid_right);
+                    if let Some((hit, at)) = grid_right {
+                        right_hit = Some(hit);
+                        right_at = Some(at);
+                    }
                 } else {
                 egui::ScrollArea::vertical()
                     .max_height(ui.available_height() - 28.0)
@@ -1061,6 +1074,7 @@ impl eframe::App for App {
                     self.menu_at = Some(at);
                     self.menu_hit = Some(hit);
                     self.menu_fresh = true;
+                    self.status = "context menu".into();
                 }
                 if let Some((i, extend)) = clicked { self.move_cursor(i, extend); self.list_focus = true; }
                 if dbl { self.open_selected(); }
