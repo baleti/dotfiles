@@ -90,14 +90,20 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/query":
             q = (qs.get("q", [""])[0]).strip()
             top = int(qs.get("top", ["60"])[0])
-            if q.startswith("//file"):
-                rest = q[len("//file"):].strip()
-                results, count = NAMES.search(rest, top)
+            # default: file-name search over everything the catalog knows; //clip and //face
+            # switch to photo search; the explicit //file prefix is still accepted
+            photo_mode = ("//clip" in q) or ("//face" in q)
+            if not photo_mode:
+                rest = q[len("//file"):].strip() if q.startswith("//file") else q
+                if rest:
+                    results, count = NAMES.search(rest, top)
+                else:
+                    results, count = NAMES.browse(top), None
                 for r in results:
                     r["score"] = None
                     r["thumb"] = thumb_path(r["remote"])
                     r["ready"] = (not r["remote"].lower().endswith(IMAGE_EXT)) or enqueue(r["remote"])
-                return self._json(200, {"count": count, "results": results, "errors": []})
+                return self._json(200, {"count": count if count is not None else len(results), "results": results, "errors": []})
             try:
                 with _q_lock:
                     if not q:
