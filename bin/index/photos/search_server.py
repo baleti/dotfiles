@@ -115,22 +115,10 @@ def split_path_tags(text):
     values = [m.group(1) for m in PATH_TAG.finditer(text)]
     return values, PATH_TAG.sub(" ", text).strip()
 
-def path_matches(path, value):
-    """Each '/'-separated segment must appear in the path, in order: gdrive/"part 3" matches .../gdrive-.../part 3/..."""
-    low, pos = path.lower(), 0
-    for seg in value.replace('"', "").split("/"):
-        if not seg:
-            continue
-        i = low.find(seg.lower(), pos)
-        if i < 0:
-            return False
-        pos = i + len(seg)
-    return True
-
 def fts_query(text, sort, desc, offset, limit):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match.
     Searches every content index; //path narrows by folder."""
-    from filesearch import split_mime, split_tags, matches_mime, _size_ok
+    from filesearch import split_mime, split_tags, matches_mime, _size_ok, path_matches
     wanted, rest = split_mime(text)
     paths, rest = split_path_tags(rest)
     tags, terms = split_tags(rest)
@@ -224,6 +212,33 @@ _queued_lock = threading.Lock()
 
 def thumb_path(remote):
     return os.path.join(THUMBS, hashlib.sha1(remote.encode()).hexdigest()[:16] + ".jpg")
+
+FACECROPS = os.path.join(config.DATA_DIR, "facecrops")
+
+def face_crop(face):
+    """A square crop around one detected face, 160 px, cached; '' when the photo cannot be read."""
+    dst = os.path.join(FACECROPS, hashlib.sha1(face["id"].encode()).hexdigest()[:16] + ".jpg")
+    if os.path.exists(dst):
+        return dst
+    remote = face["remote"]
+    if remote.startswith(config.CFG["rclone_remote"]):
+        remote = os.path.join(os.path.expanduser(config.CFG["mount_root"]), remote[len(config.CFG["rclone_remote"]):])
+    if not remote.startswith("/"):
+        return ""
+    img = cv2.imread(remote)
+    if img is None:
+        return ""
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = face["bbox"]
+    side = max(x2 - x1, y2 - y1) * 1.6
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    a, b = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+    crop = img[b:min(h, int(cy + side / 2)), a:min(w, int(cx + side / 2))]
+    if crop.size == 0:
+        return ""
+    os.makedirs(FACECROPS, exist_ok=True)
+    cv2.imwrite(dst, cv2.resize(crop, (160, 160), interpolation=cv2.INTER_AREA), [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return dst
 
 def make_pdf_thumb(remote, dst):
     """First page of a PDF as a 256 px JPEG (poppler's pdftoppm; -singlefile writes <base>.jpg)."""
@@ -338,6 +353,14 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(200, {"snippets": [], "error": str(e)})
             return self._json(200, {"snippets": snips, "error": err})
+        if u.path == "/faces/pane":
+            # random indexed faces to pick from: the picker shows the crops, no names involved
+            n = int(qs.get("n", ["48"])[0])
+            seed = int(qs["seed"][0]) if "seed" in qs else None
+            with _q_lock:
+                rows = search.face_pane(n, seed)
+            faces = [{"id": r["id"], "thumb": face_crop(r)} for r in rows]
+            return self._json(200, {"faces": [f for f in faces if f["thumb"]]})
         if u.path == "/facets":
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),
