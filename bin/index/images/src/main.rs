@@ -261,6 +261,8 @@ struct App {
     /// last drawn rectangle per hit (list view), used to place the menu for F10
     row_rects: HashMap<usize, egui::Rect>,
     menu_fresh: bool,
+    /// true while keyboard focus is in the result list (query box is not auto-focused then)
+    list_focus: bool,
     /// properties dialog for one hit
     props: Option<usize>,
     /// cached "Open with" handlers per mime type
@@ -364,6 +366,7 @@ impl App {
             row_rects: HashMap::new(),
             props: None,
             menu_fresh: false,
+            list_focus: false,
             handlers: HashMap::new(),
             status: "connecting to search server…".into(),
             busy: false,
@@ -698,6 +701,14 @@ impl eframe::App for App {
 
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.hits.len();
+        // Ctrl+J / Ctrl+K from the query box: focus the list at the first / last entry
+        let ctrl_j = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::J));
+        let ctrl_k = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::K));
+        let was_list = self.list_focus;
+        if !was_list && n > 0 && !self.popup && self.trash_pending.is_none() && self.props.is_none() && (ctrl_j || ctrl_k) {
+            self.list_focus = true;
+            self.move_cursor(if ctrl_j { 0 } else { n - 1 }, false);
+        }
         let (down, up, left, right, pgdn, pgup, home, end, enter, ctrl_enter, esc, cj, ck) = ui.input(|i| {
             (
                 i.key_pressed(Key::ArrowDown),
@@ -711,8 +722,8 @@ impl eframe::App for App {
                 i.key_pressed(Key::Enter) && !i.modifiers.ctrl && !i.modifiers.alt,
                 i.key_pressed(Key::Enter) && i.modifiers.ctrl,
                 i.key_pressed(Key::Escape),
-                i.modifiers.ctrl && i.key_pressed(Key::J),
-                i.modifiers.ctrl && i.key_pressed(Key::K),
+                ctrl_j && was_list,
+                ctrl_k && was_list,
             )
         });
         // Esc closes the innermost thing first: menu, then properties, then the window
@@ -885,6 +896,10 @@ impl eframe::App for App {
             }
         }
 
+        if self.list_focus && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
+            self.list_focus = false;
+            ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+        }
         egui::Frame::new()
             .fill(pal.bg)
             .stroke(Stroke::new(1.0, pal.border))
@@ -917,8 +932,9 @@ impl eframe::App for App {
                                 .font(egui::TextStyle::Body);
                             let r = ui.add(edit);
                             if r.changed() { self.last_change = Instant::now(); }
-                            // keep focus here even after a click elsewhere in the picker
-                            if !r.has_focus() { r.request_focus(); }
+                            if r.clicked() { self.list_focus = false; }
+                            // keep focus here unless the list was focused on purpose
+                            if !self.list_focus && !r.has_focus() { r.request_focus(); }
                         });
                     });
 
@@ -1046,7 +1062,7 @@ impl eframe::App for App {
                     self.menu_hit = Some(hit);
                     self.menu_fresh = true;
                 }
-                if let Some((i, extend)) = clicked { self.move_cursor(i, extend); }
+                if let Some((i, extend)) = clicked { self.move_cursor(i, extend); self.list_focus = true; }
                 if dbl { self.open_selected(); }
 
                 ui.add_space(4.0);
