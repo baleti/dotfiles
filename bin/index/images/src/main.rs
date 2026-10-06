@@ -1233,6 +1233,14 @@ impl eframe::App for App {
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
         }
 
+        // holding Ctrl+J/K (or any Ctrl chord) repeats as key events plus stray text events: drop the text
+        // so a held chord never types into the query box
+        ui.input_mut(|i| {
+            if i.modifiers.ctrl || (i.modifiers.command && !i.modifiers.alt) {
+                i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+            }
+        });
+
         // Delete: only when the confirmation dialog is closed
         let del = self.trash_pending.is_none() && ui.input(|i| i.key_pressed(Key::Delete));
         if del && !self.popup && self.total > 0 {
@@ -1274,16 +1282,19 @@ impl eframe::App for App {
                     i.key_pressed(Key::ArrowUp),
                     i.key_pressed(Key::Enter) && !i.modifiers.ctrl,
                     i.key_pressed(Key::Escape),
-                    i.consume_key(egui::Modifiers::CTRL, Key::J),
-                    i.consume_key(egui::Modifiers::CTRL, Key::K),
+                    false,
+                    false,
                 )
             });
+            let (cj_n, ck_n) = (take_count(ui, egui::Modifiers::CTRL, Key::J), take_count(ui, egui::Modifiers::CTRL, Key::K));
             let n = self.cands.len();
             if esc { self.popup = false; }
             else if enter { self.accept_candidate(); }
             else if n > 0 {
-                if down || cj { self.cand_sel = (self.cand_sel + 1) % n; }
-                if up || ck { self.cand_sel = (self.cand_sel + n - 1) % n; }
+                let _ = (cj, ck);
+                if down { self.cand_sel = (self.cand_sel + 1) % n; }
+                if up { self.cand_sel = (self.cand_sel + n - 1) % n; }
+                self.cand_sel = (self.cand_sel + cj_n % n + n - ck_n % n) % n;
             }
         }
         // typing while the popup is open narrows it in place
