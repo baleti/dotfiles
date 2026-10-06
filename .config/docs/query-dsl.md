@@ -49,8 +49,7 @@ there is no "not indexed" row to explain. Name search (no verb) covers every
 file regardless of content indexing.
 
 **Index collections (`/fts/<index>`).** Content indexes are kept as named
-collections, one per folder under `~/.cache/indexes/` (currently `part3-books`
-and `professional-reference`). The verb pivots on a collection with a slash:
+collections, one per folder under `~/.cache/indexes/` (the list is private config, not part of this spec). The verb pivots on a collection with a slash:
 `/fts/part3-books daniel essay career cdm //mime pdf` searches only that
 collection. Shorthands are allowed, resolved like type paths: an exact name,
 else a unique prefix, else letters in order, so `/fts/p3` finds
