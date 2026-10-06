@@ -633,13 +633,15 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
 struct FacePane {
     items: Vec<(String, String)>,
     sel: usize,
+    cols: usize,
+    scroll_pending: bool,
     prefix: String,
     loading: bool,
     rx: Receiver<Vec<(String, String)>>,
 }
 
 fn fetch_faces(seed: u64) -> Vec<(String, String)> {
-    let url = format!("{}/faces/pane?n=24&seed={seed}", cfg().server);
+    let url = format!("{}/faces/pane?n=120&seed={seed}", cfg().server);
     ureq::get(&url)
         .timeout(Duration::from_secs(300))
         .call()
@@ -1471,7 +1473,7 @@ impl eframe::App for App {
             let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let (tx, rx) = channel();
             std::thread::spawn(move || { let _ = tx.send(fetch_faces(seed)); });
-            self.face_pane = Some(FacePane { items: Vec::new(), sel: 0, prefix: q[..q.len() - "/face".len()].to_string(), loading: true, rx });
+            self.face_pane = Some(FacePane { items: Vec::new(), sel: 0, cols: 6, scroll_pending: false, prefix: q[..q.len() - "/face".len()].to_string(), loading: true, rx });
         } else if (tab || ctrl_space) && !self.popup {
             let (start, cands) = completions(&self.query, &self.facets, &self.history);
             match cands.len() {
@@ -1540,7 +1542,6 @@ impl eframe::App for App {
             }
         }
         if self.face_pane.is_some() {
-            let cols = 6usize;
             let (l, r, u, d, enter, esc) = ui.input_mut(|i| (
                 i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft) | i.consume_key(egui::Modifiers::CTRL, Key::H),
                 i.consume_key(egui::Modifiers::NONE, Key::ArrowRight) | i.consume_key(egui::Modifiers::CTRL, Key::L),
@@ -1551,11 +1552,14 @@ impl eframe::App for App {
             ));
             if let Some(p) = self.face_pane.as_mut() {
                 let n = p.items.len();
+                let cols = p.cols.max(1);
                 if n > 0 {
+                    let before = p.sel;
                     if r { p.sel = (p.sel + 1).min(n - 1); }
                     if l { p.sel = p.sel.saturating_sub(1); }
                     if d { p.sel = (p.sel + cols).min(n - 1); }
                     if u { p.sel = p.sel.saturating_sub(cols); }
+                    if p.sel != before { p.scroll_pending = true; }
                 }
             }
             if esc { self.face_pane = None; }
@@ -1991,8 +1995,13 @@ impl eframe::App for App {
                     ui.add_space(4.0);
                 }
                 if let Some(p) = self.face_pane.as_ref() {
-                    let (items, sel, loading) = (p.items.clone(), p.sel, p.loading);
+                    let (items, sel, loading, scroll) = (p.items.clone(), p.sel, p.loading, p.scroll_pending);
                     let mut chosen: Option<usize> = None;
+                    let cell = 96.0;
+                    let gap = 6.0;
+                    let pitch = cell + gap;
+                    let cols = ((ui.available_width() - 16.0) / pitch).floor().max(1.0) as usize;
+                    let rows = items.len().div_ceil(cols);
                     egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(6.0)
                         .inner_margin(Margin::same(8)).show(ui, |ui| {
                             if loading {
@@ -2000,20 +2009,34 @@ impl eframe::App for App {
                             } else if items.is_empty() {
                                 ui.label(RichText::new("no faces indexed").color(pal.dim).size(11.0));
                             }
-                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                            ui.horizontal_wrapped(|ui| {
-                                for (i, (_, thumb)) in items.iter().enumerate() {
-                                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(96.0, 96.0), egui::Sense::click());
-                                    if let Some(tex) = self.texture(&ctx, thumb) {
-                                        egui::Image::new(&tex).fit_to_exact_size(rect.size()).paint_at(ui, rect);
-                                    }
-                                    if i == sel {
-                                        ui.painter().rect_stroke(rect.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
-                                    }
-                                    if resp.clicked() { chosen = Some(i); }
+                            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+                            let mut area = egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, false]);
+                            if scroll {
+                                area = area.vertical_scroll_offset(((sel / cols) as f32 * pitch - 120.0).max(0.0));
+                            }
+                            area.show_rows(ui, pitch, rows, |ui, range| {
+                                for row in range {
+                                    ui.horizontal(|ui| {
+                                        for c in 0..cols {
+                                            let i = row * cols + c;
+                                            let Some((_, thumb)) = items.get(i) else { break };
+                                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(cell, cell), egui::Sense::click());
+                                            if let Some(tex) = self.texture(&ctx, thumb) {
+                                                egui::Image::new(&tex).fit_to_exact_size(rect.size()).paint_at(ui, rect);
+                                            }
+                                            if i == sel {
+                                                ui.painter().rect_stroke(rect.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
+                                            }
+                                            if resp.clicked() { chosen = Some(i); }
+                                        }
+                                    });
                                 }
                             });
                         });
+                    if let Some(p) = self.face_pane.as_mut() {
+                        p.cols = cols;
+                        p.scroll_pending = false;
+                    }
                     if let Some(i) = chosen {
                         if let Some(p) = self.face_pane.take() {
                             if let Some((id, _)) = p.items.get(i) {

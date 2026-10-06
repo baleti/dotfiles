@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse
+import hashlib, json, os, queue, random, re, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -235,6 +235,23 @@ def path_candidates(frag, offset, top):
     rows = _paths_cache["rows"]
     return len(rows), rows[offset: offset + top]
 
+FACE_POOL = []
+_face_pool_lock = threading.Lock()
+
+def face_crop_path(face):
+    """Path of a face's cached crop if it exists, else ''."""
+    dst = os.path.join(FACECROPS, hashlib.sha1(face["id"].encode()).hexdigest()[:16] + ".jpg")
+    return dst if os.path.exists(dst) else ""
+
+def warm_face_pool(n=400):
+    """Cut crops for a fixed sample of faces in the background, so the face pane is instant."""
+    rows = search.face_pane(n, seed=7)
+    for r in rows:
+        if face_crop(r):
+            with _face_pool_lock:
+                FACE_POOL.append(r)
+    print(f"face pool ready: {len(FACE_POOL)} crops", file=sys.stderr, flush=True)
+
 def face_crop(face):
     """A square crop around one detected face, 160 px, cached; '' when the photo cannot be read."""
     dst = os.path.join(FACECROPS, hashlib.sha1(face["id"].encode()).hexdigest()[:16] + ".jpg")
@@ -348,7 +365,7 @@ class H(BaseHTTPRequestHandler):
                         r["ready"] = bool(r["thumb"])
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
-                        r["mtime"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
+                        r["mtime"] = None if r["mtime"] < 172800 or r["mtime"] in (filesearch.UNKNOWN_MTIME, 123456789) else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
                 return self._json(200, {"count": count, "results": results, "errors": errors, "stats": stats})
             try:
                 with _q_lock:
@@ -381,12 +398,20 @@ class H(BaseHTTPRequestHandler):
             total, items = path_candidates(frag, offset, top)
             return self._json(200, {"total": total, "items": items})
         if u.path == "/faces/pane":
-            # random indexed faces to pick from: the picker shows the crops, no names involved
+            # random indexed faces to pick from: the picker shows the crops, no names involved.
+            # Served from the pre-cut pool, so opening the pane does not wait on photo reads.
             n = int(qs.get("n", ["48"])[0])
             seed = int(qs["seed"][0]) if "seed" in qs else None
-            with _q_lock:
-                rows = search.face_pane(n, seed)
-            faces = [{"id": r["id"], "thumb": face_crop(r)} for r in rows]
+            rnd = random.Random(seed)
+            with _face_pool_lock:
+                ready = list(FACE_POOL)
+            if ready:
+                picks = rnd.sample(ready, min(n, len(ready)))
+                faces = [{"id": r["id"], "thumb": face_crop_path(r)} for r in picks]
+            else:
+                with _q_lock:
+                    rows = search.face_pane(n, seed)
+                faces = [{"id": r["id"], "thumb": face_crop(r)} for r in rows]
             return self._json(200, {"faces": [f for f in faces if f["thumb"]]})
         if u.path == "/facets":
             # values for the //dm and //mime completions
@@ -410,6 +435,7 @@ def main():
         search._refresh()
         from clip_text import embed_texts
         embed_texts(["warm up"])            # load the text model once, up front
+    threading.Thread(target=warm_face_pool, daemon=True).start()
     for _ in range(8):                      # thumbnails are I/O bound (rclone / FUSE reads), so run several at once
         threading.Thread(target=thumb_worker, daemon=True).start()
     print(f"search server on 127.0.0.1:{PORT}", file=sys.stderr, flush=True)
