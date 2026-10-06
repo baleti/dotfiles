@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <!-- folder -->
-  <path d="M6 16 h18 l5 6 h29 a3 3 0 0 1 3 3 v26 a3 3 0 0 1 -3 3 H6 a3 3 0 0 1 -3 -3 V19 a3 3 0 0 1 3 -3 z" fill="#4a90d9"/>
-  <path d="M3 27 h58 v22 a3 3 0 0 1 -3 3 H6 a3 3 0 0 1 -3 -3 z" fill="#6aaef5"/>
-  <!-- magnifier -->
-  <circle cx="40" cy="36" r="9" fill="none" stroke="#ffffff" stroke-width="4"/>
-  <line x1="46.5" y1="42.5" x2="54" y2="50" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round"/>
-</svg>
