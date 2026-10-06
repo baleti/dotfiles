@@ -316,8 +316,10 @@ struct App {
     first_frame: bool,
     close_now: bool,
     people: Vec<String>,
-    /// thumbnail size in px; Ctrl+wheel / pinch changes it. Below GRID_BELOW the view is a grid.
+    /// thumbnail size in px; Ctrl+wheel / pinch changes it (rows grow and shrink with it)
     thumb: f32,
+    /// thumbnail grid instead of the list; toggled with Ctrl+G
+    grid_mode: bool,
     popup: bool,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
@@ -424,6 +426,7 @@ impl App {
             close_now: false,
             people: Vec::new(),
             thumb: 52.0,
+            grid_mode: false,
             popup: false,
             cands: Vec::new(),
             cand_sel: 0,
@@ -718,7 +721,13 @@ impl eframe::App for App {
             self.thumb = (self.thumb * zd).clamp(36.0, 260.0);
         }
         ctx.set_zoom_factor(1.0);
-        let grid = self.thumb < GRID_BELOW;
+        let grid = self.grid_mode;
+        // Ctrl+G toggles the thumbnail grid (the list is the default at every zoom level)
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::G)) {
+            self.grid_mode = !self.grid_mode;
+        }
+        // the score column only exists for photo results
+        let show_score = self.hits.iter().any(|h| h.score.is_some());
 
         if self.close_now {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1144,7 +1153,7 @@ impl eframe::App for App {
                     hp.text(egui::pos2(c.path_x, hr.top()), egui::Align2::LEFT_TOP, "PATH", hf.clone(), pal.dim);
                     hp.text(egui::pos2(c.size_r, hr.top()), egui::Align2::RIGHT_TOP, "SIZE", hf.clone(), pal.dim);
                     hp.text(egui::pos2(c.date_x, hr.top()), egui::Align2::LEFT_TOP, "MODIFIED", hf.clone(), pal.dim);
-                    hp.text(egui::pos2(c.score_r, hr.top()), egui::Align2::RIGHT_TOP, "SCORE", hf, pal.dim);
+                    if show_score { hp.text(egui::pos2(c.score_r, hr.top()), egui::Align2::RIGHT_TOP, "SCORE", hf, pal.dim); }
                 }
                 let hits = self.hits.clone();
                 let sel_set: std::collections::HashSet<usize> = self.selection().into_iter().collect();
@@ -1214,7 +1223,7 @@ impl eframe::App for App {
                             if let Some(t) = &h.mtime {
                                 painter.text(egui::pos2(c.date_x, y), egui::Align2::LEFT_TOP, short_time(t), egui::FontId::monospace(11.0), dim);
                             }
-                            if let Some(s) = h.score {
+                            if let (true, Some(s)) = (show_score, h.score) {
                                 painter.text(egui::pos2(c.score_r, y), egui::Align2::RIGHT_TOP, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
                             }
                             if selected {
