@@ -420,6 +420,8 @@ struct App {
     thumb: f32,
     /// height of the results viewport last frame; sets how far PgUp/PgDn move
     results_h: f32,
+    /// set by keyboard movement; the views scroll the cursor into sight once, then clear it
+    scroll_pending: bool,
     popup: bool,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
@@ -587,6 +589,7 @@ impl App {
             col_frac: load_cols(),
             thumb: 20.0,
             results_h: 400.0,
+            scroll_pending: false,
             popup: false,
             cands: Vec::new(),
             cand_sel: 0,
@@ -662,6 +665,7 @@ impl App {
 
     /// Move the cursor; with `extend` the range grows from the anchor, otherwise it collapses.
     fn move_cursor(&mut self, to: usize, extend: bool) {
+        self.scroll_pending = true;
         if extend {
             if self.anchor.is_none() { self.anchor = Some(self.selected); }
         } else {
@@ -843,7 +847,7 @@ impl App {
                         }
                         if selected {
                             ui.painter().rect_stroke(img.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
-                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                            if self.scroll_pending { ui.scroll_to_rect(rect, Some(egui::Align::Center)); }
                         }
                         let short = short_name(&h.remote);
                         let (dir, base) = match short.rsplit_once('/') {
@@ -889,12 +893,8 @@ impl App {
         let Some(h) = self.hits.get(self.selected).cloned() else { return };
         let local = local_path(&h.remote).to_string_lossy().into_owned();
         std::thread::spawn(move || {
-            // dolphin --select opens the folder with the file highlighted; fall back to the folder alone
-            let ok = std::process::Command::new("dolphin").arg("--select").arg(&local).spawn().is_ok();
-            if !ok {
-                if let Some(dir) = Path::new(&local).parent() {
-                    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-                }
+            if let Some(dir) = Path::new(&local).parent() {
+                let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
             }
         });
     }
@@ -1007,7 +1007,7 @@ impl eframe::App for App {
                 (
                     i.key_pressed(Key::ArrowDown),
                     i.key_pressed(Key::ArrowUp),
-                    i.key_pressed(Key::Enter),
+                    i.key_pressed(Key::Enter) && !i.modifiers.ctrl,
                     i.key_pressed(Key::Escape),
                     i.modifiers.ctrl && i.key_pressed(Key::J),
                     i.modifiers.ctrl && i.key_pressed(Key::K),
@@ -1498,7 +1498,7 @@ impl eframe::App for App {
                                 painter.text(egui::pos2(c.score_r, y), egui::Align2::LEFT_CENTER, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
                             }
                             if selected {
-                                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                if self.scroll_pending { ui.scroll_to_rect(rect, Some(egui::Align::Center)); }
                             }
                             let shift = ui.input(|i| i.modifiers.shift);
                             self.row_rects.insert(idx, rect);
@@ -1532,6 +1532,7 @@ impl eframe::App for App {
                 );
             });
 
+        self.scroll_pending = false;
         // keep polling so thumbnails and results appear without input
         ctx.request_repaint_after(Duration::from_millis(120));
     }
