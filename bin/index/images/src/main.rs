@@ -1439,7 +1439,9 @@ impl eframe::App for App {
             self.thumb = (self.thumb * 1.15f32.powi(steps)).clamp(16.0, 800.0);
         }
         ctx.set_zoom_factor(1.0);
-        ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
+        // wheel steps cover more rows when the rows are small (zoomed out), about 4 rows at medium zoom
+        let row_h = (self.thumb + 4.0).max(20.0);
+        ctx.options_mut(|o| o.input_options.line_scroll_speed = (60.0 * 400.0 / row_h).clamp(100.0, 800.0));
         let grid = self.thumb >= GRID_ZOOM;
         // the score column only exists for photo results
         let show_score = self.pages.values().flatten().any(|h| h.score.is_some());
