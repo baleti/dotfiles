@@ -42,7 +42,7 @@ fn load_cfg() -> Cfg {
 }
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
 const TOP: usize = 150;
-const GRID_BELOW: f32 = 110.0;
+const GRID_ZOOM: f32 = 110.0;
 
 #[derive(Deserialize, Clone)]
 struct Hit {
@@ -370,10 +370,8 @@ struct App {
     sort_desc: bool,
     /// column widths as fractions of the row (drag the header boundaries to change)
     col_frac: [f32; 5],
-    /// thumbnail size in px; Ctrl+wheel / pinch changes it (rows grow and shrink with it)
+    /// thumbnail size in px; Ctrl+wheel / pinch changes it; at GRID_ZOOM and above the results show as a grid
     thumb: f32,
-    /// thumbnail grid instead of the list; toggled with Ctrl+G
-    grid_mode: bool,
     popup: bool,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
@@ -540,7 +538,6 @@ impl App {
             sort_desc: load_sort().1,
             col_frac: load_cols(),
             thumb: 20.0,
-            grid_mode: false,
             popup: false,
             cands: Vec::new(),
             cand_sel: 0,
@@ -772,19 +769,20 @@ impl App {
         self.selected = self.selected.min(self.hits.len().saturating_sub(1));
     }
 
-    /// Thumbnail grid for zoomed-out views: square cells, score under each.
+    /// Thumbnail grid for zoomed-in views: square cells with name, path, size and date under each.
     fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hits: &[Hit], sel: &[usize],
                  clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
         let pal = self.pal;
         let t = self.thumb;
+        let text_h = 58.0;
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - 28.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
                 ui.horizontal_wrapped(|ui| {
                     for (idx, h) in hits.iter().enumerate() {
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + 14.0), egui::Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + text_h), egui::Sense::click());
                         let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
                         let selected = sel.contains(&idx);
                         match self.texture(ctx, &h.thumb) {
@@ -795,8 +793,30 @@ impl App {
                             ui.painter().rect_stroke(img.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
                             ui.scroll_to_rect(rect, Some(egui::Align::Center));
                         }
+                        let short = short_name(&h.remote);
+                        let (dir, base) = match short.rsplit_once('/') {
+                            Some((d, b)) => (d.to_string(), b.to_string()),
+                            None => (String::new(), short.clone()),
+                        };
+                        let name_font = egui::FontId::monospace(12.0);
+                        let small = egui::FontId::monospace(10.0);
+                        let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
+                        let size_txt = h.size.map(human_size).unwrap_or_default();
+                        let date_txt = h.mtime.as_deref().map(short_time).unwrap_or_default();
+                        let lines = [
+                            (fit_text(ui, &base, &name_font, t), name_font.clone(), txt),
+                            (fit_text(ui, &dir, &small, t), small.clone(), pal.dim),
+                            (fit_text(ui, &size_txt, &small, t), small.clone(), pal.dim),
+                            (fit_text(ui, &date_txt, &small, t), small.clone(), pal.dim),
+                        ];
+                        let painter = ui.painter();
+                        let mut y = img.bottom() + 4.0;
+                        for (text, font, color) in lines {
+                            painter.text(egui::pos2(rect.left(), y), egui::Align2::LEFT_TOP, text, font, color);
+                            y += 14.0;
+                        }
                         if let Some(sc) = h.score {
-                            ui.painter().text(egui::pos2(rect.left() + 2.0, img.bottom() + 1.0), egui::Align2::LEFT_TOP,
+                            painter.text(egui::pos2(rect.right() - 2.0, img.top() + 2.0), egui::Align2::RIGHT_TOP,
                                 format!("{sc:.2}"), egui::FontId::monospace(10.0), pal.accent);
                         }
                         let shift = ui.input(|i| i.modifiers.shift);
@@ -875,11 +895,7 @@ impl eframe::App for App {
             self.thumb = (self.thumb * zd).clamp(16.0, 260.0);
         }
         ctx.set_zoom_factor(1.0);
-        let grid = self.grid_mode;
-        // Ctrl+G toggles the thumbnail grid (the list is the default at every zoom level)
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::G)) {
-            self.grid_mode = !self.grid_mode;
-        }
+        let grid = self.thumb >= GRID_ZOOM;
         // the score column only exists for photo results
         let show_score = self.hits.iter().any(|h| h.score.is_some());
 
@@ -1451,7 +1467,7 @@ impl eframe::App for App {
 
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!("{} shown · ↑↓ / ^j^k move · PgUp/PgDn · Home/End · ⏎ open · esc close", self.hits.len()))
+                    RichText::new(format!("{} shown", self.hits.len()))
                         .color(pal.dim).size(11.0),
                 );
             });
