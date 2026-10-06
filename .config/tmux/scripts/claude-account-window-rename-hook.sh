@@ -78,6 +78,17 @@ target="$1"
 
 cur_cmd=$(tmux display-message -t "$target" -p '#{pane_current_command}')
 
+# prefix+C-c runs claude-history via `zsh -c "... || {...}"`: that
+# non-interactive zsh has no job control, so it stays the pane's foreground
+# process (cur_cmd = zsh) while claude runs as its child. Treat a pane with a
+# direct claude child as running claude, or the window gets renamed to "zsh".
+if [ "$cur_cmd" != "claude" ]; then
+    pp=$(tmux display-message -t "$target" -p '#{pane_pid}')
+    if pgrep -x -P "$pp" claude >/dev/null 2>&1; then
+        cur_cmd=claude
+    fi
+fi
+
 marker=$(tmux display-message -t "$target" -p '#{@claude_autoname}')
 lastset=$(tmux display-message -t "$target" -p '#{@claude_lastset}')
 win_name=$(tmux display-message -t "$target" -p '#{window_name}')
