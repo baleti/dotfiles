@@ -522,6 +522,8 @@ struct App {
     popup: bool,
     /// /face pane: indexed faces as crops to pick from (no names involved)
     face_pane: Option<FacePane>,
+    /// //path pane: folders matching the fragment being typed, listed virtually
+    path_pane: Option<PathPane>,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
     /// query text as of the last frame, so the popup only re-narrows when it really changed
@@ -647,6 +649,65 @@ fn fetch_faces(seed: u64) -> Vec<(String, String)> {
         .and_then(|v| v["faces"].as_array().cloned())
         .map(|fs| fs.iter().filter_map(|f| Some((f["id"].as_str()?.to_string(), f["thumb"].as_str()?.to_string()))).collect())
         .unwrap_or_default()
+}
+
+const PATH_PAGE: usize = 200;
+
+struct PathPane {
+    start: usize,
+    frag: String,
+    total: usize,
+    pages: HashMap<usize, Vec<String>>,
+    pending: HashSet<usize>,
+    sel: usize,
+    tx: Sender<PathPage>,
+    rx: Receiver<PathPage>,
+}
+
+struct PathPage {
+    frag: String,
+    page: usize,
+    total: usize,
+    items: Vec<String>,
+}
+
+/// The //path fragment at the end of the query, and where it starts.
+fn path_fragment(q: &str) -> Option<(usize, String)> {
+    let idx = q.rfind("//path")?;
+    let after = &q[idx + 6..];
+    if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let start = idx + 6 + (after.len() - after.trim_start().len());
+    let frag = &q[start..];
+    if frag.contains("//") || frag.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((start, frag.to_string()))
+}
+
+fn request_path_page(p: &mut PathPane, page: usize) {
+    if !p.pending.insert(page) {
+        return;
+    }
+    let (tx, frag) = (p.tx.clone(), p.frag.clone());
+    std::thread::spawn(move || {
+        let (total, items) = ureq::get(&format!("{}/paths", cfg().server))
+            .query("q", frag.trim_matches('"'))
+            .query("offset", &(page * PATH_PAGE).to_string())
+            .query("top", &PATH_PAGE.to_string())
+            .timeout(Duration::from_secs(60))
+            .call()
+            .ok()
+            .and_then(|r| r.into_string().ok())
+            .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+            .map(|v| {
+                let items = v["items"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+                (v["total"].as_u64().unwrap_or(0) as usize, items)
+            })
+            .unwrap_or((0, Vec::new()));
+        let _ = tx.send(PathPage { frag, page, total, items });
+    });
 }
 
 /// Sortable fields: (name typed in `/s`, server key). The first four are the visible columns.
@@ -847,6 +908,7 @@ impl App {
             grid_off: 0.0,
             popup: false,
             face_pane: None,
+            path_pane: None,
             cands: Vec::new(),
             cand_sel: 0,
             popup_q: String::new(),
@@ -1398,7 +1460,13 @@ impl eframe::App for App {
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         let ctrl_space = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Space));
-        if (tab || ctrl_space) && !self.popup && self.face_pane.is_none() && self.query.trim_end().ends_with("/face") {
+        if (tab || ctrl_space) && !self.popup && self.path_pane.is_none() && path_fragment(&self.query).is_some() {
+            let (start, frag) = path_fragment(&self.query).unwrap_or((0, String::new()));
+            let (tx, rx) = channel();
+            let mut p = PathPane { start, frag, total: 0, pages: HashMap::new(), pending: HashSet::new(), sel: 0, tx, rx };
+            request_path_page(&mut p, 0);
+            self.path_pane = Some(p);
+        } else if (tab || ctrl_space) && !self.popup && self.face_pane.is_none() && self.query.trim_end().ends_with("/face") {
             let q = self.query.trim_end().to_string();
             let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let (tx, rx) = channel();
@@ -1424,6 +1492,52 @@ impl eframe::App for App {
         }
         if let Some(p) = self.face_pane.as_mut() {
             if let Ok(items) = p.rx.try_recv() { p.items = items; p.loading = false; }
+        }
+        match (path_fragment(&self.query), self.path_pane.as_mut()) {
+            (None, Some(_)) => self.path_pane = None,
+            (Some((start, frag)), Some(p)) => {
+                if frag != p.frag || start != p.start {
+                    p.start = start;
+                    p.frag = frag;
+                    p.total = 0;
+                    p.pages.clear();
+                    p.pending.clear();
+                    p.sel = 0;
+                    request_path_page(p, 0);
+                }
+                while let Ok(pg) = p.rx.try_recv() {
+                    if pg.frag == p.frag {
+                        p.total = pg.total;
+                        p.pending.remove(&pg.page);
+                        p.pages.insert(pg.page, pg.items);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let Some(p) = self.path_pane.as_mut() {
+            let (down, up, enter, esc) = ui.input_mut(|i| (
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | i.consume_key(egui::Modifiers::CTRL, Key::J),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | i.consume_key(egui::Modifiers::CTRL, Key::K),
+                i.consume_key(egui::Modifiers::NONE, Key::Enter) | i.consume_key(egui::Modifiers::NONE, Key::Tab),
+                i.consume_key(egui::Modifiers::NONE, Key::Escape),
+            ));
+            if p.total > 0 {
+                if down { p.sel = (p.sel + 1).min(p.total - 1); }
+                if up { p.sel = p.sel.saturating_sub(1); }
+            }
+            if esc {
+                self.path_pane = None;
+            } else if enter {
+                let chosen = p.pages.get(&(p.sel / PATH_PAGE)).and_then(|v| v.get(p.sel % PATH_PAGE)).cloned();
+                if let Some(value) = chosen {
+                    let shown = if value.contains(' ') { format!("\"{value}\"") } else { value };
+                    self.query = format!("{}{} ", &self.query[..p.start], shown);
+                    self.last_change = Instant::now() - Duration::from_millis(400);
+                    self.cursor_end = true;
+                    self.path_pane = None;
+                }
+            }
         }
         if self.face_pane.is_some() {
             let cols = 6usize;
@@ -1833,6 +1947,49 @@ impl eframe::App for App {
                 }
                 ui.add_space(4.0);
 
+                if let Some(p) = self.path_pane.as_ref() {
+                    let (total, sel, pages) = (p.total, p.sel, p.pages.clone());
+                    let mut want: Vec<usize> = Vec::new();
+                    let mut chosen: Option<usize> = None;
+                    egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(6.0)
+                        .inner_margin(Margin::same(6)).show(ui, |ui| {
+                            if total == 0 {
+                                ui.label(RichText::new("no folders match").color(pal.dim).size(11.0));
+                            }
+                            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, false])
+                                .show_rows(ui, 18.0, total, |ui, range| {
+                                    for i in range {
+                                        match pages.get(&(i / PATH_PAGE)).and_then(|v| v.get(i % PATH_PAGE)) {
+                                            Some(s) => {
+                                                if ui.selectable_label(i == sel, RichText::new(s).monospace().size(12.0)).clicked() {
+                                                    chosen = Some(i);
+                                                }
+                                            }
+                                            None => {
+                                                want.push(i / PATH_PAGE);
+                                                ui.label(RichText::new("…").color(pal.dim));
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+                    want.sort();
+                    want.dedup();
+                    if let Some(p) = self.path_pane.as_mut() {
+                        for page in want { request_path_page(p, page); }
+                        if let Some(i) = chosen {
+                            if let Some(value) = p.pages.get(&(i / PATH_PAGE)).and_then(|v| v.get(i % PATH_PAGE)).cloned() {
+                                let shown = if value.contains(' ') { format!("\"{value}\"") } else { value };
+                                let start = p.start;
+                                self.query = format!("{}{} ", &self.query[..start], shown);
+                                self.last_change = Instant::now() - Duration::from_millis(400);
+                                self.cursor_end = true;
+                                self.path_pane = None;
+                            }
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
                 if let Some(p) = self.face_pane.as_ref() {
                     let (items, sel, loading) = (p.items.clone(), p.sel, p.loading);
                     let mut chosen: Option<usize> = None;
