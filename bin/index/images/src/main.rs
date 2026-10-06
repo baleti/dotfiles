@@ -84,6 +84,19 @@ fn trashable(remote: &str) -> Option<(PathBuf, u64)> {
 fn human(b: u64) -> String { human_size(b) }
 
 
+fn sort_path() -> PathBuf {
+    PathBuf::from(&cfg().data_dir).join("search-files-sort.json")
+}
+
+/// (column key, descending) from the last session; ("", false) when there is none.
+fn load_sort() -> (String, bool) {
+    let v: serde_json::Value = std::fs::read_to_string(sort_path()).ok()
+        .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null);
+    let key = v.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let desc = v.get("desc").and_then(|x| x.as_bool()).unwrap_or(false);
+    (key, desc)
+}
+
 /// Search-box history file (one query per line), in the picker's data directory.
 fn history_path() -> PathBuf {
     PathBuf::from(&cfg().data_dir).join("search-files-history.txt")
@@ -225,9 +238,10 @@ const SIZE_W: f32 = 84.0;
 const DATE_W: f32 = 140.0;
 const SCORE_W: f32 = 48.0;
 fn cols(left: f32, right: f32) -> Cols {
-    let score_r = right - 12.0;
-    let date_x = score_r - SCORE_W - 12.0 - DATE_W;
-    let size_r = date_x - 12.0;
+    // columns are left-aligned: size_r / score_r hold the LEFT edge of those columns
+    let score_r = right - SCORE_W;
+    let date_x = score_r - 12.0 - DATE_W;
+    let size_r = date_x - 12.0 - SIZE_W;
     let name_x = left;
     let path_x = name_x + NAME_W + 12.0;
     Cols { name_x, path_x, path_r: size_r - SIZE_W - 12.0, size_r, date_x, score_r }
@@ -335,6 +349,9 @@ struct App {
     people: Vec<String>,
     /// year-months present in the index (for //dm completion) and file kinds (for //mime)
     facets: FacetsReply,
+    /// list sort: column key ("" = server order) and direction; remembered between runs
+    sort_key: String,
+    sort_desc: bool,
     /// thumbnail size in px; Ctrl+wheel / pinch changes it (rows grow and shrink with it)
     thumb: f32,
     /// thumbnail grid instead of the list; toggled with Ctrl+G
@@ -501,6 +518,8 @@ impl App {
             close_now: false,
             people: Vec::new(),
             facets: FacetsReply::default(),
+            sort_key: load_sort().0,
+            sort_desc: load_sort().1,
             thumb: 20.0,
             grid_mode: false,
             popup: false,
@@ -542,6 +561,7 @@ impl App {
                 Ok(r) => {
                     self.count = r.count;
                     self.hits = r.results;
+                    self.apply_sort();
                     self.selected = self.selected.min(self.hits.len().saturating_sub(1));
                     self.missing.clear();
                     self.status = if !r.errors.is_empty() {
@@ -693,6 +713,38 @@ impl App {
 
     fn open_selected(&mut self) {
         self.open_hit(self.selected);
+    }
+
+    /// Clicking a header: the same column flips the direction, another column sorts ascending.
+    fn set_sort(&mut self, key: &str) {
+        if self.sort_key == key {
+            self.sort_desc = !self.sort_desc;
+        } else {
+            self.sort_key = key.to_string();
+            self.sort_desc = false;
+        }
+        self.apply_sort();
+        let _ = std::fs::create_dir_all(PathBuf::from(&cfg().data_dir));
+        let _ = std::fs::write(sort_path(), serde_json::json!({"key": self.sort_key, "desc": self.sort_desc}).to_string());
+    }
+
+    fn apply_sort(&mut self) {
+        if self.sort_key.is_empty() { return; }
+        let key = self.sort_key.clone();
+        let desc = self.sort_desc;
+        self.hits.sort_by(|a, b| {
+            let ord = match key.as_str() {
+                "name" => short_name(&a.remote).rsplit('/').next().unwrap_or("").to_lowercase()
+                    .cmp(&short_name(&b.remote).rsplit('/').next().unwrap_or("").to_lowercase()),
+                "path" => short_name(&a.remote).to_lowercase().cmp(&short_name(&b.remote).to_lowercase()),
+                "size" => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
+                "date" => a.mtime.clone().unwrap_or_default().cmp(&b.mtime.clone().unwrap_or_default()),
+                "score" => a.score.unwrap_or(0.0).partial_cmp(&b.score.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal),
+                _ => std::cmp::Ordering::Equal,
+            };
+            if desc { ord.reverse() } else { ord }
+        });
+        self.selected = self.selected.min(self.hits.len().saturating_sub(1));
     }
 
     /// Thumbnail grid for zoomed-out views: square cells, score under each.
@@ -1224,14 +1276,25 @@ impl eframe::App for App {
                 // results list
                 if !self.hits.is_empty() && !grid {
                     let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
-                    let c = cols(hr.left() + 52.0 + 22.0, hr.right());
-                    let hp = ui.painter();
+                    // same left edge as the rows: thumbnail (6 px margin) + gap
+                    let c = cols(hr.left() + 6.0 + self.thumb + 12.0, hr.right());
                     let hf = egui::FontId::monospace(10.0);
-                    hp.text(egui::pos2(c.name_x, hr.top()), egui::Align2::LEFT_TOP, "NAME", hf.clone(), pal.dim);
-                    hp.text(egui::pos2(c.path_x, hr.top()), egui::Align2::LEFT_TOP, "PATH", hf.clone(), pal.dim);
-                    hp.text(egui::pos2(c.size_r, hr.top()), egui::Align2::RIGHT_TOP, "SIZE", hf.clone(), pal.dim);
-                    hp.text(egui::pos2(c.date_x, hr.top()), egui::Align2::LEFT_TOP, "MODIFIED", hf.clone(), pal.dim);
-                    if show_score { hp.text(egui::pos2(c.score_r, hr.top()), egui::Align2::RIGHT_TOP, "SCORE", hf, pal.dim); }
+                    let mut columns: Vec<(&str, f32, f32, &str)> = vec![
+                        ("name", c.name_x, NAME_W, "NAME"),
+                        ("path", c.path_x, (c.path_r - c.path_x).max(0.0), "PATH"),
+                        ("size", c.size_r, SIZE_W, "SIZE"),
+                        ("date", c.date_x, DATE_W, "MODIFIED"),
+                    ];
+                    if show_score { columns.push(("score", c.score_r, SCORE_W, "SCORE")); }
+                    for (key, x, w, label) in columns {
+                        let rect = egui::Rect::from_min_size(egui::pos2(x, hr.top()), egui::vec2(w, 18.0));
+                        let resp = ui.interact(rect, egui::Id::new(("hdr", key)), egui::Sense::click());
+                        let arrow = if self.sort_key == key { if self.sort_desc { " ▼" } else { " ▲" } } else { "" };
+                        ui.painter().text(egui::pos2(x, hr.top() + 2.0), egui::Align2::LEFT_TOP,
+                            format!("{label}{arrow}"), hf.clone(),
+                            if self.sort_key == key { pal.accent } else { pal.dim });
+                        if resp.clicked() { self.set_sort(key); }
+                    }
                 }
                 let hits = self.hits.clone();
                 let sel_set: std::collections::HashSet<usize> = self.selection().into_iter().collect();
@@ -1301,13 +1364,13 @@ impl eframe::App for App {
                             let path_clip = egui::Rect::from_min_max(egui::pos2(c.path_x, rect.top()), egui::pos2(c.path_r, rect.bottom()));
                             painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::monospace(11.0), dim);
                             if let Some(sz) = h.size {
-                                painter.text(egui::pos2(c.size_r, y), egui::Align2::RIGHT_CENTER, human_size(sz), egui::FontId::monospace(11.0), dim);
+                                painter.text(egui::pos2(c.size_r, y), egui::Align2::LEFT_CENTER, human_size(sz), egui::FontId::monospace(11.0), dim);
                             }
                             if let Some(t) = &h.mtime {
                                 painter.text(egui::pos2(c.date_x, y), egui::Align2::LEFT_CENTER, short_time(t), egui::FontId::monospace(11.0), dim);
                             }
                             if let (true, Some(s)) = (show_score, h.score) {
-                                painter.text(egui::pos2(c.score_r, y), egui::Align2::RIGHT_CENTER, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
+                                painter.text(egui::pos2(c.score_r, y), egui::Align2::LEFT_CENTER, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
                             }
                             if selected {
                                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
