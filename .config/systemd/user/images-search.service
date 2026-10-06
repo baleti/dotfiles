@@ -1,9 +1,9 @@
 [Unit]
-Description=Photo search server for the images picker (CLIP + faces, 127.0.0.1:8765)
+Description=Photo search server for the images picker (CLIP + faces, see ~/.config/indexes/photos.json)
 
 [Service]
-WorkingDirectory=%h/.cache/indexes/photos
-ExecStart=%h/.cache/indexes/venv/bin/python %h/.cache/indexes/photos/search_server.py
+WorkingDirectory=%h/bin/index/photos
+ExecStart=%h/.cache/indexes/venv/bin/python %h/bin/index/photos/search_server.py
 Restart=on-failure
 RestartSec=5
 

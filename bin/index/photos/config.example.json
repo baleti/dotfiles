@@ -1,0 +1,22 @@
+{
+  "data_dir": "~/.cache/indexes/photos",
+  "clip_text_dir": "~/.cache/indexes/shared/clip-vit-b32",
+  "python": "~/.cache/indexes/venv/bin/python",
+  "rclone_remote": "gdrive-crypt:",
+  "mount_root": "~/gdrive-rclone-crypt",
+  "scheme_file": "~/.local/state/quickshell/scheme.json",
+  "sources": {
+    "photos": "photos",
+    "cardiff": "cardiff",
+    "job_applications": "job applications",
+    "office_orms": "office/orms"
+  },
+  "server": {"host": "127.0.0.1", "port": 8765},
+  "ai1": {
+    "jump_host": "host1",
+    "ssh": "ssh -o BatchMode=yes -i ~/path/to/ai1_key -p 2211 user@ai1-address",
+    "idle_secs": 120,
+    "worker_launcher": "~/indexer/run-worker.sh",
+    "clip_launcher": "~/indexer/run-clip.sh"
+  }
+}

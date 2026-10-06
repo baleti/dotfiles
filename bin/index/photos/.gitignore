@@ -1,0 +1,14 @@
+# private / machine-specific: config lives in ~/.config/indexes/photos.json
+# data produced by the indexers (embeddings, listings, people, thumbnails, logs)
+*.jsonl
+*.npy
+*.log
+*.pid
+__pycache__/
+thumbs/
+cache/
+people/
+lists/*.json
+lists/*.txt
+clip/
+faces/
