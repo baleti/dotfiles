@@ -2269,8 +2269,8 @@ impl eframe::App for App {
                                 line.push_str(&if a == b { format!(" · {a}") } else { format!(" · {a} → {b}") });
                             }
                             if !st.kinds.is_empty() {
-                                let k: Vec<String> = st.kinds.iter().map(|(n, c)| format!("{n} {}", group_digits(*c))).collect();
-                                line.push_str(&format!(" · {}", k.join(", ")));
+                                let k: Vec<String> = st.kinds.iter().filter(|(n, _)| n != "no ext").map(|(n, c)| format!("{n} {}", group_digits(*c))).collect();
+                                if !k.is_empty() { line.push_str(&format!(" · {}", k.join(", "))); }
                             }
                         }
                         line
