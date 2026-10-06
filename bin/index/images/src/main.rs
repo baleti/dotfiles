@@ -499,6 +499,8 @@ struct App {
     results_h: f32,
     /// set by keyboard movement; the views scroll the cursor into sight once, then clear it
     scroll_pending: bool,
+    /// grid scroll offset after the last frame (for keeping the grid still while the selection moves)
+    grid_off: f32,
     popup: bool,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
@@ -793,6 +795,7 @@ impl App {
             thumb: 20.0,
             results_h: 400.0,
             scroll_pending: false,
+            grid_off: 0.0,
             popup: false,
             cands: Vec::new(),
             cand_sel: 0,
@@ -1112,14 +1115,26 @@ impl App {
         let text_h = 58.0;
         let cols = ((ui.available_width() / (t + 10.0)).floor() as usize).max(1);
         let rows = self.total.div_ceil(cols);
-        let mut area = egui::ScrollArea::vertical().max_height(ui.available_height() - 30.0).auto_shrink([false, false]);
+        let view_h = ui.available_height() - 30.0;
+        let mut area = egui::ScrollArea::vertical().max_height(view_h).auto_shrink([false, false]);
+        // the spacing is set before show_rows so its row stride is exactly the one computed here
+        ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+        let stride = t + text_h + 10.0;
         if self.scroll_pending {
-            let target = (self.selected / cols) as f32 * (t + text_h + 10.0) - (ui.available_height() - 30.0) * 0.4;
-            area = area.vertical_scroll_offset(target.max(0.0));
+            // keep the grid still while the selection moves inside the view; when it leaves, scroll by
+            // whole rows so the rows stay aligned to the same screen positions
+            let row = (self.selected / cols) as f32;
+            let off = self.grid_off;
+            let fits = row * stride >= off - 0.5 && (row + 1.0) * stride - 10.0 <= off + view_h + 0.5;
+            if !fits {
+                let visible = ((view_h + 10.0) / stride).floor().max(1.0);
+                let first = (off / stride).round();
+                let new_first = if row < first { row } else { row - visible + 1.0 };
+                area = area.vertical_scroll_offset((new_first.max(0.0)) * stride);
+            }
         }
-        area.show_rows(ui, t + text_h, rows, |ui, range| {
+        let out = area.show_rows(ui, t + text_h, rows, |ui, range| {
             self.ensure_rows(range.start * cols, range.end * cols);
-            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
             for row in range {
                 ui.horizontal(|ui| {
                     for idx in row * cols..((row + 1) * cols).min(self.total) {
@@ -1176,6 +1191,7 @@ impl App {
                 });
             }
         });
+        self.grid_off = out.state.offset.y;
     }
 
     /// Ctrl+Enter: show the photo selected in Dolphin, at its real folder on the gdrive mount.
