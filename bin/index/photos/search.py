@@ -18,7 +18,7 @@ import numpy as np
 
 import config
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "catalog"))
-from filesearch import path_matches
+from filesearch import path_matches, hidden_folders
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = config.DATA_DIR
 FACES = os.path.join(DATA, "faces", "faces.jsonl")
@@ -130,6 +130,13 @@ def parse_size(text):
     m = re.match(r"^([<>]=?)\s*([0-9.]+)\s*([KMGT]?)B?$", text.strip(), re.I)
     if not m: return None
     return m.group(1), float(m.group(2)) * _UNITS[m.group(3).upper()]
+
+def to_mount(remote):
+    """rclone form (gdrive-crypt:folder/x) -> the mount path the catalog and the picker use."""
+    rc = config.CFG["rclone_remote"]
+    if remote.startswith(rc):
+        return os.path.join(os.path.expanduser(config.CFG["mount_root"]), remote[len(rc):])
+    return remote
 
 def field_filter(kind, text, universe):
     """Row filter on one column. name/path/dm are case-insensitive substring matches
@@ -277,6 +284,9 @@ def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
     # AND across filters: keep remotes present in every filter, sum scores
     keys = set(results[0])
     for r in results[1:]: keys &= set(r)
+    hidden = hidden_folders(q)
+    if hidden:
+        keys = {k for k in keys if not any(to_mount(k).startswith(f) for f in hidden)}
     ranked = sorted(keys, key=lambda k: -sum(r[k] for r in results))[:top]
     out = [{"remote": k, "score": round(sum(r[k] for r in results), 4)} for k in ranked]
     return out, len(keys), errors

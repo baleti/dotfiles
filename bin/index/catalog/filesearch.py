@@ -6,7 +6,7 @@ blob with bytes.find, maps hits back to lines with searchsorted, then checks the
 other terms per candidate. Each keystroke is one scan over RAM; nothing on disk
 is touched and no per-query process is started.
 """
-import bisect, os, re, sqlite3, threading, time
+import bisect, json, os, re, sqlite3, threading, time
 import numpy as np
 
 # file kinds by extension: `//mime <kind>` (any extension name also works, e.g. //mime pdf)
@@ -33,6 +33,40 @@ def kind_of(path):
     if "." not in name:
         return ""
     return name.rsplit(".", 1)[-1].lower()
+
+SEARCH_CFG = os.path.expanduser("~/.config/indexes/search-app.json")
+
+def _search_cfg():
+    try:
+        with open(SEARCH_CFG, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+def off_default_entries():
+    """[(mount folder with trailing slash, keyword)] for folders that are hidden unless opted in."""
+    return [(os.path.expanduser(e["folder"]).rstrip("/") + "/", e["keyword"])
+            for e in _search_cfg().get("off_by_default", []) if e.get("folder") and e.get("keyword")]
+
+def hidden_folders(query):
+    """Off-by-default folders this query does not opt into with //path <keyword>."""
+    out = []
+    for folder, keyword in off_default_entries():
+        if not re.search(r"//path\s+" + re.escape(keyword) + r"(?=\s|$)", query, re.I):
+            out.append(folder)
+    return out
+
+def path_matches(path, value):
+    """Each '/'-separated segment must appear in the path, in order: gdrive/"part 3" matches .../gdrive-.../part 3/..."""
+    low, pos = path.lower(), 0
+    for seg in value.replace('"', "").split("/"):
+        if not seg:
+            continue
+        i = low.find(seg.lower(), pos)
+        if i < 0:
+            return False
+        pos = i + len(seg)
+    return True
 
 def matches_mime(path, wanted):
     """wanted: list of kind names or extensions; a file matches if any applies."""
@@ -160,6 +194,8 @@ class NameTable:
     def __init__(self, db_path):
         self.db_path = db_path
         self.paths = []        # original-case paths, index-aligned with blob lines
+        self.off_masks = {}    # off-by-default folder -> bool mask over paths
+        self.dirs = []         # every distinct folder, sorted (for //path completion)
         self.blob = b""
         self.starts = np.zeros(0, np.int64)
         self.sizes = []
@@ -190,6 +226,7 @@ class NameTable:
         mt = np.array([m if m is not None else 0 for m in mtimes], dtype=np.int64)
         order = np.argsort(-mt) if len(mt) else np.zeros(0, np.int64)
         ext_codes, ext_names, size_arr, mt_arr, orders, keys = _extras(paths, sizes, mtimes)
+        dirs = sorted({p.rsplit("/", 1)[0] for p in paths if "/" in p})
         with self.lock:
             self.paths, self.sizes, self.mtimes = paths, sizes, mtimes
             self.blob, self.starts = blob, starts
@@ -197,6 +234,9 @@ class NameTable:
             self.order = order
             self.ext_codes, self.ext_names = ext_codes, ext_names
             self.size_arr, self.mt_arr, self.orders = size_arr, mt_arr, orders
+            self.off_masks = {f: np.fromiter((p.startswith(f) for p in paths), bool, len(paths))
+                              for f, _ in off_default_entries()}
+            self.dirs = dirs
             self.sort_keys = keys
             self._cache = None
             self.dates = [d for d in dates if d]
@@ -252,6 +292,9 @@ class NameTable:
             sort_keys = self.sort_keys
             ext_codes, ext_names, size_arr = self.ext_codes, self.ext_names, self.size_arr
         mask = np.ones(N, bool)
+        for f in hidden_folders(q):
+            if f in self.off_masks:
+                mask &= ~self.off_masks[f]
         for t in terms:
             mask &= self._term_mask(t.encode("utf-8"))
         if wanted:
