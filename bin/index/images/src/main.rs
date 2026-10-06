@@ -1254,6 +1254,26 @@ impl eframe::App for App {
         if (zd - 1.0).abs() > 1e-4 {
             self.thumb = (self.thumb * zd).clamp(16.0, 800.0);
         }
+        // Ctrl+- / Ctrl++ (Ctrl+= too): the same zoom as Ctrl+wheel, one step per press, repeating while held
+        let steps = ui.input_mut(|i| {
+            let mut n = 0i32;
+            i.events.retain(|e| {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                    if modifiers.ctrl && !modifiers.alt {
+                        match key {
+                            Key::Plus | Key::Equals => { n += 1; return false; }
+                            Key::Minus => { n -= 1; return false; }
+                            _ => {}
+                        }
+                    }
+                }
+                true
+            });
+            n
+        });
+        if steps != 0 {
+            self.thumb = (self.thumb * 1.15f32.powi(steps)).clamp(16.0, 800.0);
+        }
         ctx.set_zoom_factor(1.0);
         ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
         let grid = self.thumb >= GRID_ZOOM;
