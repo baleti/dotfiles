@@ -68,6 +68,8 @@ folders from the whole catalog, which you can page through.
 `!//path gdrive/office` is the inverse: every file whose path does *not* contain that text
 (see Negation); it never opts an off-by-default folder in.
 
+**Caret keys (all DSL search boxes).** `Ctrl+E` moves the caret to the end of the query, as in Emacs. `Ctrl+A` keeps its usual meaning of selecting everything in the box, so it does not move the caret. `Home` and `End` also work.
+
 Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 `Home`/`End` jump, `Enter` opens, `Esc` closes.
