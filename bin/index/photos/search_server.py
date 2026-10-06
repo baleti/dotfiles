@@ -214,7 +214,7 @@ def with_meta(r):
     return r
 PORT = config.SERVER_PORT
 _q_lock = threading.Lock()          # one query at a time (onnx session is not re-entrant)
-_pending = queue.Queue()
+_pending = queue.LifoQueue()   # newest request first: what is on screen now beats what was scrolled past
 _queued = set()
 _queued_lock = threading.Lock()
 
@@ -227,7 +227,16 @@ def make_thumb(remote):
     if remote.startswith("/"):                 # local file from the file-name index
         data = open(remote, "rb").read()
     else:
-        data = subprocess.run(["rclone", "cat", remote], capture_output=True).stdout
+        # through the rclone mount when it has the file (its cache makes this much quicker than a fresh
+        # `rclone cat`, which costs several seconds of start-up per file); rclone cat is the fallback
+        data = b""
+        if remote.startswith(config.REMOTE):
+            try:
+                data = open(os.path.join(os.path.expanduser(config.CFG["mount_root"]), remote[len(config.REMOTE):]), "rb").read()
+            except OSError:
+                data = b""
+        if not data:
+            data = subprocess.run(["rclone", "cat", remote], capture_output=True).stdout
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if img is None: return
     os.makedirs(THUMBS, exist_ok=True)
@@ -334,7 +343,8 @@ def main():
         search._refresh()
         from clip_text import embed_texts
         embed_texts(["warm up"])            # load the text model once, up front
-    threading.Thread(target=thumb_worker, daemon=True).start()
+    for _ in range(8):                      # thumbnails are I/O bound (rclone / FUSE reads), so run several at once
+        threading.Thread(target=thumb_worker, daemon=True).start()
     print(f"search server on 127.0.0.1:{PORT}", file=sys.stderr, flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
 
