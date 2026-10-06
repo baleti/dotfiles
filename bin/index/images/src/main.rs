@@ -560,8 +560,18 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
             out.push((format!("{verb}/{n} "), "full-text index".to_string()));
         }
         return (start, out);
-    } else if frag.len() >= 2 && !frag.starts_with("//") && frag.starts_with('/') && !frag.contains(' ') && "/fts/".starts_with(frag) {
-        out.push(("/fts/".to_string(), "full-text search, optionally pivot to an index: /fts/p3".to_string()));
+    } else if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') {
+        // a lone "/" lists every verb
+        const VERBS: [(&str, &str); 3] = [
+            ("/fts/", "full-text search, optionally pivot to an index: /fts/p3"),
+            ("/sort ", "order the results by a field, e.g. /s size desc"),
+            ("/reverse ", "flip the order"),
+        ];
+        for (v, label) in VERBS {
+            if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort ") {
+                out.push((v.to_string(), label.to_string()));
+            }
+        }
     }
     if matches!(prev, "/s" | "/sort") && !frag.starts_with('/') {
         // the field after /s, or a direction once a field is there
@@ -570,8 +580,6 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
             if name.contains(f.as_str()) { out.push((format!("{name} "), "sort field".to_string())); }
         }
         return (start, out);
-    } else if frag.len() >= 2 && !frag.starts_with("//") && "/sort".starts_with(frag) {
-        out.push(("/sort ".to_string(), "order the results by a field, e.g. /s size desc".to_string()));
     } else if let Some(body) = frag.strip_prefix("//") {
         // exact tag with a value list: offer the values right away
         if let Some((tag, _)) = TAGS.iter().find(|(t, _)| *t == body) {
