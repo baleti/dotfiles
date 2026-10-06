@@ -564,7 +564,7 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
             out.push((format!("{verb}/{n} "), "full-text index".to_string()));
         }
         return (start, out);
-    } else if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') {
+    } else if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
         const VERBS: [(&str, &str); 3] = [
             ("/fts/", "full-text search, optionally pivot to an index: /fts/p3"),
@@ -672,12 +672,30 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
         let t = toks[i];
         i += 1;
         if t == "/rv" || t == "/reverse" { reverse = true; continue; }
+        // a `//tag` owns the next token as its value, whatever it looks like (`//path /etc`, `//path /sort`)
+        if t.starts_with("//") {
+            rest.push(t);
+            if i < toks.len() { rest.push(toks[i]); i += 1; }
+            continue;
+        }
         let chain = if let Some(c) = t.strip_prefix("/sort") { c } else if let Some(c) = t.strip_prefix("/s") { c } else { rest.push(t); continue };
         let mut path = if chain.is_empty() { None } else if let Some(c) = chain.strip_prefix('/') { Some(c) } else { rest.push(t); continue };
-        if path.is_none() && i < toks.len() && !toks[i].starts_with('/') { path = Some(toks[i]); i += 1; }
+        // direction may come before the field (`/s desc name`) or after it (`/s name desc`)
+        let mut dir_first = None;
+        if path.is_none() && i < toks.len() && !toks[i].starts_with('/') {
+            if resolve_sort_field(toks[i]).is_none() {
+                if let Some(d) = sort_direction(toks[i]) {
+                    dir_first = Some(d);
+                    i += 1;
+                }
+            }
+            if i < toks.len() && !toks[i].starts_with('/') { path = Some(toks[i]); i += 1; }
+        }
         let segs: Vec<Option<&str>> = path.map(|p| p.split('/').map(resolve_sort_field).collect()).unwrap_or_default();
-        if let Some(d) = toks.get(i).and_then(|d| sort_direction(d)) { i += 1; if !segs.is_empty() && segs.iter().all(Option::is_some) { desc = Some(d); } }
+        let mut dir = dir_first;
+        if let Some(d) = toks.get(i).and_then(|d| sort_direction(d)) { i += 1; dir = Some(d); }
         if !segs.is_empty() && segs.iter().all(Option::is_some) {
+            if dir.is_some() { desc = dir; }
             explicit = true;
             for k in segs.into_iter().flatten() {
                 if !keys.iter().any(|x| x == k) { keys.push(k.to_string()); }
@@ -1943,6 +1961,11 @@ mod sort_tests {
         assert_eq!(p("/s nonsense //name a"), ("//name a".into(), "date".into(), true));
         assert_eq!(p("/s size /rv"), ("".into(), "size".into(), true));
         assert_eq!(p("/s size \"a  /s name\" b"), ("\"a  /s name\" b".into(), "size".into(), false));
+        assert_eq!(p("//path /etc"), ("//path /etc".into(), "date".into(), true));
+        assert_eq!(p("//path / /sort dm asc"), ("//path /".into(), "date".into(), false));
+        assert_eq!(p("//path /sort /s size"), ("//path /sort".into(), "size".into(), false));
+        assert_eq!(p("/s desc name"), ("".into(), "name".into(), true));
+        assert_eq!(p("/s/size desc x"), ("x".into(), "size".into(), true));
         assert_eq!(p("/s d"), ("".into(), "date".into(), true)); // ambiguous (date-modified, depth) -> inert
     }
 }
