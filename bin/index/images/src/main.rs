@@ -261,6 +261,9 @@ struct App {
     /// last drawn rectangle per hit (list view), used to place the menu for F10
     row_rects: HashMap<usize, egui::Rect>,
     menu_fresh: bool,
+    /// mime type of the hit the menu / properties were opened for (computed once, on open)
+    menu_mime: Option<String>,
+    props_mime: String,
     /// true while keyboard focus is in the result list (query box is not auto-focused then)
     list_focus: bool,
     /// properties dialog for one hit
@@ -366,6 +369,8 @@ impl App {
             row_rects: HashMap::new(),
             props: None,
             menu_fresh: false,
+            menu_mime: None,
+            props_mime: String::new(),
             list_focus: false,
             handlers: HashMap::new(),
             status: "connecting to search server…".into(),
@@ -518,6 +523,28 @@ impl App {
                     .arg(format!("rclone cat '{}' > '{}' && xdg-open '{}'", h.remote, dst, dst)).status();
             });
         }
+    }
+
+    /// Opens the context menu for one hit; the mime type is looked up once here, not per frame.
+    fn open_menu(&mut self, at: egui::Pos2, hit: usize) {
+        self.menu_mime = self.hits.get(hit)
+            .map(|h| local_path(&h.remote))
+            .filter(|p| p.exists())
+            .map(|p| mime_of(&p));
+        if let Some(m) = self.menu_mime.clone() {
+            self.handlers.entry(m.clone()).or_insert_with(|| handlers_for(&m));
+        }
+        self.menu_at = Some(at);
+        self.menu_hit = Some(hit);
+    }
+
+    /// Opens the properties panel for one hit; the mime type is looked up once here.
+    fn open_props(&mut self, idx: usize) {
+        self.props_mime = self.hits.get(idx).map(|h| {
+            let l = local_path(&h.remote);
+            if l.exists() { mime_of(&l) } else { "not available locally".into() }
+        }).unwrap_or_default();
+        self.props = Some(idx);
     }
 
     fn open_selected(&mut self) {
@@ -736,12 +763,11 @@ impl eframe::App for App {
             else { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
         let alt_enter = ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.alt);
-        if alt_enter && n > 0 && !self.popup && self.trash_pending.is_none() { self.props = Some(self.selected); }
+        if alt_enter && n > 0 && !self.popup && self.trash_pending.is_none() { self.open_props(self.selected); }
         let f10 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F10));
         if f10 && n > 0 && !self.popup && self.trash_pending.is_none() {
             let at = self.row_rects.get(&self.selected).map(|r| r.left_bottom()).unwrap_or(egui::pos2(40.0, 120.0));
-            self.menu_at = Some(at);
-            self.menu_hit = Some(self.selected);
+            self.open_menu(at, self.selected);
         }
         let qsel = query_has_selection(&ctx);
         if !qsel && !self.popup && self.trash_pending.is_none() && self.props.is_none() && n > 0 {
@@ -833,7 +859,7 @@ impl eframe::App for App {
         // context menu (right-click or F10): one entry, "Open with" submenu
         if let (Some(at), Some(hit)) = (self.menu_at, self.menu_hit) {
             let local = self.hits.get(hit).map(|h| local_path(&h.remote));
-            let mime = local.as_ref().filter(|p| p.exists()).map(|p| mime_of(p));
+            let mime = self.menu_mime.clone();
             let mut chosen: Option<(String, PathBuf)> = None;
             let area = egui::Area::new(egui::Id::new("ctxmenu"))
                 .order(egui::Order::Foreground)
@@ -877,7 +903,7 @@ impl eframe::App for App {
                 None => self.props = None,
                 Some(h) => {
                     let local = local_path(&h.remote);
-                    let mime = if local.exists() { mime_of(&local) } else { "not available locally".into() };
+                    let mime = self.props_mime.clone();
                     let mut open = true;
                     egui::Window::new("Properties")
                         .open(&mut open)
@@ -1070,8 +1096,7 @@ impl eframe::App for App {
                 if let (Some(hit), Some(at)) = (right_hit, right_at) {
                     // right-click on a row outside the selection selects just that row first
                     if !self.in_selection(hit) { self.anchor = None; self.selected = hit; }
-                    self.menu_at = Some(at);
-                    self.menu_hit = Some(hit);
+                    self.open_menu(at, hit);
                     self.menu_fresh = true;
                     self.status = "context menu".into();
                 }
