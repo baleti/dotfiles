@@ -1318,8 +1318,6 @@ impl eframe::App for App {
                             }
                         });
                 }
-                ui.add_space(6.0);
-                ui.label(RichText::new(&self.status).color(if self.busy { pal.dim } else { pal.dim }).size(12.0));
                 ui.add_space(4.0);
 
                 // results list
