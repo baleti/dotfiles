@@ -82,6 +82,15 @@ fn trashable(remote: &str) -> Option<(PathBuf, u64)> {
 
 fn human(b: u64) -> String { human_size(b) }
 
+/// Counts and consumes every queued press of `key` with `mods` this frame (repeats included).
+fn take_count(ui: &mut egui::Ui, mods: egui::Modifiers, key: Key) -> usize {
+    let mut c = 0;
+    while c < 500 && ui.input_mut(|i| i.consume_key(mods, key)) {
+        c += 1;
+    }
+    c
+}
+
 /// True when the query text field has a non-empty selection (then Ctrl+C/X belong to the text).
 fn query_has_selection(ctx: &egui::Context) -> bool {
     egui::TextEdit::load_state(ctx, egui::Id::new("query"))
@@ -679,8 +688,8 @@ impl eframe::App for App {
         // Shift+arrows extend the list selection; consume them before the query box sees them
         let shift_down = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowDown));
         let shift_up = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowUp));
-        let shift_left = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowLeft));
-        let shift_right = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowRight));
+        let _shift_left = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowLeft));
+        let _shift_right = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowRight));
 
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
@@ -732,14 +741,17 @@ impl eframe::App for App {
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.hits.len();
         // Ctrl+J / Ctrl+K from the query box: focus the list at the first / last entry
-        let ctrl_j = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::J));
-        let ctrl_k = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::K));
+        // Ctrl+J/K/H/L: count every queued press (holding the key auto-repeats), so holding moves smoothly
+        let ctrl_j_n = take_count(ui, egui::Modifiers::CTRL, Key::J);
+        let ctrl_k_n = take_count(ui, egui::Modifiers::CTRL, Key::K);
+        let ctrl_j = ctrl_j_n > 0;
+        let ctrl_k = ctrl_k_n > 0;
         let was_list = self.list_focus;
         if !was_list && n > 0 && !self.popup && self.trash_pending.is_none() && self.props.is_none() && (ctrl_j || ctrl_k) {
             self.list_focus = true;
             self.move_cursor(if ctrl_j { 0 } else { n - 1 }, false);
         }
-        let (down, up, left, right, pgdn, pgup, home, end, enter, ctrl_enter, esc, cj, ck) = ui.input(|i| {
+        let (down, up, left, right, pgdn, pgup, home, end, enter, ctrl_enter, esc, _cj, _ck) = ui.input(|i| {
             (
                 i.key_pressed(Key::ArrowDown),
                 i.key_pressed(Key::ArrowUp),
@@ -752,8 +764,8 @@ impl eframe::App for App {
                 i.key_pressed(Key::Enter) && !i.modifiers.ctrl && !i.modifiers.alt,
                 i.key_pressed(Key::Enter) && i.modifiers.ctrl,
                 i.key_pressed(Key::Escape),
-                ctrl_j && was_list,
-                ctrl_k && was_list,
+                false,
+                false,
             )
         });
         // Esc closes the innermost thing first: menu, then properties, then the window
@@ -783,26 +795,33 @@ impl eframe::App for App {
             let cols = if grid { ((ui.available_width() / (self.thumb + 10.0)).floor() as usize).max(1) } else { 1 };
             let shift_any = ui.input(|i| i.modifiers.shift);
             // Ctrl+H / Ctrl+L: previous / next item, in grid and list alike (consumed before the query box)
-            let ctrl_shift_h = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::H));
-            let ctrl_shift_l = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::L));
-            let cur = self.selected;
-            // (target, extend-selection?)
-            let mut moves: Vec<(usize, bool)> = Vec::new();
-            if (grid && right) || ctrl_shift_l { moves.push(((cur + 1).min(n - 1), shift_any)); }
-            if (grid && left) || ctrl_shift_h { moves.push((cur.saturating_sub(1), shift_any)); }
-            if shift_right && !grid { moves.push((cur, true)); }
-            if shift_left && !grid { moves.push((cur, true)); }
-            if down || cj { moves.push(((cur + cols).min(n - 1), shift_any)); }
-            if up || ck { moves.push((cur.saturating_sub(cols), shift_any)); }
-            if shift_down { moves.push(((cur + cols).min(n - 1), true)); }
-            if shift_up { moves.push((cur.saturating_sub(cols), true)); }
-            if pgdn { moves.push(((cur + 8).min(n - 1), shift_any)); }
-            if pgup { moves.push((cur.saturating_sub(8), shift_any)); }
-            if home { moves.push((0, shift_any)); }
-            if end { moves.push((n - 1, shift_any)); }
-            // only the last movement in a frame counts (keys are rare enough that this is fine)
-            if let Some((t, ext)) = moves.last().copied() {
-                self.move_cursor(t, ext);
+            let h_n = take_count(ui, egui::Modifiers::CTRL, Key::H);
+            let l_n = take_count(ui, egui::Modifiers::CTRL, Key::L);
+            let j_n = if was_list { ctrl_j_n } else { 0 };
+            let k_n = if was_list { ctrl_k_n } else { 0 };
+            let cur = self.selected as i64;
+            // all movement in this frame is summed, then applied once (clamped to the list)
+            let mut delta: i64 = 0;
+            let mut abs: Option<usize> = None;
+            let mut extend = shift_any;
+            let mut any = false;
+            if grid && right { delta += 1; any = true; }
+            if grid && left { delta -= 1; any = true; }
+            delta += l_n as i64; delta -= h_n as i64;
+            if h_n + l_n > 0 { any = true; }
+            let down_steps = (down as i64) + j_n as i64;
+            let up_steps = (up as i64) + k_n as i64;
+            if down_steps + up_steps > 0 { any = true; }
+            delta += cols as i64 * (down_steps - up_steps);
+            if shift_down { delta += cols as i64; extend = true; any = true; }
+            if shift_up { delta -= cols as i64; extend = true; any = true; }
+            if pgdn { delta += 8; any = true; }
+            if pgup { delta -= 8; any = true; }
+            if home { abs = Some(0); any = true; }
+            if end { abs = Some(n - 1); any = true; }
+            if any {
+                let target = abs.unwrap_or_else(|| (cur + delta).clamp(0, n as i64 - 1) as usize);
+                self.move_cursor(target, extend);
             }
         }
         if enter && n > 0 && !self.popup { self.open_selected(); }
