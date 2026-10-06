@@ -41,7 +41,8 @@ fn load_cfg() -> Cfg {
     }
 }
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
-const TOP: usize = 5000;
+/// rows fetched per request; the list only asks for the pages that are on screen
+const PAGE: usize = 200;
 const GRID_ZOOM: f32 = 110.0;
 
 #[derive(Deserialize, Clone)]
@@ -357,9 +358,26 @@ fn load_palette(scheme: &str) -> Palette {
     }
 }
 
+/// One page of results for a query, sorted on the server.
+fn fetch_page(q: &str, sort: &str, desc: bool, page: usize) -> Result<Reply, String> {
+    let url = format!("{}/query", cfg().server);
+    ureq::get(&url)
+        .query("q", q)
+        .query("sort", sort)
+        .query("desc", if desc { "1" } else { "0" })
+        .query("offset", &(page * PAGE).to_string())
+        .query("top", &PAGE.to_string())
+        .timeout(Duration::from_secs(120))
+        .call()
+        .map_err(|e| format!("search server unreachable: {e}"))
+        .and_then(|resp| resp.into_string().map_err(|e| e.to_string()))
+        .and_then(|body| serde_json::from_str::<Reply>(&body).map_err(|e| e.to_string()))
+}
+
 /// background query results come back tagged with the request sequence number
 struct Fetch {
     seq: u64,
+    page: usize,
     query: String,
     result: Result<Reply, String>,
 }
@@ -373,8 +391,13 @@ struct App {
     seq: u64,
     tx: Sender<Fetch>,
     rx: Receiver<Fetch>,
-    hits: Vec<Hit>,
-    count: usize,
+    /// total matches for the current query and the pages fetched so far (page index -> rows)
+    total: usize,
+    pages: HashMap<usize, Vec<Hit>>,
+    pending: HashSet<usize>,
+    req_q: String,
+    req_sort: String,
+    req_desc: bool,
     selected: usize,
     /// multi-selection: rows between `anchor` and `selected` (inclusive) are selected
     anchor: Option<usize>,
@@ -557,8 +580,12 @@ impl App {
             seq: 0,
             tx,
             rx,
-            hits: Vec::new(),
-            count: 0,
+            total: 0,
+            pages: HashMap::new(),
+            pending: HashSet::new(),
+            req_q: String::new(),
+            req_sort: String::new(),
+            req_desc: true,
             selected: 0,
             anchor: None,
             trash_pending: None,
@@ -602,45 +629,80 @@ impl App {
 
     fn send_query(&mut self) {
         self.seq += 1;
-        let seq = self.seq;
-        let q = self.query.trim().to_string();
+        self.req_q = self.query.trim().to_string();
+        self.req_sort = match self.sort_key.as_str() {
+            k @ ("name" | "path" | "size" | "date") => k.to_string(),
+            _ => "date".to_string(),
+        };
+        self.req_desc = self.sort_desc;
         self.last_sent = self.query.clone();
+        self.pages.clear();
+        self.pending.clear();
         self.busy = true;
+        self.request_page(0);
+    }
+
+    fn request_page(&mut self, page: usize) {
+        if !self.pending.insert(page) && page != 0 { return; }
         let tx: Sender<Fetch> = self.tx.clone();
+        let (seq, q, sort, desc) = (self.seq, self.req_q.clone(), self.req_sort.clone(), self.req_desc);
         std::thread::spawn(move || {
-            let url = format!("{}/query", cfg().server);
-            let r = ureq::get(&url)
-                .query("q", &q)
-                .query("top", &TOP.to_string())
-                .timeout(Duration::from_secs(120))
-                .call()
-                .map_err(|e| format!("search server unreachable: {e}"))
-                .and_then(|resp| resp.into_string().map_err(|e| e.to_string()))
-                .and_then(|body| serde_json::from_str::<Reply>(&body).map_err(|e| e.to_string()));
-            let _ = tx.send(Fetch { seq, query: q, result: r });
+            let r = fetch_page(&q, &sort, desc, page);
+            let _ = tx.send(Fetch { seq, page, query: q, result: r });
         });
+    }
+
+    /// Requests the pages that cover rows lo..hi, skipping ones already fetched or in flight.
+    fn ensure_rows(&mut self, lo: usize, hi: usize) {
+        if self.total == 0 { return; }
+        let hi = hi.min(self.total - 1);
+        if lo > hi { return; }
+        for page in lo / PAGE..=hi / PAGE {
+            if !self.pages.contains_key(&page) && !self.pending.contains(&page) {
+                self.request_page(page);
+            }
+        }
+    }
+
+    fn hit(&self, i: usize) -> Option<&Hit> {
+        self.pages.get(&(i / PAGE)).and_then(|p| p.get(i % PAGE))
+    }
+
+    /// A row by index, fetching its page right away when it is not loaded yet.
+    fn hit_now(&mut self, i: usize) -> Option<Hit> {
+        if i >= self.total { return None; }
+        if self.hit(i).is_none() {
+            let page = i / PAGE;
+            let rows = fetch_page(&self.req_q, &self.req_sort, self.req_desc, page).ok()?.results;
+            self.pages.insert(page, rows);
+        }
+        self.hit(i).cloned()
     }
 
     fn drain(&mut self) {
         while let Ok(f) = self.rx.try_recv() {
             if f.seq != self.seq { continue; } // stale: a newer query was already sent
-            self.busy = false;
+            self.pending.remove(&f.page);
             match f.result {
                 Ok(r) => {
-                    self.count = r.count;
-                    self.hits = r.results;
-                    self.apply_sort();
-                    self.selected = self.selected.min(self.hits.len().saturating_sub(1));
-                    self.missing.clear();
-                    self.status = if !r.errors.is_empty() {
-                        r.errors.join("; ")
-                    } else if f.query.is_empty() {
-                        format!("newest {} photos", self.hits.len())
-                    } else {
-                        format!("{} matches", r.count)
-                    };
+                    self.total = r.count;
+                    self.pages.insert(f.page, r.results);
+                    self.selected = self.selected.min(self.total.saturating_sub(1));
+                    if f.page == 0 {
+                        self.busy = false;
+                        self.missing.clear();
+                        self.status = if !r.errors.is_empty() {
+                            r.errors.join("; ")
+                        } else if f.query.is_empty() {
+                            format!("newest {} photos", self.total)
+                        } else {
+                            format!("{} matches", r.count)
+                        };
+                    }
                 }
-                Err(e) => self.status = e,
+                Err(e) => {
+                    if f.page == 0 { self.busy = false; self.status = e; }
+                }
             }
         }
     }
@@ -650,7 +712,7 @@ impl App {
         match self.anchor {
             Some(a) => {
                 let (lo, hi) = (a.min(self.selected), a.max(self.selected));
-                (lo..=hi).filter(|i| *i < self.hits.len()).collect()
+                (lo..=hi).filter(|i| *i < self.total).collect()
             }
             None => vec![self.selected],
         }
@@ -700,7 +762,7 @@ impl App {
         let mut files = Vec::new();
         let mut skipped = 0usize;
         for i in self.selection() {
-            let Some(h) = self.hits.get(i) else { continue };
+            let Some(h) = self.hit_now(i) else { continue };
             match trashable(&h.remote) {
                 Some(f) => files.push(f),
                 None => skipped += 1,
@@ -729,10 +791,8 @@ impl App {
                 _ => failed.push(p.display().to_string()),
             }
         }
-        let gone: std::collections::HashSet<String> = files.iter().map(|(p, _)| p.display().to_string()).collect();
-        self.hits.retain(|h| !(gone.contains(&h.remote) && !failed.contains(&h.remote)));
         self.anchor = None;
-        self.selected = self.selected.min(self.hits.len().saturating_sub(1));
+        self.send_query();
         self.status = if failed.is_empty() {
             format!("moved {ok} file(s) to the trash")
         } else {
@@ -741,7 +801,7 @@ impl App {
     }
 
     fn open_hit(&mut self, idx: usize) {
-        let Some(h) = self.hits.get(idx).cloned() else { return };
+        let Some(h) = self.hit_now(idx) else { return };
         let local = local_path(&h.remote);
         if local.exists() {
             std::thread::spawn(move || {
@@ -760,7 +820,7 @@ impl App {
 
     /// Opens the context menu for one hit; the mime type is looked up once here, not per frame.
     fn open_menu(&mut self, at: egui::Pos2, hit: usize) {
-        self.menu_mime = self.hits.get(hit)
+        self.menu_mime = self.hit_now(hit)
             .map(|h| local_path(&h.remote))
             .filter(|p| p.exists())
             .map(|p| mime_of(&p));
@@ -773,7 +833,7 @@ impl App {
 
     /// Opens the properties panel for one hit; the mime type is looked up once here.
     fn open_props(&mut self, idx: usize) {
-        self.props_mime = self.hits.get(idx).map(|h| {
+        self.props_mime = self.hit_now(idx).map(|h| {
             let l = local_path(&h.remote);
             if l.exists() { mime_of(&l) } else { "not available locally".into() }
         }).unwrap_or_default();
@@ -803,51 +863,44 @@ impl App {
         let _ = std::fs::write(sort_path(), body.to_string());
     }
 
+    /// Sorting happens on the server, so the whole match list is re-requested in the new order.
     fn apply_sort(&mut self) {
-        if self.sort_key.is_empty() { return; }
-        let key = self.sort_key.clone();
-        let desc = self.sort_desc;
-        self.hits.sort_by(|a, b| {
-            let ord = match key.as_str() {
-                "name" => short_name(&a.remote).rsplit('/').next().unwrap_or("").to_lowercase()
-                    .cmp(&short_name(&b.remote).rsplit('/').next().unwrap_or("").to_lowercase()),
-                "path" => short_name(&a.remote).to_lowercase().cmp(&short_name(&b.remote).to_lowercase()),
-                "size" => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
-                "date" => a.mtime.clone().unwrap_or_default().cmp(&b.mtime.clone().unwrap_or_default()),
-                "score" => a.score.unwrap_or(0.0).partial_cmp(&b.score.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal),
-                _ => std::cmp::Ordering::Equal,
-            };
-            if desc { ord.reverse() } else { ord }
-        });
-        self.selected = self.selected.min(self.hits.len().saturating_sub(1));
+        self.send_query();
     }
 
     /// Thumbnail grid for zoomed-in views: square cells with name, path, size and date under each.
-    fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hits: &[Hit], sel: &[usize],
+    /// Only the rows on screen are laid out; the others are fetched as they come into view.
+    fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context,
                  clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
         let pal = self.pal;
         let t = self.thumb;
         let text_h = 58.0;
-        let terms = query_terms(&self.last_sent);
-        self.results_h = ui.available_height() - 30.0;
-        egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - 30.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-                ui.horizontal_wrapped(|ui| {
-                    for (idx, h) in hits.iter().enumerate() {
+        let cols = ((ui.available_width() / (t + 10.0)).floor() as usize).max(1);
+        let rows = self.total.div_ceil(cols);
+        let mut area = egui::ScrollArea::vertical().max_height(ui.available_height() - 30.0).auto_shrink([false, false]);
+        if self.scroll_pending {
+            let target = (self.selected / cols) as f32 * (t + text_h + 10.0) - (ui.available_height() - 30.0) * 0.4;
+            area = area.vertical_scroll_offset(target.max(0.0));
+        }
+        area.show_rows(ui, t + text_h, rows, |ui, range| {
+            self.ensure_rows(range.start * cols, range.end * cols);
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            for row in range {
+                ui.horizontal(|ui| {
+                    for idx in row * cols..((row + 1) * cols).min(self.total) {
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + text_h), egui::Sense::click());
+                        let Some(h) = self.hit(idx).cloned() else {
+                            ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(t, t)), 4.0, pal.border.gamma_multiply(0.5));
+                            continue;
+                        };
                         let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
-                        let selected = sel.contains(&idx);
-                        if !selected && !ui.is_rect_visible(rect) { continue; }
+                        let selected = self.in_selection(idx);
                         match self.texture(ctx, &h.thumb) {
                             Some(tex) => { egui::Image::new(&tex).fit_to_exact_size(img.size()).paint_at(ui, img); }
                             None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
                         }
                         if selected {
                             ui.painter().rect_stroke(img.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
-                            if self.scroll_pending { ui.scroll_to_rect(rect, Some(egui::Align::Center)); }
                         }
                         let short = short_name(&h.remote);
                         let (dir, base) = match short.rsplit_once('/') {
@@ -860,6 +913,7 @@ impl App {
                         let size_txt = h.size.map(human_size).unwrap_or_default();
                         let date_txt = h.mtime.as_deref().map(short_time).unwrap_or_default();
                         let name_text = fit_text(ui, &base, &name_font, t);
+                        let terms = query_terms(&self.last_sent);
                         let lines = [
                             (fit_text(ui, &dir, &small, t), small.clone(), pal.dim),
                             (fit_text(ui, &size_txt, &small, t), small.clone(), pal.dim),
@@ -885,12 +939,13 @@ impl App {
                         }
                     }
                 });
-            });
+            }
+        });
     }
 
     /// Ctrl+Enter: show the photo selected in Dolphin, at its real folder on the gdrive mount.
     fn reveal_selected(&mut self) {
-        let Some(h) = self.hits.get(self.selected).cloned() else { return };
+        let Some(h) = self.hit_now(self.selected) else { return };
         let local = local_path(&h.remote).to_string_lossy().into_owned();
         std::thread::spawn(move || {
             if let Some(dir) = Path::new(&local).parent() {
@@ -901,7 +956,7 @@ impl App {
 
     fn copy_selection(&mut self, cut: bool) {
         let paths: Vec<PathBuf> = self.selection().into_iter()
-            .filter_map(|i| self.hits.get(i)).map(|h| local_path(&h.remote))
+            .filter_map(|i| self.hit_now(i)).map(|h| local_path(&h.remote))
             .filter(|p| p.exists()).collect();
         if paths.is_empty() {
             self.status = "nothing local to copy".into();
@@ -952,7 +1007,7 @@ impl eframe::App for App {
         ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
         let grid = self.thumb >= GRID_ZOOM;
         // the score column only exists for photo results
-        let show_score = self.hits.iter().any(|h| h.score.is_some());
+        let show_score = self.pages.values().flatten().any(|h| h.score.is_some());
 
         if self.close_now {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -970,7 +1025,7 @@ impl eframe::App for App {
 
         // Delete: only when the confirmation dialog is closed
         let del = self.trash_pending.is_none() && ui.input(|i| i.key_pressed(Key::Delete));
-        if del && !self.popup && !self.hits.is_empty() {
+        if del && !self.popup && self.total > 0 {
             self.request_trash();
         }
 
@@ -1028,7 +1083,7 @@ impl eframe::App for App {
         }
 
         // keys (only the ones the list owns; typing goes to the query box)
-        let n = self.hits.len();
+        let n = self.total;
         // Ctrl+R / F4: search history popup, seeded from the current text
         let hist_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::R))
             | ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F4));
@@ -1206,10 +1261,10 @@ impl eframe::App for App {
 
         // context menu (right-click or F10): one entry, "Open with" submenu
         if let (Some(at), Some(hit)) = (self.menu_at, self.menu_hit) {
-            let local = self.hits.get(hit).map(|h| local_path(&h.remote));
+            let local = self.hit_now(hit).map(|h| local_path(&h.remote));
             let mime = self.menu_mime.clone();
             // photo results (they carry a score) can search for the face in them
-            let face_remote = self.hits.get(hit).filter(|h| h.score.is_some()).map(|h| h.remote.clone());
+            let face_remote = self.hit_now(hit).filter(|h| h.score.is_some()).map(|h| h.remote);
             let mut face_query: Option<String> = None;
             let mut chosen: Option<(String, PathBuf)> = None;
             let area = egui::Area::new(egui::Id::new("ctxmenu"))
@@ -1261,7 +1316,7 @@ impl eframe::App for App {
 
         // properties (Alt+Enter)
         if let Some(idx) = self.props {
-            match self.hits.get(idx).cloned() {
+            match self.hit_now(idx) {
                 None => self.props = None,
                 Some(h) => {
                     let local = local_path(&h.remote);
@@ -1371,7 +1426,7 @@ impl eframe::App for App {
                 ui.add_space(4.0);
 
                 // results list
-                if !self.hits.is_empty() && !grid {
+                if self.total > 0 && !grid {
                     let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
                     // same left edge as the rows: thumbnail (6 px margin) + gap
                     let frac = self.col_frac;
@@ -1416,37 +1471,44 @@ impl eframe::App for App {
                         if resp.drag_stopped() { self.save_sort(); }
                     }
                 }
-                let hits = self.hits.clone();
                 let frac = self.col_frac;
-                let sel_set: std::collections::HashSet<usize> = self.selection().into_iter().collect();
                 let mut clicked: Option<(usize, bool)> = None;
                 let mut dbl = false;
                 let mut right_at: Option<egui::Pos2> = None;
                 let mut right_hit: Option<usize> = None;
                 if grid {
-                    let sel_v: Vec<usize> = self.selection();
                     let mut grid_right: Option<(usize, egui::Pos2)> = None;
-                    self.grid_view(ui, &ctx, &hits, &sel_v, &mut clicked, &mut dbl, &mut grid_right);
+                    self.grid_view(ui, &ctx, &mut clicked, &mut dbl, &mut grid_right);
                     if let Some((hit, at)) = grid_right {
                         right_hit = Some(hit);
                         right_at = Some(at);
                     }
                 } else {
                 self.results_h = ui.available_height() - 30.0;
-                egui::ScrollArea::vertical()
+                // one line per result: the row is just tall enough for the thumbnail and text
+                let row_h = (self.thumb + 4.0).max(20.0);
+                let mut area = egui::ScrollArea::vertical()
                     .max_height(ui.available_height() - 30.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        // one line per result: the row is just tall enough for the thumbnail and text
-                        let row_h = (self.thumb + 4.0).max(20.0);
+                    .auto_shrink([false, false]);
+                if self.scroll_pending {
+                    let target = self.selected as f32 * row_h - (ui.available_height() - 30.0) * 0.4;
+                    area = area.vertical_scroll_offset(target.max(0.0));
+                }
+                ui.spacing_mut().item_spacing.y = 0.0;
+                area.show_rows(ui, row_h, self.total, |ui, range| {
+                        self.ensure_rows(range.start, range.end.saturating_sub(1));
                         let thumb = self.thumb;
                         let terms = query_terms(&self.last_sent);
-                        for (idx, h) in hits.iter().enumerate() {
+                        for idx in range {
+                            let Some(h) = self.hit(idx).cloned() else {
+                                ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+                                continue;
+                            };
                             let (rect, resp) = ui.allocate_exact_size(
                                 egui::vec2(ui.available_width(), row_h),
                                 egui::Sense::click(),
                             );
-                            let selected = sel_set.contains(&idx);
+                            let selected = self.in_selection(idx);
                             if !selected && !ui.is_rect_visible(rect) { continue; }
                             if selected {
                                 ui.painter().rect_filled(rect, 6.0, pal.accent.gamma_multiply(0.18));
@@ -1498,7 +1560,6 @@ impl eframe::App for App {
                                 painter.text(egui::pos2(c.score_r, y), egui::Align2::LEFT_CENTER, format!("{s:.2}"), egui::FontId::monospace(12.0), pal.accent);
                             }
                             if selected {
-                                if self.scroll_pending { ui.scroll_to_rect(rect, Some(egui::Align::Center)); }
                             }
                             let shift = ui.input(|i| i.modifiers.shift);
                             self.row_rects.insert(idx, rect);
@@ -1509,7 +1570,7 @@ impl eframe::App for App {
                                 right_hit = Some(idx);
                             }
                         }
-                        if hits.is_empty() && !self.busy {
+                        if self.total == 0 && !self.busy {
                             ui.add_space(20.0);
                             ui.label(RichText::new("no matches").color(pal.dim));
                         }
@@ -1527,7 +1588,7 @@ impl eframe::App for App {
 
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!("{} shown", self.hits.len()))
+                    RichText::new(format!("{} shown", self.total))
                         .color(pal.dim).size(11.0),
                 );
             });
