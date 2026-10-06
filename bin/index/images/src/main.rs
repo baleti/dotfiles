@@ -88,6 +88,23 @@ fn sort_path() -> PathBuf {
     PathBuf::from(&cfg().data_dir).join("search-files-sort.json")
 }
 
+/// Column proportions from the last session (defaults when missing or invalid).
+fn load_cols() -> [f32; 5] {
+    let v: serde_json::Value = std::fs::read_to_string(sort_path()).ok()
+        .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null);
+    let mut out = DEFAULT_COLS;
+    if let Some(arr) = v.get("cols").and_then(|x| x.as_array()) {
+        if arr.len() == 5 {
+            let vals: Vec<f32> = arr.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect();
+            let sum: f32 = vals.iter().sum();
+            if vals.len() == 5 && sum > 0.0 && vals.iter().all(|v| *v >= MIN_FRAC * 0.5) {
+                for i in 0..5 { out[i] = vals[i] / sum; }
+            }
+        }
+    }
+    out
+}
+
 /// (column key, descending) from the last session; ("", false) when there is none.
 fn load_sort() -> (String, bool) {
     let v: serde_json::Value = std::fs::read_to_string(sort_path()).ok()
@@ -232,19 +249,18 @@ fn clipboard_files(paths: &[PathBuf], cut: bool) {
 }
 
 /// Column x-positions for a row/header spanning [left, right]: name | path | size | modified | score.
-struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, date_x: f32, score_r: f32 }
-const NAME_W: f32 = 210.0;
-const SIZE_W: f32 = 84.0;
-const DATE_W: f32 = 140.0;
-const SCORE_W: f32 = 48.0;
-fn cols(left: f32, right: f32) -> Cols {
-    // columns are left-aligned: size_r / score_r hold the LEFT edge of those columns
-    let score_r = right - SCORE_W;
-    let date_x = score_r - 12.0 - DATE_W;
-    let size_r = date_x - 12.0 - SIZE_W;
-    let name_x = left;
-    let path_x = name_x + NAME_W + 12.0;
-    Cols { name_x, path_x, path_r: size_r - SIZE_W - 12.0, size_r, date_x, score_r }
+/// Column x-positions for a row/header spanning [left, right]: name | path | size | modified | score.
+/// `f` holds each column's share of the width (sums to 1), so the columns scale with the window.
+struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, date_x: f32, score_r: f32, right: f32 }
+const MIN_FRAC: f32 = 0.04;
+const DEFAULT_COLS: [f32; 5] = [0.30, 0.40, 0.10, 0.14, 0.06];
+fn cols(left: f32, right: f32, f: &[f32; 5]) -> Cols {
+    let w = (right - left).max(1.0);
+    let x1 = left + f[0] * w;
+    let x2 = x1 + f[1] * w;
+    let x3 = x2 + f[2] * w;
+    let x4 = x3 + f[3] * w;
+    Cols { name_x: left, path_x: x1, path_r: x2, size_r: x2, date_x: x3, score_r: x4, right }
 }
 
 #[derive(Deserialize)]
@@ -352,6 +368,8 @@ struct App {
     /// list sort: column key ("" = server order) and direction; remembered between runs
     sort_key: String,
     sort_desc: bool,
+    /// column widths as fractions of the row (drag the header boundaries to change)
+    col_frac: [f32; 5],
     /// thumbnail size in px; Ctrl+wheel / pinch changes it (rows grow and shrink with it)
     thumb: f32,
     /// thumbnail grid instead of the list; toggled with Ctrl+G
@@ -520,6 +538,7 @@ impl App {
             facets: FacetsReply::default(),
             sort_key: load_sort().0,
             sort_desc: load_sort().1,
+            col_frac: load_cols(),
             thumb: 20.0,
             grid_mode: false,
             popup: false,
@@ -724,8 +743,14 @@ impl App {
             self.sort_desc = false;
         }
         self.apply_sort();
+        self.save_sort();
+    }
+
+    /// Writes the sort and the column proportions, so both come back next time the app opens.
+    fn save_sort(&self) {
         let _ = std::fs::create_dir_all(PathBuf::from(&cfg().data_dir));
-        let _ = std::fs::write(sort_path(), serde_json::json!({"key": self.sort_key, "desc": self.sort_desc}).to_string());
+        let body = serde_json::json!({"key": self.sort_key, "desc": self.sort_desc, "cols": self.col_frac});
+        let _ = std::fs::write(sort_path(), body.to_string());
     }
 
     fn apply_sort(&mut self) {
@@ -1277,26 +1302,50 @@ impl eframe::App for App {
                 if !self.hits.is_empty() && !grid {
                     let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
                     // same left edge as the rows: thumbnail (6 px margin) + gap
-                    let c = cols(hr.left() + 6.0 + self.thumb + 12.0, hr.right());
+                    let frac = self.col_frac;
+                    let left = hr.left() + 6.0 + self.thumb + 12.0;
+                    let c = cols(left, hr.right(), &frac);
                     let hf = egui::FontId::monospace(10.0);
-                    let mut columns: Vec<(&str, f32, f32, &str)> = vec![
-                        ("name", c.name_x, NAME_W, "NAME"),
-                        ("path", c.path_x, (c.path_r - c.path_x).max(0.0), "PATH"),
-                        ("size", c.size_r, SIZE_W, "SIZE"),
-                        ("date", c.date_x, DATE_W, "MODIFIED"),
+                    let mut columns: Vec<(&str, f32, &str)> = vec![
+                        ("name", c.name_x, "NAME"),
+                        ("path", c.path_x, "PATH"),
+                        ("size", c.size_r, "SIZE"),
+                        ("date", c.date_x, "MODIFIED"),
                     ];
-                    if show_score { columns.push(("score", c.score_r, SCORE_W, "SCORE")); }
-                    for (key, x, w, label) in columns {
-                        let rect = egui::Rect::from_min_size(egui::pos2(x, hr.top()), egui::vec2(w, 18.0));
-                        let resp = ui.interact(rect, egui::Id::new(("hdr", key)), egui::Sense::click());
-                        let arrow = if self.sort_key == key { if self.sort_desc { " ▼" } else { " ▲" } } else { "" };
-                        ui.painter().text(egui::pos2(x, hr.top() + 2.0), egui::Align2::LEFT_TOP,
+                    if show_score { columns.push(("score", c.score_r, "SCORE")); }
+                    for (key, x, label) in &columns {
+                        let rect = egui::Rect::from_min_max(egui::pos2(*x, hr.top()), egui::pos2(*x + 40.0, hr.bottom()));
+                        let resp = ui.interact(rect, egui::Id::new(("hdr", *key)), egui::Sense::click());
+                        let arrow = if self.sort_key == *key { if self.sort_desc { " ▼" } else { " ▲" } } else { "" };
+                        ui.painter().text(egui::pos2(*x, hr.top() + 2.0), egui::Align2::LEFT_TOP,
                             format!("{label}{arrow}"), hf.clone(),
-                            if self.sort_key == key { pal.accent } else { pal.dim });
+                            if self.sort_key == *key { pal.accent } else { pal.dim });
                         if resp.clicked() { self.set_sort(key); }
+                    }
+                    // drag handles on the boundaries between columns: move width from one column to its neighbour
+                    let total = (hr.right() - left).max(1.0);
+                    let bounds = [c.path_x, c.size_r, c.date_x, c.score_r];
+                    for i in 0..4 {
+                        let x = bounds[i];
+                        let rect = egui::Rect::from_min_max(egui::pos2(x - 4.0, hr.top()), egui::pos2(x + 4.0, hr.bottom()));
+                        let resp = ui.interact(rect, egui::Id::new(("colsep", i)), egui::Sense::drag());
+                        if resp.hovered() || resp.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        }
+                        if resp.dragged() {
+                            let d = resp.drag_delta().x / total;
+                            let a = self.col_frac[i] + d;
+                            let b = self.col_frac[i + 1] - d;
+                            if a >= MIN_FRAC && b >= MIN_FRAC {
+                                self.col_frac[i] = a;
+                                self.col_frac[i + 1] = b;
+                            }
+                        }
+                        if resp.drag_stopped() { self.save_sort(); }
                     }
                 }
                 let hits = self.hits.clone();
+                let frac = self.col_frac;
                 let sel_set: std::collections::HashSet<usize> = self.selection().into_iter().collect();
                 let mut clicked: Option<(usize, bool)> = None;
                 let mut dbl = false;
@@ -1345,7 +1394,7 @@ impl eframe::App for App {
                                     ui.painter().rect_filled(thumb_rect, 4.0, pal.border.gamma_multiply(0.5));
                                 }
                             }
-                            let c = cols(thumb_rect.right() + 12.0, rect.right());
+                            let c = cols(thumb_rect.right() + 12.0, rect.right(), &frac);
                             let y = rect.center().y;
                             let short = short_name(&h.remote);
                             let (dir, base) = match short.rsplit_once('/') {
@@ -1357,11 +1406,11 @@ impl eframe::App for App {
                             let painter = ui.painter();
                             let name_font = egui::FontId::monospace(13.0);
                             let dir_font = egui::FontId::monospace(11.0);
-                            let base = fit_text(ui, &base, &name_font, NAME_W - 4.0);
-                            let dir = fit_text(ui, &dir, &dir_font, (c.path_r - c.path_x - 4.0).max(0.0));
-                            let name_clip = egui::Rect::from_min_max(egui::pos2(c.name_x, rect.top()), egui::pos2(c.name_x + NAME_W, rect.bottom()));
+                            let base = fit_text(ui, &base, &name_font, (c.path_x - c.name_x - 8.0).max(0.0));
+                            let dir = fit_text(ui, &dir, &dir_font, (c.path_r - c.path_x - 8.0).max(0.0));
+                            let name_clip = egui::Rect::from_min_max(egui::pos2(c.name_x, rect.top()), egui::pos2(c.path_x - 4.0, rect.bottom()));
                             painter.with_clip_rect(name_clip).text(egui::pos2(c.name_x, y), egui::Align2::LEFT_CENTER, base, egui::FontId::monospace(13.0), txt);
-                            let path_clip = egui::Rect::from_min_max(egui::pos2(c.path_x, rect.top()), egui::pos2(c.path_r, rect.bottom()));
+                            let path_clip = egui::Rect::from_min_max(egui::pos2(c.path_x, rect.top()), egui::pos2(c.path_r - 4.0, rect.bottom()));
                             painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::monospace(11.0), dim);
                             if let Some(sz) = h.size {
                                 painter.text(egui::pos2(c.size_r, y), egui::Align2::LEFT_CENTER, human_size(sz), egui::FontId::monospace(11.0), dim);
