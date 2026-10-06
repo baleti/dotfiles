@@ -755,16 +755,15 @@ impl eframe::App for App {
         }
         if n > 0 && !self.popup {
             let cols = if grid { ((ui.available_width() / (self.thumb + 10.0)).floor() as usize).max(1) } else { 1 };
-            let (ctrl_shift_h, ctrl_shift_l, shift_any) = ui.input(|i| (
-                i.modifiers.ctrl && i.key_pressed(Key::H),
-                i.modifiers.ctrl && i.key_pressed(Key::L),
-                i.modifiers.shift,
-            ));
+            let shift_any = ui.input(|i| i.modifiers.shift);
+            // Ctrl+H / Ctrl+L: previous / next item, in grid and list alike (consumed before the query box)
+            let ctrl_shift_h = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::H));
+            let ctrl_shift_l = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::L));
             let cur = self.selected;
             // (target, extend-selection?)
             let mut moves: Vec<(usize, bool)> = Vec::new();
-            if grid && (right || ctrl_shift_l) { moves.push(((cur + 1).min(n - 1), shift_any)); }
-            if grid && (left || ctrl_shift_h) { moves.push((cur.saturating_sub(1), shift_any)); }
+            if (grid && right) || ctrl_shift_l { moves.push(((cur + 1).min(n - 1), shift_any)); }
+            if (grid && left) || ctrl_shift_h { moves.push((cur.saturating_sub(1), shift_any)); }
             if shift_right && !grid { moves.push((cur, true)); }
             if shift_left && !grid { moves.push((cur, true)); }
             if down || cj { moves.push(((cur + cols).min(n - 1), shift_any)); }
