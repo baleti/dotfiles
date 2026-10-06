@@ -1258,6 +1258,7 @@ impl eframe::App for App {
             self.thumb = (self.thumb * zd).clamp(16.0, 800.0);
         }
         // Ctrl+- / Ctrl++ (Ctrl+= too): the same zoom as Ctrl+wheel, one step per press, repeating while held
+        let mut preset: Option<f32> = None;
         let steps = ui.input_mut(|i| {
             let mut n = 0i32;
             i.events.retain(|e| {
@@ -1266,6 +1267,8 @@ impl eframe::App for App {
                         match key {
                             Key::Plus | Key::Equals => { n += 1; return false; }
                             Key::Minus => { n -= 1; return false; }
+                            Key::Num0 => { preset = Some(16.0); return false; }  // most zoomed out: the column list
+                            Key::Num9 => { preset = Some(320.0); return false; } // large thumbnails, short of the maximum
                             _ => {}
                         }
                     }
@@ -1274,7 +1277,10 @@ impl eframe::App for App {
             });
             n
         });
-        if steps != 0 {
+        if let Some(p) = preset {
+            self.thumb = p;
+            self.scroll_pending = true;
+        } else if steps != 0 {
             self.thumb = (self.thumb * 1.15f32.powi(steps)).clamp(16.0, 800.0);
         }
         ctx.set_zoom_factor(1.0);
