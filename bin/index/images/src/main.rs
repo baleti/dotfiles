@@ -41,7 +41,7 @@ fn load_cfg() -> Cfg {
     }
 }
 const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
-const TOP: usize = 150;
+const TOP: usize = 5000;
 const GRID_ZOOM: f32 = 110.0;
 
 #[derive(Deserialize, Clone)]
