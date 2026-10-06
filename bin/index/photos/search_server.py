@@ -84,22 +84,6 @@ def is_subsequence(frag, name):
     it = iter(name)
     return all(c in it for c in frag)
 
-def fts_resolve(token):
-    """Index confs for a name or shorthand: exact, else a prefix, else letters in order (p3 -> part3-books)."""
-    names = {fts_name(c): c for c in FTS_INDEXES}
-    t = token.lower()
-    if not t:
-        return list(FTS_INDEXES), None
-    if t in names:
-        return [names[t]], None
-    for match in (lambda n: n.startswith(t), lambda n: is_subsequence(t, n)):
-        hits = [n for n in names if match(n)]
-        if len(hits) == 1:
-            return [names[hits[0]]], None
-        if len(hits) > 1:
-            return [], "ambiguous index: " + ", ".join(sorted(hits))
-    return [], "no index named " + token
-
 def fts_matches(terms, confs):
     """Paths whose contents match a Recoll query, from the given content indexes, with sizes."""
     key = (terms, tuple(confs))
@@ -124,19 +108,37 @@ def fts_matches(terms, confs):
         _fts_cache[key] = rows
     return rows
 
-def fts_query(text, index_token, sort, desc, offset, limit):
-    """/fts[/index] <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match."""
+PATH_TAG = re.compile(r'//path\s+((?:"[^"]*"|[^\s"])+)')
+
+def split_path_tags(text):
+    """'//path gdrive/"part 3" rest' -> (['gdrive/"part 3"'], 'rest'). Quotes keep spaces inside a segment."""
+    values = [m.group(1) for m in PATH_TAG.finditer(text)]
+    return values, PATH_TAG.sub(" ", text).strip()
+
+def path_matches(path, value):
+    """Each '/'-separated segment must appear in the path, in order: gdrive/"part 3" matches .../gdrive-.../part 3/..."""
+    low, pos = path.lower(), 0
+    for seg in value.replace('"', "").split("/"):
+        if not seg:
+            continue
+        i = low.find(seg.lower(), pos)
+        if i < 0:
+            return False
+        pos = i + len(seg)
+    return True
+
+def fts_query(text, sort, desc, offset, limit):
+    """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match.
+    Searches every content index; //path narrows by folder."""
     from filesearch import split_mime, split_tags, matches_mime, _size_ok
-    confs, err = fts_resolve(index_token)
-    if err:
-        return [], 0, err, None
     wanted, rest = split_mime(text)
+    paths, rest = split_path_tags(rest)
     tags, terms = split_tags(rest)
     if not terms.strip():
         return [], 0, None, None
-    rows = [r for r in fts_matches(terms.strip(), confs) if (not wanted or matches_mime(r["remote"], wanted))
+    rows = [r for r in fts_matches(terms.strip(), FTS_INDEXES) if (not wanted or matches_mime(r["remote"], wanted))
+            and all(path_matches(r["remote"], v) for v in paths)
             and all(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["name"])
-            and all(t.lower() in r["remote"].lower() for t in tags["path"])
             and all(_size_ok(r["size"], c) for c in tags["size"])]
     if sort in ("name", "path", "size"):
         key = {"name": lambda r: r["remote"].rsplit("/", 1)[-1].lower(),
@@ -162,13 +164,12 @@ def fts_snippets(remote, text):
     import html
     from recoll import recoll
     from filesearch import split_mime, split_tags
-    m = re.match(r"^/(?:fts|full-text-search)(?:/(\S*))?(?:\s+|$)(.*)$", text.strip(), re.S)
+    m = re.match(r"^/(?:fts|full-text-search)(?:\s+|$)(.*)$", text.strip(), re.S)
     if not m:
         return [], "not a /fts query"
-    confs, err = fts_resolve(m.group(1) or "")
-    if err:
-        return [], err
-    _, rest = split_mime(m.group(2))
+    confs = FTS_INDEXES
+    _, rest = split_mime(m.group(1))
+    _, rest = split_path_tags(rest)
     _, terms = split_tags(rest)
     terms = terms.strip()
     if not terms:
@@ -224,9 +225,20 @@ _queued_lock = threading.Lock()
 def thumb_path(remote):
     return os.path.join(THUMBS, hashlib.sha1(remote.encode()).hexdigest()[:16] + ".jpg")
 
+def make_pdf_thumb(remote, dst):
+    """First page of a PDF as a 256 px JPEG (poppler's pdftoppm; -singlefile writes <base>.jpg)."""
+    os.makedirs(THUMBS, exist_ok=True)
+    base = dst[:-len(".jpg")]
+    subprocess.run(["pdftoppm", "-jpeg", "-jpegopt", "quality=85", "-f", "1", "-l", "1",
+                    "-scale-to", "256", "-singlefile", remote, base],
+                   capture_output=True, timeout=120)
+
 def make_thumb(remote):
     dst = thumb_path(remote)
     if os.path.exists(dst): return
+    if remote.lower().endswith(".pdf") and remote.startswith("/"):
+        make_pdf_thumb(remote, dst)
+        return
     if remote.startswith("/"):                 # local file from the file-name index
         data = open(remote, "rb").read()
     else:
@@ -284,16 +296,16 @@ class H(BaseHTTPRequestHandler):
                 sort = qs.get("sort", ["date"])[0]
                 desc = qs.get("desc", ["1"])[0] == "1"
                 offset = int(qs.get("offset", ["0"])[0])
-                fts = re.match(r"^/(?:fts|full-text-search)(?:/(\S*))?(?:\s+|$)(.*)$", rest, re.S)
+                fts = re.match(r"^/(?:fts|full-text-search)(?:\s+|$)(.*)$", rest, re.S)
                 errors = []
                 if fts:
-                    results, count, err, stats = fts_query(fts.group(2), fts.group(1) or "", sort, desc, offset, top)
+                    results, count, err, stats = fts_query(fts.group(1), sort, desc, offset, top)
                     errors = [err] if err else []
                 else:
                     results, count, stats = NAMES.query(rest, sort, desc, offset, top)
                 for r in results:
                     r["score"] = None
-                    if r["remote"].lower().endswith(IMAGE_EXT):
+                    if r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
                         r["thumb"] = thumb_path(r["remote"])
                         r["ready"] = enqueue(r["remote"])
                     else:
