@@ -140,10 +140,10 @@ class H(BaseHTTPRequestHandler):
             photo_mode = ("//clip" in q) or ("//face" in q)
             if not photo_mode:
                 rest = q[len("//file"):].strip() if q.startswith("//file") else q
-                if rest:
-                    results, count = NAMES.search(rest, top)
-                else:
-                    results, count = NAMES.browse(top), None
+                sort = qs.get("sort", ["date"])[0]
+                desc = qs.get("desc", ["1"])[0] == "1"
+                offset = int(qs.get("offset", ["0"])[0])
+                results, count = NAMES.query(rest, sort, desc, offset, top)
                 for r in results:
                     r["score"] = None
                     if r["remote"].lower().endswith(IMAGE_EXT):
@@ -155,7 +155,7 @@ class H(BaseHTTPRequestHandler):
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
                         r["mtime"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
-                return self._json(200, {"count": count if count is not None else len(results), "results": results, "errors": []})
+                return self._json(200, {"count": count, "results": results, "errors": []})
             try:
                 with _q_lock:
                     if not q:

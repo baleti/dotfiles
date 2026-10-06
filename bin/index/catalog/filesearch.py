@@ -90,6 +90,32 @@ def tag_ok(i, paths, sizes, mtimes, wanted, tags):
         return False
     return True
 
+def _extras(paths, sizes, mtimes):
+    ext_map, codes = {}, np.empty(len(paths), np.int32)
+    for i, p in enumerate(paths):
+        codes[i] = ext_map.setdefault(kind_of(p), len(ext_map))
+    ext_names = list(ext_map)
+    size_arr = np.array([s if s is not None else -1 for s in sizes], np.int64)
+    mt_arr = np.array([m if m is not None else 0 for m in mtimes], np.int64)
+    names = np.empty(len(paths), object)
+    names[:] = [p.rsplit("/", 1)[-1].lower() for p in paths]
+    orders = {
+        "path": np.arange(len(paths), dtype=np.int64),
+        "name": np.argsort(names, kind="stable"),
+        "size": np.argsort(size_arr, kind="stable"),
+        "date": np.argsort(mt_arr, kind="stable"),
+    }
+    return codes, ext_names, size_arr, mt_arr, orders
+
+def _size_mask(size_arr, cond):
+    m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMGT]?)B?$", cond.strip(), re.I)
+    if not m:
+        return np.zeros(len(size_arr), bool)
+    mult = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}[m.group(3).upper()]
+    v = float(m.group(2)) * mult
+    known = size_arr >= 0
+    return known & ((size_arr > v) if m.group(1) == ">" else (size_arr < v))
+
 class NameTable:
     def __init__(self, db_path):
         self.db_path = db_path
@@ -123,10 +149,15 @@ class NameTable:
         # newest-first order, computed once so an empty query is instant
         mt = np.array([m if m is not None else 0 for m in mtimes], dtype=np.int64)
         order = np.argsort(-mt) if len(mt) else np.zeros(0, np.int64)
+        ext_codes, ext_names, size_arr, mt_arr, orders = _extras(paths, sizes, mtimes)
         with self.lock:
             self.paths, self.sizes, self.mtimes = paths, sizes, mtimes
             self.blob, self.starts = blob, starts
+            self.arr = np.frombuffer(blob, np.uint8)
             self.order = order
+            self.ext_codes, self.ext_names = ext_codes, ext_names
+            self.size_arr, self.mt_arr, self.orders = size_arr, mt_arr, orders
+            self._cache = None
             self.dates = [d for d in dates if d]
             self.loaded_mtime = os.path.getmtime(self.db_path)
         print(f"name table: {len(paths)} paths, {len(blob)/1e6:.0f} MB blob, {time.time()-t0:.1f}s", flush=True)
@@ -138,56 +169,58 @@ class NameTable:
         except OSError:
             pass
 
-    def browse(self, limit=200, wanted=None):
-        """Newest files first (no query), optionally filtered by //mime."""
+    def query(self, q, sort="date", desc=True, offset=0, limit=200):
+        """(rows, total) for one window of the matches; the full match list is cached per query."""
+        key = (q, sort, bool(desc))
         with self.lock:
-            order, paths, sizes, mtimes = self.order, self.paths, self.sizes, self.mtimes
-        out = []
-        for i in order[: 200000 if wanted else limit]:
-            if wanted and not matches_mime(paths[i], wanted):
-                continue
-            out.append({"remote": paths[i], "size": sizes[i], "mtime": mtimes[i]})
-            if len(out) >= limit:
-                break
-        return out
+            cached = self._cache
+        if cached is None or cached[0] != key:
+            idx = self._match(q, sort, desc)
+            with self.lock:
+                self._cache = (key, idx)
+        else:
+            idx = cached[1]
+        window = idx[offset: offset + limit].tolist()
+        return [{"remote": self.paths[i], "size": self.sizes[i], "mtime": self.mtimes[i]} for i in window], len(idx)
 
-    def search(self, query, limit=200):
-        """Substring terms (AND) plus tags: //name //path //size >N //dm <date> //mime <kind>."""
-        wanted, query = split_mime(query)
-        tags, query = split_tags(query)
-        terms = [t.lower() for t in query.split() if t]
+    def _match(self, q, sort, desc):
+        wanted, rest = split_mime(q)
+        tags, rest = split_tags(rest)
+        terms = [t.lower() for t in rest.split() if t]
         with self.lock:
-            blob, starts, paths, sizes, mtimes = self.blob, self.starts, self.paths, self.sizes, self.mtimes
-            order = self.order
-        if not terms:
-            # no substring terms: walk the newest-first order and apply the filters
-            out, count = [], 0
-            for i in order[:300000]:
-                if tag_ok(i, paths, sizes, mtimes, wanted, tags):
-                    count += 1
-                    if len(out) < limit:
-                        out.append({"remote": paths[i], "size": sizes[i], "mtime": mtimes[i]})
-            return out, count
-        anchor = max(terms, key=len)          # the longest term is usually the most selective
-        others = [t.encode("utf-8") for t in terms if t is not anchor][:4]
-        a = anchor.encode("utf-8")
-        hits, pos, seen = [], 0, set()
-        while True:
-            pos = blob.find(a, pos)
-            if pos < 0:
-                break
-            line = int(np.searchsorted(starts, pos, side="right") - 1)
-            if line not in seen:
-                seen.add(line)
-                s0 = int(starts[line])
-                e0 = blob.find(b"\n", s0)
-                if all(blob.find(o, s0, e0) >= 0 for o in others):
-                    hits.append(line)
-            pos += 1
-        # blob lines are in sorted path order, so hits are already sorted
-        hits = [i for i in hits if tag_ok(i, paths, sizes, mtimes, wanted, tags)]
-        out = [{"remote": paths[i], "size": sizes[i], "mtime": mtimes[i]} for i in hits[:limit]]
-        return out, len(hits)
+            N = len(self.paths)
+            order = self.orders.get(sort, self.orders["date"])
+            ext_codes, ext_names, size_arr = self.ext_codes, self.ext_names, self.size_arr
+        mask = np.ones(N, bool)
+        for t in terms:
+            mask &= self._term_mask(t.encode("utf-8"))
+        if wanted:
+            allowed = [k for k, e in enumerate(ext_names) if any(w == e or EXT_KIND.get(e) == w for w in wanted)]
+            mask &= np.isin(ext_codes, np.array(allowed, np.int32))
+        for c in tags["size"]:
+            mask &= _size_mask(size_arr, c)
+        if desc:
+            order = order[::-1]
+        idx = order[mask[order]]
+        if tags["name"] or tags["path"] or tags["dm"]:
+            rest_tags = {"name": tags["name"], "path": tags["path"], "size": [], "dm": tags["dm"]}
+            idx = np.array([i for i in idx.tolist()
+                            if tag_ok(i, self.paths, self.sizes, self.mtimes, [], rest_tags)], np.int64)
+        return idx
+
+    def _term_mask(self, term):
+        """Lines containing the bytes of term (terms hold no newline, so a match stays on one line)."""
+        a = self.arr
+        n, m = len(a), len(term)
+        mask = np.zeros(len(self.paths), bool)
+        if m == 0 or m > n:
+            return mask | (m == 0)
+        cand = np.flatnonzero(a[: n - m + 1] == term[0])
+        for k in range(1, m):
+            cand = cand[a[cand + k] == term[k]]
+        if cand.size:
+            mask[np.searchsorted(self.starts, cand, side="right") - 1] = True
+        return mask
 
 def start_refresh(table, every=60):
     def loop():
