@@ -789,6 +789,7 @@ impl App {
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + text_h), egui::Sense::click());
                         let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
                         let selected = sel.contains(&idx);
+                        if !selected && !ui.is_rect_visible(rect) { continue; }
                         match self.texture(ctx, &h.thumb) {
                             Some(tex) => { egui::Image::new(&tex).fit_to_exact_size(img.size()).paint_at(ui, img); }
                             None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
@@ -1397,6 +1398,7 @@ impl eframe::App for App {
                                 egui::Sense::click(),
                             );
                             let selected = sel_set.contains(&idx);
+                            if !selected && !ui.is_rect_visible(rect) { continue; }
                             if selected {
                                 ui.painter().rect_filled(rect, 6.0, pal.accent.gamma_multiply(0.18));
                                 ui.painter().rect_filled(
