@@ -109,7 +109,7 @@ def fts_matches(terms, confs):
         _fts_cache[key] = rows
     return rows
 
-PATH_TAG = re.compile(r'//path\s+((?:"[^"]*"|[^\s"])+)')
+PATH_TAG = re.compile(r'(?<!!)//path\s+(?!!)((?:"[^"]*"|[^\s"])+)')  # negated forms stay for split_tags
 
 def split_path_tags(text):
     """'//path gdrive/"part 3" rest' -> (['gdrive/"part 3"'], 'rest'). Quotes keep spaces inside a segment."""
@@ -119,14 +119,20 @@ def split_path_tags(text):
 def fts_query(text, sort, desc, offset, limit):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match.
     Searches every content index; //path narrows by folder."""
-    from filesearch import split_mime, split_tags, matches_mime, _size_ok, path_matches, hidden_folders
-    wanted, rest = split_mime(text)
+    from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, path_matches, hidden_folders
+    wanted, not_wanted, rest = split_mime_all(text)
     paths, rest = split_path_tags(rest)
     tags, terms = split_tags(rest)
+    # "!" negation of free terms has no Recoll meaning here (Recoll has its own -term): inert
+    terms = " ".join(t for t in filesearch.tokens(terms) if not t.startswith("!"))
     if not terms.strip():
         return [], 0, None, None
     hidden = hidden_folders(text)
     rows = [r for r in fts_matches(terms.strip(), FTS_INDEXES) if (not wanted or matches_mime(r["remote"], wanted))
+            and not (not_wanted and matches_mime(r["remote"], not_wanted))
+            and not any(path_matches(r["remote"], v) for v in tags["!path"])
+            and not any(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["!name"])
+            and not any(_size_ok(r["size"], c) for c in tags["!size"])
             and not any(r["remote"].startswith(f) for f in hidden)
             and all(path_matches(r["remote"], v) for v in paths)
             and all(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["name"])

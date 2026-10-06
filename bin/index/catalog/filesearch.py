@@ -53,7 +53,8 @@ def hidden_folders(query):
     """Off-by-default folders this query does not opt into with //path <keyword>."""
     out = []
     for folder, keyword in off_default_entries():
-        if not re.search(r"//path\s+" + re.escape(keyword) + r"(?=\s|$)", query, re.I):
+        # a negated "!//path keyword" excludes that folder, so it never opts it in
+        if not re.search(r"(?<!!)//path\s+" + re.escape(keyword) + r"(?=\s|$)", query, re.I):
             out.append(folder)
     return out
 
@@ -119,13 +120,19 @@ def unquote(tok):
     return tok.replace('"', "")
 
 def _take_tags(query, names):
-    """Pull '//tag value' pairs (value may be "quoted text") out of a query -> ({tag: [values]}, rest tokens joined)."""
+    """Pull '//tag value' pairs (value may be "quoted text") out of a query -> ({tag: [values]}, rest tokens joined).
+    A leading "!" (on the tag, or on its value) negates the pair (query-dsl.md "Negation"): it lands under
+    the key "!tag", so every existing positive consumer of found[tag] is untouched."""
     found = {n: [] for n in names}
+    found.update({"!" + n: [] for n in names})
     rest, toks, i = [], tokens(query), 0
     while i < len(toks):
-        m = re.fullmatch(r"//(%s)" % "|".join(names), toks[i], re.I)
+        m = re.fullmatch(r"(!?)//(%s)" % "|".join(names), toks[i], re.I)
         if m and i + 1 < len(toks):
-            found[m.group(1).lower()].append(unquote(toks[i + 1]))
+            val, neg = toks[i + 1], bool(m.group(1))
+            if val.startswith("!") and len(val) > 1:
+                val, neg = val[1:], True
+            found[("!" if neg else "") + m.group(2).lower()].append(unquote(val))
             i += 2
         else:
             rest.append(toks[i]); i += 1
@@ -135,6 +142,23 @@ def split_mime(query):
     """'//mime image foo "bar baz"' -> (['image'], 'foo "bar baz"')."""
     found, rest = _take_tags(query, ["mime"])
     return [m.lower() for m in found["mime"]], rest
+
+def split_mime_all(query):
+    """'//mime image !//mime pdf foo' -> (['image'], ['pdf'], 'foo'): wanted kinds, excluded kinds, the rest."""
+    found, rest = _take_tags(query, ["mime"])
+    return [m.lower() for m in found["mime"]], [m.lower() for m in found["!mime"]], rest
+
+def split_neg_terms(rest):
+    """Free-text terms split by a leading "!" (outside quotes) -> (positive, negated), lowercased and unquoted.
+    A quoted "!x" is literal text, since the quote comes first."""
+    pos, neg = [], []
+    for t in tokens(rest):
+        if t.startswith("!") and len(t) > 1:
+            if unquote(t[1:]):
+                neg.append(unquote(t[1:]).lower())
+        elif unquote(t):
+            pos.append(unquote(t).lower())
+    return pos, neg
 
 def split_tags(query):
     """'//name x //path "y z" //size >5M //dm >2015-06 rest' -> ({'name':[x],...}, 'rest'); quotes are kept in rest."""
@@ -166,6 +190,14 @@ def tag_ok(i, paths, sizes, mtimes, wanted, tags):
     if any(t.lower() not in base for t in tags["name"]):
         return False
     if any(t.lower() not in p.lower() for t in tags["path"]):
+        return False
+    if any(t.lower() in base for t in tags.get("!name", [])):
+        return False
+    if any(path_matches(p, t) for t in tags.get("!path", [])):
+        return False
+    if any(_size_ok(sizes[i], c) for c in tags.get("!size", [])):
+        return False
+    if any(_date_ok(mtimes[i], c) for c in tags.get("!dm", [])):
         return False
     if any(not _size_ok(sizes[i], c) for c in tags["size"]):
         return False
@@ -314,9 +346,9 @@ class NameTable:
         return out
 
     def _match(self, q, sort, desc):
-        wanted, rest = split_mime(q)
+        wanted, not_wanted, rest = split_mime_all(q)
         tags, rest = split_tags(rest)
-        terms = [unquote(t).lower() for t in tokens(rest) if unquote(t)]
+        terms, neg_terms = split_neg_terms(rest)
         with self.lock:
             N = len(self.paths)
             sorts = [k for k in sort.split(",") if k in self.sort_keys] or ["date"]
@@ -326,7 +358,9 @@ class NameTable:
             sort_keys = self.sort_keys
             ext_codes, ext_names, size_arr = self.ext_codes, self.ext_names, self.size_arr
         rest_key = (tuple(sorts), desc, tuple(wanted), tuple(tags["size"]), tuple(tags["path"]),
-                    tuple(tags["name"]), tuple(tags["dm"]), tuple(hidden_folders(q)))
+                    tuple(tags["name"]), tuple(tags["dm"]), tuple(hidden_folders(q)),
+                    tuple(not_wanted), tuple(neg_terms), tuple(tags["!name"]), tuple(tags["!path"]),
+                    tuple(tags["!size"]), tuple(tags["!dm"]))
         with self.lock:
             last = self._last
         # Typing usually extends the previous query: only the new word is checked, over the previous matches
@@ -339,8 +373,9 @@ class NameTable:
             if narrow:
                 keep = self._filter_candidates(last[2], terms[-1].encode("utf-8"))
                 idx = last[2][keep]
-                if tags["name"] or tags["dm"]:
-                    rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"]}
+                if tags["name"] or tags["dm"] or tags["!name"] or tags["!dm"]:
+                    rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"],
+                                 "!name": tags["!name"], "!dm": tags["!dm"]}
                     idx = np.array([i for i in idx.tolist()
                                     if tag_ok(i, self.paths, self.sizes, self.mtimes, [], rest_tags)], np.int64)
                 with self.lock:
@@ -352,8 +387,17 @@ class NameTable:
                 mask &= ~self.off_masks[f]
         for t in terms:
             mask &= self._cached_term_mask(t.encode("utf-8"))
+        for t in neg_terms:
+            mask &= ~self._cached_term_mask(t.encode("utf-8"))
         for v in tags["path"]:
             mask &= self._cached_term_mask(expand_path_value(v).encode("utf-8"))
+        for v in tags["!path"]:
+            mask &= ~self._cached_term_mask(expand_path_value(v).encode("utf-8"))
+        if not_wanted:
+            banned = [k for k, e in enumerate(ext_names) if any(w == e or EXT_KIND.get(e) == w for w in not_wanted)]
+            mask &= ~np.isin(ext_codes, np.array(banned, np.int32))
+        for c in tags["!size"]:
+            mask &= ~_size_mask(size_arr, c)
         if wanted:
             allowed = [k for k, e in enumerate(ext_names) if any(w == e or EXT_KIND.get(e) == w for w in wanted)]
             mask &= np.isin(ext_codes, np.array(allowed, np.int32))
@@ -369,8 +413,9 @@ class NameTable:
             sign = -1 if desc else 1
             cols = [sort_keys["path"][idx]] + [sign * sort_keys[k][idx] for k in reversed(sorts)]
             idx = idx[np.lexsort(cols)]
-        if tags["name"] or tags["path"] or tags["dm"]:
-            rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"]}
+        if tags["name"] or tags["path"] or tags["dm"] or tags["!name"] or tags["!dm"]:
+            rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"],
+                         "!name": tags["!name"], "!dm": tags["!dm"]}
             idx = np.array([i for i in idx.tolist()
                             if tag_ok(i, self.paths, self.sizes, self.mtimes, [], rest_tags)], np.int64)
         with self.lock:

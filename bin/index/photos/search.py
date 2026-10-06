@@ -97,18 +97,22 @@ def tokenize(q):
     except ValueError: return q.split()
 
 def parse(q):
-    """Return a list of filters: ('face', [names]) | ('clip', text) and bare words."""
+    """Return a list of filters: ('face', text, negated) | ('clip', text, negated) | the //tags, and bare words.
+    A leading "!" on the tag (or on the first word of its value) negates the filter (query-dsl.md "Negation");
+    a "!" bare word is inert here, since bare words are a CLIP search and "not like X" has no meaning."""
     toks = tokenize(q)
     filters, bare, cur = [], [], None
     for t in toks:
-        m = re.match(r"^(?:/(face|clip)|//(name|path|size|dm|date))$", t)
+        m = re.match(r"^(!?)(?:/(face|clip)|//(name|path|size|dm|date))$", t)
         if m:
-            cur = m.group(1) or m.group(2); filters.append([cur, []]); continue
+            cur = m.group(2) or m.group(3); filters.append([cur, [], bool(m.group(1))]); continue
         if cur is not None:
+            if not filters[-1][1] and t.startswith("!") and len(t) > 1:
+                filters[-1][2] = True; t = t[1:]
             filters[-1][1].append(t)
-        else:
+        elif not t.startswith("!"):
             bare.append(t)
-    return [(k, " ".join(v)) for k, v in filters], bare
+    return [(k, " ".join(v), neg) for k, v, neg in filters], bare
 
 # ---------- field tags: //name //path //size //dm ----------
 _META = None
@@ -262,11 +266,14 @@ def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
 
     universe = _index["clip"][1] and [m["remote"] for m in _index["clip"][1]]
     universe = list(dict.fromkeys(universe or meta().keys()))
-    for kind, text in filters:
+    excluded = []   # negated filters: photos they match are dropped from the AND of the rest
+    for kind, text, neg in filters:
+        if neg and kind == "clip": continue      # "not like <text>" is not a thing: inert
         if kind == "face": res, err = face_filter(text)
         elif kind == "clip": res, err = clip_filter(text)
         else: res, err = field_filter(kind, text, universe)
         if err: errors.append(err)
+        elif neg: excluded.append(res)
         else: results.append(res)
     if bare:
         btext = " ".join(bare)
@@ -278,12 +285,15 @@ def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
             for w in matched_people:
                 res, err = face_filter(w)
                 if not err: results.append(res)
+    if not results and excluded:
+        results.append({r: 0.0 for r in universe})   # only exclusions: everything except the matches
     if not results:
         raise ValueError("; ".join(errors) or "empty query")
 
     # AND across filters: keep remotes present in every filter, sum scores
     keys = set(results[0])
     for r in results[1:]: keys &= set(r)
+    for r in excluded: keys -= set(r)
     hidden = hidden_folders(q)
     if hidden:
         keys = {k for k in keys if not any(to_mount(k).startswith(f) for f in hidden)}

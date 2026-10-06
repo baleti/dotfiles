@@ -126,6 +126,10 @@ PanelWindow {
     }
 
     function _matches(app, term) {
+        return QueryDsl.applyNeg(term, root._matchesPos(app, term));
+    }
+
+    function _matchesPos(app, term) {
         if (term.text !== undefined)
             return app.haystack.indexOf(term.text) >= 0;
         // scoped path:value
@@ -145,7 +149,7 @@ PanelWindow {
     function _rank(app) {
         let firstText = "";
         for (const t of root.parsed.terms)
-            if (t.text !== undefined) { firstText = t.text; break; }
+            if (t.text !== undefined && !t.neg) { firstText = t.text; break; }
         if (firstText.length === 0)
             return 3;
         const n = app.name.toLowerCase();
@@ -274,13 +278,16 @@ PanelWindow {
             }
             let j = i;
             while (j < text.length && text[j] !== " ") j++;
-            const tok = text.slice(i, j);
+            // A leading "!" negates the term (query-dsl.md "Negation"); it is
+            // not part of the command, so the span starts after it.
+            const bang = text[i] === "!" ? 1 : 0;
+            const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
                 if (QueryDsl.canonVerb({ q: false, v: tok })) {
-                    spans.push({ start, end: start + tok.length, valid: true });
+                    spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
-                    spans.push({ start, end: start + tok.length, valid: false });
+                    spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
                 }
                 // else: still forming - neutral, no span at all
             }
@@ -341,7 +348,7 @@ PanelWindow {
             root.acVerbMulti = false;
         }
 
-        const vm = t.match(/(?:^|\s)(\/[a-z-]*)$/);
+        const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
             const prefix = t.slice(0, t.length - vm[1].length);
@@ -723,7 +730,7 @@ PanelWindow {
                         // no-op otherwise (empty universe cross), so this
                         // just always tries it rather than re-deriving the
                         // current stage here too.
-                        const vm = query.text.match(/(?:^|\s)(\/[a-z-]*)$/);
+                        const vm = query.text.match(/(?:^|\s|!)(\/[a-z-]*)$/);
                         if (vm || root.acVerbMulti) {
                             if (!root.acVerbMulti) {
                                 root.acVerbMulti = true;
