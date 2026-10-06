@@ -687,7 +687,6 @@ impl eframe::App for App {
                     .inner_margin(Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("󰍉").color(pal.accent).size(16.0));
                             if self.cursor_end {
                                 // programmatic completion: park the caret after the inserted text
                                 self.cursor_end = false;
