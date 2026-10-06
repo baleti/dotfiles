@@ -570,7 +570,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
         const VERBS: [(&str, &str); 5] = [
-            ("/fts ", "full-text search over every content index: /fts dgcl hwo //path gdrive/\"part 3\""),
+            ("/fts ", "full-text search over every content index: /fts dgcl design //mime pdf"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
             ("/sort ", "order the results by a field, e.g. /s size desc"),

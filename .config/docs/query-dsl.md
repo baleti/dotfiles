@@ -42,7 +42,7 @@ registered person.
 
 **Full-text search (`/fts`, `/full-text-search`) - images picker only.** The
 verb takes the rest of the query as Recoll query-language terms (words are
-ANDed, `OR`, `"phrase"`, `-term` as in Recoll), so `/fts dgcl hwo //mime pdf`
+ANDed, `OR`, `"phrase"`, `-term` as in Recoll), so `/fts dgcl design //mime pdf`
 finds PDFs whose contents contain both words. Other `//` filters still apply
 to its results. Only files that are in a Recoll (Xapian) content index can
 match: a `/fts` query never shows a file that has not been content-indexed, so
