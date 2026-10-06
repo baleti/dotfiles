@@ -275,6 +275,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/query":
             q = (qs.get("q", [""])[0]).strip()
             top = int(qs.get("top", ["60"])[0])
+            offset = int(qs.get("offset", ["0"])[0])
             # default: file-name search over everything the catalog knows; /clip and /face
             # switch to photo search; the explicit //file prefix is still accepted
             photo_mode = re.search(r"(?:^|\s)/(?:clip|face)(?:\s|$)", q) is not None
@@ -305,9 +306,10 @@ class H(BaseHTTPRequestHandler):
             try:
                 with _q_lock:
                     if not q:
-                        results, count, errors = search.browse(top), None, []
+                        results, count, errors = search.browse(offset + top), None, []
                     else:
-                        results, count, errors = search.run_query(q, top)
+                        results, count, errors = search.run_query(q, offset + top, clip_n=10**9)
+                    results = results[offset:]
             except ValueError as e:
                 return self._json(200, {"count": 0, "results": [], "errors": [str(e)]})
             except Exception as e:
