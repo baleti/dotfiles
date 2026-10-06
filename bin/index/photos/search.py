@@ -202,6 +202,25 @@ def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=400):
     results, errors = [], []
 
     def face_filter(name_text):
+        if name_text.startswith("@"):
+            # "@<photo>": use the largest face already indexed in that photo as the reference
+            ref = name_text[1:].strip()
+            E, meta = _index["faces"]
+            best = None
+            for i, m in enumerate(meta):
+                if m["remote"] == ref:
+                    b = m["bbox"]
+                    area = (b[2] - b[0]) * (b[3] - b[1])
+                    if best is None or area > best[0]:
+                        best = (area, i)
+            if best is None:
+                return None, f"no indexed face in {ref}"
+            sims = E @ E[best[1]]
+            hits = {}
+            for sim, m in zip(sims, meta):
+                if sim >= face_thr and sim > hits.get(m["remote"], 0):
+                    hits[m["remote"]] = float(sim)
+            return hits, None
         names = [n for n in people if name_text.lower() in n.lower()]
         if not names:
             return None, f"no person matches '{name_text}' (registered: {', '.join(sorted(people)) or 'none'})"
