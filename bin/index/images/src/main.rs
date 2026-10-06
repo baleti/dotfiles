@@ -106,15 +106,6 @@ fn load_cols() -> [f32; 5] {
     out
 }
 
-/// (column key, descending) from the last session; ("", false) when there is none.
-fn load_sort() -> (String, bool) {
-    let v: serde_json::Value = std::fs::read_to_string(sort_path()).ok()
-        .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null);
-    let key = v.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let desc = v.get("desc").and_then(|x| x.as_bool()).unwrap_or(false);
-    (key, desc)
-}
-
 /// Search-box history file (one query per line), in the picker's data directory.
 fn history_path() -> PathBuf {
     PathBuf::from(&cfg().data_dir).join("search-files-history.txt")
@@ -434,9 +425,6 @@ struct App {
     people: Vec<String>,
     /// year-months present in the index (for //dm completion) and file kinds (for //mime)
     facets: FacetsReply,
-    /// list sort: column key ("" = server order) and direction; remembered between runs
-    sort_key: String,
-    sort_desc: bool,
     /// column widths as fractions of the row (drag the header boundaries to change)
     col_frac: [f32; 5],
     /// thumbnail size in px; Ctrl+wheel / pinch changes it; at GRID_ZOOM and above the results show as a grid
@@ -489,7 +477,16 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
         ("mime", "file kind: image, pdf, text, code, ..."),
         ("file", "file-name search mode"),
     ];
-    if let Some(body) = frag.strip_prefix("//") {
+    if matches!(prev, "/s" | "/sort") && !frag.starts_with('/') {
+        // the field after /s, or a direction once a field is there
+        let f = frag.to_lowercase();
+        for (name, _) in SORT_FIELDS.iter() {
+            if name.contains(f.as_str()) { out.push((format!("{name} "), "sort field".to_string())); }
+        }
+        return (start, out);
+    } else if frag.len() >= 2 && !frag.starts_with("//") && "/sort".starts_with(frag) {
+        out.push(("/sort ".to_string(), "order the results by a field, e.g. /s size desc".to_string()));
+    } else if let Some(body) = frag.strip_prefix("//") {
         // exact tag with a value list: offer the values right away
         if let Some((tag, _)) = TAGS.iter().find(|(t, _)| *t == body) {
             let vals = values_for(tag);
@@ -525,6 +522,73 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply) -> (usize, Vec<
         }
     }
     (start, out)
+}
+
+/// Sortable fields: (name typed in `/s`, server key). The first four are the visible columns.
+const SORT_FIELDS: [(&str, &str); 6] = [
+    ("name", "name"), ("path", "path"), ("size", "size"), ("date-modified", "date"),
+    ("extension", "ext"), ("depth", "depth"),
+];
+
+struct SortSpec {
+    /// server keys, primary first; empty when the query has no /s (default: newest first)
+    keys: Vec<String>,
+    desc: bool,
+    explicit: bool,
+}
+
+/// A `/s` path segment -> server key: exact name or alias first, else a unique substring.
+fn resolve_sort_field(seg: &str) -> Option<&'static str> {
+    let seg = seg.to_lowercase();
+    if seg.is_empty() { return None; }
+    if seg == "dm" || seg == "date" { return Some("date"); }
+    if let Some(f) = SORT_FIELDS.iter().find(|f| f.0 == seg) { return Some(f.1); }
+    let hits: Vec<_> = SORT_FIELDS.iter().filter(|f| f.0.contains(seg.as_str())).collect();
+    if hits.len() == 1 { Some(hits[0].1) } else { None }
+}
+
+/// Direction word: only taken when it matches exactly one of ascending / descending.
+fn sort_direction(tok: &str) -> Option<bool> {
+    let t = tok.to_lowercase();
+    if t.is_empty() { return None; }
+    match ("ascending".contains(t.as_str()), "descending".contains(t.as_str())) {
+        (true, false) => Some(false),
+        (false, true) => Some(true),
+        _ => None,
+    }
+}
+
+/// Splits `/s`, `/sort` and `/rv` commands out of the query. Returns the rest (what the server
+/// sees) and the requested order. Each `/s` adds keys (`/s a /s b` == `/s/a/b`: a, then b on ties);
+/// a segment that resolves to nothing makes that whole `/s` inert. One direction for every key.
+fn parse_sort(q: &str) -> (String, SortSpec) {
+    let toks: Vec<&str> = q.split_whitespace().collect();
+    let mut rest: Vec<&str> = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
+    let mut desc = None;
+    let mut reverse = false;
+    let mut explicit = false;
+    let mut i = 0;
+    while i < toks.len() {
+        let t = toks[i];
+        i += 1;
+        if t == "/rv" || t == "/reverse" { reverse = true; continue; }
+        let chain = if let Some(c) = t.strip_prefix("/sort") { c } else if let Some(c) = t.strip_prefix("/s") { c } else { rest.push(t); continue };
+        let mut path = if chain.is_empty() { None } else if let Some(c) = chain.strip_prefix('/') { Some(c) } else { rest.push(t); continue };
+        if path.is_none() && i < toks.len() && !toks[i].starts_with('/') { path = Some(toks[i]); i += 1; }
+        let segs: Vec<Option<&str>> = path.map(|p| p.split('/').map(resolve_sort_field).collect()).unwrap_or_default();
+        if let Some(d) = toks.get(i).and_then(|d| sort_direction(d)) { i += 1; if !segs.is_empty() && segs.iter().all(Option::is_some) { desc = Some(d); } }
+        if !segs.is_empty() && segs.iter().all(Option::is_some) {
+            explicit = true;
+            for k in segs.into_iter().flatten() {
+                if !keys.iter().any(|x| x == k) { keys.push(k.to_string()); }
+            }
+        }
+    }
+    let mut desc_v = if keys.is_empty() { true } else { desc.unwrap_or(false) };
+    if keys.is_empty() { keys.push("date".into()); }
+    if reverse { desc_v = !desc_v; }
+    (rest.join(" "), SortSpec { keys, desc: desc_v, explicit: explicit || reverse })
 }
 
 fn apply(q: &str, start: usize, replacement: &str) -> String {
@@ -611,8 +675,6 @@ impl App {
             close_now: false,
             people: Vec::new(),
             facets: FacetsReply::default(),
-            sort_key: load_sort().0,
-            sort_desc: load_sort().1,
             col_frac: load_cols(),
             thumb: 20.0,
             results_h: 400.0,
@@ -629,12 +691,10 @@ impl App {
 
     fn send_query(&mut self) {
         self.seq += 1;
-        self.req_q = self.query.trim().to_string();
-        self.req_sort = match self.sort_key.as_str() {
-            k @ ("name" | "path" | "size" | "date") => k.to_string(),
-            _ => "date".to_string(),
-        };
-        self.req_desc = self.sort_desc;
+        let (rest, sort) = parse_sort(&self.query);
+        self.req_q = rest;
+        self.req_sort = sort.keys.join(",");
+        self.req_desc = sort.desc;
         self.last_sent = self.query.clone();
         self.pages.clear();
         self.pending.clear();
@@ -844,28 +904,25 @@ impl App {
         self.open_hit(self.selected);
     }
 
-    /// Clicking a header: the same column flips the direction, another column sorts ascending.
+    /// Clicking a header writes `/s <field>` into the query (replacing any /s and /rv there):
+    /// the same primary column flips the direction, another column sorts ascending.
     fn set_sort(&mut self, key: &str) {
-        if self.sort_key == key {
-            self.sort_desc = !self.sort_desc;
-        } else {
-            self.sort_key = key.to_string();
-            self.sort_desc = false;
-        }
-        self.apply_sort();
+        let (rest, cur) = parse_sort(&self.query);
+        let desc = cur.explicit && cur.keys.first().map(String::as_str) == Some(key) && !cur.desc;
+        let field = SORT_FIELDS.iter().find(|f| f.1 == key).map(|f| f.0).unwrap_or(key);
+        let mut q = rest;
+        if !q.is_empty() { q.push(' '); }
+        q.push_str(&format!("/s {field}{}", if desc { " desc" } else { "" }));
+        self.query = q;
+        self.send_query();
         self.save_sort();
     }
 
-    /// Writes the sort and the column proportions, so both come back next time the app opens.
+    /// Writes the column proportions, so they come back next time the app opens.
     fn save_sort(&self) {
         let _ = std::fs::create_dir_all(PathBuf::from(&cfg().data_dir));
-        let body = serde_json::json!({"key": self.sort_key, "desc": self.sort_desc, "cols": self.col_frac});
+        let body = serde_json::json!({"cols": self.col_frac});
         let _ = std::fs::write(sort_path(), body.to_string());
-    }
-
-    /// Sorting happens on the server, so the whole match list is re-requested in the new order.
-    fn apply_sort(&mut self) {
-        self.send_query();
     }
 
     /// Thumbnail grid for zoomed-in views: square cells with name, path, size and date under each.
@@ -1433,6 +1490,7 @@ impl eframe::App for App {
                     let left = hr.left() + 6.0 + self.thumb + 12.0;
                     let c = cols(left, hr.right(), &frac);
                     let hf = egui::FontId::monospace(10.0);
+                    let cur_sort = parse_sort(&self.query).1;
                     let mut columns: Vec<(&str, f32, &str)> = vec![
                         ("name", c.name_x, "NAME"),
                         ("path", c.path_x, "PATH"),
@@ -1443,11 +1501,12 @@ impl eframe::App for App {
                     for (key, x, label) in &columns {
                         let rect = egui::Rect::from_min_max(egui::pos2(*x, hr.top()), egui::pos2(*x + 40.0, hr.bottom()));
                         let resp = ui.interact(rect, egui::Id::new(("hdr", *key)), egui::Sense::click());
-                        let arrow = if self.sort_key == *key { if self.sort_desc { " ▼" } else { " ▲" } } else { "" };
+                        let primary = cur_sort.explicit && cur_sort.keys.first().map(String::as_str) == Some(*key);
+                        let arrow = if primary { if cur_sort.desc { " ▼" } else { " ▲" } } else { "" };
                         ui.painter().text(egui::pos2(*x, hr.top() + 2.0), egui::Align2::LEFT_TOP,
                             format!("{label}{arrow}"), hf.clone(),
-                            if self.sort_key == *key { pal.accent } else { pal.dim });
-                        if resp.clicked() { self.set_sort(key); }
+                            if primary { pal.accent } else { pal.dim });
+                        if resp.clicked() && *key != "score" { self.set_sort(key); }
                     }
                     // drag handles on the boundaries between columns: move width from one column to its neighbour
                     let total = (hr.right() - left).max(1.0);
@@ -1610,4 +1669,21 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("images", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::parse_sort;
+    fn p(q: &str) -> (String, String, bool) { let (r, s) = parse_sort(q); (r, s.keys.join(","), s.desc) }
+    #[test]
+    fn grammar() {
+        assert_eq!(p("cat"), ("cat".into(), "date".into(), true));
+        assert_eq!(p("cat /s size desc"), ("cat".into(), "size".into(), true));
+        assert_eq!(p("/s date-modified /s size"), ("".into(), "date,size".into(), false));
+        assert_eq!(p("/sort/dm/size de x"), ("x".into(), "date,size".into(), true));
+        assert_eq!(p("/s name blender"), ("blender".into(), "name".into(), false));
+        assert_eq!(p("/s nonsense //name a"), ("//name a".into(), "date".into(), true));
+        assert_eq!(p("/s size /rv"), ("".into(), "size".into(), true));
+        assert_eq!(p("/s d"), ("".into(), "date".into(), true)); // ambiguous (date-modified, depth) -> inert
+    }
 }

@@ -105,7 +105,20 @@ def _extras(paths, sizes, mtimes):
         "size": np.argsort(size_arr, kind="stable"),
         "date": np.argsort(mt_arr, kind="stable"),
     }
-    return codes, ext_names, size_arr, mt_arr, orders
+    # integer sort keys per field (equal values share a rank), for multi-key sorts via lexsort
+    def rank(a):
+        return np.unique(a, return_inverse=True)[1].astype(np.int64).ravel()
+    exts = np.empty(len(paths), object)
+    exts[:] = [ext_names[c] for c in codes]
+    keys = {
+        "path": orders["path"],
+        "name": rank(names),
+        "size": size_arr,
+        "date": mt_arr,
+        "ext": rank(exts),
+        "depth": np.array([p.count("/") for p in paths], np.int64),
+    }
+    return codes, ext_names, size_arr, mt_arr, orders, keys
 
 def _size_mask(size_arr, cond):
     m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMGT]?)B?$", cond.strip(), re.I)
@@ -149,7 +162,7 @@ class NameTable:
         # newest-first order, computed once so an empty query is instant
         mt = np.array([m if m is not None else 0 for m in mtimes], dtype=np.int64)
         order = np.argsort(-mt) if len(mt) else np.zeros(0, np.int64)
-        ext_codes, ext_names, size_arr, mt_arr, orders = _extras(paths, sizes, mtimes)
+        ext_codes, ext_names, size_arr, mt_arr, orders, keys = _extras(paths, sizes, mtimes)
         with self.lock:
             self.paths, self.sizes, self.mtimes = paths, sizes, mtimes
             self.blob, self.starts = blob, starts
@@ -157,6 +170,7 @@ class NameTable:
             self.order = order
             self.ext_codes, self.ext_names = ext_codes, ext_names
             self.size_arr, self.mt_arr, self.orders = size_arr, mt_arr, orders
+            self.sort_keys = keys
             self._cache = None
             self.dates = [d for d in dates if d]
             self.loaded_mtime = os.path.getmtime(self.db_path)
@@ -189,7 +203,9 @@ class NameTable:
         terms = [t.lower() for t in rest.split() if t]
         with self.lock:
             N = len(self.paths)
-            order = self.orders.get(sort, self.orders["date"])
+            sorts = [k for k in sort.split(",") if k in self.sort_keys] or ["date"]
+            order = self.orders.get(sorts[0]) if len(sorts) == 1 else None
+            sort_keys = self.sort_keys
             ext_codes, ext_names, size_arr = self.ext_codes, self.ext_names, self.size_arr
         mask = np.ones(N, bool)
         for t in terms:
@@ -199,9 +215,16 @@ class NameTable:
             mask &= np.isin(ext_codes, np.array(allowed, np.int32))
         for c in tags["size"]:
             mask &= _size_mask(size_arr, c)
-        if desc:
-            order = order[::-1]
-        idx = order[mask[order]]
+        if order is not None:
+            if desc:
+                order = order[::-1]
+            idx = order[mask[order]]
+        else:
+            # several keys: the first is primary, later ones break ties, path order is the last resort
+            idx = np.flatnonzero(mask)
+            sign = -1 if desc else 1
+            cols = [sort_keys["path"][idx]] + [sign * sort_keys[k][idx] for k in reversed(sorts)]
+            idx = idx[np.lexsort(cols)]
         if tags["name"] or tags["path"] or tags["dm"]:
             rest_tags = {"name": tags["name"], "path": tags["path"], "size": [], "dm": tags["dm"]}
             idx = np.array([i for i in idx.tolist()
