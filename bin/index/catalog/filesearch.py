@@ -6,7 +6,7 @@ blob with bytes.find, maps hits back to lines with searchsorted, then checks the
 other terms per candidate. Each keystroke is one scan over RAM; nothing on disk
 is touched and no per-query process is started.
 """
-import bisect, json, os, re, sqlite3, threading, time
+import bisect, collections, json, os, re, sqlite3, threading, time
 import numpy as np
 
 # file kinds by extension: `//mime <kind>` (any extension name also works, e.g. //mime pdf)
@@ -57,17 +57,18 @@ def hidden_folders(query):
             out.append(folder)
     return out
 
+def expand_path_value(value):
+    """What a //path value means on disk, lowercased: gdrive/x -> the gdrive mount, ~/x -> home."""
+    v = value.replace('"', "").strip()
+    if v.startswith("gdrive/"):
+        v = os.path.expanduser("~/gdrive-rclone-crypt/") + v[len("gdrive/"):]
+    elif v.startswith("~/"):
+        v = os.path.expanduser(v)
+    return v.lower()
+
 def path_matches(path, value):
-    """Each '/'-separated segment must appear in the path, in order: gdrive/"part 3" matches .../gdrive-.../part 3/..."""
-    low, pos = path.lower(), 0
-    for seg in value.replace('"', "").split("/"):
-        if not seg:
-            continue
-        i = low.find(seg.lower(), pos)
-        if i < 0:
-            return False
-        pos = i + len(seg)
-    return True
+    """Substring match: //path gdrive/office matches every path that contains that text."""
+    return expand_path_value(value) in path.lower()
 
 def matches_mime(path, wanted):
     """wanted: list of kind names or extensions; a file matches if any applies."""
@@ -203,6 +204,7 @@ class NameTable:
         self.paths = []        # original-case paths, index-aligned with blob lines
         self.off_masks = {}    # off-by-default folder -> bool mask over paths
         self.dirs = []         # every distinct folder, sorted (for //path completion)
+        self._tm_cache = collections.OrderedDict()
         self.blob = b""
         self.starts = np.zeros(0, np.int64)
         self.sizes = []
@@ -244,6 +246,7 @@ class NameTable:
             self.off_masks = {f: np.fromiter((p.startswith(f) for p in paths), bool, len(paths))
                               for f, _ in off_default_entries()}
             self.dirs = dirs
+            self._tm_cache = collections.OrderedDict()
             self.sort_keys = keys
             self._cache = None
             self.dates = [d for d in dates if d]
@@ -305,7 +308,9 @@ class NameTable:
             if f in self.off_masks:
                 mask &= ~self.off_masks[f]
         for t in terms:
-            mask &= self._term_mask(t.encode("utf-8"))
+            mask &= self._cached_term_mask(t.encode("utf-8"))
+        for v in tags["path"]:
+            mask &= self._cached_term_mask(expand_path_value(v).encode("utf-8"))
         if wanted:
             allowed = [k for k, e in enumerate(ext_names) if any(w == e or EXT_KIND.get(e) == w for w in wanted)]
             mask &= np.isin(ext_codes, np.array(allowed, np.int32))
@@ -322,10 +327,24 @@ class NameTable:
             cols = [sort_keys["path"][idx]] + [sign * sort_keys[k][idx] for k in reversed(sorts)]
             idx = idx[np.lexsort(cols)]
         if tags["name"] or tags["path"] or tags["dm"]:
-            rest_tags = {"name": tags["name"], "path": tags["path"], "size": [], "dm": tags["dm"]}
+            rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"]}
             idx = np.array([i for i in idx.tolist()
                             if tag_ok(i, self.paths, self.sizes, self.mtimes, [], rest_tags)], np.int64)
         return idx
+
+    def _cached_term_mask(self, term):
+        """Masks for recent terms are kept, so extending a query only scans the new word."""
+        with self.lock:
+            hit = self._tm_cache.get(term)
+            if hit is not None:
+                self._tm_cache.move_to_end(term)
+                return hit
+        m = self._term_mask(term)
+        with self.lock:
+            self._tm_cache[term] = m
+            while len(self._tm_cache) > 64:
+                self._tm_cache.popitem(last=False)
+        return m
 
     def _term_mask(self, term):
         """Lines containing the bytes of term (terms hold no newline, so a match stays on one line)."""
