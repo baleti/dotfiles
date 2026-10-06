@@ -1082,7 +1082,6 @@ impl eframe::App for App {
                             let edit = egui::TextEdit::singleline(&mut self.query)
                                 .id(egui::Id::new("query"))
                                 .frame(egui::Frame::NONE)
-                                .hint_text(RichText::new("name words   //mime pdf   //mime image   //clip brick   //face <name>").color(pal.dim))
                                 .text_color(pal.text)
                                 .desired_width(f32::INFINITY)
                                 .font(egui::TextStyle::Body);
