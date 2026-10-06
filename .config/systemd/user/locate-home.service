@@ -1,0 +1,8 @@
+[Unit]
+Description=Update the user-scoped $HOME locate database
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/updatedb --config-file=%h/.config/updatedb/home.conf --database-root=%h --require-visibility no --output=%h/.cache/locate/home.db
+Nice=19
+IOSchedulingClass=idle
