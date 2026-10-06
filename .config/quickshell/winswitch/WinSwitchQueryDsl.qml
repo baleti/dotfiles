@@ -115,8 +115,14 @@ QtObject {
         let start = -1;
         let leadQuote = false;
         let inQuotes = false;
+        // A "!" at the start of a token negates it (query-dsl.md
+        // "Negation"). It is not part of the token: `start` stays on the
+        // char after it, so command spans / completion offsets see the
+        // plain token and a replacement keeps the "!" in front.
+        let neg = false;
         for (let i = 0; i < query.length; i++) {
             const c = query[i];
+            if (c === "!" && start < 0 && !neg) { neg = true; continue; }
             if (c === '"') {
                 if (start < 0) leadQuote = true;
                 inQuotes = !inQuotes;
@@ -125,18 +131,19 @@ QtObject {
             }
             if (/\s/.test(c) && !inQuotes) {
                 if (start >= 0) {
-                    tokens.push({ start, text: cur, leadQuote });
+                    tokens.push({ start, text: cur, leadQuote, neg });
                     cur = "";
                     start = -1;
                     leadQuote = false;
                 }
+                neg = false;
                 continue;
             }
             if (start < 0) start = i;
             cur += c;
         }
         if (start >= 0)
-            tokens.push({ start, text: cur, leadQuote });
+            tokens.push({ start, text: cur, leadQuote, neg });
         return tokens;
     }
 
@@ -365,29 +372,36 @@ QtObject {
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
     function parse(query) {
         const toks = root.tokenize(query);
-        const out = { filters: [], colOps: [], sort: null, reverse: false };
+        let out = { filters: [], colOps: [], sort: null, reverse: false };
+        const top = out;
         let i = 0;
         while (i < toks.length) {
+            out = top; // undo the previous verb's "!" redirect, if any
             const tok = toks[i];
             const tv = root.tokVerb(tok);
             if (tv === null) {
                 const midTyping = !tok.leadQuote && tok.text[0] === "/" && root.isVerbPrefix(tok.text.slice(1));
                 if (!midTyping)
-                    out.filters.push(root.filterTerm(tok.text));
+                    out.filters.push(root.negated(root.filterTerm(tok.text), tok.neg));
                 i++;
                 continue;
             }
             i++;
             const verb = tv.verb;
+            // "!" only means something on a row filter: "!/s", "!/ft" ...
+            // still consume their arguments but change nothing.
+            const verbNeg = !!tok.neg;
+            if (verbNeg && verb !== "/fv")
+                out = { filters: [], colOps: [], sort: null, reverse: false };
 
             if (tv.via !== null) {
                 const via = tv.via;
                 if (verb === "/fv") {
                     if (i < toks.length && !root.startsCommand(toks[i])) {
-                        out.filters.push(root.filterTerm(via + ":" + toks[i].text));
+                        out.filters.push(root.negated(root.filterTerm(via + ":" + toks[i].text), verbNeg || toks[i].neg));
                         i++;
                     } else if (via.length > 0 && via.indexOf(".") < 0 && root.resolveGroups(via).length > 0) {
-                        out.filters.push({ kind: "exists", seg: via });
+                        out.filters.push(root.negated({ kind: "exists", seg: via }, verbNeg));
                     } else if (via.length > 0 && root.resolveFilterFields(via).length > 0) {
                         // Via path alone, no value yet, resolving to a
                         // flat type or dotted group subfield (a bare
@@ -420,7 +434,7 @@ QtObject {
                         // ambiguous fragment to union across - it must
                         // stay exactly as inert as it looked before this
                         // whole feature existed.
-                        out.filters.push({ kind: "scoped", path: via, value: "" });
+                        out.filters.push(root.negated({ kind: "scoped", path: via, value: "" }, verbNeg));
                     }
                 } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {
                     const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
@@ -450,7 +464,7 @@ QtObject {
             }
 
             if (verb === "/fv") {
-                if (args.length > 0) out.filters.push(root.filterTerm(args[0].text));
+                if (args.length > 0) out.filters.push(root.negated(root.filterTerm(args[0].text), verbNeg || args[0].neg));
             } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {
                 if (args.length > 0) {
                     const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
@@ -468,7 +482,13 @@ QtObject {
                 out.reverse = true;
             }
         }
-        return out;
+        return top;
+    }
+
+    // Stamp a filter term with its negation flag (see tokenize's "!").
+    function negated(term, neg) {
+        if (neg) term.neg = true;
+        return term;
     }
 
     // --- axis 1: row filtering ---------------------------------------------
@@ -477,6 +497,11 @@ QtObject {
     }
 
     function _termMatches(win, meta, term) {
+        const m = root._termMatchesPos(win, meta, term);
+        return term.neg ? !m : m;
+    }
+
+    function _termMatchesPos(win, meta, term) {
         if (term.kind === "free") {
             const haystack = (win.title || "") + " " + (win.class || "");
             return root.substr(term.text, haystack);
@@ -570,7 +595,7 @@ QtObject {
     function scopedGroupFilters(query) {
         const out = [];
         for (const t of root.parse(query).filters) {
-            if (t.kind !== "scoped" || t.path.indexOf(".") >= 0) continue;
+            if (t.kind !== "scoped" || t.neg || t.path.indexOf(".") >= 0) continue;
             for (const g of root.resolveGroups(t.path))
                 out.push({ group: g, value: t.value });
         }
