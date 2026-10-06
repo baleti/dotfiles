@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Photo search
-GenericName=Photo search
+Name=Search files
+GenericName=Search files
 Comment=Search photos by content (CLIP) and by person (faces)
 Exec=/home/user1/bin/index/images/target/release/images
 Icon=applications-graphics
