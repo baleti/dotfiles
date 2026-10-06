@@ -167,7 +167,7 @@ def field_filter(kind, text, universe):
         if kind == "name":
             hay = r.rsplit("/", 1)[-1].lower()
         elif kind == "path":
-            if path_matches(r, text): out[r] = 1.0
+            if path_matches(to_mount(r), text): out[r] = 1.0
             continue
         else:  # dm / date: substring of the ISO modified time
             hay = ((M.get(r) or (None, None))[1] or "").lower()
