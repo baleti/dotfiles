@@ -2,14 +2,14 @@
 """Unified photo search over the CLIP and face indexes.
 
 Query syntax (follows ~/.config/docs/query-dsl.md: `//path` = filter, AND across filters):
-  //face daniel          photos containing a face matching person 'daniel'
+  //face <name>           photos containing a face matching a registered person
   //clip brick           photos whose CLIP embedding matches the text 'brick'
-  //face daniel //clip brick   both filters (intersection)
+  //face <name> //clip <text>   both filters (intersection)
   brick building        bare words: CLIP text search, plus any registered person
                         whose name matches a bare word (default = both)
   "quoted phrase"       kept as one CLIP phrase
 
-People:  search.py people add daniel ref1.jpg [ref2.jpg ...]   (embed refs locally)
+People:  search.py people add NAME ref1.jpg [ref2.jpg ...]   (embed refs locally)
          search.py people list
 Search:  search.py [--json] [--top 60] [--face-thr 0.40] [--clip-min 0.20] QUERY...
 """

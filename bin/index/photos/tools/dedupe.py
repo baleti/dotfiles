@@ -15,7 +15,7 @@ for stem, folder in FOLDERS.items():
     for e in json.load(open(p, encoding="utf-8")):
         full = f"{folder}/{e['Path']}"
         # crypt remotes expose no MD5, so dedupe on (basename, size): the same file
-        # copied into two folders (e.g. a SoomeenHahm design folder under cardiff and office)
+        # copied into two folders (e.g. the same design folder under two different source folders)
         key = (e["Name"], e["Size"])
         if key in seen: dup += 1; continue
         seen[key] = full; out.append(full)
