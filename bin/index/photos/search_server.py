@@ -46,11 +46,12 @@ def _icon_resolver():
     return _icon_state["resolve"]
 
 def _icon_name(path):
-    if os.path.isdir(path):
-        return "inode-directory"
+    # named files never need a stat: on the FUSE mounts each one costs a network round trip
     ext = path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
     if ext in EXT_ICON:
         return EXT_ICON[ext]
+    if not ext and os.path.isdir(path):
+        return "inode-directory"
     mime = mimetypes.guess_type(path)[0] or ""
     return mime.replace("/", "-") if mime else "text-x-generic"
 
