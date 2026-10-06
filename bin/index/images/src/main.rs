@@ -436,6 +436,8 @@ struct App {
     popup: bool,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
+    /// query text as of the last frame, so the popup only re-narrows when it really changed
+    popup_q: String,
 }
 
 #[derive(Deserialize)]
@@ -682,6 +684,7 @@ impl App {
             popup: false,
             cands: Vec::new(),
             cand_sel: 0,
+            popup_q: String::new(),
         };
         app.people = fetch_people();
         app.facets = fetch_facets();
@@ -1115,14 +1118,14 @@ impl eframe::App for App {
         }
         if self.popup {
             // popup keys: Up/Down or Ctrl+J/K move, Enter accepts, Esc closes only the popup
-            let (down, up, enter, esc, cj, ck) = ui.input(|i| {
+            let (down, up, enter, esc, cj, ck) = ui.input_mut(|i| {
                 (
                     i.key_pressed(Key::ArrowDown),
                     i.key_pressed(Key::ArrowUp),
                     i.key_pressed(Key::Enter) && !i.modifiers.ctrl,
                     i.key_pressed(Key::Escape),
-                    i.modifiers.ctrl && i.key_pressed(Key::J),
-                    i.modifiers.ctrl && i.key_pressed(Key::K),
+                    i.consume_key(egui::Modifiers::CTRL, Key::J),
+                    i.consume_key(egui::Modifiers::CTRL, Key::K),
                 )
             });
             let n = self.cands.len();
@@ -1134,10 +1137,11 @@ impl eframe::App for App {
             }
         }
         // typing while the popup is open narrows it in place
-        if self.popup && self.query != self.last_sent {
+        if self.popup && self.query != self.popup_q {
             let (_, cands) = completions(&self.query, &self.people, &self.facets);
             if cands.is_empty() { self.popup = false; } else { self.cands = cands; self.cand_sel = 0; }
         }
+        self.popup_q = self.query.clone();
 
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.total;
