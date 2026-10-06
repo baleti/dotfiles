@@ -7,7 +7,7 @@
 -- `class` is the literal window class (hyprctl clients -j | jq '.[].class'),
 -- used as an exact match by get_windows and as an anchored regex in window rules.
 return {
-    { key = "1", slug = "fsearch",     class = "io.github.cboxdoerfer.FSearch", cmd = "fsearch" },
+    { key = "1", slug = "search-files", class = "images",                       cmd = "/home/user1/bin/index/images/target/release/images" },
     { key = "2", slug = "element",     class = "Element",                      cmd = "element-desktop" },
     { key = "3", slug = "thunderbird", class = "org.mozilla.Thunderbird",      cmd = "thunderbird" },
     -- UBUNTU_MENUPROXY=0: appmenu-gtk3-parser's DBus menu-export walk hits
