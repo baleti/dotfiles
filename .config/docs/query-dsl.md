@@ -57,16 +57,13 @@ show), each with its page number when the format has pages, and the matched
 words in bold. It follows the cursor, is resizable, and is fetched from the
 search server's `/snippets` endpoint.
 
-**Index collections (`/fts/<index>`).** Content indexes are kept as named
-collections, one per folder under `~/.cache/indexes/` (the list is private config, not part of this spec). The verb pivots on a collection with a slash:
-`/fts/part3-books daniel essay career cdm //mime pdf` searches only that
-collection. Shorthands are allowed, resolved like type paths: an exact name,
-else a unique prefix, else letters in order, so `/fts/p3` finds
-`part3-books` (`p` then `3`). An ambiguous or unknown name makes the result
-list empty with the reason shown in the status line. `/fts` with no pivot
-searches every collection. Completion: typing `/f` offers `/fts/`, and after
-`/fts/` the collections matching what has been typed are offered, exact and
-prefix matches first.
+**Folder scope (`//path`).** `/fts` searches every content index at once.
+Narrow it to a folder with `//path`, which is a folder filter like the other
+per-column tags. A value is split on `/`, and each part must appear in the
+folder path in that order, so `//path gdrive/"part 3"` matches a path that
+contains `gdrive` and then `part 3`. Quote a part that has spaces. Example:
+`/fts career essay cdm daniel //path gdrive/"part 3"`. There is no separate
+index name to pick: which index holds a file is an implementation detail.
 
 Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,

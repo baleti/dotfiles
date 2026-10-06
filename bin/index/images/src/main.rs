@@ -563,25 +563,10 @@ fn completions(q: &str, people: &[String], facets: &FacetsReply, history: &[Stri
         ("mime", "file kind: image, pdf, text, code, ..."),
         ("file", "file-name search mode"),
     ];
-    if let Some(rest) = frag.strip_prefix("/fts/").or_else(|| frag.strip_prefix("/full-text-search/")) {
-        // the index after /fts/: exact, prefix, or letters in order (p3 -> part3-books)
-        let verb = if frag.starts_with("/fts/") { "/fts" } else { "/full-text-search" };
-        let f = rest.to_lowercase();
-        let mut hits: Vec<(u8, &String)> = facets.fts.iter().filter_map(|n| {
-            let nl = n.to_lowercase();
-            if nl.starts_with(&f) { Some((0, n)) }
-            else if fts_subsequence(&f, &nl) { Some((1, n)) }
-            else { None }
-        }).collect();
-        hits.sort();
-        for (_, n) in hits {
-            out.push((format!("{verb}/{n} "), "full-text index".to_string()));
-        }
-        return (start, out);
-    } else if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
+    if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
         const VERBS: [(&str, &str); 5] = [
-            ("/fts/", "full-text search, optionally pivot to an index: /fts/p3"),
+            ("/fts ", "full-text search over every content index: /fts dgcl hwo //path gdrive/\"part 3\""),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
             ("/sort ", "order the results by a field, e.g. /s size desc"),
