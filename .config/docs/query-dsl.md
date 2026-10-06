@@ -664,6 +664,17 @@ whitespace. Substring is now the single matching rule everywhere;
 pickers keep their own quoting meaning (required exact phrase) as noted
 above.
 
+**images picker.** Quotes group words everywhere in the box, not only in
+values: `"career essay"` is one search term (a literal contiguous substring
+of the file name or path, and highlighted as one run), `//name "tasks of"`
+and `//path "part 3"` take the whole quoted run as their value, and
+`/fts/part3-books daniel "career essay"` passes the quoted run to Recoll as
+a phrase. `/s`, `/sort` and `/rv` inside quotes are plain text, never
+commands, and quoted runs keep their inner spacing when the order verbs are
+taken out of the query. An unterminated quote runs to the end of the box.
+Photo (`//clip`, `//face`) queries are handled by the photo engine and do
+not group quoted words.
+
 ## Autocompletion
 
 **The popup is Tab-triggered to open, never shown just from typing.**

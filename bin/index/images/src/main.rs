@@ -131,7 +131,7 @@ fn load_history() -> Vec<String> {
 
 /// Collapse whitespace runs to single spaces (shell HIST_REDUCE_BLANKS).
 fn normalize_query(q: &str) -> String {
-    q.split_whitespace().collect::<Vec<_>>().join(" ")
+    tokenize(q).join(" ")
 }
 
 /// Case-insensitive subsequence match (fzf-style fuzzy filter for the history popup).
@@ -142,14 +142,30 @@ fn fuzzy_match(hay: &str, needle: &str) -> bool {
 
 /// Shortens `text` to fit `width` px in `font`, ending with an ellipsis when it had to be cut.
 /// Plain words of a query (tags and the value after a tag are skipped), lowercased for matching.
+/// Splits on whitespace, except inside double quotes (even mid-token, as in `name:"a b"`): a quoted
+/// run is one entry. Quotes stay in the token; an unterminated quote runs to the end.
+fn tokenize(q: &str) -> Vec<String> {
+    let (mut out, mut cur, mut inq) = (Vec::new(), String::new(), false);
+    for ch in q.chars() {
+        if ch == '"' { inq = !inq; cur.push(ch); }
+        else if ch.is_whitespace() && !inq {
+            if !cur.is_empty() { out.push(std::mem::take(&mut cur)); }
+        } else { cur.push(ch); }
+    }
+    if !cur.is_empty() { out.push(cur); }
+    out
+}
+
 fn query_terms(q: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip_value = false;
-    for tok in q.split_whitespace() {
+    for tok in tokenize(q) {
+        let tok = tok.as_str();
         if tok == "/fts" || tok == "/full-text-search" { continue; }
         if tok.starts_with("//") { skip_value = true; continue; }
         if skip_value { skip_value = false; continue; }
-        out.push(tok.to_ascii_lowercase());
+        let t = tok.replace('"', "").to_ascii_lowercase();
+        if !t.is_empty() { out.push(t); }
     }
     out
 }
@@ -632,7 +648,8 @@ fn sort_direction(tok: &str) -> Option<bool> {
 /// sees) and the requested order. Each `/s` adds keys (`/s a /s b` == `/s/a/b`: a, then b on ties);
 /// a segment that resolves to nothing makes that whole `/s` inert. One direction for every key.
 fn parse_sort(q: &str) -> (String, SortSpec) {
-    let toks: Vec<&str> = q.split_whitespace().collect();
+    let owned = tokenize(q);
+    let toks: Vec<&str> = owned.iter().map(String::as_str).collect();
     let mut rest: Vec<&str> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
     let mut desc = None;
@@ -1851,6 +1868,7 @@ mod sort_tests {
         assert_eq!(p("/s name blender"), ("blender".into(), "name".into(), false));
         assert_eq!(p("/s nonsense //name a"), ("//name a".into(), "date".into(), true));
         assert_eq!(p("/s size /rv"), ("".into(), "size".into(), true));
+        assert_eq!(p("/s size \"a  /s name\" b"), ("\"a  /s name\" b".into(), "size".into(), false));
         assert_eq!(p("/s d"), ("".into(), "date".into(), true)); // ambiguous (date-modified, depth) -> inert
     }
 }
