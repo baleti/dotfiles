@@ -1360,6 +1360,25 @@ def find_session_profile(session_id):
     return best
 
 
+def label_window(profile):
+    """Name this pane's window after the account (claude/claude2/claude3)
+    the way claude-account-window-rename-hook.sh does, and mark it as
+    managed (@claude_autoname/@claude_lastset) so that hook/watcher keep
+    it current afterwards. The exec below makes claude this pane's process
+    without any window-renamed event we could rely on, so it's done here."""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return
+    base = os.path.basename((profile or CLAUDE_DIR).rstrip("/"))
+    name = {".claude2": "claude2", ".claude3": "claude3"}.get(base, "claude")
+    subprocess.run(["tmux", "rename-window", "-t", pane, name],
+                   stderr=subprocess.DEVNULL)
+    subprocess.run(["tmux", "set-window-option", "-t", pane,
+                    "@claude_autoname", "1"], stderr=subprocess.DEVNULL)
+    subprocess.run(["tmux", "set-window-option", "-t", pane,
+                    "@claude_lastset", name], stderr=subprocess.DEVNULL)
+
+
 def exec_resume(session_id, cwd):
     """Replace this process with `claude --resume ...` - this program was
     launched directly as a shell's foreground job (a plain CLI, not
@@ -1371,6 +1390,7 @@ def exec_resume(session_id, cwd):
     profile = find_session_profile(session_id)
     if profile:
         os.environ["CLAUDE_CONFIG_DIR"] = profile
+    label_window(profile)
     os.execvp("claude", ["claude", "--resume", session_id,
                          "--dangerously-skip-permissions"])
 
