@@ -10,7 +10,7 @@
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Key, Margin, RichText, Stroke, TextureHandle};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -65,6 +65,22 @@ fn human_size(b: u64) -> String {
 fn short_time(t: &str) -> String {
     t.replace('T', " ").chars().take(16).collect()
 }
+
+
+/// A local, regular file the picker may trash: under $HOME, outside the gdrive mount,
+/// not a directory, not a symlink. Remote results (gdrive-crypt:...) are never eligible.
+fn trashable(remote: &str) -> Option<(PathBuf, u64)> {
+    if !remote.starts_with('/') { return None; }
+    let home = PathBuf::from(std::env::var("HOME").ok()?);
+    let p = PathBuf::from(remote);
+    if !p.starts_with(&home) { return None; }
+    if p.starts_with(PathBuf::from(&cfg().mount_root)) { return None; }
+    let md = std::fs::symlink_metadata(&p).ok()?;
+    if !md.is_file() { return None; }
+    Some((p, md.len()))
+}
+
+fn human(b: u64) -> String { human_size(b) }
 
 /// Column x-positions for a row/header spanning [left, right]: name | path | size | modified | score.
 struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, date_x: f32, score_r: f32 }
@@ -148,6 +164,11 @@ struct App {
     hits: Vec<Hit>,
     count: usize,
     selected: usize,
+    /// multi-selection: rows between `anchor` and `selected` (inclusive) are selected
+    anchor: Option<usize>,
+    /// delete confirmation: the exact local files that would be trashed, and the typed confirmation
+    trash_pending: Option<Vec<(PathBuf, u64)>>,
+    trash_typed: String,
     status: String,
     busy: bool,
     textures: HashMap<String, TextureHandle>,
@@ -239,6 +260,9 @@ impl App {
             hits: Vec::new(),
             count: 0,
             selected: 0,
+            anchor: None,
+            trash_pending: None,
+            trash_typed: String::new(),
             status: "connecting to search server…".into(),
             busy: false,
             textures: HashMap::new(),
@@ -300,6 +324,79 @@ impl App {
         }
     }
 
+    /// Indices of all selected rows (the cursor alone when there is no range).
+    fn selection(&self) -> Vec<usize> {
+        match self.anchor {
+            Some(a) => {
+                let (lo, hi) = (a.min(self.selected), a.max(self.selected));
+                (lo..=hi).filter(|i| *i < self.hits.len()).collect()
+            }
+            None => vec![self.selected],
+        }
+    }
+
+    fn in_selection(&self, idx: usize) -> bool {
+        match self.anchor {
+            Some(a) => idx >= a.min(self.selected) && idx <= a.max(self.selected),
+            None => idx == self.selected,
+        }
+    }
+
+    /// Move the cursor; with `extend` the range grows from the anchor, otherwise it collapses.
+    fn move_cursor(&mut self, to: usize, extend: bool) {
+        if extend {
+            if self.anchor.is_none() { self.anchor = Some(self.selected); }
+        } else {
+            self.anchor = None;
+        }
+        self.selected = to;
+    }
+
+    /// Delete key: stage the selected trashable files for the confirmation dialog.
+    fn request_trash(&mut self) {
+        let mut files = Vec::new();
+        let mut skipped = 0usize;
+        for i in self.selection() {
+            let Some(h) = self.hits.get(i) else { continue };
+            match trashable(&h.remote) {
+                Some(f) => files.push(f),
+                None => skipped += 1,
+            }
+        }
+        if files.is_empty() {
+            self.status = format!("nothing to trash in the selection ({skipped} not eligible: remote or directory)");
+            return;
+        }
+        self.trash_typed.clear();
+        self.trash_pending = Some(files);
+    }
+
+    fn do_trash(&mut self, files: Vec<(PathBuf, u64)>) {
+        let mut ok = 0usize;
+        let mut failed = Vec::new();
+        for (p, _) in &files {
+            // re-check at the moment of deletion: the file may have changed since the dialog
+            if trashable(&p.to_string_lossy()).is_none() {
+                failed.push(p.display().to_string());
+                continue;
+            }
+            let res = std::process::Command::new("gio").arg("trash").arg(p).status();
+            match res {
+                Ok(st) if st.success() => ok += 1,
+                _ => failed.push(p.display().to_string()),
+            }
+        }
+        let gone: std::collections::HashSet<String> = files.iter().map(|(p, _)| p.display().to_string()).collect();
+        self.hits.retain(|h| !(gone.contains(&h.remote) && !failed.contains(&h.remote)));
+        self.anchor = None;
+        self.selected = self.selected.min(self.hits.len().saturating_sub(1));
+        self.status = if failed.is_empty() {
+            format!("moved {ok} file(s) to the trash")
+        } else {
+            format!("moved {ok} file(s) to the trash; {} failed: {}", failed.len(), failed.join(", "))
+        };
+    }
+
     fn open_selected(&mut self) {
         let Some(h) = self.hits.get(self.selected).cloned() else { return };
         let name = h.remote.rsplit('/').next().unwrap_or("photo.jpg").to_string();
@@ -317,8 +414,8 @@ impl App {
     }
 
     /// Thumbnail grid for zoomed-out views: square cells, score under each.
-    fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hits: &[Hit], sel: usize,
-                 clicked: &mut Option<usize>, dbl: &mut bool) {
+    fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hits: &[Hit], sel: &[usize],
+                 clicked: &mut Option<(usize, bool)>, dbl: &mut bool) {
         let pal = self.pal;
         let t = self.thumb;
         egui::ScrollArea::vertical()
@@ -330,7 +427,7 @@ impl App {
                     for (idx, h) in hits.iter().enumerate() {
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + 14.0), egui::Sense::click());
                         let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
-                        let selected = idx == sel;
+                        let selected = sel.contains(&idx);
                         match self.texture(ctx, &h.thumb) {
                             Some(tex) => { egui::Image::new(&tex).fit_to_exact_size(img.size()).paint_at(ui, img); }
                             None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
@@ -343,8 +440,9 @@ impl App {
                             ui.painter().text(egui::pos2(rect.left() + 2.0, img.bottom() + 1.0), egui::Align2::LEFT_TOP,
                                 format!("{sc:.2}"), egui::FontId::monospace(10.0), pal.accent);
                         }
-                        if resp.clicked() { *clicked = Some(idx); }
-                        if resp.double_clicked() { *dbl = true; *clicked = Some(idx); }
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        if resp.clicked() { *clicked = Some((idx, shift)); }
+                        if resp.double_clicked() { *dbl = true; *clicked = Some((idx, false)); }
                     }
                 });
             });
@@ -389,7 +487,7 @@ impl App {
 }
 
 fn short_name(remote: &str) -> String {
-    // "gdrive-crypt:photos/2015-07_Phone/20150605_204906.jpg" -> "photos/2015-07_Phone/20150605_204906.jpg"
+    // "gdrive-crypt:photos/<folder>/<file>.jpg" -> "photos/<folder>/<file>.jpg"
     remote.split_once(':').map(|(_, p)| p.trim_start_matches('/')).unwrap_or(remote).to_string()
 }
 
@@ -418,6 +516,18 @@ impl eframe::App for App {
             self.first_frame = false;
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
         }
+
+        // Delete: only when the confirmation dialog is closed
+        let del = self.trash_pending.is_none() && ui.input(|i| i.key_pressed(Key::Delete));
+        if del && !self.popup && !self.hits.is_empty() {
+            self.request_trash();
+        }
+
+        // Shift+arrows extend the list selection; consume them before the query box sees them
+        let shift_down = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowDown));
+        let shift_up = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowUp));
+        let shift_left = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowLeft));
+        let shift_right = ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::ArrowRight));
 
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
@@ -488,17 +598,81 @@ impl eframe::App for App {
         if esc && !self.popup { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         if n > 0 && !self.popup {
             let cols = if grid { ((ui.available_width() / (self.thumb + 10.0)).floor() as usize).max(1) } else { 1 };
-            if grid && right { self.selected = (self.selected + 1).min(n - 1); }
-            if grid && left { self.selected = self.selected.saturating_sub(1); }
-            if down || cj { self.selected = (self.selected + cols).min(n - 1); }
-            if up || ck { self.selected = self.selected.saturating_sub(cols); }
-            if pgdn { self.selected = (self.selected + 8).min(n - 1); }
-            if pgup { self.selected = self.selected.saturating_sub(8); }
-            if home { self.selected = 0; }
-            if end { self.selected = n - 1; }
+            let (ctrl_shift_h, ctrl_shift_l, shift_any) = ui.input(|i| (
+                i.modifiers.ctrl && i.key_pressed(Key::H),
+                i.modifiers.ctrl && i.key_pressed(Key::L),
+                i.modifiers.shift,
+            ));
+            let cur = self.selected;
+            // (target, extend-selection?)
+            let mut moves: Vec<(usize, bool)> = Vec::new();
+            if grid && (right || ctrl_shift_l) { moves.push(((cur + 1).min(n - 1), shift_any)); }
+            if grid && (left || ctrl_shift_h) { moves.push((cur.saturating_sub(1), shift_any)); }
+            if shift_right && !grid { moves.push((cur, true)); }
+            if shift_left && !grid { moves.push((cur, true)); }
+            if down || cj { moves.push(((cur + cols).min(n - 1), shift_any)); }
+            if up || ck { moves.push((cur.saturating_sub(cols), shift_any)); }
+            if shift_down { moves.push(((cur + cols).min(n - 1), true)); }
+            if shift_up { moves.push((cur.saturating_sub(cols), true)); }
+            if pgdn { moves.push(((cur + 8).min(n - 1), shift_any)); }
+            if pgup { moves.push((cur.saturating_sub(8), shift_any)); }
+            if home { moves.push((0, shift_any)); }
+            if end { moves.push((n - 1, shift_any)); }
+            // only the last movement in a frame counts (keys are rare enough that this is fine)
+            if let Some((t, ext)) = moves.last().copied() {
+                self.move_cursor(t, ext);
+            }
         }
         if enter && n > 0 && !self.popup { self.open_selected(); }
         if ctrl_enter && n > 0 && !self.popup { self.reveal_selected(); }
+
+        // confirmation dialog for moving files to the trash: modal, explicit, Esc cancels
+        if let Some(files) = self.trash_pending.clone() {
+            let total: u64 = files.iter().map(|(_, s)| *s).sum();
+            let need = "DELETE";
+            let mut confirm = false;
+            let mut cancel = ui.input(|i| i.key_pressed(Key::Escape));
+            egui::Window::new("Move to trash?")
+                .collapsible(false)
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .default_size([720.0, 520.0])
+                .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(2.0, pal.error)).corner_radius(10.0).inner_margin(Margin::same(14)))
+                .show(&ctx, |ui| {
+                    ui.label(RichText::new(format!("{} file(s), {} total", files.len(), human(total)))
+                        .color(pal.error).size(18.0).strong());
+                    ui.label(RichText::new("Files are moved to the trash (recoverable), not erased. Only local files under your home folder are listed here.")
+                        .color(pal.dim));
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        for (p, sz) in &files {
+                            ui.label(RichText::new(format!("{:>10}  {}", human(*sz), p.display())).monospace().size(12.0).color(pal.text));
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(format!("Type {need} to confirm:")).color(pal.text));
+                    let edit = ui.add(egui::TextEdit::singleline(&mut self.trash_typed).desired_width(200.0));
+                    if !edit.has_focus() { edit.request_focus(); }
+                    let ready = self.trash_typed.trim() == need;
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(ready, egui::Button::new(RichText::new("Move to trash").color(pal.error))).clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if confirm {
+                self.trash_pending = None;
+                self.trash_typed.clear();
+                self.do_trash(files);
+            } else if cancel {
+                self.trash_pending = None;
+                self.trash_typed.clear();
+                self.status = "delete cancelled".into();
+            }
+        }
 
         egui::Frame::new()
             .fill(pal.bg)
@@ -572,11 +746,12 @@ impl eframe::App for App {
                     hp.text(egui::pos2(c.score_r, hr.top()), egui::Align2::RIGHT_TOP, "SCORE", hf, pal.dim);
                 }
                 let hits = self.hits.clone();
-                let sel = self.selected;
-                let mut clicked: Option<usize> = None;
+                let sel_set: std::collections::HashSet<usize> = self.selection().into_iter().collect();
+                let mut clicked: Option<(usize, bool)> = None;
                 let mut dbl = false;
                 if grid {
-                    self.grid_view(ui, &ctx, &hits, sel, &mut clicked, &mut dbl);
+                    let sel_v: Vec<usize> = self.selection();
+                    self.grid_view(ui, &ctx, &hits, &sel_v, &mut clicked, &mut dbl);
                 } else {
                 egui::ScrollArea::vertical()
                     .max_height(ui.available_height() - 28.0)
@@ -589,7 +764,7 @@ impl eframe::App for App {
                                 egui::vec2(ui.available_width(), row_h),
                                 egui::Sense::click(),
                             );
-                            let selected = idx == sel;
+                            let selected = sel_set.contains(&idx);
                             if selected {
                                 ui.painter().rect_filled(rect, 6.0, pal.accent.gamma_multiply(0.18));
                                 ui.painter().rect_filled(
@@ -637,8 +812,9 @@ impl eframe::App for App {
                             if selected {
                                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
                             }
-                            if resp.clicked() { clicked = Some(idx); }
-                            if resp.double_clicked() { dbl = true; clicked = Some(idx); }
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            if resp.clicked() { clicked = Some((idx, shift)); }
+                            if resp.double_clicked() { dbl = true; clicked = Some((idx, false)); }
                         }
                         if hits.is_empty() && !self.busy {
                             ui.add_space(20.0);
@@ -646,7 +822,7 @@ impl eframe::App for App {
                         }
                     });
                 }
-                if let Some(i) = clicked { self.selected = i; }
+                if let Some((i, extend)) = clicked { self.move_cursor(i, extend); }
                 if dbl { self.open_selected(); }
 
                 ui.add_space(4.0);

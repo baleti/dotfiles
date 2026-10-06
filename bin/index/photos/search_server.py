@@ -19,6 +19,12 @@ sys.path.insert(0, HERE)
 import config  # noqa: E402
 import search  # noqa: E402  (query engine)
 import cv2, numpy as np  # noqa: E402
+# file-name search: the in-memory name table lives in the catalog package
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "catalog"))
+import filesearch  # noqa: E402
+
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic")
+NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
 
 THUMBS = os.path.join(config.DATA_DIR, "thumbs")
 
@@ -45,7 +51,10 @@ def thumb_path(remote):
 def make_thumb(remote):
     dst = thumb_path(remote)
     if os.path.exists(dst): return
-    data = subprocess.run(["rclone", "cat", remote], capture_output=True).stdout
+    if remote.startswith("/"):                 # local file from the file-name index
+        data = open(remote, "rb").read()
+    else:
+        data = subprocess.run(["rclone", "cat", remote], capture_output=True).stdout
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if img is None: return
     os.makedirs(THUMBS, exist_ok=True)
@@ -81,6 +90,14 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/query":
             q = (qs.get("q", [""])[0]).strip()
             top = int(qs.get("top", ["60"])[0])
+            if q.startswith("//file"):
+                rest = q[len("//file"):].strip()
+                results, count = NAMES.search(rest, top)
+                for r in results:
+                    r["score"] = None
+                    r["thumb"] = thumb_path(r["remote"])
+                    r["ready"] = (not r["remote"].lower().endswith(IMAGE_EXT)) or enqueue(r["remote"])
+                return self._json(200, {"count": count, "results": results, "errors": []})
             try:
                 with _q_lock:
                     if not q:
@@ -109,6 +126,8 @@ class H(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
 def main():
+    NAMES.load()
+    filesearch.start_refresh(NAMES)
     with _q_lock:
         search._refresh()
         from clip_text import embed_texts
