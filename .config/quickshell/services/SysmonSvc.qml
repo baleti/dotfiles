@@ -286,6 +286,34 @@ QtObject {
         return Math.round(pcent) + "% " + f(used) + "/" + f(total) + units[u];
     }
 
+    // Whole-disk device under a mount source (e.g. /dev/mapper/luks-x ->
+    // nvme0n1), so a usage bar can take the same colour as that disk's
+    // legend entry under the I/O graph. "" for non-block sources (rclone,
+    // nfs). Parent map comes from `lsblk -rno NAME,PKNAME`, read once.
+    property var _blkParent: ({})
+    readonly property Process lsblkProc: Process {
+        command: ["lsblk", "-rno", "NAME,PKNAME"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const m = {};
+                for (const l of text.trim().split("\n")) {
+                    const [n, pk] = l.split(" ");
+                    if (n) m[n] = pk || "";
+                }
+                root._blkParent = m;
+                if (root._lastDfText) root._parseDfOutput(root._lastDfText);
+            }
+        }
+    }
+    function _diskOf(source) {
+        if (!source.startsWith("/dev/")) return "";
+        let n = source.split("/").pop();
+        for (let i = 0; i < 8 && root._blkParent[n]; i++)
+            n = root._blkParent[n];
+        return root._blkParent[n] === undefined ? "" : n;
+    }
+
     property var _netSeen: ({})
     property var _wantedMounts: []
     property string _lastDfText: ""
@@ -328,7 +356,7 @@ QtObject {
             // before the wanted-list filter matches against it.
             const existing = bySource[source];
             if (!existing || target.length < existing.target.length)
-                bySource[source] = { source, target, pcent, fstype: parts[1], label: root._fmtUsage(pcent, used, size) };
+                bySource[source] = { source, target, pcent, fstype: parts[1], label: root._fmtUsage(pcent, used, size), disk: root._diskOf(source) };
         }
         const bySourceOrTarget = {};
         for (const d of Object.values(bySource)) {
@@ -360,7 +388,7 @@ QtObject {
             const wanted = root._wantedMounts[i];
             const d = bySourceOrTarget[wanted];
             if (d)
-                out.push({ name: d.target, pcent: d.pcent, label: d.label });
+                out.push({ name: d.target, pcent: d.pcent, label: d.label, disk: d.disk });
             else if (prev[i])
                 out.push(prev[i]);
         }
@@ -370,7 +398,7 @@ QtObject {
         // missing most of the time. Last reading is kept once seen.
         for (const d of Object.values(bySource))
             if (/^(nfs|cifs|smb3)/.test(d.fstype))
-                root._netSeen[d.target] = { name: d.target, pcent: d.pcent, label: d.label };
+                root._netSeen[d.target] = { name: d.target, pcent: d.pcent, label: d.label, disk: d.disk };
         for (const t of Object.keys(root._netSeen))
             if (!out.some(o => o.name === t))
                 out.push(root._netSeen[t]);

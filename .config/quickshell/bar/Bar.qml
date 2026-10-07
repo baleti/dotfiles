@@ -1173,7 +1173,7 @@ Item {
             secondaryDivider: false
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
-            usageItems: SysmonSvc.diskUsage
+            usageItems: SysmonSvc.diskUsage.map(d => d.disk ? Object.assign({}, d, { color: root.colorFor(d.disk) }) : d)
             topProcs: SysmonSvc.topDisk.map(e => ({ pid: e.pid, name: e.name, detail: e.detail, util_pct: e.util_pct, value: e.value / 1024 }))
             topUnit: " MB/s"
             yAxisFormatter: v => root.fmtRate(v)
