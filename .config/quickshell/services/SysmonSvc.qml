@@ -400,21 +400,46 @@ QtObject {
     // Auto-discovered: every mounted FUSE filesystem except desktop plumbing
     // (gvfs, portal, fusectl). `rclone listremotes` only lists configured
     // remotes, not what is mounted, so the mount table (findmnt) is the
-    // source. Mounts reporting identical size+used (rclone backends without
-    // About() all echo the same underlying number) collapse to the first.
+    // source. Overlay remotes (crypt/alias/chunker/union/...) just re-present
+    // another remote's storage, so `rclone config dump` is used to follow each
+    // mounted remote's `remote =` chain to its root backend; if that root is
+    // itself mounted the overlay is hidden, else the first overlay stands in.
     readonly property Process fuseDfProc: Process {
         stdout: StdioCollector {
             onStreamFinished: {
-                const seen = {}, out = [];
-                for (const line of text.trim().split("\n").sort()) {
+                const lines = text.trim().split("\n").sort();
+                let cfg = {};
+                const rows = [];
+                for (const line of lines) {
+                    if (line.startsWith("CFG")) {
+                        try { cfg = JSON.parse(line.slice(3)); } catch (e) {}
+                        continue;
+                    }
                     const m = line.trim().split(/\s+/);
-                    if (m.length < 5) continue;
+                    if (m.length < 4) continue;
                     const pcent = parseInt(m[2]);
                     if (isNaN(pcent)) continue;
-                    const key = m[3] + "/" + m[4];
-                    if (seen[key]) continue;
-                    seen[key] = true;
-                    out.push({ name: m.slice(5).join(" "), pcent });
+                    rows.push({ source: m[0], pcent, name: m.slice(3).join(" ") });
+                }
+                const rootOf = src => {
+                    let n = src.replace(/:.*$/, "");
+                    for (let i = 0; i < 8 && cfg[n] && cfg[n].remote; i++)
+                        n = cfg[n].remote.replace(/:.*$/, "");
+                    return n;
+                };
+                const overlay = src => {
+                    const n = src.replace(/:.*$/, "");
+                    return !!(cfg[n] && cfg[n].remote);
+                };
+                const rootMounted = {};
+                for (const r of rows)
+                    if (!overlay(r.source)) rootMounted[rootOf(r.source)] = true;
+                const shown = {}, out = [];
+                for (const r of rows) {
+                    const root_ = rootOf(r.source);
+                    if (overlay(r.source) && (rootMounted[root_] || shown[root_])) continue;
+                    shown[root_] = true;
+                    out.push({ name: r.name, pcent: r.pcent });
                 }
                 if (out.length) root._fuseUsage = out;
             }
@@ -423,8 +448,8 @@ QtObject {
     function _pollFuse() {
         if (root._sleeping || root.fuseDfProc.running)
             return;
-        const script = 'findmnt -rn -t fuse,fuse.rclone,fuse.sshfs,fuse.mergerfs -o TARGET | while read -r t; do ' +
-            '( timeout -k 1 5 df --output=source,fstype,pcent,size,used,target "$t" | tail -n +2 ) & done; wait';
+        const script = 'echo "CFG$(rclone config dump 2>/dev/null | tr -d "\\n")"; findmnt -rn -t fuse,fuse.rclone,fuse.sshfs,fuse.mergerfs -o TARGET | while read -r t; do ' +
+            '( timeout -k 1 5 df --output=source,fstype,pcent,target "$t" | tail -n +2 ) & done; wait';
         root.fuseDfProc.command = ["timeout", "-k", "2", "8", "sh", "-c", script];
         root.fuseDfProc.running = true;
     }
