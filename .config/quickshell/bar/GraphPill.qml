@@ -1372,7 +1372,7 @@ Rectangle {
                                     height: parent.height
                                     width: Math.max(0, Math.min(1, usageItem.modelData.pcent / 100)) * parent.width
                                     radius: parent.radius
-                                    color: Theme.rampColor(usageItem.modelData.pcent / 100)
+                                    color: usageItem.modelData.color ?? Theme.rampColor(usageItem.modelData.pcent / 100)
                                 }
                             }
 
