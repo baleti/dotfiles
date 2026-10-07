@@ -1378,7 +1378,7 @@ Rectangle {
 
                             Text {
                                 id: usageValue
-                                width: usageItem.modelData.label ? 78 : 32
+                                width: usageItem.modelData.label ? 104 : 32
                                 anchors.verticalCenter: parent.verticalCenter
                                 horizontalAlignment: Text.AlignRight
                                 text: usageItem.modelData.label ?? (Math.round(usageItem.modelData.pcent) + "%")
