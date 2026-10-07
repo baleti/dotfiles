@@ -1329,9 +1329,19 @@ Rectangle {
                         width: parent.width
                         spacing: 2
 
+                        Rectangle {
+                            visible: !!usageItem.modelData.header
+                            width: parent.width
+                            height: visible ? 1 : 0
+                            color: Theme.border
+                        }
+
                         Text {
                             width: parent.width
+                            topPadding: usageItem.modelData.header ? 4 : 0
                             font.bold: !!usageItem.modelData.header
+                            font.capitalization: usageItem.modelData.header ? Font.AllUppercase : Font.MixedCase
+                            font.letterSpacing: usageItem.modelData.header ? 1 : 0
                             text: usageItem.modelData.name
                             color: Theme.textDim
                             font.family: Theme.fontFamily
