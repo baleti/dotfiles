@@ -268,7 +268,9 @@ QtObject {
     // all read the same, would just be noise) and the FUSE remotes
     // (gdrive: etc.) are otherwise out of scope for local disk usage (see
     // memory) but the user does want specific ones surfaced here.
-    property var diskUsage: []
+    property var _localUsage: []
+    property var _fuseUsage: []
+    readonly property var diskUsage: _localUsage.concat(_fuseUsage)
     readonly property real rootUsagePct: {
         for (const d of root.diskUsage)
             if (d.name === "/")
@@ -342,7 +344,7 @@ QtObject {
         // mount is which _wantedMounts slot produced it -- true as long as
         // the config file didn't change in between, which is the only case
         // this can misalign, and only for one cycle.
-        const prev = root.diskUsage;
+        const prev = root._localUsage;
         const out = [];
         for (let i = 0; i < root._wantedMounts.length; i++) {
             const wanted = root._wantedMounts[i];
@@ -352,7 +354,7 @@ QtObject {
             else if (prev[i])
                 out.push(prev[i]);
         }
-        root.diskUsage = out;
+        root._localUsage = out;
     }
 
     // FUSE mounts are excluded (2026-10-05): a stale rclone/sshfs remote
@@ -395,21 +397,35 @@ QtObject {
             }
         }
     }
+    // Auto-discovered: every mounted FUSE filesystem except desktop plumbing
+    // (gvfs, portal, fusectl). `rclone listremotes` only lists configured
+    // remotes, not what is mounted, so the mount table (findmnt) is the
+    // source. Mounts reporting identical size+used (rclone backends without
+    // About() all echo the same underlying number) collapse to the first.
     readonly property Process fuseDfProc: Process {
         stdout: StdioCollector {
-            onStreamFinished: if (text.trim().length) root._parseDfOutput("hdr\n" + text)
+            onStreamFinished: {
+                const seen = {}, out = [];
+                for (const line of text.trim().split("\n").sort()) {
+                    const m = line.trim().split(/\s+/);
+                    if (m.length < 5) continue;
+                    const pcent = parseInt(m[2]);
+                    if (isNaN(pcent)) continue;
+                    const key = m[3] + "/" + m[4];
+                    if (seen[key]) continue;
+                    seen[key] = true;
+                    out.push({ name: m.slice(5).join(" "), pcent });
+                }
+                if (out.length) root._fuseUsage = out;
+            }
         }
     }
     function _pollFuse() {
         if (root._sleeping || root.fuseDfProc.running)
             return;
-        const wanted = root._wantedMounts.filter(w => w !== "/");
-        if (!wanted.length)
-            return;
-        const script = 'for a in "$@"; do ( if [ "${a#/}" != "$a" ]; then t=$a; else t=$(findmnt -rn -o TARGET -S "$a" | head -1); fi; ' +
-            '[ -n "$t" ] || exit 0; case $(findmnt -rn -o FSTYPE -T "$t" | head -1) in fuse*) ;; *) exit 0;; esac; ' +
-            'timeout -k 1 5 df --output=source,fstype,pcent,target "$t" | tail -n +2 ) & done; wait';
-        root.fuseDfProc.command = ["timeout", "-k", "2", "8", "sh", "-c", script, "sh"].concat(wanted);
+        const script = 'findmnt -rn -t fuse,fuse.rclone,fuse.sshfs,fuse.mergerfs -o TARGET | while read -r t; do ' +
+            '( timeout -k 1 5 df --output=source,fstype,pcent,size,used,target "$t" | tail -n +2 ) & done; wait';
+        root.fuseDfProc.command = ["timeout", "-k", "2", "8", "sh", "-c", script];
         root.fuseDfProc.running = true;
     }
 
