@@ -398,11 +398,7 @@ QtObject {
     // child process -- no FUSE statfs, so nothing here can block suspend.
     property var _rcloneUsage: []
     readonly property Process rcloneProc: Process {
-        command: ["timeout", "-k", "2", "25", "sh", "-c",
-            'rclone config dump 2>/dev/null | python3 -c \'import json,sys\n' +
-            'for k,v in json.load(sys.stdin).items():\n' +
-            ' if not v.get("remote"): print(k)\' | while read -r r; do ' +
-            '( o=$(timeout -k 1 15 rclone about "$r": --json 2>/dev/null) && echo "$r $o" | tr -d "\\n" && echo ) & done; wait']
+        command: ["timeout", "-k", "2", "25", "sh", `${Quickshell.env("HOME")}/.config/quickshell/services/rclone-usage.sh`]
         stdout: StdioCollector {
             onStreamFinished: {
                 const out = [];
