@@ -408,7 +408,7 @@ QtObject {
                     if (!j.total || j.used === undefined) continue;
                     const tb = x => (x / 1099511627776).toFixed(1);
                     out.push({ name: "rclone:" + line.slice(0, i), pcent: 100 * j.used / j.total,
-                               label: tb(j.used) + "/" + tb(j.total) + "T" });
+                               label: Math.round(100 * j.used / j.total) + "% " + tb(j.used) + "/" + tb(j.total) + "T" });
                 }
                 root._rcloneUsage = out;
             }
