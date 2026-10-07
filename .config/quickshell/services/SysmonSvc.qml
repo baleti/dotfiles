@@ -292,6 +292,7 @@ QtObject {
                 .filter(l => l.length > 0 && !l.startsWith("#"));
             if (root._lastDfText)
                 root._parseDfOutput(root._lastDfText);
+            root.fuseKick.restart();
         }
         onLoadFailed: root._wantedMounts = ["/"];
     }
@@ -374,6 +375,56 @@ QtObject {
         stdout: StdioCollector {
             onStreamFinished: root._parseDfOutput(text)
         }
+    }
+
+    // FUSE/remote mounts listed in disk-usage-mounts.conf, polled separately
+    // from dfProc (2026-10-07). A wedged statfs on one of these must never
+    // block the local df nor suspend, so: only mounts the user explicitly
+    // listed are touched (never the whole table), each in its own backgrounded
+    // `timeout` df, single-flight, slow cadence, and not started while the
+    // machine is going to sleep or if the previous run never exited.
+    property bool _sleeping: false
+    readonly property Process sleepWatch: Process {
+        command: ["dbus-monitor", "--system",
+                  "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"]
+        running: true
+        stdout: SplitParser {
+            onRead: data => {
+                if (data.indexOf("boolean true") >= 0) root._sleeping = true;
+                else if (data.indexOf("boolean false") >= 0) root._sleeping = false;
+            }
+        }
+    }
+    readonly property Process fuseDfProc: Process {
+        stdout: StdioCollector {
+            onStreamFinished: if (text.trim().length) root._parseDfOutput("hdr\n" + text)
+        }
+    }
+    function _pollFuse() {
+        if (root._sleeping || root.fuseDfProc.running)
+            return;
+        const wanted = root._wantedMounts.filter(w => w !== "/");
+        if (!wanted.length)
+            return;
+        const script = 'for a in "$@"; do ( if [ "${a#/}" != "$a" ]; then t=$a; else t=$(findmnt -rn -o TARGET -S "$a" | head -1); fi; ' +
+            '[ -n "$t" ] || exit 0; case $(findmnt -rn -o FSTYPE -T "$t" | head -1) in fuse*) ;; *) exit 0;; esac; ' +
+            'timeout -k 1 5 df --output=source,fstype,pcent,target "$t" | tail -n +2 ) & done; wait';
+        root.fuseDfProc.command = ["timeout", "-k", "2", "8", "sh", "-c", script, "sh"].concat(wanted);
+        root.fuseDfProc.running = true;
+    }
+
+    readonly property Timer fuseUsageTimer: Timer {
+        interval: 300000
+        running: true
+        repeat: true
+        triggeredOnStart: false
+        onTriggered: root._pollFuse()
+    }
+
+    readonly property Timer fuseKick: Timer {
+        interval: 3000
+        running: true
+        onTriggered: root._pollFuse()
     }
 
     readonly property Timer diskUsageTimer: Timer {
