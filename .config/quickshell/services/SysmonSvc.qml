@@ -269,9 +269,7 @@ QtObject {
     // (gdrive: etc.) are otherwise out of scope for local disk usage (see
     // memory) but the user does want specific ones surfaced here.
     property var _localUsage: []
-    readonly property var diskUsage: _rcloneUsage.length
-        ? _localUsage.concat([{ name: "rclone", header: true }], _rcloneUsage)
-        : _localUsage
+    readonly property var diskUsage: _localUsage.concat(_rcloneUsage)
     readonly property real rootUsagePct: {
         for (const d of root.diskUsage)
             if (d.name === "/")
@@ -409,7 +407,7 @@ QtObject {
                     try { j = JSON.parse(line.slice(i + 1)); } catch (e) { continue; }
                     if (!j.total || j.used === undefined) continue;
                     const tb = x => (x / 1099511627776).toFixed(1);
-                    out.push({ name: line.slice(0, i), pcent: 100 * j.used / j.total,
+                    out.push({ name: "rclone:" + line.slice(0, i), pcent: 100 * j.used / j.total,
                                label: tb(j.used) + "/" + tb(j.total) + "T" });
                 }
                 root._rcloneUsage = out;
