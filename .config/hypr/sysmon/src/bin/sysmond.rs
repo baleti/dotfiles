@@ -897,7 +897,15 @@ impl History {
             buf.b.load_persisted(&b);
             buf.b.apply_downtime_gap(gap_secs);
         }
-        for (name, (a, b)) in p.disk {
+        // Drop persisted disks that no longer exist (e.g. `sda` left over from a
+        // replaced machine) -- otherwise they linger in the legend forever as
+        // all-gap series. Unlike net, disks aren't intermittently present.
+        let present: std::collections::HashSet<String> = fs::read_to_string("/proc/diskstats")
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_whitespace().nth(2).map(str::to_string))
+            .collect();
+        for (name, (a, b)) in p.disk.into_iter().filter(|(n, _)| present.contains(n)) {
             let buf = self.disk.entry(name).or_insert_with(TwoSeriesBuf::new);
             buf.a.load_persisted(&a);
             buf.a.apply_downtime_gap(gap_secs);
