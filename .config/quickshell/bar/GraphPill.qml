@@ -1331,6 +1331,7 @@ Rectangle {
 
                         Text {
                             width: parent.width
+                            font.bold: !!usageItem.modelData.header
                             text: usageItem.modelData.name
                             color: Theme.textDim
                             font.family: Theme.fontFamily
@@ -1345,6 +1346,7 @@ Rectangle {
                         Row {
                             width: parent.width
                             spacing: 6
+                            visible: !usageItem.modelData.header
 
                             Rectangle {
                                 id: usageBarBg
@@ -1366,10 +1368,10 @@ Rectangle {
 
                             Text {
                                 id: usageValue
-                                width: 32
+                                width: usageItem.modelData.label ? 78 : 32
                                 anchors.verticalCenter: parent.verticalCenter
                                 horizontalAlignment: Text.AlignRight
-                                text: Math.round(usageItem.modelData.pcent) + "%"
+                                text: usageItem.modelData.label ?? (Math.round(usageItem.modelData.pcent) + "%")
                                 color: Theme.textDim
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 2
