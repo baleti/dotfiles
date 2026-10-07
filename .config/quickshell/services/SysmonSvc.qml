@@ -277,13 +277,11 @@ QtObject {
         return NaN;
     }
 
-    // "82% 4.1/5.0T" -- percent, then used/total in the total's unit.
+    // "82% 4.10/5.00T" -- percent, then used/total, always in TB so rows
+    // line up in the panel.
     function _fmtUsage(pcent, used, total) {
-        const units = ["B", "K", "M", "G", "T", "P"];
-        let u = 0, div = 1;
-        while (total / div >= 1024 && u < units.length - 1) { div *= 1024; u++; }
-        const f = x => (x / div).toFixed(u >= 3 ? 1 : 0);
-        return Math.round(pcent) + "% " + f(used) + "/" + f(total) + units[u];
+        const tb = x => (x / 1099511627776).toFixed(2);
+        return Math.round(pcent) + "% " + tb(used) + "/" + tb(total) + "T";
     }
 
     // Whole-disk device under a mount source (e.g. /dev/mapper/luks-x ->
