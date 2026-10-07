@@ -269,8 +269,9 @@ QtObject {
     // (gdrive: etc.) are otherwise out of scope for local disk usage (see
     // memory) but the user does want specific ones surfaced here.
     property var _localUsage: []
-    property var _fuseUsage: []
-    readonly property var diskUsage: _localUsage.concat(_fuseUsage)
+    readonly property var diskUsage: _rcloneUsage.length
+        ? _localUsage.concat([{ name: "rclone", header: true }], _rcloneUsage)
+        : _localUsage
     readonly property real rootUsagePct: {
         for (const d of root.diskUsage)
             if (d.name === "/")
@@ -278,6 +279,7 @@ QtObject {
         return NaN;
     }
 
+    property var _netSeen: ({})
     property var _wantedMounts: []
     property string _lastDfText: ""
 
@@ -294,7 +296,6 @@ QtObject {
                 .filter(l => l.length > 0 && !l.startsWith("#"));
             if (root._lastDfText)
                 root._parseDfOutput(root._lastDfText);
-            root.fuseKick.restart();
         }
         onLoadFailed: root._wantedMounts = ["/"];
     }
@@ -318,7 +319,7 @@ QtObject {
             // before the wanted-list filter matches against it.
             const existing = bySource[source];
             if (!existing || target.length < existing.target.length)
-                bySource[source] = { source, target, pcent };
+                bySource[source] = { source, target, pcent, fstype: parts[1] };
         }
         const bySourceOrTarget = {};
         for (const d of Object.values(bySource)) {
@@ -354,6 +355,16 @@ QtObject {
             else if (prev[i])
                 out.push(prev[i]);
         }
+        // Network filesystems (nfs/cifs) are included automatically rather
+        // than via the conf: they're often autofs-mounted on demand (e.g.
+        // /mnt/host1-backups, idle-timeout 300) so a fixed entry would be
+        // missing most of the time. Last reading is kept once seen.
+        for (const d of Object.values(bySource))
+            if (/^(nfs|cifs|smb3)/.test(d.fstype))
+                root._netSeen[d.target] = { name: d.target, pcent: d.pcent };
+        for (const t of Object.keys(root._netSeen))
+            if (!out.some(o => o.name === t))
+                out.push(root._netSeen[t]);
         root._localUsage = out;
     }
 
@@ -372,100 +383,49 @@ QtObject {
     readonly property Process dfProc: Process {
         command: ["timeout", "-k", "2", "8",
                   "df", "--output=source,fstype,pcent,target",
-                  "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs",
+                  "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs", "-x", "autofs",
                   "-x", "fuse", "-x", "fuse.rclone", "-x", "fuse.sshfs", "-x", "fuse.gvfsd-fuse", "-x", "fuse.portal", "-x", "fuse.mergerfs"]
         stdout: StdioCollector {
             onStreamFinished: root._parseDfOutput(text)
         }
     }
 
-    // FUSE/remote mounts listed in disk-usage-mounts.conf, polled separately
-    // from dfProc (2026-10-07). A wedged statfs on one of these must never
-    // block the local df nor suspend, so: only mounts the user explicitly
-    // listed are touched (never the whole table), each in its own backgrounded
-    // `timeout` df, single-flight, slow cadence, and not started while the
-    // machine is going to sleep or if the previous run never exited.
-    property bool _sleeping: false
-    readonly property Process sleepWatch: Process {
-        command: ["dbus-monitor", "--system",
-                  "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"]
-        running: true
-        stdout: SplitParser {
-            onRead: data => {
-                if (data.indexOf("boolean true") >= 0) root._sleeping = true;
-                else if (data.indexOf("boolean false") >= 0) root._sleeping = false;
-            }
-        }
-    }
-    // Auto-discovered: every mounted FUSE filesystem except desktop plumbing
-    // (gvfs, portal, fusectl). `rclone listremotes` only lists configured
-    // remotes, not what is mounted, so the mount table (findmnt) is the
-    // source. Overlay remotes (crypt/alias/chunker/union/...) just re-present
-    // another remote's storage, so `rclone config dump` is used to follow each
-    // mounted remote's `remote =` chain to its root backend; if that root is
-    // itself mounted the overlay is hidden, else the first overlay stands in.
-    readonly property Process fuseDfProc: Process {
+    // rclone remotes' own quota/usage (2026-10-07), independent of what is
+    // mounted: `rclone config dump` names the remotes, those with a `remote =`
+    // are overlays (crypt/alias/...) of another remote and skipped, and
+    // `rclone about` asks each real backend directly (backends without
+    // About(), e.g. S3, are omitted). Network calls, but a plain killable
+    // child process -- no FUSE statfs, so nothing here can block suspend.
+    property var _rcloneUsage: []
+    readonly property Process rcloneProc: Process {
+        command: ["timeout", "-k", "2", "25", "sh", "-c",
+            'rclone config dump 2>/dev/null | python3 -c \'import json,sys\n' +
+            'for k,v in json.load(sys.stdin).items():\n' +
+            ' if not v.get("remote"): print(k)\' | while read -r r; do ' +
+            '( o=$(timeout -k 1 15 rclone about "$r": --json 2>/dev/null) && echo "$r $o" | tr -d "\\n" && echo ) & done; wait']
         stdout: StdioCollector {
             onStreamFinished: {
-                const lines = text.trim().split("\n").sort();
-                let cfg = {};
-                const rows = [];
-                for (const line of lines) {
-                    if (line.startsWith("CFG")) {
-                        try { cfg = JSON.parse(line.slice(3)); } catch (e) {}
-                        continue;
-                    }
-                    const m = line.trim().split(/\s+/);
-                    if (m.length < 4) continue;
-                    const pcent = parseInt(m[2]);
-                    if (isNaN(pcent)) continue;
-                    rows.push({ source: m[0], pcent, name: m.slice(3).join(" ") });
+                const out = [];
+                for (const line of text.split("\n").sort()) {
+                    const i = line.indexOf(" ");
+                    if (i < 0) continue;
+                    let j;
+                    try { j = JSON.parse(line.slice(i + 1)); } catch (e) { continue; }
+                    if (!j.total || j.used === undefined) continue;
+                    const tb = x => (x / 1099511627776).toFixed(1);
+                    out.push({ name: line.slice(0, i), pcent: 100 * j.used / j.total,
+                               label: tb(j.used) + "/" + tb(j.total) + "T" });
                 }
-                const rootOf = src => {
-                    let n = src.replace(/:.*$/, "");
-                    for (let i = 0; i < 8 && cfg[n] && cfg[n].remote; i++)
-                        n = cfg[n].remote.replace(/:.*$/, "");
-                    return n;
-                };
-                const overlay = src => {
-                    const n = src.replace(/:.*$/, "");
-                    return !!(cfg[n] && cfg[n].remote);
-                };
-                const rootMounted = {};
-                for (const r of rows)
-                    if (!overlay(r.source)) rootMounted[rootOf(r.source)] = true;
-                const shown = {}, out = [];
-                for (const r of rows) {
-                    const root_ = rootOf(r.source);
-                    if (overlay(r.source) && (rootMounted[root_] || shown[root_])) continue;
-                    shown[root_] = true;
-                    out.push({ name: r.name, pcent: r.pcent });
-                }
-                if (out.length) root._fuseUsage = out;
+                root._rcloneUsage = out;
             }
         }
     }
-    function _pollFuse() {
-        if (root._sleeping || root.fuseDfProc.running)
-            return;
-        const script = 'echo "CFG$(rclone config dump 2>/dev/null | tr -d "\\n")"; findmnt -rn -t fuse,fuse.rclone,fuse.sshfs,fuse.mergerfs -o TARGET | while read -r t; do ' +
-            '( timeout -k 1 5 df --output=source,fstype,pcent,target "$t" | tail -n +2 ) & done; wait';
-        root.fuseDfProc.command = ["timeout", "-k", "2", "8", "sh", "-c", script];
-        root.fuseDfProc.running = true;
-    }
-
-    readonly property Timer fuseUsageTimer: Timer {
-        interval: 300000
+    readonly property Timer rcloneTimer: Timer {
+        interval: 600000
         running: true
         repeat: true
-        triggeredOnStart: false
-        onTriggered: root._pollFuse()
-    }
-
-    readonly property Timer fuseKick: Timer {
-        interval: 3000
-        running: true
-        onTriggered: root._pollFuse()
+        triggeredOnStart: true
+        onTriggered: if (!root.rcloneProc.running) root.rcloneProc.running = true;
     }
 
     readonly property Timer diskUsageTimer: Timer {
