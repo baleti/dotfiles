@@ -277,6 +277,15 @@ QtObject {
         return NaN;
     }
 
+    // "82% 4.1/5.0T" -- percent, then used/total in the total's unit.
+    function _fmtUsage(pcent, used, total) {
+        const units = ["B", "K", "M", "G", "T", "P"];
+        let u = 0, div = 1;
+        while (total / div >= 1024 && u < units.length - 1) { div *= 1024; u++; }
+        const f = x => (x / div).toFixed(u >= 3 ? 1 : 0);
+        return Math.round(pcent) + "% " + f(used) + "/" + f(total) + units[u];
+    }
+
     property var _netSeen: ({})
     property var _wantedMounts: []
     property string _lastDfText: ""
@@ -305,11 +314,13 @@ QtObject {
         const bySource = {};
         for (const line of lines) {
             const parts = line.trim().split(/\s+/);
-            if (parts.length < 4)
+            if (parts.length < 6)
                 continue;
             const source = parts[0];
             const pcent = parseInt(parts[2]);
-            const target = parts.slice(3).join(" ");
+            const size = parseFloat(parts[3]);
+            const used = parseFloat(parts[4]);
+            const target = parts.slice(5).join(" ");
             if (isNaN(pcent))
                 continue;
             // Dedupes multiple mounts of the same source (btrfs subvolumes
@@ -317,7 +328,7 @@ QtObject {
             // before the wanted-list filter matches against it.
             const existing = bySource[source];
             if (!existing || target.length < existing.target.length)
-                bySource[source] = { source, target, pcent, fstype: parts[1] };
+                bySource[source] = { source, target, pcent, fstype: parts[1], label: root._fmtUsage(pcent, used, size) };
         }
         const bySourceOrTarget = {};
         for (const d of Object.values(bySource)) {
@@ -349,7 +360,7 @@ QtObject {
             const wanted = root._wantedMounts[i];
             const d = bySourceOrTarget[wanted];
             if (d)
-                out.push({ name: d.target, pcent: d.pcent });
+                out.push({ name: d.target, pcent: d.pcent, label: d.label });
             else if (prev[i])
                 out.push(prev[i]);
         }
@@ -359,7 +370,7 @@ QtObject {
         // missing most of the time. Last reading is kept once seen.
         for (const d of Object.values(bySource))
             if (/^(nfs|cifs|smb3)/.test(d.fstype))
-                root._netSeen[d.target] = { name: d.target, pcent: d.pcent };
+                root._netSeen[d.target] = { name: d.target, pcent: d.pcent, label: d.label };
         for (const t of Object.keys(root._netSeen))
             if (!out.some(o => o.name === t))
                 out.push(root._netSeen[t]);
@@ -380,7 +391,7 @@ QtObject {
     // <defunct> children). `-k 2 8`: SIGTERM at 8s, SIGKILL 2s later.
     readonly property Process dfProc: Process {
         command: ["timeout", "-k", "2", "8",
-                  "df", "--output=source,fstype,pcent,target",
+                  "df", "-B1", "--output=source,fstype,pcent,size,used,target",
                   "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay", "-x", "squashfs", "-x", "efivarfs", "-x", "autofs",
                   "-x", "fuse", "-x", "fuse.rclone", "-x", "fuse.sshfs", "-x", "fuse.gvfsd-fuse", "-x", "fuse.portal", "-x", "fuse.mergerfs"]
         stdout: StdioCollector {
@@ -406,9 +417,8 @@ QtObject {
                     let j;
                     try { j = JSON.parse(line.slice(i + 1)); } catch (e) { continue; }
                     if (!j.total || j.used === undefined) continue;
-                    const tb = x => (x / 1099511627776).toFixed(1);
                     out.push({ name: "rclone:" + line.slice(0, i), pcent: 100 * j.used / j.total,
-                               label: Math.round(100 * j.used / j.total) + "% " + tb(j.used) + "/" + tb(j.total) + "T" });
+                               label: root._fmtUsage(100 * j.used / j.total, j.used, j.total) });
                 }
                 root._rcloneUsage = out;
             }
