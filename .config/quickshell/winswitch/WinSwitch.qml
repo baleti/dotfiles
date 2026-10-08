@@ -173,6 +173,13 @@ PanelWindow {
         // harmless no-op during plain (unlocked) Alt+Tab cycling.
         WinSwitchQueryHistory.record(root.queryText);
     }
+    Connections {
+        target: WinSwitchState
+        function onNavKey(direction: string): void {
+            if (root.open)
+                root._advance(direction === "left" ? "prev" : "next");
+        }
+    }
     function _advanceRow(delta) {
         const n = root.results.length;
         if (n === 0) return;
