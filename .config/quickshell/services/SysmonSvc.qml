@@ -354,7 +354,7 @@ QtObject {
             // before the wanted-list filter matches against it.
             const existing = bySource[source];
             if (!existing || target.length < existing.target.length)
-                bySource[source] = { source, target, pcent, fstype: parts[1], label: root._fmtUsage(pcent, used, size), disk: root._diskOf(source) };
+                bySource[source] = { source, target, pcent, fstype: parts[1], label: root._fmtUsage(pcent, used, size), disk: /^(nfs|cifs|smb3)/.test(parts[1]) ? "nfs:" + target.split("/").pop() : root._diskOf(source) };
         }
         const bySourceOrTarget = {};
         for (const d of Object.values(bySource)) {
@@ -443,7 +443,7 @@ QtObject {
                     let j;
                     try { j = JSON.parse(line.slice(i + 1)); } catch (e) { continue; }
                     if (!j.total || j.used === undefined) continue;
-                    out.push({ name: "rclone:" + line.slice(0, i), pcent: 100 * j.used / j.total,
+                    out.push({ name: "rclone:" + line.slice(0, i), disk: "rclone:" + line.slice(0, i), pcent: 100 * j.used / j.total,
                                label: root._fmtUsage(100 * j.used / j.total, j.used, j.total) });
                 }
                 root._rcloneUsage = out;
