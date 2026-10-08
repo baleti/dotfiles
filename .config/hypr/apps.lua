@@ -21,4 +21,5 @@ return {
     { key = "5", slug = "signal",      class = "org.signal.Signal",            cmd = "flatpak run org.signal.Signal" },
     { key = "6", slug = "inkscape",    class = "org.inkscape.Inkscape",        cmd = "inkscape" },
     { key = "7", slug = "recoll",      class = "recoll",                       cmd = "recoll" },
+    { key = "8", slug = "whatsapp",    class = "brave-web.whatsapp.com__-Default", cmd = "/home/user1/bin/whatsapp-web" },
 }

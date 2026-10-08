@@ -1,0 +1,7 @@
+[Unit]
+Description=Open WhatsApp on the Pixel to keep linked devices alive
+
+[Service]
+Type=oneshot
+ExecStart=%h/bin/whatsapp-keepalive
+Environment=PATH=/opt/android-sdk/platform-tools:/usr/local/bin:/usr/bin

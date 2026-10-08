@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# WhatsApp Web as a Brave app window, isolated in firejail with its own profile.
+d="$HOME/.brave-whatsapp"
+exec firejail --whitelist="$d" brave --user-data-dir="$d" \
+    --ozone-platform=wayland \
+    --app=https://web.whatsapp.com/

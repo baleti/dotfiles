@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly WhatsApp keepalive on the Pixel
+
+[Timer]
+OnCalendar=Sun 12:00
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
