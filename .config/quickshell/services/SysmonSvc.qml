@@ -313,6 +313,9 @@ QtObject {
     }
 
     property var _netSeen: ({})
+    // nfs series names ("nfs:<dir>") present in the latest df run, unlike
+    // _netSeen which is sticky; lets the graph show a mounted-but-idle share.
+    property var netMounted: ({})
     property var _wantedMounts: []
     property string _lastDfText: ""
 
@@ -394,6 +397,11 @@ QtObject {
         // than via the conf: they're often autofs-mounted on demand (e.g.
         // /mnt/host1-backups, idle-timeout 300) so a fixed entry would be
         // missing most of the time. Last reading is kept once seen.
+        const nm = {};
+        for (const d of Object.values(bySource))
+            if (/^(nfs|cifs|smb3)/.test(d.fstype))
+                nm["nfs:" + d.target.split("/").pop()] = true;
+        root.netMounted = nm;
         for (const d of Object.values(bySource))
             if (/^(nfs|cifs|smb3)/.test(d.fstype))
                 root._netSeen[d.target] = { name: d.target, pcent: d.pcent, label: d.label, disk: d.disk };
