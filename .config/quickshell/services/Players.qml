@@ -31,6 +31,37 @@ QtObject {
         return player?.identity ?? "";
     }
 
+    // Untagged files (e.g. yt-dlp downloads) give MPD no title; derive
+    // "Artist - Title" from the file name in xesam:url instead.
+    function fileLabel(player: MprisPlayer): string {
+        const url = player?.metadata["xesam:url"] ?? "";
+        if (!url.startsWith("file://"))
+            return "";
+        let name = decodeURIComponent(url.split("/").pop());
+        name = name.replace(/\.[A-Za-z0-9]{2,4}$/, "").replace(/\s*\[[\w-]{11}\]$/, "");
+        return name;
+    }
+
+    function getTitle(player: MprisPlayer): string {
+        if (!player)
+            return "";
+        if (player.trackTitle)
+            return player.trackTitle;
+        const n = fileLabel(player);
+        const i = n.indexOf(" - ");
+        return (player.trackArtist && i > 0) ? n.slice(i + 3) : n;
+    }
+
+    function getArtist(player: MprisPlayer): string {
+        if (!player)
+            return "";
+        if (player.trackArtist || player.trackTitle)
+            return player.trackArtist;
+        const n = fileLabel(player);
+        const i = n.indexOf(" - ");
+        return i > 0 ? n.slice(0, i) : "";
+    }
+
     function getArtUrl(player: MprisPlayer): string {
         if (!player)
             return "";
