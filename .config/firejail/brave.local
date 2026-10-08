@@ -1,0 +1,33 @@
+# needed for browserpass extension
+# whitelist ${HOME}/.password-store
+# noblacklist ${HOME}/.password-store
+# whitelist ${HOME}/.gnupg
+# noblacklist ${HOME}/.gnupg
+# writable-run-user
+# whitelist ${RUNUSER}/gnupg
+
+# however I couldn't get browserpass to work on brave for some reason
+# it should have been already installed in package browserpass-chromium
+# therefore disabling access to gnupg
+nowhitelist ${HOME}/.gnupg
+
+nowhitelist ${HOME}/.kde/share/config/kdeglobals
+tmpfs ${HOME}/.kde
+tmpfs ${HOME}/.cache
+nowhitelist ${HOME}/.themes
+tmpfs ${HOME}/.themes
+nowhitelist ${HOME}/.pki
+nowhitelist ${HOME}/.fonts.conf
+nowhitelist ${HOME}/.fonts
+nowhitelist ${HOME}/.gnome2
+nowhitelist ${HOME}/.gtkrc-2.0
+tmpfs ${HOME}/.config
+tmpfs ${HOME}/.local
+blacklist ${HOME}/.Xauthority
+
+# webrtc screen sharing via xdg desktop portal
+# by default brave allows apparently the entire dbus
+# monitor if any other dbus names will need to be accessed
+dbus-user filter
+dbus-user.talk org.freedesktop.portal.*
+dbus-user.talk org.freedesktop.Notifications

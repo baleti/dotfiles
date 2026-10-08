@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Open WhatsApp on the Pixel so linked devices (WhatsApp Web) stay linked.
+# WhatsApp unlinks companions after ~14 days without the phone connecting.
+# Borrows adb via the Companion app (/adb/enable ... /adb/release).
+set -u
+PHONE_HOST=10.10.0.5
+peer() { curl -sf -m "$1" -X POST -H 'X-Peer-Agent: 1' "http://$PHONE_HOST:8788$2"; }
+
+port="$(peer 15 /adb/enable)" || { echo "phone unreachable"; exit 1; }
+trap 'peer 5 /adb/release >/dev/null 2>&1' EXIT
+serial="$PHONE_HOST:$port"
+out="$(timeout 8 adb connect "$serial" 2>&1)"
+case "$out" in *connected*) ;; *) echo "adb: $out"; exit 1;; esac
+
+adb -s "$serial" shell 'monkey -p com.whatsapp -c android.intent.category.LAUNCHER 1' >/dev/null 2>&1
+sleep 20                                  # let it sync with the server
+adb -s "$serial" shell input keyevent KEYCODE_HOME
+adb disconnect "$serial" >/dev/null 2>&1
+echo "ok $(date -Is)"
