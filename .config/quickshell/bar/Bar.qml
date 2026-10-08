@@ -588,13 +588,45 @@ Item {
         { data: SysmonSvc.swapUsedPct, color: Theme.orange, dashed: false, name: qsTr("Swap"), procSnaps: SysmonSvc.procHistSnaps("mem:swap") }
     ] : []
 
-    readonly property var diskLegend: diskPill.expanded ? SysmonSvc.diskDevices.map(d => ({ name: d.name, color: root.colorFor(d.name) })) : []
+    // Network-mount series from sysmond (names "nfs:<dir>" / "rclone:<remote>",
+    // see read_net_mount_bytes) share the disk graph with the block devices.
+    // Idle ones (all-zero window) are hidden -- every rclone mount gets a
+    // series, most are quiet. Colours: block devices keep their name-hash
+    // colour; network series take palette colours the block devices aren't
+    // using, so the two groups don't get mixed up (wrapping only when the
+    // 8-colour palette runs out).
+    function isNetMount(name: string): bool { return name.indexOf(":") >= 0; }
+    readonly property var diskDevicesShown: SysmonSvc.diskDevices.filter(d =>
+        !root.isNetMount(d.name) || Math.max(0, ...d.read_bps, ...d.write_bps) > 0)
+    readonly property var diskColorMap: {
+        const m = {}, used = {};
+        for (const d of SysmonSvc.diskDevices) {
+            if (root.isNetMount(d.name)) continue;
+            m[d.name] = root.colorFor(d.name);
+            used[m[d.name]] = true;
+        }
+        const n = root.palette.length;
+        const nets = SysmonSvc.diskDevices.filter(d => root.isNetMount(d.name)).map(d => d.name).sort();
+        let next = 0;
+        for (const name of nets) {
+            let tries = 0;
+            while (used[root.palette[next % n]] && tries++ < n) next++;
+            m[name] = root.palette[next % n];
+            used[m[name]] = true;
+            next++;
+            if (Object.keys(used).length >= n) for (const k in used) delete used[k];
+        }
+        return m;
+    }
+    function diskColor(name: string): var { return root.diskColorMap[name]; }
+
+    readonly property var diskLegend: diskPill.expanded ? root.diskDevicesShown.map(d => ({ name: d.name, color: root.diskColor(d.name) })) : []
     readonly property var diskSeriesList: {
         if (!diskPill.expanded)
             return [];
         const out = [];
-        for (const dev of SysmonSvc.diskDevices) {
-            const c = root.colorFor(dev.name);
+        for (const dev of root.diskDevicesShown) {
+            const c = root.diskColor(dev.name);
             // Same name on both read/write (request 2026-09-10: same
             // reasoning as netSeriesList's own comment above). procSnaps
             // (2026-09-11): machine-wide, not per-device -- no comparable
@@ -612,13 +644,16 @@ Item {
         if (!diskPill.expanded)
             return 1024;
         let m = 1024;
-        for (const dev of SysmonSvc.diskDevices)
+        for (const dev of root.diskDevicesShown)
             m = Math.max(m, ...dev.read_bps, ...dev.write_bps);
         return m;
     }
     readonly property real diskTotalNow: {
         let rd = 0, wr = 0;
+        // Block devices only: network mounts' traffic isn't local disk I/O
+        // (and rclone's cache writes already show up on the disk itself).
         for (const dev of SysmonSvc.diskDevices) {
+            if (root.isNetMount(dev.name)) continue;
             rd += root.last(dev.read_bps);
             wr += root.last(dev.write_bps);
         }
@@ -1173,7 +1208,7 @@ Item {
             secondaryDivider: false
             secondaryValueFraction: SysmonSvc.rootUsagePct / 100
             legendItems: root.diskLegend
-            usageItems: SysmonSvc.diskUsage.map(d => d.disk ? Object.assign({}, d, { color: root.colorFor(d.disk) }) : d)
+            usageItems: SysmonSvc.diskUsage.map(d => d.disk ? Object.assign({}, d, { color: root.diskColorMap[d.disk] }) : d)
             topProcs: SysmonSvc.topDisk.map(e => ({ pid: e.pid, name: e.name, detail: e.detail, util_pct: e.util_pct, value: e.value / 1024 }))
             topUnit: " MB/s"
             yAxisFormatter: v => root.fmtRate(v)

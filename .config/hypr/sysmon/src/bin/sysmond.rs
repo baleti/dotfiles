@@ -904,6 +904,7 @@ impl History {
             .unwrap_or_default()
             .lines()
             .filter_map(|l| l.split_whitespace().nth(2).map(str::to_string))
+            .chain(read_net_mount_bytes(&find_rclone_mount_pids()).into_keys())
             .collect();
         for (name, (a, b)) in p.disk.into_iter().filter(|(n, _)| present.contains(n)) {
             let buf = self.disk.entry(name).or_insert_with(TwoSeriesBuf::new);
@@ -1130,6 +1131,73 @@ fn read_all_disk_bytes(names: &[String]) -> HashMap<String, (u64, u64)> {
         let Ok(rd_sectors) = fields[5].parse::<u64>() else { continue };
         let Ok(wr_sectors) = fields[9].parse::<u64>() else { continue };
         out.insert(name.to_string(), (rd_sectors * 512, wr_sectors * 512));
+    }
+    out
+}
+
+/// Per-mount I/O counters for network filesystems, keyed like a disk device so
+/// they flow through the same history/legend path:
+///  - `nfs:<mount dir name>`: the kernel's per-mount server read/write byte
+///    counters (`bytes:` line of /proc/self/mountstats), i.e. real wire bytes.
+///  - `rclone:<remote>`: FUSE has no per-mount counters, so this is the
+///    `rclone mount` process's `rchar`/`wchar` (/proc/<pid>/io). An
+///    approximation: it also counts the vfs cache file and /dev/fuse traffic,
+///    so reads and writes both run high (roughly 2x on cached transfers).
+fn read_net_mount_bytes(rclone_pids: &[(String, u32)]) -> HashMap<String, (u64, u64)> {
+    let mut out = HashMap::new();
+    if let Ok(text) = fs::read_to_string("/proc/self/mountstats") {
+        let mut cur: Option<String> = None;
+        for line in text.lines() {
+            if line.starts_with("device ") {
+                cur = None;
+                let Some((_, rest)) = line.split_once(" mounted on ") else { continue };
+                let Some((target, fstype)) = rest.split_once(" with fstype ") else { continue };
+                if fstype.trim().starts_with("nfs") {
+                    let base = target.rsplit('/').next().unwrap_or(target);
+                    cur = Some(format!("nfs:{base}"));
+                }
+            } else if let Some(name) = &cur {
+                if let Some(b) = line.trim().strip_prefix("bytes:") {
+                    let f: Vec<u64> = b.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                    if f.len() >= 6 {
+                        out.insert(name.clone(), (f[4], f[5]));
+                    }
+                    cur = None;
+                }
+            }
+        }
+    }
+    for (name, pid) in rclone_pids {
+        let Ok(io) = fs::read_to_string(format!("/proc/{pid}/io")) else { continue };
+        let field = |key: &str| {
+            io.lines()
+                .find_map(|l| l.strip_prefix(key))
+                .and_then(|v| v.trim().parse::<u64>().ok())
+        };
+        if let (Some(rd), Some(wr)) = (field("rchar:"), field("wchar:")) {
+            out.insert(name.clone(), (rd, wr));
+        }
+    }
+    out
+}
+
+/// `(rclone:<remote>, pid)` for every running `rclone mount`. A /proc walk,
+/// so callers cache the result and refresh it only occasionally.
+fn find_rclone_mount_pids() -> Vec<(String, u32)> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir("/proc") else { return out };
+    for e in entries.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) else { continue };
+        let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+        if args.len() < 3 || !args[0].ends_with(b"rclone") || args[1] != b"mount" {
+            continue;
+        }
+        let remote = String::from_utf8_lossy(args[2]);
+        let remote = remote.split(':').next().unwrap_or("");
+        if !remote.is_empty() {
+            out.push((format!("rclone:{remote}"), pid));
+        }
     }
     out
 }
@@ -2393,6 +2461,8 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
     let mut prev_cpu_lines = read_all_cpu_lines();
     let mut prev_net: HashMap<String, (u64, u64, Instant)> = HashMap::new();
     let mut prev_disk: HashMap<String, (u64, u64, Instant)> = HashMap::new();
+    let mut rclone_pids = find_rclone_mount_pids();
+    let mut rclone_scan = Instant::now();
     let page_size_bytes = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as f64;
     let mut prev_swap: Option<(u64, u64, Instant)> = None;
 
@@ -2476,7 +2546,12 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
         // rate against a stale, arbitrarily old timestamp.
         prev_net = current.into_iter().map(|(name, (rx, tx))| (name, (rx, tx, now))).collect();
 
-        let cur_disk = read_all_disk_bytes(&disk_names);
+        if rclone_scan.elapsed() >= Duration::from_secs(30) {
+            rclone_pids = find_rclone_mount_pids();
+            rclone_scan = Instant::now();
+        }
+        let mut cur_disk = read_all_disk_bytes(&disk_names);
+        cur_disk.extend(read_net_mount_bytes(&rclone_pids));
         let mut disk_rates: Vec<(String, f64, f64)> = Vec::with_capacity(cur_disk.len());
         for (name, (rd, wr)) in &cur_disk {
             let rate = match prev_disk.get(name) {
