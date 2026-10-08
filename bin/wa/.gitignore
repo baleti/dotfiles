@@ -1,0 +1,4 @@
+# build output and local state never belong in the repo
+/wa
+*.db
+*.db-*
