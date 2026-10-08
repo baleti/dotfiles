@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # WhatsApp Web as a Brave app window, isolated in firejail with its own profile.
+# WA_DEBUG=1 also opens a loopback-only CDP port (random; see DevToolsActivePort).
 d="$HOME/.brave-whatsapp"
 exec firejail --whitelist="$d" brave --user-data-dir="$d" \
-    --ozone-platform=wayland \
+    --ozone-platform=wayland ${WA_DEBUG:+--remote-debugging-port=0} \
     --app=https://web.whatsapp.com/
