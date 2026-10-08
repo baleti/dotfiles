@@ -45,6 +45,14 @@ Limits in the daemon: 30 actions/24h (`WA_DAILY_CAP`), 2 group creations/24h, 20
 sends, 64 MB per file. A temporary-ban event stops all sends and notifies.
 
 ## Maintenance
-`update.sh` (weekly timer `wa-update`) bumps whatsmeow, rebuilds, runs vet + tests and rolls
-back on failure. The AUR security checker also reviews whatsmeow's upstream changes.
-`wa selftest` runs the offline regression suite (parsing, storage, FTS, outbox, approval gate).
+- `bin/cron/check-aur-security.sh` (every 4 days) also reviews whatsmeow: `whatsmeow-review-prep.sh`
+  mirrors upstream and diffs the last reviewed commit against the newest commit that is at least
+  3 days old; a headless review must answer `WHATSMEOW_REVIEW: CLEAN <commit>` before
+  `~/.local/share/aur-security-check/whatsmeow/reviewed-ok` advances. Baseline = the commit pinned in go.mod.
+- `update.sh` (weekly `wa-update.timer`) only adopts that reviewed commit, then vets, tests,
+  runs `selftest`, swaps the binary, restarts the daemon and waits for it to reconnect. Any failure
+  rolls back go.mod/go.sum and the old binary and emails.
+- `health.sh` (daily `wa-health.timer`) runs `selftest` and, once paired, checks the daemon is up
+  and linked, not logged out, outdated or temp-banned. It emails and notifies on problems.
+- `wa selftest` / `go test` cover parsing, storage, FTS, name resolution, the outbox and the approval gate.
+  Live paths (pairing, upload/download, group changes) can only be verified with a real session.

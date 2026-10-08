@@ -1,0 +1,10 @@
+[Unit]
+Description=wa daily health and regression check
+
+[Timer]
+OnCalendar=*-*-* 09:30
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
