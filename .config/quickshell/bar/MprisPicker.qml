@@ -220,8 +220,8 @@ Item {
                             textFormat: Text.PlainText
                             visible: text.length > 0
                             text: {
-                                const t = rowItem.modelData.trackTitle || "";
-                                const a = rowItem.modelData.trackArtist || "";
+                                const t = Players.getTitle(rowItem.modelData);
+                                const a = Players.getArtist(rowItem.modelData);
                                 return (a && t) ? `${a} - ${t}` : (t || a);
                             }
                             color: Theme.textDim
