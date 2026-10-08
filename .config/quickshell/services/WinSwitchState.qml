@@ -65,6 +65,8 @@ QtObject {
     property var enrichMeta: ({})
 
     signal lockedTab(string direction)
+    // Ctrl+Alt+H/L while the switcher is up (winswitch.nav in winswitch.lua).
+    signal navKey(string direction)
 
     property bool _capturePending: false
     // True from a tab press until the compositor's Alt-release poll emits
@@ -87,6 +89,8 @@ QtObject {
                 root._onAltUp();
             else if (rest.startsWith("tab "))
                 root._onTab(rest.slice(4));
+            else if (rest.startsWith("nav ") && root.active)
+                root.navKey(rest.slice(4));
         }
     }
 

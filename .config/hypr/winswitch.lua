@@ -263,5 +263,20 @@ function winswitch.focus(address)
     return hl.dsp.no_op()
 end
 
+-- True from the first Tab until Alt is released (the alt_timer poll above).
+function winswitch.active()
+    return alt_timer:is_enabled()
+end
+
+-- Alt is necessarily held while the switcher is up, so Ctrl+H/J/K/L typed
+-- then arrives as CTRL+ALT+<key> and would hit the workspace binds in
+-- keybinds.lua. Those binds call this first: returns true (and emits a nav
+-- event for the grid) if the switcher swallowed the key.
+function winswitch.nav(dir)
+    if not alt_timer:is_enabled() then return false end
+    emit("nav " .. dir)
+    return true
+end
+
 hl.bind("ALT + Tab", function() winswitch.tab("next") end, { description = "Window switcher (next)" })
 hl.bind("ALT + SHIFT + Tab", function() winswitch.tab("prev") end, { description = "Window switcher (previous)" })
