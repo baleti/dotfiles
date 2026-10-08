@@ -1209,6 +1209,20 @@ fn read_rclone_overlay_map() -> HashMap<String, String> {
     map
 }
 
+/// Series names (e.g. `rclone:somebucket`) the user never wants graphed, one
+/// per line in `~/.local/state/sysmond/hidden-mounts.conf` (private, kept out
+/// of the dotfiles repo). `#` comments and blank lines are ignored.
+fn read_hidden_mounts() -> std::collections::HashSet<String> {
+    let path = persist_path().with_file_name("hidden-mounts.conf");
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Follows overlay `remote =` links down to the base backend.
 fn rclone_base_remote(name: &str, overlays: &HashMap<String, String>) -> String {
     let mut cur = name.to_string();
@@ -1226,6 +1240,7 @@ fn rclone_base_remote(name: &str, overlays: &HashMap<String, String>) -> String 
 fn find_rclone_mount_pids() -> Vec<(String, u32)> {
     let mut out = Vec::new();
     let cfg = read_rclone_overlay_map();
+    let hidden = read_hidden_mounts();
     let Ok(entries) = fs::read_dir("/proc") else { return out };
     for e in entries.flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
@@ -1237,7 +1252,10 @@ fn find_rclone_mount_pids() -> Vec<(String, u32)> {
         let remote = String::from_utf8_lossy(args[2]);
         let remote = remote.split(':').next().unwrap_or("");
         if !remote.is_empty() {
-            out.push((format!("rclone:{}", rclone_base_remote(remote, &cfg)), pid));
+            let name = format!("rclone:{}", rclone_base_remote(remote, &cfg));
+            if !hidden.contains(&name) {
+                out.push((name, pid));
+            }
         }
     }
     out

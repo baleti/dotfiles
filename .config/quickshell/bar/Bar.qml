@@ -597,7 +597,7 @@ Item {
     // 8-colour palette runs out).
     function isNetMount(name: string): bool { return name.indexOf(":") >= 0; }
     readonly property var diskDevicesShown: SysmonSvc.diskDevices.filter(d =>
-        !root.isNetMount(d.name) || Math.max(0, ...d.read_bps, ...d.write_bps) > 0)
+        !root.isNetMount(d.name) || SysmonSvc.netMounted[d.name] || Math.max(0, ...d.read_bps, ...d.write_bps) > 0)
     readonly property var diskColorMap: {
         const m = {}, used = {};
         for (const d of SysmonSvc.diskDevices) {

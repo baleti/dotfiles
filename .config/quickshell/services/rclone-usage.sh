@@ -7,7 +7,9 @@ for k, v in json.load(sys.stdin).items():
     if not v.get("remote"):
         print(k)
 ')
+hidden=$HOME/.local/state/sysmond/hidden-mounts.conf
 for r in $remotes; do
+    grep -qx "rclone:$r" "$hidden" 2>/dev/null && continue
     ( o=$(timeout -k 1 15 rclone about "$r": --json 2>/dev/null) && printf '%s %s\n' "$r" "$(echo "$o" | tr -d '\n')" ) &
 done
 wait
