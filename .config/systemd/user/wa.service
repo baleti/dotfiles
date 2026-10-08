@@ -1,0 +1,14 @@
+[Unit]
+Description=wa - receive-only WhatsApp session (whatsmeow) with approval outbox
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/wa daemon
+Restart=on-failure
+RestartSec=30
+# a failed pairing or logout is permanent until a human re-pairs
+RestartPreventExitStatus=1
+UMask=0077
+
+[Install]
+WantedBy=default.target
