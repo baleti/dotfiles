@@ -79,5 +79,20 @@ else
     rc=1
 fi
 
+# Follow the headphones with the playerctl target (what ALT+CTRL+SHIFT+m picks):
+# handing to the phone selects pixel6 (remembering the host3 player it replaces);
+# taking them back restores that host3 player.
+player_file="$HOME/.config/playerctl-current"
+last_local="$HOME/.config/playerctl-last-local"
+if [ "$rc" = 0 ]; then
+    cur="$(cat "$player_file" 2>/dev/null)"
+    if [ "$action" = disconnect ]; then
+        [ -n "$cur" ] && [ "$cur" != pixel6 ] && printf '%s\n' "$cur" > "$last_local"
+        printf 'pixel6\n' > "$player_file"
+    elif [ "$cur" = pixel6 ] && [ -s "$last_local" ]; then
+        cp "$last_local" "$player_file"
+    fi
+fi
+
 [ "$action" = disconnect ] && [ "$rc" = 0 ] && { sleep 1; phone_do connect; }
 exit "$rc"
