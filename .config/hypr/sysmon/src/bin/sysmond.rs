@@ -1175,16 +1175,57 @@ fn read_net_mount_bytes(rclone_pids: &[(String, u32)]) -> HashMap<String, (u64, 
                 .and_then(|v| v.trim().parse::<u64>().ok())
         };
         if let (Some(rd), Some(wr)) = (field("rchar:"), field("wchar:")) {
-            out.insert(name.clone(), (rd, wr));
+            // Several mounts can share one base remote (crypt overlays on
+            // gdrive): their traffic is summed into that base's series.
+            let e = out.entry(name.clone()).or_insert((0, 0));
+            e.0 += rd;
+            e.1 += wr;
         }
     }
     out
+}
+
+/// rclone.conf sections that are overlays (`remote = <other>:path`, e.g.
+/// crypt/alias/chunker), as name -> the remote they wrap.
+fn read_rclone_overlay_map() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Some(home) = std::env::var_os("HOME") else { return map };
+    let path = std::path::Path::new(&home).join(".config/rclone/rclone.conf");
+    let Ok(text) = fs::read_to_string(path) else { return map };
+    let mut section = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            section = name.to_string();
+        } else if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == "remote" && !section.is_empty() {
+                let target = v.trim().split(':').next().unwrap_or("").to_string();
+                if !target.is_empty() {
+                    map.insert(section.clone(), target);
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Follows overlay `remote =` links down to the base backend.
+fn rclone_base_remote(name: &str, overlays: &HashMap<String, String>) -> String {
+    let mut cur = name.to_string();
+    for _ in 0..8 {
+        match overlays.get(&cur) {
+            Some(next) => cur = next.clone(),
+            None => break,
+        }
+    }
+    cur
 }
 
 /// `(rclone:<remote>, pid)` for every running `rclone mount`. A /proc walk,
 /// so callers cache the result and refresh it only occasionally.
 fn find_rclone_mount_pids() -> Vec<(String, u32)> {
     let mut out = Vec::new();
+    let cfg = read_rclone_overlay_map();
     let Ok(entries) = fs::read_dir("/proc") else { return out };
     for e in entries.flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
@@ -1196,7 +1237,7 @@ fn find_rclone_mount_pids() -> Vec<(String, u32)> {
         let remote = String::from_utf8_lossy(args[2]);
         let remote = remote.split(':').next().unwrap_or("");
         if !remote.is_empty() {
-            out.push((format!("rclone:{remote}"), pid));
+            out.push((format!("rclone:{}", rclone_base_remote(remote, &cfg)), pid));
         }
     }
     out
