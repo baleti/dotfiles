@@ -1,0 +1,7 @@
+[Unit]
+Description=Adopt the security-reviewed whatsmeow commit, rebuild, test, roll back on failure
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/bin/wa/update.sh
