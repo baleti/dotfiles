@@ -709,12 +709,12 @@ PanelWindow {
                         } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
                             if (acPopup.visible) {
                                 if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
-                            } else if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("next"));
+                            } else if (!event.isAutoRepeat) root._startNavRepeat(() => root._advanceRow(root.cols));
                             event.accepted = true;
                         } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
                             if (acPopup.visible) {
                                 if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
-                            } else if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("prev"));
+                            } else if (!event.isAutoRepeat) root._startNavRepeat(() => root._advanceRow(-root.cols));
                             event.accepted = true;
                         } else if (!acPopup.visible && event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier)) {
                             // Ctrl+H/L mirror the grid's own Left/Right (unlocked
