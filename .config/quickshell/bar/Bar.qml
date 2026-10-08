@@ -596,8 +596,13 @@ Item {
     // using, so the two groups don't get mixed up (wrapping only when the
     // 8-colour palette runs out).
     function isNetMount(name: string): bool { return name.indexOf(":") >= 0; }
+    // Order: local block devices, then nfs, then rclone (stable within each).
+    function mountRank(name: string): int { return name.startsWith("nfs:") ? 1 : root.isNetMount(name) ? 2 : 0; }
     readonly property var diskDevicesShown: SysmonSvc.diskDevices.filter(d =>
         !root.isNetMount(d.name) || SysmonSvc.netMounted[d.name] || Math.max(0, ...d.read_bps, ...d.write_bps) > 0)
+        .map((d, i) => ({ d, i, r: root.mountRank(d.name) }))
+        .sort((a, b) => a.r - b.r || a.i - b.i)
+        .map(x => x.d)
     readonly property var diskColorMap: {
         const m = {}, used = {};
         for (const d of SysmonSvc.diskDevices) {
