@@ -289,17 +289,24 @@ QtObject {
     // legend entry under the I/O graph. "" for non-block sources (rclone,
     // nfs). Parent map comes from `lsblk -rno NAME,PKNAME`, read once.
     property var _blkParent: ({})
+    // Same tree keyed by kernel name (dm-0, nvme0n1p2, ...), for matching sysmond's device names.
+    property var kernelParent: ({})
+    property var _nameToKernel: ({})
     readonly property Process lsblkProc: Process {
-        command: ["lsblk", "-rno", "NAME,PKNAME"]
+        command: ["lsblk", "-rno", "NAME,KNAME,PKNAME"]
         running: true
         stdout: StdioCollector {
             onStreamFinished: {
-                const m = {};
+                const m = {}, k = {}, nk = {};
                 for (const l of text.trim().split("\n")) {
-                    const [n, pk] = l.split(" ");
+                    const [n, kn, pk] = l.split(" ");
                     if (n) m[n] = pk || "";
+                    if (kn) k[kn] = pk || "";
+                    if (n && kn) nk[n] = kn;
                 }
                 root._blkParent = m;
+                root.kernelParent = k;
+                root._nameToKernel = nk;
                 if (root._lastDfText) root._parseDfOutput(root._lastDfText);
             }
         }
@@ -307,6 +314,9 @@ QtObject {
     function _diskOf(source) {
         if (!source.startsWith("/dev/")) return "";
         let n = source.split("/").pop();
+        // A device-mapper source is its own graph series (dm-0), not its disk.
+        const kn = root._nameToKernel[n];
+        if (kn && kn.startsWith("dm-")) return kn;
         for (let i = 0; i < 8 && root._blkParent[n]; i++)
             n = root._blkParent[n];
         return root._blkParent[n] === undefined ? "" : n;

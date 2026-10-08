@@ -598,8 +598,31 @@ Item {
     function isNetMount(name: string): bool { return name.indexOf(":") >= 0; }
     // Order: local block devices, then nfs, then rclone (stable within each).
     function mountRank(name: string): int { return name.startsWith("nfs:") ? 1 : root.isNetMount(name) ? 2 : 0; }
+    // A whole disk whose I/O is (nearly) all carried by device-mapper layers
+    // stacked on it (LUKS here: nvme0n1 -> dm-0/dm-1) is just a duplicate of
+    // those, so it is hidden; the logical dm devices stay. Judged by traffic,
+    // not structure: if >10% of the disk's I/O isn't explained by its dm
+    // children (a plain partition in use directly) it stays visible.
+    function topDisk(name: string): string {
+        let n = name;
+        for (let i = 0; i < 8 && SysmonSvc.kernelParent[n]; i++) n = SysmonSvc.kernelParent[n];
+        return n;
+    }
+    readonly property var hiddenBackingDisks: {
+        const hide = {};
+        const tot = d => d.read_bps.reduce((a, b) => a + b, 0) + d.write_bps.reduce((a, b) => a + b, 0);
+        for (const disk of SysmonSvc.diskDevices) {
+            if (root.isNetMount(disk.name) || disk.name.startsWith("dm-")) continue;
+            const kids = SysmonSvc.diskDevices.filter(d => d.name.startsWith("dm-") && root.topDisk(d.name) === disk.name);
+            if (!kids.length) continue;
+            const t = tot(disk), kt = kids.reduce((a, d) => a + tot(d), 0);
+            if (t - kt <= 0.1 * t) hide[disk.name] = true;
+        }
+        return hide;
+    }
     readonly property var diskDevicesShown: SysmonSvc.diskDevices.filter(d =>
-        !root.isNetMount(d.name) || SysmonSvc.netMounted[d.name] || Math.max(0, ...d.read_bps, ...d.write_bps) > 0)
+        !root.hiddenBackingDisks[d.name] &&
+        (!root.isNetMount(d.name) || SysmonSvc.netMounted[d.name] || Math.max(0, ...d.read_bps, ...d.write_bps) > 0))
         .map((d, i) => ({ d, i, r: root.mountRank(d.name) }))
         .sort((a, b) => a.r - b.r || a.i - b.i)
         .map(x => x.d)
@@ -657,7 +680,7 @@ Item {
         let rd = 0, wr = 0;
         // Block devices only: network mounts' traffic isn't local disk I/O
         // (and rclone's cache writes already show up on the disk itself).
-        for (const dev of SysmonSvc.diskDevices) {
+        for (const dev of root.diskDevicesShown) {
             if (root.isNetMount(dev.name)) continue;
             rd += root.last(dev.read_bps);
             wr += root.last(dev.write_bps);
