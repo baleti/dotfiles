@@ -1349,6 +1349,24 @@ def find_session_profile(session_id):
         except (OSError, ValueError):
             continue
     best, best_m = None, -1
+    # Most reliable for a just-closed session: each profile's .claude.json
+    # records projects[cwd].lastSessionId, and session-env/file-history
+    # dirs often don't exist (no tool use / no file edits). Newest
+    # .claude.json wins if several profiles name the session.
+    for d in glob.glob(os.path.expanduser("~/.claude*")):
+        cj = os.path.join(d, ".claude.json")
+        try:
+            with open(cj) as f:
+                projs = json.load(f).get("projects") or {}
+            if any(isinstance(v, dict) and v.get("lastSessionId") == session_id
+                   for v in projs.values()):
+                m = os.stat(cj).st_mtime
+                if m > best_m:
+                    best, best_m = d, m
+        except (OSError, ValueError, AttributeError):
+            continue
+    if best:
+        return best
     for d in glob.glob(os.path.expanduser("~/.claude*")):
         for sub in ("session-env", "file-history"):
             try:
