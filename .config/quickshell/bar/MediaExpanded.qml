@@ -138,7 +138,7 @@ Rectangle {
 
                 Text {
                     width: parent.width
-                    text: root.player?.trackTitle ?? ""
+                    text: Players.getTitle(root.player)
                     color: Theme.text
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize + 1
@@ -148,7 +148,7 @@ Rectangle {
 
                 Text {
                     width: parent.width
-                    text: root.player?.trackArtist ?? ""
+                    text: Players.getArtist(root.player)
                     color: Theme.textDim
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1

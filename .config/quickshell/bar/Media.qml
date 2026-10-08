@@ -79,8 +79,8 @@ Rectangle {
     readonly property string trackText: {
         if (!hasPlayer)
             return "";
-        const artist = player.trackArtist;
-        const title = player.trackTitle || "";
+        const artist = Players.getArtist(player);
+        const title = Players.getTitle(player);
         let t = artist ? `${artist} - ${title}` : title;
         const max = 28;
         if (t.length > max)
