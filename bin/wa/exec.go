@@ -117,6 +117,7 @@ func (d *Daemon) execute(ctx context.Context, action string, p map[string]any) (
 					QuotedMessage: &waE2E.Message{Conversation: proto.String(txt)}}}}
 		}
 		r, err := d.cli.SendMessage(ctx, to, msg)
+		d.archiveSent(to, msg, r, err)
 		return "id " + r.ID, err
 	case "send_file":
 		return d.sendFile(ctx, p)
@@ -241,7 +242,24 @@ func (d *Daemon) sendFile(ctx context.Context, p map[string]any) (string, error)
 			FileName: &name, Title: &name, Caption: proto.String(caption)}}
 	}
 	r, err := d.cli.SendMessage(ctx, to, msg)
+	d.archiveSent(to, msg, r, err)
 	return "id " + r.ID, err
+}
+
+// archiveSent records our own successful send; whatsmeow emits no Message event
+// for messages this device sends, so without this `wa messages` would miss them.
+func (d *Daemon) archiveSent(to types.JID, msg *waE2E.Message, r whatsmeow.SendResponse, err error) {
+	if err != nil || r.ID == "" {
+		return
+	}
+	kind, text, mime, fname, size, quoted := describe(msg)
+	raw, _ := proto.Marshal(msg)
+	me := ""
+	if d.cli.Store.ID != nil {
+		me = d.cli.Store.ID.ToNonAD().String()
+	}
+	_ = d.db.putMessage(Msg{Chat: to.ToNonAD().String(), ID: r.ID, Sender: me, TS: r.Timestamp.Unix(), FromMe: true,
+		Kind: kind, Text: text, Mime: mime, Filename: fname, Size: size, QuotedID: quoted, Raw: raw})
 }
 
 func pathBase(p string) string {
