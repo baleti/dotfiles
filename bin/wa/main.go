@@ -2,10 +2,11 @@
 //
 //	wa daemon            keep a linked-device session, store messages
 //	wa chats|messages|new|search|contacts|group ...   read from the local DB (works offline)
-//	wa send|send-file|react|group ... -> outbox; a human runs `wa approve <id>`
+//	wa send|send-file|react|group ... -> outbox
 //
-// Everything that leaves the account is queued in the outbox and needs a
-// human at a terminal to approve it. See README.md.
+// Everything that leaves the account goes through the outbox. Messages, files and
+// reactions send right away; group changes and read receipts need a human at a
+// terminal to run `wa approve <id>`. See README.md.
 package main
 
 import (
@@ -43,7 +44,7 @@ read (local DB, no network):
   group list | group info <group>
   outbox [--all]                  proposed actions and their status
 
-propose (queued; nothing is sent until a human approves):
+send (queued, sent by the daemon within seconds; group/mark-read wait for approval):
   send <chat> <text...> [--reply-to ID]
   send-file <chat> <path> [--caption TEXT] [--as image|video|audio|voice|document]
   react <chat> <id> <emoji>
