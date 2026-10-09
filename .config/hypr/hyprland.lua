@@ -169,8 +169,10 @@ hl.on("hyprland.start", function()
     -- aren't).
 
     for _, app in ipairs(apps) do
-        pending_hide[app.class] = app.slug
-        hl.exec_cmd(app.cmd)
+        if not app.no_autostart then
+            pending_hide[app.class] = app.slug
+            hl.exec_cmd(app.cmd)
+        end
     end
 
     autostart_hide_timer = hl.timer(function()
