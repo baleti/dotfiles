@@ -3,6 +3,14 @@
 d="$HOME/.brave-teams"
 # firejail --whitelist silently ignores a missing dir (profile then lands in tmpfs and is lost on exit)
 mkdir -p "$d"
+# Teams keeps its tokens encrypted with the session cookie teams.microsoft.com/msal.cache.encryption
+# (and Entra's esctx etc.); Brave drops session cookies on startup even with restore_on_startup, so the
+# login is lost on every close. While no browser owns the profile, promote last run's session cookies
+# to persistent ones (expiry +1y, WebKit-epoch microseconds).
+if [[ -f $d/Default/Cookies ]] && ! pgrep -f "^/opt/brave-bin/brave --user-data-dir=$d" >/dev/null; then
+    sqlite3 "$d/Default/Cookies" "update cookies set is_persistent=1, has_expires=1,
+        expires_utc=(strftime('%s','now')+31536000+11644473600)*1000000 where is_persistent=0" 2>/dev/null
+fi
 exec firejail --whitelist="$d" brave --user-data-dir="$d" \
-    --ozone-platform=wayland \
+    --ozone-platform=wayland ${TEAMS_DEBUG:+--remote-debugging-port=0} \
     --app=https://teams.microsoft.com/v2/
