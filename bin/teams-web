@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Microsoft Teams as a Brave app window, isolated in firejail with its own profile.
+d="$HOME/.brave-teams"
+exec firejail --whitelist="$d" brave --user-data-dir="$d" \
+    --ozone-platform=wayland \
+    --app=https://teams.microsoft.com/v2/
