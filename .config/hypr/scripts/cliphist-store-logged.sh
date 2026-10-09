@@ -102,7 +102,11 @@ fi
 
 tmp=$(mktemp "${TMPDIR:-/tmp}/cliphist-store.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
-cat > "$tmp"
+# Bounded: a delayed-render source (xfreerdp's cliprdr, caught live
+# 2026-10-09) can offer a selection and never deliver the bytes, leaving
+# wl-paste --watch's stdin open forever. An unbounded cat then held the
+# flock above indefinitely, wedging every later clipboard event.
+timeout 10 cat > "$tmp"
 
 # Every real type currently on offer, pseudo/marker targets excluded.
 # x-kde-force-image-copy carries no data of its own (see below); TARGETS/
