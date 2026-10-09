@@ -1,0 +1,8 @@
+[Unit]
+Description=Collect replies to the Reddit bot's comments for the News Digest
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/src/newsdigest-android/server/collectors
+Environment=CDP_PORT=9223
+ExecStart=%h/.local/share/chromium-cdp-driver/venv/bin/python3 reddit_replies.py
