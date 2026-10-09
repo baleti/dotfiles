@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # Microsoft Teams as a Brave app window, isolated in firejail with its own profile.
+#
+# Login persistence notes (ablation-tested 2026-10-09, personal account via teams.live.com):
+#  - ONLY needed: third-party cookie ALLOW exceptions in ~/.brave-teams/Default/Preferences
+#    (profile.content_settings.exceptions.cookies, key "[*.]live.com,*", setting 1). Without it Teams'
+#    hidden login iframes are blocked and every launch lands on login.microsoftonline.com.
+#    Set it while the browser is closed (Brave rewrites Preferences on exit).
+#  - If you ever use a work/school account and sign-in loops again, widen that list to:
+#    microsoftonline.com microsoft.com office.com cloud.microsoft sharepoint.com skype.com
+#    msauth.net msftauth.net office365.com office.net  (microsoft.com+microsoftonline.com alone
+#    did NOT fix the personal account; live.com alone did).
+#  - NOT needed (tested removed, still works): session.restore_on_startup=1, and promoting session
+#    cookies to persistent via sqlite (msal.cache.encryption/esctx...). If a Brave update breaks
+#    persistence, restore the promotion: with no browser on the profile run
+#      sqlite3 $d/Default/Cookies "update cookies set is_persistent=1, has_expires=1,
+#        expires_utc=(strftime('%s','now')+31536000+11644473600)*1000000 where is_persistent=0"
+#  - mkdir below is required: firejail --whitelist ignores a missing dir and the profile is lost on exit.
+#  - TEAMS_DEBUG=1 opens a loopback CDP port (drive with bin/teams-cdp.mjs).
 d="$HOME/.brave-teams"
-# firejail --whitelist silently ignores a missing dir (profile then lands in tmpfs and is lost on exit)
 mkdir -p "$d"
-# Teams keeps its tokens encrypted with the session cookie teams.microsoft.com/msal.cache.encryption
-# (and Entra's esctx etc.); Brave drops session cookies on startup even with restore_on_startup, so the
-# login is lost on every close. While no browser owns the profile, promote last run's session cookies
-# to persistent ones (expiry +1y, WebKit-epoch microseconds).
-if [[ -f $d/Default/Cookies ]] && ! pgrep -f "^/opt/brave-bin/brave --user-data-dir=$d" >/dev/null; then
-    sqlite3 "$d/Default/Cookies" "update cookies set is_persistent=1, has_expires=1,
-        expires_utc=(strftime('%s','now')+31536000+11644473600)*1000000 where is_persistent=0" 2>/dev/null
-fi
 exec firejail --whitelist="$d" brave --user-data-dir="$d" \
     --ozone-platform=wayland ${TEAMS_DEBUG:+--remote-debugging-port=0} \
     --app=https://teams.microsoft.com/v2/
