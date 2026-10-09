@@ -438,16 +438,34 @@ var quiet bool
 
 // ---- outbox ----
 
+// autoSend lists the actions that go out without a human approving each one:
+// plain messages, files and reactions. Group changes and read receipts still wait
+// for `wa approve`. Set WA_REQUIRE_APPROVAL=1 to gate everything again. The
+// daemon's rate limits and daily caps apply either way.
+var autoSend = map[string]bool{"send_text": true, "send_file": true, "react": true}
+
 func (d *DB) addOutbox(action, summary string, params map[string]any) (int64, error) {
 	b, _ := json.Marshal(params)
-	r, err := d.Exec(`INSERT INTO outbox(created,action,summary,params) VALUES(?,?,?,?)`, time.Now().Unix(), action, summary, string(b))
+	auto := autoSend[action] && os.Getenv("WA_REQUIRE_APPROVAL") == ""
+	status, now := "pending", time.Now().Unix()
+	var approvedAt any
+	if auto {
+		status, approvedAt = "approved", now
+	}
+	r, err := d.Exec(`INSERT INTO outbox(created,action,summary,params,status,approved_at) VALUES(?,?,?,?,?,?)`,
+		now, action, summary, string(b), status, approvedAt)
 	if err != nil {
 		return 0, err
 	}
 	id, _ := r.LastInsertId()
 	if !quiet {
-		_ = exec.Command("notify-send", "-a", "wa", "WhatsApp action awaiting approval", fmt.Sprintf("#%d %s\nrun: wa approve %d", id, summary, id)).Start()
-		fmt.Printf("queued #%d: %s\nnothing is sent until a human runs: wa approve %d\n", id, summary, id)
+		if auto {
+			_ = exec.Command("notify-send", "-a", "wa", "WhatsApp sending", fmt.Sprintf("#%d %s", id, summary)).Start()
+			fmt.Printf("queued #%d: %s\nthe daemon sends it shortly (wa outbox --all)\n", id, summary)
+		} else {
+			_ = exec.Command("notify-send", "-a", "wa", "WhatsApp action awaiting approval", fmt.Sprintf("#%d %s\nrun: wa approve %d", id, summary, id)).Start()
+			fmt.Printf("queued #%d: %s\nnothing is sent until a human runs: wa approve %d\n", id, summary, id)
+		}
 	}
 	return id, nil
 }

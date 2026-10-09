@@ -114,17 +114,34 @@ func selftest() error {
 		return fmt.Errorf("selftest failed: unknown name should not resolve")
 	}
 
-	// outbox starts pending and the approval gate refuses without a terminal
+	// plain sends go out without approval; group changes wait; the gate can be restored
+	last := func() (id int64, status string) {
+		db.QueryRow(`SELECT id,status FROM outbox ORDER BY id DESC LIMIT 1`).Scan(&id, &status)
+		return
+	}
 	if _, err := db.addOutbox("send_text", "selftest", map[string]any{"chat": j, "text": "x"}); err != nil {
 		return err
 	}
-	var status string
-	db.QueryRow(`SELECT status FROM outbox ORDER BY id DESC LIMIT 1`).Scan(&status)
-	if err := check(status == "pending", "outbox entries start pending"); err != nil {
+	if _, st := last(); check(st == "approved", "send_text is auto-approved") != nil {
+		return fmt.Errorf("selftest failed: send_text status %q", st)
+	}
+	if _, err := db.addOutbox("group_rename", "selftest", map[string]any{"chat": j, "name": "x"}); err != nil {
 		return err
 	}
+	gid, st := last()
+	if err := check(st == "pending", "group actions still start pending"); err != nil {
+		return err
+	}
+	os.Setenv("WA_REQUIRE_APPROVAL", "1")
+	if _, err := db.addOutbox("send_text", "selftest", map[string]any{"chat": j, "text": "x"}); err != nil {
+		return err
+	}
+	os.Unsetenv("WA_REQUIRE_APPROVAL")
+	if _, st := last(); check(st == "pending", "WA_REQUIRE_APPROVAL=1 restores the gate") != nil {
+		return fmt.Errorf("selftest failed: gated send_text status %q", st)
+	}
 	if !stdinIsTerminal() {
-		if err := check(cmdApprove(db, "approve", args{pos: []string{"1"}}) != nil, "approve must refuse without a terminal"); err != nil {
+		if err := check(cmdApprove(db, "approve", args{pos: []string{fmt.Sprint(gid)}}) != nil, "approve must refuse without a terminal"); err != nil {
 			return err
 		}
 	}
