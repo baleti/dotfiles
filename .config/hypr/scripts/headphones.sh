@@ -48,13 +48,20 @@ phone_do() {
     # Always give Wireless debugging back, however the rest goes.
     trap 'peer 5 /adb/release >/dev/null 2>&1' RETURN
 
-    [[ "$port" =~ ^[0-9]+$ ]] || return 1
-    serial="$PHONE_HOST:$port"
-    out="$(timeout 8 adb connect "$serial" 2>&1 9>&-)"
+    # adb prints "failed to connect" for a rejected TLS handshake (key no longer
+    # trusted) but ALSO when adbd's listener isn't up yet or the port went stale
+    # after the toggle. Retry, re-reading the port each time, and only blame the
+    # key if it still fails after ~6 s of retries.
+    local try
+    for try in 1 2 3 4; do
+        [[ "$port" =~ ^[0-9]+$ ]] || return 1
+        serial="$PHONE_HOST:$port"
+        out="$(timeout 8 adb connect "$serial" 2>&1 9>&-)"
+        grep -q '^\(already \)\?connected' <<<"$out" && break
+        sleep 1.5
+        port="$(peer 15 /adb/enable)" || return 1
+    done
     if ! grep -q '^\(already \)\?connected' <<<"$out"; then
-        # Port is open but the TLS handshake was rejected: the phone no longer
-        # trusts this host's adb key (adb prints "failed to connect", not
-        # "cannot connect ... refused/timed out", in that case).
         if grep -q '^failed to connect' <<<"$out"; then
             notify-send -u critical -t 0 "Headphones: phone needs re-pairing" \
 "The phone no longer trusts this computer's adb key, so it can't hand the headphones over. Headphones still connect/disconnect on this computer.
