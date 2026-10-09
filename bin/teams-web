@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Microsoft Teams as a Brave app window, isolated in firejail with its own profile.
 d="$HOME/.brave-teams"
+# firejail --whitelist silently ignores a missing dir (profile then lands in tmpfs and is lost on exit)
+mkdir -p "$d"
 exec firejail --whitelist="$d" brave --user-data-dir="$d" \
     --ozone-platform=wayland \
     --app=https://teams.microsoft.com/v2/
