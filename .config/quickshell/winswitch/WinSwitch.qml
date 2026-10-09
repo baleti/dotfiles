@@ -38,6 +38,10 @@ PanelWindow {
     property int _grabSession: -1
 
     onOpenChanged: {
+        // A held nav key's release is never delivered once the panel closes
+        // (or a new session starts), which left the repeat timer stepping
+        // the selection by itself in the next session.
+        root._stopNavRepeat();
         if (root.open) {
             root.queryText = "";
             root._hideSuggestions();
@@ -196,7 +200,7 @@ PanelWindow {
     // NotificationPicker DSL pickers' identical mechanism.
     property var _navRepeatFn: null
     Timer { id: navRepeatDelay; interval: 600; onTriggered: navRepeatTimer.start() }
-    Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: if (root._navRepeatFn) root._navRepeatFn() }
+    Timer { id: navRepeatTimer; interval: 40; repeat: true; onTriggered: { if (root._navRepeatFn && root.open) root._navRepeatFn(); else root._stopNavRepeat(); } }
     function _startNavRepeat(fn) {
         root._navRepeatFn = fn;
         fn();
