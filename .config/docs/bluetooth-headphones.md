@@ -63,8 +63,9 @@ switches it off itself after 90 s.
 The phone step is best-effort: if the phone is unreachable or Wireless
 debugging cannot come up, it is skipped and the headphones are still
 connected/disconnected on host3. If the port is open but adb's TLS handshake
-is rejected (`adb connect` prints `failed to connect`, not `cannot connect`),
-the phone no longer trusts host3's key and a critical notification says so,
+is rejected (`adb connect` prints `failed to connect`, not `cannot connect`)
+on all 4 attempts (it retries, re-reading the port, because a freshly toggled
+adbd also says that transiently), the phone no longer trusts host3's key and a critical notification says so,
 with the re-pairing steps. Runs are serialised with `flock` so two presses do
 not race.
 
