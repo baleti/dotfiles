@@ -51,7 +51,7 @@ local apps = require("apps")
 -- GIMP's dialogs are separate toplevels sharing the class, so hiding or
 -- summoning only one of them splits the app across workspaces and leaves the
 -- rest stranded (invisibly, if the leftovers are the ones in scratch).
-local function toggle_app(class, slug, launch_cmd)
+local function toggle_app(class, slug, launch_cmd, summon_only)
     local scratch = "special:scratch_" .. slug
     return function()
         local windows = hl.get_windows({ class = class })
@@ -72,7 +72,9 @@ local function toggle_app(class, slug, launch_cmd)
             end
         end
 
-        if active then
+        if active and summon_only then
+            return
+        elseif active then
             for _, win in ipairs(windows) do
                 hl.dispatch(hl.dsp.window.move({ workspace = scratch, window = win, follow = false }))
             end
@@ -101,7 +103,20 @@ local function toggle_app(class, slug, launch_cmd)
 end
 
 for _, app in ipairs(apps) do
-    hl.bind(mainMod .. " + " .. app.key, toggle_app(app.class, app.slug, app.cmd), { description = "Launch / toggle " .. app.slug })
+    if app.key then
+        hl.bind(mainMod .. " + " .. app.key, toggle_app(app.class, app.slug, app.cmd), { description = "Launch / toggle " .. app.slug })
+    end
+end
+
+-- Launch-or-focus (never hides) for .desktop entries, so the app launcher
+-- behaves like the keybind for single-window apps: `hyprctl eval 'summon_app("whatsapp")'`
+function summon_app(slug)
+    for _, app in ipairs(apps) do
+        if app.slug == slug then
+            toggle_app(app.class, app.slug, app.cmd, true)()
+            return
+        end
+    end
 end
 
 -- Scroll through existing workspaces with mainMod + scroll

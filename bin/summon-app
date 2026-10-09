@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Launch-or-focus a pinned app from apps.lua (same logic as its mod+N bind, but never hides).
+# Usage: summon-app <slug>
+sig=${HYPRLAND_INSTANCE_SIGNATURE:-$(ls -t "${XDG_RUNTIME_DIR:-/run/user/$UID}/hypr" | head -1)}
+HYPRLAND_INSTANCE_SIGNATURE=$sig exec hyprctl eval "summon_app('$1')"

@@ -22,4 +22,6 @@ return {
     { key = "6", slug = "inkscape",    class = "org.inkscape.Inkscape",        cmd = "inkscape" },
     { key = "7", slug = "recoll",      class = "recoll",                       cmd = "recoll" },
     { key = "8", slug = "whatsapp",    class = "brave-web.whatsapp.com__-Default", cmd = "/home/user1/bin/whatsapp-web" },
+    -- No key and no autostart: only reachable through its .desktop entry (summon-app teams).
+    { slug = "teams",       class = "brave-teams.microsoft.com__v2_-Default", cmd = "/home/user1/bin/teams-web", no_autostart = true },
 }
