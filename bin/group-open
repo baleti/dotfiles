@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Open files (or every file in the given folders) in their default apps and
+stack all the resulting windows into ONE Hyprland group (tabs).
+
+Usage: group-open [--head N | --tail N] [--workspace N] [--delay S] FILE_OR_DIR...
+
+--head N / --tail N open only the first / last N files of the (sorted) list.
+
+Step through the tabs with mod+[ / mod+] (hl.dsp.group.prev/next).
+Folder contents are opened in natural sort order ("2 x" before "10 x").
+
+The app for each file is the mime type's default (xdg-mime -> .desktop Exec).
+Override per mime type in OVERRIDES; "{}" is replaced by the quoted file path.
+"""
+import argparse, json, mimetypes, os, re, shlex, subprocess, sys, time
+
+# mime type -> shell command, e.g. {"image/png": "mpv --no-config {}"}
+OVERRIDES = {
+}
+
+APP_DIRS = [os.path.expanduser("~/.local/share/applications"),
+            "/usr/local/share/applications", "/usr/share/applications"]
+TIMEOUT = 20  # seconds to wait for each window to appear
+
+
+def hypr_env():
+    env = dict(os.environ)
+    if "HYPRLAND_INSTANCE_SIGNATURE" not in env:
+        rt = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}") + "/hypr"
+        env["HYPRLAND_INSTANCE_SIGNATURE"] = subprocess.check_output(
+            f"ls -t {shlex.quote(rt)} | head -1", shell=True, text=True).strip()
+    return env
+
+
+ENV = hypr_env()
+
+
+def hyprctl(*args):
+    return subprocess.run(["hyprctl", *args], env=ENV, capture_output=True, text=True).stdout
+
+
+def clients():
+    return json.loads(hyprctl("clients", "-j") or "[]")
+
+
+def lua(code):
+    return hyprctl("eval", code)
+
+
+def natural(s):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
+def collect(paths):
+    out = []
+    for p in paths:
+        p = os.path.abspath(os.path.expanduser(p))
+        if os.path.isdir(p):
+            names = sorted((n for n in os.listdir(p) if not n.startswith(".")), key=natural)
+            out += [os.path.join(p, n) for n in names if os.path.isfile(os.path.join(p, n))]
+        elif os.path.isfile(p):
+            out.append(p)
+        else:
+            sys.exit(f"group-open: no such file or directory: {p}")
+    return out
+
+
+def mime_of(path):
+    r = subprocess.run(["xdg-mime", "query", "filetype", path], capture_output=True, text=True)
+    return r.stdout.strip() or mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+def desktop_exec(mime):
+    d = subprocess.run(["xdg-mime", "query", "default", mime], capture_output=True, text=True).stdout.strip()
+    if not d:
+        return None
+    for base in APP_DIRS:
+        f = os.path.join(base, d)
+        if os.path.exists(f):
+            for line in open(f, errors="replace"):
+                if line.startswith("Exec="):
+                    return line[5:].strip()
+    return None
+
+
+def command_for(path):
+    mime = mime_of(path)
+    q = shlex.quote(path)
+    if mime in OVERRIDES:
+        return OVERRIDES[mime].replace("{}", q)
+    ex = desktop_exec(mime)
+    if not ex:
+        return f"xdg-open {q}"
+    ex = re.sub(r"%[fFuU]", q, ex)          # we pass exactly one file
+    return re.sub(r"%[a-zA-Z%]", "", ex)    # drop %i %c %k etc.
+
+
+def spawn(cmd, workspace):
+    rule = f"workspace {workspace} silent" if workspace else "silent"
+    lua(f'hl.dispatch(hl.dsp.exec_cmd({json.dumps("[" + rule + "] " + cmd)}))')
+
+
+def wait_new(seen):
+    end = time.time() + TIMEOUT
+    while time.time() < end:
+        new = [c for c in clients() if c["address"] not in seen and c["mapped"]]
+        if new:
+            return new[0]["address"]
+        time.sleep(0.1)
+    return None
+
+
+def win_lua(addr):
+    return f'(function() for _,w in ipairs(hl.get_windows()) do if w.address=="{addr}" then return w end end end)()'
+
+
+def focus(addr):
+    lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.focus({{window=w}})) end end)()')
+
+
+def group_size(addr):
+    for c in clients():
+        if c["address"] == addr:
+            return len(c["grouped"])
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("paths", nargs="+")
+    ap.add_argument("--workspace", help="open on this workspace instead of the current one")
+    ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
+    lim = ap.add_mutually_exclusive_group()
+    lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
+    lim.add_argument("--tail", type=int, metavar="N", help="only open the last N files")
+    a = ap.parse_args()
+
+    files = collect(a.paths)
+    if a.head is not None:
+        files = files[:max(a.head, 0)]
+    elif a.tail is not None:
+        files = files[len(files) - max(a.tail, 0):]
+    if not files:
+        sys.exit("group-open: nothing to open")
+    seen = {c["address"] for c in clients()}
+    leader = None
+    for i, f in enumerate(files, 1):
+        cmd = command_for(f)
+        print(f"[{i}/{len(files)}] {os.path.basename(f)}  ->  {cmd}", file=sys.stderr)
+        spawn(cmd, a.workspace)
+        addr = wait_new(seen)
+        if not addr:
+            print("   (no window appeared, skipping)", file=sys.stderr)
+            continue
+        seen.add(addr)
+        time.sleep(a.delay)
+        focus(addr)
+        if leader is None:
+            lua(f'(function() local w={win_lua(addr)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
+            leader = addr
+            continue
+        # auto_group usually joins it already; otherwise try each direction
+        n = group_size(leader)
+        if group_size(addr) > 1:
+            continue
+        for d in ("left", "right", "up", "down"):
+            lua(f'(function() local w={win_lua(addr)} hl.dispatch(hl.dsp.window.move({{into_group="{d}", window=w}})) end)()')
+            if group_size(leader) > n:
+                break
+        else:
+            print("   (could not join group)", file=sys.stderr)
+        # newest tab stays active: tabs insert after the active one, which keeps file order
+
+    if leader:
+        focus(leader)
+        lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.active({{index=1, window=w}})) end)()')
+
+
+if __name__ == "__main__":
+    main()
