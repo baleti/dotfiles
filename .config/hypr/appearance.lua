@@ -10,13 +10,16 @@
 -- the hardcoded fallback below (confirmed 2026-08-31 -- reload used to wipe
 -- the live theme color because appearance.lua never saw it). Falls back to
 -- the hardcoded rgba(33ccff...) pair before gen-theme.py has ever run.
-local border_colors = { active_border = "rgba(33ccfff2)", inactive_border = "rgba(595959aa)" }
+local border_colors = {
+    active_border = "rgba(33ccfff2)", inactive_border = "rgba(595959aa)",
+    group_active_border = "rgba(ffb693f2)", group_inactive_border = "rgba(ffb69377)",
+}
 do
     local chunk = loadfile(os.getenv("HOME") .. "/.local/state/quickshell/hyprland-border-colors.lua")
     if chunk then
         local ok, generated = pcall(chunk)
         if ok and type(generated) == "table" then
-            border_colors = generated
+            for k, v in pairs(generated) do border_colors[k] = v end
         end
     end
 end
@@ -76,12 +79,12 @@ hl.config({
     -- https://wiki.hypr.land/Configuring/Variables/#group
     group = {
         col = {
-            border_active   = "rgba(33ccffee)",
-            border_inactive = "rgba(595959aa)",
+            border_active   = border_colors.group_active_border,
+            border_inactive = border_colors.group_inactive_border,
         },
 
         groupbar = {
-            enabled       = true,
+            enabled       = false,   -- no tab strip; step through tabs with mod+[ / mod+]
             height        = 14,
             render_titles = true,
             font_size     = 8,

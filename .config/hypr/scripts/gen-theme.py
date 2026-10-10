@@ -52,6 +52,7 @@ Writes/applies (2026-08-28, expanded past just GTK/KDE -- see conversation
     `include`d by mpv.conf. Read at mpv startup only; running players keep
     the colour they started with.
 """
+import colorsys
 import argparse
 import configparser
 import io
@@ -632,11 +633,27 @@ def theme_hyprland_borders(out: dict) -> None:
     outline = out["outlineVariant"].lstrip("#")
     active_border = f'rgba({primary}f2)'
     inactive_border = f'rgba({outline}aa)'
+    # Grouped windows (tabs) get their own border so a group reads differently
+    # from a plain focused window: the palette's second accent, or -- if a
+    # wallpaper puts it within 60 degrees of the primary hue -- the series colour
+    # on the opposite side of the wheel.
+    def _hue(hex_color: str) -> float:
+        r, g, b = (int(hex_color.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        return colorsys.rgb_to_hsv(r, g, b)[0] * 360
+    hue_gap = abs(_hue(out["primary"]) - _hue(out["secondary"]))
+    hue_gap = min(hue_gap, 360 - hue_gap)
+    group_hex = out["secondary"] if hue_gap >= 60 else out["seriesPalette"][4]
+    group = group_hex.lstrip("#")
+    group_active_border = f'rgba({group}f2)'
+    group_inactive_border = f'rgba({group}77)'
     lua = (
         'hl.config({general={'
         'border_size=2,col={'
         f'active_border="{active_border}",'
         f'inactive_border="{inactive_border}"'
+        '}},group={col={'
+        f'border_active="{group_active_border}",'
+        f'border_inactive="{group_inactive_border}"'
         '}}})'
     )
     # Callers started outside Hyprland's session env (e.g. wallpaper-rotate.sh
@@ -671,6 +688,8 @@ def theme_hyprland_borders(out: dict) -> None:
         "return {\n"
         f'    active_border   = "{active_border}",\n'
         f'    inactive_border = "{inactive_border}",\n'
+        f'    group_active_border   = "{group_active_border}",\n'
+        f'    group_inactive_border = "{group_inactive_border}",\n'
         "}\n",
     )
     print(f"wrote {HYPR_BORDER_COLORS}")
