@@ -132,7 +132,9 @@ def _take_tags(query, names):
     rest, toks, i = [], tokens(query), 0
     while i < len(toks):
         m = re.fullmatch(r"(!?)//(%s)" % "|".join(names), toks[i], re.I)
-        if m and i + 1 < len(toks):
+        if m and not (i + 1 < len(toks) and not re.match(r"!?//[a-z]", toks[i + 1], re.I)):
+            i += 1              # a tag with no value yet (still being typed) filters nothing
+        elif m:
             val, neg = toks[i + 1], bool(m.group(1))
             if val.startswith("!") and len(val) > 1:
                 val, neg = val[1:], True
