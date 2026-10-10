@@ -45,6 +45,12 @@ QtObject {
 
     property bool active: false
     property bool shown: false
+    // Group mode (mod+Tab, see GroupPickerState.qml): the same grid, fed only the
+    // active window's group tabs. No Alt is involved, so nothing here waits for an
+    // Alt release, the grid shows at once, and the capture backend is limited to
+    // `onlyAddresses` (WINSWITCH_ONLY) so it doesn't photograph every window.
+    property bool groupMode: false
+    property string onlyAddresses: ""
     property string monitor: ""
     property int sessionId: 0
     // [{index, address, class, title, workspace, pid, width, height, active}],
@@ -142,16 +148,18 @@ QtObject {
         return screens.length > 0 ? screens[0].name : "";
     }
 
-    function _startSession(list) {
+    function _startSession(list, keepAll) {
         const rows = list.map((w, index) => Object.assign({ index }, w));
         const live = {};
         for (const w of rows)
             live[w.address] = true;
         const kept = {};
         for (const a in root.thumbnails)
-            if (live[a])
+            if (keepAll || live[a])
                 kept[a] = root.thumbnails[a];
 
+        if (!root.groupMode)
+            root.onlyAddresses = "";
         root.sessionId++;
         root._pendingThumbnails = ({});
         root._pendingEnrich = ({});
@@ -164,6 +172,22 @@ QtObject {
         root.monitor = root._resolveMonitor();
         root.active = true;
         showTimer.restart();
+    }
+
+    // Open the grid on `list` (same row shape as winswitch-windows.json) with the
+    // selection on the active row, shown immediately.
+    function startGroup(list) {
+        if (!Array.isArray(list) || list.length === 0 || root.active)
+            return;
+        root.groupMode = true;
+        root.onlyAddresses = list.map(w => w.address).join(",");
+        root._startSession(list, true);
+        showTimer.stop();
+        root.altHeld = false;
+        root._capturePending = true;
+        captureTimer.interval = root.captureFallbackMs;
+        captureTimer.restart();
+        root.shown = true;
     }
 
     // Cyclic over the full list; WinSwitch.qml has its own over filtered
@@ -192,6 +216,8 @@ QtObject {
         root._capturePending = false;
         root.shown = false;
         root.locked = false;
+        root.groupMode = false;
+        root.onlyAddresses = "";
         root.active = false;
     }
 
@@ -240,7 +266,9 @@ QtObject {
     // refreshing the cache for next time.
     readonly property Process _backend: Process {
         id: backend
-        command: [Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
+        command: root.onlyAddresses.length > 0
+            ? ["env", "WINSWITCH_ONLY=" + root.onlyAddresses, Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
+            : [Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
         stdout: SplitParser {
             onRead: line => root._handleLine(line)
         }
