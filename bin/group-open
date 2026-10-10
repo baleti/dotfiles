@@ -294,10 +294,6 @@ def win_lua(addr):
     return f'(function() for _,w in ipairs(hl.get_windows()) do if w.address=="{addr}" then return w end end end)()'
 
 
-def focus(addr):
-    lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.focus({{window=w}})) end end)()')
-
-
 def focus_if_on(addr, ws):
     """Focus addr only if the user is still looking at workspace ws."""
     lua(f'(function() local w={win_lua(addr)} if w and hl.get_active_workspace().id=={ws} then hl.dispatch(hl.dsp.focus({{window=w}})) end end)()')
@@ -305,12 +301,6 @@ def focus_if_on(addr, ws):
 
 def move_ws(addr, ws):
     lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.window.move({{workspace={ws}, window=w, follow=false}})) end end)()')
-
-
-# Lua snippets shared by the batch merge and the tab warm-up: remember which window
-# the user has focused, and give focus back to exactly that window afterwards.
-LUA_SAVE_FOCUS = "local prev; for _, w in ipairs(hl.get_windows()) do if w.active then prev = w end end"
-LUA_RESTORE_FOCUS = "if prev then hl.dispatch(hl.dsp.focus({ window = prev })) end"
 
 
 def is_solitary(leader, addrs, ws):
@@ -324,9 +314,9 @@ def is_solitary(leader, addrs, ws):
 def merge_batch(leader, addrs, ws):
     """Append every window in addrs (file order) to leader's group in ONE Lua call.
 
-    Everything is addressed by Hyprland window address; nothing depends on which window
-    is focused (the user's focused window is saved first and restored at the end of the
-    same call), and the leader stays the selected tab.
+    Everything is addressed by Hyprland window address and no focus operation is ever
+    issued (the group is built where nobody is focused, or moved silently), so the
+    user's focus is never touched; the leader stays the selected tab.
 
     How windows join depends on what else is on ws:
     - the group is alone there: windows are moved onto ws and Hyprland merges them into
@@ -344,7 +334,6 @@ def merge_batch(leader, addrs, ws):
     solitary = is_solitary(leader, addrs, ws)
     target = ws if solitary else BUILD
     lua(f'''(function()
-  {LUA_SAVE_FOCUS}
   local lead = {win_lua(leader)}
   if not lead then return end
   {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {BUILD}, window = lead, follow = false }}))'}
@@ -359,7 +348,6 @@ def merge_batch(leader, addrs, ws):
   end
   hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
   {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = lead, follow = false }}))'}
-  {LUA_RESTORE_FOCUS}
 end)()''')
     want = before + len(addrs) + (1 if before == 0 else 0)
     end = time.time() + 2 + 0.05 * len(addrs)
@@ -458,7 +446,10 @@ def main():
     # Hyprland merges a window moved onto a workspace that holds only a group into that
     # group, but only while this option is on. It is off in the user's config, so it is
     # switched on for this run and always switched back off (also when killed).
-    hyprctl("eval", "hl.config({group={group_on_movetoworkspace=true}})")
+    # Hyprland re-announces the focused window whenever a window opens or moves (even a
+    # silent one) and warps the cursor to its centre when it does; measured: one exact-centre
+    # warp per run, none with this on. Off for the run, restored in `finally`.
+    hyprctl("eval", "hl.config({group={group_on_movetoworkspace=true}, cursor={no_warps=true}})")
     # Where the group is built: a private workspace nobody looks at (default), or dest.
     home = dest if a.live else BUILD
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # let `finally` run on kill/timeout
@@ -635,7 +626,7 @@ def main():
         if a.focus:
             focus_if_on(leader, dest)
     finally:
-        hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}})")
+        hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}, cursor={no_warps=false}})")
 
 
 if __name__ == "__main__":
