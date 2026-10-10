@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=RDP: Windows Revit VM (host2, dev)
-Comment=Remote desktop into Windows Revit VM (host2, dev) (offline VM on host2, blank password)
+Name=RDP: Revit VM GPU (CID 3)
+Comment=Revit VM with GTX 1060 passthrough, 32 GB (dev VM on host2, blank password)
 Exec=/home/user1/bin/rdp-windows-vm 3
 Icon=computer
 Terminal=false
