@@ -36,6 +36,8 @@ for w in sorted(hyprctl("workspaces") or [], key=lambda w: w["id"]):
         "title": f"{w['name']}: {titles}" if titles else f"{w['name']} (empty)",
         "workspace": w["name"],
         "pid": 0,
+        "monitor": mon.get("name", ""),
+        "windowCount": len(cs),
         "width": mon.get("width", 1920),
         "height": mon.get("height", 1080),
         "active": w["id"] == focused,
