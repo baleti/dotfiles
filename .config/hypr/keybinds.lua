@@ -292,6 +292,11 @@ hl.bind(mainMod .. " + SHIFT + n", hl.dsp.exec_cmd("~/.config/hypr/scripts/notif
 -- the `notification-picker` binary a headless list/activate backend.
 hl.bind(mainMod .. " + CTRL + n", hl.dsp.exec_cmd("qs ipc call notificationPicker toggle"), { description = "Search all notification history" })
 
+-- Revit command picker: the InvokeAddinCommand list (Q, `) but outside Revit and across every Revit instance reachable from here
+-- (this machine's VMs, other machines) -- same query DSL as mod+v / mod+ctrl+n. UI: ~/.config/quickshell/revitremote/, backend:
+-- `revit-remote` (~/src/revit-ballet/tools/remote). Exclusive keyboard grab like the other two pickers, so test it by keybind only.
+hl.bind(mainMod .. " + grave", hl.dsp.exec_cmd("qs ipc call revitRemote toggle"), { description = "Run a Revit command in any Revit instance (list)" })
+
 -- notifications: clear all on-screen cards without touching history --
 -- notifyctl close-all only drops the render order, it never removes
 -- entries from state.json/ListHistory (see the DismissPopup/CloseAll
