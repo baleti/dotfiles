@@ -12,7 +12,7 @@ Folder contents are opened in natural sort order ("2 x" before "10 x").
 The app for each file is the mime type's default (xdg-mime -> .desktop Exec).
 Override per mime type in OVERRIDES; "{}" is replaced by the quoted file path.
 """
-import argparse, glob, json, mimetypes, re, shlex, shutil, signal, os, re, shlex, subprocess, sys, time
+import argparse, glob, hashlib, json, mimetypes, re, shlex, shutil, signal, os, re, shlex, subprocess, sys, time
 
 # mime type -> shell command, e.g. {"image/png": "mpv --no-config {}"}
 OVERRIDES = {
@@ -28,6 +28,9 @@ BUILD = STAGE + 1   # private empty workspace a busy workspace's group is taken 
 TIMEOUT = 20  # seconds to wait for each window to appear
 
 
+T0 = time.time()
+
+
 def hypr_env():
     env = dict(os.environ)
     if "HYPRLAND_INSTANCE_SIGNATURE" not in env:
@@ -40,8 +43,15 @@ def hypr_env():
 ENV = hypr_env()
 
 
+TRACE = os.environ.get("GROUP_OPEN_TRACE")
+
+
 def hyprctl(*args):
-    return subprocess.run(["hyprctl", *args], env=ENV, capture_output=True, text=True).stdout
+    t = time.time()
+    out = subprocess.run(["hyprctl", *args], env=ENV, capture_output=True, text=True).stdout
+    if TRACE and time.time() - t > 0.05:
+        print(f"TRACE {time.time() - T0:7.2f}s hyprctl {args[0]} took {1000 * (time.time() - t):.0f}ms", file=sys.stderr)
+    return out
 
 
 _last_clients = []
@@ -124,32 +134,116 @@ def collect(paths):
     return out
 
 
+CACHE = os.path.expanduser("~/.cache/group-open")
+
+
+def scaled_copy(path, max_edge):
+    """Path of a copy of `path` whose long edge is at most max_edge (made once with vips,
+    cached under ~/.cache/group-open, the original is never touched); `path` itself if it
+    is not a large raster image or anything goes wrong.
+
+    Why: a 4963x7019 slide is decoded to ~140 MB per viewer (and ~0.5 s of one core at
+    full turbo, which is where the heat comes from). A viewer holding 48 of those pushes
+    the compositor's own pages out to swap, which freezes the desktop. At 3000 px a slide
+    is ~25 MB and decodes five times faster, and is still sharper than any monitor here."""
+    if not max_edge:
+        return path
+    mime = mime_of(path)
+    ext = os.path.splitext(path)[1].lower()
+    if not mime.startswith("image/") or ext not in (".png", ".jpg", ".jpeg"):
+        return path
+    try:
+        w, h = (int(subprocess.run(["vipsheader", "-f", f, path], capture_output=True, text=True,
+                                   timeout=20).stdout) for f in ("width", "height"))
+        st = os.stat(path)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return path
+    if max(w, h) <= max_edge:
+        return path
+    key = hashlib.sha1(f"{path}|{st.st_mtime_ns}|{st.st_size}|{max_edge}".encode()).hexdigest()[:16]
+    out = os.path.join(CACHE, key, os.path.basename(path))   # same file name: titles/labels stay readable
+    if os.path.exists(out):
+        return out
+    opts = "[compression=1,strip]" if ext == ".png" else "[Q=95,strip]"
+    tmp = os.path.join(CACHE, key, "part-" + os.path.basename(path))
+    try:
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        pin = ["taskset", "-c", ECORES] if ECORES else []
+        r = subprocess.run([*pin, "nice", "-n", "19", "vipsthumbnail", path, "-s", f"{max_edge}x{max_edge}>",
+                            "-o", tmp + opts], capture_output=True, text=True, timeout=120)
+        if r.returncode == 0 and os.path.exists(tmp):
+            os.replace(tmp, out)
+            return out
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return path
+
+
 def mime_of(path):
     r = subprocess.run(["xdg-mime", "query", "filetype", path], capture_output=True, text=True)
     return r.stdout.strip() or mimetypes.guess_type(path)[0] or "application/octet-stream"
 
 
+def mime_candidates(mime):
+    """The type and every name it is known by: the system reports e.g. video/matroska
+    while the default player is registered under its canonical name video/x-matroska
+    (from /usr/share/mime/aliases), then the parent types (subclasses)."""
+    alias_to_canon, canon_to_aliases, parents = {}, {}, {}
+    for fname, fn in (("aliases", None), ("subclasses", None)):
+        try:
+            for line in open(f"/usr/share/mime/{fname}"):
+                parts = line.split()
+                if len(parts) != 2:
+                    continue
+                if fname == "aliases":
+                    alias_to_canon[parts[0]] = parts[1]
+                    canon_to_aliases.setdefault(parts[1], []).append(parts[0])
+                else:
+                    parents.setdefault(parts[0], []).append(parts[1])
+        except OSError:
+            pass
+    out = [mime]
+    def add(m):
+        if m and m not in out:
+            out.append(m)
+    add(alias_to_canon.get(mime))
+    for al in canon_to_aliases.get(mime, []):
+        add(al)
+    i = 0
+    while i < len(out):                      # parent types, breadth first
+        for par in parents.get(out[i], []):
+            add(par)
+            add(alias_to_canon.get(par))
+        i += 1
+    return out
+
+
 def desktop_exec(mime):
-    d = subprocess.run(["xdg-mime", "query", "default", mime], capture_output=True, text=True).stdout.strip()
-    if not d:
-        return None
-    for base in APP_DIRS:
-        f = os.path.join(base, d)
-        if os.path.exists(f):
-            for line in open(f, errors="replace"):
-                if line.startswith("Exec="):
-                    return line[5:].strip()
+    for m in mime_candidates(mime):
+        d = subprocess.run(["xdg-mime", "query", "default", m], capture_output=True, text=True).stdout.strip()
+        if not d:
+            continue
+        for base in APP_DIRS:
+            f = os.path.join(base, d)
+            if os.path.exists(f):
+                for line in open(f, errors="replace"):
+                    if line.startswith("Exec="):
+                        return line[5:].strip()
     return None
 
 
 def command_for(path):
+    """Shell command that opens `path`, or None if there is no application for it.
+    There is deliberately no xdg-open fallback: it starts the application through a
+    different process tree, which escapes Hyprland's silent launch rule (the window would
+    open on the user's visible workspace and take focus)."""
     mime = mime_of(path)
     q = shlex.quote(path)
     if mime in OVERRIDES:
         return OVERRIDES[mime].replace("{}", q)
     ex = desktop_exec(mime)
     if not ex:
-        return f"xdg-open {q}"
+        return None
     ex = re.sub(r"%[fFuU]", q, ex)          # we pass exactly one file
     return re.sub(r"%[a-zA-Z%]", "", ex)    # drop %i %c %k etc.
 
@@ -165,6 +259,20 @@ def slice_name(label):
 SLICE = None   # set in main()
 
 
+def efficiency_cores():
+    """CPU list of the efficiency cores on a hybrid Intel CPU ("4-11"), else None. The image
+    work (decoding, scaling) is pinned there: the performance cores turbo to 4.4 GHz and
+    spike the package temperature within a fraction of a second; the E-cores top out at
+    3.3 GHz and run far cooler for the same work, which is plenty for loading slides."""
+    try:
+        return open("/sys/devices/cpu_atom/cpus").read().strip() or None
+    except OSError:
+        return None
+
+
+ECORES = None   # set in main() unless --no-pin
+
+
 def spawn(cmd, workspace):
     """Start a viewer through Hyprland's own exec, with a launch rule that opens it on the
     given workspace WITHOUT taking focus (`silent`). Nothing else I tried can stop a new
@@ -173,10 +281,11 @@ def spawn(cmd, workspace):
     Hyprland itself starts. So viewers are Hyprland's children, not ours; they are grouped
     by cgroup instead (see slice_name). Low CPU / I/O priority: slides load in the
     background and never at the desktop's expense."""
-    inner = f"exec nice -n 15 ionice -c2 -n7 {cmd}"
+    pin = f"taskset -c {ECORES} " if ECORES else ""
+    inner = f"exec {pin}nice -n 15 ionice -c2 -n7 {cmd}"
     if SLICE and shutil.which("systemd-run"):
         inner = (f"exec systemd-run --user --scope --quiet --slice={SLICE} "
-                 f"-p CPUWeight=20 -p IOWeight=20 -- /bin/sh -c {shlex.quote(inner)}")
+                 f"-p CPUWeight=20 -p IOWeight=20 -p MemoryHigh=500M -- /bin/sh -c {shlex.quote(inner)}")
     rule = f"workspace {workspace} silent"
     lua(f'hl.dispatch(hl.dsp.exec_cmd({json.dumps("[" + rule + "] " + inner)}))')
 
@@ -312,11 +421,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
+    ap.add_argument("--live", action="store_true", help="join windows to the group on your workspace as they load (default: build the whole group off-screen, pre-render it, and drop it onto your workspace in one step)")
+    ap.add_argument("--no-pin", action="store_true", help="do not pin the image work to the efficiency cores (faster, but hotter: measured ~27%% less package power when pinned)")
+    ap.add_argument("--max-edge", type=int, default=3000, help="open large images as a cached copy scaled to this long edge, in pixels; 0 = open the originals (default 3000)")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
     ap.add_argument("--batch", type=float, default=1.0, help="seconds between merge batches on an empty workspace (default 1.0)")
     ap.add_argument("--ferry", type=float, default=12.0, help="seconds between merge batches on a busy workspace, where each batch briefly takes the group off it (default 12)")
     ap.add_argument("--max-parallel", type=int, default=1, help="most windows loading at once (default 1)")
-    ap.add_argument("--launch-gap", type=float, default=0.8, help="minimum seconds between launches (default 0.8)")
+    ap.add_argument("--launch-gap", type=float, default=0.6, help="minimum seconds between launches (default 0.6)")
     ap.add_argument("--cpu-limit", type=float, default=50, help="back off while CPU use is above this percent (default 50)")
     ap.add_argument("--temp-limit", type=float, default=78, help="pause launching while the CPU is hotter than this, deg C; resumes 10 below (default 78)")
     ap.add_argument("--focus", action="store_true", help="focus the finished group once, if you are still on its workspace (default: focus is never moved)")
@@ -334,7 +446,8 @@ def main():
         sys.exit("group-open: nothing to open")
     n = len(files)
 
-    global SLICE
+    global SLICE, ECORES
+    ECORES = None if a.no_pin else efficiency_cores()
     SLICE = slice_name(os.path.basename(a.paths[0].rstrip("/")))
 
     seen = {c["address"] for c in clients()}
@@ -343,19 +456,29 @@ def main():
     # group, but only while this option is on. It is off in the user's config, so it is
     # switched on for this run and always switched back off (also when killed).
     hyprctl("eval", "hl.config({group={group_on_movetoworkspace=true}})")
+    # Where the group is built: a private workspace nobody looks at (default), or dest.
+    home = dest if a.live else BUILD
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # let `finally` run on kill/timeout
 
+    opened = {}   # file index -> the path actually handed to the viewer (maybe a scaled copy)
+
     def launch(i, ws):
-        cmd = command_for(files[i])
-        print(f"[{i + 1}/{n}] {os.path.basename(files[i])}  ->  {cmd}", file=sys.stderr)
+        opened[i] = scaled_copy(files[i], a.max_edge)
+        cmd = command_for(opened[i])
+        if cmd is None:
+            print(f"[{i + 1}/{n}] {os.path.basename(files[i])}  ->  no application for {mime_of(files[i])}, skipped", file=sys.stderr)
+            return False
+        note = " (scaled copy)" if opened[i] != files[i] else ""
+        print(f"[{i + 1}/{n}] {os.path.basename(files[i])}{note}  ->  {cmd}", file=sys.stderr)
         spawn(cmd, ws)
+        return True
 
     def rank(c):
         try:
             cmdline = open(f"/proc/{c['pid']}/cmdline", "rb").read().decode(errors="replace")
         except OSError:
             return n
-        hit = [i for i, f in enumerate(files) if f in cmdline]
+        hit = [i for i in range(n) if opened.get(i, files[i]) in cmdline or files[i] in cmdline]
         return hit[0] if hit else n
 
     def new_windows():
@@ -376,7 +499,8 @@ def main():
         # load: they open off-screen and are merged in file order, in batches
         # (one Lua call each), so the visible slide sees a few changes, not one
         # per window.
-        launch(0, STAGE)
+        if not launch(0, STAGE):
+            sys.exit("group-open: the first file cannot be opened")
         leader = None
         end = time.time() + TIMEOUT
         while leader is None and time.time() < end:
@@ -387,15 +511,17 @@ def main():
                 time.sleep(0.1)
         if not leader:
             sys.exit("group-open: first window never appeared")
-        move_ws(leader, dest)    # silent: it appears on dest, nothing gets focus
+        move_ws(leader, home)    # silent: nothing gets focus
         time.sleep(a.delay)
 
         pending = {}   # file index -> client
         extra = []     # windows we could not match to a file
         ready = []     # contiguous-from-the-start windows waiting for the next batch
         nxt = 1        # next file index to move into `ready`
-        launched = 1   # files started so far (file 0 is the leader)
-        arrived = 0    # windows seen so far, other than the leader
+        launched = 1   # files handled so far (file 0 is the leader)
+        arrived = 0    # windows seen or given up on so far, other than the leader
+        started = {}   # file index -> launch time, until its window appears (or we give up)
+        skipped = 0
         merged = 0
         # Streamed launches: only `limit` slides are loading at once, started in
         # file order, so they finish roughly in file order and can be merged as
@@ -431,20 +557,39 @@ def main():
                     last = now               # waiting for the machine to cool is not a stall
             if (not paused and launched < n and launched - 1 - arrived < limit
                     and now - last_launch >= a.launch_gap):
-                launch(launched, STAGE)
+                if launch(launched, STAGE):
+                    started[launched] = time.time()
+                else:                        # nothing to open it with: never blocks the rest
+                    pending[launched] = None
+                    arrived += 1
+                    skipped += 1
                 launched += 1
                 last_launch = last = time.time()
             for c in new_windows():
                 r = rank(c)
-                (pending.__setitem__(r, c) if r < n else extra.append(c))
+                if r < n:
+                    pending[r] = c
+                    started.pop(r, None)
+                else:
+                    extra.append(c)
                 arrived += 1
                 last = time.time()
+            for i, t in list(started.items()):     # a window that never comes must not hold up the others
+                if time.time() - t > 30:
+                    print(f"   (no window for {os.path.basename(files[i])} after 30 s, skipped)", file=sys.stderr)
+                    del started[i]
+                    pending[i] = None
+                    arrived += 1
+                    skipped += 1
+                    last = time.time()
             while nxt in pending:
-                ready.append(pending.pop(nxt)["address"])
+                c = pending.pop(nxt)
+                if c is not None:
+                    ready.append(c["address"])
                 nxt += 1
-            gap = a.batch if is_solitary(leader, ready, dest) else a.ferry
+            gap = a.batch if is_solitary(leader, ready, home) else a.ferry
             if ready and (nxt >= n or time.time() - last_batch >= gap):
-                joined = merge_batch(leader, ready, dest)
+                joined = merge_batch(leader, ready, home)
                 if joined:
                     merged += len(ready)
                     print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, parallel {limit}, {temp:.0f}C{', PAUSED (hot)' if paused else ''})", file=sys.stderr)
@@ -452,11 +597,11 @@ def main():
                     last = time.time()
                 last_batch = time.time()
             time.sleep(0.25)
-        rest = ready + [pending[k]["address"] for k in sorted(pending)] + [c["address"] for c in extra]
+        rest = ready + [pending[k]["address"] for k in sorted(pending) if pending[k]] + [c["address"] for c in extra]
         if rest:
-            merge_batch(leader, rest, dest)
-        if nxt < n and not rest:
-            print(f"   ({n - nxt} window(s) never appeared)", file=sys.stderr)
+            merge_batch(leader, rest, home)
+        if skipped:
+            print(f"   ({skipped} of {n} files could not be opened)", file=sys.stderr)
         # anything of ours that could not be grouped is moved to dest ungrouped, never
         # left stranded on the invisible staging workspace
         for c in clients():
@@ -467,6 +612,15 @@ def main():
         cold = warm_tabs(group)
         if cold:
             print(f"   ({cold} tab(s) could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
+        if not a.live:
+            # one step: the finished, pre-rendered group goes onto the user's workspace.
+            # The merge option must be off first, or a workspace that happens to hold just
+            # another group would swallow ours.
+            hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}})")
+            move_ws(leader, dest)
+            if shutil.which("notify-send"):
+                subprocess.run(["notify-send", "-a", "group-open", f"{len(group)} slides ready",
+                                os.path.basename(a.paths[0].rstrip("/"))], capture_output=True)
         if a.focus:
             focus_if_on(leader, dest)
     finally:
