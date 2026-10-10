@@ -12,7 +12,7 @@ Folder contents are opened in natural sort order ("2 x" before "10 x").
 The app for each file is the mime type's default (xdg-mime -> .desktop Exec).
 Override per mime type in OVERRIDES; "{}" is replaced by the quoted file path.
 """
-import argparse, json, mimetypes, os, re, shlex, subprocess, sys, time
+import argparse, glob, json, mimetypes, os, re, shlex, subprocess, sys, time
 
 # mime type -> shell command, e.g. {"image/png": "mpv --no-config {}"}
 OVERRIDES = {
@@ -54,6 +54,29 @@ def clients():
         except ValueError:
             time.sleep(0.1)
     return _last_clients
+
+
+def cpu_temp():
+    """Hottest coretemp sensor in degrees C, or 0 if none can be read."""
+    best = 0.0
+    for d in glob.glob("/sys/class/hwmon/hwmon*"):
+        try:
+            if open(f"{d}/name").read().strip() != "coretemp":
+                continue
+            for t in glob.glob(f"{d}/temp*_input"):
+                best = max(best, int(open(t).read()) / 1000)
+        except (OSError, ValueError):
+            pass
+    return best
+
+
+def psi(resource):
+    """Kernel pressure-stall 'some avg10' for cpu or memory (percent of the last
+    10 s some task was stalled waiting for it); 0 if unavailable."""
+    try:
+        return float(open(f"/proc/pressure/{resource}").readline().split("avg10=")[1].split()[0])
+    except (OSError, IndexError, ValueError):
+        return 0.0
 
 
 class Cpu:
@@ -128,6 +151,7 @@ def command_for(path):
 
 
 def spawn(cmd, workspace):
+    cmd = f"nice -n 15 ionice -c2 -n7 {cmd}"   # slides load in the background: never at the desktop's expense
     rule = f"workspace {workspace} silent" if workspace else "silent"
     lua(f'hl.dispatch(hl.dsp.exec_cmd({json.dumps("[" + rule + "] " + cmd)}))')
 
@@ -232,8 +256,10 @@ def main():
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
     ap.add_argument("--batch", type=float, default=1.0, help="seconds between merge batches (default 1.0)")
-    ap.add_argument("--max-parallel", type=int, default=8, help="most windows loading at once (default 8)")
-    ap.add_argument("--cpu-limit", type=float, default=75, help="back off while CPU use is above this percent (default 75)")
+    ap.add_argument("--max-parallel", type=int, default=1, help="most windows loading at once (default 1)")
+    ap.add_argument("--launch-gap", type=float, default=0.8, help="minimum seconds between launches (default 0.8)")
+    ap.add_argument("--cpu-limit", type=float, default=50, help="back off while CPU use is above this percent (default 50)")
+    ap.add_argument("--temp-limit", type=float, default=78, help="pause launching while the CPU is hotter than this, deg C; resumes 10 below (default 78)")
     lim = ap.add_mutually_exclusive_group()
     lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
     lim.add_argument("--tail", type=int, metavar="N", help="only open the last N files")
@@ -301,22 +327,38 @@ def main():
         # they appear. `limit` adapts to measured CPU use: it shrinks when the
         # machine is above --cpu-limit and grows back when there is headroom.
         cpu = Cpu()
-        limit = min(4, a.max_parallel)
+        limit = 1
+        paused = False
+        pause_start = 0.0
+        last_launch = 0.0
         last_cpu = last = time.time()
         last_batch = 0.0
+        temp = cpu_temp()
         while (launched < n or nxt < n or ready) and time.time() - last < TIMEOUT:
             now = time.time()
             if now - last_cpu >= 0.5:
-                busy = cpu.percent()
-                if busy > a.cpu_limit:
+                busy_pct, temp = cpu.percent(), cpu_temp()
+                pressured = psi("cpu") > 40 or psi("memory") > 10
+                if temp > a.temp_limit:
+                    if not paused:
+                        pause_start = now
+                    paused = True            # too hot: stop starting anything until it cools
+                elif temp < a.temp_limit - 10:
+                    paused = False
+                if paused and now - pause_start > 90:
+                    paused = False           # never cooled: carry on, one window at a time
+                if paused or busy_pct > a.cpu_limit or pressured:
                     limit = max(1, limit - 1)
-                elif busy < a.cpu_limit - 20:
+                elif busy_pct < a.cpu_limit - 20:
                     limit = min(a.max_parallel, limit + 1)
                 last_cpu = now
-            while launched < n and launched - 1 - arrived < limit:
+                if paused:
+                    last = now               # waiting for the machine to cool is not a stall
+            if (not paused and launched < n and launched - 1 - arrived < limit
+                    and now - last_launch >= a.launch_gap):
                 launch(launched, STAGE)
                 launched += 1
-                last = time.time()
+                last_launch = last = time.time()
             for c in new_windows():
                 r = rank(c)
                 (pending.__setitem__(r, c) if r < n else extra.append(c))
@@ -329,10 +371,10 @@ def main():
                 joined = merge_batch(leader, ready, dest, solitary)
                 if joined or solitary:
                     merged += len(ready)
-                    print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, cpu limit {limit})", file=sys.stderr)
+                    print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, parallel {limit}, {temp:.0f}C{', PAUSED (hot)' if paused else ''})", file=sys.stderr)
                     ready = []
                 last_batch = last = time.time()
-            time.sleep(0.1)
+            time.sleep(0.25)
         rest = ready + [pending[k]["address"] for k in sorted(pending)] + [c["address"] for c in extra]
         if rest:
             merge_batch(leader, rest, dest, solitary)
