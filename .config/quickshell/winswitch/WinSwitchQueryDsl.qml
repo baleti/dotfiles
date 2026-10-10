@@ -404,7 +404,10 @@ QtObject {
 
             if (tv.via !== null) {
                 const via = tv.via;
-                if (verb === "/fv") {
+                if (verb === "/sw")
+                    top.switchWorkspace = true;
+                // "/sw/windows 3" = "/sw" + "/fv/windows 3"
+                if (verb === "/fv" || verb === "/sw") {
                     if (i < toks.length && !root.startsCommand(toks[i])) {
                         out.filters.push(root.negated(root.filterTerm(via + ":" + toks[i].text), verbNeg || toks[i].neg));
                         i++;
@@ -520,7 +523,10 @@ QtObject {
         }
         if (term.kind === "scoped") {
             const fields = root.resolveFilterFields(term.path);
-            return fields.length > 0 && fields.some(f => root.substr(term.value, root.fieldValue(win, meta, f)));
+            // a window count is a number: "3" means exactly 3, not 13 or 30
+            return fields.length > 0 && fields.some(f => f.kind === "flat" && f.name === "windows"
+                ? (term.value === "" || root.fieldValue(win, meta, f) === term.value)
+                : root.substr(term.value, root.fieldValue(win, meta, f)));
         }
         // "exists"
         const gs = root.resolveGroups(term.seg);
