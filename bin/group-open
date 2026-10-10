@@ -459,7 +459,7 @@ def main():
     ap.add_argument("--max-edge", type=int, default=3000, help="open large images as a cached copy scaled to this long edge, in pixels; 0 = open the originals (default 3000)")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
     ap.add_argument("--batch", type=float, default=1.0, help="seconds between merge batches on an empty workspace (default 1.0)")
-    ap.add_argument("--ferry", type=float, default=12.0, help="seconds between merge batches on a busy workspace, where each batch briefly takes the group off it (default 12)")
+    ap.add_argument("--ferry", type=float, default=None, help="seconds between merge batches on a busy workspace, where each batch briefly takes the group off it (default: same as --batch, so windows join as soon as they are ready)")
     ap.add_argument("--max-parallel", type=int, default=1, help="most windows loading at once (default 1)")
     ap.add_argument("--launch-gap", type=float, default=0.6, help="minimum seconds between launches (default 0.6)")
     ap.add_argument("--cpu-limit", type=float, default=50, help="back off while CPU use is above this percent (default 50)")
@@ -662,7 +662,7 @@ def main():
                     ready.append(c["address"])
                 nxt += 1
             solitary_now = is_solitary(leader, ready, home)
-            gap = a.batch if solitary_now else a.ferry
+            gap = a.batch if (solitary_now or a.ferry is None) else a.ferry
             if ready and (nxt >= n or time.time() - last_batch >= gap):
                 batch_addrs = list(ready)
                 joined = merge_batch(leader, ready, home)
@@ -674,7 +674,7 @@ def main():
                         # loading): just the new tabs when the group's size did not change
                         # (empty workspace), every tab when the batch took the group away and
                         # back (busy workspace), since the size changed twice.
-                        todo = batch_addrs if solitary_now else next(
+                        todo = batch_addrs if (solitary_now or a.ferry is None) else next(
                             (c["grouped"] for c in clients() if c["address"] == leader), batch_addrs)
                         bg.submit(warm_tabs, list(todo))
                     print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, parallel {limit}, {temp:.0f}C{', PAUSED (hot)' if paused else ''})", file=sys.stderr)
