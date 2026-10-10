@@ -133,7 +133,22 @@ PanelWindow {
     }
     // Parallel to `windows` (same index), built once per windows/enrichMeta
     // change, not per keystroke.
-    readonly property var metas: root.windows.map(w => WinSwitchState.enrichMeta[w.address] || {})
+    readonly property var metas: root.windows.map(w => root.metaOf(w))
+    // A workspace row has no meta of its own: it gets its windows' tmux/claude
+    // fields joined, so "/sw/claude.title foo" keeps workspaces where ANY window
+    // matches, and the cell shows every window's value.
+    function metaOf(w) {
+        if (!w.wins)
+            return WinSwitchState.enrichMeta[w.address] || {};
+        const out = {};
+        for (const win of w.wins) {
+            const m = WinSwitchState.enrichMeta[win.address];
+            for (const k in m)
+                if (m[k] !== "" && m[k] !== undefined)
+                    out[k] = k in out ? out[k] + " | " + m[k] : String(m[k]);
+        }
+        return out;
+    }
     readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.queryText, root.wantWorkspaces ? WinSwitchQueryDsl.workspaceColumns : WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
 
     readonly property var results: {
@@ -146,7 +161,7 @@ PanelWindow {
         let rows = root.wantWorkspaces
             ? root.windows.filter(w => root.parsedQuery.filters.every(t =>
                 t.kind === "free" ? WinSwitchQueryDsl.substr(t.text, w.workspace) !== !!t.neg
-                    : WinSwitchQueryDsl._termMatches(w, {}, t)))
+                    : WinSwitchQueryDsl._termMatches(w, root.metas[w.index] || {}, t)))
             : root.windows.filter(w => WinSwitchQueryDsl.matchesStr(w, root.metas[w.index] || {}, root.queryText));
         const s = root.parsedQuery.sort;
         if (s) {
@@ -936,7 +951,7 @@ PanelWindow {
                         property string shownPath: ""
                         readonly property bool isSelected: modelData.index === root.selected
                         readonly property var frameDims: root.frameSize(modelData.width, modelData.height, root.cellW, root.maxH)
-                        readonly property var meta: WinSwitchState.enrichMeta[modelData.address] || {}
+                        readonly property var meta: root.metaOf(modelData)
                         // One line per active column (title, the default,
                         // plus whichever fields are `/at`-added or currently
                         // scoped-filtered - see WinSwitchQueryDsl.qml's
