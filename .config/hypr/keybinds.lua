@@ -7,6 +7,21 @@
 
 hl.bind(mainMod .. " + space", hl.dsp.exec_cmd(terminal), { description = "Open a terminal" })
 hl.bind(mainMod .. " + Q",     hl.dsp.window.close(), { description = "Close the active window" })
+hl.bind(mainMod .. " + SHIFT + Q", function()
+    local active
+    for _, win in ipairs(hl.get_windows()) do
+        if win.active then active = win end
+    end
+    if not active then return end
+    local targets = { active }
+    if active.group then
+        targets = {}
+        for _, m in ipairs(active.group.members) do targets[#targets + 1] = m end
+    end
+    for _, win in ipairs(targets) do
+        hl.dispatch(hl.dsp.window.close({ window = win }))
+    end
+end, { description = "Close every window in the active window's group" })
 hl.bind(mainMod .. " + E",     hl.dsp.exec_cmd(fileManager), { description = "Open the file manager" })
 hl.bind(mainMod .. " + SHIFT + space", hl.dsp.window.float({ action = "toggle" }), { description = "Toggle floating for the active window" })
 -- mod+R was `menu` (hyprlauncher); the quickshell launcher on mod+Super_l is
