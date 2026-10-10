@@ -295,8 +295,8 @@ different characters, not to be confused even though both sit between
 name-like segments.
 
 Every path-taking verb accepts a via path the same way: `/ft/claude`,
-`/at/claude.*`, `/rt/tmux.session`, `/s/claude.time` all mean exactly
-what `/ft claude`, `/at claude.*`, `/rt tmux.session`, `/s claude.time`
+`/at/claude.*`, `/rt/tmux.session`, `/s/claude.age` all mean exactly
+what `/ft claude`, `/at claude.*`, `/rt tmux.session`, `/s claude.age`
 already meant - the via form is purely an additional spelling, never a
 replacement, so nothing that already worked stops working (`/sort`'s via
 form is the one exception - see its own section, below, for the
@@ -422,7 +422,7 @@ claude.*           every subfield of the group
 
 **A bare group used as a `/fv` scope searches every subfield, not just its
 default one.** `/fv/claude ovh` (or `/fv claude:ovh`) keeps a row if *any*
-subfield - `claude.title`, `claude.path`, `claude.session`, `claude.time`,
+subfield - `claude.title`, `claude.path`, `claude.session`, `claude.age`,
 `claude.contents`, whichever the group has - contains `ovh`, the same union
 `claude.*` already means for a column verb (see `/add-type` etc., below).
 This changed 2026-09-13: it used to narrow to just `GROUP_DEFAULT_SUB`
@@ -888,7 +888,7 @@ therefore enough to reach a whole command: `/wo` + Tab reaches
 `/s/workspace` (every path-taking verb crossed with the one path
 containing `wo`); `/cla` + Tab reaches all five verbs crossed with
 `claude` and each of its five subfields (`claude.title`, `claude.path`,
-`claude.session`, `claude.time`, `claude.contents`) - thirty rows, further
+`claude.session`, `claude.age`, `claude.contents`) - thirty rows, further
 narrowed by typing more (`/claude.t` cuts it to the two subfields
 containing `t`). `/reverse` takes no path and is never crossed.
 
