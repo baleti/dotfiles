@@ -20,6 +20,7 @@ OVERRIDES = {
 
 APP_DIRS = [os.path.expanduser("~/.local/share/applications"),
             "/usr/local/share/applications", "/usr/share/applications"]
+STAGE, BUILD = 9100, 9101  # off-screen workspaces used while building
 TIMEOUT = 20  # seconds to wait for each window to appear
 
 
@@ -118,6 +119,31 @@ def focus(addr):
     lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.focus({{window=w}})) end end)()')
 
 
+def move_ws(addr, ws):
+    lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.window.move({{workspace={ws}, window=w, follow=false}})) end end)()')
+
+
+def focus_if_on(addr, ws):
+    """Focus addr only if the user is still looking at workspace ws."""
+    lua(f'(function() local w={win_lua(addr)} if w and hl.get_active_workspace().id=={ws} then hl.dispatch(hl.dsp.focus({{window=w}})) end end)()')
+
+
+def pinned_merge(leader, addr, ws):
+    """Append addr to leader's group, keeping the leader's tab selected and focused."""
+    before = group_size(leader)
+    lua(f'''(function()
+  local lead, nw = {win_lua(leader)}, {win_lua(addr)}
+  if not (lead and nw) then return end
+  hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
+  hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = nw, follow = false }}))
+  hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
+  if hl.get_active_workspace().id == {ws} then hl.dispatch(hl.dsp.focus({{ window = lead }})) end
+end)()''')
+    end = time.time() + 2
+    while group_size(leader) <= before and time.time() < end:
+        time.sleep(0.02)
+
+
 def group_size(addr):
     for c in clients():
         if c["address"] == addr:
@@ -143,86 +169,103 @@ def main():
         files = files[len(files) - max(a.tail, 0):]
     if not files:
         sys.exit("group-open: nothing to open")
-    seen = {c["address"] for c in clients()}
     n = len(files)
+    seen = {c["address"] for c in clients()}
+    dest = int(a.workspace) if a.workspace else json.loads(hyprctl("activeworkspace", "-j"))["id"]
+    # windows join a group by being moved (silently) onto a workspace that holds
+    # nothing but that group; that only works when the destination is empty
+    inplace = not any(c["workspace"]["id"] == dest for c in clients())
+    orig_merge = json.loads(hyprctl("getoption", "group:group_on_movetoworkspace", "-j")).get("bool", False)
+    hyprctl("eval", "hl.config({group={group_on_movetoworkspace=true}})")
 
-    def launch(i):
+    def launch(i, ws):
         cmd = command_for(files[i])
         print(f"[{i + 1}/{n}] {os.path.basename(files[i])}  ->  {cmd}", file=sys.stderr)
-        spawn(cmd, a.workspace)
+        spawn(cmd, ws)
 
-    # 1) first window serially: it becomes the group leader
-    launch(0)
-    leader = wait_new(seen)
-    if not leader:
-        sys.exit("group-open: first window never appeared")
-    seen.add(leader)
-    time.sleep(a.delay)
-    focus(leader)
-    lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
-
-    # 2) launch everything else at once; with focus on the group, auto_group
-    #    pulls each window in as it maps (in arbitrary order, fixed in step 4)
-    for i in range(1, n):
-        launch(i)
-        time.sleep(a.stagger)
-    arrived = []
-    last = time.time()
-    while len(arrived) < n - 1 and time.time() - last < TIMEOUT:
-        new = [c for c in clients() if c["address"] not in seen and c["mapped"]]
-        for c in new:
-            seen.add(c["address"])
-            arrived.append(c)
-            last = time.time()
-        time.sleep(0.1)
-    if len(arrived) < n - 1:
-        print(f"   ({n - 1 - len(arrived)} window(s) never appeared)", file=sys.stderr)
-    time.sleep(a.delay)
-
-    # 3) any straggler auto_group missed: join by focus + direction
-    for c in arrived:
-        addr = c["address"]
-        if group_size(addr) > 1:
-            continue
-        focus(addr)
-        before = group_size(leader)
-        for d in ("left", "right", "up", "down"):
-            lua(f'(function() local w={win_lua(addr)} hl.dispatch(hl.dsp.window.move({{into_group="{d}", window=w}})) end)()')
-            if group_size(leader) > before:
-                break
-        else:
-            print(f"   (could not join group: {addr})", file=sys.stderr)
-
-    # 4) sort tabs into file order: rank = index of the file named in the window's cmdline
-    rank = {leader: 0}
-    nxt = n
-    for c in arrived:
+    def rank(c):
         try:
             cmdline = open(f"/proc/{c['pid']}/cmdline", "rb").read().decode(errors="replace")
         except OSError:
-            cmdline = ""
+            return n
         hit = [i for i, f in enumerate(files) if f in cmdline]
-        rank[c["address"]] = hit[0] if hit else nxt
-        nxt += 0 if hit else 1
-    table = ",".join(f'["{k}"]={v}' for k, v in rank.items())
-    focus(leader)
-    lua(f'''(function()
-  local rank = {{{table}}}
-  local w = {win_lua(leader)}
-  local m = {{}}
-  for _, x in ipairs(w.group.members) do m[#m + 1] = x end
-  local function r(x) return rank[x.address] or 1e9 end
-  for i = 2, #m do
-    local j = i
-    while j > 1 and r(m[j]) < r(m[j - 1]) do
-      hl.dispatch(hl.dsp.group.active({{ index = j, window = w }}))
-      hl.dispatch(hl.dsp.group.move_window({{ forward = false }}))
-      m[j], m[j - 1] = m[j - 1], m[j]
-      j = j - 1
-    end
-  end
-  hl.dispatch(hl.dsp.group.active({{ index = 1, window = w }}))
-end)()''')
+        return hit[0] if hit else n
+
+    def new_windows():
+        out = []
+        for c in clients():
+            if c["address"] not in seen and c["mapped"]:
+                seen.add(c["address"])
+                out.append(c)
+        return out
+
+    try:
+        if inplace:
+            # the first window opens right here and stays the selected tab; the
+            # rest open off-screen and are appended behind it. Each join and the
+            # re-selection of the first tab happen in one Lua call, so no frame
+            # is ever drawn with a different tab or focus.
+            launch(0, dest)
+            leader = wait_new(seen)
+            if not leader:
+                sys.exit("group-open: first window never appeared")
+            seen.add(leader)
+            time.sleep(a.delay)
+            lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
+            focus_if_on(leader, dest)
+            for i in range(1, n):
+                launch(i, STAGE)
+                time.sleep(a.stagger)
+
+            pending = {}   # file index -> client
+            extra = []     # windows we could not match to a file
+            nxt, last = 1, time.time()
+            while nxt < n and time.time() - last < TIMEOUT:
+                for c in new_windows():
+                    r = rank(c)
+                    (pending.__setitem__(r, c) if r < n else extra.append(c))
+                    last = time.time()
+                while nxt in pending:
+                    pinned_merge(leader, pending.pop(nxt)["address"], dest)
+                    nxt += 1
+                    last = time.time()
+                time.sleep(0.05)
+            rest = [pending[k] for k in sorted(pending)] + extra   # gaps: files that never opened a window
+            for c in rest:
+                pinned_merge(leader, c["address"], dest)
+            if nxt < n and not rest:
+                print(f"   ({n - nxt} window(s) never appeared)", file=sys.stderr)
+        else:
+            # destination is not empty: build the whole group off-screen, then drop it in
+            for i in range(n):
+                launch(i, STAGE)
+                time.sleep(a.stagger)
+            arrived, last = [], time.time()
+            while len(arrived) < n and time.time() - last < TIMEOUT:
+                got = new_windows()
+                arrived += got
+                last = time.time() if got else last
+                time.sleep(0.1)
+            if not arrived:
+                sys.exit("group-open: no windows appeared")
+            arrived.sort(key=rank)
+            leader = arrived[0]["address"]
+            move_ws(leader, BUILD)
+            time.sleep(a.delay)
+            lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
+            time.sleep(a.delay)
+            for c in arrived[1:]:
+                before = group_size(leader)
+                move_ws(c["address"], BUILD)
+                end = time.time() + 2
+                while group_size(leader) <= before and time.time() < end:
+                    time.sleep(0.02)
+            lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.active({{index=1, window=w}})) end)()')
+            move_ws(leader, dest)
+            time.sleep(a.delay)
+            focus(leader)
+    finally:
+        hyprctl("eval", f"hl.config({{group={{group_on_movetoworkspace={'true' if orig_merge else 'false'}}}}})")
 
 
 if __name__ == "__main__":
