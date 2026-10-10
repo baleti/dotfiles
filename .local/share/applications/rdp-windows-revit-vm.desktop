@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RDP: Windows Revit VM (host2)
+Comment=Remote desktop into the offline Windows + Revit VM on host2 (asks for the password with pinentry)
+Exec=/home/user1/bin/rdp-windows-revit-vm
+Icon=computer
+Terminal=false
+Categories=Network;RemoteAccess;

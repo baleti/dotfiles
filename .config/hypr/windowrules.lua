@@ -84,3 +84,12 @@ hl.window_rule({
 
     no_focus = true,
 })
+
+-- Password prompt of ~/bin/rdp-windows-revit-vm (pinentry-gtk): small dialog, keep it floating and centred.
+hl.window_rule({
+    name  = "pinentry-float",
+    match = { class = "^(pinentry|pinentry-gtk|Pinentry-gtk|pinentry-gtk-2|Pinentry)$" },
+
+    float  = true,
+    center = true,
+})
