@@ -624,6 +624,14 @@ def main():
             if shutil.which("notify-send"):
                 subprocess.run(["notify-send", "-a", "group-open", f"{len(group)} slides ready",
                                 os.path.basename(a.paths[0].rstrip("/"))], capture_output=True)
+        if not a.no_warm:
+            # The same pass as before, but now that the group is on the visible workspace at its
+            # final tile size: this is what pressing mod+Tab does, and what makes the first
+            # switch to every tab smooth (measured: the revealed tab gets no X11 events, so
+            # the flicker is the compositor presenting a never-rendered window, not the
+            # viewer redrawing). The tabs already have content, so one quick pass is enough.
+            time.sleep(0.5)
+            warm_tabs(group)
         if a.focus:
             focus_if_on(leader, dest)
     finally:
