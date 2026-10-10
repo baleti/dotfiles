@@ -54,6 +54,10 @@ def rows(address):
             "preview": label(c),
             "icon": c["class"].lower(),
             "current": addr == address,
+            "index": i - 1,
+            "address": addr,
+            "width": c["size"][0],
+            "height": c["size"][1],
             "fields": {"app": c["class"], "tab": str(i), "title": c["title"]},
         }
 

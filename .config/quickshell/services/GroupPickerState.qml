@@ -10,6 +10,10 @@ QtObject {
 
     property bool active: false
     property string monitor: ""
+    // address -> {path, width, height}. Kept across opens so a tab shows its
+    // last capture instantly while a fresh one is taken (the backend writes a
+    // new file name per capture, so Image's pixmap cache can't go stale).
+    property var thumbnails: ({})
 
     function toggle(mon: string): void {
         if (root.active) {
