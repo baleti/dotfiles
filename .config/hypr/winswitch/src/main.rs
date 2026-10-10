@@ -87,6 +87,28 @@ fn remove_older_thumbs(dir: &Path, address: &str, keep: &Path) {
     }
 }
 
+/// True if a captured frame is one flat colour: what a window that has not drawn its
+/// first picture yet looks like (observed: freshly opened viewers capture "successfully"
+/// as uniform frames for the first ~second, then show their content). Samples a grid of
+/// pixels; real content (a page, a UI) varies by far more than the tolerance.
+fn is_blank(rgba: &[u8], width: usize, height: usize) -> bool {
+    if width == 0 || height == 0 || rgba.len() < width * height * 4 {
+        return true;
+    }
+    let (mut lo, mut hi) = (255u8, 0u8);
+    for gy in 0..24 {
+        for gx in 0..24 {
+            let x = gx * (width - 1) / 23;
+            let y = gy * (height - 1) / 23;
+            let i = (y * width + x) * 4;
+            let luma = ((rgba[i] as u16 * 3 + rgba[i + 1] as u16 * 6 + rgba[i + 2] as u16) / 10) as u8;
+            lo = lo.min(luma);
+            hi = hi.max(luma);
+        }
+    }
+    hi - lo < 8
+}
+
 fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> std::io::Result<()> {
     let file = fs::File::create(path)?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
@@ -127,6 +149,7 @@ fn main() {
     }
     let run_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
 
+    let skip_blank = std::env::var_os("WINSWITCH_SKIP_BLANK").is_some();
     let thumb_rx = wayland_capture::start(&windows);
     let enrich_rx = enrich::start(&windows);
 
@@ -138,6 +161,13 @@ fn main() {
             progressed = true;
             thumbs_done += 1;
             let Some(w) = windows.get(msg.index) else { continue };
+            // WINSWITCH_SKIP_BLANK=1 (group picker, group-open): a flat frame is "not drawn
+            // yet", not a thumbnail -- report nothing so the caller counts it as missing
+            // and asks again later.
+            if skip_blank && is_blank(&msg.rgba, msg.width as usize, msg.height as usize) {
+                log_line(&format!("blank frame from {} skipped", w.address));
+                continue;
+            }
             // A fresh name per capture: the frontend's Image pixmap cache is
             // keyed by URL, so reusing a path would show a stale picture.
             let path = thumb_dir.join(format!("{}-{run_id}.png", w.address));
