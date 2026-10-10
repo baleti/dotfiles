@@ -422,6 +422,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
+    ap.add_argument("--fresh", action="store_true", help="always use an empty workspace (the default when the current one is busy), and move the view to it")
+    ap.add_argument("--here", action="store_true", help="stay on the current workspace even if it is busy: the group is built off-screen and dropped in when done (no live joining)")
+    ap.add_argument("--no-switch", action="store_true", help="with a fresh workspace: do not move the view to it")
+    ap.add_argument("--ferry-live", action="store_true", help="on a busy workspace, join windows live on it anyway (each batch re-tiles your other windows twice and re-renders the group)")
     ap.add_argument("--offscreen", action="store_true", help="build the whole group off-screen, pre-render it, and drop it onto your workspace in one step (default: the first window appears at once and the others join it as they load)")
     ap.add_argument("--no-warm", action="store_true", help="skip the pre-render pass (mod+Tab then captures the tabs itself, retrying until they have drawn)")
     ap.add_argument("--no-pin", action="store_true", help="do not pin the image work to the efficiency cores (faster, but hotter: measured ~27%% less package power when pinned)")
@@ -462,7 +466,33 @@ def main():
     # warp per run, none with this on. Off for the run, restored in `finally`.
     hyprctl("eval", "hl.config({group={group_on_movetoworkspace=true}, cursor={no_warps=true}})")
     # Where the group is built: a private workspace nobody looks at (default), or dest.
-    home = BUILD if a.offscreen else dest
+    explicit = bool(a.workspace)
+    dest_busy = any(c["workspace"]["id"] == dest for c in clients())
+    # Joining a window to a visible group re-tiles every other window on that workspace
+    # (measured: an X11 neighbour got two resizes per merge batch), and Hyprland only merges
+    # silently on a workspace that holds nothing but the group. On an empty workspace the
+    # visible slide receives no events at all while windows join (measured). So when the
+    # current workspace is busy, the slideshow gets its own empty workspace instead (the
+    # lowest free number), and the view moves there once, so the first slide is on screen the
+    # moment it opens and the rest join it silently. --here stays on the busy workspace and
+    # builds the group off-screen (one re-tile when it is dropped in); --no-switch prepares the
+    # empty workspace without moving the view.
+    use_fresh = a.fresh or (dest_busy and not explicit and not a.here and not a.ferry_live and not a.offscreen)
+    if use_fresh:
+        occupied = {w["id"] for w in json.loads(hyprctl("workspaces", "-j") or "[]") if w.get("windows", 0) > 0}
+        occupied |= {m["activeWorkspace"]["id"] for m in json.loads(hyprctl("monitors", "-j") or "[]")}
+        dest = next(i for i in range(1, 9000) if i not in occupied)
+        dest_busy = False
+        if a.no_switch:
+            print(f"group-open: slides are loading on empty workspace {dest}", file=sys.stderr)
+        else:
+            lua(f"hl.dispatch(hl.dsp.focus({{ workspace = {dest} }}))")     # the one view change
+            print(f"group-open: using empty workspace {dest}", file=sys.stderr)
+    elif dest_busy and not a.ferry_live and not a.offscreen:
+        print(f"group-open: workspace {dest} is busy: building the group off-screen and dropping it in "
+              f"when done (drop --here to get a live group on its own empty workspace)", file=sys.stderr)
+    mode = "offscreen" if (a.offscreen or (dest_busy and not a.ferry_live)) else "live"
+    home = dest if mode == "live" else BUILD
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # let `finally` run on kill/timeout
 
     opened = {}   # file index -> the path actually handed to the viewer (maybe a scaled copy)
@@ -601,7 +631,7 @@ def main():
                 joined = merge_batch(leader, ready, home)
                 if joined:
                     merged += len(ready)
-                    if not a.offscreen and not a.no_warm:
+                    if mode == "live" and not a.no_warm:
                         # A tab that has never been rendered at its current size flickers when
                         # first revealed, so re-cache in the background (never delaying the
                         # loading): just the new tabs when the group's size did not change
@@ -628,12 +658,11 @@ def main():
                 print(f"   (could not group {c['address']}; left on workspace {dest})", file=sys.stderr)
         bg.shutdown(wait=True)    # background re-caching started during loading
         group = next((c["grouped"] for c in clients() if c["address"] == leader), [leader])
-        if a.offscreen:
+        if mode == "offscreen":
             if not a.no_warm and warm_tabs(group):
                 print("   (some tabs could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
-            # one step: the finished, pre-rendered group goes onto the user's workspace.
-            # The merge option must be off first, or a workspace that happens to hold just
-            # another group would swallow ours.
+            # one step: the finished, pre-rendered group goes onto the user's workspace. The merge
+            # option must be off first, or a workspace that happens to hold just another group would swallow ours.
             hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}})")
             move_ws(leader, dest)
             time.sleep(0.5)
