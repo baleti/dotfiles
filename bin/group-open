@@ -20,6 +20,7 @@ OVERRIDES = {
 
 APP_DIRS = [os.path.expanduser("~/.local/share/applications"),
             "/usr/local/share/applications", "/usr/share/applications"]
+STAGE, BUILD = 9100, 9101  # off-screen workspaces used while building the group
 TIMEOUT = 20  # seconds to wait for each window to appear
 
 
@@ -118,6 +119,10 @@ def focus(addr):
     lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.focus({{window=w}})) end end)()')
 
 
+def move_ws(addr, ws):
+    lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.window.move({{workspace={ws}, window=w, follow=false}})) end end)()')
+
+
 def group_size(addr):
     for c in clients():
         if c["address"] == addr:
@@ -128,8 +133,8 @@ def group_size(addr):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+")
-    ap.add_argument("--workspace", help="open on this workspace instead of the current one")
-    ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
+    ap.add_argument("--workspace", help="put the finished group on this workspace instead of the current one")
+    ap.add_argument("--delay", type=float, default=0.15, help="settle time between build steps (default 0.15)")
     ap.add_argument("--stagger", type=float, default=0.03, help="pause between launches (default 0.03)")
     lim = ap.add_mutually_exclusive_group()
     lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
@@ -143,86 +148,68 @@ def main():
         files = files[len(files) - max(a.tail, 0):]
     if not files:
         sys.exit("group-open: nothing to open")
-    seen = {c["address"] for c in clients()}
     n = len(files)
+    seen = {c["address"] for c in clients()}
+    dest = a.workspace or json.loads(hyprctl("activeworkspace", "-j"))["id"]
 
-    def launch(i):
-        cmd = command_for(files[i])
-        print(f"[{i + 1}/{n}] {os.path.basename(files[i])}  ->  {cmd}", file=sys.stderr)
-        spawn(cmd, a.workspace)
+    # Everything is built off-screen so nothing flickers: windows open on STAGE,
+    # are merged one by one into a group on BUILD, and the finished group is
+    # moved to the destination workspace in a single step. No focus changes
+    # until the very end.
+    orig_merge = json.loads(hyprctl("getoption", "group:group_on_movetoworkspace", "-j")).get("bool", False)
+    hyprctl("eval", f"hl.config({{group={{group_on_movetoworkspace={'true'}}}}})")
+    try:
+        for i, f in enumerate(files):
+            cmd = command_for(f)
+            print(f"[{i + 1}/{n}] {os.path.basename(f)}  ->  {cmd}", file=sys.stderr)
+            spawn(cmd, STAGE)
+            time.sleep(a.stagger)
 
-    # 1) first window serially: it becomes the group leader
-    launch(0)
-    leader = wait_new(seen)
-    if not leader:
-        sys.exit("group-open: first window never appeared")
-    seen.add(leader)
-    time.sleep(a.delay)
-    focus(leader)
-    lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
+        arrived = []
+        last = time.time()
+        while len(arrived) < n and time.time() - last < TIMEOUT:
+            for c in clients():
+                if c["address"] not in seen and c["mapped"]:
+                    seen.add(c["address"])
+                    arrived.append(c)
+                    last = time.time()
+            time.sleep(0.1)
+        if len(arrived) < n:
+            print(f"   ({n - len(arrived)} window(s) never appeared)", file=sys.stderr)
+        if not arrived:
+            sys.exit("group-open: no windows appeared")
 
-    # 2) launch everything else at once; with focus on the group, auto_group
-    #    pulls each window in as it maps (in arbitrary order, fixed in step 4)
-    for i in range(1, n):
-        launch(i)
-        time.sleep(a.stagger)
-    arrived = []
-    last = time.time()
-    while len(arrived) < n - 1 and time.time() - last < TIMEOUT:
-        new = [c for c in clients() if c["address"] not in seen and c["mapped"]]
-        for c in new:
-            seen.add(c["address"])
-            arrived.append(c)
-            last = time.time()
-        time.sleep(0.1)
-    if len(arrived) < n - 1:
-        print(f"   ({n - 1 - len(arrived)} window(s) never appeared)", file=sys.stderr)
-    time.sleep(a.delay)
+        # file order: rank = index of the file named in the window's cmdline;
+        # windows we cannot match go last, in arrival order
+        def rank(c):
+            try:
+                cmdline = open(f"/proc/{c['pid']}/cmdline", "rb").read().decode(errors="replace")
+            except OSError:
+                return n
+            hit = [i for i, f in enumerate(files) if f in cmdline]
+            return hit[0] if hit else n
+        arrived.sort(key=rank)  # stable
 
-    # 3) any straggler auto_group missed: join by focus + direction
-    for c in arrived:
-        addr = c["address"]
-        if group_size(addr) > 1:
-            continue
-        focus(addr)
-        before = group_size(leader)
-        for d in ("left", "right", "up", "down"):
-            lua(f'(function() local w={win_lua(addr)} hl.dispatch(hl.dsp.window.move({{into_group="{d}", window=w}})) end)()')
-            if group_size(leader) > before:
-                break
-        else:
-            print(f"   (could not join group: {addr})", file=sys.stderr)
+        leader = arrived[0]["address"]
+        move_ws(leader, BUILD)
+        time.sleep(a.delay)
+        lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
+        time.sleep(a.delay)
+        for c in arrived[1:]:
+            before = group_size(leader)
+            move_ws(c["address"], BUILD)  # merges into the group (group_on_movetoworkspace)
+            end = time.time() + 2
+            while group_size(leader) <= before and time.time() < end:
+                time.sleep(0.02)
+            if group_size(leader) <= before:
+                print(f"   (could not merge {c['address']})", file=sys.stderr)
 
-    # 4) sort tabs into file order: rank = index of the file named in the window's cmdline
-    rank = {leader: 0}
-    nxt = n
-    for c in arrived:
-        try:
-            cmdline = open(f"/proc/{c['pid']}/cmdline", "rb").read().decode(errors="replace")
-        except OSError:
-            cmdline = ""
-        hit = [i for i, f in enumerate(files) if f in cmdline]
-        rank[c["address"]] = hit[0] if hit else nxt
-        nxt += 0 if hit else 1
-    table = ",".join(f'["{k}"]={v}' for k, v in rank.items())
-    focus(leader)
-    lua(f'''(function()
-  local rank = {{{table}}}
-  local w = {win_lua(leader)}
-  local m = {{}}
-  for _, x in ipairs(w.group.members) do m[#m + 1] = x end
-  local function r(x) return rank[x.address] or 1e9 end
-  for i = 2, #m do
-    local j = i
-    while j > 1 and r(m[j]) < r(m[j - 1]) do
-      hl.dispatch(hl.dsp.group.active({{ index = j, window = w }}))
-      hl.dispatch(hl.dsp.group.move_window({{ forward = false }}))
-      m[j], m[j - 1] = m[j - 1], m[j]
-      j = j - 1
-    end
-  end
-  hl.dispatch(hl.dsp.group.active({{ index = 1, window = w }}))
-end)()''')
+        lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.active({{index=1, window=w}})) end)()')
+        move_ws(leader, dest)
+        time.sleep(a.delay)
+        focus(leader)
+    finally:
+        hyprctl("eval", f"hl.config({{group={{group_on_movetoworkspace={'true' if orig_merge else 'false'}}}}})")
 
 
 if __name__ == "__main__":
