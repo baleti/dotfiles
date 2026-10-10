@@ -125,6 +125,12 @@ PanelWindow {
 
     // ---- filtering / sorting (query DSL) -----------------------------
     readonly property var parsedQuery: WinSwitchQueryDsl.parse(root.queryText)
+    // /sw (/switch-workspace): swap the rows for workspaces (state fetches them).
+    readonly property bool wantWorkspaces: root.parsedQuery.switchWorkspace
+    onWantWorkspacesChanged: {
+        if (root.open)
+            WinSwitchState.setWorkspaceMode(root.wantWorkspaces);
+    }
     // Parallel to `windows` (same index), built once per windows/enrichMeta
     // change, not per keystroke.
     readonly property var metas: root.windows.map(w => WinSwitchState.enrichMeta[w.address] || {})
@@ -918,7 +924,7 @@ PanelWindow {
                         width: grid.cellWidth
                         height: grid.cellHeight
 
-                        readonly property var thumb: WinSwitchState.thumbnails[modelData.address]
+                        readonly property var thumb: WinSwitchState.thumbnails[modelData.thumbAddress || modelData.address]
                         readonly property string thumbPath: cellItem.thumb ? cellItem.thumb.path : ""
                         // What's on screen: only swapped once the incoming
                         // capture has decoded, so a refresh never blanks.

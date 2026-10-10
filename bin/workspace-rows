@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Workspaces as alt+tab grid rows (the /switch-workspace view in
+quickshell/winswitch). One JSON array, winswitch-windows.json's row shape plus
+`thumbAddress` (the workspace's last-focused window, whose thumbnail stands in
+for the workspace). Special (scratchpad) workspaces are left out."""
+import json, os, subprocess
+
+
+def hyprctl(*args):
+    env = dict(os.environ)
+    if "HYPRLAND_INSTANCE_SIGNATURE" not in env:
+        rt = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}") + "/hypr"
+        env["HYPRLAND_INSTANCE_SIGNATURE"] = max(
+            (os.path.join(rt, d) for d in os.listdir(rt)), key=os.path.getmtime).rsplit("/", 1)[1]
+    return json.loads(subprocess.run(["hyprctl", *args, "-j"], env=env, capture_output=True, text=True).stdout or "null")
+
+
+clients = hyprctl("clients") or []
+monitors = {m["id"]: m for m in hyprctl("monitors") or []}
+focused = next((m["activeWorkspace"]["id"] for m in monitors.values() if m["focused"]), None)
+by_ws = {}
+for c in sorted(clients, key=lambda c: c["focusHistoryID"]):
+    by_ws.setdefault(c["workspace"]["id"], []).append(c)
+
+rows = []
+for w in sorted(hyprctl("workspaces") or [], key=lambda w: w["id"]):
+    if w["id"] < 0:
+        continue
+    cs = by_ws.get(w["id"], [])
+    mon = monitors.get(w.get("monitorID"), {})
+    titles = ", ".join(c["title"] or c["class"] for c in cs[:4])
+    rows.append({
+        "address": f"ws:{w['name']}",
+        "thumbAddress": (cs[0]["address"] if cs else ""),
+        "class": f"workspace {w['name']}",
+        "title": f"{w['name']}: {titles}" if titles else f"{w['name']} (empty)",
+        "workspace": w["name"],
+        "pid": 0,
+        "width": mon.get("width", 1920),
+        "height": mon.get("height", 1080),
+        "active": w["id"] == focused,
+    })
+print(json.dumps(rows))

@@ -35,10 +35,11 @@ QtObject {
     readonly property var directions: ["ascending", "descending"]
     readonly property var defaultColumns: [{ kind: "flat", name: "title" }]
 
-    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/rv"]
+    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/rv", "/sw"]
     readonly property var verbAliases: ({
         "/filter-value": "/fv", "/filter-type": "/ft", "/add-type": "/at",
-        "/remove-type": "/rt", "/sort": "/s", "/reverse": "/rv"
+        "/remove-type": "/rt", "/sort": "/s", "/reverse": "/rv",
+        "/switch-workspace": "/sw"
     })
     readonly property var verbInfo: ({
         "/fv": { long: "/filter-value", desc: "keep windows whose value matches (substring)" },
@@ -46,11 +47,12 @@ QtObject {
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
         "/s":  { long: "/sort",         desc: "order windows by one field, optional asc / desc" },
-        "/rv": { long: "/reverse",      desc: "flip the current order" }
+        "/rv": { long: "/reverse",      desc: "flip the current order" },
+        "/sw": { long: "/switch-workspace", desc: "show workspaces instead of windows; pick one to switch to it" }
     })
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "rv",
-        "filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"
+        "fv", "ft", "at", "rt", "s", "rv", "sw",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse", "switch-workspace"
     ]
     // All resolvable type paths (flat types, groups, and group.subfields),
     // bare, no "*" -- the full depth the Verb stage's completion crosses
@@ -103,7 +105,7 @@ QtObject {
         if (!a || !b || a.kind !== b.kind) return false;
         return a.kind === "flat" ? a.name === b.name : a.group === b.group && a.sub === b.sub;
     }
-    function takesPath(verb) { return verb !== "/rv"; }
+    function takesPath(verb) { return verb !== "/rv" && verb !== "/sw"; }
 
     // --- tokenizer (query.rs's Tok / tokenize) ----------------------------
     // Unlike QueryDsl.qml's own tokenize, this keeps each token's byte
@@ -372,7 +374,7 @@ QtObject {
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
     function parse(query) {
         const toks = root.tokenize(query);
-        let out = { filters: [], colOps: [], sort: null, reverse: false };
+        let out = { filters: [], colOps: [], sort: null, reverse: false, switchWorkspace: false };
         const top = out;
         let i = 0;
         while (i < toks.length) {
@@ -392,7 +394,7 @@ QtObject {
             // still consume their arguments but change nothing.
             const verbNeg = !!tok.neg;
             if (verbNeg && verb !== "/fv")
-                out = { filters: [], colOps: [], sort: null, reverse: false };
+                out = { filters: [], colOps: [], sort: null, reverse: false, switchWorkspace: false };
 
             if (tv.via !== null) {
                 const via = tv.via;
@@ -450,12 +452,14 @@ QtObject {
                         out.sort = { fields, dir };
                 } else if (verb === "/rv") {
                     out.reverse = true;
+                } else if (verb === "/sw") {
+                    top.switchWorkspace = true;
                 }
                 continue;
             }
 
             const args = [];
-            const maxArgs = verb === "/rv" ? 0 : (verb === "/s" ? 2 : 1);
+            const maxArgs = (verb === "/rv" || verb === "/sw") ? 0 : (verb === "/s" ? 2 : 1);
             while (args.length < maxArgs && i < toks.length && !root.startsCommand(toks[i])) {
                 if (verb === "/s" && args.length === 1 && root.parseDirection(toks[i].text) === null)
                     break;
@@ -480,6 +484,8 @@ QtObject {
                 }
             } else if (verb === "/rv") {
                 out.reverse = true;
+            } else if (verb === "/sw") {
+                top.switchWorkspace = true;
             }
         }
         return top;
@@ -700,7 +706,7 @@ QtObject {
                     const tv = root.tokVerb(tok);
                     if (tv === null) {
                         // nothing to track
-                    } else if (tv.verb === "/rv") {
+                    } else if (tv.verb === "/rv" || tv.verb === "/sw") {
                         // consumes nothing
                     } else if ((tv.verb === "/ft" || tv.verb === "/at" || tv.verb === "/rt") && tv.via !== null) {
                         // via already supplies the one path this verb takes
