@@ -3,6 +3,8 @@
 
   group-windows list [ADDRESS]      NDJSON, one row per tab of ADDRESS's group
                                     (default: the active window's group), in tab order
+  group-windows list --winswitch    the same as one JSON array in the alt+tab grid's row
+                                    shape (what mod+Tab feeds WinSwitchState.startGroup)
   group-windows activate ADDRESS    make that tab the visible, focused one
 
 Row shape matches the other quickshell pickers: id, preview, icon, fields{...},
@@ -62,6 +64,19 @@ def rows(address):
         }
 
 
+def winswitch_rows(address):
+    """The group's tabs in winswitch-windows.json's row shape, in tab order, so the
+    alt+tab grid can show them (see services/GroupPickerState.qml)."""
+    clients = {c["address"]: c for c in json.loads(hyprctl("clients", "-j") or "[]")}
+    for r in rows(address):
+        c = clients[r["id"]]
+        yield {
+            "address": r["id"], "class": c["class"], "title": r["preview"],
+            "workspace": c["workspace"]["name"], "pid": c["pid"],
+            "width": c["size"][0], "height": c["size"][1], "active": r["current"],
+        }
+
+
 def activate(address):
     lua = ('(function() for _,w in ipairs(hl.get_windows()) do if w.address=="%s" then '
            'hl.dispatch(hl.dsp.focus({window=w})) end end end)()' % address)
@@ -70,7 +85,10 @@ def activate(address):
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
-    if cmd == "list":
+    if cmd == "list" and "--winswitch" in sys.argv:
+        args = [a for a in sys.argv[2:] if a != "--winswitch"]
+        print(json.dumps(list(winswitch_rows(args[0] if args else None))))
+    elif cmd == "list":
         for r in rows(sys.argv[2] if len(sys.argv) > 2 else None):
             print(json.dumps(r))
     elif cmd == "activate" and len(sys.argv) > 2:

@@ -13,7 +13,6 @@ import "rssreader"
 import "keybinds"
 import "winswitch"
 import "clipboard"
-import "groups"
 import "shotty"
 import "services"
 
@@ -89,13 +88,15 @@ ShellRoot {
         }
     }
 
-    // Group picker (mod+Tab): the tabs of the active window's Hyprland group.
-    // Same latched-monitor pattern as the pickers above -- see
-    // GroupPickerState.qml.
+    // Group picker (mod+Tab): the alt+tab grid limited to the active window's
+    // Hyprland group -- see GroupPickerState.qml.
     IpcHandler {
         target: "groupPicker"
         function toggle(): void {
-            GroupPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+            GroupPickerState.toggle(Hyprland.focusedMonitor?.name ?? "", "");
+        }
+        function openFor(address: string): void {
+            GroupPickerState.toggle(Hyprland.focusedMonitor?.name ?? "", address);
         }
     }
 
@@ -242,15 +243,6 @@ ShellRoot {
         model: Quickshell.screens
 
         NotificationPicker {
-            required property var modelData
-            screen: modelData
-        }
-    }
-
-    Variants {
-        model: Quickshell.screens
-
-        GroupPicker {
             required property var modelData
             screen: modelData
         }
