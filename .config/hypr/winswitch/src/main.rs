@@ -104,7 +104,17 @@ fn main() {
     // QML has already confirmed a hold and shown the placeholder grid by
     // the time this process even exists (see module doc) -- straight to
     // capture, no tap/hold branch here any more.
-    let windows = hyprctl::list_windows();
+    let mut windows = hyprctl::list_windows();
+    // WINSWITCH_ONLY=addr,addr,...: capture just these windows (the group picker,
+    // mod+Tab, only wants one group's tabs, not all ~50 windows). Such a run must
+    // not prune the thumbnail cache: that would delete every other window's
+    // capture, which the next alt-tab shows instantly while it refreshes.
+    let only: Option<HashSet<String>> = std::env::var("WINSWITCH_ONLY")
+        .ok()
+        .map(|v| v.split(',').filter(|a| !a.is_empty()).map(str::to_string).collect());
+    if let Some(only) = &only {
+        windows.retain(|w| only.contains(&w.address));
+    }
     log_line(&format!("{} windows ({}us)", windows.len(), start.elapsed().as_micros()));
     if windows.is_empty() {
         return;
@@ -112,7 +122,9 @@ fn main() {
 
     let thumb_dir = thumb_dir();
     let _ = fs::create_dir_all(&thumb_dir);
-    prune_thumb_dir(&thumb_dir, &windows);
+    if only.is_none() {
+        prune_thumb_dir(&thumb_dir, &windows);
+    }
     let run_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
 
     let thumb_rx = wayland_capture::start(&windows);
