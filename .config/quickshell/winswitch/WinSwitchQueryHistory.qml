@@ -22,17 +22,34 @@ Singleton {
         path: root._path
         atomicWrites: true
         onLoaded: root._loadJson(hist.text())
-        onLoadFailed: {}  // no history yet - start empty
+        onLoadFailed: root._finishLoad([])  // no history yet - start empty
         onSaveFailed: err => console.warn("winswitch-query-history: save failed:", err)
     }
 
+    // The file is read asynchronously and the singleton is built lazily, so
+    // the first record() after a (re)load could run before the old history
+    // arrived and then save over it (this is how the history shrank to a single
+    // entry). Until loaded, new queries wait in `_early` and are appended after.
+    property bool loaded: false
+    property var _early: []
+
     function _loadJson(txt) {
+        let parsed = [];
         try {
-            const parsed = JSON.parse(txt);
-            root.entries = Array.isArray(parsed) ? parsed : [];
+            const j = JSON.parse(txt);
+            if (Array.isArray(j)) parsed = j;
         } catch (e) {
-            root.entries = [];
+            // unreadable: keep the file untouched until a record() rewrites it
         }
+        root._finishLoad(parsed);
+    }
+    function _finishLoad(parsed) {
+        root.loaded = true;
+        root.entries = parsed;
+        const early = root._early;
+        root._early = [];
+        for (const q of early)
+            root.record(q);
     }
     function _save() { hist.setText(JSON.stringify(root.entries)); }
 
@@ -44,6 +61,10 @@ Singleton {
     function record(query) {
         const q = query.trim().replace(/\s+/g, " ");
         if (!q) return;
+        if (!root.loaded) {
+            root._early.push(q);
+            return;
+        }
         const i = root.entries.indexOf(q);
         if (i >= 0) root.entries.splice(i, 1);
         root.entries.push(q);
