@@ -28,7 +28,8 @@ PanelWindow {
     function _recompute() {
         root.open = WinSwitchState.active && WinSwitchState.shown && WinSwitchState.monitor === root.screen.name;
     }
-    Component.onCompleted: root._recompute()
+    // Touching the history singleton here makes it load at startup, not at the first Ctrl+R / confirm.
+    Component.onCompleted: { root._recompute(); WinSwitchQueryHistory.loaded; }
     readonly property var windows: WinSwitchState.windows
     readonly property int selected: WinSwitchState.selected
     readonly property bool locked: WinSwitchState.locked
@@ -344,8 +345,11 @@ PanelWindow {
     property int acVerbMultiStart: 0
 
     function _hideSuggestions() {
-        root.acItems = [];
+        // Kind first: onAcItemsChanged keeps a "history" popup visible at zero
+        // items, so clearing the items while the kind was still "history" left
+        // the (empty) popup up and it took a second Escape to close.
         root.acSuggestionKind = null;
+        root.acItems = [];
         root.acVerbMulti = false;
         root.acActive = false;
     }
