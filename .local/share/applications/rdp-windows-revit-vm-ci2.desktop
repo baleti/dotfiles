@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RDP: Windows Revit CI VM 2 (host2, CID 6)
+Comment=Remote desktop into Windows Revit CI VM 2 (host2, CID 6) (offline VM on host2, blank password)
+Exec=/home/user1/bin/rdp-windows-vm 6
+Icon=computer
+Terminal=false
+Categories=Network;RemoteAccess;
