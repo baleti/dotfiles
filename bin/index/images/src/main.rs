@@ -974,7 +974,7 @@ impl App {
         self.req_sort = sort.keys.join(",");
         self.req_desc = sort.desc;
         self.last_sent = self.query.clone();
-        self.pages.clear();
+        // keep showing the old rows until the new first page arrives (no flicker while typing)
         self.pending.clear();
         self.busy = true;
         self.request_page(0);
@@ -992,7 +992,7 @@ impl App {
 
     /// Requests the pages that cover rows lo..hi, skipping ones already fetched or in flight.
     fn ensure_rows(&mut self, lo: usize, hi: usize) {
-        if self.total == 0 { return; }
+        if self.total == 0 || self.busy { return; }
         let hi = hi.min(self.total - 1);
         if lo > hi { return; }
         for page in lo / PAGE..=hi / PAGE {
@@ -1030,7 +1030,7 @@ impl App {
             match f.result {
                 Ok(r) => {
                     self.total = r.count;
-                    if f.page == 0 { self.stats = r.stats.clone(); }
+                    if f.page == 0 { self.stats = r.stats.clone(); self.pages.clear(); }
                     self.pages.insert(f.page, r.results);
                     self.selected = self.selected.min(self.total.saturating_sub(1));
                     if f.page == 0 {
