@@ -35,6 +35,40 @@ QtObject {
                 let rows;
                 try { rows = JSON.parse(listOut.text); } catch (e) { return; }
                 WinSwitchState.startGroup(rows);
+                if (rows.length > 0) {
+                    root._anchor = rows[0].address;
+                    pollTimer.restart();
+                }
+            }
+        }
+    }
+
+    // While the grid is open, follow the group: windows that group-open is still adding
+    // (or that get closed) appear/disappear without reopening it.
+    property string _anchor: ""
+    readonly property Timer _poll: Timer {
+        id: pollTimer
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            if (!WinSwitchState.active || !WinSwitchState.groupMode) {
+                pollTimer.stop();
+                return;
+            }
+            if (!pollProc.running) {
+                pollProc.command = [Quickshell.env("HOME") + "/bin/group-windows", "list", "--winswitch", root._anchor];
+                pollProc.running = true;
+            }
+        }
+    }
+    readonly property Process _pollProc: Process {
+        id: pollProc
+        stdout: StdioCollector {
+            id: pollOut
+            onStreamFinished: {
+                let rows;
+                try { rows = JSON.parse(pollOut.text); } catch (e) { return; }
+                WinSwitchState.updateGroup(rows);
             }
         }
     }

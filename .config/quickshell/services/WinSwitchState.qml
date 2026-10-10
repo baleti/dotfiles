@@ -200,6 +200,41 @@ QtObject {
         root.shown = true;
     }
 
+    // Group mode: the group changed while the grid is open (group-open is still adding
+    // windows, or one was closed). Swap in the new row list, keep the selection on the same
+    // window, and capture only the newcomers.
+    function updateGroup(list) {
+        if (!root.active || !root.groupMode || root.workspaceMode || !Array.isArray(list) || list.length === 0)
+            return;
+        const old = {};
+        for (const w of root.windows)
+            old[w.address] = true;
+        const added = list.filter(w => !old[w.address]).map(w => w.address);
+        const now = {};
+        for (const w of list)
+            now[w.address] = true;
+        if (added.length === 0 && root.windows.length === list.length && root.windows.every(w => now[w.address]))
+            return;
+        const keep = root.selected >= 0 && root.selected < root.windows.length ? root.windows[root.selected].address : "";
+        const fresh = Object.assign({}, root.thumbnails);
+        for (const a of added)
+            delete fresh[a];      // addresses get reused; see startGroup
+        root.thumbnails = fresh;
+        const rows = list.map((w, index) => Object.assign({ index }, w));
+        root.windows = rows;
+        const at = rows.findIndex(w => w.address === keep);
+        root.selected = at >= 0 ? at : Math.min(Math.max(root.selected, 0), rows.length - 1);
+        if (added.length > 0) {
+            root._captureTries = 0;
+            // a running capture re-checks what is missing when it exits
+            if (!backend.running && !retryTimer.running) {
+                root.onlyAddresses = added.join(",");
+                retryTimer.interval = 300;
+                retryTimer.restart();
+            }
+        }
+    }
+
     // Cyclic over the full list; WinSwitch.qml has its own over filtered
     // results for search mode.
     function advance(direction) {
