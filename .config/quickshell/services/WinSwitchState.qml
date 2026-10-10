@@ -168,6 +168,7 @@ QtObject {
         root.windows = rows;
         root.selected = rows.findIndex(w => w.active);
         root.locked = false;
+        root.workspaceMode = false;
         root.shown = false;
         root.monitor = root._resolveMonitor();
         root.active = true;
@@ -180,6 +181,7 @@ QtObject {
         if (!Array.isArray(list) || list.length === 0 || root.active)
             return;
         root.groupMode = true;
+        root._captureTries = 0;
         root.onlyAddresses = list.map(w => w.address).join(",");
         root._startSession(list, true);
         showTimer.stop();
@@ -202,9 +204,50 @@ QtObject {
 
     function confirm(i) {
         const w = root.windows[i];
+        const ws = root.workspaceMode;
         root.close();
-        if (w && !w.active)
+        if (w && ws)
+            Hyprland.dispatch(`hl.dsp.focus({ workspace = "${w.workspace}" })`);
+        else if (w && !w.active)
             root.focusWindow(w.address);
+    }
+
+    // /switch-workspace: the grid lists workspaces (~/bin/workspace-rows) instead
+    // of windows; the window rows are parked and put back when the verb goes away.
+    property bool workspaceMode: false
+    property var _parkedWindows: []
+    property int _parkedSelected: -1
+    function setWorkspaceMode(on) {
+        if (!root.active || on === root.workspaceMode)
+            return;
+        if (on) {
+            root._parkedWindows = root.windows;
+            root._parkedSelected = root.selected;
+            root.workspaceMode = true;
+            wsProc.running = false;
+            wsProc.running = true;
+        } else {
+            wsProc.running = false;
+            root.workspaceMode = false;
+            root.windows = root._parkedWindows;
+            root.selected = root._parkedSelected;
+        }
+    }
+    readonly property Process _wsProc: Process {
+        id: wsProc
+        command: [Quickshell.env("HOME") + "/bin/workspace-rows"]
+        stdout: StdioCollector {
+            id: wsOut
+            onStreamFinished: {
+                if (!root.active || !root.workspaceMode)
+                    return;
+                let list;
+                try { list = JSON.parse(wsOut.text); } catch (e) { return; }
+                const rows = list.map((w, index) => Object.assign({ index }, w));
+                root.windows = rows;
+                root.selected = rows.findIndex(w => w.active);
+            }
+        }
     }
 
     function close(reason) {
@@ -217,6 +260,7 @@ QtObject {
         root.shown = false;
         root.locked = false;
         root.groupMode = false;
+        root.workspaceMode = false;
         root.onlyAddresses = "";
         root.active = false;
     }
@@ -264,8 +308,37 @@ QtObject {
     // Captures every window once and exits; output is NDJSON keyed by
     // address. Not killed on close, so a quick hold-release still finishes
     // refreshing the cache for next time.
+    // Group mode only: a capture of a never-rendered tab can come back empty the
+    // first time (the attempt is what makes the compositor render it), so any
+    // window still without a thumbnail when the backend exits is captured again,
+    // a few times, within the same mod+Tab invocation.
+    property int _captureTries: 0
+    function _retryMissing() {
+        if (!root.active || !root.groupMode)
+            return;
+        root._flushPending();
+        const missing = root.windows.filter(w => !root.thumbnails[w.address]).map(w => w.address);
+        if (missing.length === 0 || root._captureTries >= 3)
+            return;
+        root._captureTries++;
+        root.onlyAddresses = missing.join(",");
+        retryTimer.restart();
+    }
+    readonly property Timer _retryTimer: Timer {
+        id: retryTimer
+        interval: 350
+        repeat: false
+        onTriggered: {
+            if (root.active && root.groupMode) {
+                backend.running = false;
+                backend.running = true;
+            }
+        }
+    }
+
     readonly property Process _backend: Process {
         id: backend
+        onExited: root._retryMissing()
         command: root.onlyAddresses.length > 0
             ? ["env", "WINSWITCH_ONLY=" + root.onlyAddresses, Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
             : [Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
