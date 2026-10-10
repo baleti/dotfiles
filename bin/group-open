@@ -124,48 +124,50 @@ def focus_if_on(addr, ws):
     lua(f'(function() local w={win_lua(addr)} if w and hl.get_active_workspace().id=={ws} then hl.dispatch(hl.dsp.focus({{window=w}})) end end)()')
 
 
-def pinned_merge(leader, addr, ws):
-    """Append addr to leader's group, keeping the leader's tab selected and focused."""
-    before = group_size(leader)
-    lua(f'''(function()
-  local lead, nw = {win_lua(leader)}, {win_lua(addr)}
-  if not (lead and nw) then return end
-  hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
-  hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = nw, follow = false }}))
-  hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
-  if hl.get_active_workspace().id == {ws} then hl.dispatch(hl.dsp.focus({{ window = lead }})) end
-end)()''')
-    end = time.time() + 2
-    while group_size(leader) <= before and time.time() < end:
-        time.sleep(0.02)
+def merge_batch(leader, addrs, ws, solitary):
+    """Append every window in addrs (file order) to leader's group in ONE Lua call.
 
-
-def shared_merge(leader, addr, ws):
-    """Append addr to leader's group on a workspace that also holds other windows.
-
-    Same single-Lua-call trick as pinned_merge, but joins by direction (needs focus),
-    so it only runs while the user is looking at ws. Returns False if it did not join.
+    The leader is grouped by the first batch, stays the selected and focused tab,
+    and sees one burst of changes per batch instead of one per window. On an
+    empty workspace windows join by being moved onto it (Hyprland merges them into
+    the lone group); on a busy one they join by direction, which needs focus, so
+    that path only runs while the user is looking at ws. Returns how many joined.
     """
     before = group_size(leader)
+    table = ",".join(f'"{x}"' for x in addrs)
+    join = (
+        f'hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = nw, follow = false }}))'
+        if solitary else
+        f'''hl.dispatch(hl.dsp.focus({{ window = lead }}))
+    hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
+    hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = nw, follow = false }}))
+    hl.dispatch(hl.dsp.focus({{ window = nw }}))
+    for _, d in ipairs({{ "left", "right", "up", "down" }}) do
+      if nw.group and nw.group.size > 1 then break end
+      hl.dispatch(hl.dsp.window.move({{ into_group = d, window = nw }}))
+    end''')
     lua(f'''(function()
-  if hl.get_active_workspace().id ~= {ws} then return end
-  local lead, nw = {win_lua(leader)}, {win_lua(addr)}
-  if not (lead and nw) then return end
-  hl.dispatch(hl.dsp.focus({{ window = lead }}))
-  hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
-  hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = nw, follow = false }}))
-  hl.dispatch(hl.dsp.focus({{ window = nw }}))
-  for _, d in ipairs({{ "left", "right", "up", "down" }}) do
-    if nw.group and nw.group.size > 1 then break end
-    hl.dispatch(hl.dsp.window.move({{ into_group = d, window = nw }}))
+  local here = hl.get_active_workspace().id == {ws}
+  if not {'true' if solitary else 'here'} then return end
+  local lead = {win_lua(leader)}
+  if not lead then return end
+  if not lead.group then hl.dispatch(hl.dsp.group.toggle({{ window = lead }})) end
+  for _, addr in ipairs({{ {table} }}) do
+    local nw
+    for _, w in ipairs(hl.get_windows()) do if w.address == addr then nw = w break end end
+    if nw then
+      hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
+      {join}
+    end
   end
   hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
-  hl.dispatch(hl.dsp.focus({{ window = lead }}))
+  if here then hl.dispatch(hl.dsp.focus({{ window = lead }})) end
 end)()''')
-    end = time.time() + 1
-    while group_size(leader) <= before and time.time() < end:
+    want = before + len(addrs) + (1 if before == 0 else 0)
+    end = time.time() + 2 + 0.05 * len(addrs)
+    while group_size(leader) < want and time.time() < end:
         time.sleep(0.02)
-    return group_size(leader) > before
+    return max(0, group_size(leader) - (before or 1))
 
 
 def group_size(addr):
@@ -180,7 +182,8 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
-    ap.add_argument("--stagger", type=float, default=0.03, help="pause between launches (default 0.03)")
+    ap.add_argument("--stagger", type=float, default=0.01, help="pause between launches (default 0.01)")
+    ap.add_argument("--batch", type=float, default=1.5, help="seconds between merge batches (default 1.5)")
     lim = ap.add_mutually_exclusive_group()
     lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
     lim.add_argument("--tail", type=int, metavar="N", help="only open the last N files")
@@ -223,29 +226,17 @@ def main():
                 out.append(c)
         return out
 
-    def merge(leader, addr):
-        if solitary:
-            pinned_merge(leader, addr, dest)
-            return
-        end = time.time() + 30
-        while not shared_merge(leader, addr, dest):
-            if time.time() > end or json.loads(hyprctl("activeworkspace", "-j"))["id"] == dest:
-                print(f"   (could not join {addr})", file=sys.stderr)
-                return
-            time.sleep(0.3)   # user is on another workspace: wait until they are back
-
     try:
-        # the first window opens right here and stays the selected tab; the
-        # rest open off-screen and are appended behind it. Each join and the
-        # re-selection of the first tab happen in one Lua call, so no frame
-        # is ever drawn with a different tab or focus.
+        # The first window opens right here and is never touched while the others
+        # load: they open off-screen and are merged in file order, in batches
+        # (one Lua call each), so the visible slide sees a few changes, not one
+        # per window.
         launch(0, dest)
         leader = wait_new(seen)
         if not leader:
             sys.exit("group-open: first window never appeared")
         seen.add(leader)
         time.sleep(a.delay)
-        lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
         focus_if_on(leader, dest)
         for i in range(1, n):
             launch(i, STAGE)
@@ -253,21 +244,26 @@ def main():
 
         pending = {}   # file index -> client
         extra = []     # windows we could not match to a file
-        nxt, last = 1, time.time()
-        while nxt < n and time.time() - last < TIMEOUT:
+        ready = []     # contiguous-from-the-start windows waiting for the next batch
+        nxt = 1
+        last = last_batch = time.time()
+        while (nxt < n or ready) and time.time() - last < TIMEOUT:
             for c in new_windows():
                 r = rank(c)
                 (pending.__setitem__(r, c) if r < n else extra.append(c))
                 last = time.time()
             while nxt in pending:
-                merge(leader, pending.pop(nxt)["address"])
+                ready.append(pending.pop(nxt)["address"])
                 nxt += 1
-                last = time.time()
+            if ready and (nxt >= n or time.time() - last_batch >= a.batch):
+                if merge_batch(leader, ready, dest, solitary) or solitary:
+                    ready = []
+                last_batch = last = time.time()
             time.sleep(0.05)
-        rest = [pending[k] for k in sorted(pending)] + extra   # gaps: files that never opened a window
-        for c in rest:
-            merge(leader, c["address"])
-        if nxt < n and not rest:
+        rest = ready + [pending[k]["address"] for k in sorted(pending)] + [c["address"] for c in extra]
+        if rest:
+            merge_batch(leader, rest, dest, solitary)
+        elif nxt < n:
             print(f"   ({n - nxt} window(s) never appeared)", file=sys.stderr)
     finally:
         hyprctl("eval", f"hl.config({{group={{group_on_movetoworkspace={'true' if orig_merge else 'false'}}}}})")
