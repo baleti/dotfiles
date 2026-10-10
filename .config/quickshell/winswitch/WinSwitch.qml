@@ -134,7 +134,7 @@ PanelWindow {
     // Parallel to `windows` (same index), built once per windows/enrichMeta
     // change, not per keystroke.
     readonly property var metas: root.windows.map(w => WinSwitchState.enrichMeta[w.address] || {})
-    readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.queryText, WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
+    readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.queryText, root.wantWorkspaces ? WinSwitchQueryDsl.workspaceColumns : WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
 
     readonly property var results: {
         // Reference-stable fast path: with no query, hand back `windows`
@@ -984,7 +984,7 @@ PanelWindow {
                                     }
                                 }
                                 const ex = WinSwitchQueryDsl.excerpt(v, needle, 80);
-                                const prefix = f.kind === "group" ? (f.sub + ": ") : (f.name === "workspace" ? "#" : "");
+                                const prefix = f.kind === "group" ? (f.sub + ": ") : (f.name === "workspace" ? "#" : (f.name === "monitor" || f.name === "windows" ? f.name + ": " : ""));
                                 parts.push({ prefix, text: ex.text, matchStart: ex.matchStart, matchLen: ex.matchLen });
                             }
                             return parts;

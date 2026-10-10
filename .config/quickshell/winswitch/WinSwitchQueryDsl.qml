@@ -25,7 +25,7 @@ QtObject {
     id: root
 
     // --- schema (query.rs's COLUMNS / GROUPS / GROUP_DEFAULT_SUB) --------
-    readonly property var columns: ["title", "workspace", "pid"]
+    readonly property var columns: ["title", "workspace", "pid", "monitor", "windows"]
     readonly property var groupOrder: ["tmux", "claude"]
     readonly property var groups: ({
         tmux: ["session", "window", "title"],
@@ -34,6 +34,8 @@ QtObject {
     readonly property var groupDefaultSub: ({ tmux: "title", claude: "contents" })
     readonly property var directions: ["ascending", "descending"]
     readonly property var defaultColumns: [{ kind: "flat", name: "title" }]
+    // /sw (workspace view): what each workspace shows under its thumbnail.
+    readonly property var workspaceColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "monitor" }, { kind: "flat", name: "windows" }]
 
     readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/rv", "/sw"]
     readonly property var verbAliases: ({
@@ -88,6 +90,8 @@ QtObject {
         "title": "the window title",
         "workspace": "the Hyprland workspace",
         "pid": "the process id",
+        "monitor": "the monitor a workspace is on (/sw view)",
+        "windows": "how many windows a workspace holds (/sw view)",
         "tmux": "tmux session / window on this terminal",
         "tmux.session": "tmux session name",
         "tmux.window": "tmux window name",
@@ -264,6 +268,8 @@ QtObject {
         case "title": return win.title || "";
         case "workspace": return win.workspace || "";
         case "pid": return String(win.pid ?? "");
+        case "monitor": return win.monitor || "";
+        case "windows": return win.windowCount === undefined ? "" : String(win.windowCount);
         }
         return "";
     }
