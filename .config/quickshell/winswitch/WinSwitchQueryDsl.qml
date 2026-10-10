@@ -29,7 +29,7 @@ QtObject {
     readonly property var groupOrder: ["tmux", "claude"]
     readonly property var groups: ({
         tmux: ["session", "window", "title"],
-        claude: ["title", "path", "session", "time", "contents"]
+        claude: ["title", "path", "session", "age", "contents"]
     })
     readonly property var groupDefaultSub: ({ tmux: "title", claude: "contents" })
     readonly property var directions: ["ascending", "descending"]
@@ -100,7 +100,7 @@ QtObject {
         "claude.title": "Claude Code session title",
         "claude.path": "Claude Code working directory",
         "claude.session": "Claude Code session id",
-        "claude.time": "how long ago the transcript last changed",
+        "claude.age": "how long ago the transcript last changed",
         "claude.contents": "Claude Code transcript text"
     })
 
@@ -278,7 +278,8 @@ QtObject {
     // file's own doc.
     function groupSubValue(meta, g, s) {
         if (!meta) return "";
-        return meta[g + "_" + s] || "";
+        // claude.age is the backend's `claude_time` (renamed in the DSL only)
+        return meta[g + "_" + (g === "claude" && s === "age" ? "time" : s)] || "";
     }
     function groupHasAnyValue(meta, g) {
         return root.groupSubsOf(g).some(s => root.groupSubValue(meta, g, s) !== "");
