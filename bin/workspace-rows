@@ -31,7 +31,10 @@ for w in sorted(hyprctl("workspaces") or [], key=lambda w: w["id"]):
     titles = ", ".join(c["title"] or c["class"] for c in cs[:4])
     rows.append({
         "address": f"ws:{w['name']}",
-        "thumbAddress": (cs[0]["address"] if cs else ""),
+        "wins": [
+            {"address": c["address"], "x": c["at"][0] - mon.get("x", 0), "y": c["at"][1] - mon.get("y", 0),
+             "w": c["size"][0], "h": c["size"][1]}
+            for c in reversed(cs) if not c["hidden"] and c["mapped"]],
         "class": f"workspace {w['name']}",
         "title": f"{w['name']}: {titles}" if titles else f"{w['name']} (empty)",
         "workspace": w["name"],
