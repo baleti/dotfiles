@@ -928,7 +928,7 @@ PanelWindow {
                         width: grid.cellWidth
                         height: grid.cellHeight
 
-                        readonly property var thumb: WinSwitchState.thumbnails[modelData.thumbAddress || modelData.address]
+                        readonly property var thumb: WinSwitchState.thumbnails[modelData.address]
                         readonly property string thumbPath: cellItem.thumb ? cellItem.thumb.path : ""
                         // What's on screen: only swapped once the incoming
                         // capture has decoded, so a refresh never blanks.
@@ -1039,8 +1039,31 @@ PanelWindow {
                                 Image {
                                     anchors.fill: parent
                                     fillMode: Image.PreserveAspectFit
-                                    visible: cellItem.shownPath !== ""
+                                    visible: cellItem.shownPath !== "" && !cellItem.modelData.wins
                                     source: cellItem.shownPath
+                                }
+                                // /sw view: the whole workspace, each window's
+                                // capture at its real spot on the monitor (like
+                                // the bar's workspace-pill hover preview). Rows
+                                // are back-to-front, so the focused window is on top.
+                                Item {
+                                    anchors.fill: parent
+                                    clip: true
+                                    visible: !!cellItem.modelData.wins
+                                    Repeater {
+                                        model: cellItem.modelData.wins || []
+                                        delegate: Image {
+                                            required property var modelData
+                                            readonly property var t: WinSwitchState.thumbnails[modelData.address]
+                                            x: modelData.x / cellItem.modelData.width * frame.width
+                                            y: modelData.y / cellItem.modelData.height * frame.height
+                                            width: modelData.w / cellItem.modelData.width * frame.width
+                                            height: modelData.h / cellItem.modelData.height * frame.height
+                                            fillMode: Image.Stretch
+                                            asynchronous: true
+                                            source: t ? t.path : ""
+                                        }
+                                    }
                                 }
                                 Image {
                                     visible: false
