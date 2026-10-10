@@ -464,7 +464,7 @@ def prune_archive(archive_days: int, feed_icons: dict | None = None):
     feed_icons = feed_icons or {}
     cutoff = datetime.now(timezone.utc).timestamp() - archive_days * 86400
     kept, dropped, changed = [], 0, False
-    for line in ARCHIVE_FILE.read_text().splitlines():
+    for line in ARCHIVE_FILE.read_text().split("\n"):  # not splitlines(): U+2028 etc. appear raw in JSON
         if not line.strip():
             continue
         try:
@@ -487,7 +487,14 @@ def prune_archive(archive_days: int, feed_icons: dict | None = None):
         tmp.write_text("\n".join(kept) + "\n")
         tmp.replace(ARCHIVE_FILE)
     if dropped:
-        refs = {rec for line in kept for rec in [json.loads(line).get("image", "")] if rec}
+        refs = set()
+        for line in kept:
+            try:
+                img = json.loads(line).get("image", "")
+            except json.JSONDecodeError:
+                continue  # truncated line kept verbatim above
+            if img:
+                refs.add(img)
         for m in MEDIA_DIR.glob("*"):
             if str(m) not in refs:
                 m.unlink()
