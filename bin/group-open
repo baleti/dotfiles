@@ -32,11 +32,17 @@ T0 = time.time()
 
 
 def hypr_env():
+    """The environment to run hyprctl and the capture backend in. Uses the shell's
+    HYPRLAND_INSTANCE_SIGNATURE only if that instance's socket really exists: a tmux pane
+    keeps the value from the session it was started in, so after a relogin or a Hyprland
+    restart it can be missing or stale; then the newest live instance is used."""
     env = dict(os.environ)
-    if "HYPRLAND_INSTANCE_SIGNATURE" not in env:
-        rt = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}") + "/hypr"
-        env["HYPRLAND_INSTANCE_SIGNATURE"] = subprocess.check_output(
-            f"ls -t {shlex.quote(rt)} | head -1", shell=True, text=True).strip()
+    rt = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}") + "/hypr"
+    sig = env.get("HYPRLAND_INSTANCE_SIGNATURE", "")
+    if not (sig and os.path.exists(f"{rt}/{sig}/.socket.sock")):
+        live = [d for d in glob.glob(f"{rt}/*") if os.path.exists(f"{d}/.socket.sock")]
+        if live:
+            env["HYPRLAND_INSTANCE_SIGNATURE"] = os.path.basename(max(live, key=os.path.getmtime))
     return env
 
 
@@ -382,8 +388,12 @@ def warm_tabs(addrs):
             try:
                 # SKIP_BLANK: a viewer that has not drawn its first picture yet captures as a
                 # flat frame; that is reported as missing here and asked for again below.
+                # env=ENV: the same Hyprland instance this script found for itself. Without it a
+                # shell that lost HYPRLAND_INSTANCE_SIGNATURE (a tmux pane after a relogin) made the
+                # backend see no compositor: every pass reported "0 windows" and nothing was
+                # pre-rendered or cached.
                 r = subprocess.run(["env", "WINSWITCH_SKIP_BLANK=1", "WINSWITCH_ONLY=" + ",".join(chunk), CAPTURE_BIN],
-                                   capture_output=True, text=True, timeout=30)
+                                   capture_output=True, text=True, timeout=30, env=ENV)
             except subprocess.TimeoutExpired:
                 continue
             for line in r.stdout.splitlines():
