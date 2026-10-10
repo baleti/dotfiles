@@ -20,7 +20,7 @@ return {
     { key = "4", slug = "gimp",        class = "gimp",                         cmd = "env UBUNTU_MENUPROXY=0 gimp-3.2" },
     { key = "5", slug = "signal",      class = "org.signal.Signal",            cmd = "flatpak run org.signal.Signal" },
     { key = "6", slug = "inkscape",    class = "org.inkscape.Inkscape",        cmd = "inkscape" },
-    { key = "8", slug = "whatsapp",    class = "brave-web.whatsapp.com__-Default", cmd = "/home/user1/bin/whatsapp-web" },
+    { slug = "whatsapp",    class = "brave-web.whatsapp.com__-Default", cmd = "/home/user1/bin/whatsapp-web" },
     -- No key and no autostart: only reachable through its .desktop entry (summon-app teams).
     { slug = "teams",       class = "brave-teams.microsoft.com__v2_-Default", cmd = "/home/user1/bin/teams-web", no_autostart = true },
 }
