@@ -182,6 +182,14 @@ QtObject {
             return;
         root.groupMode = true;
         root._captureTries = 0;
+        // Forget any cached thumbnail for these windows. Hyprland reuses window addresses,
+        // so a new window can inherit an old one's entry: it would then look "already
+        // captured", never be retried, and show someone else's (or a blank) picture. Every
+        // tab starts as missing and is captured fresh, with retries until it has content.
+        const fresh = Object.assign({}, root.thumbnails);
+        for (const w of list)
+            delete fresh[w.address];
+        root.thumbnails = fresh;
         root.onlyAddresses = list.map(w => w.address).join(",");
         root._startSession(list, true);
         showTimer.stop();
