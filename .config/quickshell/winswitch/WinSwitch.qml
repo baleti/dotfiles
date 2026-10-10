@@ -142,7 +142,11 @@ PanelWindow {
         if (root.queryText.length === 0)
             return root.windows;
 
-        let rows = root.windows.filter(w => WinSwitchQueryDsl.matchesStr(w, root.metas[w.index] || {}, root.queryText));
+        // Workspace view: bare words match the workspace name only ("/sw 3" -> 3, 13, 23, ...).
+        let rows = root.wantWorkspaces
+            ? root.windows.filter(w => root.parsedQuery.filters.every(t =>
+                t.kind !== "free" || WinSwitchQueryDsl.substr(t.text, w.workspace) !== !!t.neg))
+            : root.windows.filter(w => WinSwitchQueryDsl.matchesStr(w, root.metas[w.index] || {}, root.queryText));
         const s = root.parsedQuery.sort;
         if (s) {
             rows = rows.slice().sort((a, b) => {
