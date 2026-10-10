@@ -388,11 +388,13 @@ def warm_tabs(addrs):
     if not addrs or not os.path.exists(CAPTURE_BIN):
         return len(addrs)
     todo = list(addrs)
-    for attempt in range(4):
+    for attempt in range(10):
         for i in range(0, len(todo), 8):
             chunk = todo[i:i + 8]
             try:
-                r = subprocess.run(["env", "WINSWITCH_ONLY=" + ",".join(chunk), CAPTURE_BIN],
+                # SKIP_BLANK: a viewer that has not drawn its first picture yet captures as a
+                # flat frame; that is reported as missing here and asked for again below.
+                r = subprocess.run(["env", "WINSWITCH_SKIP_BLANK=1", "WINSWITCH_ONLY=" + ",".join(chunk), CAPTURE_BIN],
                                    capture_output=True, text=True, timeout=30)
             except subprocess.TimeoutExpired:
                 continue
@@ -406,7 +408,7 @@ def warm_tabs(addrs):
             time.sleep(0.3)
         if not todo:
             break
-        time.sleep(0.5)
+        time.sleep(min(1.5, 0.5 + 0.2 * attempt))
     return len(todo)
 
 
@@ -422,6 +424,7 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
     ap.add_argument("--live", action="store_true", help="join windows to the group on your workspace as they load (default: build the whole group off-screen, pre-render it, and drop it onto your workspace in one step)")
+    ap.add_argument("--no-warm", action="store_true", help="skip the pre-render pass (mod+Tab then captures the tabs itself, retrying until they have drawn)")
     ap.add_argument("--no-pin", action="store_true", help="do not pin the image work to the efficiency cores (faster, but hotter: measured ~27%% less package power when pinned)")
     ap.add_argument("--max-edge", type=int, default=3000, help="open large images as a cached copy scaled to this long edge, in pixels; 0 = open the originals (default 3000)")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
@@ -609,7 +612,7 @@ def main():
                 move_ws(c["address"], dest)
                 print(f"   (could not group {c['address']}; left on workspace {dest})", file=sys.stderr)
         group = next((c["grouped"] for c in clients() if c["address"] == leader), [leader])
-        cold = warm_tabs(group)
+        cold = 0 if a.no_warm else warm_tabs(group)
         if cold:
             print(f"   ({cold} tab(s) could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
         if not a.live:
