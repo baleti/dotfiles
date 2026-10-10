@@ -109,7 +109,7 @@ QtObject {
         if (!a || !b || a.kind !== b.kind) return false;
         return a.kind === "flat" ? a.name === b.name : a.group === b.group && a.sub === b.sub;
     }
-    function takesPath(verb) { return verb !== "/rv" && verb !== "/sw"; }
+    function takesPath(verb) { return verb !== "/rv"; }
 
     // --- tokenizer (query.rs's Tok / tokenize) ----------------------------
     // Unlike QueryDsl.qml's own tokenize, this keeps each token's byte
@@ -718,7 +718,7 @@ QtObject {
                     const tv = root.tokVerb(tok);
                     if (tv === null) {
                         // nothing to track
-                    } else if (tv.verb === "/rv" || tv.verb === "/sw") {
+                    } else if (tv.verb === "/rv" || (tv.verb === "/sw" && tv.via === null)) {
                         // consumes nothing
                     } else if ((tv.verb === "/ft" || tv.verb === "/at" || tv.verb === "/rt") && tv.via !== null) {
                         // via already supplies the one path this verb takes
@@ -789,7 +789,7 @@ QtObject {
                 ? { kind: "sortDirection", start, field, fragment: frag }
                 : { kind: "typePath", start, verb, fragment: frag, via: false };
         }
-        if (verb === "/fv") {
+        if (verb === "/fv" || verb === "/sw") {
             if (args.length === 1) {
                 const field = root.resolveOne(args[0]);
                 return field !== null
