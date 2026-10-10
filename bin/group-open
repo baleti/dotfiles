@@ -321,9 +321,9 @@ def is_solitary(leader, addrs, ws):
 def merge_batch(leader, addrs, ws):
     """Append every window in addrs (file order) to leader's group in ONE Lua call.
 
-    Everything is addressed by Hyprland window address and no focus operation is ever
-    issued (the group is built where nobody is focused, or moved silently), so the
-    user's focus is never touched; the leader stays the selected tab.
+    Everything is addressed by Hyprland window address. The group's current tab and its focus
+    are remembered first and put back at the end of the same call, so a user who is
+    flipping through pages keeps their page and their keyboard focus while windows join.
 
     How windows join depends on what else is on ws:
     - the group is alone there: windows are moved onto ws and Hyprland merges them into
@@ -343,6 +343,24 @@ def merge_batch(leader, addrs, ws):
     lua(f'''(function()
   local lead = {win_lua(leader)}
   if not lead then return end
+  -- What the user is looking at and typing into: the group's current tab, and whether the
+  -- group has focus. Both are put back at the end of this same call. (Joining a window makes
+  -- it the current tab and drops the focus of the tab that was current; resetting to tab 1,
+  -- as this used to do, also threw the user back to page 1 while they were flipping pages.)
+  local cur_addr, had_focus = nil, false
+  if lead.group then
+    cur_addr = tostring(lead.group.current.address)
+    for _, w in ipairs(hl.get_windows()) do
+      if w.active then
+        for _, m in ipairs(lead.group.members) do
+          if tostring(m.address) == tostring(w.address) then had_focus = true end
+        end
+      end
+    end
+  else
+    cur_addr = tostring(lead.address)
+    had_focus = lead.active == true
+  end
   {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {BUILD}, window = lead, follow = false }}))'}
   if not lead.group then hl.dispatch(hl.dsp.group.toggle({{ window = lead }})) end
   for _, addr in ipairs({{ {table} }}) do
@@ -353,8 +371,17 @@ def merge_batch(leader, addrs, ws):
       hl.dispatch(hl.dsp.window.move({{ workspace = {target}, window = nw, follow = false }}))
     end
   end
-  hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
+  local idx, keep = 1, nil
+  for i, m in ipairs(lead.group.members) do
+    if tostring(m.address) == cur_addr then idx = i keep = m break end
+  end
+  hl.dispatch(hl.dsp.group.active({{ index = idx, window = lead }}))
   {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = lead, follow = false }}))'}
+  if had_focus and keep then
+    local now
+    for _, w in ipairs(hl.get_windows()) do if w.active then now = tostring(w.address) end end
+    if now ~= cur_addr then hl.dispatch(hl.dsp.focus({{ window = keep }})) end
+  end
 end)()''')
     want = before + len(addrs) + (1 if before == 0 else 0)
     end = time.time() + 2 + 0.05 * len(addrs)
@@ -474,7 +501,7 @@ def main():
     # silently on a workspace that holds nothing but the group. On an empty workspace the
     # visible slide receives no events at all while windows join (measured). So when the
     # current workspace is busy, the slideshow gets its own empty workspace instead (the
-    # lowest free number), and the view moves there once, so the first slide is on screen the
+    # free number next to the current one), and the view moves there once, so the first slide is on screen the
     # moment it opens and the rest join it silently. --here stays on the busy workspace and
     # builds the group off-screen (one re-tile when it is dropped in); --no-switch prepares the
     # empty workspace without moving the view.
@@ -482,7 +509,10 @@ def main():
     if use_fresh:
         occupied = {w["id"] for w in json.loads(hyprctl("workspaces", "-j") or "[]") if w.get("windows", 0) > 0}
         occupied |= {m["activeWorkspace"]["id"] for m in json.loads(hyprctl("monitors", "-j") or "[]")}
-        dest = next(i for i in range(1, 9000) if i not in occupied)
+        # the free workspace next to the current one (so it opens beside it in the bar), not
+        # simply the lowest free number
+        here_id = dest if isinstance(dest, int) and dest > 0 else 0
+        dest = next(i for i in list(range(here_id + 1, 9000)) + list(range(1, here_id + 1)) if i not in occupied)
         dest_busy = False
         if a.no_switch:
             print(f"group-open: slides are loading on empty workspace {dest}", file=sys.stderr)
