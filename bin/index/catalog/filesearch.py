@@ -91,13 +91,17 @@ def path_matches(path, value):
     """Substring match: //path gdrive/office matches every path that contains that text."""
     return expand_path_value(value) in path.lower()
 
+def wants(ext, w):
+    """One //mime or //ext entry against a file's extension: ".pdf" (from //ext) is that extension exactly;
+    anything else is a kind name or an extension."""
+    if w.startswith("."):
+        return w[1:] == ext
+    return w == ext or EXT_KIND.get(ext) == w
+
 def matches_mime(path, wanted):
-    """wanted: list of kind names or extensions; a file matches if any applies."""
+    """wanted: list of kind names, extensions or ".ext" entries; a file matches if any applies."""
     ext = kind_of(path)
-    for w in wanted:
-        if w == ext or EXT_KIND.get(ext) == w:
-            return True
-    return False
+    return any(wants(ext, w) for w in wanted)
 
 def tokens(query):
     """Whitespace-separated tokens; text inside double quotes (even mid-token, as in name:"a b") stays one token.
@@ -138,15 +142,20 @@ def _take_tags(query, names):
             rest.append(toks[i]); i += 1
     return found, " ".join(rest)
 
+def _kinds(found, neg=""):
+    """//mime values as they are, //ext (alias //extension) values as ".ext" (a leading dot is optional)."""
+    exts = found[neg + "ext"] + found[neg + "extension"]
+    return [m.lower() for m in found[neg + "mime"]] + ["." + e.lower().lstrip(".") for e in exts if e.lstrip(".")]
+
 def split_mime(query):
-    """'//mime image foo "bar baz"' -> (['image'], 'foo "bar baz"')."""
-    found, rest = _take_tags(query, ["mime"])
-    return [m.lower() for m in found["mime"]], rest
+    """'//mime image //ext .csv foo "bar baz"' -> (['image', '.csv'], 'foo "bar baz"')."""
+    found, rest = _take_tags(query, ["mime", "ext", "extension"])
+    return _kinds(found), rest
 
 def split_mime_all(query):
-    """'//mime image !//mime pdf foo' -> (['image'], ['pdf'], 'foo'): wanted kinds, excluded kinds, the rest."""
-    found, rest = _take_tags(query, ["mime"])
-    return [m.lower() for m in found["mime"]], [m.lower() for m in found["!mime"]], rest
+    """'//mime image !//ext pdf foo' -> (['image'], ['.pdf'], 'foo'): wanted kinds, excluded kinds, the rest."""
+    found, rest = _take_tags(query, ["mime", "ext", "extension"])
+    return _kinds(found), _kinds(found, "!"), rest
 
 def split_neg_terms(rest):
     """Free-text terms split by a leading "!" (outside quotes) -> (positive, negated), lowercased and unquoted.
@@ -307,6 +316,13 @@ class NameTable:
             self.loaded_mtime = os.path.getmtime(self.db_path)
         print(f"name table: {len(paths)} paths, {len(blob)/1e6:.0f} MB blob, {time.time()-t0:.1f}s", flush=True)
 
+    def top_exts(self, n=60):
+        """The commonest extensions, for //ext completion."""
+        with self.lock:
+            codes, names = self.ext_codes, self.ext_names
+        counts = np.bincount(codes, minlength=len(names)) if len(codes) else np.zeros(0, int)
+        return [names[k] for k in np.argsort(-counts)[:n] if names[k] and counts[k] > 0]
+
     def refresh_if_stale(self):
         try:
             if os.path.getmtime(self.db_path) > self.loaded_mtime:
@@ -394,12 +410,12 @@ class NameTable:
         for v in tags["!path"]:
             mask &= ~self._cached_term_mask(expand_path_value(v).encode("utf-8"))
         if not_wanted:
-            banned = [k for k, e in enumerate(ext_names) if any(w == e or EXT_KIND.get(e) == w for w in not_wanted)]
+            banned = [k for k, e in enumerate(ext_names) if any(wants(e, w) for w in not_wanted)]
             mask &= ~np.isin(ext_codes, np.array(banned, np.int32))
         for c in tags["!size"]:
             mask &= ~_size_mask(size_arr, c)
         if wanted:
-            allowed = [k for k, e in enumerate(ext_names) if any(w == e or EXT_KIND.get(e) == w for w in wanted)]
+            allowed = [k for k, e in enumerate(ext_names) if any(wants(e, w) for w in wanted)]
             mask &= np.isin(ext_codes, np.array(allowed, np.int32))
         for c in tags["size"]:
             mask &= _size_mask(size_arr, c)

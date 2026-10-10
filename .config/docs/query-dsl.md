@@ -38,6 +38,11 @@ the verbs are `/face <name>` (photos showing a registered person) and
 changes the search space (photos only, ranked by meaning). The per-column tags stay `//`:
 `//name <text>` (file name), `//path <text>` (folder), `//size >5M` / `<200K` (size comparison), and
 `//dm <text>` (date modified; `2015-06` substring or `>2015-06` / `<2015-06`).
+`//mime <kind>` (a file kind such as `image`, `pdf`, `code`, or a bare extension) and
+`//ext <.pdf>` (`//extension`; one exact extension, the leading dot optional, case
+ignored - `//ext .csv`). Repeated `//mime`/`//ext` entries OR together, so
+`//ext .jpg //ext .png` finds both; `!//ext .log` excludes one. Tab after `//ext`
+offers the commonest extensions in the index.
 Several filters AND together; bare words act as `/clip` plus any matching
 registered person.
 
@@ -557,7 +562,7 @@ alacritty !//path gdrive/      terms still AND: contains "alacritty", NOT under 
 - **Not everywhere.** Pickers whose engine can't invert a given verb leave
   it inert rather than guess: in the images picker `/clip` and `/fts` take no
   `!` (CLIP "not like X" has no meaning; Recoll has its own `-term` inside
-  `/fts`), while `!//path`, `!//name`, `!//size`, `!//dm`, `!//mime`,
+  `/fts`), while `!//path`, `!//name`, `!//size`, `!//dm`, `!//mime`, `!//ext`,
   `!/face <name>` (photos *without* that person) and bare name words work;
   bare words in photo mode are CLIP text, so a `!word` there is inert.
   notification-picker shares `ClipboardQueryDsl.qml` with clipboard-picker
