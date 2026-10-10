@@ -40,8 +40,39 @@ def hyprctl(*args):
     return subprocess.run(["hyprctl", *args], env=ENV, capture_output=True, text=True).stdout
 
 
+_last_clients = []
+
+
 def clients():
-    return json.loads(hyprctl("clients", "-j") or "[]")
+    """hyprctl's window list. Under heavy load it sometimes answers with something
+    that is not JSON; retry briefly, then fall back to the last good list."""
+    global _last_clients
+    for _ in range(4):
+        try:
+            _last_clients = json.loads(hyprctl("clients", "-j"))
+            return _last_clients
+        except ValueError:
+            time.sleep(0.1)
+    return _last_clients
+
+
+class Cpu:
+    """Whole-machine CPU utilisation (0-100) since the previous call, from /proc/stat."""
+
+    def __init__(self):
+        self._prev = self._read()
+
+    @staticmethod
+    def _read():
+        f = open("/proc/stat").readline().split()[1:]
+        v = [int(x) for x in f]
+        return sum(v), v[3] + v[4]          # total, idle + iowait
+
+    def percent(self):
+        total, idle = self._read()
+        dt, di = total - self._prev[0], idle - self._prev[1]
+        self._prev = (total, idle)
+        return 100.0 * (dt - di) / dt if dt > 0 else 0.0
 
 
 def lua(code):
@@ -182,8 +213,9 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
-    ap.add_argument("--stagger", type=float, default=0.01, help="pause between launches (default 0.01)")
-    ap.add_argument("--batch", type=float, default=1.5, help="seconds between merge batches (default 1.5)")
+    ap.add_argument("--batch", type=float, default=1.0, help="seconds between merge batches (default 1.0)")
+    ap.add_argument("--max-parallel", type=int, default=8, help="most windows loading at once (default 8)")
+    ap.add_argument("--cpu-limit", type=float, default=75, help="back off while CPU use is above this percent (default 75)")
     lim = ap.add_mutually_exclusive_group()
     lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
     lim.add_argument("--tail", type=int, metavar="N", help="only open the last N files")
@@ -238,28 +270,51 @@ def main():
         seen.add(leader)
         time.sleep(a.delay)
         focus_if_on(leader, dest)
-        for i in range(1, n):
-            launch(i, STAGE)
-            time.sleep(a.stagger)
 
         pending = {}   # file index -> client
         extra = []     # windows we could not match to a file
         ready = []     # contiguous-from-the-start windows waiting for the next batch
-        nxt = 1
-        last = last_batch = time.time()
-        while (nxt < n or ready) and time.time() - last < TIMEOUT:
+        nxt = 1        # next file index to move into `ready`
+        launched = 1   # files started so far (file 0 is the leader)
+        arrived = 0    # windows seen so far, other than the leader
+        merged = 0
+        # Streamed launches: only `limit` slides are loading at once, started in
+        # file order, so they finish roughly in file order and can be merged as
+        # they appear. `limit` adapts to measured CPU use: it shrinks when the
+        # machine is above --cpu-limit and grows back when there is headroom.
+        cpu = Cpu()
+        limit = min(4, a.max_parallel)
+        last_cpu = last = time.time()
+        last_batch = 0.0
+        while (launched < n or nxt < n or ready) and time.time() - last < TIMEOUT:
+            now = time.time()
+            if now - last_cpu >= 0.5:
+                busy = cpu.percent()
+                if busy > a.cpu_limit:
+                    limit = max(1, limit - 1)
+                elif busy < a.cpu_limit - 20:
+                    limit = min(a.max_parallel, limit + 1)
+                last_cpu = now
+            while launched < n and launched - 1 - arrived < limit:
+                launch(launched, STAGE)
+                launched += 1
+                last = time.time()
             for c in new_windows():
                 r = rank(c)
                 (pending.__setitem__(r, c) if r < n else extra.append(c))
+                arrived += 1
                 last = time.time()
             while nxt in pending:
                 ready.append(pending.pop(nxt)["address"])
                 nxt += 1
             if ready and (nxt >= n or time.time() - last_batch >= a.batch):
-                if merge_batch(leader, ready, dest, solitary) or solitary:
+                joined = merge_batch(leader, ready, dest, solitary)
+                if joined or solitary:
+                    merged += len(ready)
+                    print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, cpu limit {limit})", file=sys.stderr)
                     ready = []
                 last_batch = last = time.time()
-            time.sleep(0.05)
+            time.sleep(0.1)
         rest = ready + [pending[k]["address"] for k in sorted(pending)] + [c["address"] for c in extra]
         if rest:
             merge_batch(leader, rest, dest, solitary)
