@@ -12,6 +12,7 @@ Folder contents are opened in natural sort order ("2 x" before "10 x").
 The app for each file is the mime type's default (xdg-mime -> .desktop Exec).
 Override per mime type in OVERRIDES; "{}" is replaced by the quoted file path.
 """
+from concurrent.futures import ThreadPoolExecutor
 import argparse, glob, hashlib, json, mimetypes, re, shlex, shutil, signal, os, re, shlex, subprocess, sys, time
 
 # mime type -> shell command, e.g. {"image/png": "mpv --no-config {}"}
@@ -421,7 +422,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
-    ap.add_argument("--live", action="store_true", help="join windows to the group on your workspace as they load (default: build the whole group off-screen, pre-render it, and drop it onto your workspace in one step)")
+    ap.add_argument("--offscreen", action="store_true", help="build the whole group off-screen, pre-render it, and drop it onto your workspace in one step (default: the first window appears at once and the others join it as they load)")
     ap.add_argument("--no-warm", action="store_true", help="skip the pre-render pass (mod+Tab then captures the tabs itself, retrying until they have drawn)")
     ap.add_argument("--no-pin", action="store_true", help="do not pin the image work to the efficiency cores (faster, but hotter: measured ~27%% less package power when pinned)")
     ap.add_argument("--max-edge", type=int, default=3000, help="open large images as a cached copy scaled to this long edge, in pixels; 0 = open the originals (default 3000)")
@@ -461,7 +462,7 @@ def main():
     # warp per run, none with this on. Off for the run, restored in `finally`.
     hyprctl("eval", "hl.config({group={group_on_movetoworkspace=true}, cursor={no_warps=true}})")
     # Where the group is built: a private workspace nobody looks at (default), or dest.
-    home = dest if a.live else BUILD
+    home = BUILD if a.offscreen else dest
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # let `finally` run on kill/timeout
 
     opened = {}   # file index -> the path actually handed to the viewer (maybe a scaled copy)
@@ -497,6 +498,8 @@ def main():
                 seen.add(c["address"])
                 out.append(c)
         return out
+
+    bg = ThreadPoolExecutor(max_workers=1)   # re-caches tabs while loading continues
 
     try:
         # The first window opens right here and is never touched while the others
@@ -591,11 +594,22 @@ def main():
                 if c is not None:
                     ready.append(c["address"])
                 nxt += 1
-            gap = a.batch if is_solitary(leader, ready, home) else a.ferry
+            solitary_now = is_solitary(leader, ready, home)
+            gap = a.batch if solitary_now else a.ferry
             if ready and (nxt >= n or time.time() - last_batch >= gap):
+                batch_addrs = list(ready)
                 joined = merge_batch(leader, ready, home)
                 if joined:
                     merged += len(ready)
+                    if not a.offscreen and not a.no_warm:
+                        # A tab that has never been rendered at its current size flickers when
+                        # first revealed, so re-cache in the background (never delaying the
+                        # loading): just the new tabs when the group's size did not change
+                        # (empty workspace), every tab when the batch took the group away and
+                        # back (busy workspace), since the size changed twice.
+                        todo = batch_addrs if solitary_now else next(
+                            (c["grouped"] for c in clients() if c["address"] == leader), batch_addrs)
+                        bg.submit(warm_tabs, list(todo))
                     print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, parallel {limit}, {temp:.0f}C{', PAUSED (hot)' if paused else ''})", file=sys.stderr)
                     ready = []
                     last = time.time()
@@ -612,27 +626,28 @@ def main():
             if c["workspace"]["id"] == STAGE:
                 move_ws(c["address"], dest)
                 print(f"   (could not group {c['address']}; left on workspace {dest})", file=sys.stderr)
+        bg.shutdown(wait=True)    # background re-caching started during loading
         group = next((c["grouped"] for c in clients() if c["address"] == leader), [leader])
-        cold = 0 if a.no_warm else warm_tabs(group)
-        if cold:
-            print(f"   ({cold} tab(s) could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
-        if not a.live:
+        if a.offscreen:
+            if not a.no_warm and warm_tabs(group):
+                print("   (some tabs could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
             # one step: the finished, pre-rendered group goes onto the user's workspace.
             # The merge option must be off first, or a workspace that happens to hold just
             # another group would swallow ours.
             hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}})")
             move_ws(leader, dest)
-            if shutil.which("notify-send"):
-                subprocess.run(["notify-send", "-a", "group-open", f"{len(group)} slides ready",
-                                os.path.basename(a.paths[0].rstrip("/"))], capture_output=True)
-        if not a.no_warm:
-            # The same pass as before, but now that the group is on the visible workspace at its
-            # final tile size: this is what pressing mod+Tab does, and what makes the first
-            # switch to every tab smooth (measured: the revealed tab gets no X11 events, so
-            # the flicker is the compositor presenting a never-rendered window, not the
-            # viewer redrawing). The tabs already have content, so one quick pass is enough.
             time.sleep(0.5)
-            warm_tabs(group)
+        if not a.no_warm:
+            # Final pass with the group on its workspace at its final size: what pressing
+            # mod+Tab does. (Measured: the revealed tab gets no X11 events, so the first-switch
+            # flicker is the compositor presenting a window it has not rendered at this size,
+            # not the viewer redrawing.) The tabs already have content, so one pass is enough.
+            cold = warm_tabs(group)
+            if cold:
+                print(f"   ({cold} tab(s) could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
+        if shutil.which("notify-send"):
+            subprocess.run(["notify-send", "-a", "group-open", f"{len(group)} slides ready",
+                            os.path.basename(a.paths[0].rstrip("/"))], capture_output=True)
         if a.focus:
             focus_if_on(leader, dest)
     finally:
