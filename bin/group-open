@@ -24,6 +24,7 @@ APP_DIRS = [os.path.expanduser("~/.local/share/applications"),
 # window sitting on it is ours by construction (identified by its Hyprland address, never
 # by "whatever just appeared" or by what is focused).
 STAGE = 20000 + os.getpid() % 10000
+BUILD = STAGE + 1   # private empty workspace a busy workspace's group is taken to while slides are merged into it
 TIMEOUT = 20  # seconds to wait for each window to appear
 
 
@@ -153,10 +154,51 @@ def command_for(path):
     return re.sub(r"%[a-zA-Z%]", "", ex)    # drop %i %c %k etc.
 
 
-def spawn(cmd, workspace):
-    cmd = f"nice -n 15 ionice -c2 -n7 {cmd}"   # slides load in the background: never at the desktop's expense
-    rule = f"workspace {workspace} silent" if workspace else "silent"
-    lua(f'hl.dispatch(hl.dsp.exec_cmd({json.dumps("[" + rule + "] " + cmd)}))')
+REG = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "group-open.reg")
+CHILDREN = []   # the viewers we started: real children of this process (htop tree / pstree)
+
+
+def register():
+    """Tell the compositor hook (~/.config/hypr/groupopen.lua) that windows descending
+    from this process belong on our private staging workspace until we unregister."""
+    with open(REG, "a") as f:
+        f.write(f"{os.getpid()} {STAGE}\n")
+
+
+def unregister():
+    try:
+        mine = f"{os.getpid()} "
+        lines = [l for l in open(REG) if not l.startswith(mine)]
+        if lines:
+            open(REG, "w").write("".join(lines))
+        else:
+            os.unlink(REG)
+    except OSError:
+        pass
+
+
+def spawn(cmd):
+    """Start a viewer as a direct child of this process (so the whole run shows up as one
+    subtree in htop / pstree), at low CPU and I/O priority. `exec` replaces the shell,
+    so the child IS the app, not a shell around it."""
+    CHILDREN.append(subprocess.Popen(
+        ["/bin/sh", "-c", f"exec nice -n 15 ionice -c2 -n7 {cmd}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+
+
+def descends_from_us(pid):
+    """Is this process one of our (grand)children? Walks /proc parents."""
+    me = os.getpid()
+    for _ in range(12):
+        if pid == me:
+            return True
+        try:
+            pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if pid <= 1:
+            return False
+    return False
 
 
 def win_lua(addr):
@@ -182,50 +224,52 @@ LUA_SAVE_FOCUS = "local prev; for _, w in ipairs(hl.get_windows()) do if w.activ
 LUA_RESTORE_FOCUS = "if prev then hl.dispatch(hl.dsp.focus({ window = prev })) end"
 
 
+def is_solitary(leader, addrs, ws):
+    """True if the leader's group is the only thing on ws (ignoring `addrs`, which are
+    about to join): then Hyprland merges windows moved onto ws with no resizing at all."""
+    members = set(next((c["grouped"] for c in clients() if c["address"] == leader), [])) | {leader}
+    return not any(c["workspace"]["id"] == ws and c["address"] not in members | set(addrs)
+                   for c in clients())
+
+
 def merge_batch(leader, addrs, ws):
     """Append every window in addrs (file order) to leader's group in ONE Lua call.
 
     Everything is addressed by Hyprland window address; nothing depends on which window
-    is focused. The user's focused window is saved first and restored at the end of the
-    same call, and the leader stays the selected tab. The join method is chosen per
-    batch: if the group is alone on ws, windows are moved onto ws and Hyprland merges
-    them (no focus needed at all); otherwise they join by direction, which needs focus
-    and therefore only runs while the user is looking at ws.
+    is focused (the user's focused window is saved first and restored at the end of the
+    same call), and the leader stays the selected tab.
 
-    Returns how many joined, or None if it had to wait for the user to come back to ws.
+    How windows join depends on what else is on ws:
+    - the group is alone there: windows are moved onto ws and Hyprland merges them into
+      it. Measured: the visible slide receives no X11 events at all.
+    - other windows share ws: a window joining next to the group would re-tile the
+      workspace and resize the visible slide each time (measured: ~5 resizes, focus
+      changes and redraws per window). So the whole group is taken to the private empty
+      workspace BUILD, the windows are merged there, and the group is brought back:
+      one small change per batch instead of several per window.
+
+    Returns how many joined.
     """
-    members = set(next((c["grouped"] for c in clients() if c["address"] == leader), [])) | {leader}
-    solitary = not any(c["workspace"]["id"] == ws and c["address"] not in members | set(addrs)
-                       for c in clients())
-    if not solitary and json.loads(hyprctl("activeworkspace", "-j"))["id"] != ws:
-        return None
     before = group_size(leader)
     table = ",".join(f'"{x}"' for x in addrs)
-    join = (
-        f'hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = nw, follow = false }}))'
-        if solitary else
-        f'''hl.dispatch(hl.dsp.focus({{ window = lead }}))
-      hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
-      hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = nw, follow = false }}))
-      hl.dispatch(hl.dsp.focus({{ window = nw }}))
-      for _, d in ipairs({{ "left", "right", "up", "down" }}) do
-        if nw.group and nw.group.size > 1 then break end
-        hl.dispatch(hl.dsp.window.move({{ into_group = d, window = nw }}))
-      end''')
+    solitary = is_solitary(leader, addrs, ws)
+    target = ws if solitary else BUILD
     lua(f'''(function()
   {LUA_SAVE_FOCUS}
   local lead = {win_lua(leader)}
   if not lead then return end
+  {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {BUILD}, window = lead, follow = false }}))'}
   if not lead.group then hl.dispatch(hl.dsp.group.toggle({{ window = lead }})) end
   for _, addr in ipairs({{ {table} }}) do
     local nw
     for _, w in ipairs(hl.get_windows()) do if w.address == addr then nw = w break end end
     if nw then
       hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
-      {join}
+      hl.dispatch(hl.dsp.window.move({{ workspace = {target}, window = nw, follow = false }}))
     end
   end
   hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
+  {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = lead, follow = false }}))'}
   {LUA_RESTORE_FOCUS}
 end)()''')
     want = before + len(addrs) + (1 if before == 0 else 0)
@@ -235,23 +279,46 @@ end)()''')
     return max(0, group_size(leader) - (before or 1))
 
 
-def warm_tabs(leader):
-    """Visit every tab once in a single Lua call, then return to the first.
+CAPTURE_BIN = os.path.expanduser("~/.config/hypr/winswitch/target/release/winswitch")
 
-    A tab that has never been on screen flickers the first time it is revealed
-    (its surface has never been presented); after one visit it doesn't. Doing the
-    visit inside one call means the compositor draws no frame in between, so the
-    user sees nothing; the first tab stays selected and the user's focus is restored."""
-    lua(f'''(function()
-  {LUA_SAVE_FOCUS}
-  local lead = {win_lua(leader)}
-  if not (lead and lead.group) then return end
-  for i = 2, lead.group.size do
-    hl.dispatch(hl.dsp.group.active({{ index = i, window = lead }}))
-  end
-  hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
-  {LUA_RESTORE_FOCUS}
-end)()''')
+
+def warm_tabs(addrs):
+    """Warm every tab by photographing it with the alt+tab capture backend.
+
+    A tab that has never been rendered by the compositor has a cold surface: its first
+    reveal flickers (mod+]) and its first capture can come back empty (mod+Tab shows
+    only the pages already visited). Capturing makes Hyprland render each window, which
+    fixes both; observed: after one full capture pass, switching to a never-visited tab
+    no longer flickers. (Cycling through the tabs inside one Lua call does NOT do this:
+    no frame is drawn, so nothing is rendered.)
+
+    Done in small chunks, repeating for any tab that did not come back (a capture only
+    emits a line when it succeeds), so it stays gentle on the compositor and the CPU.
+    The thumbnails land in the backend's cache, which mod+Tab shows straight away.
+    """
+    if not addrs or not os.path.exists(CAPTURE_BIN):
+        return len(addrs)
+    todo = list(addrs)
+    for attempt in range(4):
+        for i in range(0, len(todo), 8):
+            chunk = todo[i:i + 8]
+            try:
+                r = subprocess.run(["env", "WINSWITCH_ONLY=" + ",".join(chunk), CAPTURE_BIN],
+                                   capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                continue
+            for line in r.stdout.splitlines():
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                if m.get("type") == "thumbnail" and m.get("address") in todo:
+                    todo.remove(m["address"])
+            time.sleep(0.3)
+        if not todo:
+            break
+        time.sleep(0.5)
+    return len(todo)
 
 
 def group_size(addr):
@@ -266,11 +333,13 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
-    ap.add_argument("--batch", type=float, default=1.0, help="seconds between merge batches (default 1.0)")
+    ap.add_argument("--batch", type=float, default=1.0, help="seconds between merge batches on an empty workspace (default 1.0)")
+    ap.add_argument("--ferry", type=float, default=12.0, help="seconds between merge batches on a busy workspace, where each batch briefly takes the group off it (default 12)")
     ap.add_argument("--max-parallel", type=int, default=1, help="most windows loading at once (default 1)")
     ap.add_argument("--launch-gap", type=float, default=0.8, help="minimum seconds between launches (default 0.8)")
     ap.add_argument("--cpu-limit", type=float, default=50, help="back off while CPU use is above this percent (default 50)")
     ap.add_argument("--temp-limit", type=float, default=78, help="pause launching while the CPU is hotter than this, deg C; resumes 10 below (default 78)")
+    ap.add_argument("--no-detach", action="store_true", help="stay in the foreground until every viewer is closed (default: return the prompt once the group is built; a background process stays as the viewers' parent)")
     ap.add_argument("--no-focus", action="store_true", help="never focus the finished group (default: focus it once, if you are still on its workspace)")
     lim = ap.add_mutually_exclusive_group()
     lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
@@ -285,6 +354,32 @@ def main():
     if not files:
         sys.exit("group-open: nothing to open")
     n = len(files)
+
+    # A recognisable name in htop / pstree: the process re-executes itself with a
+    # descriptive argv[0]. Its viewers are its children, so `pstree -p` / htop's F5 tree
+    # show the whole run as one subtree under this line.
+    if not os.environ.get("GROUP_OPEN_TITLED"):
+        os.environ["GROUP_OPEN_TITLED"] = "1"
+        title = f"group-open[{os.path.basename(a.paths[0].rstrip('/'))}: {n} windows]"
+        os.execv(sys.executable, [title, os.path.abspath(__file__), *sys.argv[1:]])
+
+    try:
+        import ctypes
+        ctypes.CDLL(None).prctl(15, b"group-open", 0, 0, 0)   # PR_SET_NAME: pstree / `ps -o comm`
+    except (OSError, AttributeError):
+        pass
+
+    # Detach before anything is spawned (children must belong to the process that
+    # stays alive): the original process waits for the group to be built, then returns
+    # the shell prompt; the forked one does the work and stays on as the parent.
+    done_fd = None
+    if not a.no_detach:
+        r, w = os.pipe()
+        if os.fork():
+            os.close(w)
+            os._exit(0 if os.read(r, 1) == b"x" else 1)
+        os.close(r)
+        done_fd = w
     seen = {c["address"] for c in clients()}
     dest = int(a.workspace) if a.workspace else json.loads(hyprctl("activeworkspace", "-j"))["id"]
     # Hyprland merges a window moved onto a workspace that holds only a group into that
@@ -292,11 +387,12 @@ def main():
     # switched on for this run and always switched back off (also when killed).
     hyprctl("eval", "hl.config({group={group_on_movetoworkspace=true}})")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # let `finally` run on kill/timeout
+    register()
 
-    def launch(i, ws):
+    def launch(i, _ws=None):
         cmd = command_for(files[i])
         print(f"[{i + 1}/{n}] {os.path.basename(files[i])}  ->  {cmd}", file=sys.stderr)
-        spawn(cmd, ws)
+        spawn(cmd)
 
     def rank(c):
         try:
@@ -312,8 +408,17 @@ def main():
         focused while this runs can never be picked up."""
         out = []
         for c in clients():
-            if c["address"] not in seen and c["mapped"] and c["workspace"]["id"] == STAGE:
+            if c["address"] in seen or not c["mapped"]:
+                continue
+            if c["workspace"]["id"] == STAGE:
                 seen.add(c["address"])
+                out.append(c)
+            elif descends_from_us(c["pid"]):
+                # Our own child, but not staged: the compositor hook is not loaded
+                # (run `hyprctl reload`). Stage it ourselves, late.
+                seen.add(c["address"])
+                move_ws(c["address"], STAGE)
+                c["workspace"]["id"] = STAGE
                 out.append(c)
         return out
 
@@ -388,11 +493,10 @@ def main():
             while nxt in pending:
                 ready.append(pending.pop(nxt)["address"])
                 nxt += 1
-            if ready and (nxt >= n or time.time() - last_batch >= a.batch):
+            gap = a.batch if is_solitary(leader, ready, dest) else a.ferry
+            if ready and (nxt >= n or time.time() - last_batch >= gap):
                 joined = merge_batch(leader, ready, dest)
-                if joined is None:
-                    last = time.time()        # user is away from dest: wait, don't time out
-                elif joined:
+                if joined:
                     merged += len(ready)
                     print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, parallel {limit}, {temp:.0f}C{', PAUSED (hot)' if paused else ''})", file=sys.stderr)
                     ready = []
@@ -410,11 +514,28 @@ def main():
             if c["workspace"]["id"] == STAGE:
                 move_ws(c["address"], dest)
                 print(f"   (could not group {c['address']}; left on workspace {dest})", file=sys.stderr)
-        warm_tabs(leader)
+        group = next((c["grouped"] for c in clients() if c["address"] == leader), [leader])
+        cold = warm_tabs(group)
+        if cold:
+            print(f"   ({cold} tab(s) could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
         if not a.no_focus:
             focus_if_on(leader, dest)   # the one focus change: the finished group, only if you are still on dest
     finally:
         hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}})")
+        unregister()
+
+    # The group is built. Return the shell prompt, then stay on as the viewers' parent
+    # until the last one is closed, so they remain one subtree in htop / pstree.
+    if done_fd is not None:
+        os.write(done_fd, b"x")
+        os.close(done_fd)
+        os.setsid()
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        null = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(null, fd)
+    while any(c.poll() is None for c in CHILDREN):
+        time.sleep(2)
 
 
 if __name__ == "__main__":
