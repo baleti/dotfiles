@@ -704,6 +704,13 @@ QtObject {
         }
         const out = root.columns.filter(c => root.substr(fragment, c)).slice();
         out.push(...root.resolveGroups(fragment));
+        // Dotted subfields too ("claude.title"), so the list is the same full
+        // set the Verb stage offers ("/<tab>" -> "sw/claude.title"); before,
+        // a subfield only appeared once you had typed the "." yourself.
+        for (const g of root.groupOrder)
+            for (const s of root.groupSubsOf(g))
+                if (root.substr(fragment, g + "." + s))
+                    out.push(g + "." + s);
         return out;
     }
 
