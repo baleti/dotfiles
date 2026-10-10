@@ -201,6 +201,24 @@ end)()''')
     return max(0, group_size(leader) - (before or 1))
 
 
+def warm_tabs(leader, ws):
+    """Visit every tab once in a single Lua call, then return to the first.
+
+    A tab that has never been on screen flickers the first time it is revealed
+    (its surface has never been presented); after one visit it doesn't. Doing the
+    visit inside one call means the compositor draws no frame in between, so the
+    user sees nothing, and the tab they were on stays selected and focused."""
+    lua(f'''(function()
+  local lead = {win_lua(leader)}
+  if not (lead and lead.group) then return end
+  for i = 2, lead.group.size do
+    hl.dispatch(hl.dsp.group.active({{ index = i, window = lead }}))
+  end
+  hl.dispatch(hl.dsp.group.active({{ index = 1, window = lead }}))
+  if hl.get_active_workspace().id == {ws} then hl.dispatch(hl.dsp.focus({{ window = lead }})) end
+end)()''')
+
+
 def group_size(addr):
     for c in clients():
         if c["address"] == addr:
@@ -320,6 +338,7 @@ def main():
             merge_batch(leader, rest, dest, solitary)
         elif nxt < n:
             print(f"   ({n - nxt} window(s) never appeared)", file=sys.stderr)
+        warm_tabs(leader, dest)
     finally:
         hyprctl("eval", f"hl.config({{group={{group_on_movetoworkspace={'true' if orig_merge else 'false'}}}}})")
 
