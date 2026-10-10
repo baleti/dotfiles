@@ -130,6 +130,7 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
     ap.add_argument("--delay", type=float, default=0.15, help="settle time after each window (default 0.15)")
+    ap.add_argument("--stagger", type=float, default=0.03, help="pause between launches (default 0.03)")
     lim = ap.add_mutually_exclusive_group()
     lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
     lim.add_argument("--tail", type=int, metavar="N", help="only open the last N files")
@@ -143,37 +144,85 @@ def main():
     if not files:
         sys.exit("group-open: nothing to open")
     seen = {c["address"] for c in clients()}
-    leader = None
-    for i, f in enumerate(files, 1):
-        cmd = command_for(f)
-        print(f"[{i}/{len(files)}] {os.path.basename(f)}  ->  {cmd}", file=sys.stderr)
+    n = len(files)
+
+    def launch(i):
+        cmd = command_for(files[i])
+        print(f"[{i + 1}/{n}] {os.path.basename(files[i])}  ->  {cmd}", file=sys.stderr)
         spawn(cmd, a.workspace)
-        addr = wait_new(seen)
-        if not addr:
-            print("   (no window appeared, skipping)", file=sys.stderr)
-            continue
-        seen.add(addr)
-        time.sleep(a.delay)
-        focus(addr)
-        if leader is None:
-            lua(f'(function() local w={win_lua(addr)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
-            leader = addr
-            continue
-        # auto_group usually joins it already; otherwise try each direction
-        n = group_size(leader)
+
+    # 1) first window serially: it becomes the group leader
+    launch(0)
+    leader = wait_new(seen)
+    if not leader:
+        sys.exit("group-open: first window never appeared")
+    seen.add(leader)
+    time.sleep(a.delay)
+    focus(leader)
+    lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.toggle({{window=w}})) end)()')
+
+    # 2) launch everything else at once; with focus on the group, auto_group
+    #    pulls each window in as it maps (in arbitrary order, fixed in step 4)
+    for i in range(1, n):
+        launch(i)
+        time.sleep(a.stagger)
+    arrived = []
+    last = time.time()
+    while len(arrived) < n - 1 and time.time() - last < TIMEOUT:
+        new = [c for c in clients() if c["address"] not in seen and c["mapped"]]
+        for c in new:
+            seen.add(c["address"])
+            arrived.append(c)
+            last = time.time()
+        time.sleep(0.1)
+    if len(arrived) < n - 1:
+        print(f"   ({n - 1 - len(arrived)} window(s) never appeared)", file=sys.stderr)
+    time.sleep(a.delay)
+
+    # 3) any straggler auto_group missed: join by focus + direction
+    for c in arrived:
+        addr = c["address"]
         if group_size(addr) > 1:
             continue
+        focus(addr)
+        before = group_size(leader)
         for d in ("left", "right", "up", "down"):
             lua(f'(function() local w={win_lua(addr)} hl.dispatch(hl.dsp.window.move({{into_group="{d}", window=w}})) end)()')
-            if group_size(leader) > n:
+            if group_size(leader) > before:
                 break
         else:
-            print("   (could not join group)", file=sys.stderr)
-        # newest tab stays active: tabs insert after the active one, which keeps file order
+            print(f"   (could not join group: {addr})", file=sys.stderr)
 
-    if leader:
-        focus(leader)
-        lua(f'(function() local w={win_lua(leader)} hl.dispatch(hl.dsp.group.active({{index=1, window=w}})) end)()')
+    # 4) sort tabs into file order: rank = index of the file named in the window's cmdline
+    rank = {leader: 0}
+    nxt = n
+    for c in arrived:
+        try:
+            cmdline = open(f"/proc/{c['pid']}/cmdline", "rb").read().decode(errors="replace")
+        except OSError:
+            cmdline = ""
+        hit = [i for i, f in enumerate(files) if f in cmdline]
+        rank[c["address"]] = hit[0] if hit else nxt
+        nxt += 0 if hit else 1
+    table = ",".join(f'["{k}"]={v}' for k, v in rank.items())
+    focus(leader)
+    lua(f'''(function()
+  local rank = {{{table}}}
+  local w = {win_lua(leader)}
+  local m = {{}}
+  for _, x in ipairs(w.group.members) do m[#m + 1] = x end
+  local function r(x) return rank[x.address] or 1e9 end
+  for i = 2, #m do
+    local j = i
+    while j > 1 and r(m[j]) < r(m[j - 1]) do
+      hl.dispatch(hl.dsp.group.active({{ index = j, window = w }}))
+      hl.dispatch(hl.dsp.group.move_window({{ forward = false }}))
+      m[j], m[j - 1] = m[j - 1], m[j]
+      j = j - 1
+    end
+  end
+  hl.dispatch(hl.dsp.group.active({{ index = 1, window = w }}))
+end)()''')
 
 
 if __name__ == "__main__":
