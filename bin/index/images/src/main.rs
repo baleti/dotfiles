@@ -563,6 +563,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     let values_for = |tag: &str| -> Vec<(String, String)> {
         match tag {
             "dm" => facets.dates.iter().map(|d| (d.clone(), "modified in this month".to_string())).collect(),
+            "ext" | "extension" => facets.exts.iter().map(|e| (format!(".{e}"), "file extension".to_string())).collect(),
             "mime" => facets.mimes.iter().map(|m| (m.clone(), "file kind".to_string())).collect(),
             "size" => vec![
                 ("<100K".into(), "smaller than 100 KiB".into()),
@@ -581,12 +582,13 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             _ => Vec::new(),
         }
     };
-    const TAGS: [(&str, &str); 6] = [
+    const TAGS: [(&str, &str); 7] = [
         ("name", "file name contains"),
         ("path", "folder path contains"),
         ("size", "file size, e.g. >5M or <200K"),
         ("dm", "date modified, pick a month"),
         ("mime", "file kind: image, pdf, text, code, ..."),
+        ("ext", "file extension, e.g. .pdf or .csv"),
         ("file", "file-name search mode"),
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
@@ -835,6 +837,8 @@ struct FacetsReply {
     dates: Vec<String>,
     #[serde(default)]
     mimes: Vec<String>,
+    #[serde(default)]
+    exts: Vec<String>,
     #[serde(default)]
     fts: Vec<String>,
 }

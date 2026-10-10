@@ -479,6 +479,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/facets":
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),
+                                    "exts": NAMES.top_exts(),
                                     "fts": [fts_name(c) for c in FTS_INDEXES]})
         if u.path == "/people":
             with _q_lock:
