@@ -308,20 +308,22 @@ QtObject {
     // Captures every window once and exits; output is NDJSON keyed by
     // address. Not killed on close, so a quick hold-release still finishes
     // refreshing the cache for next time.
-    // Group mode only: a capture of a never-rendered tab can come back empty the
-    // first time (the attempt is what makes the compositor render it), so any
-    // window still without a thumbnail when the backend exits is captured again,
-    // a few times, within the same mod+Tab invocation.
+    // Group mode only: a window that has not drawn its first picture yet captures as a
+    // flat frame, which the backend (WINSWITCH_SKIP_BLANK) reports as missing. Any tab
+    // still without a thumbnail when the backend exits is captured again, with a growing
+    // pause (0.4 s ... ~10 s in total), while the grid is open -- so thumbnails appear
+    // as the viewers finish drawing instead of only on the next invocation.
     property int _captureTries: 0
     function _retryMissing() {
         if (!root.active || !root.groupMode)
             return;
         root._flushPending();
         const missing = root.windows.filter(w => !root.thumbnails[w.address]).map(w => w.address);
-        if (missing.length === 0 || root._captureTries >= 3)
+        if (missing.length === 0 || root._captureTries >= 9)
             return;
         root._captureTries++;
         root.onlyAddresses = missing.join(",");
+        retryTimer.interval = 300 + 150 * root._captureTries;
         retryTimer.restart();
     }
     readonly property Timer _retryTimer: Timer {
@@ -340,7 +342,7 @@ QtObject {
         id: backend
         onExited: root._retryMissing()
         command: root.onlyAddresses.length > 0
-            ? ["env", "WINSWITCH_ONLY=" + root.onlyAddresses, Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
+            ? ["env", "WINSWITCH_SKIP_BLANK=1", "WINSWITCH_ONLY=" + root.onlyAddresses, Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
             : [Quickshell.env("HOME") + "/.config/hypr/winswitch/target/release/winswitch"]
         stdout: SplitParser {
             onRead: line => root._handleLine(line)
