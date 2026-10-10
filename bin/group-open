@@ -449,10 +449,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--workspace", help="open on this workspace instead of the current one")
-    ap.add_argument("--fresh", action="store_true", help="always use an empty workspace (the default when the current one is busy), and move the view to it")
-    ap.add_argument("--here", action="store_true", help="stay on the current workspace even if it is busy: the group is built off-screen and dropped in when done (no live joining)")
+    ap.add_argument("--fresh", action="store_true", help="use a free empty workspace next to the current one and move the view to it (joins are then re-tile-free)")
+    ap.add_argument("--here", action="store_true", help="on a busy workspace, build the group off-screen and drop it in when done (no live joining)")
     ap.add_argument("--no-switch", action="store_true", help="with a fresh workspace: do not move the view to it")
-    ap.add_argument("--ferry-live", action="store_true", help="on a busy workspace, join windows live on it anyway (each batch re-tiles your other windows twice and re-renders the group)")
+    ap.add_argument("--ferry-live", action="store_true", help="(now the default) join live on the current workspace; each batch on a busy one re-tiles your other windows")
     ap.add_argument("--offscreen", action="store_true", help="build the whole group off-screen, pre-render it, and drop it onto your workspace in one step (default: the first window appears at once and the others join it as they load)")
     ap.add_argument("--no-warm", action="store_true", help="skip the pre-render pass (mod+Tab then captures the tabs itself, retrying until they have drawn)")
     ap.add_argument("--no-pin", action="store_true", help="do not pin the image work to the efficiency cores (faster, but hotter: measured ~27%% less package power when pinned)")
@@ -505,7 +505,7 @@ def main():
     # moment it opens and the rest join it silently. --here stays on the busy workspace and
     # builds the group off-screen (one re-tile when it is dropped in); --no-switch prepares the
     # empty workspace without moving the view.
-    use_fresh = a.fresh or (dest_busy and not explicit and not a.here and not a.ferry_live and not a.offscreen)
+    use_fresh = a.fresh
     if use_fresh:
         occupied = {w["id"] for w in json.loads(hyprctl("workspaces", "-j") or "[]") if w.get("windows", 0) > 0}
         occupied |= {m["activeWorkspace"]["id"] for m in json.loads(hyprctl("monitors", "-j") or "[]")}
@@ -520,10 +520,9 @@ def main():
             lua(f"hl.dispatch(hl.dsp.focus({{ workspace = {dest} }}))")     # the one view change
             switched_view = True
             print(f"group-open: using empty workspace {dest}", file=sys.stderr)
-    elif dest_busy and not a.ferry_live and not a.offscreen:
-        print(f"group-open: workspace {dest} is busy: building the group off-screen and dropping it in "
-              f"when done (drop --here to get a live group on its own empty workspace)", file=sys.stderr)
-    mode = "offscreen" if (a.offscreen or (dest_busy and not a.ferry_live)) else "live"
+    # default: stay on the current workspace and join live (ferrying the group off it per batch
+    # when other windows share it); --here/--offscreen build off-screen and drop in at the end
+    mode = "offscreen" if (a.offscreen or (dest_busy and a.here)) else "live"
     home = dest if mode == "live" else BUILD
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # let `finally` run on kill/timeout
 
