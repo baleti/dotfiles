@@ -26,6 +26,7 @@ add a new consumer, add its row here too.
 | group picker | mod+Tab | `~/.config/quickshell/services/GroupPickerState.qml` + `~/bin/group-windows` (no UI of its own: it feeds the active window's Hyprland group tabs into `WinSwitchState.startGroup()`, so the grid, thumbnails and search box are winswitch's, the grammar is winswitch's `WinSwitchQueryDsl.qml`) | the tabs of the active window's Hyprland group, same fields as winswitch (title is the file name for apps like nsxiv that title themselves with their own name) |
 | clipboard-picker | mod+v | `~/.config/quickshell/clipboard/ClipboardPicker.qml` (headless backend: `~/.config/hypr/clipboard-picker/src/bin/clipboard-picker.rs`) | cliphist clipboard history, list layout |
 | notification-picker | mod+CTRL+n | `~/.config/quickshell/notifications/NotificationPicker.qml` (headless backend: `~/.config/hypr/clipboard-picker/src/bin/notification-picker.rs`; imports `ClipboardQueryDsl.qml` directly rather than an 8th hand-port) | notifyd's retained notification history |
+| revit-remote picker | mod+` | `~/.config/quickshell/revitremote/` (`RevitRemotePicker.qml` + `RevitRemoteModel.qml`, imports `ClipboardQueryDsl.qml` like notification-picker; backend `~/bin/revit-remote` = `~/src/revit-ballet/tools/remote/revit-remote`; design in revit-ballet `docs/remote-commands-and-query-dsl.md`) | add-in commands of every reachable Revit instance (this machine's VMs, other machines), one row per command x instance; Enter runs it there |
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 | claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
@@ -639,6 +640,10 @@ Defaults per picker:
   size badge was, so defaulting both on is what makes the table useful
   immediately. `age` auto-sizes the same way clipboard-picker's does
   (`app` stays fixed-width).
+- **revit-remote picker**: `input`/`instance` on from open; the command's name is the row's own preview text, so `command` is only a column
+  after `/at command`. Fields: `command` (display name), `class`, `input`, `output`, `target`, `instance` (target, Revit year, pid), `year`,
+  `pid`, `state` (`idle`, or `dialog: <title>` while a modal dialog holds that Revit up). Free text is display name + class + target + year only;
+  `input` is deliberately left out so `any` does not match every command that needs a selection (`//input any` does). `pid` sorts numerically.
 - **fzf pickers**: focus-picker renders columns and honours all three
   verbs; window-search / claude-history render a single ranked line and
   ignore column verbs (inert, not an error).

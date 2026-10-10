@@ -8,6 +8,7 @@ import "bar"
 import "background"
 import "osd"
 import "notifications"
+import "revitremote"
 import "launcher"
 import "rssreader"
 import "keybinds"
@@ -85,6 +86,15 @@ ShellRoot {
         target: "notificationPicker"
         function toggle(): void {
             NotificationPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
+    // Revit command picker (mod+`): the command list across every reachable Revit instance (this machine's VMs, other machines). Same
+    // single-top-level-target / latched-monitor pattern as notificationPicker -- see RevitRemotePickerState.qml.
+    IpcHandler {
+        target: "revitRemote"
+        function toggle(): void {
+            RevitRemotePickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
         }
     }
 
@@ -243,6 +253,15 @@ ShellRoot {
         model: Quickshell.screens
 
         NotificationPicker {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        RevitRemotePicker {
             required property var modelData
             screen: modelData
         }

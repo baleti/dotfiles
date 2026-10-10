@@ -1,0 +1,3 @@
+#!/bin/sh
+# Launcher for revit-ballet's remote command tool (list and run Revit add-in commands in Revit instances on other machines / VMs).
+exec python3 "${REVIT_BALLET_REPO:-$HOME/src/revit-ballet}/tools/remote/revit-remote" "$@"
