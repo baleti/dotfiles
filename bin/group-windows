@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Backend for the quickshell group picker (mod+Tab).
+
+  group-windows list [ADDRESS]      NDJSON, one row per tab of ADDRESS's group
+                                    (default: the active window's group), in tab order
+  group-windows activate ADDRESS    make that tab the visible, focused one
+
+Row shape matches the other quickshell pickers: id, preview, icon, fields{...},
+plus `current` for the tab that is showing now.
+"""
+import json, os, subprocess, sys
+
+
+def hyprctl(*args):
+    env = dict(os.environ)
+    if "HYPRLAND_INSTANCE_SIGNATURE" not in env:
+        rt = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}") + "/hypr"
+        env["HYPRLAND_INSTANCE_SIGNATURE"] = max(
+            (os.path.join(rt, d) for d in os.listdir(rt)), key=os.path.getmtime).rsplit("/", 1)[1]
+    return subprocess.run(["hyprctl", *args], env=env, capture_output=True, text=True).stdout
+
+
+def label(c):
+    """Window title, or -- when the app just titles itself with its own name, as
+    nsxiv does -- the file it was started on, read from its command line."""
+    title = c["title"].strip()
+    if title and title.lower() != c["class"].lower():
+        return title
+    try:
+        args = open(f"/proc/{c['pid']}/cmdline", "rb").read().decode(errors="replace").split("\0")
+    except OSError:
+        return title or c["class"]
+    for a in reversed([a for a in args[1:] if a]):
+        if os.path.exists(a):
+            return os.path.basename(a)
+    return title or c["class"]
+
+
+def rows(address):
+    clients = {c["address"]: c for c in json.loads(hyprctl("clients", "-j") or "[]")}
+    if address is None:
+        active = json.loads(hyprctl("activewindow", "-j") or "{}")
+        address = active.get("address")
+    me = clients.get(address)
+    if not me:
+        return
+    members = me["grouped"] or [address]
+    for i, addr in enumerate(members, 1):
+        c = clients.get(addr)
+        if not c:
+            continue
+        yield {
+            "id": addr,
+            "preview": label(c),
+            "icon": c["class"].lower(),
+            "current": addr == address,
+            "fields": {"app": c["class"], "tab": str(i), "title": c["title"]},
+        }
+
+
+def activate(address):
+    lua = ('(function() for _,w in ipairs(hl.get_windows()) do if w.address=="%s" then '
+           'hl.dispatch(hl.dsp.focus({window=w})) end end end)()' % address)
+    hyprctl("eval", lua)
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
+    if cmd == "list":
+        for r in rows(sys.argv[2] if len(sys.argv) > 2 else None):
+            print(json.dumps(r))
+    elif cmd == "activate" and len(sys.argv) > 2:
+        activate(sys.argv[2])
+    else:
+        sys.exit(__doc__)

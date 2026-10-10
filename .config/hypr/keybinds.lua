@@ -251,7 +251,7 @@ hl.bind("SHIFT + Print",   hl.dsp.exec_cmd("hyprshot -m region --raw | satty -f 
 -- a11y bridge on.
 hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("python3 ~/.config/hypr/scripts/appmenu-atspi.py"), { description = "Show the focused window's menu (global menu)" })
 
-hl.bind(mainMod .. " + Tab", hl.dsp.window.cycle_next(), { description = "Cycle to the next window" })
+hl.bind(mainMod .. " + Tab", hl.dsp.exec_cmd("qs ipc call groupPicker toggle"), { description = "List the windows (tabs) in the active window's group" })
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"), { description = "Open htop" })
 
 -- ALT+Tab / ALT+SHIFT+Tab (grid alt-tab switcher) are bound in
