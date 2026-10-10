@@ -145,7 +145,8 @@ PanelWindow {
         // Workspace view: bare words match the workspace name only ("/sw 3" -> 3, 13, 23, ...).
         let rows = root.wantWorkspaces
             ? root.windows.filter(w => root.parsedQuery.filters.every(t =>
-                t.kind !== "free" || WinSwitchQueryDsl.substr(t.text, w.workspace) !== !!t.neg))
+                t.kind === "free" ? WinSwitchQueryDsl.substr(t.text, w.workspace) !== !!t.neg
+                    : WinSwitchQueryDsl._termMatches(w, {}, t)))
             : root.windows.filter(w => WinSwitchQueryDsl.matchesStr(w, root.metas[w.index] || {}, root.queryText));
         const s = root.parsedQuery.sort;
         if (s) {
