@@ -52,6 +52,7 @@ Rectangle {
         if (!h)
             return [];
         const gb = mb => (mb / 1024).toFixed(mb >= 10240 ? 0 : 1);
+        const tb = g => (g / 1024).toFixed(2);
         const out = [];
         if (h.cpu_pct !== undefined)
             out.push({ label: "cpu", value: h.cpu_pct + "%", pct: h.cpu_pct });
@@ -65,7 +66,7 @@ Rectangle {
             out.push({ label: "gpu", value: h.gpu.util + "% " + gb(h.gpu.mem_used_mb) + "/" + gb(h.gpu.mem_total_mb) + "G " + h.gpu.temp_c + "\u00b0",
                        pct: h.gpu.util });
         for (const d of (h.disks || []))
-            out.push({ label: d.label, value: d.pct + "% " + d.used_gb + "/" + d.size_gb + "G", pct: d.pct });
+            out.push({ label: d.label, value: d.pct + "% " + tb(d.used_gb) + "/" + tb(d.size_gb) + "T", pct: d.pct });
         return out;
     }
 
