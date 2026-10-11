@@ -1,0 +1,53 @@
+set guioptions ""
+set adjust-open best-fit
+set selection-clipboard clipboard
+map W adjust_window width
+map a adjust_window best-fit
+map w adjust_window best-fit
+map f feedkeys agg
+map <F3> search forward
+map <S-F3> search backward
+
+# map n navigate next
+map p navigate previous
+map <Right> navigate next
+map <Left> navigate previous
+map <Up> navigate previous
+map <Down> navigate next
+map <Space> navigate next
+map <S-Space> navigate previous
+
+map <M-d> focus_inputbar ":exec rm $FILE"
+map <M-e> focus_inputbar ":exec evince $FILE"
+map <M-a> focus_inputbar ":exec /home/user1/.config/zathura/open-alacritty.sh $FILE"
+map <M-z> focus_inputbar ":exec /home/user1/.config/zathura/open-zathura.sh $FILE"
+
+map b toggle_statusbar
+
+# n/p and </> page navigation (search next/prev stay on F3 / S-F3, N is unchanged)
+map n navigate next
+map > navigate next
+map < navigate previous
+
+# fullscreen is a separate mode: every mapping above needs a copy here (keep in sync)
+map [fullscreen] W adjust_window width
+map [fullscreen] a adjust_window best-fit
+map [fullscreen] w adjust_window best-fit
+map [fullscreen] f feedkeys agg
+map [fullscreen] <F3> search forward
+map [fullscreen] <S-F3> search backward
+map [fullscreen] p navigate previous
+map [fullscreen] <Right> navigate next
+map [fullscreen] <Left> navigate previous
+map [fullscreen] <Up> navigate previous
+map [fullscreen] <Down> navigate next
+map [fullscreen] <Space> navigate next
+map [fullscreen] <S-Space> navigate previous
+map [fullscreen] <M-d> focus_inputbar ":exec rm $FILE"
+map [fullscreen] <M-e> focus_inputbar ":exec evince $FILE"
+map [fullscreen] <M-a> focus_inputbar ":exec /home/user1/.config/zathura/open-alacritty.sh $FILE"
+map [fullscreen] <M-z> focus_inputbar ":exec /home/user1/.config/zathura/open-zathura.sh $FILE"
+map [fullscreen] b toggle_statusbar
+map [fullscreen] n navigate next
+map [fullscreen] > navigate next
+map [fullscreen] < navigate previous

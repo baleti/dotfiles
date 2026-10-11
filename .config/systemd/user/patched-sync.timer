@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly patched-programs upstream sync
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
