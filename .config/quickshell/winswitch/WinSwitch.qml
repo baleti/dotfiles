@@ -207,7 +207,13 @@ PanelWindow {
     Connections {
         target: WinSwitchState
         function onNavKey(direction: string): void {
-            if (root.open)
+            if (!root.open)
+                return;
+            if (direction === "up")
+                root._advanceRow(-root.cols);
+            else if (direction === "down")
+                root._advanceRow(root.cols);
+            else
                 root._advance(direction === "left" ? "prev" : "next");
         }
     }
