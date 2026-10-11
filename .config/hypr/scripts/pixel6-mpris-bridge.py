@@ -239,19 +239,37 @@ class Pixel6Player(dbus.service.Object):
     def Previous(self):
         command("prev")
 
+    def _send(self, name):
+        """command() with one retry (a dozing phone often drops the first
+        request), and a visible card if the phone still did not answer - a
+        silently dropped pause looked like the keybind doing nothing."""
+        ok = command(name) is not None or command(name) is not None
+        if not ok:
+            self._notify_text("Pixel 6 unreachable", "'%s' was not delivered" % name)
+        return ok
+
     @dbus.service.method(PLAYER_IFACE)
     def Pause(self):
-        command("pause")
-        self._optimistic_state("paused")
+        if self._send("pause"):
+            self._optimistic_state("paused")
 
     @dbus.service.method(PLAYER_IFACE)
     def Play(self):
-        command("play")
-        self._optimistic_state("playing")
+        if self._send("play"):
+            self._optimistic_state("playing")
 
     @dbus.service.method(PLAYER_IFACE)
     def PlayPause(self):
-        if self._status and self._status.get("state") == "playing":
+        # Decide from the phone's real state, not the cache (up to 4s stale, or
+        # None/"Stopped" after a timeout - which used to turn a pause press
+        # into a dropped "play"). If it can't be read, say so instead of guessing.
+        status = fetch_status() or fetch_status()
+        if status is None:
+            self._notify_text("Pixel 6 unreachable", "play/pause not sent")
+            return
+        self._status = status
+        self._status_mono = time.monotonic()
+        if status.get("state") in ("playing", "buffering"):
             self.Pause()
         else:
             self.Play()
@@ -378,6 +396,18 @@ class Pixel6Player(dbus.service.Object):
             return False
         self._art_path = path
         return True
+
+    def _notify_text(self, summary, body):
+        try:
+            self._bus.call_async(
+                NOTIFY_BUS, NOTIFY_PATH, NOTIFY_BUS, "Notify", "susssasa{sv}i",
+                ("pixel6", dbus.UInt32(0), "dialog-warning", summary, body,
+                 dbus.Array([], signature="s"),
+                 dbus.Dictionary({"urgency": dbus.Byte(1)}, signature="sv"),
+                 dbus.Int32(4000)),
+                lambda *_: None, lambda *_: None)
+        except dbus.DBusException:
+            pass
 
     def _notify_track(self, status):
         """Same card mpDris2 posts for mpd (app, 'by artist', normal-low urgency, no
