@@ -44,6 +44,28 @@ Rectangle {
     property string hintText: ""
     property point hintPos: Qt.point(0, 0)
 
+    property var host: null
+
+    // Pills for the VM host's own stats (cpu, memory, the passed-through GPU read inside its VM, the disks the VMs live on): [{ label, value, pct }].
+    readonly property var hostPills: {
+        const h = root.host;
+        if (!h)
+            return [];
+        const gb = mb => (mb / 1024).toFixed(mb >= 10240 ? 0 : 1);
+        const out = [];
+        if (h.cpu_pct !== undefined)
+            out.push({ label: "cpu", value: h.cpu_pct + "%", pct: h.cpu_pct });
+        if (h.mem_total_mb)
+            out.push({ label: "mem", value: gb(h.mem_total_mb - h.mem_avail_mb) + "/" + gb(h.mem_total_mb) + "G",
+                       pct: 100 * (h.mem_total_mb - h.mem_avail_mb) / h.mem_total_mb });
+        if (h.gpu)
+            out.push({ label: "gpu", value: h.gpu.util + "% " + gb(h.gpu.mem_used_mb) + "/" + gb(h.gpu.mem_total_mb) + "G " + h.gpu.temp_c + "\u00b0",
+                       pct: h.gpu.util });
+        for (const d of (h.disks || []))
+            out.push({ label: d.label, value: d.pct + "% " + d.used_gb + "/" + d.size_gb + "G", pct: d.pct });
+        return out;
+    }
+
     property var rows: []
     property bool loaded: false
     property string error: ""
@@ -143,6 +165,7 @@ Rectangle {
                 const d = JSON.parse(stateFile.text());
                 root.rows = root.sortRows(d.rows || []);
                 root.probeOk = d.ok !== false;
+                root.host = d.host || null;
                 root.error = root.rows.length === 0 ? "no Revit targets found (revit-remote targets)" : "";
                 root.loaded = true;
             } catch (e) {
@@ -193,6 +216,51 @@ Rectangle {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 3
                 anchors.baseline: parent.children[0].baseline
+            }
+        }
+
+        // second line: the VM host's stats
+        Row {
+            visible: root.hostPills.length > 0
+            spacing: 6
+            opacity: root.probeOk ? 1 : 0.55
+            Text {
+                text: root.host ? root.host.name : ""
+                color: Theme.muted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 3
+                anchors.verticalCenter: parent.verticalCenter
+            }
+            Repeater {
+                model: root.hostPills
+                delegate: Rectangle {
+                    id: pill
+                    required property var modelData
+                    implicitWidth: pillRow.implicitWidth + 14
+                    implicitHeight: pillRow.implicitHeight + 6
+                    radius: height / 2
+                    color: Theme.bgAlpha
+                    border.color: Theme.border
+                    border.width: 1
+                    Row {
+                        id: pillRow
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Text {
+                            text: pill.modelData.label
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                        }
+                        Text {
+                            text: pill.modelData.value
+                            color: Theme.rampColor(pill.modelData.pct / 100)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            font.bold: true
+                        }
+                    }
+                }
             }
         }
 
