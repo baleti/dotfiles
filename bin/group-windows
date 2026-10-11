@@ -94,14 +94,24 @@ def winswitch_rows(address):
     """The group's tabs in winswitch-windows.json's row shape, in tab order, so the
     alt+tab grid can show them (see services/GroupPickerState.qml)."""
     clients = {c["address"]: c for c in json.loads(hyprctl("clients", "-j") or "[]")}
-    for r in rows(address):
+    rs = list(rows(address))
+    # Every tab of a group occupies the same tile, but a tab that joined recently can still
+    # report the size it had before (Hyprland updates it lazily). The grid draws each frame
+    # from these numbers, so a stale size gives a wrongly shaped, off-centre thumbnail until
+    # something refreshes it. Use the group's most common size (largest on a tie) for all tabs.
+    from collections import Counter
+    sizes = Counter(tuple(clients[r["id"]]["size"]) for r in rs)
+    best = max(sizes, key=lambda z: (sizes[z], z[0] * z[1])) if sizes else None
+    shown = {"size": list(best)} if best else None
+    for r in rs:
         c = clients[r["id"]]
+        w, h = (shown or c)["size"]
         yield {
             "address": r["id"], "class": c["class"], "title": r["preview"],
             "workspace": c["workspace"]["name"], "pid": c["pid"],
-            "width": c["size"][0], "height": c["size"][1], "active": r["current"],
+            "width": w, "height": h, "active": r["current"],
         }
-        last = c
+        last = {**c, "size": list(best)}
     # slides group-open is still loading: listed now, picture only once they open
     members = {r["id"] for r in rows(address)}
     if members:
