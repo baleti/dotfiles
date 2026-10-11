@@ -1,0 +1,47 @@
+From aa6a2054961c0255f3b4154f62e00070ee1d9653 Mon Sep 17 00:00:00 2001
+From: baleti <baleti3266@gmail.com>
+Date: Sun, 11 Oct 2026 18:03:54 +0100
+Subject: [PATCH 2/2] adjust_window best-fit: realign the current page to the
+ viewport after the zoom change
+
+adjust_view rescales but keeps the old scroll offset, so a page break ended up
+mid-window. Run position_set(-1,-1) from an idle callback once the new layout
+is allocated.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01E6J7Dgms4BH4yWufmn43ac
+---
+ zathura/shortcuts.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/zathura/shortcuts.c b/zathura/shortcuts.c
+index 38397aee..b0a78138 100644
+--- a/zathura/shortcuts.c
++++ b/zathura/shortcuts.c
+@@ -164,6 +164,13 @@ bool sc_abort(girara_session_t* session, girara_argument_t* UNUSED(argument), gi
+   return false;
+ }
+ 
++static void realign_after_adjust(gpointer data) {
++  zathura_t* zathura = data;
++  if (zathura_has_document(zathura) == true) {
++    position_set(zathura, -1, -1);
++  }
++}
++
+ bool sc_adjust_window(girara_session_t* session, girara_argument_t* argument, girara_event_t* UNUSED(event),
+                       unsigned int UNUSED(t)) {
+   g_return_val_if_fail(session != NULL, false);
+@@ -179,6 +186,12 @@ bool sc_adjust_window(girara_session_t* session, girara_argument_t* argument, gi
+ 
+     zathura_document_set_adjust_mode(zathura_get_document(zathura), argument->n);
+     adjust_view(zathura);
++
++    /* adjust_view only rescales; the scroll offset still belongs to the old zoom, which leaves a page break
++     * in the middle of the window. Once the new layout is allocated, align the current page to the viewport. */
++    if (argument->n == ZATHURA_ADJUST_BESTFIT) {
++      g_idle_add_once(realign_after_adjust, zathura);
++    }
+   }
+ 
+   return false;

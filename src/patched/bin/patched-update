@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Weekly: run AFTER paru (needs your sudo lease). Installs builds staged by patched-sync, and rebuilds
+# the current branch when a dependency package changed (soname bumps), so nothing breaks silently.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/patched-lib.sh"
+
+for f in $(registry_files); do
+  load_entry "$f"
+  st=$(cat "$STATE/$NAME.status" 2>/dev/null || echo none)
+  fp=$(deps_fingerprint)
+  last=$(cat "$STATE/$NAME.deps" 2>/dev/null || true)
+  pkgfile=""
+
+  case $st in
+    ready:*) pkgfile=${st#ready:}
+             [ -f "$pkgfile" ] || { echo "$NAME: staged package vanished, rebuilding"; pkgfile=""; } ;;
+    conflict|build-failed|dirty-checkout)
+             echo "$NAME: last monthly sync said '$st' - still on the installed version (see $STATE/$NAME.*.log)" ;;
+  esac
+
+  if [ -z "$pkgfile" ] && [ "$fp" != "$last" ]; then
+    echo "$NAME: dependencies changed (or first run), rebuilding current branch"
+    pkgfile=$(build_pkg) || { echo "$NAME: REBUILD FAILED, see $STATE/$NAME.build.log" >&2; continue; }
+  fi
+  [ -z "$pkgfile" ] && { echo "$NAME: nothing to do"; continue; }
+
+  echo "$NAME: installing $(basename "$pkgfile")"
+  if sudo pacman -U --noconfirm "$pkgfile"; then
+    printf '%s\n' "$fp" >"$STATE/$NAME.deps"
+    status_set "$NAME" installed
+  else
+    echo "$NAME: install failed" >&2
+  fi
+done

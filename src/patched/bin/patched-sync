@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Monthly (systemd --user timer): fetch upstream, rebase our patches onto the newest release tag,
+# let the claude agent resolve conflicts if needed, build into staging. NEVER installs and has no sudo.
+# Result per program is written to $STATE/<name>.status: ready:<pkgfile> | uptodate | conflict | build-failed
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/patched-lib.sh"
+
+notify() { notify-send -a patched "$1" "$2" 2>/dev/null || true; }
+
+for f in $(registry_files); do
+  load_entry "$f"
+  echo "== $NAME"
+  git -C "$CHECKOUT" fetch --tags --quiet origin || { status_set "$NAME" fetch-failed; continue; }
+  tag=$(latest_tag); base=$(base_tag)
+  echo "latest upstream $tag, our base $base"
+  if [ "$tag" = "$base" ]; then status_set "$NAME" uptodate; continue; fi
+
+  git -C "$CHECKOUT" checkout -q "$BRANCH"
+  if [ -n "$(git -C "$CHECKOUT" status --porcelain --untracked-files=no)" ]; then
+    status_set "$NAME" dirty-checkout; notify "$NAME: not updated" "checkout has uncommitted changes"; continue
+  fi
+  orig=$(git -C "$CHECKOUT" rev-parse "$BRANCH")
+
+  if ! git -C "$CHECKOUT" rebase "$tag" >/dev/null 2>&1; then
+    echo "rebase conflicts, handing over to the agent"
+    ( cd "$CHECKOUT" && timeout 30m claude -p --no-session-persistence --permission-mode acceptEdits \
+        --allowedTools "Read" "Edit" "Grep" "Glob" "Bash(git status:*)" "Bash(git diff:*)" "Bash(git add:*)" \
+                       "Bash(git log:*)" "Bash(git show:*)" "Bash(git rebase --continue)" "Bash(git -c core.editor=true rebase --continue)" \
+        "A 'git rebase $tag' of our local patch commits onto the new upstream release is stopped on conflicts in $CHECKOUT.
+Resolve every conflict so the intent of OUR commits survives on top of the new upstream code (read upstream's new
+code; if upstream already implemented the same thing, drop our now-redundant hunk). Intent of our patches: $PATCH_NOTES
+Stage the files and finish with: git -c core.editor=true rebase --continue (repeat until the rebase is done).
+Do NOT run git rebase --abort, git reset, git push, or touch anything outside this checkout. Do not build; the caller builds.
+If you cannot resolve safely, stop and say so." ) >"$STATE/$NAME.agent.log" 2>&1
+    if [ -d "$CHECKOUT/.git/rebase-merge" ] || [ -d "$CHECKOUT/.git/rebase-apply" ]; then
+      git -C "$CHECKOUT" rebase --abort
+      git -C "$CHECKOUT" checkout -q "$BRANCH"
+      status_set "$NAME" conflict
+      notify "$NAME: needs you" "rebase onto $tag has conflicts the agent could not resolve (log: $STATE/$NAME.agent.log)"
+      continue
+    fi
+  fi
+
+  if pkgfile=$(build_pkg) && [ -n "$pkgfile" ]; then
+    status_set "$NAME" "ready:$pkgfile"
+    export_patches
+    notify "$NAME $tag ready" "patched build staged; it will install with your next patched-update"
+  else
+    # leave the old, working branch state in place so the installed package stays reproducible
+    git -C "$CHECKOUT" branch -f "$BRANCH.failed-$tag" "$BRANCH" >/dev/null 2>&1
+    git -C "$CHECKOUT" reset -q --hard "$orig"
+    status_set "$NAME" build-failed
+    notify "$NAME: build failed" "after rebase onto $tag (log: $STATE/$NAME.build.log); branch kept as $BRANCH.failed-$tag"
+  fi
+done
