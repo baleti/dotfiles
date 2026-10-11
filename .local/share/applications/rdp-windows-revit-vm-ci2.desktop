@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=RDP: Revit VM QXL 2 (CID 6)
-Comment=Revit VM without GPU (QXL), 5 GB, held CI VM 2 on host2, blank password
-Exec=/home/user1/bin/rdp-windows-vm 6
-Icon=computer
-Terminal=false
-Categories=Network;RemoteAccess;
