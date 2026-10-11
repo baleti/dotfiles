@@ -43,9 +43,9 @@ QtObject {
             if (event.name !== "custom" || !event.data.startsWith("winswitch "))
                 return;
             const rest = event.data.slice("winswitch ".length);
-            if (rest.startsWith("gtab "))
-                root._onGroupTab(rest.slice(5));
-            else if (rest === "altup" && root._loading)
+            // the `gtab` presses themselves arrive via WinSwitchState (a singleton is only
+            // created when first referenced, so this object cannot be the one listening)
+            if (rest === "altup" && root._loading)
                 root._released = true;
         }
     }
