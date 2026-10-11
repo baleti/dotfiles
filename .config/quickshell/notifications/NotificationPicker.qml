@@ -5,6 +5,7 @@ import Quickshell.Wayland
 import "../theme"
 import "../services"
 import "../clipboard"
+import "../launcher"
 
 // Notification-history picker (mod+CTRL+n) -- replaces the standalone
 // GTK3 + gtk-layer-shell app (~/.config/hypr/clipboard-picker/src/bin/
@@ -164,6 +165,7 @@ PanelWindow {
                     try { rows.push(JSON.parse(l)); } catch (e) { /* skip */ }
                 }
                 root._entries = rows;
+                LauncherIcons.resolve(rows.map(r => r.icon).filter(i => i && !i.startsWith("/") && !i.startsWith("file://")));
             }
         }
     }
@@ -749,6 +751,8 @@ PanelWindow {
                                 if (ic.length === 0) return Quickshell.iconPath("dialog-information", "");
                                 if (ic.startsWith("file://")) return ic;
                                 if (ic.startsWith("/")) return "file://" + ic;
+                                const resolved = LauncherIcons.pathFor(ic);
+                                if (resolved) return resolved;
                                 return Quickshell.iconPath(ic, "dialog-information");
                             }
                         }
