@@ -417,22 +417,10 @@ hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("~/.config/hypr/scripts/playerctl-v
 -- move windows (reflow the active window's tiled position in a direction,
 -- without swapping places with whatever was there -- equivalent to the old
 -- .conf's "movewindow" dispatcher; window.swap is the true two-window trade)
-hl.bind(mainMod .. " + CTRL + h", function()
-    if winswitch.nav_mod("left") then return end
-    hl.dispatch(hl.dsp.window.move({ direction = "left" }))
-end,  { description = "Move window left" })
-hl.bind(mainMod .. " + CTRL + j", function()
-    if winswitch.nav_mod("down") then return end
-    hl.dispatch(hl.dsp.window.move({ direction = "down" }))
-end,  { description = "Move window down" })
-hl.bind(mainMod .. " + CTRL + k", function()
-    if winswitch.nav_mod("up") then return end
-    hl.dispatch(hl.dsp.window.move({ direction = "up" }))
-end,    { description = "Move window up" })
-hl.bind(mainMod .. " + CTRL + l", function()
-    if winswitch.nav_mod("right") then return end
-    hl.dispatch(hl.dsp.window.move({ direction = "right" }))
-end, { description = "Move window right" })
+hl.bind(mainMod .. " + CTRL + h", hl.dsp.window.move({ direction = "left" }),  { description = "Move window left" })
+hl.bind(mainMod .. " + CTRL + j", hl.dsp.window.move({ direction = "down" }),  { description = "Move window down" })
+hl.bind(mainMod .. " + CTRL + k", hl.dsp.window.move({ direction = "up" }),    { description = "Move window up" })
+hl.bind(mainMod .. " + CTRL + l", hl.dsp.window.move({ direction = "right" }), { description = "Move window right" })
 
 -- resize (old .conf: "resizeactive, -80 0" -- a relative pixel delta)
 -- confirmed field names from LuaBindingsDispatchers.cpp: x, y (numbers), relative (bool, default false)
