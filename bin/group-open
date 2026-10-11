@@ -312,6 +312,43 @@ def move_ws(addr, ws):
     lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.window.move({{workspace={json.dumps(ws) if isinstance(ws, str) else ws}, window=w, follow=false}})) end end)()')
 
 
+MANIFEST = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "group-open", f"{os.getpid()}.json")
+
+
+class Manifest:
+    """What this run is going to open, for the mod+Tab picker (group-windows): one entry per
+    file with the address of its window once it exists, so the picker can list slides that are
+    still loading as placeholders. Lives in $XDG_RUNTIME_DIR, removed when the run ends."""
+
+    def __init__(self, files):
+        self.data = {"pid": os.getpid(), "leader": None,
+                     "files": [{"name": os.path.basename(f), "window": None, "skipped": False} for f in files]}
+        os.makedirs(os.path.dirname(MANIFEST), exist_ok=True)
+        self.save()
+
+    def save(self):
+        tmp = MANIFEST + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(self.data, f)
+        os.replace(tmp, MANIFEST)
+
+    def window(self, i, addr):
+        self.data["files"][i]["window"] = addr
+        if i == 0:
+            self.data["leader"] = addr
+        self.save()
+
+    def skip(self, i):
+        self.data["files"][i]["skipped"] = True
+        self.save()
+
+    def remove(self):
+        try:
+            os.remove(MANIFEST)
+        except OSError:
+            pass
+
+
 def current_ws(leader, default):
     """Where the leader (and so its group) is right now: the user may have moved it to
     another workspace, or into a scratchpad, since the run started. Numbered workspaces are
@@ -575,6 +612,7 @@ def main():
         return out
 
     bg = ThreadPoolExecutor(max_workers=1)   # re-caches tabs while loading continues
+    manifest = Manifest(files)
 
     try:
         # The first window opens right here and is never touched while the others
@@ -593,6 +631,7 @@ def main():
                 time.sleep(0.1)
         if not leader:
             sys.exit("group-open: first window never appeared")
+        manifest.window(0, leader)
         move_ws(leader, home)    # silent: nothing gets focus
         time.sleep(a.delay)
         if switched_view:
@@ -642,6 +681,7 @@ def main():
                     started[launched] = time.time()
                 else:                        # nothing to open it with: never blocks the rest
                     pending[launched] = None
+                    manifest.skip(launched)
                     arrived += 1
                     skipped += 1
                 launched += 1
@@ -650,6 +690,7 @@ def main():
                 r = rank(c)
                 if r < n:
                     pending[r] = c
+                    manifest.window(r, c["address"])
                     started.pop(r, None)
                 else:
                     extra.append(c)
@@ -660,6 +701,7 @@ def main():
                     print(f"   (no window for {os.path.basename(files[i])} after 30 s, skipped)", file=sys.stderr)
                     del started[i]
                     pending[i] = None
+                    manifest.skip(i)
                     arrived += 1
                     skipped += 1
                     last = time.time()
@@ -723,6 +765,7 @@ def main():
             if isinstance(here_now, int):
                 focus_if_on(leader, here_now)
     finally:
+        manifest.remove()
         hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}, cursor={no_warps=false}})")
 
 
