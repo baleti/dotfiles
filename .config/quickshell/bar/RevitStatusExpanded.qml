@@ -22,20 +22,20 @@ Rectangle {
 
     // [{ label, width, role }] -- role picks the cell renderer below.
     readonly property var columns: [
-        { label: "VM",      width: 150, key: "vm" },
-        { label: "REVIT",   width: 60,  key: "year" },
-        { label: "VERSION", width: 100, key: "version" },
-        { label: "STATUS",  width: 250, key: "status" },
-        { label: "AGENT",   width: 110, key: "agent" },
-        { label: "BUILD",   width: 170, key: "build" },
-        { label: "ENGINES", width: 260, key: "engines" },
-        { label: "QUEUE",   width: 56,  key: "queued" },
-        { label: "PID",     width: 62,  key: "pid" },
-        { label: "PORT",    width: 56,  key: "port" }
+        { label: "VM",      width: 90, key: "vm" },
+        { label: "DISPLAY", width: 52, key: "display" },
+        { label: "REVIT",   width: 42,  key: "year" },
+        { label: "STATUS",  width: 190, key: "status" },
+        { label: "AGENT",   width: 74,  key: "agent" },
+        { label: "BUILD",   width: 140, key: "build" },
+        { label: "ENGINE",  width: 80,  key: "engine" },
+        { label: "QUEUE",   width: 42,  key: "queued" },
+        { label: "PID",     width: 46,  key: "pid" },
+        { label: "PORT",    width: 42,  key: "port" }
     ]
-    readonly property int colGap: 12
-    readonly property int rowHeight: 26
-    readonly property real naturalContentWidth: columns.reduce((s, c) => s + c.width + root.colGap, 0) + 32
+    readonly property int colGap: 8
+    readonly property int rowHeight: 17
+    readonly property real naturalContentWidth: columns.reduce((s, c) => s + c.width + root.colGap, 0) + 24
 
     property var rows: []
     property bool loaded: false
@@ -44,7 +44,7 @@ Rectangle {
     property double updatedMs: 0
 
     width: panelWidth
-    implicitHeight: expanded ? Math.min(content.implicitHeight + 24, root.maxPanelHeight) : 0
+    implicitHeight: expanded ? Math.min(content.implicitHeight + 20, root.maxPanelHeight) : 0
     height: implicitHeight
     visible: height > 0
     clip: true
@@ -96,13 +96,14 @@ Rectangle {
     function cellText(r, key) {
         if (key === "vm") return root.vmLabel(r);
         if (key === "status") return root.statusText(r);
-        if (!r.instance) return key === "build" && r.detail ? r.detail : "";
+        if (key === "display") return r.display === "gpu" ? "GPU" : r.display === "qxl" ? "QXL" : "";
+        if (!r.instance) return key === "build" && r.detail ? r.detail.replace(/[^\x20-\x7e]/g, "").trim() : "";
         switch (key) {
         case "year": return String(r.year);
         case "version": return r.version || "";
         case "agent": return root.agentKind(r);
         case "build": return r.build || "-";
-        case "engines": return (r.engines || []).join(" ");
+        case "engine": return r.active_engine || (r.running ? "?" : "-");
         case "queued": return r.queued > 0 ? String(r.queued) : "-";
         case "pid": return String(r.pid);
         case "port": return String(r.port);
@@ -112,6 +113,7 @@ Rectangle {
     function cellColor(r, key) {
         if (key === "status") return root.statusColor(r);
         if (key === "agent") return r.instance && root.agentKind(r) === "legacy" ? Theme.orange : Theme.textDim;
+        if (key === "display") return r.display === "gpu" ? Theme.cyan : Theme.textDim;
         if (key === "vm" || key === "year") return Theme.text;
         return Theme.textDim;
     }
@@ -174,10 +176,10 @@ Rectangle {
 
     Column {
         id: content
-        x: 16
-        y: 12
-        width: parent.width - 32
-        spacing: 6
+        x: 12
+        y: 10
+        width: parent.width - 24
+        spacing: 2
 
         Row {
             width: parent.width
@@ -185,7 +187,7 @@ Rectangle {
                 text: "Revit instances"
                 color: Theme.text
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize
+                font.pixelSize: Theme.fontSize - 1
                 font.bold: true
             }
             Item { width: 12; height: 1 }
@@ -194,7 +196,7 @@ Rectangle {
                 text: root.loaded ? (n + " running") + (root.loading ? "  · refreshing…" : "") : "probing VMs…"
                 color: Theme.muted
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize - 2
+                font.pixelSize: Theme.fontSize - 3
                 anchors.baseline: parent.children[0].baseline
             }
         }
@@ -235,10 +237,10 @@ Rectangle {
                         height: root.rowHeight
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
-                        text: modelData.key === "vm" && rowItem.repeatsVm ? "" : root.cellText(rowItem.modelData, modelData.key)
+                        text: (modelData.key === "vm" || modelData.key === "display") && rowItem.repeatsVm ? "" : root.cellText(rowItem.modelData, modelData.key)
                         color: root.cellColor(rowItem.modelData, modelData.key)
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSize - 1
+                        font.pixelSize: modelData.key === "vm" || modelData.key === "year" || modelData.key === "status" || modelData.key === "display" ? Theme.fontSize - 2 : Theme.fontSize - 3
                         font.bold: modelData.key === "status"
                     }
                 }
@@ -250,7 +252,7 @@ Rectangle {
             text: root.error
             color: Theme.red
             font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSize - 1
+            font.pixelSize: Theme.fontSize - 2
         }
         Text {
             visible: root.loaded
