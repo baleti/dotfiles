@@ -24,8 +24,10 @@ APP_DIRS = [os.path.expanduser("~/.local/share/applications"),
 # Private, never-focused workspace the windows open on. It is unique to this run, so a
 # window sitting on it is ours by construction (identified by its Hyprland address, never
 # by "whatever just appeared" or by what is focused).
-STAGE = 20000 + os.getpid() % 10000
-BUILD = STAGE + 1   # private empty workspace a busy workspace's group is taken to while slides are merged into it
+# Both are scratchpad (special) workspaces: invisible, absent from the workspace bar, and
+# never shown on any monitor, unlike a numbered workspace.
+STAGE = f"special:groupopen_{os.getpid()}"
+BUILD = f"special:groupopen_build_{os.getpid()}"   # private empty workspace a busy workspace's group is taken to while slides are merged into it
 TIMEOUT = 20  # seconds to wait for each window to appear
 
 
@@ -307,14 +309,14 @@ def focus_if_on(addr, ws):
 
 
 def move_ws(addr, ws):
-    lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.window.move({{workspace={ws}, window=w, follow=false}})) end end)()')
+    lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.window.move({{workspace={json.dumps(ws) if isinstance(ws, str) else ws}, window=w, follow=false}})) end end)()')
 
 
 def is_solitary(leader, addrs, ws):
     """True if the leader's group is the only thing on ws (ignoring `addrs`, which are
     about to join): then Hyprland merges windows moved onto ws with no resizing at all."""
     members = set(next((c["grouped"] for c in clients() if c["address"] == leader), [])) | {leader}
-    return not any(c["workspace"]["id"] == ws and c["address"] not in members | set(addrs)
+    return not any(c["workspace"]["id" if isinstance(ws, int) else "name"] == ws and c["address"] not in members | set(addrs)
                    for c in clients())
 
 
@@ -361,14 +363,14 @@ def merge_batch(leader, addrs, ws):
     cur_addr = tostring(lead.address)
     had_focus = lead.active == true
   end
-  {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {BUILD}, window = lead, follow = false }}))'}
+  {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {json.dumps(BUILD)}, window = lead, follow = false }}))'}
   if not lead.group then hl.dispatch(hl.dsp.group.toggle({{ window = lead }})) end
   for _, addr in ipairs({{ {table} }}) do
     local nw
     for _, w in ipairs(hl.get_windows()) do if w.address == addr then nw = w break end end
     if nw then
       hl.dispatch(hl.dsp.group.active({{ index = lead.group.size, window = lead }}))
-      hl.dispatch(hl.dsp.window.move({{ workspace = {target}, window = nw, follow = false }}))
+      hl.dispatch(hl.dsp.window.move({{ workspace = {json.dumps(target)}, window = nw, follow = false }}))
     end
   end
   local idx, keep = 1, nil
@@ -376,7 +378,7 @@ def merge_batch(leader, addrs, ws):
     if tostring(m.address) == cur_addr then idx = i keep = m break end
   end
   hl.dispatch(hl.dsp.group.active({{ index = idx, window = lead }}))
-  {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = lead, follow = false }}))'}
+  {'' if solitary else f'hl.dispatch(hl.dsp.window.move({{ workspace = {json.dumps(ws)}, window = lead, follow = false }}))'}
   if had_focus and keep then
     local now
     for _, w in ipairs(hl.get_windows()) do if w.active then now = tostring(w.address) end end
@@ -463,7 +465,7 @@ def main():
     ap.add_argument("--max-parallel", type=int, default=1, help="most windows loading at once (default 1)")
     ap.add_argument("--launch-gap", type=float, default=0.6, help="minimum seconds between launches (default 0.6)")
     ap.add_argument("--cpu-limit", type=float, default=50, help="back off while CPU use is above this percent (default 50)")
-    ap.add_argument("--temp-limit", type=float, default=78, help="pause launching while the CPU is hotter than this, deg C; resumes 10 below (default 78)")
+    ap.add_argument("--temp-limit", type=float, default=78, help="start slowing down above this CPU temperature, deg C: launches are spaced out further by 1x per 2 degrees over, never stopped (default 78)")
     ap.add_argument("--focus", action="store_true", help="focus the finished group once, if you are still on its workspace (default: focus is never moved)")
     lim = ap.add_mutually_exclusive_group()
     lim.add_argument("--head", type=int, metavar="N", help="only open the first N files")
@@ -555,7 +557,7 @@ def main():
         for c in clients():
             if c["address"] in seen or not c["mapped"]:
                 continue
-            if c["workspace"]["id"] == STAGE:
+            if c["workspace"]["name"] == STAGE:
                 seen.add(c["address"])
                 out.append(c)
         return out
@@ -603,8 +605,7 @@ def main():
         # machine is above --cpu-limit and grows back when there is headroom.
         cpu = Cpu()
         limit = 1
-        paused = False
-        pause_start = 0.0
+        slow = 1.0
         last_launch = 0.0
         last_cpu = last = time.time()
         last_batch = 0.0
@@ -614,23 +615,17 @@ def main():
             if now - last_cpu >= 0.5:
                 busy_pct, temp = cpu.percent(), cpu_temp()
                 pressured = psi("cpu") > 40 or psi("memory") > 10
-                if temp > a.temp_limit:
-                    if not paused:
-                        pause_start = now
-                    paused = True            # too hot: stop starting anything until it cools
-                elif temp < a.temp_limit - 10:
-                    paused = False
-                if paused and now - pause_start > 90:
-                    paused = False           # never cooled: carry on, one window at a time
-                if paused or busy_pct > a.cpu_limit or pressured:
+                # Too hot or too busy: never stop, just go slower. Each degree over the limit
+                # stretches the gap between launches (and the pause between merges).
+                over = max(0.0, temp - a.temp_limit)
+                slow = min(10.0, 1.0 + over / 2)
+                if over > 0 or busy_pct > a.cpu_limit or pressured:
                     limit = max(1, limit - 1)
                 elif busy_pct < a.cpu_limit - 20:
                     limit = min(a.max_parallel, limit + 1)
                 last_cpu = now
-                if paused:
-                    last = now               # waiting for the machine to cool is not a stall
-            if (not paused and launched < n and launched - 1 - arrived < limit
-                    and now - last_launch >= a.launch_gap):
+            if (launched < n and launched - 1 - arrived < limit
+                    and now - last_launch >= a.launch_gap * slow):
                 if launch(launched, STAGE):
                     started[launched] = time.time()
                 else:                        # nothing to open it with: never blocks the rest
@@ -663,7 +658,7 @@ def main():
                 nxt += 1
             solitary_now = is_solitary(leader, ready, home)
             gap = a.batch if (solitary_now or a.ferry is None) else a.ferry
-            if ready and (nxt >= n or time.time() - last_batch >= gap):
+            if ready and (nxt >= n or time.time() - last_batch >= gap * slow):
                 batch_addrs = list(ready)
                 joined = merge_batch(leader, ready, home)
                 if joined:
@@ -677,7 +672,7 @@ def main():
                         todo = batch_addrs if (solitary_now or a.ferry is None) else next(
                             (c["grouped"] for c in clients() if c["address"] == leader), batch_addrs)
                         bg.submit(warm_tabs, list(todo))
-                    print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, parallel {limit}, {temp:.0f}C{', PAUSED (hot)' if paused else ''})", file=sys.stderr)
+                    print(f"   merged {len(ready)} (group now {merged + 1}/{n}, loading {launched - 1 - arrived}, parallel {limit}, {temp:.0f}C{f', slowed x{slow:.1f} (hot)' if slow > 1 else ''})", file=sys.stderr)
                     ready = []
                     last = time.time()
                 last_batch = time.time()
@@ -690,7 +685,7 @@ def main():
         # anything of ours that could not be grouped is moved to dest ungrouped, never
         # left stranded on the invisible staging workspace
         for c in clients():
-            if c["workspace"]["id"] == STAGE:
+            if c["workspace"]["name"] == STAGE:
                 move_ws(c["address"], dest)
                 print(f"   (could not group {c['address']}; left on workspace {dest})", file=sys.stderr)
         bg.shutdown(wait=True)    # background re-caching started during loading
