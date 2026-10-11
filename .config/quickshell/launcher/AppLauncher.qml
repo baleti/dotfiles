@@ -701,7 +701,28 @@ PanelWindow {
                 // Only a genuine key-up should actually stop it.
                 Keys.onReleased: event => { if (!event.isAutoRepeat) _stopNavRepeat(); }
 
+                // zsh-autosuggestions (query-dsl.md "Search-box history"): greyed-out
+                // rest of the newest history entry starting with the text; Right, End
+                // or Ctrl+F at the end of the text takes it.
+                readonly property string ghost:
+                    (cursorPosition === text.length && !(ac.visible)) ? LauncherQueryHistory.suggest(text) : ""
+                Text {
+                    visible: query.ghost.length > 0
+                    x: query.positionToRectangle(query.text.length).x
+                    y: query.positionToRectangle(query.text.length).y
+                    text: query.ghost
+                    color: Theme.muted
+                    font: query.font
+                }
                 Keys.onPressed: event => {
+                    if (query.ghost.length > 0 && !((event.modifiers & Qt.ShiftModifier))
+                            && ((event.key === Qt.Key_Right && !(event.modifiers & ~Qt.KeypadModifier))
+                                || event.key === Qt.Key_End
+                                || (event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier)))) {
+                        query.insert(query.text.length, query.ghost);
+                        event.accepted = true;
+                        return;
+                    }
                     if (event.key === Qt.Key_Escape) {
                         if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; root.acHistoryMode = false; }
                         else root.hide();

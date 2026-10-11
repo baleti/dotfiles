@@ -55,4 +55,15 @@ Singleton {
     function listMostRecentFirst() {
         return root.entries.slice().reverse();
     }
+
+    // zsh-autosuggestions (query-dsl.md "Search-box history"): the unfinished
+    // remainder of the newest entry that starts with `text`, "" if none.
+    function suggest(text) {
+        if (!text || !text.trim()) return "";
+        for (let i = root.entries.length - 1; i >= 0; i--) {
+            const e = root.entries[i];
+            if (e.length > text.length && e.startsWith(text)) return e.slice(text.length);
+        }
+        return "";
+    }
 }

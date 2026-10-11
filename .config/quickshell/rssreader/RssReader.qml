@@ -778,7 +778,28 @@ PanelWindow {
                                 // a genuine key-up should actually stop it.
                                 Keys.onReleased: e => { if (!e.isAutoRepeat) _stopNavRepeat(); }
 
+                                // zsh-autosuggestions (query-dsl.md "Search-box history"): greyed-out
+                                // rest of the newest history entry starting with the text; Right, End
+                                // or Ctrl+F at the end of the text takes it.
+                                readonly property string ghost:
+                                    (cursorPosition === text.length && !(root.acOpen)) ? RssQueryHistory.suggest(text) : ""
+                                Text {
+                                    visible: search.ghost.length > 0
+                                    x: search.positionToRectangle(search.text.length).x
+                                    y: search.positionToRectangle(search.text.length).y
+                                    text: search.ghost
+                                    color: Theme.muted
+                                    font: search.font
+                                }
                                 Keys.onPressed: e => {
+                                    if (search.ghost.length > 0 && !((e.modifiers & Qt.ShiftModifier))
+                                            && ((e.key === Qt.Key_Right && !(e.modifiers & ~Qt.KeypadModifier))
+                                                || e.key === Qt.Key_End
+                                                || (e.key === Qt.Key_F && (e.modifiers & Qt.ControlModifier)))) {
+                                        search.insert(search.text.length, search.ghost);
+                                        e.accepted = true;
+                                        return;
+                                    }
                                     if (e.key === Qt.Key_Escape) {
                                         if (root.acOpen) { root.acDismissed = true; root.acVerbMulti = false; }
                                         else if (search.text.length) search.text = "";

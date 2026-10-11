@@ -1676,7 +1676,28 @@ Rectangle {
                 // open; that needs a further Escape, which -- now that
                 // this one is accepted and the box no longer holds focus
                 // -- bubbles up to Bar.qml's root.Keys.onPressed.
+                // zsh-autosuggestions (query-dsl.md "Search-box history"): greyed-out
+                // rest of the newest history entry starting with the text; Right, End
+                // or Ctrl+F at the end of the text takes it.
+                readonly property string ghost:
+                    (cursorPosition === text.length && !(root.acOpen)) ? ClaudeUsageQueryHistory.suggest(text) : ""
+                Text {
+                    visible: searchInput.ghost.length > 0
+                    x: searchInput.positionToRectangle(searchInput.text.length).x
+                    y: searchInput.positionToRectangle(searchInput.text.length).y
+                    text: searchInput.ghost
+                    color: Theme.muted
+                    font: searchInput.font
+                }
                 Keys.onPressed: event => {
+                    if (searchInput.ghost.length > 0 && !((event.modifiers & Qt.ShiftModifier))
+                            && ((event.key === Qt.Key_Right && !(event.modifiers & ~Qt.KeypadModifier))
+                                || event.key === Qt.Key_End
+                                || (event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier)))) {
+                        searchInput.insert(searchInput.text.length, searchInput.ghost);
+                        event.accepted = true;
+                        return;
+                    }
                     if (event.key === Qt.Key_Escape) {
                         if (root.acOpen) {
                             root.acDismissed = true;
