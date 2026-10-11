@@ -1,0 +1,7 @@
+[Desktop Entry]
+Exec=bluetoothctl connect B0:F0:0C:0E:77:29
+Name=bluetooth headphones connect
+NoDisplay=true
+StartupNotify=false
+Type=Application
+X-KDE-GlobalAccel-CommandShortcut=true

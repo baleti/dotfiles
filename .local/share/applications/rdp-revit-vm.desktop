@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RDP: Revit VMs
+Comment=Pick from the Revit VMs currently running on host2 and open RDP
+Exec=/home/user1/bin/rdp-revit-vm-menu
+Icon=computer
+Terminal=false
+Categories=Network;RemoteAccess;

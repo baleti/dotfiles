@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Rhino WIP
+MimeType=application/x-wine-extension-3dmbak;
+Exec=env "WINEPREFIX=/home/user1/.wine" wine start /ProgIDOpen "Rhino9.Document.Backup" %f
+NoDisplay=true
+StartupNotify=true
+Icon=E902_Rhino.0

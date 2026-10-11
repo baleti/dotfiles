@@ -9,6 +9,7 @@ import "background"
 import "osd"
 import "notifications"
 import "revitremote"
+import "rdpvm"
 import "launcher"
 import "rssreader"
 import "keybinds"
@@ -95,6 +96,14 @@ ShellRoot {
         target: "revitRemote"
         function toggle(): void {
             RevitRemotePickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+    }
+
+    // Revit VM RDP picker (launcher entry "RDP: Revit VM", ~/bin/rdp-revit-vm-menu).
+    IpcHandler {
+        target: "rdpVm"
+        function toggle(): void {
+            RdpVmPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
         }
     }
 
@@ -262,6 +271,15 @@ ShellRoot {
         model: Quickshell.screens
 
         RevitRemotePicker {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        RdpVmPicker {
             required property var modelData
             screen: modelData
         }
