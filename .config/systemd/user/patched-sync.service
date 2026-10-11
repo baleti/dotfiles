@@ -1,0 +1,9 @@
+[Unit]
+Description=Rebase locally patched programs (zathura, ...) onto new upstream releases and stage builds
+
+[Service]
+Type=oneshot
+ExecStart=%h/src/patched/bin/patched-sync
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+TimeoutStartSec=2h
+Nice=10
