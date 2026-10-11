@@ -382,6 +382,10 @@ hl.bind(mainMod .. " + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh
 -- service), not queried directly here.
 hl.bind("CTRL + ALT + c", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleClaudeUsage"), { description = "Toggle the Claude Code usage panel" })
 
+-- Revit instance status panel: one row per Revit reachable through the revit-ballet agents (VM, Revit version, status, agent origin/
+-- build, engines, queue). Same shape as the Claude usage panel above; data from `revit-remote status`, polled only while open.
+hl.bind("CTRL + ALT + r", hl.dsp.exec_cmd("~/.config/hypr/scripts/bar-toggle.sh toggleRevitStatus"), { description = "Toggle the Revit instances status panel" })
+
 -- bluetooth
 -- Headphone address lives in ~/.config/hypr/bluetooth-headphones.conf (HEADPHONES_ID).
 hl.bind(mainMod .. " + b",          hl.dsp.exec_cmd("~/.config/hypr/scripts/headphones.sh connect"),    { description = "Bluetooth headphones: take over from phone and connect here" })
