@@ -150,6 +150,25 @@ Item {
     // together, as that'd mean the Rust popup re-reading this JSON file.
     readonly property var palette: Theme.seriesPalette
 
+    // Palette slots in an order that keeps neighbours far apart in hue, so
+    // two interfaces/devices never get near-identical colours (hash-based
+    // colorFor() could collide or land next to each other). Used by the
+    // net and disk graphs, which give each rx/tx (read/write) pair a base
+    // colour plus a lighter, hue-shifted "twin" (pairTwin).
+    readonly property var distinctOrder: [0, 2, 3, 1, 5, 6, 7, 4]
+    function distinctColor(i: int): color {
+        const n = root.palette.length;
+        return root.palette[root.distinctOrder[i % root.distinctOrder.length] % n];
+    }
+    function pairTwin(c: color): color {
+        return Qt.hsla((c.hslHue + 0.04) % 1, Math.max(0, c.hslSaturation * 0.8), Math.min(0.88, c.hslLightness + 0.2), 1);
+    }
+    readonly property var netColorMap: {
+        const m = {};
+        SysmonSvc.netInterfaces.map(i => i.name).sort().forEach((n, i) => { m[n] = root.distinctColor(i); });
+        return m;
+    }
+
     function colorFor(name: string): color {
         let hash = 0;
         for (let i = 0; i < name.length; i++)
@@ -468,13 +487,18 @@ Item {
     // which is what was making `qs` itself the top CPU consumer (43% of a
     // core) and measurably contributing to the temperature widget's own
     // readings, 2026-08-27.
-    readonly property var netLegend: netPill.expanded ? SysmonSvc.netInterfaces.map(i => ({ name: i.name, color: root.colorFor(i.name) })) : []
+    readonly property var netLegend: netPill.expanded ? [].concat(...SysmonSvc.netInterfaces.map(i => [
+        { name: i.name + " " + root.rxArrow, color: root.netColorMap[i.name] },
+        { name: i.name + " " + root.txArrow, color: root.pairTwin(root.netColorMap[i.name]) }
+    ])) : []
+    readonly property string rxArrow: "\u2193"
+    readonly property string txArrow: "\u2191"
     readonly property var netSeriesList: {
         if (!netPill.expanded)
             return [];
         const out = [];
         for (const iface of SysmonSvc.netInterfaces) {
-            const c = root.colorFor(iface.name);
+            const c = root.netColorMap[iface.name];
             // Same name on both rx/tx (request 2026-09-10: hover-bold) --
             // matches netLegend's own one-row-per-interface name, so
             // hovering either line bolds both plus their shared legend row.
@@ -484,8 +508,8 @@ Item {
             // interface on its own -- see NethogsPool's doc comment in
             // sysmond.rs -- so a separate instance per interface is what
             // makes this possible at all).
-            out.push({ data: iface.rx_bps, color: c, dashed: false, name: iface.name, procSnaps: SysmonSvc.procHistSnaps("net:" + iface.name + ":rx") });
-            out.push({ data: iface.tx_bps, color: c, dashed: true, name: iface.name, procSnaps: SysmonSvc.procHistSnaps("net:" + iface.name + ":tx") });
+            out.push({ data: iface.rx_bps, color: c, dashed: false, noFill: true, name: iface.name + " " + root.rxArrow, procSnaps: SysmonSvc.procHistSnaps("net:" + iface.name + ":rx") });
+            out.push({ data: iface.tx_bps, color: root.pairTwin(c), dashed: false, noFill: true, name: iface.name + " " + root.txArrow, procSnaps: SysmonSvc.procHistSnaps("net:" + iface.name + ":tx") });
         }
         return out;
     }
@@ -637,28 +661,21 @@ Item {
         .sort((a, b) => a.r - b.r || a.i - b.i)
         .map(x => x.d)
     readonly property var diskColorMap: {
-        const m = {}, used = {};
-        for (const d of SysmonSvc.diskDevices) {
-            if (root.isNetMount(d.name)) continue;
-            m[d.name] = root.colorFor(d.name);
-            used[m[d.name]] = true;
-        }
-        const n = root.palette.length;
-        const nets = SysmonSvc.diskDevices.filter(d => root.isNetMount(d.name)).map(d => d.name).sort();
-        let next = 0;
-        for (const name of nets) {
-            let tries = 0;
-            while (used[root.palette[next % n]] && tries++ < n) next++;
-            m[name] = root.palette[next % n];
-            used[m[name]] = true;
-            next++;
-            if (Object.keys(used).length >= n) for (const k in used) delete used[k];
-        }
+        // Local block devices first, then network mounts, each sorted by
+        // name -- sequential distinct slots, so no two collide until the
+        // palette runs out.
+        const m = {};
+        const names = SysmonSvc.diskDevices.map(d => d.name);
+        const ordered = names.filter(n => !root.isNetMount(n)).sort().concat(names.filter(n => root.isNetMount(n)).sort());
+        ordered.forEach((n, i) => { m[n] = root.distinctColor(i); });
         return m;
     }
     function diskColor(name: string): var { return root.diskColorMap[name]; }
 
-    readonly property var diskLegend: diskPill.expanded ? root.diskDevicesShown.map(d => ({ name: d.name, color: root.diskColor(d.name) })) : []
+    readonly property var diskLegend: diskPill.expanded ? [].concat(...root.diskDevicesShown.map(d => [
+        { name: d.name + " " + root.rxArrow, color: root.diskColor(d.name) },
+        { name: d.name + " " + root.txArrow, color: root.pairTwin(root.diskColor(d.name)) }
+    ])) : []
     readonly property var diskSeriesList: {
         if (!diskPill.expanded)
             return [];
@@ -673,8 +690,8 @@ Item {
             // shares the ONE read ring (ditto write); referencing the same
             // ring across devices is also what keeps the empty-space merge
             // from summing it once per device.
-            out.push({ data: dev.read_bps, color: c, dashed: false, name: dev.name, procSnaps: SysmonSvc.procHistSnaps("disk:read") });
-            out.push({ data: dev.write_bps, color: c, dashed: true, name: dev.name, procSnaps: SysmonSvc.procHistSnaps("disk:write") });
+            out.push({ data: dev.read_bps, color: c, dashed: false, noFill: true, name: dev.name + " " + root.rxArrow, procSnaps: SysmonSvc.procHistSnaps("disk:read") });
+            out.push({ data: dev.write_bps, color: root.pairTwin(c), dashed: false, noFill: true, name: dev.name + " " + root.txArrow, procSnaps: SysmonSvc.procHistSnaps("disk:write") });
         }
         return out;
     }
