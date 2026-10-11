@@ -280,7 +280,7 @@ class NameTable:
     def load(self):
         t0 = time.time()
         con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        rows = con.execute("SELECT path, size, mtime FROM entries ORDER BY path").fetchall()
+        rows = con.execute("SELECT path, size, mtime FROM entries ORDER BY path, mtime DESC").fetchall()
         dates = [r[0] for r in con.execute(
             "SELECT DISTINCT strftime('%Y-%m', mtime, 'unixepoch', 'localtime') d FROM entries "
             "WHERE mtime IS NOT NULL ORDER BY d DESC")]
@@ -315,7 +315,7 @@ class NameTable:
             self.sort_keys = keys
             self._cache = None
             self.dates = [d for d in dates if d]
-            self.loaded_mtime = os.path.getmtime(self.db_path)
+            self.loaded_mtime = self._db_mtime()
         print(f"name table: {len(paths)} paths, {len(blob)/1e6:.0f} MB blob, {time.time()-t0:.1f}s", flush=True)
 
     def top_exts(self, n=60):
@@ -325,9 +325,15 @@ class NameTable:
         counts = np.bincount(codes, minlength=len(names)) if len(codes) else np.zeros(0, int)
         return [names[k] for k in np.argsort(-counts)[:n] if names[k] and counts[k] > 0]
 
+    def _db_mtime(self):
+        """Newest change to the database, counting the WAL file (commits land there before a checkpoint)."""
+        return max(os.path.getmtime(f) for f in (self.db_path, self.db_path + "-wal") if os.path.exists(f))
+
     def refresh_if_stale(self):
         try:
-            if os.path.getmtime(self.db_path) > self.loaded_mtime:
+            if os.path.exists(self.db_path + ".building"):
+                return
+            if self._db_mtime() > self.loaded_mtime:
                 self.load()
         except OSError:
             pass
