@@ -102,7 +102,8 @@ PanelWindow {
         stdout: StdioCollector {
             id: listOut
             onStreamFinished: {
-                root._entries = m.parseRows(listOut.text);
+                const live = m.parseRows(listOut.text);
+                if (live.length > 0 || root._entries.length === 0) root._entries = live;   // an empty live answer (ssh hiccup) never wipes what is shown
                 root._status = root._entries.length + " commands";
             }
         }
@@ -118,7 +119,7 @@ PanelWindow {
     Process { id: invokeProc }
     function activate(idx) {
         const e = root.results[idx];
-        if (!e) return;
+        if (!e || !e.command) return;   // placeholder row of an instance without a command list
         // wait for the job so the notification can report how it ended (a command may sit in a picker or dialog for minutes)
         invokeProc.command = [root._bin, "invoke", "--target", e.target, "--port", String(e.port), "--command", e.command,
                               "--wait", "600000", "--notify", e.preview + " (" + e.fields.instance + ")"];
