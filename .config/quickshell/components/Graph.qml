@@ -359,8 +359,13 @@ Canvas {
     // past either end, which happens for a still-filling ring buffer's
     // right edge).
     function _lineYAt(data, x) {
-        const pts = root.downsample(data);
-        for (const run of root._splitRuns(pts)) {
+        return root._runsYAt(root._splitRuns(root.downsample(data)), x);
+    }
+
+    // Same, over already-split runs -- lets _updateHover smooth/split a
+    // series once and probe several x offsets.
+    function _runsYAt(runs, x) {
+        for (const run of runs) {
             if (run.length < 2)
                 continue;
             if (x < run[0].x || x > run[run.length - 1].x)
@@ -389,12 +394,22 @@ Canvas {
             const list = root._hitTestSeries();
             let bestName = "";
             let bestIdx = -1;
-            let bestDist = 10;
+            // 16px radius (was 10), measured as the closest approach over a
+            // +-8px horizontal window rather than only straight above/below
+            // the cursor -- steep spikes (net/disk bursts) are nearly
+            // vertical, so a same-x vertical distance missed them entirely.
+            let bestDist = 16;
             for (let i = 0; i < list.length; i++) {
-                const y = root._lineYAt(list[i].data, mx);
-                if (y === null)
+                let d = Infinity;
+                const runs = root._splitRuns(root.downsample(list[i].data));
+                for (let dx = -8; dx <= 8; dx += 2) {
+                    const y = root._runsYAt(runs, mx + dx);
+                    if (y === null)
+                        continue;
+                    d = Math.min(d, Math.hypot(dx, my - y));
+                }
+                if (d === Infinity)
                     continue;
-                const d = Math.abs(my - y);
                 if (d < bestDist) {
                     bestDist = d;
                     bestName = list[i].name ?? "";

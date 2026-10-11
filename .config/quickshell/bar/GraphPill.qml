@@ -1531,7 +1531,7 @@ Rectangle {
         height: legendTipText.implicitHeight + 12
         x: root._legendHoverPos.x - width / 2
         y: root._legendHoverPos.y - height - 10
-        color: Theme.bg
+        color: Qt.alpha(Theme.bg, 0.86)
         border.color: Theme.border
         border.width: 1
         radius: Theme.rounding
@@ -1551,9 +1551,9 @@ Rectangle {
     // Graph-hover tooltip -- the top processes at the graph point under the
     // cursor (see `hoverSnap`, driven by Graph.qml's hoveredIndex). A child
     // of `root` rather than `expandPanel` so it isn't clipped by the
-    // panel's `clip: true` -- it's meant to sit to the RIGHT of the cursor
-    // always, spilling out over the desktop beside the panel when the
-    // cursor is near the panel's own right edge.
+    // panel's `clip: true` -- it sits right of the cursor in the graph's
+    // right half and left of it in the left half, spilling out over the
+    // desktop beside the panel.
     Rectangle {
         id: hoverTip
         parent: root
@@ -1562,14 +1562,17 @@ Rectangle {
         z: 100
         width: 250
         height: hoverTipCol.implicitHeight + 16
-        // Always to the right of the cursor, vertically centred on it
-        // (Graph coords mapped into this pill's). No left-flip and no
-        // right-edge clamp -- overflowing the panel onto the background is
+        // Vertically centred on the cursor (Graph coords mapped into this
+        // pill's). No edge clamp -- overflowing the panel onto the background is
         // intended; only the top is floored so it never rides up over the
         // bar strip.
-        x: root._hoverCursorInPill.x + 16
+        // On the RIGHT of the cursor while it is in the right half of the
+        // graph, on the LEFT of it while in the left half.
+        x: graph.hoveredPixelX > graph.width / 2
+           ? root._hoverCursorInPill.x + 16
+           : root._hoverCursorInPill.x - 16 - width
         y: Math.max(root.height + 4, root._hoverCursorInPill.y - height / 2)
-        color: Theme.bg
+        color: Qt.alpha(Theme.bg, 0.86)
         border.color: Theme.border
         border.width: 1
         radius: Theme.rounding
@@ -1632,9 +1635,9 @@ Rectangle {
         z: 101
         width: chipRow.implicitWidth + 16
         height: chipRow.implicitHeight + 8
-        x: root._hoverCursorInPill.x + 16
+        x: hoverTip.x
         y: hoverTip.y - height - 4
-        color: Theme.bg
+        color: Qt.alpha(Theme.bg, 0.86)
         border.color: Theme.border
         border.width: 1
         radius: Theme.rounding
