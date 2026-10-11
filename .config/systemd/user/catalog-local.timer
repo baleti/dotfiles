@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the local file-name catalog regularly
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=30min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the remote file-name catalog every few hours
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

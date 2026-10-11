@@ -19,6 +19,7 @@ Everything here is generic code. The private parts are kept outside the repo:
 | Full text | Recoll (`recollindex`), one config directory per collection under `~/.cache/indexes/<name>/recoll` | Word search over file contents. `/fts` searches all of them. |
 | Semantic text | `chroma/recoll_fulltext_to_chroma.py` | Chunks extracted text, embeds on ai1 (`chroma/minilm_embed_ai1.py`), stores in Chroma. |
 | Driver | `photos/index_all.py` | Runs every flagged index for every collection in `collections.json`. |
+| Catalog refresh | `~/.config/systemd/user/catalog-{local,remote}.{service,timer}` | Local walk every 30 min (about 45 s, 26 MB); rclone remote and newest restic snapshot every 6 h (about 14 min, 1.4 GB peak). A full walk drops deleted files and old versions. The server reloads the catalog on its own when the file changes (it skips a build in progress, marked by `catalog.db.building`). |
 | Nightly | `~/.config/systemd/user/nightly-index.{service,timer}` | 02:30 run of the driver, nice 19, idle I/O, 2 CPUs, memory capped at 8 GB. |
 | Tools | `tools/pdf_list.py` (lists PDFs per collection), `tools/coverage.py` (indexed vs on disk) | Maintenance. |
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the file-name catalog from the local home (images picker)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/bin/index/catalog
+ExecStart=/usr/bin/nice -n 19 /usr/bin/ionice -c3 /usr/bin/python3 %h/bin/index/catalog/catalog.py build-local
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+CPUQuota=60%
+MemoryMax=1G
+TimeoutStartSec=30min
