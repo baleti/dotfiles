@@ -1,0 +1,14 @@
+[Unit]
+Description=Probe the Revit Ballet agents on the VMs for the quickshell CTRL+ALT+r panel
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/revit-status/revit-status-daemon.py
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=default.target
