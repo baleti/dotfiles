@@ -1,7 +1,0 @@
-[Desktop Entry]
-Name=Rhino WIP in Safe Mode
-Exec=env "WINEPREFIX=/home/user1/.wine" wine "C:\\\\users\\\\user1\\\\AppData\\\\Roaming\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Rhino WIP\\\\Rhino WIP in Safe Mode.lnk"
-Type=Application
-StartupNotify=true
-Icon=E902_Rhino.0
-StartupWMClass=rhino.exe

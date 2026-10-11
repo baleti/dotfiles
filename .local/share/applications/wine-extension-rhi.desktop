@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Rhino Installer Engine
-MimeType=application/rhi;
-Exec=env "WINEPREFIX=/home/user1/.wine" wine start /ProgIDOpen "Rhino.InstallerPackage" %f
-NoDisplay=true
-StartupNotify=true
-Icon=F9C5_rhiexec.0
