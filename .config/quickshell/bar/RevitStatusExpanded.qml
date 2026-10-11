@@ -26,8 +26,16 @@ Rectangle {
         { label: "ENGINE",  width: 80,  key: "engine" },
         { label: "QUEUE",   width: 42,  key: "queued" },
         { label: "PID",     width: 46,  key: "pid" },
-        { label: "PORT",    width: 42,  key: "port" }
+        { label: "PORT",    width: 42,  key: "port" },
+        // the "host3" group: the live Claude Code session on this machine that last ran a command naming the VM (shown on the VM's first row)
+        { label: "TITLE",   width: 230, key: "claudeTitle", group: true },
+        { label: "SESS",    width: 34,  key: "tmuxSession", group: true },
+        { label: "WIN",     width: 34,  key: "tmuxWindow",  group: true },
+        { label: "PANE",    width: 36,  key: "tmuxPane",    group: true }
     ]
+    readonly property var plainColumns: columns.filter(c => !c.group)
+    readonly property real plainWidth: plainColumns.reduce((s, c) => s + c.width + root.colGap, 0)
+    readonly property real groupWidth: columns.filter(c => c.group).reduce((s, c) => s + c.width + root.colGap, 0) - root.colGap
     readonly property int colGap: 8
     readonly property int rowHeight: 17
     readonly property real naturalContentWidth: columns.reduce((s, c) => s + c.width + root.colGap, 0) + 24
@@ -85,7 +93,12 @@ Rectangle {
 
     function cellText(r, key) {
         if (key === "vm") return root.vmLabel(r);
+        if (key === "claudeTitle") return r.claude ? r.claude.title : "";
+        if (key === "tmuxSession") return r.claude ? r.claude.tmux_session : "";
+        if (key === "tmuxWindow") return r.claude ? r.claude.tmux_window : "";
+        if (key === "tmuxPane") return r.claude ? r.claude.tmux_pane : "";
         if (key === "status") return root.statusText(r);
+        if (key === "claudeTitle") return Theme.text;
         if (key === "display") return r.display === "gpu" ? "GPU" : r.display === "qxl" ? "QXL" : "";
         if (!r.instance) return "";
         switch (key) {
@@ -180,6 +193,26 @@ Rectangle {
         }
 
         Row {
+            spacing: 0
+            Item { width: root.plainWidth; height: 1 }
+            Text {
+                text: "host3"
+                width: root.groupWidth
+                color: Theme.muted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 3
+                horizontalAlignment: Text.AlignHCenter
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: Theme.border
+                }
+            }
+        }
+
+        Row {
             spacing: root.colGap
             Repeater {
                 model: root.columns
@@ -215,7 +248,7 @@ Rectangle {
                         height: root.rowHeight
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
-                        text: (modelData.key === "vm" || modelData.key === "display") && rowItem.repeatsVm ? "" : root.cellText(rowItem.modelData, modelData.key)
+                        text: (modelData.key === "vm" || modelData.key === "display" || modelData.group === true) && rowItem.repeatsVm ? "" : root.cellText(rowItem.modelData, modelData.key)
                         color: root.cellColor(rowItem.modelData, modelData.key)
                         font.family: Theme.fontFamily
                         font.pixelSize: modelData.key === "vm" || modelData.key === "year" || modelData.key === "status" || modelData.key === "display" ? Theme.fontSize - 2 : Theme.fontSize - 3
