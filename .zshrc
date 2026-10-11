@@ -49,6 +49,7 @@ export EDITOR="emacsclient -t"
 # decode block, no need to wake the dGPU just to decode an RDP stream)
 export FREERDP_VAAPI_DEVICE=/dev/dri/renderD129
 
+alias nsxiv="nsxiv -b"
 alias b="bat --wrap never"
 alias ll='eza -lah'
 alias fd="fd -H -I"
