@@ -1,9 +1,28 @@
 #!/bin/bash
 # Launcher entry "RDP: Revit VM". No args: opens the quickshell picker (rdpvm/RdpVmPicker.qml), which calls `--list` each time it opens.
-# --list: the Revit VMs running on host2 right now, one per line: cid<TAB>name<TAB>cpus<TAB>mem. Picking one runs rdp-windows-vm <cid>.
+# --list: the Revit VMs running on host2 right now, one per line: cid<TAB>name<TAB>cpus<TAB>mem<TAB>gpu|qxl<TAB>revit instances<TAB>claude session title. Picking one runs rdp-windows-vm <cid>.
 if [ "$1" != --list ]; then exec qs ipc call rdpVm toggle; fi
 H2=192.168.1.13; KEY=~/.ssh/host2-ssh-auth
 ssh -i $KEY -o ConnectTimeout=5 -o BatchMode=yes user@$H2 'ps -eo args | grep "[q]emu-system"' 2>/dev/null | while read -r line; do
   cid=$(grep -oP 'guest-cid=\K[0-9]+' <<<"$line"); [ -n "$cid" ] || continue
-  printf '%s\t%s\t%s\t%s\n' "$cid" "$(grep -oP -- '-name \K\S+' <<<"$line")" "$(grep -oP -- '-smp \K\S+' <<<"$line")" "$(grep -oP -- '-m \K\S+' <<<"$line")"
-done | sort -n
+  case $line in *vfio-pci*) kind=gpu;; *) kind=qxl;; esac
+  printf '%s\t%s\t%s\t%s\t%s\n' "$cid" "$(grep -oP -- '-name \K\S+' <<<"$line")" "$(grep -oP -- '-smp \K\S+' <<<"$line")" "$(grep -oP -- '-m \K\S+' <<<"$line")" "$kind"
+done | sort -n | python3 -c '
+import json, sys
+# Revit instances + last Claude session per VM from the cached CTRL+ALT+r panel state (revit-status-daemon); blank if not cached
+try:
+    rows = json.load(open(__import__("os").path.expanduser("~/.cache/revit-status/state.json")))["rows"]
+except Exception:
+    rows = []
+def status(r):
+    if r.get("state") == "modal": return "dialog"
+    if not r.get("responsive", True): return "not responding"
+    if r.get("running"): return "busy"
+    return r.get("state") or "?"
+for line in sys.stdin:
+    f = line.rstrip("\n").split("\t")
+    mine = [r for r in rows if str(r.get("cid")) == f[0] and r.get("instance")]
+    inst = "  ".join("%s %s%s" % (r["year"], status(r), "+%dq" % r["queued"] if r.get("queued") else "") for r in sorted(mine, key=lambda r: r["year"]))
+    title = next((r["claude"]["title"] for r in rows if str(r.get("cid")) == f[0] and r.get("claude")), "")
+    print("\t".join(f + [inst or "no Revit running", title]))
+'
