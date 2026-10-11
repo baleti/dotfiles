@@ -62,7 +62,7 @@ PanelWindow {
     }
     function hide() { RdpVmPickerState.close(); }
 
-    // `cid <TAB> name <TAB> cpus <TAB> mem` per running VM
+    // `cid <TAB> name <TAB> cpus <TAB> mem <TAB> gpu|qxl <TAB> revit instances <TAB> claude title` per running VM
     Process {
         id: listProc
         command: [root._bin, "--list"]
@@ -71,7 +71,7 @@ PanelWindow {
             onStreamFinished: {
                 root.vms = listOut.text.split("\n").filter(l => l.length > 0).map(l => {
                     const f = l.split("\t");
-                    return { cid: f[0], name: f[1] || "", detail: (f[2] || "?") + " cpu  " + (f[3] || "?") };
+                    return { cid: f[0], name: f[1] || "", detail: (f[2] || "?") + " cpu  " + (f[3] || "?"), gpu: f[4] === "gpu", revit: f[5] || "", claude: f[6] || "" };
                 });
                 root.status = root.vms.length === 0 ? "no Revit VM running on host2 (or host2 unreachable)" : "";
             }
@@ -80,7 +80,7 @@ PanelWindow {
 
     readonly property var results: {
         const q = query.text.trim().toLowerCase();
-        return root.vms.filter(v => q === "" || ("cid " + v.cid + " " + v.name + " " + v.detail).toLowerCase().indexOf(q) >= 0);
+        return root.vms.filter(v => q === "" || ("cid " + v.cid + " " + (v.gpu ? "gpu passthrough" : "qxl") + " " + v.name + " " + v.detail + " " + v.revit + " " + v.claude).toLowerCase().indexOf(q) >= 0);
     }
     onResultsChanged: if (root.selected >= results.length) root.selected = Math.max(0, results.length - 1)
 
@@ -118,8 +118,8 @@ PanelWindow {
         id: card
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.verticalCenter: parent.verticalCenter
-        width: 460
-        height: Math.min(Math.round((root.screen ? root.screen.height : 1080) * 0.6), 44 + 8 + Math.max(1, root.results.length) * 44 + 24)
+        width: 520
+        height: Math.min(Math.round((root.screen ? root.screen.height : 1080) * 0.6), 44 + 8 + Math.max(1, root.results.length) * 76 + 24)
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.cyan
@@ -210,7 +210,7 @@ PanelWindow {
                 required property var modelData
                 required property int index
                 width: list.width
-                height: 44
+                height: 76
                 color: index === root.selected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16) : "transparent"
 
                 Text {
@@ -219,7 +219,7 @@ PanelWindow {
                     text: ""
                     font.family: Theme.iconFontFamily
                     font.pixelSize: 16
-                    color: Theme.textDim
+                    color: row.modelData.gpu ? Theme.cyan : Theme.textDim
                 }
                 Column {
                     x: 40
@@ -228,7 +228,7 @@ PanelWindow {
                     spacing: 1
                     Text {
                         width: parent.width
-                        text: "Revit VM  CID " + row.modelData.cid
+                        text: "Revit VM  CID " + row.modelData.cid + "  ·  " + (row.modelData.gpu ? "GPU passthrough" : "QXL")
                         elide: Text.ElideRight
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 1
@@ -237,6 +237,25 @@ PanelWindow {
                     Text {
                         width: parent.width
                         text: row.modelData.name + "  ·  " + row.modelData.detail
+                        elide: Text.ElideRight
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        color: Theme.textDim
+                        opacity: 0.7
+                    }
+                    Text {
+                        width: parent.width
+                        text: "Revit  " + row.modelData.revit
+                        elide: Text.ElideRight
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        color: Theme.textDim
+                        opacity: 0.7
+                    }
+                    Text {
+                        visible: row.modelData.claude !== ""
+                        width: parent.width
+                        text: "Claude  " + row.modelData.claude
                         elide: Text.ElideRight
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 2
