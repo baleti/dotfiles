@@ -95,6 +95,8 @@ QtObject {
                 root._onAltUp();
             else if (rest.startsWith("tab "))
                 root._onTab(rest.slice(4));
+            else if (rest.startsWith("gtab "))
+                GroupPickerState._onGroupTab(rest.slice(5));   // mod+Tab, see GroupPickerState.qml
             else if (rest.startsWith("nav ") && root.active)
                 root.navKey(rest.slice(4));
         }
