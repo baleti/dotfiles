@@ -301,6 +301,14 @@ function winswitch.group_tab(direction)
     end
 end
 
+-- mainMod+CTRL+h/j/k/l normally move the window; while the group switcher is up (Super is
+-- necessarily held) they move the selection instead. Called first by those binds.
+function winswitch.nav_mod(dir)
+    if not mod_timer:is_enabled() then return false end
+    emit("nav " .. dir)
+    return true
+end
+
 hl.bind(mainMod .. " + Tab", function() winswitch.group_tab("next") end, { description = "Group tabs switcher (next); stays up while the modifier is held" })
 hl.bind(mainMod .. " + SHIFT + Tab", function() winswitch.group_tab("prev") end, { description = "Group tabs switcher (previous)" })
 
