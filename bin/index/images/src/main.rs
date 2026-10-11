@@ -1091,6 +1091,15 @@ impl App {
             .collect()
     }
 
+    /// The unfinished remainder of the newest history entry that starts with the current text.
+    fn suggestion(&self) -> String {
+        if self.query.trim().is_empty() { return String::new(); }
+        self.history.iter().rev()
+            .find(|h| h.len() > self.query.len() && h.starts_with(&self.query))
+            .map(|h| h[self.query.len()..].to_string())
+            .unwrap_or_default()
+    }
+
     /// Adds the current query to the history (see the DSL spec: recorded on accept / movement, not per keystroke).
     fn record_history(&mut self) {
         let q = normalize_query(&self.query);
@@ -1699,6 +1708,7 @@ impl eframe::App for App {
                 if let Some(q) = matches.get(self.hist_sel).cloned() {
                     self.query = q;
                     self.last_change = Instant::now() - Duration::from_millis(200);
+                    self.cursor_end = true;
                 }
                 self.hist_popup = false;
             } else if m > 0 {
@@ -1969,13 +1979,40 @@ impl eframe::App for App {
                                     st.store(ui.ctx(), id);
                                 }
                             }
-                            let edit = egui::TextEdit::singleline(&mut self.query)
-                                .id(egui::Id::new("query"))
+                            // zsh-autosuggestions style: greyed-out rest of the newest history entry that
+                            // starts with what is typed; Right / End / Ctrl+F at the end of the text takes it
+                            let qid = egui::Id::new("query");
+                            let at_end = egui::TextEdit::load_state(ui.ctx(), qid)
+                                .and_then(|st| st.cursor.char_range())
+                                .map_or(true, |c| c.primary.index.0 >= self.query.chars().count());
+                            let ghost = if at_end && !self.list_focus && !self.popup && !self.hist_popup {
+                                self.suggestion()
+                            } else { String::new() };
+                            if !ghost.is_empty() {
+                                let take = ui.input_mut(|i| {
+                                    i.consume_key(egui::Modifiers::NONE, Key::ArrowRight)
+                                        | i.consume_key(egui::Modifiers::NONE, Key::End)
+                                        | i.consume_key(egui::Modifiers::CTRL, Key::F)
+                                });
+                                if take {
+                                    self.query.push_str(&ghost);
+                                    self.last_change = Instant::now();
+                                    self.cursor_end = true;
+                                }
+                            }
+                            let out = egui::TextEdit::singleline(&mut self.query)
+                                .id(qid)
                                 .frame(egui::Frame::NONE)
                                 .text_color(pal.text)
                                 .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Body);
-                            let r = ui.add(edit);
+                                .font(egui::TextStyle::Body)
+                                .show(ui);
+                            let r = out.response;
+                            if !ghost.is_empty() && !self.cursor_end && r.has_focus() {
+                                let font = egui::TextStyle::Body.resolve(ui.style());
+                                let pos = out.galley_pos + egui::vec2(out.galley.rect.width(), 0.0);
+                                ui.painter().text(pos, egui::Align2::LEFT_TOP, &ghost, font, pal.dim.gamma_multiply(0.7));
+                            }
                             if r.changed() { self.last_change = Instant::now(); }
                             if r.clicked() { self.list_focus = false; }
                             // keep focus here unless the list was focused on purpose

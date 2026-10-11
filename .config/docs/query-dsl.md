@@ -1365,10 +1365,32 @@ with no new mechanism to learn.
     fzf's own ordinary things in this popup too) replaces the **entire**
     search-box text with the chosen history entry, cursor at the end - a
     whole-line replace, not an insert at cursor, matching zsh's own
-    `LBUFFER=$selected`.
+    `LBUFFER=$selected`. The caret must really be parked at the end of
+    the inserted text (not left where it was, or at the start) in every
+    picker, so typing carries on from the end of the recalled query.
   - **Escape** dismisses just the popup, search box left exactly as it
     was before Ctrl+R was pressed - same as every other popup in this
     DSL.
+
+- **Inline suggestion (zsh-autosuggestions).** While typing, the rest of
+  the **newest** history entry that starts with the text typed so far
+  (case-sensitive prefix, strictly longer than the text) is drawn in
+  greyed-out text directly after the cursor, from the same history list
+  Up-arrow and Ctrl+R use. **Right-arrow**, **End** or **Ctrl+F**
+  accepts it (appends the greyed text and parks the cursor at the end);
+  anything else typed just narrows or drops it. Shown only when the
+  cursor is at the end of a non-blank search box and no popup
+  (completion or history) is open; Shift+arrow and a cursor mid-text
+  never take it, so Right/End keep their ordinary editing meaning
+  whenever there is no suggestion. Nothing is recorded by accepting it
+  (history is only written on accept / selection-move, as above).
+  Landed 2026-10-11 in the images picker (egui) and the four QML
+  pickers (app-launcher, winswitch, rss-reader, claude-usage), each via a
+  `suggest(text)` helper on its history store. The fzf-native pickers
+  (focus-picker, claude-history) cannot draw ghost text inside fzf's
+  query line, so they are out of scope; clipboard-, notification- and
+  revit-remote pickers have no search-box history yet, so no suggestion
+  either.
 
 **What gets recorded, and when.** A query is appended to that picker's own
 history the moment the user *acts on it in the results grid* - not on
