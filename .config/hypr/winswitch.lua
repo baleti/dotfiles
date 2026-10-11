@@ -285,28 +285,36 @@ local function mod_down()
     return hl.is_key_down("Super_L") or hl.is_key_down("Super_R")
 end
 
+local SUBMAP = "group-switch"
 local mod_timer -- kept referenced: a collected timer never fires
 mod_timer = hl.timer(function()
     if not mod_down() then
         mod_timer:set_enabled(false)
+        hl.dispatch(hl.dsp.submap("reset"))   -- always, from here: never leaves the keymap stuck
         emit("altup")
     end
 end, { timeout = ALT_POLL_MS, type = "repeat" })
 mod_timer:set_enabled(false)
 
+-- While the switcher is up (Super held) every other bind is switched off by swapping to this
+-- submap, which replaces the whole active keymap rather than adding to it (same trick as
+-- rdp-guard.lua). Keys it does not bind (arrows, Enter, Escape, letters...) fall through to the
+-- focused window, i.e. the grid. Only the switcher's own keys are bound here.
+hl.define_submap(SUBMAP, function()
+    hl.bind(mainMod .. " + Tab", function() winswitch.group_tab("next") end, { description = "Group tabs switcher (next)" })
+    hl.bind(mainMod .. " + SHIFT + Tab", function() winswitch.group_tab("prev") end, { description = "Group tabs switcher (previous)" })
+    hl.bind(mainMod .. " + CTRL + h", function() emit("nav left") end, { description = "Group tabs switcher: selection left" })
+    hl.bind(mainMod .. " + CTRL + j", function() emit("nav down") end, { description = "Group tabs switcher: selection down" })
+    hl.bind(mainMod .. " + CTRL + k", function() emit("nav up") end, { description = "Group tabs switcher: selection up" })
+    hl.bind(mainMod .. " + CTRL + l", function() emit("nav right") end, { description = "Group tabs switcher: selection right" })
+end)
+
 function winswitch.group_tab(direction)
-    emit("gtab " .. direction)
     if not mod_timer:is_enabled() then
+        hl.dispatch(hl.dsp.submap(SUBMAP))
         mod_timer:set_enabled(true)
     end
-end
-
--- mainMod+CTRL+h/j/k/l normally move the window; while the group switcher is up (Super is
--- necessarily held) they move the selection instead. Called first by those binds.
-function winswitch.nav_mod(dir)
-    if not mod_timer:is_enabled() then return false end
-    emit("nav " .. dir)
-    return true
+    emit("gtab " .. direction)
 end
 
 hl.bind(mainMod .. " + Tab", function() winswitch.group_tab("next") end, { description = "Group tabs switcher (next); stays up while the modifier is held" })
