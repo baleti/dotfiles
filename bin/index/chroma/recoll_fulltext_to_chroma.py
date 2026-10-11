@@ -12,12 +12,14 @@ Resumable: documents whose chunks are already in the collection are skipped.
 import argparse
 import hashlib
 import html
+import os
 import re
 import sys
 import time
 from pathlib import Path
 
 import json
+import socket
 import subprocess
 
 import chromadb
@@ -28,13 +30,16 @@ AI1_EMBED = (
     "LD_LIBRARY_PATH=$(ls -d $SP/*/lib | paste -sd:) $HOME/indexer/venv/bin/python $HOME/indexer/minilm/embed.py"
 )
 AI1_SSH = json.load(open(os.path.expanduser("~/.config/indexes/collections.json")))["ai1"]["ssh_to_ai1"]
+ON_HOST1 = socket.gethostname() == "host1"
 
 
 def embed(texts):
-    """MiniLM embeddings computed on the ai1 GPU (ONNX Runtime, CUDA) via host1."""
-    cmd = f"{AI1_SSH} '{AI1_EMBED}'"
-    r = subprocess.run(["ssh", "-o", "BatchMode=yes", "host1", cmd],
-                       input=json.dumps(texts), capture_output=True, text=True, timeout=1800)
+    """MiniLM embeddings computed on the ai1 GPU (ONNX Runtime, CUDA), hopping via host1 unless already there."""
+    if ON_HOST1:
+        argv = AI1_SSH.split() + [AI1_EMBED]
+    else:
+        argv = ["ssh", "-o", "BatchMode=yes", "host1", f"{AI1_SSH} '{AI1_EMBED}'"]
+    r = subprocess.run(argv, input=json.dumps(texts), capture_output=True, text=True, timeout=1800)
     if r.returncode != 0:
         raise RuntimeError(f"ai1 embed failed: {r.stderr[-300:]}")
     return json.loads(r.stdout)["vectors"]

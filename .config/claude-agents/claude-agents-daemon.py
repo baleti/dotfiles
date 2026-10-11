@@ -1038,6 +1038,12 @@ def spawn_session(dir_key, initial_text):
     # poll for that doesn't itself risk racing the first real prompt.
     time.sleep(2)
 
+    if not initial_text:
+        # Empty session: nothing to prime, and Claude Code writes no
+        # transcript until the first real message, so there is nothing to
+        # wait for either. The id is already live via --session-id.
+        return session_id, None
+
     if not send_to_pane(f"{tmux_session}:0.0", initial_text):
         log(f"spawn: initial send to {tmux_session} failed")
         return None, "session started but initial message failed to send"
@@ -2392,10 +2398,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 return self._reject(400, "bad json")
             account = body.get("account", "claude2")
-            text = body.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return self._reject(400, "empty text")
-            text = text[:20000]
+            text = body.get("text", "")
+            if not isinstance(text, str):
+                return self._reject(400, "bad text")
+            text = text.strip()[:20000]
 
             session_id, err = spawn_session(account, text)
             if err:
@@ -2519,10 +2525,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length))
             except Exception:
                 return self._reject(400, "bad json")
-            text = body.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return self._reject(400, "empty text")
-            text = text[:20000]
+            text = body.get("text", "")
+            if not isinstance(text, str):
+                return self._reject(400, "bad text")
+            text = text.strip()[:20000]
             msg_id = body.get("id")
             if not (isinstance(msg_id, str) and msg_id):
                 msg_id = None
@@ -2563,10 +2569,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length))
             except Exception:
                 return self._reject(400, "bad json")
-            text = body.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return self._reject(400, "empty text")
-            text = text[:20000]
+            text = body.get("text", "")
+            if not isinstance(text, str):
+                return self._reject(400, "bad text")
+            text = text.strip()[:20000]
             msg_id = body.get("id")
             if not (isinstance(msg_id, str) and msg_id):
                 msg_id = None

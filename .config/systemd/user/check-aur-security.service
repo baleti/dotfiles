@@ -3,6 +3,7 @@ Description=Check installed AUR packages for recent security incidents and email
 
 [Service]
 Type=oneshot
+Environment=PATH=/home/user1/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
 ExecStart=/home/user1/bin/cron/check-aur-security.sh
 
 [Install]

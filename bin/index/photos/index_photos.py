@@ -7,11 +7,12 @@ Resumable: paths already present in an output file are skipped.
 
 usage: index_photos.py --list DATA/lists/all.txt [--list ...] [--limit N]
 """
-import argparse, json, os, subprocess, sys, tarfile, tempfile, threading
+import argparse, json, os, socket, subprocess, sys, tarfile, tempfile, threading
 
 import config
 AI1 = config.AI1["ssh"]
 JUMP = config.AI1["jump_host"]
+ON_JUMP_HOST = socket.gethostname() == JUMP
 WORKERS = {
     "face": (config.AI1["worker_launcher"], os.path.join(config.DATA_DIR, "faces", "faces.jsonl")),
     "clip": (config.AI1["clip_launcher"], os.path.join(config.DATA_DIR, "clip", "clip.jsonl")),
@@ -45,8 +46,11 @@ def main():
         os.makedirs(os.path.dirname(out), exist_ok=True)
         dones[w] = done_set(out)
         outs[w] = open(out, "a", encoding="utf-8")
-        procs[w] = subprocess.Popen(["ssh", JUMP, f"{AI1} \"IDLE_SECS={a.idle} {launcher}\""],
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr)
+        if ON_JUMP_HOST:
+            argv = AI1.split() + [f"IDLE_SECS={a.idle} {launcher}"]
+        else:
+            argv = ["ssh", JUMP, f"{AI1} \"IDLE_SECS={a.idle} {launcher}\""]
+        procs[w] = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr)
     def reader(w):
         for line in procs[w].stdout:
             rec = json.loads(line)
