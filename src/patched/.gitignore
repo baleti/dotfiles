@@ -1,0 +1,6 @@
+/zathura/
+/build/*/src/
+/build/*/pkg/
+*.pkg.tar.zst
+/staging/
+/build/*/*/
