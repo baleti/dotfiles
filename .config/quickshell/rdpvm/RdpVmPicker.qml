@@ -84,11 +84,17 @@ PanelWindow {
     }
     onResultsChanged: if (root.selected >= results.length) root.selected = Math.max(0, results.length - 1)
 
-    Process { id: rdpProc }
+    Process {
+        id: rdpProc
+        stdout: StdioCollector { id: rdpOut }
+        stderr: StdioCollector { id: rdpErr }
+        onExited: (code, status) => console.log("rdpvm: rdp-windows-vm exited", code, status, rdpOut.text.trim(), rdpErr.text.trim())
+    }
     function launch(i) {
         const v = root.results[i];
         if (!v) return;
-        rdpProc.command = [Quickshell.env("HOME") + "/bin/rdp-windows-vm", v.cid];
+        console.log("rdpvm: launching CID", v.cid);
+        rdpProc.command = [Quickshell.env("HOME") + "/bin/rdp-windows-vm", String(v.cid)];
         rdpProc.running = true;
         root.hide();
     }
