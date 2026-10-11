@@ -312,6 +312,17 @@ def move_ws(addr, ws):
     lua(f'(function() local w={win_lua(addr)} if w then hl.dispatch(hl.dsp.window.move({{workspace={json.dumps(ws) if isinstance(ws, str) else ws}, window=w, follow=false}})) end end)()')
 
 
+def current_ws(leader, default):
+    """Where the leader (and so its group) is right now: the user may have moved it to
+    another workspace, or into a scratchpad, since the run started. Numbered workspaces are
+    returned by id, special ones by name; `default` if it cannot be found."""
+    for c in clients():
+        if c["address"] == leader:
+            w = c["workspace"]
+            return w["id"] if w["id"] > 0 else w["name"]
+    return default
+
+
 def is_solitary(leader, addrs, ws):
     """True if the leader's group is the only thing on ws (ignoring `addrs`, which are
     about to join): then Hyprland merges windows moved onto ws with no resizing at all."""
@@ -338,6 +349,7 @@ def merge_batch(leader, addrs, ws):
 
     Returns how many joined.
     """
+    ws = current_ws(leader, ws) if ws != BUILD else ws   # follow the group wherever the user put it
     before = group_size(leader)
     table = ",".join(f'"{x}"' for x in addrs)
     solitary = is_solitary(leader, addrs, ws)
@@ -656,7 +668,7 @@ def main():
                 if c is not None:
                     ready.append(c["address"])
                 nxt += 1
-            solitary_now = is_solitary(leader, ready, home)
+            solitary_now = is_solitary(leader, ready, current_ws(leader, home) if mode == "live" else home)
             gap = a.batch if (solitary_now or a.ferry is None) else a.ferry
             if ready and (nxt >= n or time.time() - last_batch >= gap * slow):
                 batch_addrs = list(ready)
@@ -707,7 +719,9 @@ def main():
             if cold:
                 print(f"   ({cold} tab(s) could not be pre-rendered; their first switch may flicker)", file=sys.stderr)
         if a.focus:
-            focus_if_on(leader, dest)
+            here_now = current_ws(leader, dest)
+            if isinstance(here_now, int):
+                focus_if_on(leader, here_now)
     finally:
         hyprctl("eval", "hl.config({group={group_on_movetoworkspace=false}, cursor={no_warps=false}})")
 
