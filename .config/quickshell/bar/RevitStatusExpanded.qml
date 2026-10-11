@@ -19,19 +19,19 @@ Rectangle {
 
     // [{ label, width, role }] -- role picks the cell renderer below.
     readonly property var columns: [
-        { label: "VM",      width: 90, key: "vm" },
-        { label: "DISPLAY", width: 52, key: "display" },
-        { label: "REVIT",   width: 42,  key: "year" },
-        { label: "STATUS",  width: 190, key: "status" },
-        { label: "ENGINE",  width: 80,  key: "engine" },
-        { label: "QUEUE",   width: 42,  key: "queued" },
-        { label: "PID",     width: 46,  key: "pid" },
-        { label: "PORT",    width: 42,  key: "port" },
+        { label: "VM",      width: 90, key: "vm" , tip: "the VM the Revit instance runs in (a CI VM is shown as its cid)" },
+        { label: "DISPLAY", width: 52, key: "display" , tip: "GPU = a passed-through GPU (vfio) as well as the emulated display; QXL = emulated display only" },
+        { label: "REVIT",   width: 42,  key: "year" , tip: "Revit version" },
+        { label: "STATUS",  width: 190, key: "status" , tip: "idle, busy (a job is running), or the dialog that is blocking Revit" },
+        { label: "ENGINE",  width: 80,  key: "engine" , tip: "the script engine of the job running right now (roslyn, ironpython2, cpython3, command); - when nothing is running" },
+        { label: "QUEUE",   width: 42,  key: "queued" , tip: "jobs waiting in the agent queue" },
+        { label: "PID",     width: 46,  key: "pid" , tip: "Revit process id inside the VM" },
+        { label: "PORT",    width: 42,  key: "port" , tip: "the agent port inside the VM" },
         // the "host3" group: the live Claude Code session on this machine that last ran a command naming the VM (shown on the VM's first row)
-        { label: "TITLE",   width: 230, key: "claudeTitle", group: true },
-        { label: "SESS",    width: 34,  key: "tmuxSession", group: true },
-        { label: "WIN",     width: 34,  key: "tmuxWindow",  group: true },
-        { label: "PANE",    width: 36,  key: "tmuxPane",    group: true }
+        { label: "TITLE",   width: 230, key: "claudeTitle", group: true , tip: "title of the live Claude Code session that last ran a command naming this VM (shown on the first row of the VM)" },
+        { label: "SESS",    width: 34,  key: "tmuxSession", group: true , tip: "tmux session of that Claude session" },
+        { label: "WIN",     width: 34,  key: "tmuxWindow",  group: true , tip: "tmux window of that Claude session" },
+        { label: "PANE",    width: 36,  key: "tmuxPane",    group: true , tip: "tmux pane of that Claude session" }
     ]
     readonly property var plainColumns: columns.filter(c => !c.group)
     readonly property real plainWidth: plainColumns.reduce((s, c) => s + c.width + root.colGap, 0)
@@ -39,6 +39,10 @@ Rectangle {
     readonly property int colGap: 8
     readonly property int rowHeight: 17
     readonly property real naturalContentWidth: columns.reduce((s, c) => s + c.width + root.colGap, 0) + 24
+
+    // Cursor-following hover hint for the column headers (same shape as ClaudeUsageExpanded's hintPopup).
+    property string hintText: ""
+    property point hintPos: Qt.point(0, 0)
 
     property var rows: []
     property bool loaded: false
@@ -196,12 +200,23 @@ Rectangle {
             spacing: 0
             Item { width: root.plainWidth; height: 1 }
             Text {
+                id: groupLabel
                 text: "host3"
                 width: root.groupWidth
                 color: Theme.muted
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 3
                 horizontalAlignment: Text.AlignHCenter
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onEntered: {
+                        root.hintText = "this machine: the Claude Code session that last used the VM";
+                        root.hintPos = groupLabel.mapToItem(root, mouseX + 12, mouseY + 16);
+                    }
+                    onPositionChanged: mouse => root.hintPos = groupLabel.mapToItem(root, mouse.x + 12, mouse.y + 16)
+                    onExited: root.hintText = ""
+                }
                 Rectangle {
                     anchors.left: parent.left
                     anchors.right: parent.right
@@ -217,6 +232,7 @@ Rectangle {
             Repeater {
                 model: root.columns
                 delegate: Text {
+                    id: headerCell
                     required property var modelData
                     width: modelData.width
                     text: modelData.label
@@ -224,6 +240,16 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     font.bold: true
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onEntered: {
+                            root.hintText = headerCell.modelData.tip;
+                            root.hintPos = headerCell.mapToItem(root, mouseX + 12, mouseY + 16);
+                        }
+                        onPositionChanged: mouse => root.hintPos = headerCell.mapToItem(root, mouse.x + 12, mouse.y + 16)
+                        onExited: root.hintText = ""
+                    }
                 }
             }
         }
@@ -285,6 +311,27 @@ Rectangle {
                     font.bold: true
                 }
             }
+        }
+    }
+
+    Rectangle {
+        visible: root.hintText.length > 0
+        x: Math.max(4, Math.min(root.hintPos.x, root.width - width - 4))
+        y: Math.min(root.hintPos.y, root.height - height - 4)
+        z: 100
+        width: hintPopupText.implicitWidth + 8
+        height: hintPopupText.implicitHeight + 4
+        radius: 3
+        color: Theme.bg
+        border.color: Theme.border
+        border.width: 1
+        Text {
+            id: hintPopupText
+            anchors.centerIn: parent
+            text: root.hintText
+            color: Theme.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSize - 3
         }
     }
 }
