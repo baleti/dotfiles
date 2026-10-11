@@ -61,7 +61,7 @@ Singleton {
             id: out
             onStreamFinished: {
                 try {
-                    root.map = JSON.parse(out.text) || {};
+                    root.map = Object.assign({}, root.map, JSON.parse(out.text) || {});
                 } catch (e) {
                     console.warn("launcher-icons: resolve-icons.py output unparseable:", e);
                 }

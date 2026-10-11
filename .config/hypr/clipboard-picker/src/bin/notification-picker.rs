@@ -122,16 +122,19 @@ fn activate(id: &str) {
     let has_default = actions.is_some_and(|a| {
         a.len() == 1 || a.iter().any(|x| x.get("key").and_then(|k| k.as_str()) == Some("default"))
     });
-    match n {
-        Some(n) if !has_default => {
-            let home = std::env::var("HOME").unwrap_or_default();
-            let _ = Command::new(format!("{home}/.config/hypr/scripts/notify-summon.sh"))
-                .args([get_str(n, "app_name"), get_str(n, "sender")])
-                .status();
-        }
-        _ => {
-            let _ = Command::new(NOTIFYCTL).args(["invoke", id]).status();
-        }
+    // Invoke the default action when there is one, but also always summon the
+    // sender's window: history entries outlive their live notification, and
+    // notifyd's invoke on a closed one is a silent no-op (and apps like
+    // Thunderbird ignore ActionInvoked for notifications they no longer own),
+    // which left clicks on older rows doing nothing at all.
+    if has_default {
+        let _ = Command::new(NOTIFYCTL).args(["invoke", id]).status();
+    }
+    if let Some(n) = n {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let _ = Command::new(format!("{home}/.config/hypr/scripts/notify-summon.sh"))
+            .args([get_str(n, "app_name"), get_str(n, "sender")])
+            .status();
     }
 }
 
