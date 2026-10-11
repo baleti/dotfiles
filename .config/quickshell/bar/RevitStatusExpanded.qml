@@ -4,7 +4,7 @@ import Quickshell.Io
 import "../theme"
 
 // CTRL+ALT+r panel: every Revit instance reachable through the Revit Ballet agents, one row each, in columns -- VM and its display hardware
-// (GPU passthrough / QXL), Revit year, status (idle / busy / modal dialog), agent build, the engine of the running job, queue depth, pid and
+// (GPU passthrough / QXL), Revit year, status (idle / busy / modal dialog), the engine of the running job, queue depth, pid and
 // port. Reads the state file kept current by revit-status-daemon (~/.config/revit-status, adaptive probe interval), so the last known view
 // shows the moment the panel opens; while open it touches the daemon's watch file to get fast refreshes. Same sibling-overlay shape as
 // ClaudeUsageExpanded (collapses to 0 height when closed, wired through Bar.qml's panel row); pin/Escape only -- there is no pill.
@@ -23,7 +23,6 @@ Rectangle {
         { label: "DISPLAY", width: 52, key: "display" },
         { label: "REVIT",   width: 42,  key: "year" },
         { label: "STATUS",  width: 190, key: "status" },
-        { label: "BUILD",   width: 140, key: "build" },
         { label: "ENGINE",  width: 80,  key: "engine" },
         { label: "QUEUE",   width: 42,  key: "queued" },
         { label: "PID",     width: 46,  key: "pid" },
@@ -88,11 +87,10 @@ Rectangle {
         if (key === "vm") return root.vmLabel(r);
         if (key === "status") return root.statusText(r);
         if (key === "display") return r.display === "gpu" ? "GPU" : r.display === "qxl" ? "QXL" : "";
-        if (!r.instance) return key === "build" && r.detail ? r.detail.replace(/[^\x20-\x7e]/g, "").trim() : "";
+        if (!r.instance) return "";
         switch (key) {
         case "year": return String(r.year);
         case "version": return r.version || "";
-        case "build": return r.build || "-";
         case "engine": return r.active_engine || (r.running ? "?" : "-");
         case "queued": return r.queued > 0 ? String(r.queued) : "-";
         case "pid": return String(r.pid);
