@@ -190,7 +190,7 @@ QtObject {
         for (const w of list)
             delete fresh[w.address];
         root.thumbnails = fresh;
-        root.onlyAddresses = list.map(w => w.address).join(",");
+        root.onlyAddresses = list.filter(w => !w.pending).map(w => w.address).join(",");
         root._startSession(list, true);
         showTimer.stop();
         root.altHeld = false;
@@ -209,7 +209,7 @@ QtObject {
         const old = {};
         for (const w of root.windows)
             old[w.address] = true;
-        const added = list.filter(w => !old[w.address]).map(w => w.address);
+        const added = list.filter(w => !w.pending && !old[w.address]).map(w => w.address);
         const now = {};
         for (const w of list)
             now[w.address] = true;
@@ -247,6 +247,8 @@ QtObject {
 
     function confirm(i) {
         const w = root.windows[i];
+        if (w && w.pending)
+            return;       // a slide group-open has not opened yet: nothing to switch to
         const ws = root.workspaceMode;
         root.close();
         if (w && ws)
@@ -361,7 +363,7 @@ QtObject {
         if (!root.active || !root.groupMode)
             return;
         root._flushPending();
-        const missing = root.windows.filter(w => !root.thumbnails[w.address]).map(w => w.address);
+        const missing = root.windows.filter(w => !w.pending && !root.thumbnails[w.address]).map(w => w.address);
         if (missing.length === 0 || root._captureTries >= 9)
             return;
         root._captureTries++;

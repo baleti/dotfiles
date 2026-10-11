@@ -64,6 +64,32 @@ def rows(address):
         }
 
 
+def pending_slides(members):
+    """Slides a running `group-open` has yet to put into this group, in file order:
+    [(key, file name)]. Read from its manifest in $XDG_RUNTIME_DIR/group-open/<pid>.json
+    (written as it goes, removed when it ends); stale manifests of dead runs are ignored."""
+    d = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "group-open")
+    out = []
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            m = json.load(open(os.path.join(d, name)))
+            os.kill(m["pid"], 0)
+        except (OSError, ValueError, KeyError):
+            continue
+        if m.get("leader") not in members:
+            continue
+        for i, f in enumerate(m["files"]):
+            if not f["skipped"] and f["window"] not in members:
+                out.append((f"pending:{m['pid']}:{i}", f["name"]))
+    return out
+
+
 def winswitch_rows(address):
     """The group's tabs in winswitch-windows.json's row shape, in tab order, so the
     alt+tab grid can show them (see services/GroupPickerState.qml)."""
@@ -75,6 +101,15 @@ def winswitch_rows(address):
             "workspace": c["workspace"]["name"], "pid": c["pid"],
             "width": c["size"][0], "height": c["size"][1], "active": r["current"],
         }
+        last = c
+    # slides group-open is still loading: listed now, picture only once they open
+    members = {r["id"] for r in rows(address)}
+    if members:
+        for key, name in pending_slides(members):
+            yield {
+                "address": key, "class": last["class"], "title": name, "workspace": last["workspace"]["name"],
+                "pid": 0, "width": last["size"][0], "height": last["size"][1], "active": False, "pending": True,
+            }
 
 
 def activate(address):
