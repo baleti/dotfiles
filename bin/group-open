@@ -548,6 +548,8 @@ def main():
     home = dest if mode == "live" else BUILD
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # let `finally` run on kill/timeout
 
+    pids = {}          # address -> pid of every window seen on the staging workspace
+    joined_pids = {}   # address -> pid of the windows in the group (the leader and merged ones)
     opened = {}   # file index -> the path actually handed to the viewer (maybe a scaled copy)
 
     def launch(i, ws):
@@ -579,8 +581,20 @@ def main():
                 continue
             if c["workspace"]["name"] == STAGE:
                 seen.add(c["address"])
+                pids[c["address"]] = c["pid"]
                 out.append(c)
         return out
+
+    def alive_members():
+        """Windows of the group this run has built that still exist. Hyprland reuses window
+        addresses, so a window only counts if its pid is the one it had when it joined."""
+        cur = {c["address"]: c["pid"] for c in clients()}
+        return [x for x, p in joined_pids.items() if cur.get(x) == p]
+
+    def close_ours_on_stage():
+        for c in clients():
+            if c["workspace"]["name"] == STAGE:
+                lua(f'(function() local w={win_lua(c["address"])} if w then hl.dispatch(hl.dsp.window.close({{window=w}})) end end)()')
 
     bg = ThreadPoolExecutor(max_workers=1)   # re-caches tabs while loading continues
     manifest = Manifest(files)
@@ -603,6 +617,7 @@ def main():
         if not leader:
             sys.exit("group-open: first window never appeared")
         manifest.window(0, leader)
+        joined_pids[leader] = next((c["pid"] for c in clients() if c["address"] == leader), None)
         move_ws(leader, home)    # silent: nothing gets focus
         time.sleep(a.delay)
 
@@ -626,8 +641,18 @@ def main():
         last_cpu = last = time.time()
         last_batch = 0.0
         temp = cpu_temp()
+        aborted = False
         while (launched < n or nxt < n or ready) and time.time() - last < TIMEOUT:
             now = time.time()
+            # The user closed the slideshow (every window of the group): they have abandoned
+            # it, so stop opening more. If only some tabs were closed the group carries on
+            # under whichever member is left.
+            alive = alive_members()
+            if not alive:
+                aborted = True
+                break
+            if leader not in alive:
+                leader = alive[0]
             if now - last_cpu >= 0.5:
                 busy_pct, temp = cpu.percent(), cpu_temp()
                 pressured = psi("cpu") > 40 or psi("memory") > 10
@@ -681,6 +706,8 @@ def main():
                 batch_addrs = list(ready)
                 joined = merge_batch(leader, ready, home)
                 if joined:
+                    for x in batch_addrs:
+                        joined_pids[x] = pids.get(x)
                     merged += len(ready)
                     if mode == "live" and not a.no_warm:
                         # A tab that has never been rendered at its current size flickers when
@@ -696,6 +723,18 @@ def main():
                     last = time.time()
                 last_batch = time.time()
             time.sleep(0.25)
+        if aborted:
+            print("group-open: the slideshow window was closed, stopping", file=sys.stderr)
+            # a viewer that was already starting may still show up: give it a moment, then
+            # close whatever of ours is waiting on the staging workspace (none of it is visible)
+            end = time.time() + 4
+            while started and time.time() < end:
+                for c in new_windows():
+                    r = rank(c)
+                    started.pop(r, None)
+                time.sleep(0.25)
+            close_ours_on_stage()
+            return
         rest = ready + [pending[k]["address"] for k in sorted(pending) if pending[k]] + [c["address"] for c in extra]
         if rest:
             merge_batch(leader, rest, home)
