@@ -1,7 +1,0 @@
-[Desktop Entry]
-Exec=wofi --show drun --insensitive
-Name=wofi --show drun --insensitive
-NoDisplay=true
-StartupNotify=false
-Type=Application
-X-KDE-GlobalAccel-CommandShortcut=true

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Name=WinDbg (ARM64)
-Exec=env "WINEPREFIX=/home/user1/.wine" wine "C:\\\\users\\\\user1\\\\AppData\\\\Roaming\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Windows Kits\\\\Debugging Tools for Windows (ARM64)\\\\WinDbg (ARM64).lnk"
-Type=Application
-StartupNotify=true
-Comment=WinDbg (ARM64)
-Path=/home/user1/.wine/drive_c/Program Files (x86)/Windows Kits/10/Debuggers/
-Icon=AC26_windbg.0
-StartupWMClass=windbg.exe

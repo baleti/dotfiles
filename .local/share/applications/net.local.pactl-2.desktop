@@ -1,7 +1,0 @@
-[Desktop Entry]
-Exec=pactl set-card-profile bluez_card.B0_F0_0C_0E_77_29 headset-head-unit
-Name=bluetooth headset switch profile - headset-head-unit
-NoDisplay=true
-StartupNotify=false
-Type=Application
-X-KDE-GlobalAccel-CommandShortcut=true

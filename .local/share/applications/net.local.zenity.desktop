@@ -1,7 +1,0 @@
-[Desktop Entry]
-Exec=zenity --column='' --list $(playerctl --list-all) > ~/.config/playerctl-current
-Name=playerctl zenity choose player
-NoDisplay=true
-StartupNotify=false
-Type=Application
-X-KDE-GlobalAccel-CommandShortcut=true

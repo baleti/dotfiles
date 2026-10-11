@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Debugging Help
-Exec=env "WINEPREFIX=/home/user1/.wine" wine "C:\\\\users\\\\user1\\\\AppData\\\\Roaming\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Windows Kits\\\\Debugging Tools for Windows (ARM64)\\\\Debugging Help.lnk"
-Type=Application
-StartupNotify=true
-Comment=Debugging Help
-Icon=DA49_debugger.0
-StartupWMClass=debugger.chm

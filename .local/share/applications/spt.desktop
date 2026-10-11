@@ -1,7 +1,0 @@
-[Desktop Entry]
-Exec=alacritty -e spt
-Name=alacritty -e spt
-NoDisplay=true
-StartupNotify=false
-Type=Application
-X-KDE-GlobalAccel-CommandShortcut=true
