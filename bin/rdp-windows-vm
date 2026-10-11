@@ -10,7 +10,7 @@ probe() { timeout 6 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT && printf '\x03\x0
 if ! probe; then
   old=$(ss -ltnp 2>/dev/null | sed -n "s/.*127.0.0.1:$PORT .*pid=\([0-9]*\).*/\1/p" | head -1)
   [ -n "$old" ] && kill "$old" 2>/dev/null && sleep 1
-  ssh -i $KEY user@$H2 "ss -ltn | grep -q 127.0.0.1:$RPORT || setsid socat TCP-LISTEN:$RPORT,bind=127.0.0.1,fork,reuseaddr VSOCK-CONNECT:$CID:3389 >/dev/null 2>&1 < /dev/null &" || exit 1
+  ssh -i $KEY user@$H2 "{ ss -ltn | grep -q 127.0.0.1:$RPORT || setsid socat TCP-LISTEN:$RPORT,bind=127.0.0.1,fork,reuseaddr VSOCK-CONNECT:$CID:3389; } >/dev/null 2>&1 < /dev/null &" || exit 1
   ssh -i $KEY -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -f -N -L $PORT:127.0.0.1:$RPORT user@$H2 >/dev/null 2>&1 || exit 1
   for i in $(seq 1 20); do probe && break; sleep 0.5; done
   probe || { echo "rdp-windows-vm: tunnel is up but RDP of CID $CID does not answer (VM not running, or not logged in yet?)" >&2; notify-send "Revit VM $CID" "RDP does not answer (VM not running or not logged in yet?)" 2>/dev/null; exit 1; }
