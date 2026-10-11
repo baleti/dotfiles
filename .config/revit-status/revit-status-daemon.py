@@ -12,6 +12,7 @@ A probe costs ssh round trips into every VM, so the interval adapts the way clau
 Each row also carries `claude`: the live Claude Code session that last ran a command naming that VM (ClaudeXref).
 Waits are taken in 1 s slices so opening the panel (or the screen coming back on) cuts an idle wait short.
 """
+import concurrent.futures
 import importlib.machinery
 import importlib.util
 import json
@@ -82,9 +83,9 @@ def signature(rows):
                               r.get("queued"), r.get("active_engine"), r.get("responsive")]) for r in rows)
 
 
-def write_state(rows, mode, interval, ok):
+def write_state(rows, mode, interval, ok, host=None):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"rows": rows, "poll_mode": mode, "poll_interval_s": interval, "ok": ok,
+    payload = {"rows": rows, "host": host, "poll_mode": mode, "poll_interval_s": interval, "ok": ok,
                "updated_at": datetime.now(timezone.utc).isoformat(), "updated_ms": int(time.time() * 1000)}
     tmp = STATE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload))
@@ -142,10 +143,19 @@ class ClaudeXref:
             return
         with open(path, "rb") as f:
             f.seek(rec["offset"])
-            data = f.read(size - rec["offset"])
-        end = data.rfind(b"\n") + 1          # only whole lines; a half-written last line is read next time
-        rec["offset"] += end
-        for line in data[:end].decode("utf-8", "replace").splitlines():
+            tail = b""
+            while True:     # 4 MB at a time: a long session's transcript can be hundreds of MB
+                chunk = f.read(4 << 20)
+                if not chunk:
+                    break
+                data = tail + chunk
+                end = data.rfind(b"\n") + 1      # only whole lines; a half-written last line is read next time
+                rec["offset"] += end
+                tail = data[end:]
+                self.scan_lines(data[:end].decode("utf-8", "replace"), rec)
+
+    def scan_lines(self, text, rec):
+        for line in text.splitlines():
             if '"type":"tool_use"' not in line:
                 continue
             m = re.search(r'"timestamp":"([^"]+)"', line)
@@ -181,11 +191,54 @@ class ClaudeXref:
         return rows
 
 
+# Basic stats of the VM host, one ssh round trip: cpu% over a 1 s sample, memory, load, and the disks that matter for the VMs.
+HOST_DISKS = [("/", "/"), ("/srv/vm", "vm"), ("/srv/tank", "tank")]
+HOST_SCRIPT = r'''
+read -r _ a1 b1 c1 d1 e1 f1 g1 h1 _ < /proc/stat; sleep 1; read -r _ a2 b2 c2 d2 e2 f2 g2 h2 _ < /proc/stat
+t1=$((a1+b1+c1+d1+e1+f1+g1+h1)); t2=$((a2+b2+c2+d2+e2+f2+g2+h2)); i1=$((d1+e1)); i2=$((d2+e2))
+echo "cpu $(( 100 * ((t2-t1) - (i2-i1)) / (t2-t1) )) $(nproc) $(cut -d' ' -f1 /proc/loadavg)"
+awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print "mem", int(t/1024), int(a/1024)}' /proc/meminfo
+for m in __MOUNTS__; do df -kP "$m" 2>/dev/null | awk -v m="$m" 'NR==2{print "disk", m, $2, $3}'; done
+'''
+
+
+def host_stats(ssh_host):
+    script = HOST_SCRIPT.replace("__MOUNTS__", " ".join(m for m, _ in HOST_DISKS))
+    try:
+        p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", ssh_host, "bash -s"], input=script, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return None
+    out = {"name": ssh_host, "disks": []}
+    labels = dict(HOST_DISKS)
+    for line in p.stdout.splitlines():
+        w = line.split()
+        try:
+            if w[0] == "cpu":
+                out.update(cpu_pct=int(w[1]), cores=int(w[2]), load1=float(w[3]))
+            elif w[0] == "mem":
+                out.update(mem_total_mb=int(w[1]), mem_avail_mb=int(w[2]))
+            elif w[0] == "disk" and int(w[2]) > 0:
+                out["disks"].append({"mount": w[1], "label": labels.get(w[1], w[1]), "size_gb": int(w[2]) // 1048576,
+                                     "used_gb": int(w[3]) // 1048576, "pct": round(100 * int(w[3]) / int(w[2]))})
+        except (ValueError, IndexError):
+            continue
+    return out if "cpu_pct" in out or "mem_total_mb" in out else None
+
+
 def probe(rr):
     cfg = rr.load_config()
     targets = rr.expand_targets(cfg)
-    probes = rr.probe_all(targets, commands=False)
+    ssh_hosts = sorted({t["ssh"] for t in targets if t.get("ssh")})[:1]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        host_f = ex.submit(host_stats, ssh_hosts[0]) if ssh_hosts else None
+        probes = rr.probe_all(targets, commands=False)
+        host = host_f.result() if host_f else None
     rows = rr.build_status_rows(probes, targets)
+    for pr in probes:
+        if pr.get("gpu") and host is not None:
+            vm = next((t.get("vm") for t in targets if t["name"] == pr["target"]), "")
+            host["gpu"] = dict(pr["gpu"], vm=vm)
+    probe.host = host
     # every target failing (the VM host itself is unreachable) is a failed probe, not a legitimate "nothing running"
     ok = not (rows and all(not r.get("instance") and r.get("state") == "unreachable" for r in rows))
     return rows, ok
@@ -198,6 +251,7 @@ def main():
     last_change = 0.0
     failures = 0
     last_rows = []
+    last_host = None
     while True:
         try:
             rows, ok = probe(rr)
@@ -230,7 +284,9 @@ def main():
             rows = xref.attach(rows)
         except Exception as e:
             log("claude cross-reference failed: %r" % (e,))
-        write_state(rows, mode, interval, ok)
+        if ok and getattr(probe, "host", None):
+            last_host = probe.host
+        write_state(rows, mode, interval, ok, last_host)
         # wait in 1 s slices; the panel opening or the tier dropping to a shorter interval ends the wait early
         waited = 0
         while waited < interval:
