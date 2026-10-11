@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Rhino WIP
-MimeType=application/x-wine-extension-rws;
-Exec=env "WINEPREFIX=/home/user1/.wine" wine start /ProgIDOpen "Rhino9.Worksession" %f
-NoDisplay=true
-StartupNotify=true
-Icon=E902_Rhino.0

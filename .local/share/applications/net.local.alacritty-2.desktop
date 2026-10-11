@@ -1,7 +1,0 @@
-[Desktop Entry]
-Exec=alacritty -e sh -c "wl-paste | qrencode -t ansi256utf8; sleep 100"
-Name=display qr code from clipboard contents
-NoDisplay=true
-StartupNotify=false
-Type=Application
-X-KDE-GlobalAccel-CommandShortcut=true

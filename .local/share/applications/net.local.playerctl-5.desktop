@@ -1,7 +1,0 @@
-[Desktop Entry]
-Exec=playerctl --player=$(cat /home/user1/.config/playerctl-current) position 5+ && playerctl --player=$(cat /home/user1/.config/playerctl-current) pause && playerctl --player=$(cat /home/user1/.config/playerctl-current) play
-Name=playerctl forward 5s
-NoDisplay=true
-StartupNotify=false
-Type=Application
-X-KDE-GlobalAccel-CommandShortcut=true

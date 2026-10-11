@@ -1,7 +1,0 @@
-[Desktop Entry]
-Exec=pactl set-card-profile bluez_card.B0_F0_0C_0E_77_29 a2dp-sink
-Name=testtt
-NoDisplay=true
-StartupNotify=false
-Type=Application
-X-KDE-GlobalAccel-CommandShortcut=true
