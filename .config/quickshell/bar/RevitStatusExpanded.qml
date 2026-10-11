@@ -58,6 +58,9 @@ Rectangle {
         if (h.mem_total_mb)
             out.push({ label: "mem", value: gb(h.mem_total_mb - h.mem_avail_mb) + "/" + gb(h.mem_total_mb) + "G",
                        pct: 100 * (h.mem_total_mb - h.mem_avail_mb) / h.mem_total_mb });
+        if (h.swap_total_mb)
+            out.push({ label: "swap", value: gb(h.swap_total_mb - h.swap_free_mb) + "/" + gb(h.swap_total_mb) + "G",
+                       pct: 100 * (h.swap_total_mb - h.swap_free_mb) / h.swap_total_mb });
         if (h.gpu)
             out.push({ label: "gpu", value: h.gpu.util + "% " + gb(h.gpu.mem_used_mb) + "/" + gb(h.gpu.mem_total_mb) + "G " + h.gpu.temp_c + "\u00b0",
                        pct: h.gpu.util });
