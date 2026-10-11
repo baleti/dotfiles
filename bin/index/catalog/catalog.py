@@ -55,10 +55,20 @@ def source_id(db, label, kind, taken=None):
     db.execute("INSERT OR IGNORE INTO sources(label, kind, taken) VALUES(?,?,?)", (label, kind, taken))
     return db.execute("SELECT id FROM sources WHERE label=?", (label,)).fetchone()[0]
 
+def sweep(db, sid):
+    """After a full re-walk of a live source: drop what it no longer has (deleted files, old
+    versions of changed ones), then entries nothing links to any more. One commit, so readers
+    see either the old or the new state, never half."""
+    db.execute("DELETE FROM entry_sources WHERE source_id=? AND entry_id NOT IN (SELECT id FROM seen)", (sid,))
+    db.execute("DELETE FROM entries WHERE id NOT IN (SELECT entry_id FROM entry_sources)")
+    db.commit()
+
 class Writer:
     """Batches entries; each (path,size,mtime) is stored once and linked to every source that has it."""
     def __init__(self, db, sid):
         self.db, self.sid, self.n = db, sid, 0
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY)")
+        db.execute("DELETE FROM seen")
     def add(self, path, size, mtime, kind):
         name = path.rsplit("/", 1)[-1]
         row = self.db.execute(
@@ -66,6 +76,7 @@ class Writer:
             "ON CONFLICT(path,size,mtime) DO UPDATE SET kind=excluded.kind RETURNING id",
             (path, name, size, mtime, kind)).fetchone()
         self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (row[0], self.sid))
+        self.db.execute("INSERT OR IGNORE INTO seen VALUES(?)", (row[0],))
         self.n += 1
         if self.n % 50000 == 0:
             self.db.commit()
@@ -116,6 +127,7 @@ def build_local(db, roots):
                 else:
                     w.add(p, st.st_size, int(st.st_mtime), "file")
     db.commit()
+    sweep(db, sid)
     print(f"local: {w.n} rows, {skipped_mounts} mount points skipped, {time.time()-t0:.1f}s", file=sys.stderr)
 
 def build_rclone(db):
@@ -134,6 +146,7 @@ def build_rclone(db):
                 ts = None
             w.add(f"{mount}/{e['Path']}", int(e.get("Size", 0)), ts, "file")
         db.commit()
+        sweep(db, sid)
         print(f"rclone {remote}: {w.n} rows, {time.time()-t0:.1f}s", file=sys.stderr)
 
 def restic_snapshots(rep):
@@ -154,9 +167,9 @@ def build_restic(db, which):
             t0 = time.time()
             sid = source_id(db, label, "restic", s["time"][:19])
             w = Writer(db, sid)
-            out = subprocess.run(cmd + ["ls", "--json", s["short_id"]],
-                                 capture_output=True, text=True, check=True).stdout
-            for line in out.splitlines():
+            proc = subprocess.Popen(cmd + ["ls", "--json", s["short_id"]],
+                                    stdout=subprocess.PIPE, text=True)   # streamed: the listing is GBs
+            for line in proc.stdout:
                 r = json.loads(line)
                 if r.get("struct_type") != "node":
                     continue
@@ -170,6 +183,8 @@ def build_restic(db, which):
                     ts = None
                 w.add(r["path"], r.get("size") if t == "file" else None, ts,
                       {"file": "file", "dir": "dir", "symlink": "link"}[t])
+            if proc.wait() != 0:
+                raise RuntimeError(f"restic ls failed for {label}")
             db.commit()
             print(f"{label}: {w.n} rows, {time.time()-t0:.1f}s", file=sys.stderr)
 
@@ -213,6 +228,17 @@ def main():
     f.add_argument("--source"); f.add_argument("--size"); f.add_argument("--dm")
     a = ap.parse_args()
     db = connect()
+    lock = os.path.expanduser(DB) + ".building"      # tells the search server not to reload mid-build
+    building = a.cmd.startswith("build-")
+    if building:
+        open(lock, "w").close()
+    try:
+        run(a, db)
+    finally:
+        if building and os.path.exists(lock):
+            os.remove(lock)
+
+def run(a, db):
     if a.cmd == "build-local":
         build_local(db, C["local_roots"]); rebuild_fts(db)
     elif a.cmd == "build-rclone":
