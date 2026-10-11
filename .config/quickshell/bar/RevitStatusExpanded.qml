@@ -19,19 +19,19 @@ Rectangle {
 
     // [{ label, width, role }] -- role picks the cell renderer below.
     readonly property var columns: [
-        { label: "VM",      width: 90, key: "vm" , tip: "the VM the Revit instance runs in (a CI VM is shown as its cid)" },
-        { label: "DISPLAY", width: 52, key: "display" , tip: "GPU = a passed-through GPU (vfio) as well as the emulated display; QXL = emulated display only" },
+        { label: "VM",      width: 90, key: "vm" , tip: "VM running this Revit" },
+        { label: "DISPLAY", width: 52, key: "display" , tip: "GPU = passthrough, QXL = emulated" },
         { label: "REVIT",   width: 42,  key: "year" , tip: "Revit version" },
-        { label: "STATUS",  width: 190, key: "status" , tip: "idle, busy (a job is running), or the dialog that is blocking Revit" },
-        { label: "ENGINE",  width: 80,  key: "engine" , tip: "the script engine of the job running right now (roslyn, ironpython2, cpython3, command); - when nothing is running" },
-        { label: "QUEUE",   width: 42,  key: "queued" , tip: "jobs waiting in the agent queue" },
-        { label: "PID",     width: 46,  key: "pid" , tip: "Revit process id inside the VM" },
-        { label: "PORT",    width: 42,  key: "port" , tip: "the agent port inside the VM" },
+        { label: "STATUS",  width: 190, key: "status" , tip: "idle, busy, or blocking dialog" },
+        { label: "ENGINE",  width: 80,  key: "engine" , tip: "engine of the running job" },
+        { label: "QUEUE",   width: 42,  key: "queued" , tip: "queued jobs" },
+        { label: "PID",     width: 46,  key: "pid" , tip: "Revit process id" },
+        { label: "PORT",    width: 42,  key: "port" , tip: "agent port" },
         // the "host3" group: the live Claude Code session on this machine that last ran a command naming the VM (shown on the VM's first row)
-        { label: "TITLE",   width: 230, key: "claudeTitle", group: true , tip: "title of the live Claude Code session that last ran a command naming this VM (shown on the first row of the VM)" },
-        { label: "SESS",    width: 34,  key: "tmuxSession", group: true , tip: "tmux session of that Claude session" },
-        { label: "WIN",     width: 34,  key: "tmuxWindow",  group: true , tip: "tmux window of that Claude session" },
-        { label: "PANE",    width: 36,  key: "tmuxPane",    group: true , tip: "tmux pane of that Claude session" }
+        { label: "TITLE",   width: 230, key: "claudeTitle", group: true , tip: "last Claude session to use this VM" },
+        { label: "SESS",    width: 34,  key: "tmuxSession", group: true , tip: "tmux session" },
+        { label: "WIN",     width: 34,  key: "tmuxWindow",  group: true , tip: "tmux window" },
+        { label: "PANE",    width: 36,  key: "tmuxPane",    group: true , tip: "tmux pane" }
     ]
     readonly property var plainColumns: columns.filter(c => !c.group)
     readonly property real plainWidth: plainColumns.reduce((s, c) => s + c.width + root.colGap, 0)
@@ -211,7 +211,7 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     onEntered: {
-                        root.hintText = "this machine: the Claude Code session that last used the VM";
+                        root.hintText = "Claude sessions on this machine";
                         root.hintPos = groupLabel.mapToItem(root, mouseX + 12, mouseY + 16);
                     }
                     onPositionChanged: mouse => root.hintPos = groupLabel.mapToItem(root, mouse.x + 12, mouse.y + 16)
