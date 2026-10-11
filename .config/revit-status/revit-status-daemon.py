@@ -5,7 +5,7 @@ shows the last known view the instant it opens instead of waiting ~3 s for an ss
 
 A probe costs ssh round trips into every VM, so the interval adapts the way claude-usage-daemon's does:
   - a monitor is DPMS-off, or the session is locked          -> every 10 min
-  - the panel is open (it touches ~/.cache/revit-status/watch every few seconds while open) -> every 5 s (probe-bound, ~3 s each)
+  - the panel is open (it touches ~/.cache/revit-status/watch every few seconds while open) -> back to back (probe-bound, ~3 s per pass; host stats every 2 s)
   - something changed within the last 10 min (instance came/went, state/dialog/queue/engine changed) -> every 30 s
   - otherwise (screen on, nothing moving)                    -> every 2 min
   - every probe that fails outright (ssh to the VM host down) doubles the wait up to 10 min, resetting on the next success
@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,7 @@ WATCH_FILE = STATE_DIR / "watch"
 REMOTE = Path(os.environ.get("REVIT_BALLET_REPO", str(Path.home() / "src" / "revit-ballet"))) / "tools" / "remote" / "revit-remote"
 
 INTERVAL_LOCKED = 600
-INTERVAL_WATCHED = 5
+INTERVAL_WATCHED = 1
 INTERVAL_ACTIVE = 30
 INTERVAL_IDLE = 120
 MAX_BACKOFF = 600
@@ -197,7 +198,7 @@ HOST_SCRIPT = r'''
 read -r _ a1 b1 c1 d1 e1 f1 g1 h1 _ < /proc/stat; sleep 1; read -r _ a2 b2 c2 d2 e2 f2 g2 h2 _ < /proc/stat
 t1=$((a1+b1+c1+d1+e1+f1+g1+h1)); t2=$((a2+b2+c2+d2+e2+f2+g2+h2)); i1=$((d1+e1)); i2=$((d2+e2))
 echo "cpu $(( 100 * ((t2-t1) - (i2-i1)) / (t2-t1) )) $(nproc) $(cut -d' ' -f1 /proc/loadavg)"
-awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print "mem", int(t/1024), int(a/1024)}' /proc/meminfo
+awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} /SwapTotal/{st=$2} /SwapFree/{sf=$2} END{print "mem", int(t/1024), int(a/1024), int(st/1024), int(sf/1024)}' /proc/meminfo
 for m in __MOUNTS__; do df -kP "$m" 2>/dev/null | awk -v m="$m" 'NR==2{print "disk", m, $2, $3}'; done
 '''
 
@@ -217,6 +218,8 @@ def host_stats(ssh_host):
                 out.update(cpu_pct=int(w[1]), cores=int(w[2]), load1=float(w[3]))
             elif w[0] == "mem":
                 out.update(mem_total_mb=int(w[1]), mem_avail_mb=int(w[2]))
+                if len(w) >= 5:
+                    out.update(swap_total_mb=int(w[3]), swap_free_mb=int(w[4]))
             elif w[0] == "disk" and int(w[2]) > 0:
                 out["disks"].append({"mount": w[1], "label": labels.get(w[1], w[1]), "size_gb": int(w[2]) // 1048576,
                                      "used_gb": int(w[3]) // 1048576, "pct": round(100 * int(w[3]) / int(w[2]))})
@@ -226,75 +229,107 @@ def host_stats(ssh_host):
 
 
 def probe(rr):
-    cfg = rr.load_config()
-    targets = rr.expand_targets(cfg)
-    ssh_hosts = sorted({t["ssh"] for t in targets if t.get("ssh")})[:1]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        host_f = ex.submit(host_stats, ssh_hosts[0]) if ssh_hosts else None
-        probes = rr.probe_all(targets, commands=False)
-        host = host_f.result() if host_f else None
+    """One pass over every VM -> (rows, ok, gpu). gpu = the nvidia-smi readout of the VM that has the passed-through GPU."""
+    targets = rr.expand_targets(rr.load_config())
+    probes = rr.probe_all(targets, commands=False)
     rows = rr.build_status_rows(probes, targets)
+    gpu = None
     for pr in probes:
-        if pr.get("gpu") and host is not None:
-            vm = next((t.get("vm") for t in targets if t["name"] == pr["target"]), "")
-            host["gpu"] = dict(pr["gpu"], vm=vm)
-    probe.host = host
+        if pr.get("gpu"):
+            gpu = dict(pr["gpu"], vm=next((t.get("vm") for t in targets if t["name"] == pr["target"]), ""))
     # every target failing (the VM host itself is unreachable) is a failed probe, not a legitimate "nothing running"
     ok = not (rows and all(not r.get("instance") and r.get("state") == "unreachable" for r in rows))
-    return rows, ok
+    return rows, ok, gpu
+
+
+class Shared:
+    """The two probe loops (VMs, host stats) each update their part and republish the one state file."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.rows, self.host, self.gpu = [], None, None
+        self.mode, self.interval, self.ok = "idle", INTERVAL_IDLE, True
+        self.last_change = 0.0
+
+    def publish(self):
+        with self.lock:
+            host = dict(self.host, gpu=self.gpu) if self.host else None
+            write_state(self.rows, self.mode, self.interval, self.ok, host)
+
+    def tier(self):
+        if screen_off_or_locked():
+            return "locked", INTERVAL_LOCKED
+        if watched():
+            return "watched", INTERVAL_WATCHED
+        if time.time() - self.last_change < ACTIVE_WINDOW:
+            return "active", INTERVAL_ACTIVE
+        return "idle", INTERVAL_IDLE
+
+    def wait(self, interval_for, started):
+        """Sleep in 1 s slices until `interval_for(tier)` seconds have passed since `started`; a shorter tier (panel opened, screen on) ends it early."""
+        while time.time() - started < interval_for(self.tier()[0]):
+            time.sleep(1)
+
+
+# host stats cadence per tier: cheap (one ssh, 1 s CPU sample), so much faster than the VM probes while the panel is open
+HOST_INTERVAL = {"locked": INTERVAL_LOCKED, "watched": 2, "active": 30, "idle": 30}
+
+
+def host_loop(sh):
+    rr = load_remote()
+    while True:
+        started = time.time()
+        try:
+            targets = rr.expand_targets(rr.load_config())
+            hosts = sorted({t["ssh"] for t in targets if t.get("ssh")})
+            host = host_stats(hosts[0]) if hosts else None
+            if host is not None:
+                sh.host = host
+                sh.publish()
+        except Exception as e:
+            log("host stats failed: %r" % (e,))
+        sh.wait(lambda tier: HOST_INTERVAL.get(tier, 30), started)
 
 
 def main():
     rr = load_remote()
     xref = ClaudeXref()
+    sh = Shared()
+    threading.Thread(target=host_loop, args=(sh,), daemon=True).start()
     last_sig = None
-    last_change = 0.0
     failures = 0
     last_rows = []
-    last_host = None
     while True:
+        started = time.time()
         try:
-            rows, ok = probe(rr)
+            rows, ok, gpu = probe(rr)
         except Exception as e:  # never die: the next cycle retries
             log("probe failed: %r" % (e,))
-            rows, ok = last_rows, False
+            rows, ok, gpu = last_rows, False, sh.gpu
         if ok:
             failures = 0
             sig = signature(rows)
             if sig != last_sig:
-                last_sig, last_change = sig, time.time()
+                last_sig, sh.last_change = sig, time.time()
             last_rows = rows
         else:
             failures += 1
             rows = last_rows or rows   # keep showing the last good view; the panel dims it via `ok`
-
-        def tier():
-            if screen_off_or_locked():
-                return "locked", INTERVAL_LOCKED
-            if watched():
-                return "watched", INTERVAL_WATCHED
-            if time.time() - last_change < ACTIVE_WINDOW:
-                return "active", INTERVAL_ACTIVE
-            return "idle", INTERVAL_IDLE
-
-        mode, interval = tier()
-        if failures:
-            mode, interval = "backoff", min(MAX_BACKOFF, max(interval, 15) * 2 ** min(failures, 6))
         try:
             rows = xref.attach(rows)
         except Exception as e:
             log("claude cross-reference failed: %r" % (e,))
-        if ok and getattr(probe, "host", None):
-            last_host = probe.host
-        write_state(rows, mode, interval, ok, last_host)
-        # wait in 1 s slices; the panel opening or the tier dropping to a shorter interval ends the wait early
-        waited = 0
-        while waited < interval:
-            time.sleep(1)
-            waited += 1
-            m2, i2 = tier()
-            if not failures and i2 < interval - waited + 1 and i2 <= waited:
-                break
+        mode, interval = sh.tier()
+        if failures:
+            mode, interval = "backoff", min(MAX_BACKOFF, max(interval, 15) * 2 ** min(failures, 6))
+        sh.rows, sh.ok, sh.mode, sh.interval = rows, ok, mode, interval
+        if gpu is not None or ok:
+            sh.gpu = gpu
+        sh.publish()
+        if failures:
+            sh.wait(lambda tier: interval, started)
+        else:
+            sh.wait(lambda tier: {"locked": INTERVAL_LOCKED, "watched": INTERVAL_WATCHED, "active": INTERVAL_ACTIVE, "idle": INTERVAL_IDLE}[tier], started)
 
 
 if __name__ == "__main__":
