@@ -2,6 +2,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 
 // mod+Tab: the alt+tab grid (winswitch/WinSwitch.qml, state in WinSwitchState)
 // restricted to the tabs of the active window's Hyprland group -- same grid,
@@ -27,18 +28,70 @@ QtObject {
         listProc.running = true;
     }
 
+    // mod+Tab / mod+Shift+Tab (winswitch.lua `gtab`): behaves like alt+tab. The grid opens
+    // on the first press and stays up while the modifier is held; each further press steps
+    // forward (Shift: back); releasing the modifier switches to the selected tab ("altup",
+    // handled by WinSwitchState). The group's list is fetched asynchronously, so presses
+    // and an early release that arrive before it is ready are kept and replayed.
+    property var _queued: []
+    property bool _released: false
+    property bool _loading: false
+
+    readonly property Connections _events: Connections {
+        target: Hyprland
+        function onRawEvent(event: var): void {
+            if (event.name !== "custom" || !event.data.startsWith("winswitch "))
+                return;
+            const rest = event.data.slice("winswitch ".length);
+            if (rest.startsWith("gtab "))
+                root._onGroupTab(rest.slice(5));
+            else if (rest === "altup" && root._loading)
+                root._released = true;
+        }
+    }
+
+    function _onGroupTab(direction: string): void {
+        if (WinSwitchState.active && WinSwitchState.groupMode) {
+            WinSwitchState.altHeld = true;
+            if (WinSwitchState.locked)
+                WinSwitchState.lockedTab(direction);
+            else
+                WinSwitchState.advance(direction);
+            return;
+        }
+        if (WinSwitchState.active)
+            return;     // the alt+tab grid is up
+        root._queued = root._queued.concat([direction]);
+        if (root._loading)
+            return;
+        root._loading = true;
+        root._released = false;
+        listProc.command = [Quickshell.env("HOME") + "/bin/group-windows", "list", "--winswitch"];
+        listProc.running = true;
+    }
+
     readonly property Process _list: Process {
         id: listProc
         stdout: StdioCollector {
             id: listOut
             onStreamFinished: {
                 let rows;
+                const steps = root._queued, released = root._released;
+                root._queued = [];
+                root._loading = false;
+                root._released = false;
                 try { rows = JSON.parse(listOut.text); } catch (e) { return; }
                 WinSwitchState.startGroup(rows);
-                if (rows.length > 0) {
-                    root._anchor = rows[0].address;
-                    pollTimer.restart();
-                }
+                if (!WinSwitchState.active)
+                    return;
+                root._anchor = rows.find(r => !r.pending).address;
+                pollTimer.restart();
+                if (steps.length > 0)
+                    WinSwitchState.altHeld = true;
+                for (const d of steps)
+                    WinSwitchState.advance(d);
+                if (released)
+                    WinSwitchState.confirm(WinSwitchState.selected);   // tapped and let go already
             }
         }
     }

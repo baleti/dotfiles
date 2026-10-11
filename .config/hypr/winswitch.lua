@@ -278,5 +278,31 @@ function winswitch.nav(dir)
     return true
 end
 
+-- mainMod+Tab: the same hold-the-modifier cycling, over the active window's group tabs
+-- (Quickshell's GroupPickerState lists them). "gtab" is the tab press; the release of the
+-- Super key is reported with the same "altup" event the grid already confirms on.
+local function mod_down()
+    return hl.is_key_down("Super_L") or hl.is_key_down("Super_R")
+end
+
+local mod_timer -- kept referenced: a collected timer never fires
+mod_timer = hl.timer(function()
+    if not mod_down() then
+        mod_timer:set_enabled(false)
+        emit("altup")
+    end
+end, { timeout = ALT_POLL_MS, type = "repeat" })
+mod_timer:set_enabled(false)
+
+function winswitch.group_tab(direction)
+    emit("gtab " .. direction)
+    if not mod_timer:is_enabled() then
+        mod_timer:set_enabled(true)
+    end
+end
+
+hl.bind(mainMod .. " + Tab", function() winswitch.group_tab("next") end, { description = "Group tabs switcher (next); stays up while the modifier is held" })
+hl.bind(mainMod .. " + SHIFT + Tab", function() winswitch.group_tab("prev") end, { description = "Group tabs switcher (previous)" })
+
 hl.bind("ALT + Tab", function() winswitch.tab("next") end, { description = "Window switcher (next)" })
 hl.bind("ALT + SHIFT + Tab", function() winswitch.tab("prev") end, { description = "Window switcher (previous)" })
