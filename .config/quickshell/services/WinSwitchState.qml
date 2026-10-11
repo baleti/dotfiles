@@ -213,7 +213,9 @@ QtObject {
         const now = {};
         for (const w of list)
             now[w.address] = true;
-        if (added.length === 0 && root.windows.length === list.length && root.windows.every(w => now[w.address]))
+        const sameSizes = root.windows.length === list.length
+            && list.every((w, i) => root.windows[i].address === w.address && root.windows[i].width === w.width && root.windows[i].height === w.height);
+        if (added.length === 0 && root.windows.length === list.length && root.windows.every(w => now[w.address]) && sameSizes)
             return;
         const keep = root.selected >= 0 && root.selected < root.windows.length ? root.windows[root.selected].address : "";
         const fresh = Object.assign({}, root.thumbnails);
