@@ -1,0 +1,7 @@
+[Desktop Entry]
+Exec=bluetoothctl disconnect B0:F0:0C:0E:77:29
+Name=bluetoothctl headphones disconnect
+NoDisplay=true
+StartupNotify=false
+Type=Application
+X-KDE-GlobalAccel-CommandShortcut=true
