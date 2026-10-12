@@ -1379,7 +1379,7 @@ def find_session_profile(session_id):
 
 
 def label_window(profile):
-    """Name this pane's window after the account (claude/claude2/claude3)
+    """Name this pane's window after the account (claude/claude2/claude3/claude4)
     the way claude-account-window-rename-hook.sh does, and mark it as
     managed (@claude_autoname/@claude_lastset) so that hook/watcher keep
     it current afterwards. The exec below makes claude this pane's process
@@ -1388,7 +1388,7 @@ def label_window(profile):
     if not pane:
         return
     base = os.path.basename((profile or CLAUDE_DIR).rstrip("/"))
-    name = {".claude2": "claude2", ".claude3": "claude3"}.get(base, "claude")
+    name = {".claude2": "claude2", ".claude3": "claude3", ".claude4": "claude4"}.get(base, "claude")
     subprocess.run(["tmux", "rename-window", "-t", pane, name],
                    stderr=subprocess.DEVNULL)
     subprocess.run(["tmux", "set-window-option", "-t", pane,

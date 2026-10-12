@@ -160,6 +160,8 @@ def account_for_config_dir(cfg_dir):
         return "claude2"
     if cfg_dir.endswith("/.claude3"):
         return "claude3"
+    if cfg_dir.endswith("/.claude4"):
+        return "claude4"
     return "claude"
 
 

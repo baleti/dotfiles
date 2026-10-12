@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Polls Anthropic's account-usage endpoint for this machine's Claude Code
-accounts (~/.claude, ~/.claude2, ~/.claude3) and writes one combined
+accounts (~/.claude, ~/.claude2, ~/.claude3, ~/.claude4) and writes one combined
 snapshot for the quickshell bar to read.
 
 This is the same endpoint the `claude` CLI itself calls for `/usage` --
@@ -83,6 +83,7 @@ ACCOUNTS = [
     ("claude", Path.home() / ".claude"),
     ("claude2", Path.home() / ".claude2"),
     ("claude3", Path.home() / ".claude3"),
+    ("claude4", Path.home() / ".claude4"),
 ]
 
 STATE_DIR = Path.home() / ".cache" / "claude-usage"

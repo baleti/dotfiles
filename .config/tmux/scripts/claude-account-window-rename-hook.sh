@@ -129,6 +129,7 @@ if [ "$cur_cmd" = "claude" ]; then
     case "$cfg_dir" in
         */.claude2) desired="claude2" ;;
         */.claude3) desired="claude3" ;;
+        */.claude4) desired="claude4" ;;
         *) desired="claude" ;;
     esac
 elif [ "$marker" = "1" ]; then

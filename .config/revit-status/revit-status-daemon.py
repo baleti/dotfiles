@@ -40,7 +40,7 @@ ACTIVE_WINDOW = 600    # "something changed" lingers this long
 
 
 CLAUDE_STATE = Path.home() / ".cache" / "claude-usage" / "state.json"
-CLAUDE_BASES = {"claude": Path.home() / ".claude", "claude2": Path.home() / ".claude2", "claude3": Path.home() / ".claude3"}
+CLAUDE_BASES = {"claude": Path.home() / ".claude", "claude2": Path.home() / ".claude2", "claude3": Path.home() / ".claude3", "claude4": Path.home() / ".claude4"}
 
 
 def log(msg):

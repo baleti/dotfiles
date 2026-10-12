@@ -71,7 +71,7 @@ BIND_IP = _env_or_fatal("CLAUDE_AGENTS_BIND_IP")
 PORT = int(os.environ.get("CLAUDE_AGENTS_PORT", "8790"))
 ALLOWED_SUBNET = ipaddress.ip_network(_env_or_fatal("CLAUDE_AGENTS_ALLOWED_SUBNET"))
 
-ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3"}
+ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3", "claude4": HOME / ".claude4"}
 
 CLAUDE_PROC_RE = re.compile(r'(^|/)claude(\s|$)')
 
