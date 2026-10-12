@@ -26,3 +26,9 @@ export LOCATE_PATH="$HOME/.cache/locate/home.db"
 # idempotent across nested shells.
 typeset -U path PATH
 path=("$HOME/.config/emacs/bin" $path "$HOME/.local/bin")
+
+# tmux runs as a systemd user service started without Hyprland's env, so panes
+# never inherit this; rediscover the newest instance dir instead.
+if [[ -z $HYPRLAND_INSTANCE_SIGNATURE && -d $XDG_RUNTIME_DIR/hypr ]]; then
+  export HYPRLAND_INSTANCE_SIGNATURE=$(ls -t $XDG_RUNTIME_DIR/hypr/ 2>/dev/null | head -1)
+fi
