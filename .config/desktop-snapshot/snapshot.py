@@ -256,10 +256,14 @@ def get_tmux_state(children, pid_info):
                     "cwd": cwd,
                     "active": pactive == "1",
                 }
-                if cmd == "claude":
-                    acc = resolve_claude_account(ppid, children, pid_info)
-                    if acc:
-                        pane["claude"] = acc
+                # Not gated on cmd == "claude": tmux's pane_current_command
+                # can read "zsh" while claude is still the shell's child
+                # (2026-10-12: three live sessions missed this way, so the
+                # restore never resumed them). resolve_claude_account only
+                # matches a direct child with comm == "claude".
+                acc = resolve_claude_account(ppid, children, pid_info)
+                if acc:
+                    pane["claude"] = acc
                 panes.append(pane)
             windows.append({
                 "index": widx,
