@@ -56,7 +56,7 @@ from pathlib import Path
 
 DEFAULT = Path.home() / ".local" / "share" / "desktop-snapshot" / "latest.json"
 SNAPSHOTS_DIR = Path.home() / ".local" / "share" / "desktop-snapshot" / "snapshots"
-CLAUDE_DIRS = [Path.home() / ".claude", Path.home() / ".claude2", Path.home() / ".claude3"]
+CLAUDE_DIRS = [Path.home() / ".claude", Path.home() / ".claude2", Path.home() / ".claude3", Path.home() / ".claude4"]
 
 # Every tmux call inject_resume() makes uses this - see its use there for
 # why (a single hung `tmux send-keys` wedged an entire ~100-pane resume
@@ -805,6 +805,8 @@ def account_for_config_dir(cfg_dir):
         return "claude2"
     if cfg_dir.endswith("/.claude3"):
         return "claude3"
+    if cfg_dir.endswith("/.claude4"):
+        return "claude4"
     return "claude"
 
 
