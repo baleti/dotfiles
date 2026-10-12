@@ -1424,7 +1424,7 @@ Rectangle {
         // column-header row). tallyLineH: the total-sessions line below
         // the table. errorLineCount * errorLineH: one line per account
         // currently showing an error.
-        const fixedOverhead = 20 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH
+        const fixedOverhead = 20 + 14 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH
             + root.errorLineCount * root.errorLineH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
     }
@@ -1475,7 +1475,7 @@ Rectangle {
                     Layout.alignment: Qt.AlignVCenter
                     implicitWidth: acctSummary.implicitWidth + 16
                     implicitHeight: acctSummary.implicitHeight + 6
-                    radius: height / 2
+                    radius: Math.min(height / 2, 12)
                     color: Theme.bgAlpha
                     border.color: Theme.border
                     border.width: 1
@@ -1487,6 +1487,7 @@ Rectangle {
 
                         Text {
                             id: acctSummaryName
+                            anchors.verticalCenter: parent.verticalCenter
                             text: String(root.acctIndex(acctSummaryPill.modelData.account))
                             color: Theme.text
                             font.family: Theme.fontFamily
@@ -1497,57 +1498,53 @@ Rectangle {
                             // rest of the fields (request 2026-09-05).
                             rightPadding: 4
                         }
-                        Text {
-                            id: acctSummarySession
-                            visible: typeof acctSummaryPill.modelData.session_pct === "number"
-                            // Baseline, not verticalCenter -- these run at
-                            // fontSize-2/-3 next to the bold fontSize-1
-                            // number, and centering different glyph sizes on
-                            // each other leaves their baselines at different
-                            // heights (reported 2026-09-05: "1 2 3 and the
-                            // rest of the line seem misaligned"). Sitting
-                            // every piece on the number's baseline lines the
-                            // text up the way it reads as aligned.
-                            anchors.baseline: acctSummaryName.baseline
-                            opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
-                            text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.session_pct))
-                            color: Theme.rampColor(acctSummaryPill.modelData.session_pct / 100)
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                        }
-                        Text {
-                            visible: acctSummarySession.visible
-                            anchors.baseline: acctSummaryName.baseline
-                            text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.session_resets_at) : ""
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
-                        }
-                        Text {
-                            visible: acctSummarySession.visible && acctSummaryWeekly.visible
-                            anchors.baseline: acctSummaryName.baseline
-                            text: "/"
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                        }
-                        Text {
-                            id: acctSummaryWeekly
-                            visible: typeof acctSummaryPill.modelData.weekly_pct === "number"
-                            anchors.baseline: acctSummaryName.baseline
-                            opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
-                            text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.weekly_pct))
-                            color: Theme.rampColor(acctSummaryPill.modelData.weekly_pct / 100)
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                        }
-                        Text {
-                            visible: acctSummaryWeekly.visible
-                            anchors.baseline: acctSummaryName.baseline
-                            text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.weekly_resets_at) : ""
-                            color: Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 3
+                        // Session and weekly limits each on their own
+                        // line (request 2026-10-12: with 4 accounts they
+                        // no longer fit side by side on one line).
+                        Column {
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 1
+
+                            Row {
+                                id: acctSummarySession
+                                visible: typeof acctSummaryPill.modelData.session_pct === "number"
+                                spacing: 4
+                                Text {
+                                    id: acctSessionPct
+                                    opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
+                                    text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.session_pct))
+                                    color: Theme.rampColor(acctSummaryPill.modelData.session_pct / 100)
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 2
+                                }
+                                Text {
+                                    anchors.baseline: acctSessionPct.baseline
+                                    text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.session_resets_at) : ""
+                                    color: Theme.textDim
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 3
+                                }
+                            }
+                            Row {
+                                id: acctSummaryWeekly
+                                visible: typeof acctSummaryPill.modelData.weekly_pct === "number"
+                                spacing: 4
+                                Text {
+                                    id: acctWeeklyPct
+                                    opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
+                                    text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.weekly_pct))
+                                    color: Theme.rampColor(acctSummaryPill.modelData.weekly_pct / 100)
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 2
+                                }
+                                Text {
+                                    anchors.baseline: acctWeeklyPct.baseline
+                                    text: root.tick >= 0 ? root.fmtResets(acctSummaryPill.modelData.weekly_resets_at) : ""
+                                    color: Theme.textDim
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 3
+                                }
+                            }
                         }
                     }
                 }
