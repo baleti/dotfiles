@@ -33,7 +33,7 @@ QtObject {
     })
     readonly property var groupDefaultSub: ({ tmux: "title", claude: "contents" })
     readonly property var directions: ["ascending", "descending"]
-    readonly property var defaultColumns: [{ kind: "flat", name: "title" }]
+    readonly property var defaultColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "workspace" }]
     // /sw (workspace view): what each workspace shows under its thumbnail.
     readonly property var workspaceColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "monitor" }, { kind: "flat", name: "windows" }]
 
