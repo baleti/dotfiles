@@ -1510,6 +1510,13 @@ Rectangle {
                                 visible: typeof acctSummaryPill.modelData.session_pct === "number"
                                 spacing: 4
                                 Text {
+                                    anchors.baseline: acctSessionPct.baseline
+                                    text: "session"
+                                    color: Theme.textDim
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 3
+                                }
+                                Text {
                                     id: acctSessionPct
                                     opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
                                     text: qsTr("%1%").arg(Math.round(acctSummaryPill.modelData.session_pct))
@@ -1529,6 +1536,13 @@ Rectangle {
                                 id: acctSummaryWeekly
                                 visible: typeof acctSummaryPill.modelData.weekly_pct === "number"
                                 spacing: 4
+                                Text {
+                                    anchors.baseline: acctWeeklyPct.baseline
+                                    text: "weekly"
+                                    color: Theme.textDim
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 3
+                                }
                                 Text {
                                     id: acctWeeklyPct
                                     opacity: acctSummaryPill.modelData.stale ? 0.55 : 1
