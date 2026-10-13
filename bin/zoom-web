@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Zoom web client as a Brave app window, isolated in firejail with its own profile.
+# Mirrors bin/teams-web (same stock brave firejail profile + ~/.config/firejail/brave.local).
+# Used to compare against Teams when the Teams mic kept muting itself (2026-10-13).
+#  - mkdir below is required: firejail --whitelist ignores a missing dir and the profile is lost on exit.
+#  - app.zoom.us/wc lands on the browser "Join a meeting" page; sign in there for hosting.
+#  - ZOOM_DEBUG=1 opens a loopback CDP port.
+d="$HOME/.brave-zoom"
+mkdir -p "$d"
+exec firejail --whitelist="$d" brave --user-data-dir="$d" \
+    --ozone-platform=wayland ${ZOOM_DEBUG:+--remote-debugging-port=0} \
+    --app=https://app.zoom.us/wc
