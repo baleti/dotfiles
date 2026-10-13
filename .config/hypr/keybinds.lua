@@ -319,7 +319,8 @@ hl.bind(mainMod .. " + CTRL + t", hl.dsp.exec_cmd("~/.config/hypr/scripts/dictat
 -- panel covers it.
 hl.bind("ALT + " .. mainMod .. " + n", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph net"), { description = "Network graph popup (last 10 min)" })
 hl.bind("ALT + " .. mainMod .. " + t", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph temp"), { description = "Temperature graph popup (last 10 min)" })
-hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/sysmon/target/release/sysmon-graph mem"), { description = "Memory graph popup (last 10 min)" })
+-- memory graph popup dropped 2026-10-13: ALT+mod+m is now the notification mute toggle.
+hl.bind("ALT + " .. mainMod .. " + m", hl.dsp.exec_cmd("~/.config/hypr/scripts/notifyd-toggle-mute.sh"), { description = "Toggle notification mute (history still recorded)" })
 
 -- Toggle the *quickshell bar's own* hover-graph panels open/closed on
 -- whichever monitor is focused (~/.config/hypr/scripts/bar-toggle.sh). Just

@@ -16,3 +16,10 @@ timeout_ms = 10000
 
 [urgency_critical]
 timeout_ms = 0            # 0 = sticky
+
+# Still shown while muted (alt+mod+m). A notification bypasses if its app
+# name matches `apps` (case-insensitive) or its summary contains any
+# `summary_contains` text. Muted notifications are always kept in history.
+[mute_bypass]
+apps = ["rssd"]           # news / RSS reader
+summary_contains = []
