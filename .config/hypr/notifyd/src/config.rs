@@ -17,6 +17,23 @@ pub struct UrgencyConfig {
     pub timeout_ms: u32,
 }
 
+#[derive(Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct MuteBypass {
+    pub apps: Vec<String>,
+    pub summary_contains: Vec<String>,
+}
+
+impl MuteBypass {
+    pub fn matches(&self, app_name: &str, summary: &str) -> bool {
+        let summary = summary.to_lowercase();
+        // notifyd's own mute-toggle feedback card must always show.
+        app_name == "notifyd-mute"
+            || self.apps.iter().any(|a| a.eq_ignore_ascii_case(app_name))
+            || self.summary_contains.iter().any(|t| summary.contains(&t.to_lowercase()))
+    }
+}
+
 #[derive(Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
@@ -28,6 +45,10 @@ pub struct Config {
     /// dunstrc: ignore_dbusclose -- if true, a client's CloseNotification
     /// is ignored (only notifyd's own timeout / a dismiss closes a popup).
     pub ignore_dbusclose: bool,
+    /// Notifications that still pop up while muted. A notification bypasses
+    /// if its app_name matches any `apps` entry (case-insensitive, exact) or
+    /// its summary contains any `summary_contains` entry (case-insensitive).
+    pub mute_bypass: MuteBypass,
     pub urgency_low: UrgencyConfig,
     pub urgency_normal: UrgencyConfig,
     pub urgency_critical: UrgencyConfig,
@@ -88,6 +109,7 @@ impl Default for Config {
             notification_limit: 20,
             history_length: 20,
             ignore_dbusclose: false,
+            mute_bypass: MuteBypass::default(),
             urgency_low: Self::urgency_low_default(),
             urgency_normal: UrgencyConfig::default(),
             urgency_critical: Self::urgency_critical_default(),

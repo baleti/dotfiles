@@ -9,7 +9,7 @@ use notifyd::dbus_names::{BUS_NAME, CONTROL_INTERFACE, OBJECT_PATH};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: notifyctl <invoke-last | invoke ID | invoke-action ID KEY | dismiss ID | actions [ID] | list | close-all | hover-start ID | hover-end ID>"
+        "usage: notifyctl <invoke-last | invoke ID | invoke-action ID KEY | dismiss ID | actions [ID] | list | close-all | hover-start ID | hover-end ID | toggle-mute | muted>"
     );
     std::process::exit(2);
 }
@@ -104,6 +104,23 @@ fn main() {
         Some("hover-start") if args.len() == 2 => {
             let id = parse_id(&args[1]);
             call_unit(&connection, "HoverStart", Some(&(id,).to_variant()));
+        }
+        Some(cmd @ ("toggle-mute" | "muted")) if args.len() == 1 => {
+            let method = if cmd == "toggle-mute" { "ToggleMute" } else { "GetMuted" };
+            match connection.call_sync(
+                Some(BUS_NAME), OBJECT_PATH, CONTROL_INTERFACE, method, None,
+                Some(glib::VariantTy::new("(b)").expect("valid variant type")),
+                gio::DBusCallFlags::NONE, -1, gio::Cancellable::NONE,
+            ) {
+                Ok(reply) => {
+                    let (muted,): (bool,) = reply.get().expect("reply is (b)");
+                    println!("{}", if muted { "muted" } else { "unmuted" });
+                }
+                Err(err) => {
+                    eprintln!("notifyctl: {method} failed: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
         Some("hover-end") if args.len() == 2 => {
             let id = parse_id(&args[1]);
