@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Zoom
+GenericName=Video Conferencing
+Comment=Zoom web client in a sandboxed Brave app window
+Exec=/home/user1/bin/summon-app zoom
+Icon=zoom-web
+Terminal=false
+Categories=Network;InstantMessaging;Chat;VideoConference;
+Keywords=zoom;meeting;call;video;
+StartupWMClass=brave-app.zoom.us__wc-Default
