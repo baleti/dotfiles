@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=WhatsApp (PWA)
+GenericName=Messaging
+Comment=WhatsApp Web in a sandboxed Brave app window
+Exec=/home/user1/bin/summon-app whatsapp
+Icon=whatsapp-web
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+Keywords=whatsapp;chat;messages;pwa;
+StartupWMClass=brave-web.whatsapp.com__-Default
