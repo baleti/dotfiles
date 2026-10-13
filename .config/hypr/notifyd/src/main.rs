@@ -28,6 +28,7 @@ use config::Config;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gio::prelude::*;
 
@@ -43,6 +44,9 @@ pub mod close_reason {
     #[allow(dead_code)]
     pub const UNDEFINED: u32 = 4;
 }
+
+/// Mute flag: while set, notifications are recorded but no popup is shown.
+static MUTED: AtomicBool = AtomicBool::new(false);
 
 /// Sent from the (Send + Sync) D-Bus callbacks to the glib-main-thread
 /// receiver in `main()`. Carries ids, not full data -- the receiver
@@ -122,6 +126,14 @@ const INTROSPECTION_XML: &str = r#"
       <arg type="s" name="json" direction="out"/>
     </method>
     <method name="CloseAll"/>
+    <!-- Mute: Notify() still records into history (and returns an id), but
+         no popup is shown. ToggleMute flips and replies with the new state. -->
+    <method name="ToggleMute">
+      <arg type="b" name="muted" direction="out"/>
+    </method>
+    <method name="GetMuted">
+      <arg type="b" name="muted" direction="out"/>
+    </method>
     <!-- Pointer entered/left a card (quickshell hover, via `notifyctl
          hover-start`/`hover-end`): hold the countdown while hovered, then
          restart it at its full duration on leave -- a reset, not a resume.
@@ -268,6 +280,7 @@ fn drop_icon_file(id: u32) {
 
 fn handle_notify(
     state: &SharedState,
+    config: &Config,
     ui_tx: &glib::Sender<UiMsg>,
     sender: &str,
     parameters: &glib::Variant,
@@ -323,7 +336,9 @@ fn handle_notify(
          actions={actions:?} urgency={urgency} timeout={expire_timeout}"
     );
 
-    let _ = ui_tx.send(UiMsg::Show { id, urgency, expire_timeout });
+    if !MUTED.load(Ordering::Relaxed) || config.mute_bypass.matches(&app_name, &summary) {
+        let _ = ui_tx.send(UiMsg::Show { id, urgency, expire_timeout });
+    }
     Some(id)
 }
 
@@ -501,6 +516,17 @@ fn handle_control_call(
             let _ = ui_tx.send(UiMsg::CloseAll);
             invocation.return_value(None);
         }
+        "ToggleMute" => {
+            let muted = !MUTED.fetch_xor(true, Ordering::Relaxed);
+            if muted {
+                // Muting also clears whatever is currently on screen.
+                let _ = ui_tx.send(UiMsg::CloseAll);
+            }
+            invocation.return_value(Some(&(muted,).to_variant()));
+        }
+        "GetMuted" => {
+            invocation.return_value(Some(&(MUTED.load(Ordering::Relaxed),).to_variant()));
+        }
         "HoverStart" => {
             let Some((id,)): Option<(u32,)> = parameters.get() else {
                 invocation.return_dbus_error(
@@ -550,7 +576,7 @@ fn handle_method_call(
             let info = ("notifyd", "hypr", "0.2.0", "1.2");
             invocation.return_value(Some(&info.to_variant()));
         }
-        "Notify" => match handle_notify(state, ui_tx, sender, parameters) {
+        "Notify" => match handle_notify(state, config, ui_tx, sender, parameters) {
             Some(id) => invocation.return_value(Some(&(id,).to_variant())),
             None => invocation.return_dbus_error(
                 "org.freedesktop.DBus.Error.InvalidArgs",
