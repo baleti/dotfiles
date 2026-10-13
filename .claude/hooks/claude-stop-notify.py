@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 MATCH_SCRIPT = os.path.expanduser(
     "~/.config/hypr/scripts/lib/tmux-window-match.py"
@@ -285,7 +286,22 @@ def main():
             debug_log(f"session={session_name}: window already focused, skipping")
             sys.exit(0)
 
+        debug_log(f"payload keys={sorted(payload)}")
         ai_title, body = stop_fields(transcript_path)
+        # The Stop hook can fire before the turn's final assistant message
+        # is flushed to the transcript, so the tail read above then yields
+        # the *previous* message. Prefer the payload's own copy of it.
+        last_msg = payload.get("last_assistant_message")
+        if isinstance(last_msg, str) and last_msg.strip():
+            body = last_msg
+        else:
+            # Older Claude Code: poll briefly for the flush instead.
+            for _ in range(5):
+                time.sleep(0.2)
+                t2, b2 = stop_fields(transcript_path)
+                if b2 != body:
+                    ai_title, body = t2 or ai_title, b2
+                    break
         title = ai_title or registry_name or os.path.basename(cwd.rstrip("/")) or session_name
         body = body.strip()
         if len(body) > BODY_BUDGET:
