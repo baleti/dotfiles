@@ -23,4 +23,6 @@ return {
     { slug = "whatsapp",    class = "brave-web.whatsapp.com__-Default", cmd = "/home/user1/bin/whatsapp-web" },
     -- No key and no autostart: only reachable through its .desktop entry (summon-app teams).
     { slug = "teams",       class = "brave-teams.microsoft.com__v2_-Default", cmd = "/home/user1/bin/teams-web", no_autostart = true },
+    -- Zoom web client for comparing mic behaviour with Teams; same no-key/no-autostart pattern.
+    { slug = "zoom",        class = "brave-app.zoom.us__wc-Default", cmd = "/home/user1/bin/zoom-web", no_autostart = true },
 }
