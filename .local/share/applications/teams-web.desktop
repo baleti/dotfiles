@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Microsoft Teams (PWA)
+GenericName=Video Conferencing
+Comment=Microsoft Teams in a sandboxed Brave app window
+Exec=/home/user1/bin/summon-app teams
+Icon=teams-web
+Terminal=false
+Categories=Network;InstantMessaging;Chat;VideoConference;
+Keywords=teams;microsoft;meeting;call;chat;pwa;
+StartupWMClass=brave-teams.microsoft.com__v2_-Default
