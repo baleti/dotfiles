@@ -6,6 +6,7 @@ Type=oneshot
 WorkingDirectory=%h/bin/index/catalog
 ExecStart=/usr/bin/nice -n 19 /usr/bin/ionice -c3 /usr/bin/python3 %h/bin/index/catalog/catalog.py build-restic
 ExecStart=/usr/bin/nice -n 19 /usr/bin/ionice -c3 /usr/bin/python3 %h/bin/index/catalog/catalog.py build-rclone
+ExecStart=/usr/bin/nice -n 19 /usr/bin/ionice -c3 /usr/bin/python3 %h/bin/index/catalog/catalog.py build-extra
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=10
