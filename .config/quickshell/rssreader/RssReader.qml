@@ -731,19 +731,7 @@ PanelWindow {
                                 // TextInput, and positionToRectangle stays
                                 // correct under scrolling where a manual
                                 // TextMetrics measurement wouldn't).
-                                Repeater {
-                                    model: search.text.length ? root._commandSpans(search.text) : []
-                                    Rectangle {
-                                        required property var modelData
-                                        x: search.positionToRectangle(modelData.start).x
-                                        y: search.positionToRectangle(modelData.start).y
-                                           + search.positionToRectangle(modelData.start).height - 2
-                                        width: Math.max(1, search.positionToRectangle(modelData.end).x - x)
-                                        height: 2
-                                        radius: 1
-                                        color: modelData.valid ? Theme.cyan : Theme.red
-                                    }
-                                }
+                                DslHighlight { input: search; spans: search.text.length ? root._commandSpans(search.text) : [] }
 
                                 // Standard completion-menu convention
                                 // (reported 2026-09-09 against winswitch's

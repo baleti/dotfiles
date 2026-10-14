@@ -50,7 +50,10 @@ registered person.
 **Full-text search (`/fts`, `/full-text-search`) - images picker only.** The
 verb takes the rest of the query as Recoll query-language terms (words are
 ANDed, `OR`, `"phrase"`, `-term` as in Recoll), so `/fts beta design //mime pdf`
-finds PDFs whose contents contain both words. Other `//` filters still apply
+finds PDFs whose contents contain both words. `/fts/<index> terms` searches one content index (a unique prefix of its
+folder name is enough, e.g. `/fts/part3 cdm`; an unknown name is reported as an error),
+and a first word that is exactly an index name does the same (`/fts part3-books cdm`).
+The names are the `fts` list in `/facets`. Other `//` filters still apply
 to its results. Only files that are in a Recoll (Xapian) content index can
 match: a `/fts` query never shows a file that has not been content-indexed, so
 there is no "not indexed" row to explain. Name search (no verb) covers every
@@ -774,6 +777,35 @@ directly after a `//tag` (`//path / /sort dm asc` - the value is the lone
 `/`, then the sort) is parsed as usual.
 Photo (`//clip`, `//face`) queries are handled by the photo engine and do
 not group quoted words.
+
+## Syntax highlighting
+
+Every search box that implements this DSL colours the **commands** in its own text,
+so you can see at a glance what the parser will treat as a command and what it will
+treat as plain text.
+
+- **Painted:** a token that the app's parser recognises as a command: an exact verb
+  (`/fv /ft /at /rt /s /rv`, plus an app's own such as `/fts /clip /face`), the
+  `/verb/via` form, and a `//tag` default-verb form that names a real field. The
+  leading `!` of a negated command is not part of the command and stays plain.
+- **Not painted:** barewords, `"quoted phrases"`, a `//tag`'s value (it owns the next
+  token whatever it looks like), and any `/token` that is not a command, such as the
+  path `/mnt/backups/office`. There is no "invalid command" colour: a token the
+  parser would treat as plain text looks like plain text. A `/token` still being typed
+  that might become a verb is also left plain.
+- **How:** the command is recoloured with the theme accent and set bold; the rest of the
+  text keeps the normal text colour. It is the text itself, not an underline.
+- **Colours come from the wallpaper palette.** Apps read the generated Material You
+  scheme (`~/.local/state/quickshell/scheme.json`, written by `gen-theme.py`): text is
+  `onSurface`, commands are `primary`. Never hard-code a colour; a wallpaper change
+  recolours the boxes.
+
+Implementations: the Quickshell pickers share `~/.config/quickshell/theme/DslHighlight.qml`
+(a transparent-text overlay inside the `TextInput`, fed the app's command spans; the
+input keeps the caret and selection). The images picker does it with an egui text
+layouter (`command_spans` / `query_job` in `~/bin/index/images/src/main.rs`).
+Not yet done: the tmux TUIs (window-search, claude-history, focus-picker) and the
+Android app.
 
 ## Autocompletion
 

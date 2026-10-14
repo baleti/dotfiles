@@ -176,6 +176,53 @@ fn query_terms(q: &str) -> Vec<String> {
 }
 
 /// The text with every case-insensitive occurrence of a term drawn on a highlight background.
+/// Byte ranges of the recognised /commands in a query box (query-dsl.md "Syntax highlighting"):
+/// the images picker's verbs, `/verb/via`, and `//tag`. Quoted runs, a `//tag`'s value and
+/// anything else that merely starts with `/` (a path such as /mnt/x) are not commands.
+fn command_spans(q: &str) -> Vec<(usize, usize)> {
+    const VERBS: [&str; 7] = ["fts", "full-text-search", "clip", "face", "s", "sort", "rv"];
+    const REVERSE: &str = "reverse";
+    const TAGS: [&str; 7] = ["name", "path", "size", "dm", "mime", "ext", "file"];
+    let b = q.as_bytes();
+    let (mut i, mut out, mut owns_value) = (0, Vec::new(), false);
+    while i < b.len() {
+        if b[i] == b' ' { i += 1; continue; }
+        let mut start = i;
+        if b[i] == b'!' { i += 1; start = i; }
+        if i < b.len() && b[i] == b'"' {
+            i = q[i + 1..].find('"').map_or(b.len(), |e| i + 1 + e + 1);
+            owns_value = false;
+            continue;
+        }
+        while i < b.len() && b[i] != b' ' { i += 1; }
+        let tok = &q[start..i];
+        if owns_value { owns_value = false; continue; }
+        if let Some(rest) = tok.strip_prefix("//") {
+            let name = rest.split('/').next().unwrap_or("");
+            if TAGS.contains(&name) { out.push((start, i)); owns_value = true; }
+        } else if let Some(rest) = tok.strip_prefix('/') {
+            let name = rest.split('/').next().unwrap_or("");
+            if VERBS.contains(&name) || name == REVERSE { out.push((start, i)); }
+        }
+    }
+    out
+}
+
+/// The query box's text with each recognised command in the accent colour and bold.
+fn query_job(q: &str, font: &egui::FontId, bold: &egui::FontFamily, pal: &Palette) -> egui::text::LayoutJob {
+    let plain = egui::TextFormat::simple(font.clone(), pal.text);
+    let cmd = egui::TextFormat::simple(egui::FontId::new(font.size, bold.clone()), pal.accent);
+    let mut job = egui::text::LayoutJob::default();
+    let mut pos = 0;
+    for (s, e) in command_spans(q) {
+        job.append(&q[pos..s], 0.0, plain.clone());
+        job.append(&q[s..e], 0.0, cmd.clone());
+        pos = e;
+    }
+    job.append(&q[pos..], 0.0, plain);
+    job
+}
+
 fn name_job(text: &str, terms: &[String], font: &egui::FontId, color: Color32) -> egui::text::LayoutJob {
     let lower = text.to_ascii_lowercase();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -2000,8 +2047,16 @@ impl eframe::App for App {
                                     self.cursor_end = true;
                                 }
                             }
+                            let bold_family = FontFamily::Name("bold".into());
+                            let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
+                                let font = egui::TextStyle::Body.resolve(ui.style());
+                                let mut job = query_job(text.as_str(), &font, &bold_family, &pal);
+                                job.wrap.max_width = wrap;
+                                ui.fonts_mut(|f| f.layout_job(job))
+                            };
                             let out = egui::TextEdit::singleline(&mut self.query)
                                 .id(qid)
+                                .layouter(&mut layouter)
                                 .frame(egui::Frame::NONE)
                                 .text_color(pal.text)
                                 .desired_width(f32::INFINITY)
@@ -2382,5 +2437,21 @@ mod sort_tests {
         assert_eq!(p("/s desc name"), ("".into(), "name".into(), true));
         assert_eq!(p("/s/size desc x"), ("x".into(), "size".into(), true));
         assert_eq!(p("/s d"), ("".into(), "date".into(), true)); // ambiguous (date-modified, depth) -> inert
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::command_spans;
+    fn words(q: &str) -> Vec<&str> { command_spans(q).into_iter().map(|(s, e)| &q[s..e]).collect() }
+
+    #[test]
+    fn only_real_commands() {
+        assert_eq!(words("/mnt/backups/office/corpus/alpha/01 WIP/"), Vec::<&str>::new());
+        assert_eq!(words("/fts part3-books cdm"), vec!["/fts"]);
+        assert_eq!(words("/fts/part3 cdm //mime pdf /s size"), vec!["/fts/part3", "//mime", "/s"]);
+        assert_eq!(words("//path /etc /sort"), vec!["//path", "/sort"]);
+        assert_eq!(words("!//path /x \"/fts no\" /rv"), vec!["//path", "/rv"]);
+        assert_eq!(words("/fvv /nonsense //bogus"), Vec::<&str>::new());
     }
 }
