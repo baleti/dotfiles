@@ -46,6 +46,13 @@ ignored - `//ext .csv`). Repeated `//mime`/`//ext` entries OR together, so
 offers the commonest extensions in the index.
 Several filters AND together; bare words act as `/clip` plus any matching
 registered person.
+In photo mode (`/clip`, `/face`, bare words) the filters compose left to right and AND:
+`/clip` and `/face` take the words after them up to the next `/command` or `//tag`; a `//tag`
+takes exactly one value (quote it for spaces), so words after it are not swallowed; `//mime`
+and `//ext` work here exactly as in name search, and `!` negates them; and a bare word that
+is just an extension, such as `.jpeg`, is a file-name substring filter and never part of the
+CLIP text. So `/clip brick .jpeg` is the bricks, kept only where the name contains `.jpeg`,
+and `/clip brick //ext .jpg //ext .png` keeps jpg or png.
 
 **Full-text search (`/fts`, `/full-text-search`) - images picker only.** The
 verb takes the rest of the query as Recoll query-language terms (words are

@@ -96,20 +96,31 @@ def tokenize(q):
     try: return shlex.split(q)
     except ValueError: return q.split()
 
+DOT_EXT = re.compile(r"^(!?)(\.\w+)$")      # a bare ".jpeg": a file-name filter, never CLIP text
+
 def parse(q):
     """Return a list of filters: ('face', text, negated) | ('clip', text, negated) | the //tags, and bare words.
-    A leading "!" on the tag (or on the first word of its value) negates the filter (query-dsl.md "Negation");
-    a "!" bare word is inert here, since bare words are a CLIP search and "not like X" has no meaning."""
+    /clip and /face take the words after them up to the next /command or //tag; a //tag takes exactly one
+    value (quote it for spaces), as everywhere in the DSL. A bare ".ext" word is a file-name substring filter
+    and never part of the CLIP text, so `/clip brick .jpeg` is bricks, then only names containing .jpeg.
+    A leading "!" on the tag (or on its value) negates the filter (query-dsl.md "Negation"); a "!" bare word
+    is inert here, since bare words are a CLIP search and "not like X" has no meaning."""
     toks = tokenize(q)
     filters, bare, cur = [], [], None
     for t in toks:
         m = re.match(r"^(!?)(?:/(face|clip)|//(name|path|size|dm|date))$", t)
         if m:
             cur = m.group(2) or m.group(3); filters.append([cur, [], bool(m.group(1))]); continue
+        d = DOT_EXT.match(t)
+        if d:
+            filters.append(["name", [d.group(2)], bool(d.group(1))])
+            if cur in ("name", "path", "size", "dm", "date"): cur = None
+            continue
         if cur is not None:
             if not filters[-1][1] and t.startswith("!") and len(t) > 1:
                 filters[-1][2] = True; t = t[1:]
             filters[-1][1].append(t)
+            if cur not in ("face", "clip"): cur = None      # a //tag owns one token
         elif not t.startswith("!"):
             bare.append(t)
     return [(k, " ".join(v), neg) for k, v, neg in filters], bare
@@ -211,7 +222,9 @@ def browse(top=120):
 def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
     """Returns (results, count, errors). Raises ValueError when nothing can be searched."""
     _refresh()
-    filters, bare = parse(q)
+    import filesearch
+    wanted, not_wanted, q_rest = filesearch.split_mime_all(q)     # //mime and //ext (alias //extension)
+    filters, bare = parse(q_rest)
     people = _index["people"]
     results, errors = [], []
 
@@ -285,7 +298,7 @@ def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
             for w in matched_people:
                 res, err = face_filter(w)
                 if not err: results.append(res)
-    if not results and excluded:
+    if not results and (excluded or wanted or not_wanted):
         results.append({r: 0.0 for r in universe})   # only exclusions: everything except the matches
     if not results:
         raise ValueError("; ".join(errors) or "empty query")
@@ -294,6 +307,9 @@ def run_query(q, top=60, face_thr=0.60, clip_min=0.20, clip_n=10**9):
     keys = set(results[0])
     for r in results[1:]: keys &= set(r)
     for r in excluded: keys -= set(r)
+    if wanted or not_wanted:
+        keys = {k for k in keys if (not wanted or filesearch.matches_mime(k, wanted))
+                and not (not_wanted and filesearch.matches_mime(k, not_wanted))}
     hidden = hidden_folders(q)
     if hidden:
         keys = {k for k in keys if not any(to_mount(k).startswith(f) for f in hidden)}
