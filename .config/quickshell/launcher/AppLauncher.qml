@@ -649,19 +649,7 @@ PanelWindow {
                 // scroll-adjusted, unlike a manual TextMetrics measurement)
                 // is the safe middle ground: real color signal, zero risk
                 // to the TextInput's own text/cursor/selection rendering.
-                Repeater {
-                    model: query.text.length ? root._commandSpans(query.text) : []
-                    Rectangle {
-                        required property var modelData
-                        x: query.positionToRectangle(modelData.start).x
-                        y: query.positionToRectangle(modelData.start).y
-                           + query.positionToRectangle(modelData.start).height - 2
-                        width: Math.max(1, query.positionToRectangle(modelData.end).x - x)
-                        height: 2
-                        radius: 1
-                        color: modelData.valid ? Theme.cyan : Theme.red
-                    }
-                }
+                DslHighlight { input: query; spans: query.text.length ? root._commandSpans(query.text) : [] }
 
                 // Standard completion-menu convention (reported 2026-09-09
                 // against winswitch's identical pattern -- accepting on

@@ -684,22 +684,8 @@ PanelWindow {
                             root._hideSuggestions();
                     }
 
-                    // Inline command-validity coloring (query-dsl.md): an
-                    // underline under each /command token, same approach as
-                    // AppLauncher.qml (TextInput has no per-range color).
-                    Repeater {
-                        model: root.queryText.length ? root._commandSpans : []
-                        Rectangle {
-                            required property var modelData
-                            x: searchInput.positionToRectangle(modelData.start).x
-                            y: searchInput.positionToRectangle(modelData.start).y
-                               + searchInput.positionToRectangle(modelData.start).height - 2
-                            width: Math.max(1, searchInput.positionToRectangle(modelData.end).x - x)
-                            height: 2
-                            radius: 1
-                            color: modelData.valid ? Theme.cyan : Theme.red
-                        }
-                    }
+                    // Syntax highlighting (query-dsl.md): recognised /commands in the accent colour.
+                    DslHighlight { input: searchInput; spans: root.queryText.length ? root._commandSpans : [] }
 
                     // zsh-autosuggestions (query-dsl.md "Search-box history"): greyed-out
                     // rest of the newest history entry starting with the text; Right, End

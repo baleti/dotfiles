@@ -1663,19 +1663,7 @@ Rectangle {
                 // (no per-range text styling on TextInput, and
                 // positionToRectangle stays correct under scrolling where a
                 // manual TextMetrics measurement wouldn't).
-                Repeater {
-                    model: searchInput.text.length ? root._commandSpans(searchInput.text) : []
-                    Rectangle {
-                        required property var modelData
-                        x: searchInput.positionToRectangle(modelData.start).x
-                        y: searchInput.positionToRectangle(modelData.start).y
-                           + searchInput.positionToRectangle(modelData.start).height - 2
-                        width: Math.max(1, searchInput.positionToRectangle(modelData.end).x - x)
-                        height: 2
-                        radius: 1
-                        color: modelData.valid ? Theme.cyan : Theme.red
-                    }
-                }
+                DslHighlight { input: searchInput; spans: searchInput.text.length ? root._commandSpans(searchInput.text) : [] }
 
                 // First Escape while searching closes the autocomplete
                 // popup if one's open. With no popup, one Escape both
