@@ -3,6 +3,9 @@ Description=wa - receive-only WhatsApp session (whatsmeow) with approval outbox
 After=network-online.target
 
 [Service]
+# user-level network-online.target doesn't wait for DNS; boot-time dial failures exit 1 and were never retried
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do getent hosts web.whatsapp.com >/dev/null && exit 0; sleep 2; done; exit 0'
+TimeoutStartSec=300
 ExecStart=%h/.local/bin/wa daemon
 Restart=on-failure
 RestartSec=30
