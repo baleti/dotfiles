@@ -3,6 +3,7 @@
 the restic snapshots, deduplicated by (path, size, mtime).
 
   build-local      walk the local roots (skips mount points, excluded names)
+  build-extra      walk the extra_roots (NFS shares outside $HOME)
   build-rclone     list each rclone remote through its API (no FUSE walk)
   build-restic     add restic snapshot listings (latest N, or --all)
   find TEXT        substring search over names (trigram FTS), optional filters
@@ -130,6 +131,56 @@ def build_local(db, roots):
     sweep(db, sid)
     print(f"local: {w.n} rows, {skipped_mounts} mount points skipped, {time.time()-t0:.1f}s", file=sys.stderr)
 
+# Run on the host that holds the files (python3 -c over ssh): prints "kind size mtime path" lines.
+REMOTE_WALK = r"""
+import os, sys
+stack = [sys.argv[1]]
+while stack:
+    d = stack.pop()
+    try:
+        it = os.scandir(d)
+    except OSError:
+        if d == sys.argv[1]: print("FAIL"); sys.exit(1)
+        continue
+    with it:
+        for e in it:
+            try:
+                st = e.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if e.is_dir(follow_symlinks=False):
+                print("dir", "", int(st.st_mtime), e.path, sep="\t"); stack.append(e.path)
+            elif e.is_symlink():
+                print("link", 0, int(st.st_mtime), e.path, sep="\t")
+            else:
+                print("file", st.st_size, int(st.st_mtime), e.path, sep="\t")
+"""
+
+def build_extra(db):
+    """Index the "extra_roots": {"root": path as seen here, "ssh": host, "remote_root": same dir on that
+    host}. The walk runs on the host that owns the disk and streams rows back, so this machine does
+    no tree walking over NFS. One source per root; a failed walk keeps the old rows (no sweep)."""
+    for r in C.get("extra_roots", []):
+        root, host, rroot = r["root"].rstrip("/"), r["ssh"], r["remote_root"].rstrip("/")
+        sid = source_id(db, f"live:path:{root}", "live", time.strftime("%Y-%m-%dT%H:%M:%S"))
+        w = Writer(db, sid)
+        t0 = time.time()
+        p = subprocess.Popen(["ssh", host, "nice", "-n", "19", "python3", "-c", shlex.quote(REMOTE_WALK), shlex.quote(rroot)],
+                             stdout=subprocess.PIPE, text=True, errors="surrogateescape")
+        failed = False
+        for line in p.stdout:
+            parts = line.rstrip("\n").split("\t", 3)
+            if len(parts) != 4:
+                failed = failed or line.startswith("FAIL")
+                continue
+            kind, size, mtime, path = parts
+            w.add(root + path[len(rroot):], int(size) if size != "" else None, int(mtime), kind)
+        failed = failed or p.wait() != 0
+        db.commit()
+        if not failed:
+            sweep(db, sid)
+        print(f"extra {root}: {w.n} rows, {time.time()-t0:.1f}s{' FAILED, kept old rows' if failed else ''}", file=sys.stderr)
+
 def build_rclone(db):
     for r in C.get("rclone", []):
         remote, mount = r["remote"], os.path.expanduser(r["mount"])
@@ -222,6 +273,7 @@ def main():
     sub.add_parser("build-local")
     sub.add_parser("build-rclone")
     b = sub.add_parser("build-restic"); b.add_argument("--all", action="store_true")
+    sub.add_parser("build-extra")
     sub.add_parser("rebuild-fts")
     sub.add_parser("stats")
     f = sub.add_parser("find"); f.add_argument("text"); f.add_argument("--limit", type=int, default=50)
@@ -241,6 +293,8 @@ def main():
 def run(a, db):
     if a.cmd == "build-local":
         build_local(db, C["local_roots"]); rebuild_fts(db)
+    elif a.cmd == "build-extra":
+        build_extra(db); rebuild_fts(db)
     elif a.cmd == "build-rclone":
         build_rclone(db); rebuild_fts(db)
     elif a.cmd == "build-restic":

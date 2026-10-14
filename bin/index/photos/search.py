@@ -47,11 +47,11 @@ def _cached_load(jsonl, prefix, field_fn):
     return E, meta
 
 def load_clip():
-    return _cached_load(CLIP, "clip", lambda r: [(r["emb"], {"remote": r["remote"]})] if "emb" in r else [])
+    return _cached_load(CLIP, "clip", lambda r: [(r["emb"], {"remote": config.to_local(r["remote"])})] if "emb" in r else [])
 
 def load_faces():
     def fn(r):
-        return [(f["emb"], {"remote": r["remote"], "score": f["score"], "bbox": f["bbox"]})
+        return [(f["emb"], {"remote": config.to_local(r["remote"]), "score": f["score"], "bbox": f["bbox"]})
                 for f in r.get("faces", [])]
     return _cached_load(FACES, "faces", fn)
 

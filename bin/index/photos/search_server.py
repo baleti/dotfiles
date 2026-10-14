@@ -98,7 +98,7 @@ def fts_matches(terms, confs):
             parts = line.split("\t")
             if len(parts) < 4 or not parts[1].startswith("[file://"):
                 continue
-            path = urllib.parse.unquote(parts[1][len("[file://"):-1])
+            path = config.to_local(urllib.parse.unquote(parts[1][len("[file://"):-1]))
             if path in seen:
                 continue
             seen.add(path)
@@ -181,7 +181,7 @@ def fts_snippets(remote, text):
                 doc = q.fetchone()
                 if doc is None:
                     break
-                if urllib.parse.unquote(doc.url[len("file://"):]) != remote:
+                if urllib.parse.unquote(doc.url[len("file://"):]) != config.to_index(remote):
                     continue
                 out = []
                 for page, _term, snip in q.getsnippets(doc, methods=_Mark()):

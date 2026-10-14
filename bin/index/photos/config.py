@@ -43,3 +43,23 @@ SOURCES = CFG["sources"]                   # {stem: gdrive folder}
 REMOTE = CFG["rclone_remote"]              # e.g. "gdrive-crypt:"
 SERVER_PORT = int(CFG["server"]["port"])
 AI1 = CFG["ai1"]
+
+
+def _path_map():
+    return [(a, b) for a, b in CFG.get("path_map", [])]
+
+
+def to_local(path):
+    """Index-side path (as the indexing host saw it) -> the path on this machine."""
+    for a, b in _path_map():
+        if path.startswith(a):
+            return b + path[len(a):]
+    return path
+
+
+def to_index(path):
+    """This machine's path -> the path the content indexes stored."""
+    for a, b in _path_map():
+        if path.startswith(b):
+            return a + path[len(b):]
+    return path
