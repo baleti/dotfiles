@@ -116,7 +116,22 @@ def split_path_tags(text):
     values = [m.group(1) for m in PATH_TAG.finditer(text)]
     return values, PATH_TAG.sub(" ", text).strip()
 
-def fts_query(text, sort, desc, offset, limit):
+def fts_pick_indexes(via, terms):
+    """Which content indexes a /fts query searches: `/fts/<index> terms` names one (a unique prefix of the
+    index folder name is enough); a leading bare word that is exactly an index name also selects it.
+    Returns (confs, terms, error)."""
+    names = {fts_name(c): c for c in FTS_INDEXES}
+    if not via:
+        first, _, rest = terms.strip().partition(" ")
+        if first in names:
+            return [names[first]], rest, None
+        return FTS_INDEXES, terms, None
+    hit = [n for n in names if n == via] or [n for n in names if n.startswith(via)]
+    if len(hit) != 1:
+        return [], terms, f"no content index named '{via}'" if not hit else f"'{via}' matches several indexes: {', '.join(hit)}"
+    return [names[hit[0]]], terms, None
+
+def fts_query(text, sort, desc, offset, limit, via=None):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match.
     Searches every content index; //path narrows by folder."""
     from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, path_matches, hidden_folders
@@ -125,10 +140,13 @@ def fts_query(text, sort, desc, offset, limit):
     tags, terms = split_tags(rest)
     # "!" negation of free terms has no Recoll meaning here (Recoll has its own -term): inert
     terms = " ".join(t for t in filesearch.tokens(terms) if not t.startswith("!"))
+    confs, terms, err = fts_pick_indexes(via, terms)
+    if err:
+        return [], 0, err, None
     if not terms.strip():
         return [], 0, None, None
     hidden = hidden_folders(text)
-    rows = [r for r in fts_matches(terms.strip(), FTS_INDEXES) if (not wanted or matches_mime(r["remote"], wanted))
+    rows = [r for r in fts_matches(terms.strip(), confs) if (not wanted or matches_mime(r["remote"], wanted))
             and not (not_wanted and matches_mime(r["remote"], not_wanted))
             and not any(path_matches(r["remote"], v) for v in tags["!path"])
             and not any(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["!name"])
@@ -161,16 +179,16 @@ def fts_snippets(remote, text):
     import html
     from recoll import recoll
     from filesearch import split_mime, split_tags
-    m = re.match(r"^/(?:fts|full-text-search)(?:\s+|$)(.*)$", text.strip(), re.S)
+    m = re.match(r"^/(?:fts|full-text-search)(?:/([\w.-]+))?(?:\s+|$)(.*)$", text.strip(), re.S)
     if not m:
         return [], "not a /fts query"
-    confs = FTS_INDEXES
-    _, rest = split_mime(m.group(1))
+    _, rest = split_mime(m.group(2))
     _, rest = split_path_tags(rest)
     _, terms = split_tags(rest)
+    confs, terms, err = fts_pick_indexes(m.group(1), terms.strip())
     terms = terms.strip()
-    if not terms:
-        return [], None
+    if err or not terms:
+        return [], err
     with _snip_lock:
         for conf in confs:
             if conf not in _snip_dbs:
@@ -396,10 +414,10 @@ class H(BaseHTTPRequestHandler):
                 sort = qs.get("sort", ["date"])[0]
                 desc = qs.get("desc", ["1"])[0] == "1"
                 offset = int(qs.get("offset", ["0"])[0])
-                fts = re.match(r"^/(?:fts|full-text-search)(?:\s+|$)(.*)$", rest, re.S)
+                fts = re.match(r"^/(?:fts|full-text-search)(?:/([\w.-]+))?(?:\s+|$)(.*)$", rest, re.S)
                 errors = []
                 if fts:
-                    results, count, err, stats = fts_query(fts.group(1), sort, desc, offset, top)
+                    results, count, err, stats = fts_query(fts.group(2), sort, desc, offset, top, fts.group(1))
                     errors = [err] if err else []
                 else:
                     results, count, stats = NAMES.query(rest, sort, desc, offset, top)
