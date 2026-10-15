@@ -597,6 +597,16 @@ def thaw_pane_if_frozen(pane_target):
 
 def send_to_pane(pane_target, text):
     thaw_pane_if_frozen(pane_target)
+    # A pane left in tmux copy/view mode (user scrolled back) swallows
+    # send-keys as copy-mode commands, so the text never reaches claude
+    # while tmux still reports success. Leave the mode first.
+    try:
+        if subprocess.run(["tmux", "display-message", "-p", "-t", pane_target, "#{pane_in_mode}"],
+                          capture_output=True, text=True, timeout=5).stdout.strip() == "1":
+            subprocess.run(["tmux", "send-keys", "-t", pane_target, "-X", "cancel"], timeout=5)
+            log(f"cancelled copy mode on {pane_target} before delivering text")
+    except Exception as e:
+        log(f"copy-mode check on {pane_target} failed: {e}")
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane_target, "-l", "--", text],
                         check=True, timeout=5)
