@@ -130,6 +130,7 @@ if [ "$cur_cmd" = "claude" ]; then
         */.claude2) desired="claude2" ;;
         */.claude3) desired="claude3" ;;
         */.claude4) desired="claude4" ;;
+        */.claude5) desired="claude5" ;;
         *) desired="claude" ;;
     esac
 elif [ "$marker" = "1" ]; then
