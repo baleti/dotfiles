@@ -6,7 +6,7 @@ the restic snapshots, deduplicated by (path, size, mtime).
   build-extra      walk the extra_roots (NFS shares outside $HOME)
   build-rclone     list each rclone remote through its API (no FUSE walk)
   build-restic     add restic snapshot listings (latest N, or --all)
-  find TEXT        substring search over names (trigram FTS), optional filters
+  find TEXT        substring search over file names (scans the entries table), optional filters
   stats            counts per source
 
 Settings: "catalog" section of ~/.config/indexes/photos.json (private).
@@ -44,8 +44,6 @@ CREATE TABLE IF NOT EXISTS drive_dirs(fid TEXT PRIMARY KEY, path TEXT NOT NULL) 
 CREATE INDEX IF NOT EXISTS drive_dirs_by_path ON drive_dirs(path);
 CREATE TABLE IF NOT EXISTS drive_files(fid TEXT PRIMARY KEY, dir_fid TEXT NOT NULL) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS drive_files_by_dir ON drive_files(dir_fid);
-CREATE VIRTUAL TABLE IF NOT EXISTS names USING fts5(
-  name, content='entries', content_rowid='id', tokenize='trigram');
 """
 
 def connect():
@@ -108,11 +106,10 @@ def deliver(db, paths):
         touch_generation()
 
 class SourceStore:
-    """Row-level changes to one source's entries, keeping the trigram index current and remembering which
-    paths changed (touched) so they can be delivered to the search server."""
+    """Row-level changes to one source's entries, remembering which paths changed (touched) so they can be delivered to the search server."""
     def __init__(self, db, sid):
         self.db, self.sid = db, sid
-        self.fts_add, self.touched = [], set()
+        self.touched = set()
         self.added = self.removed = 0
 
     def drop(self, ids):
@@ -120,16 +117,13 @@ class SourceStore:
         if not ids:
             return
         self.removed += len(ids)
-        orphans = []
         for i in range(0, len(ids), 500):
             part = ids[i:i + 500]
             q = ",".join("?" * len(part))
             self.touched.update(r[0] for r in self.db.execute(f"SELECT path FROM entries WHERE id IN ({q})", part))
             self.db.execute(f"DELETE FROM entry_sources WHERE source_id=? AND entry_id IN ({q})", [self.sid] + part)
-            orphans += self.db.execute(
-                f"SELECT id, name FROM entries WHERE id IN ({q}) AND id NOT IN (SELECT entry_id FROM entry_sources)", part).fetchall()
-        self.db.executemany("INSERT INTO names(names, rowid, name) VALUES('delete', ?, ?)", orphans)
-        self.db.executemany("DELETE FROM entries WHERE id=?", ((o[0],) for o in orphans))
+            self.db.execute(
+                f"DELETE FROM entries WHERE id IN ({q}) AND id NOT IN (SELECT entry_id FROM entry_sources)", part)
 
     def add(self, path, size, mtime, kind="file"):
         row = self.db.execute("SELECT id FROM entries WHERE path=? AND size IS ? AND mtime IS ?", (path, size, mtime)).fetchone()
@@ -139,14 +133,9 @@ class SourceStore:
             name = path.rsplit("/", 1)[-1]
             eid = self.db.execute("INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,?)",
                                   (path, name, size, mtime, kind)).lastrowid
-            self.fts_add.append((eid, name))
         self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (eid, self.sid))
         self.touched.add(path)
         self.added += 1
-
-    def flush_fts(self):
-        self.db.executemany("INSERT INTO names(rowid, name) VALUES(?, ?)", self.fts_add)
-        self.fts_add = []
 
 class Writer:
     """Batches entries; each (path,size,mtime) is stored once and linked to every source that has it."""
@@ -210,9 +199,8 @@ def skipped_paths(roots):
 def build_local(db, roots):
     """Incremental walk of the live local roots. Entries whose (path, size, mtime) are unchanged since
     the last walk are only marked as seen in memory (no SQL); new or changed ones are inserted and added
-    to the trigram index, vanished ones are unlinked and, when no other source has them, deleted from
-    the entries table and the trigram index. One commit at the end, so readers see the old or the new
-    state, never half. The trigram index stays valid without a full rebuild (rebuild-fts repairs it)."""
+    vanished ones are unlinked and, when no other source has them, deleted from the entries table. One
+    commit at the end, so readers see the old or the new state, never half."""
     mounts = skipped_paths(roots)
     excl = set(C.get("exclude_names", []))          # relative to $HOME
     anywhere = set(C.get("exclude_anywhere", []))   # directory/file names skipped wherever they occur (e.g. .snapshots)
@@ -226,7 +214,6 @@ def build_local(db, roots):
         known.setdefault(path, []).append((size, mtime, eid))
     seen = set()
     added = changed = 0
-    fts_add = []
     touched = set()
 
     def note(path, size, mtime, kind):
@@ -249,7 +236,6 @@ def build_local(db, roots):
             name = path.rsplit("/", 1)[-1]
             eid = db.execute("INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,?)",
                              (path, name, size, mtime, kind)).lastrowid
-            fts_add.append((eid, name))
         db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (eid, sid))
         seen.add(eid)
 
@@ -291,16 +277,10 @@ def build_local(db, roots):
                 gone.append(eid)
                 touched.add(path)
     db.executemany("DELETE FROM entry_sources WHERE source_id=? AND entry_id=?", ((sid, g) for g in gone))
-    orphans = []
     for i in range(0, len(gone), 500):
         part = gone[i:i + 500]
         q = ",".join("?" * len(part))
-        orphans += db.execute(
-            f"SELECT id, name FROM entries WHERE id IN ({q}) AND id NOT IN (SELECT entry_id FROM entry_sources)", part).fetchall()
-    # external-content FTS5: the 'delete' command needs the row's current name, so it runs before the row goes
-    db.executemany("INSERT INTO names(names, rowid, name) VALUES('delete', ?, ?)", orphans)
-    db.executemany("DELETE FROM entries WHERE id=?", ((o[0],) for o in orphans))
-    db.executemany("INSERT INTO names(rowid, name) VALUES(?, ?)", fts_add)
+        db.execute(f"DELETE FROM entries WHERE id IN ({q}) AND id NOT IN (SELECT entry_id FROM entry_sources)", part)
     db.commit()
     deliver(db, touched)
     print(f"local: {n} rows, +{added} new, {changed} changed, -{len(gone)} gone, {skipped_mounts} mount points skipped, "
@@ -633,7 +613,6 @@ def drive_poll(db):
             unresolved = {u for u in unresolved if sync.path_of(u) is None}
             if not dirty:
                 break
-        sync.flush_fts()
         db.commit()
     except BaseException:
         db.rollback()
@@ -683,21 +662,10 @@ def build_restic(db, which):
             db.commit()
             print(f"{label}: {w.n} rows, {time.time()-t0:.1f}s", file=sys.stderr)
 
-def rebuild_fts(db):
-    t0 = time.time()
-    db.execute("INSERT INTO names(names) VALUES('rebuild')")
-    db.commit()
-    print(f"fts rebuilt in {time.time()-t0:.1f}s", file=sys.stderr)
-
 def find(db, text, limit, source=None, size=None, dm=None):
     where, args = [], []
-    if len(text) >= 3:
-        sql = ("SELECT e.path, e.size, e.mtime, e.kind FROM names JOIN entries e ON e.id = names.rowid "
-               "WHERE names MATCH ?")
-        args.append('"' + text.replace('"', '""') + '"')
-    else:
-        sql = "SELECT e.path, e.size, e.mtime, e.kind FROM entries e WHERE e.name LIKE ?"
-        args.append(f"%{text}%")
+    sql = "SELECT e.path, e.size, e.mtime, e.kind FROM entries e WHERE instr(lower(e.name), lower(?)) > 0"
+    args.append(text)
     if size:
         m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMG]?)$", size.strip(), re.I)
         mult = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}[m.group(3).upper()]
@@ -719,7 +687,6 @@ def main():
     sub.add_parser("poll-drive")
     b = sub.add_parser("build-restic"); b.add_argument("--all", action="store_true")
     sub.add_parser("build-extra")
-    sub.add_parser("rebuild-fts")
     sub.add_parser("stats")
     f = sub.add_parser("find"); f.add_argument("text"); f.add_argument("--limit", type=int, default=50)
     f.add_argument("--source"); f.add_argument("--size"); f.add_argument("--dm")
@@ -731,7 +698,7 @@ def main():
         open(lock, "w").close()
     try:
         run(a, db)
-        if a.cmd in ("build-extra", "build-restic", "build-rclone", "rebuild-fts"):
+        if a.cmd in ("build-extra", "build-restic", "build-rclone"):
             touch_generation()      # the server reloads; build-local and poll-drive deliver their changes live instead
     finally:
         if building and os.path.exists(lock):
@@ -741,15 +708,13 @@ def run(a, db):
     if a.cmd == "build-local":
         build_local(db, json.loads(os.environ["CATALOG_LOCAL_ROOTS"]) if os.environ.get("CATALOG_LOCAL_ROOTS") else C["local_roots"])
     elif a.cmd == "build-extra":
-        build_extra(db); rebuild_fts(db)
+        build_extra(db)
     elif a.cmd == "poll-drive":
         drive_poll(db)
     elif a.cmd == "build-rclone":
-        build_rclone(db); rebuild_fts(db)
+        build_rclone(db)
     elif a.cmd == "build-restic":
-        build_restic(db, "all" if a.all else "latest"); rebuild_fts(db)
-    elif a.cmd == "rebuild-fts":
-        rebuild_fts(db)
+        build_restic(db, "all" if a.all else "latest")
     elif a.cmd == "stats":
         print("entries:", db.execute("SELECT count(*) FROM entries").fetchone()[0])
         for label, n in db.execute("SELECT s.label, count(*) FROM entry_sources es JOIN sources s ON s.id=es.source_id GROUP BY s.label ORDER BY s.label"):
