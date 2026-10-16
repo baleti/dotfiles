@@ -1288,7 +1288,7 @@ impl App {
             .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(12)))
             .show_inside(ui, |ui| {
                 let name = hit.remote.rsplit('/').next().unwrap_or(&hit.remote);
-                let dir = hit.remote.rsplit_once('/').map(|x| x.0).unwrap_or("");
+                let dir = split_dir(&hit.remote).0;
                 ui.add(egui::Label::new(RichText::new(name).color(pal.accent).size(13.0).family(bold.clone())).wrap());
                 ui.add(egui::Label::new(RichText::new(dir).color(pal.dim).size(10.0)).wrap());
                 ui.add_space(8.0);
@@ -1386,10 +1386,7 @@ impl App {
                             ui.painter().rect_stroke(img.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
                         }
                         let short = short_name(&h.remote);
-                        let (dir, base) = match short.rsplit_once('/') {
-                            Some((d, b)) => (d.to_string(), b.to_string()),
-                            None => (String::new(), short.clone()),
-                        };
+                        let (dir, base) = split_dir(&short);
                         let name_font = egui::FontId::monospace(12.0);
                         let small = egui::FontId::monospace(10.0);
                         let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
@@ -1469,6 +1466,15 @@ impl App {
         let tex = ctx.load_texture(path, ci, egui::TextureOptions::LINEAR);
         self.textures.insert(path.to_string(), tex.clone());
         Some(tex)
+    }
+}
+
+/// Folder and base name; an entry directly under the root (e.g. "/etc") keeps "/" as its folder.
+fn split_dir(p: &str) -> (String, String) {
+    match p.rsplit_once('/') {
+        Some(("", b)) => ("/".to_string(), b.to_string()),
+        Some((d, b)) => (d.to_string(), b.to_string()),
+        None => (String::new(), p.to_string()),
     }
 }
 
@@ -2324,10 +2330,7 @@ impl eframe::App for App {
                             let c = cols(thumb_rect.right() + 12.0, rect.right(), &frac);
                             let y = rect.center().y;
                             let short = short_name(&h.remote);
-                            let (dir, base) = match short.rsplit_once('/') {
-                                Some((d, b)) => (d.to_string(), b.to_string()),
-                                None => (String::new(), short.clone()),
-                            };
+                            let (dir, base) = split_dir(&short);
                             let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
                             let dim = pal.dim;
                             let painter = ui.painter();
