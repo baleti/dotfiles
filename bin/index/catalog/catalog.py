@@ -11,11 +11,11 @@ the restic snapshots, deduplicated by (path, size, mtime).
 
 Settings: "catalog" section of ~/.config/indexes/photos.json (private).
 """
-import argparse, json, os, re, shlex, sqlite3, subprocess, sys, time
+import argparse, json, os, re, shlex, sqlite3, subprocess, sys, time, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/photos")
 import config
 C = config.CFG["catalog"]
-DB = C["db"]
+DB = os.environ.get("CATALOG_DB") or C["db"]
 HOME = os.path.expanduser("~")
 
 SCHEMA = """
@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS entry_sources(
   PRIMARY KEY(entry_id, source_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS entry_sources_by_source ON entry_sources(source_id);
+CREATE TABLE IF NOT EXISTS drive_dirs(fid TEXT PRIMARY KEY, path TEXT NOT NULL) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS drive_dirs_by_path ON drive_dirs(path);
+CREATE TABLE IF NOT EXISTS drive_files(fid TEXT PRIMARY KEY, dir_fid TEXT NOT NULL) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS drive_files_by_dir ON drive_files(dir_fid);
 CREATE VIRTUAL TABLE IF NOT EXISTS names USING fts5(
   name, content='entries', content_rowid='id', tokenize='trigram');
 """
@@ -93,16 +97,82 @@ def mount_points_under(root):
         pass
     return out
 
-def build_local(db, roots):
-    mounts = set()
+REAL_FS = {"btrfs", "ext2", "ext3", "ext4", "xfs", "vfat", "exfat", "f2fs", "ntfs", "ntfs3", "zfs", "bcachefs"}
+
+def mount_info():
+    """{mount point: filesystem type} from /proc/self/mountinfo."""
+    out = {}
+    try:
+        for line in open("/proc/self/mountinfo"):
+            parts = line.split()
+            out[parts[4].replace("\\040", " ")] = parts[parts.index("-") + 1]
+    except OSError:
+        pass
+    return out
+
+def skipped_paths(roots):
+    """Directories the local walk must not enter. Under $HOME every mount point is skipped (the separate
+    subvolumes ~/src ~/temp ~/qemu ~/.cache, rclone mounts, ...). Under any other root only mounts that are
+    not real local filesystems are skipped (proc, sys, tmpfs, FUSE, NFS, autofs, ...), so system subvolumes
+    such as /var are walked. $HOME is walked as its own root, and "exclude_paths" adds absolute paths."""
+    minfo = mount_info()
+    skip = {HOME}
     for r in roots:
-        mounts |= mount_points_under(r)
-    excl = set(C.get("exclude_names", []))
+        r = os.path.expanduser(r).rstrip("/") or "/"
+        under = lambda mp: mp == r or r == "/" or mp.startswith(r + "/")
+        if r == HOME:
+            skip |= mount_points_under(r)
+        else:
+            skip |= {mp for mp, fs in minfo.items() if under(mp) and mp != "/" and fs not in REAL_FS}
+    skip |= {os.path.expanduser(x) for x in C.get("exclude_paths", [])}
+    return skip
+
+def build_local(db, roots):
+    """Incremental walk of the live local roots. Entries whose (path, size, mtime) are unchanged since
+    the last walk are only marked as seen in memory (no SQL); new or changed ones are inserted and added
+    to the trigram index, vanished ones are unlinked and, when no other source has them, deleted from
+    the entries table and the trigram index. One commit at the end, so readers see the old or the new
+    state, never half. The trigram index stays valid without a full rebuild (rebuild-fts repairs it)."""
+    mounts = skipped_paths(roots)
+    excl = set(C.get("exclude_names", []))          # relative to $HOME
+    anywhere = set(C.get("exclude_anywhere", []))   # directory/file names skipped wherever they occur (e.g. .snapshots)
     sid = source_id(db, "live:local", "live", time.strftime("%Y-%m-%dT%H:%M:%S"))
-    w = Writer(db, sid)
     t0 = time.time()
+    # what this source had last time: path -> (size, mtime, id)
+    known = {}
+    for path, size, mtime, eid in db.execute(
+            "SELECT e.path, e.size, e.mtime, e.id FROM entries e JOIN entry_sources es ON es.entry_id = e.id "
+            "WHERE es.source_id = ?", (sid,)):
+        known.setdefault(path, []).append((size, mtime, eid))
+    seen = set()
+    added = changed = 0
+    fts_add = []
+
+    def note(path, size, mtime, kind):
+        nonlocal added, changed
+        hit = known.get(path)
+        if hit:
+            for sz, mt, eid in hit:
+                if sz == size and mt == mtime:
+                    seen.add(eid)
+                    return
+            changed += 1
+        else:
+            added += 1
+        row = db.execute("SELECT id FROM entries WHERE path=? AND size IS ? AND mtime IS ?", (path, size, mtime)).fetchone()
+        if row:
+            eid = row[0]
+            db.execute("UPDATE entries SET kind=? WHERE id=?", (kind, eid))
+        else:
+            name = path.rsplit("/", 1)[-1]
+            eid = db.execute("INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,?)",
+                             (path, name, size, mtime, kind)).lastrowid
+            fts_add.append((eid, name))
+        db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (eid, sid))
+        seen.add(eid)
+
     stack = [os.path.expanduser(r) for r in roots]
-    skipped_mounts = 0
+    skipped_mounts = n = 0
     while stack:
         d = stack.pop()
         try:
@@ -112,24 +182,41 @@ def build_local(db, roots):
         with it:
             for e in it:
                 p = e.path
-                rel = os.path.relpath(p, HOME)
-                if rel in excl or p in mounts:
-                    if p in mounts: skipped_mounts += 1
+                if p in mounts:
+                    skipped_mounts += 1
+                    continue
+                if e.name in anywhere:
+                    continue
+                if p.startswith(HOME + "/") and os.path.relpath(p, HOME) in excl:
                     continue
                 try:
                     st = e.stat(follow_symlinks=False)
                 except OSError:
                     continue
+                n += 1
                 if e.is_dir(follow_symlinks=False):
-                    w.add(p, None, int(st.st_mtime), "dir")
+                    note(p, None, int(st.st_mtime), "dir")
                     stack.append(p)
                 elif e.is_symlink():
-                    w.add(p, 0, int(st.st_mtime), "link")
+                    note(p, 0, int(st.st_mtime), "link")
                 else:
-                    w.add(p, st.st_size, int(st.st_mtime), "file")
+                    note(p, st.st_size, int(st.st_mtime), "file")
+    t_walk = time.time() - t0
+    gone = [eid for lst in known.values() for (_, _, eid) in lst if eid not in seen]
+    db.executemany("DELETE FROM entry_sources WHERE source_id=? AND entry_id=?", ((sid, g) for g in gone))
+    orphans = []
+    for i in range(0, len(gone), 500):
+        part = gone[i:i + 500]
+        q = ",".join("?" * len(part))
+        orphans += db.execute(
+            f"SELECT id, name FROM entries WHERE id IN ({q}) AND id NOT IN (SELECT entry_id FROM entry_sources)", part).fetchall()
+    # external-content FTS5: the 'delete' command needs the row's current name, so it runs before the row goes
+    db.executemany("INSERT INTO names(names, rowid, name) VALUES('delete', ?, ?)", orphans)
+    db.executemany("DELETE FROM entries WHERE id=?", ((o[0],) for o in orphans))
+    db.executemany("INSERT INTO names(rowid, name) VALUES(?, ?)", fts_add)
     db.commit()
-    sweep(db, sid)
-    print(f"local: {w.n} rows, {skipped_mounts} mount points skipped, {time.time()-t0:.1f}s", file=sys.stderr)
+    print(f"local: {n} rows, +{added} new, {changed} changed, -{len(gone)} gone, {skipped_mounts} mount points skipped, "
+          f"walk {t_walk:.1f}s, total {time.time()-t0:.1f}s", file=sys.stderr)
 
 # Run on the host that holds the files (python3 -c over ssh): prints "kind size mtime path" lines.
 REMOTE_WALK = r"""
@@ -181,24 +268,317 @@ def build_extra(db):
             sweep(db, sid)
         print(f"extra {root}: {w.n} rows, {time.time()-t0:.1f}s{' FAILED, kept old rows' if failed else ''}", file=sys.stderr)
 
+STATE_PATH = os.path.expanduser(DB) + ".drive.json"   # {"token": changes page token, "root_fid": ...}; outside the db so an idle poll never touches it
+
+def rclone_ts(mt):
+    try:
+        return int(time.mktime(time.strptime(mt[:19], "%Y-%m-%dT%H:%M:%S")))
+    except ValueError:
+        return None
+
+def load_state():
+    try:
+        return json.load(open(STATE_PATH))
+    except (OSError, ValueError):
+        return {}
+
+def save_state(st):
+    tmp = STATE_PATH + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(st, f)
+    os.replace(tmp, STATE_PATH)
+
+_RCLONE_CFG = None
+
+def rclone_config():
+    global _RCLONE_CFG
+    if _RCLONE_CFG is None:
+        _RCLONE_CFG = _rclone_config()
+    return _RCLONE_CFG
+
+def _rclone_config():
+    return json.loads(subprocess.run(["rclone", "config", "dump"], capture_output=True, text=True, check=True).stdout)
+
+def drive_underlying(remote):
+    """For a crypt (or plain) remote on Google Drive: (drive remote name, 'name:folder' the remote points at); else None."""
+    cfg = rclone_config()
+    r = cfg.get(remote.rstrip(":"), {})
+    under = r.get("remote", remote) if r.get("type") == "crypt" else remote
+    name = under.split(":")[0]
+    return (name, under) if cfg.get(name, {}).get("type") == "drive" else None
+
+def drive_access_token(name):
+    """Current OAuth access token of an rclone drive remote (refreshed here only if rclone's has expired). Never printed."""
+    c = rclone_config()[name]
+    tok = json.loads(c["token"])
+    try:
+        import datetime
+        left = datetime.datetime.fromisoformat(tok.get("expiry", "")).timestamp() - time.time()
+    except ValueError:
+        left = 0
+    if left > 120:
+        return tok["access_token"]
+    data = urllib.parse.urlencode({"client_id": c["client_id"], "client_secret": c["client_secret"],
+                                   "refresh_token": tok["refresh_token"], "grant_type": "refresh_token"}).encode()
+    with urllib.request.urlopen(urllib.request.Request("https://oauth2.googleapis.com/token", data=data), timeout=60) as r:
+        return json.load(r)["access_token"]
+
+def drive_get(token, path, **params):
+    url = "https://www.googleapis.com/drive/v3/" + path + "?" + urllib.parse.urlencode(params)
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+            with urllib.request.urlopen(req, timeout=90) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504) or attempt == 3:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 3:
+                raise
+        time.sleep(2 ** attempt)
+
+def drive_root_fid(under):
+    """Folder id of 'name:folder' (the directory the crypt remote points at), from its parent's listing."""
+    name, _, folder = under.partition(":")
+    parent, _, leaf = folder.rpartition("/")
+    out = subprocess.run(["rclone", "lsjson", "--dirs-only", "--no-mimetype", f"{name}:{parent}"],
+                         capture_output=True, text=True, check=True).stdout
+    for e in json.loads(out):
+        if e["Name"] == leaf:
+            return e["ID"]
+    raise RuntimeError(f"cannot find folder {under}")
+
 def build_rclone(db):
+    """Full listing of each rclone remote through its API (the periodic safety net). For a Google Drive
+    remote it also records every folder's and file's Drive id, and the changes-feed position taken BEFORE
+    the listing starts, so poll-drive can replay anything that changed while the listing ran."""
     for r in C.get("rclone", []):
         remote, mount = r["remote"], os.path.expanduser(r["mount"])
         sid = source_id(db, f"live:rclone:{remote}", "live", time.strftime("%Y-%m-%dT%H:%M:%S"))
+        info = drive_underlying(remote)
+        start_token = root_fid = None
+        if info:
+            start_token = drive_get(drive_access_token(info[0]), "changes/startPageToken", supportsAllDrives="true")["startPageToken"]
+            root_fid = drive_root_fid(info[1])
         w = Writer(db, sid)
         t0 = time.time()
-        out = subprocess.run(["rclone", "lsjson", "-R", "--files-only", remote],
+        out = subprocess.run(["rclone", "lsjson", "-R", "--no-mimetype", remote],
                              capture_output=True, text=True, check=True).stdout
+        dirs, files = {"": root_fid}, []
         for e in json.loads(out):
-            mt = e.get("ModTime", "")
-            try:
-                ts = int(time.mktime(time.strptime(mt[:19], "%Y-%m-%dT%H:%M:%S")))
-            except ValueError:
-                ts = None
+            if e.get("IsDir"):
+                dirs[e["Path"]] = e.get("ID")
+                continue
+            ts = rclone_ts(e.get("ModTime", ""))
             w.add(f"{mount}/{e['Path']}", int(e.get("Size", 0)), ts, "file")
+            files.append((e.get("ID"), e["Path"].rpartition("/")[0]))
+        if info:
+            db.execute("DELETE FROM drive_dirs")
+            db.executemany("INSERT OR REPLACE INTO drive_dirs VALUES(?,?)", ((fid, p) for p, fid in dirs.items() if fid and p))
+            db.execute("DELETE FROM drive_files")
+            db.executemany("INSERT OR REPLACE INTO drive_files VALUES(?,?)", ((fid, dirs[d]) for fid, d in files if fid and dirs.get(d)))
         db.commit()
         sweep(db, sid)
-        print(f"rclone {remote}: {w.n} rows, {time.time()-t0:.1f}s", file=sys.stderr)
+        if info:
+            save_state({"token": start_token, "root_fid": root_fid, "remote": remote, "full": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        print(f"rclone {remote}: {w.n} rows, {len(dirs)} folders, {time.time()-t0:.1f}s", file=sys.stderr)
+
+class DriveSync:
+    """Applies Drive changes to the catalog by relisting only the folders that changed (through rclone, so the
+    crypt layer decrypts names and sizes), then diffing each listing against the rows the source already has."""
+    def __init__(self, db, sid, remote, mount, root_fid):
+        self.db, self.sid, self.remote, self.mount, self.root = db, sid, remote, mount, root_fid
+        self.fts_add, self.added, self.removed = [], 0, 0
+
+    def path_of(self, fid):
+        if fid == self.root:
+            return ""
+        r = self.db.execute("SELECT path FROM drive_dirs WHERE fid=?", (fid,)).fetchone()
+        return r[0] if r else None
+
+    def _entries(self, rel):
+        prefix = f"{self.mount}/{rel}/" if rel else f"{self.mount}/"
+        return [(eid, p, sz, mt) for eid, p, sz, mt in self.db.execute(
+            "SELECT e.id, e.path, e.size, e.mtime FROM entries e JOIN entry_sources es ON es.entry_id=e.id "
+            "WHERE es.source_id=? AND e.path >= ? AND e.path < ?", (self.sid, prefix, prefix[:-1] + "0"))], prefix
+
+    def drop(self, ids):
+        if not ids:
+            return
+        self.removed += len(ids)
+        self.db.executemany("DELETE FROM entry_sources WHERE source_id=? AND entry_id=?", ((self.sid, i) for i in ids))
+        orphans = []
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            orphans += self.db.execute(
+                f"SELECT id, name FROM entries WHERE id IN ({','.join('?' * len(part))}) "
+                "AND id NOT IN (SELECT entry_id FROM entry_sources)", part).fetchall()
+        self.db.executemany("INSERT INTO names(names, rowid, name) VALUES('delete', ?, ?)", orphans)
+        self.db.executemany("DELETE FROM entries WHERE id=?", ((o[0],) for o in orphans))
+
+    def add(self, path, size, mtime):
+        row = self.db.execute("SELECT id FROM entries WHERE path=? AND size IS ? AND mtime IS ?", (path, size, mtime)).fetchone()
+        if row:
+            eid = row[0]
+        else:
+            name = path.rsplit("/", 1)[-1]
+            eid = self.db.execute("INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,'file')",
+                                  (path, name, size, mtime)).lastrowid
+            self.fts_add.append((eid, name))
+        self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (eid, self.sid))
+        self.added += 1
+
+    def delete_subtree(self, rel):
+        """Forget a folder and everything under it (it was deleted, renamed or moved away)."""
+        ents, _ = self._entries(rel)
+        self.drop([e[0] for e in ents])
+        lo, pre, hi = rel, rel + "/", rel + "0"
+        fids = [r[0] for r in self.db.execute("SELECT fid FROM drive_dirs WHERE path=? OR (path>=? AND path<?)", (lo, pre, hi))]
+        for i in range(0, len(fids), 500):
+            part = fids[i:i + 500]
+            self.db.execute(f"DELETE FROM drive_files WHERE dir_fid IN ({','.join('?' * len(part))})", part)
+        self.db.execute("DELETE FROM drive_dirs WHERE path=? OR (path>=? AND path<?)", (lo, pre, hi))
+
+    def reconcile(self, rel, recursive, self_fid=None):
+        """Relist folder `rel` (recursively or just its direct children) and make the catalog match."""
+        cmd = ["rclone", "lsjson", "--no-mimetype"] + (["-R"] if recursive else []) + [self.remote + rel]
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode != 0:
+            if "not found" not in p.stderr.lower():
+                raise RuntimeError(f"rclone lsjson {rel!r}: {p.stderr.strip()[:300]}")
+            items = []
+        else:
+            items = json.loads(p.stdout or "[]")
+        join = lambda a, b: f"{a}/{b}" if a else b
+        want_files, want_dirs = {}, {}
+        for e in items:
+            full = join(rel, e["Path"])
+            if e.get("IsDir"):
+                want_dirs[full] = e.get("ID")
+            else:
+                want_files[(f"{self.mount}/{full}", int(e.get("Size", 0)), rclone_ts(e.get("ModTime", "")))] = (e.get("ID"), full.rpartition("/")[0])
+        # folders first (a recreated folder must not wipe rows added below): what the db knows below / directly in rel
+        pre = rel + "/" if rel else ""
+        hi = rel + "0" if rel else "\U0010ffff"
+        rows = self.db.execute("SELECT fid, path FROM drive_dirs WHERE path>=? AND path<?", (pre, hi)).fetchall()
+        known = {p_: fid for fid, p_ in rows if recursive or "/" not in p_[len(pre):]}
+        self_f = self_fid or self.path_fid(rel)
+        if recursive and rel and self_fid:
+            self.db.execute("INSERT OR REPLACE INTO drive_dirs VALUES(?,?)", (self_fid, rel))
+        redo = []
+        for path_, fid in known.items():
+            if want_dirs.get(path_) != fid:
+                self.delete_subtree(path_)
+        for path_, fid in want_dirs.items():
+            if known.get(path_) != fid:
+                if recursive:
+                    self.db.execute("INSERT OR REPLACE INTO drive_dirs VALUES(?,?)", (fid, path_))
+                else:
+                    redo.append((path_, fid))
+        # files: diff against the rows this source already has in scope
+        ents, prefix = self._entries(rel)
+        if not recursive:
+            ents = [e for e in ents if "/" not in e[1][len(prefix):]]
+        have = {(p_, sz, mt): eid for eid, p_, sz, mt in ents}
+        self.drop([eid for k, eid in have.items() if k not in want_files])
+        for k in want_files:
+            if k not in have:
+                self.add(*k)
+        # Drive ids of the files in scope
+        scope = [f for f in ([self_f] + (list(want_dirs.values()) if recursive else [])) if f]
+        for i in range(0, len(scope), 500):
+            part = scope[i:i + 500]
+            self.db.execute(f"DELETE FROM drive_files WHERE dir_fid IN ({','.join('?' * len(part))})", part)
+        fid_by_dir = {rel: self_f}
+        fid_by_dir.update(want_dirs)
+        self.db.executemany("INSERT OR REPLACE INTO drive_files VALUES(?,?)",
+                            ((fid, fid_by_dir.get(d)) for fid, d in want_files.values() if fid and fid_by_dir.get(d)))
+        for path_, fid in redo:                 # new / renamed / moved-in folders: take them whole
+            self.reconcile(path_, True, fid)
+
+    def path_fid(self, rel):
+        if not rel:
+            return self.root
+        r = self.db.execute("SELECT fid FROM drive_dirs WHERE path=?", (rel,)).fetchone()
+        return r[0] if r else None
+
+def drive_poll(db):
+    lock = os.path.expanduser(DB) + ".building"
+    if os.path.exists(lock):
+        print("a build is running, skipping", file=sys.stderr)
+        return
+    st = load_state()
+    if not st.get("token"):
+        print("no changes-feed position yet: run build-rclone first", file=sys.stderr)
+        return
+    remote = st["remote"]
+    mount = next(os.path.expanduser(r["mount"]) for r in C["rclone"] if r["remote"] == remote)
+    name, _ = drive_underlying(remote)
+    token = drive_access_token(name)
+    changes, pt = [], st["token"]
+    while True:
+        d = drive_get(token, "changes", pageToken=pt, pageSize=1000, includeRemoved="true", supportsAllDrives="true",
+                      includeItemsFromAllDrives="true",
+                      fields="nextPageToken,newStartPageToken,changes(fileId,removed,file(parents,trashed))")
+        changes += d.get("changes", [])
+        if d.get("nextPageToken"):
+            pt = d["nextPageToken"]
+        else:
+            new_token = d["newStartPageToken"]
+            break
+    t0 = time.time()
+    sid = db.execute("SELECT id FROM sources WHERE label=?", (f"live:rclone:{remote}",)).fetchone()[0]
+    sync = DriveSync(db, sid, remote, mount, st["root_fid"])
+    # which folders' listings could have changed: where each changed item was (old parent) and is now (new parents)
+    dirty, unresolved = set(), set()
+    for c in changes:
+        fid, f = c["fileId"], c.get("file") or {}
+        r = db.execute("SELECT dir_fid FROM drive_files WHERE fid=?", (fid,)).fetchone()
+        if r and sync.path_of(r[0]) is not None:
+            dirty.add(sync.path_of(r[0]))
+        r = db.execute("SELECT path FROM drive_dirs WHERE fid=?", (fid,)).fetchone()
+        if r:
+            dirty.add(r[0].rpartition("/")[0])
+        if not (c.get("removed") or f.get("trashed")):
+            for par in f.get("parents", []):
+                pp = sync.path_of(par)
+                (dirty.add(pp) if pp is not None else unresolved.add(par))
+    if not dirty and not unresolved:
+        save_state({**st, "token": new_token})
+        print(f"{len(changes)} changes, none in {remote}", file=sys.stderr)
+        return
+    if len(dirty) > 60:                      # ~8 s per relisted folder; past this a full listing is cheaper
+        print(f"{len(dirty)} folders changed: falling back to a full listing", file=sys.stderr)
+        open(lock, "w").close()
+        try:
+            build_rclone(db)
+        finally:
+            os.path.exists(lock) and os.remove(lock)
+        return
+    open(lock, "w").close()
+    try:
+        done = set()
+        for _ in range(3):
+            for path_ in sorted(dirty - done, key=lambda x: (x.count("/") if x else -1, x)):
+                done.add(path_)
+                if path_ and sync.path_fid(path_) is None:
+                    continue                      # removed meanwhile (its parent was relisted first)
+                sync.reconcile(path_, False)
+            dirty = {sync.path_of(u) for u in unresolved if sync.path_of(u) is not None} - done
+            unresolved = {u for u in unresolved if sync.path_of(u) is None}
+            if not dirty:
+                break
+        db.executemany("INSERT INTO names(rowid, name) VALUES(?, ?)", sync.fts_add)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    finally:
+        os.path.exists(lock) and os.remove(lock)
+    save_state({**st, "token": new_token})
+    print(f"{len(changes)} changes -> {len(done)} folders relisted, +{sync.added} -{sync.removed}, {time.time()-t0:.1f}s", file=sys.stderr)
 
 def restic_snapshots(rep):
     pw = os.path.expanduser(rep["password_file"])
@@ -272,6 +652,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("build-local")
     sub.add_parser("build-rclone")
+    sub.add_parser("poll-drive")
     b = sub.add_parser("build-restic"); b.add_argument("--all", action="store_true")
     sub.add_parser("build-extra")
     sub.add_parser("rebuild-fts")
@@ -292,9 +673,11 @@ def main():
 
 def run(a, db):
     if a.cmd == "build-local":
-        build_local(db, C["local_roots"]); rebuild_fts(db)
+        build_local(db, json.loads(os.environ["CATALOG_LOCAL_ROOTS"]) if os.environ.get("CATALOG_LOCAL_ROOTS") else C["local_roots"])
     elif a.cmd == "build-extra":
         build_extra(db); rebuild_fts(db)
+    elif a.cmd == "poll-drive":
+        drive_poll(db)
     elif a.cmd == "build-rclone":
         build_rclone(db); rebuild_fts(db)
     elif a.cmd == "build-restic":

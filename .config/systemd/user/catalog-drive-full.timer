@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily full Google Drive listing for the file-name catalog
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
