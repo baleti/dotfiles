@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Wayland
 import Quickshell.Hyprland
+import Quickshell.Io
 import "../theme"
 import "../services"
 
@@ -70,6 +71,7 @@ PanelWindow {
         root._hoverOrigin = null;
         root._hoverArmed = false;
         if (root.open) {
+            root.wsPrompt = false;
             query.text = "";
             root.selected = 0;
             ac.visible = false;
@@ -159,7 +161,75 @@ PanelWindow {
         return 3;
     }
 
+    // ---- action commands -------------------------------------------
+    // `/move-to-workspace` is not a filter/sort verb: typing it shows one
+    // action row, and Enter opens a second list (`wsPrompt`) of workspaces
+    // for the window that was focused when the launcher opened
+    // (LauncherState.windowAddress). Typing filters the list; Enter on a row
+    // moves the window there, and a typed name with no exact match creates
+    // a new workspace right after the window's current one.
+    readonly property var actionVerbs: ({
+        "/move-to-workspace": "move the focused window to a workspace (typed name may be new)"
+    })
+    readonly property var _actionMatch: query.text.match(/^\s*\/move-to-workspace(?:\s+(.*))?$/)
+    property bool wsPrompt: false
+    readonly property bool actionMode: root.wsPrompt
+    readonly property string actionArg: root.wsPrompt ? query.text.trim() : ""
+
+    readonly property var workspaceRows: {
+        const arg = root.actionArg.toLowerCase();
+        const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0);
+        list.sort((a, b) => a.id - b.id);
+        const out = [];
+        let exact = false;
+        for (const w of list) {
+            const n = String(w.name);
+            if (arg && n.toLowerCase().indexOf(arg) < 0) continue;
+            if (n.toLowerCase() === arg) exact = true;
+            const cnt = w.toplevels ? w.toplevels.values.length : 0;
+            out.push({ ws: true, name: n, target: n, detail: cnt + (cnt === 1 ? " window" : " windows")
+                       + (w.monitor ? " on " + w.monitor.name : ""), entry: { icon: "" } });
+        }
+        if (root.actionArg && !exact)
+            out.push({ ws: true, name: "+ new workspace \"" + root.actionArg + "\"", target: root.actionArg,
+                       create: true, detail: "after the current workspace", entry: { icon: "" } });
+        return out;
+    }
+
+    // Lua string literal (user-typed names must not break out of the quotes).
+    function _luaStr(s) {
+        return "\"" + String(s).replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"";
+    }
+
+    function moveToWorkspace(row) {
+        const addr = LauncherState.windowAddress.replace(/^0x/, "");
+        if (!addr) return;
+        const t = String(row.target);
+        const find = "for _, w in ipairs(hl.get_windows()) do if tostring(w.address):gsub('^0x', '') == "
+            + root._luaStr(addr) + " then ";
+        let lua;
+        if (row.create) {
+            // Hyprland orders workspaces by integer id and can't renumber,
+            // so "right after the current one" = the smallest unused id
+            // above the window's workspace, then named via rename.
+            lua = find + "local used = {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true end "
+                + "local id = w.workspace.id + 1 while used[id] do id = id + 1 end "
+                + "hl.dispatch(hl.dsp.window.move({ workspace = id, window = w })) "
+                + "hl.dispatch(hl.dsp.workspace.rename({ workspace = id, name = " + root._luaStr(t) + " })) break end end";
+        } else {
+            const ws = /^[0-9]+$/.test(t) ? t : root._luaStr("name:" + t);
+            lua = find + "hl.dispatch(hl.dsp.window.move({ workspace = " + ws + ", window = w })) break end end";
+        }
+        moveProc.exec(["hyprctl", "repl", lua]);
+    }
+    Process { id: moveProc }
+
     readonly property var results: {
+        if (root.actionMode)
+            return root.workspaceRows;
+        if (root._actionMatch)
+            return [{ action: "move-to-workspace", name: "Move window to workspace\u2026",
+                      detail: "", entry: { icon: "" } }];
         let rows = root.apps.filter(app => root.parsed.terms.every(t => root._matches(app, t)));
 
         const s = root.parsed.sort;
@@ -203,6 +273,19 @@ PanelWindow {
     function launch(i) {
         const app = root.results[i];
         if (!app) return;
+        if (app.action) {
+            LauncherQueryHistory.record(query.text);
+            root.wsPrompt = true;
+            query.text = "";
+            root.selected = 0;
+            return;
+        }
+        if (app.ws) {
+            LauncherQueryHistory.record(query.text);
+            root.moveToWorkspace(app);
+            root.hide();
+            return;
+        }
         // query-dsl.md's "Search-box history": a real accept records the
         // query, same as fzf's own --history flag does for the tmux
         // pickers - before LauncherHistory.bump, which is a different
@@ -256,7 +339,7 @@ PanelWindow {
     // leaves it in the default text color rather than either accent.
     function _isVerbPrefix(v) {
         if (v.length <= 1) return false; // just "/" - too early to call wrong
-        const forms = QueryDsl.shortVerbs.concat(Object.keys(QueryDsl.verbAliases));
+        const forms = QueryDsl.shortVerbs.concat(Object.keys(QueryDsl.verbAliases), Object.keys(root.actionVerbs));
         return forms.some(f => f.startsWith(v));
     }
 
@@ -284,7 +367,7 @@ PanelWindow {
             const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (QueryDsl.canonVerb({ q: false, v: tok })) {
+                if (QueryDsl.canonVerb({ q: false, v: tok }) || root.actionVerbs[tok] !== undefined) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
@@ -302,7 +385,7 @@ PanelWindow {
     // command. `/rv` isn't crossed (takes no path). See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1));
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(Object.keys(root.actionVerbs).map(v => v.slice(1)));
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.typeNames)
@@ -318,6 +401,8 @@ PanelWindow {
     // still land the : form"); `/s` lands its ordinary space form.
     function _verbStageItem(prefix, v) {
         const slash = v.indexOf("/");
+        if (slash < 0 && root.actionVerbs["/" + v] !== undefined)
+            return { text: prefix + "/" + v + " ", label: "/" + v, alias: "", desc: root.actionVerbs["/" + v] };
         if (slash < 0) {
             return { text: prefix + "/" + v + " ", label: "/" + v,
                      alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
@@ -633,7 +718,7 @@ PanelWindow {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("search apps   ·   / ")
+                    text: root.wsPrompt ? qsTr("move window to workspace   ·   pick or type a new name") : qsTr("search apps   ·   / ")
                     color: Theme.muted
                     font: query.font
                     visible: query.text.length === 0
@@ -713,6 +798,7 @@ PanelWindow {
                     }
                     if (event.key === Qt.Key_Escape) {
                         if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; root.acHistoryMode = false; }
+                        else if (root.wsPrompt) { root.wsPrompt = false; query.text = ""; root.selected = 0; }
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -915,6 +1001,7 @@ PanelWindow {
                 required property var modelData
                 required property int index
                 readonly property string extraText: {
+                    if (modelData.ws || modelData.action) return modelData.detail;
                     if (root.referencedFields.length === 0) return "";
                     const parts = [];
                     for (const f of root.referencedFields)
@@ -941,8 +1028,9 @@ PanelWindow {
                     asynchronous: true
                     // Our own XDG resolution first, quickshell's provider as
                     // a fallback for anything it misses.
-                    source: LauncherIcons.pathFor(modelData.entry.icon)
-                            || Quickshell.iconPath(modelData.entry.icon, "application-x-executable")
+                    source: (modelData.ws || modelData.action) ? ""
+                            : (LauncherIcons.pathFor(modelData.entry.icon)
+                               || Quickshell.iconPath(modelData.entry.icon, "application-x-executable"))
                 }
                 // Generic glyph when no icon resolves at all.
                 Text {

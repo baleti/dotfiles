@@ -33,6 +33,16 @@ add a new consumer, add its row here too.
 | claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s`, `/rv` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone) and always completes to whichever form (colon or via) is already being typed, never steers to via the way rss-reader/claude-history do |
 | images (photo search) | mod+Super_l → "Search files" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/.cache/indexes/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
 
+**app-launcher action commands.** Besides the six verbs, the launcher has
+`/move-to-workspace` (exact-matched like the others, not a filter/sort verb):
+Enter on it opens a second list of existing workspaces for the window that was
+focused when the launcher opened. Typing filters; Enter moves the window there.
+A typed name with no exact match offers `+ new workspace "name"`, which creates
+it at the smallest unused id above the window's current workspace (Hyprland
+orders workspaces by integer id and cannot renumber, so this is the nearest
+free slot after the current one, not guaranteed adjacent) and names it. Esc
+returns to the app list.
+
 **images (photo search) - its own grammar, same keys.** Not the verb grammar:
 the verbs are `/face <name>` (photos showing a registered person) and
 `/clip <text>` (CLIP text match), each its own function like `/fts` because it
