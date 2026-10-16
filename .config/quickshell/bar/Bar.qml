@@ -29,7 +29,7 @@ Item {
     readonly property int openPanelCount: (mediaExpanded.expanded ? 1 : 0) + (calendarExpanded.expanded ? 1 : 0)
         + (netPill.expanded ? 1 : 0) + (cpuPill.expanded ? 1 : 0) + (memPill.expanded ? 1 : 0)
         + (diskPill.expanded ? 1 : 0) + (tempPill.expanded ? 1 : 0) + (gpuPill.expanded ? 1 : 0)
-        + (claudeUsageExpanded.expanded ? 1 : 0) + (revitStatusExpanded.expanded ? 1 : 0) + (workspaces.renaming ? 1 : 0)
+        + (claudeUsageExpanded.expanded ? 1 : 0) + (revitStatusExpanded.expanded ? 1 : 0) + (volumeExpanded.expanded ? 1 : 0) + (workspaces.renaming ? 1 : 0)
 
     // Always focus-eligible -- actual keyboard delivery is already gated at
     // the window level by shell.qml's WlrLayershell.keyboardFocus/
@@ -108,6 +108,11 @@ Item {
             }
         } else if (calendarExpanded.expanded) {
             calendarExpanded.handleKey(event);
+        } else if (volumeExpanded.expanded) {
+            if (event.key === Qt.Key_Escape) {
+                root.closeVolumePanel();
+                event.accepted = true;
+            }
         } else if (revitStatusExpanded.expanded) {
             if (event.key === Qt.Key_Escape) {
                 root.closeRevitStatusPanel();
@@ -195,7 +200,7 @@ Item {
     // this is that system's bar-visual left-to-right ordering (matching
     // rightRow's child order, with calendar's clock trigger last since
     // it's the rightmost).
-    readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "gpu", "revit", "claudeUsage", "calendar"]
+    readonly property var panelOrder: ["media", "net", "cpu", "mem", "disk", "temp", "gpu", "revit", "claudeUsage", "volume", "calendar"]
 
     // Which of SysmonSvc's 6 fixed tiers (10m/30m/6h/7d/7w/7mo) each panel is
     // currently viewing -- kept here (not just read off SysmonSvc directly)
@@ -213,6 +218,7 @@ Item {
         switch (name) {
         case "calendar": return calendarExpanded.expanded;
         case "claudeUsage": return claudeUsageExpanded.expanded;
+        case "volume": return volumeExpanded.expanded;
         case "revit": return revitStatusExpanded.expanded;
         case "gpu": return gpuPill.expanded;
         case "temp": return tempPill.expanded;
@@ -231,6 +237,7 @@ Item {
         switch (name) {
         case "calendar": return rightRow.x + clockLoader.x + clockLoader.width;
         case "claudeUsage": return rightRow.x + claudeUsagePill.x + claudeUsagePill.width;
+        case "volume": return rightRow.x + volumePill.x + volumePill.width;
         case "revit": return rightRow.x + claudeUsagePill.x;   // no pill of its own: sits just left of the Claude usage pill
         case "gpu": return rightRow.x + gpuPill.x + gpuPill.width;
         case "temp": return rightRow.x + tempPill.x + tempPill.width;
@@ -387,6 +394,7 @@ Item {
         case "media": return mediaExpanded.height;
         case "calendar": return calendarExpanded.height;
         case "claudeUsage": return claudeUsageExpanded.height;
+        case "volume": return volumeExpanded.height;
         case "revit": return revitStatusExpanded.height;
         default: return 0;
         }
@@ -1412,6 +1420,12 @@ Item {
             onToggled: root.toggleClaudeUsagePin()
         }
 
+        VolumePill {
+            id: volumePill
+            fontSize: root.pillFont
+            onToggled: root.toggleVolumePin()
+        }
+
         Loader {
             id: clockLoader
             active: true
@@ -1581,6 +1595,46 @@ Item {
     }
 
     // CTRL+ALT+r (keybinds.lua): the Revit instance status panel. No pill and no hover-open -- a plain pin toggle, Escape closes.
+    // Volume pill: hover previews the panel, click pins it (same pattern as
+    // the Claude usage pill); Escape closes.
+    readonly property bool volumeAreaHovered: volumePill.hovered || volumeExpanded.hovered
+    property bool volumePinned: false
+
+    onVolumeAreaHoveredChanged: {
+        if (volumeAreaHovered) {
+            volumeHoverOutTimer.stop();
+            volumeExpanded.expanded = true;
+        } else if (!volumePinned) {
+            volumeHoverOutTimer.restart();
+        }
+    }
+
+    Timer {
+        id: volumeHoverOutTimer
+        interval: 0
+        onTriggered: volumeExpanded.expanded = false
+    }
+
+    function toggleVolumePin(): void {
+        volumeHoverOutTimer.stop();
+        volumePinned = !volumePinned;
+        volumeExpanded.expanded = volumePinned;
+    }
+    function closeVolumePanel(): void {
+        volumeHoverOutTimer.stop();
+        volumePinned = false;
+        volumeExpanded.expanded = false;
+    }
+
+    VolumeExpanded {
+        id: volumeExpanded
+
+        panelWidth: root.widthFor("volume")
+        x: root.layoutFor("volume").right - width
+        y: root.panelYFor("volume")
+        onExpandedChanged: expanded ? root.forceActiveFocus() : root.refocusActivePanel()
+    }
+
     property bool revitStatusPinned: false
     function toggleRevitStatusPin(): void {
         revitStatusPinned = !revitStatusPinned;
@@ -1913,5 +1967,6 @@ Item {
         function toggleCalendar(): void { root.toggleClockPin(); }
         function toggleClaudeUsage(): void { root.toggleClaudeUsagePin(); }
         function toggleRevitStatus(): void { root.toggleRevitStatusPin(); }
+        function toggleVolume(): void { root.toggleVolumePin(); }
     }
 }
