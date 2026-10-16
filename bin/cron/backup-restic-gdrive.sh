@@ -53,7 +53,6 @@ restic backup \
     --exclude "$HOME/temp" \
     --exclude "$HOME/Downloads" \
     --exclude "$HOME/virtual-machines" \
-    --exclude "$HOME/.local/share/fsearch" \
     --exclude "$HOME/.thunderbird/*/ImapMail" \
     --one-file-system \
     --repo rclone:gdrive:backups/host3-restic \
