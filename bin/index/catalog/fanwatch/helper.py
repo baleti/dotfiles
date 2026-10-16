@@ -31,6 +31,12 @@ DETACH = os.environ.get("FANWATCH_DETACH", "1") == "1"
 CANARY_DIR = os.environ.get("FANWATCH_CANARY_DIR", "/var/tmp")
 SOCK = os.environ.get("FANWATCH_SOCK", "/run/fanwatch/events.sock")
 HOME = os.environ.get("FANWATCH_HOME", "/home/user1").rstrip("/")
+VOLUME = os.environ.get("FANWATCH_VOLUME", "/")          # any path on the btrfs volume to watch
+# mount points under these prefixes are separate subvolumes the consumer does not care about (dropped early);
+# default: everything mounted below $FANWATCH_HOME. Set FANWATCH_SKIP_UNDER= (empty) to skip none.
+SKIP_UNDER = [p for p in os.environ.get("FANWATCH_SKIP_UNDER", HOME + "/").split(":") if p]
+# when set, only events under these path prefixes are sent
+ONLY = [p.rstrip("/") for p in os.environ.get("FANWATCH_ONLY", "").split(":") if p]
 
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 libc.syscall.restype = ctypes.c_long
@@ -59,19 +65,27 @@ def mountinfo():
             out.append((unescape(f[3]), unescape(f[4]), f[sep + 2]))
     return out
 
+def volume_src(mi):
+    """Source device of the btrfs mount that holds VOLUME (the longest matching mount point)."""
+    best = None
+    for r, mp, src in mi:
+        if (VOLUME == mp or VOLUME.startswith(mp.rstrip("/") + "/")) and (best is None or len(mp) > len(best[0])):
+            best = (mp, src)
+    return best[1] if best else None
+
 def check_top():
-    """Refuse to go on unless TOP really is the top-level subvolume of the volume that holds / (marking a
+    """Refuse to go on unless TOP really is the top-level subvolume of the volume that holds VOLUME (marking a
     plain directory would silently watch the wrong filesystem)."""
     mi = mountinfo()
-    root_src = next((src for r, mp, src in mi if mp == "/"), None)
-    if not any(mp == TOP and r == "/" and src == root_src for r, mp, src in mi):
-        sys.exit(f"{TOP} is not the mounted btrfs top-level subvolume of the volume holding /")
+    root_src = volume_src(mi)
+    if root_src is None or not any(mp == TOP and r == "/" and src == root_src for r, mp, src in mi):
+        sys.exit(f"{TOP} is not the mounted btrfs top-level subvolume of the volume holding {VOLUME}")
 
 def subvolumes():
-    """[(subvolume path inside the top level, where it is mounted)] for every mount of the volume holding /
+    """[(subvolume path inside the top level, where it is mounted)] for every mount of the volume holding VOLUME
     (matched by source device: each subvolume mount has its own device number)."""
     mi = mountinfo()
-    root_src = next((src for r, mp, src in mi if mp == "/"), None)
+    root_src = volume_src(mi)
     return sorted(((r, mp) for r, mp, src in mi if r != "/" and src == root_src and mp != TOP), key=lambda x: -len(x[0]))
 
 class Mapper:
@@ -80,14 +94,12 @@ class Mapper:
 
     def refresh(self):
         self.subs = subvolumes()
-        self.skip = [r for r, mp in self.subs if mp.startswith(HOME + "/")]
+        self.skip = [r for r, mp in self.subs if any(mp.startswith(p) for p in SKIP_UNDER)]
         self.stamp = time.time()
 
     def translate(self, top_path):
-        """/run/btrfs-top/@home/user1/x -> /home/user1/x ; None for unmounted or skipped subvolumes."""
+        """/run/btrfs-top/@home/user1/x or /@home/user1/x -> /home/user1/x ; None for unmounted or skipped subvolumes."""
         rel = top_path[len(TOP):] if top_path.startswith(TOP + "/") else top_path
-        if not rel.startswith("/@"):
-            return None
         for root, mp in self.subs:
             if rel == root or rel.startswith(root + "/"):
                 if root in self.skip:
@@ -228,7 +240,7 @@ def main():
             if mask == "overflow":
                 send({"overflow": 1})
                 continue
-            if real is None:
+            if real is None or (ONLY and not any(real == p or real.startswith(p + "/") for p in ONLY)):
                 continue
             if lost and client is not None:
                 lost = False
