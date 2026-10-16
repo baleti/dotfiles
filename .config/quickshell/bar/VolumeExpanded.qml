@@ -26,6 +26,36 @@ Rectangle {
 
     onExpandedChanged: if (expanded) AudioSvc.refresh()
 
+    // The graph only polls while the panel is open.
+    Binding { target: AudioSvc; property: "graphWanted"; value: root.expanded }
+
+    property int selectedNode: -1
+    readonly property var sel: selectedNode >= 0 ? (AudioSvc.graphNodes[selectedNode] || null) : null
+    // "key value" rows for the selected node, important keys first.
+    readonly property var selProps: {
+        if (!sel) return [];
+        const first = ["node.name", "node.description", "node.nick", "media.class", "media.role", "application.name",
+                       "application.process.binary", "device.id", "node.driver-id", "node.group", "audio.rate",
+                       "audio.channels", "audio.format", "node.latency", "node.rate", "priority.session", "priority.driver",
+                       "api.bluez5.address", "api.bluez5.profile", "api.bluez5.codec"];
+        const keys = Object.keys(sel.props);
+        const rest = keys.filter(k => !first.includes(k)).sort();
+        return first.filter(k => keys.includes(k)).concat(rest).map(k => [k, sel.props[k]]);
+    }
+    // "→ Brave input (active)" / "← Soundcore Q20 (active)" for every link of the selected node.
+    readonly property var selLinks: {
+        if (!sel) return [];
+        const out = [];
+        for (const id of AudioSvc.linkIds) {
+            const l = AudioSvc.graphLinks[id];
+            if (l.from === selectedNode || l.to === selectedNode) {
+                const other = AudioSvc.graphNodes[l.from === selectedNode ? l.to : l.from];
+                out.push((l.from === selectedNode ? "\u2192 " : "\u2190 ") + (other ? other.title : "?") + " (" + l.state + ")");
+            }
+        }
+        return out;
+    }
+
     MouseArea {
         id: mouseArea
         anchors.fill: parent
@@ -294,22 +324,140 @@ Rectangle {
             }
         }
 
-        // ---- Streams + server state ------------------------------------
+        // ---- Live PipeWire state summary ---------------------------------
         Column {
             width: parent.width
             spacing: 3
+            readonly property var g: AudioSvc.graph
+            readonly property var clock: g.clock || ({})
+            readonly property var counts: g.counts || ({})
+            readonly property var wp: g.wireplumber || ({})
             Label {
                 width: parent.width
-                text: qsTr("Playing: ") + (AudioSvc.playbackApps.length ? AudioSvc.playbackApps.join(", ") : qsTr("nothing"))
+                visible: !!parent.clock.rate
+                text: qsTr("Clock  ") + parent.clock.rate + " Hz · quantum " + parent.clock.quantum
+                    + " (" + (parent.clock.quantum / parent.clock.rate * 1000).toFixed(1) + " ms) · range "
+                    + parent.clock.minQuantum + "-" + parent.clock.maxQuantum
+                    + (parent.clock.forceQuantum ? " · forced " + parent.clock.forceQuantum : "")
             }
             Label {
                 width: parent.width
-                text: qsTr("Recording: ") + (AudioSvc.captureApps.length ? AudioSvc.captureApps.join(", ") : qsTr("nothing"))
+                visible: parent.counts.nodes !== undefined
+                text: qsTr("Graph  ") + parent.counts.nodes + " nodes (" + parent.counts.running + " running · "
+                    + parent.counts.idle + " idle · " + parent.counts.suspended + " suspended"
+                    + (parent.counts.error ? " · " + parent.counts.error + " error" : "") + ") · "
+                    + parent.counts.links + " links"
             }
             Label {
                 width: parent.width
-                text: "PipeWire " + (AudioSvc.pipewireVersion || "?")
-                    + "  ·  WirePlumber " + (AudioSvc.wireplumberVersion || "?")
+                visible: parent.counts.clients !== undefined
+                text: qsTr("Clients  ") + parent.counts.clients + " · devices " + parent.counts.devices
+                    + " · xruns " + parent.counts.xruns
+            }
+            Label {
+                width: parent.width
+                visible: parent.wp.autoswitch !== undefined
+                text: qsTr("WirePlumber  BT headset auto-switch ") + (parent.wp.autoswitch ? qsTr("on") : qsTr("off"))
+                    + " · prefers " + parent.wp.profilePreference
+                    + " · follow default " + (parent.wp.followDefault ? qsTr("on") : qsTr("off"))
+            }
+            Label {
+                width: parent.width
+                text: qsTr("Playing  ") + (AudioSvc.playbackApps.length ? AudioSvc.playbackApps.join(", ") : qsTr("nothing"))
+                    + qsTr("  ·  Recording  ") + (AudioSvc.captureApps.length ? AudioSvc.captureApps.join(", ") : qsTr("nothing"))
+            }
+        }
+
+        // ---- Interactive graph --------------------------------------------
+        Heading { text: qsTr("PipeWire graph") }
+        PwGraphView {
+            id: graphView
+            width: parent.width
+            selectedId: root.selectedNode
+            onNodeClicked: id => root.selectedNode = (id === root.selectedNode ? -1 : id)
+        }
+
+        // ---- Selected node details -----------------------------------------
+        Column {
+            id: details
+            width: parent.width
+            spacing: 4
+            visible: !!root.sel
+
+            Row {
+                width: parent.width
+                spacing: 8
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 8; height: 8; radius: 4
+                    color: root.sel ? graphView.stateColor(root.sel.state) : "transparent"
+                }
+                Heading {
+                    width: parent.width - 16
+                    elide: Text.ElideRight
+                    text: root.sel ? root.sel.title : ""
+                }
+            }
+            Label {
+                width: parent.width
+                text: root.sel ? (root.sel.class || "node") + " · " + root.sel.state + " · id " + root.sel.id
+                    + (root.sel.error ? " · " + root.sel.error : "") : ""
+            }
+            Label {
+                width: parent.width
+                visible: !!(root.sel && root.sel.stats && root.sel.stats.quantum)
+                text: {
+                    const st = root.sel ? root.sel.stats : null;
+                    if (!st) return "";
+                    const us = v => v === null || v === undefined ? "-" : (v >= 1000 ? (v / 1000).toFixed(1) + " ms" : v.toFixed(0) + " µs");
+                    return "quantum " + st.quantum + " @ " + st.rate + " Hz · wait " + us(st.waitUs) + " · busy " + us(st.busyUs)
+                        + (st.bq !== null ? " · load " + (st.bq * 100).toFixed(1) + "%" : "") + " · errors " + st.errors
+                        + (st.format ? " · " + st.format : "");
+                }
+            }
+            Label {
+                width: parent.width
+                visible: root.selLinks.length > 0
+                color: Theme.text
+                text: root.selLinks.join("\n")
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
+                maximumLineCount: 6
+            }
+            Rectangle {
+                width: parent.width
+                height: Math.min(150, propsList.contentHeight + 8)
+                radius: Theme.rounding - 3
+                color: Qt.rgba(0, 0, 0, 0.25)
+                clip: true
+                ListView {
+                    id: propsList
+                    anchors.fill: parent
+                    anchors.margins: 4
+                    model: root.selProps
+                    boundsBehavior: Flickable.StopAtBounds
+                    delegate: Row {
+                        required property var modelData
+                        width: propsList.width
+                        spacing: 8
+                        Text {
+                            width: Math.min(150, parent.width * 0.4)
+                            text: modelData[0]
+                            elide: Text.ElideRight
+                            color: Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                        }
+                        Text {
+                            width: parent.width - Math.min(150, parent.width * 0.4) - 8
+                            text: modelData[1]
+                            elide: Text.ElideRight
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                        }
+                    }
+                }
             }
         }
     }
