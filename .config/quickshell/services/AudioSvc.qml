@@ -32,8 +32,16 @@ Singleton {
     property var captureApps: []
     property var btCards: []
 
-    property string pipewireVersion: ""
-    property string wireplumberVersion: ""
+    // Full PipeWire graph (services/pw-graph.py), refreshed only while the
+    // volume panel is open (graphWanted). graphNodes/graphLinks are id-keyed
+    // maps; nodeIds/linkIds only change when the SET of ids changes, so the
+    // viewer's Repeaters don't rebuild every delegate on each 2s refresh.
+    property bool graphWanted: false
+    property var graph: ({})
+    property var graphNodes: ({})
+    property var graphLinks: ({})
+    property var nodeIds: []
+    property var linkIds: []
 
     readonly property bool hasSink: sinkName !== ""
     readonly property int percent: Math.round(volume * 100)
@@ -41,6 +49,48 @@ Singleton {
     function refresh(): void {
         if (!_snapshot.running)
             _snapshot.running = true;
+        if (root.graphWanted && !_graphProc.running)
+            _graphProc.running = true;
+    }
+
+    function _applyGraph(g): void {
+        root.graph = g;
+        root.graphNodes = g.nodes || {};
+        const links = {};
+        for (const l of (g.links || []))
+            links[l.id] = l;
+        root.graphLinks = links;
+        const nids = Object.keys(root.graphNodes).map(Number).sort((a, b) => a - b);
+        const lids = Object.keys(links).map(Number).sort((a, b) => a - b);
+        if (nids.join(",") !== root.nodeIds.join(","))
+            root.nodeIds = nids;
+        if (lids.join(",") !== root.linkIds.join(","))
+            root.linkIds = lids;
+    }
+
+    onGraphWantedChanged: {
+        if (graphWanted)
+            refresh();
+    }
+
+    Timer {
+        interval: 2000
+        repeat: true
+        running: root.graphWanted
+        onTriggered: root.refresh()
+    }
+
+    readonly property Process _graphProc: Process {
+        command: ["python3", "-I", Quickshell.shellPath("services/pw-graph.py")]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    root._applyGraph(JSON.parse(text));
+                } catch (e) {
+                    // pw-dump unavailable / mid-restart -- keep last graph.
+                }
+            }
+        }
     }
 
     function _apply(s): void {
@@ -147,20 +197,6 @@ Singleton {
         onTriggered: {
             root._subscribe.running = true;
             root.refresh();
-        }
-    }
-
-    readonly property Process _versions: Process {
-        command: ["sh", "-c", "pipewire --version | tail -1; wireplumber --version | tail -1"]
-        running: true
-        stdout: StdioCollector {
-            onStreamFinished: {
-                const lines = text.trim().split("\n");
-                const pw = (lines[0] || "").match(/libpipewire\s+([\d.]+)/);
-                const wp = (lines[1] || "").match(/libwireplumber\s+([\d.]+)/);
-                root.pipewireVersion = pw ? pw[1] : "";
-                root.wireplumberVersion = wp ? wp[1] : "";
-            }
         }
     }
 
