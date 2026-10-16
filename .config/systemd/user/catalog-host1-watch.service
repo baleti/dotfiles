@@ -1,0 +1,15 @@
+[Unit]
+Description=Live updates for the NFS roots of the file-name catalog (change stream from host1 over WireGuard)
+After=network-online.target images-search.service
+
+[Service]
+WorkingDirectory=%h/bin/index/catalog
+ExecStart=/usr/bin/nice -n 10 /usr/bin/python3 %h/bin/index/catalog/hostwatch.py
+Restart=always
+RestartSec=10
+Nice=10
+CPUWeight=20
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

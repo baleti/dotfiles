@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly full walk of the NFS roots of the file-name catalog
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
