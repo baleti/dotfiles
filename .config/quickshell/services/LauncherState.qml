@@ -18,6 +18,8 @@ QtObject {
     // window actions such as /move-to-workspace (the launcher's own layer
     // surface takes keyboard focus afterwards).
     property string windowAddress: ""
+    // Workspace focused at open, for /move-workspace.
+    property int workspaceId: -1
 
     function toggle(mon: string): void {
         if (root.active) {
@@ -25,6 +27,7 @@ QtObject {
         } else {
             root.monitor = mon || "";
             root.windowAddress = Hyprland.activeToplevel ? String(Hyprland.activeToplevel.address) : "";
+            root.workspaceId = Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id : -1;
             root.active = true;
         }
     }

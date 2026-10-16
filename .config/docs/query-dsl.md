@@ -42,6 +42,10 @@ it at the smallest unused id above the window's current workspace (Hyprland
 orders workspaces by integer id and cannot renumber, so this is the nearest
 free slot after the current one, not guaranteed adjacent) and names it. Esc
 returns to the app list.
+`/move-workspace` is the sibling: the same second list (minus the current
+workspace, no "new" row), and choosing one moves the *current workspace* to the
+smallest unused id above the chosen one (windows move, name is kept, view
+follows), i.e. to just after it.
 
 **images (photo search) - its own grammar, same keys.** Not the verb grammar:
 the verbs are `/face <name>` (photos showing a registered person) and
