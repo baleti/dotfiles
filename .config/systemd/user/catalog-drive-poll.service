@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply Google Drive changes to the file-name catalog (changes feed, relists only changed folders)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/bin/index/catalog
+ExecStart=/usr/bin/nice -n 19 /usr/bin/ionice -c3 /usr/bin/python3 %h/bin/index/catalog/catalog.py poll-drive
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+MemoryMax=2G
+TimeoutStartSec=30min

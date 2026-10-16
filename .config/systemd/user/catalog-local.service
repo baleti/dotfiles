@@ -9,5 +9,5 @@ Nice=19
 IOSchedulingClass=idle
 CPUWeight=10
 CPUQuota=60%
-MemoryMax=1G
+MemoryMax=3G
 TimeoutStartSec=30min
