@@ -54,6 +54,7 @@ def connect():
     db.executescript(SCHEMA)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
+    db.execute("PRAGMA busy_timeout=120000")     # the watcher and the periodic jobs share one writer lock
     return db
 
 def source_id(db, label, kind, taken=None):
@@ -67,6 +68,85 @@ def sweep(db, sid):
     db.execute("DELETE FROM entry_sources WHERE source_id=? AND entry_id NOT IN (SELECT id FROM seen)", (sid,))
     db.execute("DELETE FROM entries WHERE id NOT IN (SELECT entry_id FROM entry_sources)")
     db.commit()
+
+def touch_generation():
+    """Tell the search server to reload the whole catalog (full builds do this when they finish)."""
+    path = os.path.expanduser(DB) + ".gen"
+    with open(path, "a"):
+        os.utime(path, None)
+
+def push_ops(ops):
+    """Send live changes to the search server (POST /delta). False if it could not take them."""
+    try:
+        token = open(os.path.expanduser(DB) + ".delta-token").read().strip()
+    except OSError:
+        return False
+    url = f"http://127.0.0.1:{config.SERVER_PORT}/delta"
+    for i in range(0, len(ops), 20000):
+        body = json.dumps({"ops": ops[i:i + 20000]}).encode()
+        req = urllib.request.Request(url, data=body, headers={"X-Delta-Token": token, "Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=60).read()
+        except Exception:
+            return False
+    return True
+
+def final_ops(db, paths):
+    """What the catalog now holds for each path, as server ops: the newest version, or a delete. This is exactly
+    what a full reload would show, including paths that only a backup snapshot still has."""
+    ops = []
+    for p in paths:
+        r = db.execute("SELECT size, mtime FROM entries WHERE path=? ORDER BY mtime DESC LIMIT 1", (p,)).fetchone()
+        ops.append(["put", p, r[0], r[1]] if r else ["del", p])
+    return ops
+
+def deliver(db, paths):
+    """Commit has happened: tell the running search server about these paths, or make it reload if that fails."""
+    if not paths:
+        return
+    if len(paths) > 200000 or not push_ops(final_ops(db, paths)):
+        touch_generation()
+
+class SourceStore:
+    """Row-level changes to one source's entries, keeping the trigram index current and remembering which
+    paths changed (touched) so they can be delivered to the search server."""
+    def __init__(self, db, sid):
+        self.db, self.sid = db, sid
+        self.fts_add, self.touched = [], set()
+        self.added = self.removed = 0
+
+    def drop(self, ids):
+        """Unlink entries from this source; delete those no other source has."""
+        if not ids:
+            return
+        self.removed += len(ids)
+        orphans = []
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            q = ",".join("?" * len(part))
+            self.touched.update(r[0] for r in self.db.execute(f"SELECT path FROM entries WHERE id IN ({q})", part))
+            self.db.execute(f"DELETE FROM entry_sources WHERE source_id=? AND entry_id IN ({q})", [self.sid] + part)
+            orphans += self.db.execute(
+                f"SELECT id, name FROM entries WHERE id IN ({q}) AND id NOT IN (SELECT entry_id FROM entry_sources)", part).fetchall()
+        self.db.executemany("INSERT INTO names(names, rowid, name) VALUES('delete', ?, ?)", orphans)
+        self.db.executemany("DELETE FROM entries WHERE id=?", ((o[0],) for o in orphans))
+
+    def add(self, path, size, mtime, kind="file"):
+        row = self.db.execute("SELECT id FROM entries WHERE path=? AND size IS ? AND mtime IS ?", (path, size, mtime)).fetchone()
+        if row:
+            eid = row[0]
+        else:
+            name = path.rsplit("/", 1)[-1]
+            eid = self.db.execute("INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,?)",
+                                  (path, name, size, mtime, kind)).lastrowid
+            self.fts_add.append((eid, name))
+        self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (eid, self.sid))
+        self.touched.add(path)
+        self.added += 1
+
+    def flush_fts(self):
+        self.db.executemany("INSERT INTO names(rowid, name) VALUES(?, ?)", self.fts_add)
+        self.fts_add = []
 
 class Writer:
     """Batches entries; each (path,size,mtime) is stored once and linked to every source that has it."""
@@ -147,6 +227,7 @@ def build_local(db, roots):
     seen = set()
     added = changed = 0
     fts_add = []
+    touched = set()
 
     def note(path, size, mtime, kind):
         nonlocal added, changed
@@ -159,6 +240,7 @@ def build_local(db, roots):
             changed += 1
         else:
             added += 1
+        touched.add(path)
         row = db.execute("SELECT id FROM entries WHERE path=? AND size IS ? AND mtime IS ?", (path, size, mtime)).fetchone()
         if row:
             eid = row[0]
@@ -202,7 +284,12 @@ def build_local(db, roots):
                 else:
                     note(p, st.st_size, int(st.st_mtime), "file")
     t_walk = time.time() - t0
-    gone = [eid for lst in known.values() for (_, _, eid) in lst if eid not in seen]
+    gone = []
+    for path, lst in known.items():
+        for (_, _, eid) in lst:
+            if eid not in seen:
+                gone.append(eid)
+                touched.add(path)
     db.executemany("DELETE FROM entry_sources WHERE source_id=? AND entry_id=?", ((sid, g) for g in gone))
     orphans = []
     for i in range(0, len(gone), 500):
@@ -215,6 +302,7 @@ def build_local(db, roots):
     db.executemany("DELETE FROM entries WHERE id=?", ((o[0],) for o in orphans))
     db.executemany("INSERT INTO names(rowid, name) VALUES(?, ?)", fts_add)
     db.commit()
+    deliver(db, touched)
     print(f"local: {n} rows, +{added} new, {changed} changed, -{len(gone)} gone, {skipped_mounts} mount points skipped, "
           f"walk {t_walk:.1f}s, total {time.time()-t0:.1f}s", file=sys.stderr)
 
@@ -385,12 +473,12 @@ def build_rclone(db):
             save_state({"token": start_token, "root_fid": root_fid, "remote": remote, "full": time.strftime("%Y-%m-%dT%H:%M:%S")})
         print(f"rclone {remote}: {w.n} rows, {len(dirs)} folders, {time.time()-t0:.1f}s", file=sys.stderr)
 
-class DriveSync:
+class DriveSync(SourceStore):
     """Applies Drive changes to the catalog by relisting only the folders that changed (through rclone, so the
     crypt layer decrypts names and sizes), then diffing each listing against the rows the source already has."""
     def __init__(self, db, sid, remote, mount, root_fid):
-        self.db, self.sid, self.remote, self.mount, self.root = db, sid, remote, mount, root_fid
-        self.fts_add, self.added, self.removed = [], 0, 0
+        super().__init__(db, sid)
+        self.remote, self.mount, self.root = remote, mount, root_fid
 
     def path_of(self, fid):
         if fid == self.root:
@@ -403,32 +491,6 @@ class DriveSync:
         return [(eid, p, sz, mt) for eid, p, sz, mt in self.db.execute(
             "SELECT e.id, e.path, e.size, e.mtime FROM entries e JOIN entry_sources es ON es.entry_id=e.id "
             "WHERE es.source_id=? AND e.path >= ? AND e.path < ?", (self.sid, prefix, prefix[:-1] + "0"))], prefix
-
-    def drop(self, ids):
-        if not ids:
-            return
-        self.removed += len(ids)
-        self.db.executemany("DELETE FROM entry_sources WHERE source_id=? AND entry_id=?", ((self.sid, i) for i in ids))
-        orphans = []
-        for i in range(0, len(ids), 500):
-            part = ids[i:i + 500]
-            orphans += self.db.execute(
-                f"SELECT id, name FROM entries WHERE id IN ({','.join('?' * len(part))}) "
-                "AND id NOT IN (SELECT entry_id FROM entry_sources)", part).fetchall()
-        self.db.executemany("INSERT INTO names(names, rowid, name) VALUES('delete', ?, ?)", orphans)
-        self.db.executemany("DELETE FROM entries WHERE id=?", ((o[0],) for o in orphans))
-
-    def add(self, path, size, mtime):
-        row = self.db.execute("SELECT id FROM entries WHERE path=? AND size IS ? AND mtime IS ?", (path, size, mtime)).fetchone()
-        if row:
-            eid = row[0]
-        else:
-            name = path.rsplit("/", 1)[-1]
-            eid = self.db.execute("INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,'file')",
-                                  (path, name, size, mtime)).lastrowid
-            self.fts_add.append((eid, name))
-        self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (eid, self.sid))
-        self.added += 1
 
     def delete_subtree(self, rel):
         """Forget a folder and everything under it (it was deleted, renamed or moved away)."""
@@ -554,6 +616,7 @@ def drive_poll(db):
         open(lock, "w").close()
         try:
             build_rclone(db)
+            touch_generation()
         finally:
             os.path.exists(lock) and os.remove(lock)
         return
@@ -570,7 +633,7 @@ def drive_poll(db):
             unresolved = {u for u in unresolved if sync.path_of(u) is None}
             if not dirty:
                 break
-        db.executemany("INSERT INTO names(rowid, name) VALUES(?, ?)", sync.fts_add)
+        sync.flush_fts()
         db.commit()
     except BaseException:
         db.rollback()
@@ -578,6 +641,7 @@ def drive_poll(db):
     finally:
         os.path.exists(lock) and os.remove(lock)
     save_state({**st, "token": new_token})
+    deliver(db, sync.touched)
     print(f"{len(changes)} changes -> {len(done)} folders relisted, +{sync.added} -{sync.removed}, {time.time()-t0:.1f}s", file=sys.stderr)
 
 def restic_snapshots(rep):
@@ -667,6 +731,8 @@ def main():
         open(lock, "w").close()
     try:
         run(a, db)
+        if a.cmd in ("build-extra", "build-restic", "build-rclone", "rebuild-fts"):
+            touch_generation()      # the server reloads; build-local and poll-drive deliver their changes live instead
     finally:
         if building and os.path.exists(lock):
             os.remove(lock)

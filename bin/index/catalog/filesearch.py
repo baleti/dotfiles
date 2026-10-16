@@ -6,7 +6,7 @@ blob with bytes.find, maps hits back to lines with searchsorted, then checks the
 other terms per candidate. Each keystroke is one scan over RAM; nothing on disk
 is touched and no per-query process is started.
 """
-import bisect, collections, ctypes, json, os, re, sqlite3, subprocess, threading, time
+import functools, bisect, collections, ctypes, json, os, re, sqlite3, subprocess, threading, time
 import numpy as np
 
 # file kinds by extension: `//mime <kind>` (any extension name also works, e.g. //mime pdf)
@@ -252,6 +252,20 @@ def _extras(paths, sizes, mtimes):
     }
     return codes, ext_names, size_arr, mt_arr, orders, keys
 
+def _merge_stats(parts):
+    """Combine _stat_parts results into the stats dict the picker shows."""
+    fmt = lambda t: time.strftime("%Y-%m-%d", time.localtime(int(t)))
+    out = {"size": sum(p[0] for p in parts)}
+    lo = [p[1] for p in parts if p[1] is not None]
+    hi = [p[2] for p in parts if p[2] is not None]
+    if lo:
+        out["dmin"], out["dmax"] = fmt(min(lo)), fmt(max(hi))
+    kinds = collections.Counter()
+    for p in parts:
+        kinds.update(p[3])
+    out["kinds"] = [[k, n] for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])[:5]]
+    return out
+
 def _size_mask(size_arr, cond):
     m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMGT]?)B?$", cond.strip(), re.I)
     if not m:
@@ -276,25 +290,47 @@ class NameTable:
         self.loaded_mtime = 0.0
         self.lock = threading.Lock()
         self.dates = []
+        # live overlay on top of the loaded snapshot: base rows that were deleted or replaced (dead), the
+        # current rows for changed/new paths (d_entries, shown through a small table built on demand)
+        self.dead = np.zeros(0, bool)
+        self.d_entries = {}
+        self._delta = None
+        self._ver = 0
+        self._loading = False
+        self._buffer = []
+        self.needs_reload = False
 
     def load(self):
         t0 = time.time()
-        con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        rows = con.execute("SELECT path, size, mtime FROM entries ORDER BY path, mtime DESC").fetchall()
-        dates = [r[0] for r in con.execute(
-            "SELECT DISTINCT strftime('%Y-%m', mtime, 'unixepoch', 'localtime') d FROM entries "
-            "WHERE mtime IS NOT NULL ORDER BY d DESC")]
-        con.close()
-        paths, sizes, mtimes, prev = [], [], [], None
-        for p, s, m in rows:            # the same path can come from several sources
-            if p == prev:
-                continue
-            prev = p
-            paths.append(p); sizes.append(s); mtimes.append(m)
+        with self.lock:
+            self._loading, self._buffer = True, []      # live changes that arrive while loading are replayed afterwards
+        try:
+            stamp = self._stale_marker()
+            con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            rows = con.execute("SELECT path, size, mtime FROM entries ORDER BY path, mtime DESC").fetchall()
+            dates = [r[0] for r in con.execute(
+                "SELECT DISTINCT strftime('%Y-%m', mtime, 'unixepoch', 'localtime') d FROM entries "
+                "WHERE mtime IS NOT NULL ORDER BY d DESC")]
+            con.close()
+            paths, sizes, mtimes, prev = [], [], [], None
+            for p, s, m in rows:            # the same path can come from several sources
+                if p == prev:
+                    continue
+                prev = p
+                paths.append(p); sizes.append(s); mtimes.append(m)
+            del rows
+            self._set(paths, sizes, mtimes, dates, stamp)
+        finally:
+            with self.lock:
+                self._loading = False
+        print(f"name table: {len(paths)} paths, {len(self.blob)/1e6:.0f} MB blob, {time.time()-t0:.1f}s", flush=True)
+
+    def _set(self, paths, sizes, mtimes, dates, stamp=0.0, install_lock=True):
+        """Build every lookup structure for (paths sorted ascending) and swap them in."""
         lower = [p.lower() for p in paths]
         blob = "\n".join(lower).encode("utf-8", "surrogatepass")
         lens = np.fromiter((len(x.encode("utf-8", "surrogatepass")) + 1 for x in lower), np.int64, len(lower))
-        starts = np.concatenate(([0], np.cumsum(lens)[:-1]))
+        starts = np.concatenate(([0], np.cumsum(lens)[:-1])) if len(lower) else np.zeros(0, np.int64)
         # newest-first order, computed once so an empty query is instant
         mt = np.array([m if m is not None else 0 for m in mtimes], dtype=np.int64)
         order = np.argsort(-mt) if len(mt) else np.zeros(0, np.int64)
@@ -315,8 +351,14 @@ class NameTable:
             self.sort_keys = keys
             self._cache = None
             self.dates = [d for d in dates if d]
-            self.loaded_mtime = self._db_mtime()
-        print(f"name table: {len(paths)} paths, {len(blob)/1e6:.0f} MB blob, {time.time()-t0:.1f}s", flush=True)
+            self.loaded_mtime = stamp
+            # a fresh snapshot already contains what the live overlay held, except what arrived while it loaded
+            self.dead = np.zeros(len(paths), bool)
+            self.d_entries, self._delta, self.needs_reload = {}, None, False
+            self._ver += 1
+            for op in self._buffer:
+                self._apply(op)
+            self._buffer = []
 
     def top_exts(self, n=60):
         """The commonest extensions, for //ext completion."""
@@ -329,45 +371,158 @@ class NameTable:
         """Newest change to the database, counting the WAL file (commits land there before a checkpoint)."""
         return max(os.path.getmtime(f) for f in (self.db_path, self.db_path + "-wal") if os.path.exists(f))
 
+    def _stale_marker(self):
+        """What decides a reload: the generation file that full builds touch when they finish (live changes
+        reach the server through apply_ops and also land in the database, so they must not trigger one);
+        without that file, the database's own modification time as before."""
+        gen = self.db_path + ".gen"
+        try:
+            return os.path.getmtime(gen) if os.path.exists(gen) else self._db_mtime()
+        except OSError:
+            return 0.0
+
     def refresh_if_stale(self):
         try:
             if os.path.exists(self.db_path + ".building"):
                 return
-            if self._db_mtime() > self.loaded_mtime:
+            if self.needs_reload or self._stale_marker() > self.loaded_mtime:
                 self.load()
         except OSError:
             pass
 
+    # ---- live overlay -------------------------------------------------------------------------------
+    def apply_ops(self, ops):
+        """ops: ["put", path, size, mtime] | ["del", path] | ["delprefix", path] (a folder and everything below it)."""
+        with self.lock:
+            if self._loading:
+                self._buffer.extend(ops)
+            for op in ops:
+                self._apply(op)
+
+    def _apply(self, op):
+        """Caller holds the lock."""
+        paths, kind, p = self.paths, op[0], op[1]
+        i = bisect.bisect_left(paths, p)
+        here = i < len(paths) and paths[i] == p
+        if kind == "put":
+            size, mtime = op[2], op[3]
+            if here and self.sizes[i] == size and self.mtimes[i] == mtime:
+                self.dead[i] = False
+                self.d_entries.pop(p, None)
+            else:
+                if here:
+                    self.dead[i] = True
+                else:
+                    parent = p.rsplit("/", 1)[0]
+                    j = bisect.bisect_left(self.dirs, parent)
+                    if parent and (j >= len(self.dirs) or self.dirs[j] != parent):
+                        self.dirs.insert(j, parent)
+                self.d_entries[p] = (size, mtime)
+        elif kind == "del":
+            if here:
+                self.dead[i] = True
+            self.d_entries.pop(p, None)
+        elif kind == "delprefix":
+            lo, hi = bisect.bisect_left(paths, p + "/"), bisect.bisect_left(paths, p + "0")
+            self.dead[lo:hi] = True
+            if here:
+                self.dead[i] = True
+            below = p + "/"
+            for k in [k for k in self.d_entries if k == p or k.startswith(below)]:
+                del self.d_entries[k]
+        self._delta = None
+        self._cache = None
+        self._ver += 1
+        if len(self.d_entries) > 150000:
+            self.needs_reload = True
+
+    def _delta_table(self):
+        """A small NameTable over the live overlay rows (None when there are none)."""
+        with self.lock:
+            if not self.d_entries:
+                return None
+            if self._delta is not None:
+                return self._delta
+            items = sorted(self.d_entries.items())
+            ver = self._ver
+        t = NameTable(None)
+        t._set([k for k, _ in items], [v[1][0] for v in items], [v[1][1] for v in items], [])
+        with self.lock:
+            if self._ver == ver:
+                self._delta = t
+        return t
+
+    def _sort_key(self, path, size, mtime, sorts, desc):
+        """[(value, direction)] reproducing the order _match gives, so rows of two tables can be merged."""
+        sign = -1 if desc else 1
+        def val(k):
+            if k == "path": return path
+            if k == "name": return path.rsplit("/", 1)[-1].lower()
+            if k == "size": return size if size is not None else -1
+            if k == "date": return mtime or 0
+            if k == "ext": return kind_of(path)
+            return path.count("/")
+        if len(sorts) == 1 and sorts[0] in ("path", "name", "size", "date"):
+            if sorts[0] == "date":
+                mt = mtime or 0
+                if mt < 172800 or mt in (UNKNOWN_MTIME, 123456789):
+                    return [(1, 1), (0, 1), (path, 1)]       # unknown dates sort last in both directions
+                return [(0, 1), (mt, sign), (path, sign)]
+            return [(val(sorts[0]), sign), (path, sign)]
+        return [(val(k), sign) for k in sorts] + [(path, 1)]
+
     def query(self, q, sort="date", desc=True, offset=0, limit=200):
-        """(rows, total) for one window of the matches; the full match list is cached per query."""
+        """(rows, total, stats) for one window of the matches; the full match list is cached per query."""
         key = (q, sort, bool(desc))
         with self.lock:
-            cached = self._cache
+            cached, ver = self._cache, self._ver
         if cached is None or cached[0] != key:
-            idx = self._match(q, sort, desc)
-            stats = self._stats(idx)
+            base = self._match(q, sort, desc)
             with self.lock:
-                self._cache = (key, idx, stats)
+                dead = self.dead
+                has_overlay = bool(self.d_entries) or bool(dead.any())
+            if has_overlay:
+                base = base[~dead[base]] if len(base) else base
+            delta = self._delta_table()
+            d_idx = delta._match(q, sort, desc) if delta is not None else np.zeros(0, np.int64)
+            parts = [self._stat_parts(base)] + ([delta._stat_parts(d_idx)] if delta is not None else [])
+            stats = _merge_stats(parts)
+            with self.lock:
+                if self._ver == ver:
+                    self._cache = (key, base, d_idx, delta, stats)
         else:
-            idx, stats = cached[1], cached[2]
-        window = idx[offset: offset + limit].tolist()
-        rows = [{"remote": self.paths[i], "size": self.sizes[i], "mtime": self.mtimes[i]} for i in window]
-        return rows, len(idx), stats
+            base, d_idx, delta, stats = cached[1], cached[2], cached[3], cached[4]
+        total = len(base) + len(d_idx)
+        if not len(d_idx):
+            window = base[offset: offset + limit].tolist()
+            return [{"remote": self.paths[i], "size": self.sizes[i], "mtime": self.mtimes[i]} for i in window], total, stats
+        # merge the two sorted lists: the window of the union lies within the first offset+limit of each
+        sorts = [k for k in sort.split(",") if k in self.sort_keys] or ["date"]
+        k = offset + limit
+        rows = [(self.paths[i], self.sizes[i], self.mtimes[i]) for i in base[:k].tolist()]
+        rows += [(delta.paths[i], delta.sizes[i], delta.mtimes[i]) for i in d_idx[:k].tolist()]
+        keyed = [(self._sort_key(p, s_, m, sorts, bool(desc)), (p, s_, m)) for p, s_, m in rows]
+        def cmp(a, b):
+            for (va, da), (vb, db_) in zip(a[0], b[0]):
+                if va != vb:
+                    return da if va > vb else -da
+            return 0
+        keyed.sort(key=functools.cmp_to_key(cmp))
+        window = keyed[offset: offset + limit]
+        return [{"remote": r[0], "size": r[1], "mtime": r[2]} for _, r in window], total, stats
 
-    def _stats(self, idx):
-        """Totals over every match: size, date-modified range and the commonest file types."""
+    def _stat_parts(self, idx):
+        """Totals over the matches idx: (size sum, oldest, newest, count per file type)."""
         with self.lock:
             sizes, mts, codes, names = self.size_arr[idx], self.mt_arr[idx], self.ext_codes[idx], self.ext_names
         known = sizes >= 0
         dated = mts > 0
-        fmt = lambda t: time.strftime("%Y-%m-%d", time.localtime(int(t)))
-        out = {"size": int(sizes[known].sum()) if known.any() else 0}
-        if dated.any():
-            out["dmin"], out["dmax"] = fmt(mts[dated].min()), fmt(mts[dated].max())
         counts = np.bincount(codes, minlength=len(names)) if len(codes) else np.zeros(0, int)
-        top = np.argsort(-counts)[:5]
-        out["kinds"] = [[names[k] or "no ext", int(counts[k])] for k in top if counts[k] > 0]
-        return out
+        by_kind = {names[k] or "no ext": int(c) for k, c in enumerate(counts) if c > 0}
+        return (int(sizes[known].sum()) if known.any() else 0,
+                int(mts[dated].min()) if dated.any() else None,
+                int(mts[dated].max()) if dated.any() else None,
+                by_kind)
 
     def _match(self, q, sort, desc):
         wanted, not_wanted, rest = split_mime_all(q)

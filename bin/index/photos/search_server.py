@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import collections, hashlib, json, os, queue, random, re, subprocess, sys, threading, time, urllib.parse
+import collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -392,8 +392,40 @@ def enqueue(remote):
             _queued.add(remote); _pending.put(remote)
     return False
 
+def delta_token():
+    """Shared secret for POST /delta (the live file-change feed); created on first use, readable only by the user."""
+    path = NAMES.db_path + ".delta-token"
+    try:
+        return open(path).read().strip()
+    except OSError:
+        tok = secrets.token_hex(24)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(tok)
+        return tok
+
+DELTA_TOKEN = None
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path != "/delta":
+            return self._json(404, {"error": "not found"})
+        if not hmac.compare_digest(self.headers.get("X-Delta-Token", ""), DELTA_TOKEN or ""):
+            return self._json(403, {"error": "forbidden"})
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > 64 * 1024 * 1024:
+                return self._json(413, {"error": "too large"})
+            ops = json.loads(self.rfile.read(n))["ops"]
+            assert isinstance(ops, list) and all(
+                isinstance(o, list) and o and o[0] in ("put", "del", "delprefix") and isinstance(o[1], str)
+                and (o[0] != "put" or len(o) == 4) for o in ops)
+        except Exception as e:
+            return self._json(400, {"error": f"bad request: {e}"})
+        NAMES.apply_ops(ops)
+        self._json(200, {"applied": len(ops)})
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -511,6 +543,8 @@ class H(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
 def main():
+    global DELTA_TOKEN
+    DELTA_TOKEN = delta_token()
     NAMES.load()
     filesearch.start_refresh(NAMES)
     with _q_lock:
