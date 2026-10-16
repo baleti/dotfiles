@@ -23,12 +23,23 @@ Rectangle {
     border.width: 1
     radius: Theme.rounding
 
-    readonly property string glyph: {
-        if (AudioSvc.muted)
-            return Icons.volMuted;
-        return Icons.levelIcon(Icons.volLevels, Math.min(1, AudioSvc.volume));
+    // When the MPRIS target (ALT+CTRL+SHIFT+m) is the phone bridge, the pill
+    // shows/controls the phone's STREAM_MUSIC via the player's MPRIS Volume
+    // (same routing as playerctl-volume.sh) instead of the local sink.
+    readonly property var phone: {
+        const p = Players.active;
+        return (p && p.dbusName === "org.mpris.MediaPlayer2.pixel6" && p.volumeSupported) ? p : null;
     }
-    readonly property color tint: AudioSvc.muted ? Theme.muted : Theme.text
+    readonly property real vol: phone ? phone.volume : AudioSvc.volume
+    readonly property bool isMuted: phone ? false : AudioSvc.muted
+    readonly property bool available: phone ? true : AudioSvc.hasSink
+
+    readonly property string glyph: {
+        if (root.isMuted)
+            return Icons.volMuted;
+        return Icons.levelIcon(Icons.volLevels, Math.min(1, root.vol));
+    }
+    readonly property color tint: root.isMuted ? Theme.muted : Theme.text
 
     Row {
         id: row
@@ -44,7 +55,7 @@ Rectangle {
         }
         Text {
             anchors.verticalCenter: parent.verticalCenter
-            text: AudioSvc.hasSink ? AudioSvc.percent + "%" : "--"
+            text: root.available ? Math.round(root.vol * 100) + "%" : "--"
             font.family: Theme.fontFamily
             font.pixelSize: root.fontSize
             color: root.tint
@@ -69,7 +80,10 @@ Rectangle {
         onClicked: root.toggled()
         onWheel: wheel => {
             const step = wheel.angleDelta.y > 0 ? 0.05 : -0.05;
-            AudioSvc.setVolume(Math.round((AudioSvc.volume + step) * 20) / 20);
+            if (root.phone)
+                root.phone.volume = Math.max(0, Math.min(1, root.phone.volume + step));
+            else
+                AudioSvc.setVolume(Math.round((AudioSvc.volume + step) * 20) / 20);
             wheel.accepted = true;
         }
     }
