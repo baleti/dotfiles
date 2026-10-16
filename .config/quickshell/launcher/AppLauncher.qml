@@ -830,8 +830,12 @@ PanelWindow {
                         else root.launch(root.selected);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
-                        if (ac.visible)
-                            root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
+                        // Tab accepts the highlighted suggestion (same as
+                        // Space); Shift+Tab still steps the highlight back.
+                        if (ac.visible && (event.modifiers & Qt.ShiftModifier))
+                            root.acSel = (root.acSel - 1 + root.acItems.length) % root.acItems.length;
+                        else if (ac.visible)
+                            root.acAccept();
                         else
                             root._triggerCompletion();
                         event.accepted = true;
