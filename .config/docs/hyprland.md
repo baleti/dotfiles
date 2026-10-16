@@ -85,7 +85,7 @@ disable --now quickshell.service`).
 ## Pinned app launchers (`apps.lua` + `keybinds.lua`)
 
 `apps.lua` is a flat list of `{ key, slug, class, cmd }`, currently:
-FSearch (1), Element (2), Thunderbird (3), GIMP (4), Signal (5, via
+Search files (1), Element (2), Thunderbird (3), GIMP (4), Signal (5, via
 flatpak), Inkscape (6), Recoll (7). `mainMod+<key>` toggles each one through
 `toggle_app()` in `keybinds.lua`: not-running → launch, hidden in scratch →
 pull to current workspace + focus, on another workspace → switch to it
