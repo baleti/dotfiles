@@ -718,7 +718,12 @@ PanelWindow {
                             else root.confirm(root.selected);
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
-                            root._completionTab(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
+                            // Tab confirms the highlighted suggestion
+                            // (query-dsl.md); Shift+Tab steps back. Alt+Tab
+                            // (onLockedTab) still cycles.
+                            const back = event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier);
+                            if (acPopup.visible && !back) root._acAccept();
+                            else root._completionTab(back ? "prev" : "next");
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Space && !acPopup.visible && (event.modifiers & Qt.ControlModifier)) {
                             // Ctrl+Space also opens completion, same as Tab

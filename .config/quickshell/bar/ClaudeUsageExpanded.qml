@@ -1735,7 +1735,12 @@ Rectangle {
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
                         if (root.acOpen) {
-                            root.acSel = (root.acSel + (event.modifiers & Qt.ShiftModifier ? -1 : 1) + root.acItems.length) % root.acItems.length;
+                            // Tab confirms the highlighted suggestion (query-dsl.md);
+                            // Shift+Tab steps the highlight back.
+                            if (event.modifiers & Qt.ShiftModifier)
+                                root.acSel = (root.acSel - 1 + root.acItems.length) % root.acItems.length;
+                            else
+                                root.acAccept();
                         } else {
                             root.triggerCompletion();
                         }

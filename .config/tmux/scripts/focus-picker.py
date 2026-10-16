@@ -817,6 +817,8 @@ def complete(query):
     p = subprocess.run(
         ["fzf", "--height=100%", "--layout=reverse", "--border=rounded",
          "--prompt=complete> ",
+         # Tab confirms the highlighted candidate, same as Enter (query-dsl.md).
+         "--bind", "tab:accept",
          # Ctrl+Space AND-narrows instead of accepting (query-dsl.md) - a
          # second fragment typed after this still has to independently
          # match each candidate's full text, fzf's own multi-term AND
@@ -994,7 +996,7 @@ def history_search(query):
     # from Ctrl+R being unbound entirely (reported 2026-09-13).
     p = subprocess.run(
         ["fzf", "--height=100%", "--layout=reverse", "--border=rounded",
-         "--prompt=history> ", f"--query={query}"],
+         "--prompt=history> ", f"--query={query}", "--bind", "tab:accept"],
         input="\n".join(entries), capture_output=True, text=True,
     )
     chosen = p.stdout.strip()

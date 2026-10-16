@@ -1611,7 +1611,7 @@ r=json.loads(b);q=r["query"];c=r["candidates"]
 if mode=="complete":
     if len(c)==1:q=r["prefix"]+c[0]+r["suffix"]
     elif c:
-        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=complete> ","--bind","ctrl-space:put( )"],input="\n".join(c),capture_output=True,text=True)
+        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=complete> ","--bind","ctrl-space:put( )","--bind","tab:accept"],input="\n".join(c),capture_output=True,text=True)
         if p.stdout.strip():q=r["prefix"]+p.stdout.strip()+r["suffix"]
 else:
     # history: always opens, even with zero candidates - zsh's own ctrl-r
@@ -1621,7 +1621,7 @@ else:
     # from Ctrl+R being unbound - reported 2026-09-13). Seeded with the
     # current query (fzf --query "$LBUFFER"'s own behaviour) and a
     # whole-line replace on accept, no prefix/suffix.
-    p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=history> ","--query="+q],input="\n".join(c),capture_output=True,text=True)
+    p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=history> ","--query="+q,"--bind","tab:accept"],input="\n".join(c),capture_output=True,text=True)
     if p.stdout.strip():q=p.stdout.strip()
 sys.stdout.write(q)
 """.strip()
