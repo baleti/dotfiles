@@ -190,13 +190,19 @@ PanelWindow {
             const n = String(w.name);
             if (arg && n.toLowerCase().indexOf(arg) < 0) continue;
             if (n.toLowerCase() === arg) exact = true;
-            const cnt = w.toplevels ? w.toplevels.values.length : 0;
-            out.push({ ws: true, name: n, target: n, id: w.id, detail: cnt + (cnt === 1 ? " window" : " windows")
-                       + (w.monitor ? " on " + w.monitor.name : ""), entry: { icon: "" } });
+            const tl = w.toplevels ? w.toplevels.values : [];
+            const classes = [];
+            for (const t of tl) {
+                const c = t.lastIpcObject && t.lastIpcObject["class"] ? String(t.lastIpcObject["class"]) : "";
+                if (c && classes.indexOf(c) < 0) classes.push(c);
+            }
+            out.push({ ws: true, name: n, target: n, id: w.id, cnt: tl.length,
+                       mon: w.monitor ? w.monitor.name : "", apps: classes.join(", "),
+                       entry: { icon: "" } });
         }
         if (root.actionArg && !exact && root.promptKind === "window")
             out.push({ ws: true, name: "+ new workspace \"" + root.actionArg + "\"", target: root.actionArg,
-                       create: true, detail: "after the current workspace", entry: { icon: "" } });
+                       create: true, cnt: -1, mon: "", apps: "created after the current workspace", entry: { icon: "" } });
         return out;
     }
 
@@ -637,7 +643,12 @@ PanelWindow {
     }
     // icon gutter (40) + name + right padding (28); floored so the search
     // box always fits, capped so it never sprawls.
-    readonly property real cardWidth: Math.max(360, Math.min(560, root._widestName + 68))
+    readonly property real cardWidth: root.wsPrompt ? 780 : Math.max(360, Math.min(560, root._widestName + 68))
+    // workspace-table column widths (name column takes the rest of the row)
+    readonly property int wsColId: 56
+    readonly property int wsColWin: 64
+    readonly property int wsColMon: 96
+    readonly property int wsColApps: 260
 
     // ---- window -------------------------------------------------
     // Sized box with partial anchors, not a 4-edge full-screen anchor -- the
@@ -674,7 +685,11 @@ PanelWindow {
         // Fixed at 60% of the screen height, centred -- the results list
         // fills whatever's left under the search box (and the autocomplete
         // popup when it's up).
-        height: Math.round((root.screen ? root.screen.height : 1080) * 0.6)
+        height: root.wsPrompt
+            ? Math.min(Math.round((root.screen ? root.screen.height : 1080) * 0.8),
+                       header.height + (ac.visible ? ac.height : 0) + wsHead.height + list.topMargin
+                       + root.results.length * 30 + list.bottomMargin + 12)
+            : Math.round((root.screen ? root.screen.height : 1080) * 0.6)
         radius: Theme.rounding
         color: Theme.bgAlpha
         // Thin border in the wallpaper-derived accent (scheme.primary).
@@ -1000,9 +1015,41 @@ PanelWindow {
             }
         }
 
+        // Column header of the workspace table (second-stage lists only),
+        // same dim small-caps-less style as mod+v's column headers.
+        Row {
+            id: wsHead
+            visible: root.wsPrompt
+            anchors.top: ac.visible ? ac.bottom : header.bottom
+            x: 12
+            width: parent.width - 24
+            height: visible ? 18 : 0
+            spacing: 10
+            readonly property real nameW: width - root.wsColId - root.wsColWin - root.wsColMon - root.wsColApps - 4 * spacing
+            Repeater {
+                model: [
+                    { t: "workspace", w: wsHead.nameW, a: Text.AlignLeft },
+                    { t: "id", w: root.wsColId, a: Text.AlignRight },
+                    { t: "windows", w: root.wsColWin, a: Text.AlignRight },
+                    { t: "monitor", w: root.wsColMon, a: Text.AlignLeft },
+                    { t: "apps", w: root.wsColApps, a: Text.AlignLeft }
+                ]
+                Text {
+                    required property var modelData
+                    width: modelData.w
+                    horizontalAlignment: modelData.a
+                    text: modelData.t
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 2
+                    color: Theme.text
+                    opacity: 0.55
+                }
+            }
+        }
+
         ListView {
             id: list
-            anchors.top: ac.visible ? ac.bottom : header.bottom
+            anchors.top: root.wsPrompt ? wsHead.bottom : (ac.visible ? ac.bottom : header.bottom)
             anchors.bottom: parent.bottom
             width: parent.width
             clip: true
@@ -1029,7 +1076,8 @@ PanelWindow {
                 required property var modelData
                 required property int index
                 readonly property string extraText: {
-                    if (modelData.ws || modelData.action) return modelData.detail;
+                    if (modelData.ws) return "";
+                    if (modelData.action) return modelData.detail;
                     if (root.referencedFields.length === 0) return "";
                     const parts = [];
                     for (const f of root.referencedFields)
@@ -1044,8 +1092,37 @@ PanelWindow {
                 color: index === root.selected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
                                                : "transparent"
 
+                Row {
+                    visible: !!row.modelData.ws
+                    x: 12
+                    width: parent.width - 24
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 10
+                    readonly property real nameW: width - root.wsColId - root.wsColWin - root.wsColMon - root.wsColApps - 4 * spacing
+                    Repeater {
+                        model: row.modelData.ws ? [
+                            { t: row.modelData.name, w: parent.nameW, a: Text.AlignLeft, hi: true },
+                            { t: row.modelData.create ? "" : String(row.modelData.id), w: root.wsColId, a: Text.AlignRight },
+                            { t: row.modelData.cnt < 0 ? "" : String(row.modelData.cnt), w: root.wsColWin, a: Text.AlignRight },
+                            { t: row.modelData.mon, w: root.wsColMon, a: Text.AlignLeft },
+                            { t: row.modelData.apps, w: root.wsColApps, a: Text.AlignLeft }
+                        ] : []
+                        Text {
+                            required property var modelData
+                            width: modelData.w
+                            horizontalAlignment: modelData.a
+                            elide: Text.ElideRight
+                            text: modelData.t
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 1
+                            color: modelData.hi ? Theme.text : Theme.textDim
+                        }
+                    }
+                }
+
                 Image {
                     id: appIcon
+                    visible: !row.modelData.ws
                     x: 10
                     anchors.verticalCenter: parent.verticalCenter
                     width: 20
@@ -1063,7 +1140,7 @@ PanelWindow {
                 // Generic glyph when no icon resolves at all.
                 Text {
                     anchors.centerIn: appIcon
-                    visible: appIcon.status !== Image.Ready
+                    visible: !row.modelData.ws && appIcon.status !== Image.Ready
                     text: ""
                     font.family: Theme.iconFontFamily
                     font.pixelSize: 14
@@ -1071,6 +1148,7 @@ PanelWindow {
                 }
 
                 Column {
+                    visible: !row.modelData.ws
                     x: 40
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - 52
