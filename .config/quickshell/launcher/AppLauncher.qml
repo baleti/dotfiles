@@ -818,9 +818,17 @@ PanelWindow {
                 // or Ctrl+F at the end of the text takes it.
                 readonly property string ghost:
                     (cursorPosition === text.length && !(ac.visible)) ? LauncherQueryHistory.suggest(text) : ""
+                // Measured from the text itself, not positionToRectangle():
+                // that reads TextInput's layout, which updates after this
+                // binding re-evaluates, leaving the ghost one keystroke behind.
+                TextMetrics {
+                    id: ghostMetrics
+                    font: query.font
+                    text: query.text
+                }
                 Text {
                     visible: query.ghost.length > 0
-                    x: query.positionToRectangle(query.text.length).x
+                    x: ghostMetrics.advanceWidth
                     y: query.positionToRectangle(query.text.length).y
                     text: query.ghost
                     color: Theme.muted
