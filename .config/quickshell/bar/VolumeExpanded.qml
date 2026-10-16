@@ -26,6 +26,15 @@ Rectangle {
 
     onExpandedChanged: if (expanded) AudioSvc.refresh()
 
+    // Same routing as VolumePill: with the phone bridge as MPRIS target the
+    // output row shows/controls the phone's volume (stepped, 0..100%, no mute).
+    readonly property var phone: {
+        const p = Players.active;
+        return (p && p.dbusName === "org.mpris.MediaPlayer2.pixel6" && p.volumeSupported) ? p : null;
+    }
+    readonly property real vol: phone ? phone.volume : AudioSvc.volume
+    readonly property bool isMuted: phone ? false : AudioSvc.muted
+
     // The graph only polls while the panel is open.
     Binding { target: AudioSvc; property: "graphWanted"; value: root.expanded }
 
@@ -111,9 +120,9 @@ Rectangle {
         id: sl
         property real value: 0
         property bool dimmed: false
+        property real maxValue: 1.5
         signal moved(real v)
         height: 22
-        readonly property real maxValue: 1.5
 
         Rectangle {
             id: track
@@ -172,30 +181,31 @@ Rectangle {
             Label {
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - x - 0
-                text: AudioSvc.sinkDescription || qsTr("no output device")
+                text: root.phone ? qsTr("Phone (%1)").arg(root.phone.identity) : (AudioSvc.sinkDescription || qsTr("no output device"))
             }
         }
         Row {
             width: parent.width
             spacing: 10
             IconButton {
-                glyph: AudioSvc.muted ? Icons.volMuted : (AudioSvc.sinkBluetooth ? Icons.volHeadphone : Icons.levelIcon(Icons.volLevels, Math.min(1, AudioSvc.volume)))
-                active: AudioSvc.muted
-                onClicked: AudioSvc.toggleMute()
+                glyph: root.isMuted ? Icons.volMuted : ((!root.phone && AudioSvc.sinkBluetooth) ? Icons.volHeadphone : Icons.levelIcon(Icons.volLevels, Math.min(1, root.vol)))
+                active: root.isMuted
+                onClicked: { if (!root.phone) AudioSvc.toggleMute(); }
             }
             VolumeSlider {
                 width: parent.width - 30 - 52 - 20
                 anchors.verticalCenter: parent.verticalCenter
-                value: AudioSvc.volume
-                dimmed: AudioSvc.muted
-                onMoved: v => AudioSvc.setVolume(v)
+                value: root.vol
+                maxValue: root.phone ? 1 : 1.5
+                dimmed: root.isMuted
+                onMoved: v => { if (root.phone) root.phone.volume = Math.min(1, v); else AudioSvc.setVolume(v); }
             }
             Text {
                 width: 52
                 anchors.verticalCenter: parent.verticalCenter
                 horizontalAlignment: Text.AlignRight
-                text: AudioSvc.muted ? qsTr("muted") : AudioSvc.percent + "%"
-                color: AudioSvc.muted ? Theme.muted : Theme.text
+                text: root.isMuted ? qsTr("muted") : Math.round(root.vol * 100) + "%"
+                color: root.isMuted ? Theme.muted : Theme.text
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 1
             }

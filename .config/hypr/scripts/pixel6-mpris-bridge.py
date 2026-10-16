@@ -16,6 +16,7 @@ No new dependency: dbus-python + PyGObject/GLib are both already installed.
 """
 import json
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -313,32 +314,44 @@ class Pixel6Player(dbus.service.Object):
             self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
 
     def _set_volume(self, target):
-        # Android's STREAM_MUSIC is stepped (getStreamMaxVolume(), commonly
-        # ~15-25 steps depending on device/output), not a continuous 0.0-1.0
-        # knob, so there's no meaningful "set to this exact float" action -
-        # the Companion app only exposes the same up/down nudge the hardware
-        # buttons send (/command/volume-up|-down, one adjustStreamVolume() step
-        # each). Move one step towards whatever playerctl/the quickshell
-        # widget asked for; if it wanted a bigger jump, the next scroll/press
-        # will take another step from the corrected real level.
-        target = max(0.0, min(1.0, target))
-        current = float((self._status or {}).get("volume", 1.0))
-        if target > current:
-            command("volume-up")
-        elif target < current:
-            command("volume-down")
-        else:
+        # Android's STREAM_MUSIC is stepped, and the Companion app only exposes
+        # the hardware buttons' one-step volume-up/-down. So walk towards the
+        # target: step, re-read /status (adjustStreamVolume() is synchronous,
+        # unlike seekTo(), so the refetch is already accurate), repeat until
+        # within half a step or the level stops changing. Runs on a worker
+        # thread that always chases the LATEST requested target, so slider
+        # drags (many Set calls) neither block the mainloop nor queue up.
+        self._vol_target = max(0.0, min(1.0, target))
+        if getattr(self, "_vol_busy", False):
             return
-        # Unlike _seek_to_ms, an immediate /status re-fetch here already
-        # reflects the new level (confirmed live - adjustStreamVolume()
-        # isn't buffered/async the way a network player's seekTo() is), but
-        # patch the cache optimistically anyway rather than force-refetch:
-        # one fewer HTTP round trip, and it can't reintroduce the seek-bar's
-        # snap-back bug here if a slower link ever does race.
+        self._vol_busy = True
+        threading.Thread(target=self._volume_walk, daemon=True).start()
+
+    def _volume_walk(self):
+        try:
+            step = None
+            for _ in range(40):
+                st = fetch_status() or {}
+                cur = float(st.get("volume", self._vol_target))
+                tgt = self._vol_target
+                if abs(tgt - cur) <= (step / 2 if step else 0.001):
+                    break
+                command("volume-up" if tgt > cur else "volume-down")
+                st2 = fetch_status() or {}
+                new = float(st2.get("volume", cur))
+                if new == cur:
+                    break
+                step = abs(new - cur)
+                GLib.idle_add(self._publish_volume, new)
+        finally:
+            self._vol_busy = False
+
+    def _publish_volume(self, level):
         if self._status is not None:
-            self._status = dict(self._status, volume=target)
+            self._status = dict(self._status, volume=level)
             self._status_mono = time.monotonic()
             self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
+        return False
 
     @dbus.service.method(PLAYER_IFACE, in_signature="x")
     def Seek(self, offset):
