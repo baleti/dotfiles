@@ -1,10 +1,9 @@
 [Unit]
-Description=Live file-change watcher for the file-name catalog (inotify to database and search server)
+Description=Live file-change watcher for the file-name catalog (events from fanwatch-helper to database and search server)
 After=images-search.service
 
 [Service]
 WorkingDirectory=%h/bin/index/catalog
-Environment=WATCHER_STATS=60
 ExecStart=/usr/bin/nice -n 10 /usr/bin/python3 %h/bin/index/catalog/watcher.py
 Restart=on-failure
 RestartSec=10

@@ -1,0 +1,22 @@
+[Unit]
+Description=fanotify helper: filesystem-wide file-change events from the btrfs volume for the user's catalog watcher
+Documentation=file:///home/user1/bin/index/catalog/fanwatch/helper.py
+After=local-fs.target
+
+[Service]
+# Runs as the desktop user, not root; the capabilities below are all it has.
+User=user1
+Environment=FANWATCH_HOME=/home/user1
+RuntimeDirectory=fanwatch
+RuntimeDirectoryMode=0700
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ExecStartPre=+/usr/local/lib/fanwatch/mount-top.sh
+ExecStopPost=+/bin/sh -c 'umount /run/btrfs-top 2>/dev/null || true'
+ExecStart=/usr/bin/python3 /usr/local/lib/fanwatch/helper.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
