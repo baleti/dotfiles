@@ -1016,8 +1016,23 @@ Rectangle {
     // panel (few/no live processes) doesn't shrink below something that
     // still comfortably fits the mode-line/search box/account name text.
     readonly property real minContentWidth: 320
+    // Width the first-row account pills need side by side (each pill's own
+    // implicitWidth + the RowLayout's 10px spacing), so the panel grows
+    // enough not to crop them even when the table/no-process floor is
+    // narrower. Repeater.itemAt() isn't reactive, so the pills push their
+    // size here via recalcPillsWidth().
+    property real pillsNaturalWidth: 0
+    function recalcPillsWidth() {
+        let w = 0;
+        for (let i = 0; i < acctPillsRepeater.count; i++) {
+            const it = acctPillsRepeater.itemAt(i);
+            if (it) w += it.implicitWidth + 10;
+        }
+        root.pillsNaturalWidth = w;
+    }
     readonly property real naturalContentWidth:
-        (root.anyProcsVisible ? Math.max(root.tableNaturalWidth, root.minContentWidth) : root.minContentWidth) + 24
+        Math.max((root.anyProcsVisible ? Math.max(root.tableNaturalWidth, root.minContentWidth) : root.minContentWidth),
+                 root.pillsNaturalWidth) + 24
 
     // Measures path text the same font the "path" column's own Text uses
     // (Theme.fontFamily @ fontSize-3), for pathNaturalW above. Across
@@ -1458,7 +1473,10 @@ Rectangle {
             Item { Layout.fillWidth: true }
 
             Repeater {
+                id: acctPillsRepeater
                 model: ClaudeUsageSvc.accounts
+                onItemAdded: root.recalcPillsWidth()
+                onItemRemoved: root.recalcPillsWidth()
 
                 // Pill/chip background around each account's numbers
                 // (request 2026-09-06: "reads better" -- with 3 accounts'
@@ -1475,6 +1493,7 @@ Rectangle {
                     Layout.alignment: Qt.AlignVCenter
                     implicitWidth: acctSummary.implicitWidth + 16
                     implicitHeight: acctSummary.implicitHeight + 6
+                    onImplicitWidthChanged: root.recalcPillsWidth()
                     radius: Math.min(height / 2, 12)
                     color: Theme.bgAlpha
                     border.color: Theme.border
