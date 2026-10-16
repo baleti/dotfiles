@@ -1,0 +1,13 @@
+[Unit]
+Description=Full Google Drive listing for the file-name catalog (safety net behind the changes poll)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/bin/index/catalog
+ExecStart=/usr/bin/nice -n 19 /usr/bin/ionice -c3 /usr/bin/python3 %h/bin/index/catalog/catalog.py build-rclone
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+CPUQuota=60%
+MemoryMax=3G
+TimeoutStartSec=2h

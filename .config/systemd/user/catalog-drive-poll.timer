@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll the Google Drive changes feed for the file-name catalog
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
