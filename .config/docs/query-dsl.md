@@ -1046,9 +1046,9 @@ own `put( )` action (insert a literal space into fzf's *own* query box,
 without accepting), the same functional outcome as the GTK/QML families'
 custom AND-narrowing logic, but for a structurally different reason:
 this popup has no separate "Space accepts" rule to work around in the
-first place (`Enter` is what accepts here, plain `Tab`/`Space` do fzf's
-own ordinary things - moving the highlight and typing a literal
-character, respectively - see Shared popup UI, below, for why this
+first place (`Enter`/`Tab` accept here, plain `Space` does fzf's
+own ordinary thing - typing a literal
+character - see Shared popup UI, below, for why this
 family never got the other two's "Space also accepts" convention), so
 plain `Space` already inserts a literal space and narrows same as
 `Ctrl+Space` would; the binding exists anyway so the *key* matches
@@ -1233,23 +1233,21 @@ quickshell launcher reads them from `QueryDsl.qml`'s `verbInfo`):
 
 Shared popup UI: `Tab` triggers completion when nothing's open yet (see
 above - unique candidate applies directly, 2+ opens the popup). Once the
-popup *is* open, `Tab`'s meaning splits by implementation family:
+popup *is* open, `Tab` **confirms the highlighted suggestion**, the same as
+`Enter` (changed 2026-10-16: it used to move the highlight down in the QML
+and fzf-native families, which made Tab behave differently per picker; it
+now means "accept" everywhere, the AutoCAD-style convention `Space` already
+followed). Moving the highlight is `Down`/`Up` (and `Ctrl+j`/`Ctrl+k` where
+bound), `Shift+Tab` steps it back; none of those accept. Per family:
 
-- **QML pickers** (app-launcher, rss-reader, claude-usage, winswitch):
-  `Tab` / `Shift+Tab` cycle the highlight, wrapping around both ends;
-  `Down`/`Up` (and, in app-launcher/winswitch, `Ctrl+j`/`Ctrl+k`) move it
-  too, clamped instead of wrapped. Highlighting alone never accepts -
-  `Enter` or `Space` does (reported 2026-09-09 against winswitch's
-  original pattern: accepting on every `Tab` press without ever letting
-  you cycle through options was confusing, so `Tab` was changed to move
-  the highlight like `Down` and a dedicated accept key was kept instead;
-  the same fix landed in app-launcher and rss-reader immediately after,
-  and in claude-usage on 2026-09-10 once it was noticed to have missed
-  the fix).
-- **GTK pickers** (clipboard-picker, notification-picker, sharing
-  `picker.rs`): `Tab` itself accepts the highlighted suggestion outright,
-  same as `Enter` would; `Ctrl+j`/`Ctrl+k` move the highlight (clamped,
-  not wrapped) without accepting.
+- **QML pickers** (app-launcher, rss-reader, claude-usage, winswitch,
+  clipboard/notification/revit-remote pickers): `Tab` accepts; `Shift+Tab`
+  steps the highlight back (wrapping); `Down`/`Up` (and, in app-launcher/
+  winswitch, `Ctrl+j`/`Ctrl+k`) move it, clamped. winswitch's `Alt+Tab` while
+  locked into search mode is the one place Tab still cycles the highlight
+  (a chord, so it can't be mistaken for a plain accept).
+- **GTK pickers** (sharing `picker.rs`): `Tab` accepts outright;
+  `Ctrl+j`/`Ctrl+k` move the highlight (clamped, not wrapped).
 
 `Space` accepts the highlighted suggestion everywhere the popup is open,
 in both families, alongside whichever of `Tab`/`Enter` already did
@@ -1260,16 +1258,12 @@ as it always did.
 
 - **fzf-native pickers** (focus-picker, claude-history - a nested fzf
   process, not an in-layout widget the picker itself draws and can
-  rebind at will): `Enter` accepts, fzf's own ordinary default; `Tab`
-  moves the highlight down (fzf's stock `toggle+down`, not a custom
-  bind - the "toggle" half is a no-op without `--multi`) and `Space`
-  types a literal space into fzf's *own* query box, neither one
-  repurposed to accept. This family never adopted the other two's
-  "Space also accepts" convention above - there was nothing to add a
-  bind *for*, since accepting was already one keystroke (`Enter`) away
-  and every other key already does something fzf-native and useful
-  (`Space` narrowing further is what Ctrl+Space AND-narrowing, above,
-  builds on directly).
+  rebind at will): the nested `complete>` / `history>` fzf is launched with
+  `--bind tab:accept`, so `Tab` accepts like `Enter`; `Down`/`Up` move the
+  highlight and `Space` types a literal space into fzf's *own* query box
+  (never repurposed to accept: this family has no "Space also accepts" rule -
+  accepting is already one keystroke away, and `Space` narrowing further is
+  what Ctrl+Space AND-narrowing, above, builds on directly).
 
 `Escape` dismisses just the popup, never the picker. In
 a picker where Tab already meant something else while nothing's open
