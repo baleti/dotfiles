@@ -1,5 +1,6 @@
 pragma Singleton
 import QtQuick
+import Quickshell.Hyprland
 
 // Shared open/close state for the app launcher (mod + Super_l). One
 // AppLauncher.qml is instantiated per monitor (shell.qml's Variants); this
@@ -13,12 +14,17 @@ QtObject {
 
     property bool active: false
     property string monitor: ""
+    // Address of the window focused when the launcher opened -- the target of
+    // window actions such as /move-to-workspace (the launcher's own layer
+    // surface takes keyboard focus afterwards).
+    property string windowAddress: ""
 
     function toggle(mon: string): void {
         if (root.active) {
             root.active = false;
         } else {
             root.monitor = mon || "";
+            root.windowAddress = Hyprland.activeToplevel ? String(Hyprland.activeToplevel.address) : "";
             root.active = true;
         }
     }
