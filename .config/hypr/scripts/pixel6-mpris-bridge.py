@@ -16,7 +16,6 @@ No new dependency: dbus-python + PyGObject/GLib are both already installed.
 """
 import json
 import os
-import threading
 import time
 import urllib.parse
 import urllib.request
@@ -314,44 +313,19 @@ class Pixel6Player(dbus.service.Object):
             self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
 
     def _set_volume(self, target):
-        # Android's STREAM_MUSIC is stepped, and the Companion app only exposes
-        # the hardware buttons' one-step volume-up/-down. So walk towards the
-        # target: step, re-read /status (adjustStreamVolume() is synchronous,
-        # unlike seekTo(), so the refetch is already accurate), repeat until
-        # within half a step or the level stops changing. Runs on a worker
-        # thread that always chases the LATEST requested target, so slider
-        # drags (many Set calls) neither block the mainloop nor queue up.
-        self._vol_target = max(0.0, min(1.0, target))
-        if getattr(self, "_vol_busy", False):
+        # Companion app /command/volume-set sets STREAM_MUSIC to the nearest
+        # device step of the fraction. setStreamVolume() is synchronous, so
+        # an immediate /status refetch already reports the real (rounded)
+        # level - unlike seekTo() (see _seek_to_ms).
+        target = max(0.0, min(1.0, target))
+        if command("volume-set", {"ratio": "%.4f" % target}) is None:
             return
-        self._vol_busy = True
-        threading.Thread(target=self._volume_walk, daemon=True).start()
-
-    def _volume_walk(self):
-        try:
-            step = None
-            for _ in range(40):
-                st = fetch_status() or {}
-                cur = float(st.get("volume", self._vol_target))
-                tgt = self._vol_target
-                if abs(tgt - cur) <= (step / 2 if step else 0.001):
-                    break
-                command("volume-up" if tgt > cur else "volume-down")
-                st2 = fetch_status() or {}
-                new = float(st2.get("volume", cur))
-                if new == cur:
-                    break
-                step = abs(new - cur)
-                GLib.idle_add(self._publish_volume, new)
-        finally:
-            self._vol_busy = False
-
-    def _publish_volume(self, level):
+        s = fetch_status()
+        level = float(s["volume"]) if s and "volume" in s else target
         if self._status is not None:
             self._status = dict(self._status, volume=level)
             self._status_mono = time.monotonic()
             self.PropertiesChanged(PLAYER_IFACE, self._player_props(), [])
-        return False
 
     @dbus.service.method(PLAYER_IFACE, in_signature="x")
     def Seek(self, offset):
