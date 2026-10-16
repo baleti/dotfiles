@@ -169,16 +169,20 @@ PanelWindow {
     // moves the window there, and a typed name with no exact match creates
     // a new workspace right after the window's current one.
     readonly property var actionVerbs: ({
-        "/move-to-workspace": "move the focused window to a workspace (typed name may be new)"
+        "/move-to-workspace": "move the focused window to a workspace (typed name may be new)",
+        "/move-workspace": "move the current workspace to just after a chosen one"
     })
-    readonly property var _actionMatch: query.text.match(/^\s*\/move-to-workspace(?:\s+(.*))?$/)
+    readonly property var _actionMatch: query.text.match(/^\s*(\/move-to-workspace|\/move-workspace)(?:\s+(.*))?$/)
     property bool wsPrompt: false
+    // which action the open workspace list serves: "window" | "workspace"
+    property string promptKind: "window"
     readonly property bool actionMode: root.wsPrompt
     readonly property string actionArg: root.wsPrompt ? query.text.trim() : ""
 
     readonly property var workspaceRows: {
         const arg = root.actionArg.toLowerCase();
-        const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0);
+        const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0
+            && !(root.promptKind === "workspace" && w.id === LauncherState.workspaceId));
         list.sort((a, b) => a.id - b.id);
         const out = [];
         let exact = false;
@@ -187,10 +191,10 @@ PanelWindow {
             if (arg && n.toLowerCase().indexOf(arg) < 0) continue;
             if (n.toLowerCase() === arg) exact = true;
             const cnt = w.toplevels ? w.toplevels.values.length : 0;
-            out.push({ ws: true, name: n, target: n, detail: cnt + (cnt === 1 ? " window" : " windows")
+            out.push({ ws: true, name: n, target: n, id: w.id, detail: cnt + (cnt === 1 ? " window" : " windows")
                        + (w.monitor ? " on " + w.monitor.name : ""), entry: { icon: "" } });
         }
-        if (root.actionArg && !exact)
+        if (root.actionArg && !exact && root.promptKind === "window")
             out.push({ ws: true, name: "+ new workspace \"" + root.actionArg + "\"", target: root.actionArg,
                        create: true, detail: "after the current workspace", entry: { icon: "" } });
         return out;
@@ -199,6 +203,23 @@ PanelWindow {
     // Lua string literal (user-typed names must not break out of the quotes).
     function _luaStr(s) {
         return "\"" + String(s).replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"";
+    }
+
+    // Reorder: Hyprland can't renumber, so the current workspace's windows
+    // go to the smallest unused id above the chosen workspace, keeping the
+    // name, and the view follows them.
+    function moveWorkspaceAfter(row) {
+        const cur = LauncherState.workspaceId;
+        if (cur < 0) return;
+        const lua = "local cur = hl.get_workspace(" + cur + ") local name = cur and cur.name or '' "
+            + "local used = {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true end "
+            + "local id = " + row.id + " + 1 while used[id] and id ~= " + cur + " do id = id + 1 end "
+            + "if id == " + cur + " then return end "
+            + "for _, w in ipairs(hl.get_windows()) do if w.workspace.id == " + cur
+            + " then hl.dispatch(hl.dsp.window.move({ workspace = id, window = w, follow = false })) end end "
+            + "hl.dispatch(hl.dsp.workspace.rename({ workspace = id, name = name })) "
+            + "hl.dispatch(hl.dsp.focus({ workspace = id }))";
+        moveProc.exec(["hyprctl", "repl", lua]);
     }
 
     function moveToWorkspace(row) {
@@ -228,7 +249,8 @@ PanelWindow {
         if (root.actionMode)
             return root.workspaceRows;
         if (root._actionMatch)
-            return [{ action: "move-to-workspace", name: "Move window to workspace\u2026",
+            return [{ action: root._actionMatch[1], name: root._actionMatch[1] === "/move-workspace"
+                      ? "Move workspace after\u2026" : "Move window to workspace\u2026",
                       detail: "", entry: { icon: "" } }];
         let rows = root.apps.filter(app => root.parsed.terms.every(t => root._matches(app, t)));
 
@@ -276,13 +298,15 @@ PanelWindow {
         if (app.action) {
             LauncherQueryHistory.record(query.text);
             root.wsPrompt = true;
+            root.promptKind = app.action === "/move-workspace" ? "workspace" : "window";
             query.text = "";
             root.selected = 0;
             return;
         }
         if (app.ws) {
             LauncherQueryHistory.record(query.text);
-            root.moveToWorkspace(app);
+            if (root.promptKind === "workspace") root.moveWorkspaceAfter(app);
+            else root.moveToWorkspace(app);
             root.hide();
             return;
         }
@@ -718,7 +742,7 @@ PanelWindow {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.wsPrompt ? qsTr("move window to workspace   ·   pick or type a new name") : qsTr("search apps   ·   / ")
+                    text: root.wsPrompt ? (root.promptKind === "workspace" ? qsTr("move this workspace after   ·   pick one") : qsTr("move window to workspace   ·   pick or type a new name")) : qsTr("search apps   ·   / ")
                     color: Theme.muted
                     font: query.font
                     visible: query.text.length === 0
