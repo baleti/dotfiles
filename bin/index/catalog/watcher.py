@@ -11,7 +11,7 @@ What inotify cannot see is covered by the periodic jobs: files held open and sti
 and date update when closed), changes made while this was not running, and remote mounts (the Drive poller).
 A kernel queue overflow starts a catalog walk.
 """
-import ctypes, ctypes.util, json, os, select, stat, struct, subprocess, sys, threading, time
+import collections, ctypes, ctypes.util, json, os, select, stat, struct, subprocess, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import catalog
 from catalog import C, HOME
@@ -45,8 +45,8 @@ class LocalSync(catalog.SourceStore):
         size, kind = self._kind(st)
         mtime, keep, gone = int(st.st_mtime), False, []
         for eid, sz, mt in self.db.execute(
-                "SELECT e.id, e.size, e.mtime FROM entries e JOIN entry_sources es ON es.entry_id=e.id "
-                "WHERE e.path=? AND es.source_id=?", (path, self.sid)).fetchall():
+                "SELECT e.id, e.size, e.mtime FROM entries e WHERE e.path=? AND EXISTS "
+                "(SELECT 1 FROM entry_sources es WHERE es.entry_id=e.id AND es.source_id=?)", (path, self.sid)).fetchall():
             if sz == size and mt == mtime:
                 keep = True
             else:
@@ -58,14 +58,15 @@ class LocalSync(catalog.SourceStore):
 
     def del_path(self, path):
         self.drop([r[0] for r in self.db.execute(
-            "SELECT e.id FROM entries e JOIN entry_sources es ON es.entry_id=e.id WHERE e.path=? AND es.source_id=?",
-            (path, self.sid))])
+            "SELECT e.id FROM entries e WHERE e.path=? AND EXISTS "
+            "(SELECT 1 FROM entry_sources es WHERE es.entry_id=e.id AND es.source_id=?)", (path, self.sid))])
         self.touched.add(path)
 
     def delprefix(self, path):
         self.drop([r[0] for r in self.db.execute(
-            "SELECT e.id FROM entries e JOIN entry_sources es ON es.entry_id=e.id WHERE es.source_id=? AND "
-            "(e.path=? OR (e.path>=? AND e.path<?))", (self.sid, path, path + "/", path + "0"))])
+            "SELECT e.id FROM entries e WHERE (e.path=? OR (e.path>=? AND e.path<?)) AND EXISTS "
+            "(SELECT 1 FROM entry_sources es WHERE es.entry_id=e.id AND es.source_id=?)",
+            (path, path + "/", path + "0", self.sid))])
         self.touched.add(path)
 
 class Watcher:
@@ -85,6 +86,10 @@ class Watcher:
         self.overflow = False
         self.full = False         # out of watches: remember, the periodic walk still covers the rest
         self.last_rescan = 0.0
+        self.events = 0
+        self.t = collections.Counter()           # seconds spent per flush phase
+        self.hot = collections.Counter()        # where the events come from (first path components)
+        self.stats_every = float(os.environ.get("WATCHER_STATS", "600"))
 
     def excluded(self, path, name):
         return (path in self.skip or name in self.anywhere
@@ -156,6 +161,8 @@ class Watcher:
         if name and self.excluded(path, name):
             return
         isdir = bool(mask & IN_ISDIR)
+        self.events += 1
+        self.hot["/".join(d.split("/")[:self.hot_depth(d)])] += 1
         if mask & (IN_CREATE | IN_MOVED_TO):
             if isdir:
                 with self.lock:
@@ -172,6 +179,10 @@ class Watcher:
             self.put(d)
         else:                                   # closed after writing / attributes
             self.put(path)
+
+    @staticmethod
+    def hot_depth(d):
+        return 6 if d.startswith(HOME + "/") else 4
 
     def read_loop(self):
         while True:
@@ -216,7 +227,7 @@ class Watcher:
         db = catalog.connect()
         sid = catalog.source_id(db, "live:local", "live")
         db.commit()
-        applied = 0
+        applied, last_stats = 0, time.time()
         while True:
             time.sleep(0.5)
             if self.overflow:
@@ -234,6 +245,7 @@ class Watcher:
             if not structs and not due:
                 continue
             store = LocalSync(db, sid)
+            t_a = time.time()
             try:
                 for kind, path in structs:
                     if kind == "scan":
@@ -243,8 +255,8 @@ class Watcher:
                         store.delprefix(path)
                 for p in due:
                     store.put_path(p)
-                store.flush_fts()
                 db.commit()
+                self.t["db"] += time.time() - t_a
             except Exception as e:
                 db.rollback()
                 log("flush failed, will retry:", repr(e))
@@ -253,10 +265,17 @@ class Watcher:
                     for p in due:
                         self.puts.setdefault(p, [now, now])
                 continue
+            t_e = time.time()
             catalog.deliver(db, store.touched)
+            self.t["deliver"] += time.time() - t_e
             applied += len(store.touched)
-            if applied and int(now) % 600 < 1:
-                log(f"{applied} paths applied so far")
+            if now - last_stats >= self.stats_every:
+                log(f"{self.events} events, {applied} paths applied in {now - last_stats:.0f}s; hottest: "
+                    + ", ".join(f"{k} x{v}" for k, v in self.hot.most_common(8))
+                    + " | seconds: " + ", ".join(f"{k} {v:.1f}" for k, v in self.t.items()))
+                self.t.clear()
+                self.events, applied, last_stats = 0, 0, now
+                self.hot.clear()
 
     def run(self):
         threading.Thread(target=self.flush_loop, daemon=True).start()
