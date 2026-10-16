@@ -544,6 +544,10 @@ struct App {
     history: Vec<String>,
     /// Ctrl+R / F4 popup: open flag, highlighted row, and the query text last recorded
     hist_popup: bool,
+    /// Up/Down in the query box: position in the history (0 = newest) while browsing, the text typed before, and the text last put in the box
+    hist_pos: Option<usize>,
+    hist_draft: String,
+    hist_applied: String,
     hist_sel: usize,
     last_recorded: String,
     /// mime type of the hit the menu / properties were opened for (computed once, on open)
@@ -981,6 +985,9 @@ impl App {
             menu_mime: None,
             history: load_history(),
             hist_popup: false,
+            hist_pos: None,
+            hist_draft: String::new(),
+            hist_applied: String::new(),
             hist_sel: 0,
             last_recorded: String::new(),
             props_mime: String::new(),
@@ -1800,6 +1807,36 @@ impl eframe::App for App {
                 false,
             )
         });
+        // Up / Down in the query box walk the search history like a shell (same list as Ctrl+R / F4);
+        // typing anything resets it. Down with no history walk in progress still moves through the results.
+        let (mut down, mut up) = (down, up);
+        if !self.list_focus && !self.popup && !self.hist_popup && self.trash_pending.is_none() && self.props.is_none()
+            && !ui.input(|i| i.modifiers.ctrl || i.modifiers.shift || i.modifiers.alt)
+        {
+            if self.hist_pos.is_some() && self.query != self.hist_applied { self.hist_pos = None; }
+            let len = self.history.len();
+            let mut set: Option<String> = None;
+            if up && len > 0 {
+                let next = self.hist_pos.map_or(0, |p| p + 1);
+                if next < len {
+                    if self.hist_pos.is_none() { self.hist_draft = self.query.clone(); }
+                    self.hist_pos = Some(next);
+                    set = Some(self.history[len - 1 - next].clone());
+                }
+                up = false;
+            } else if down && self.hist_pos.is_some() {
+                let p = self.hist_pos.unwrap();
+                if p == 0 { self.hist_pos = None; set = Some(self.hist_draft.clone()); }
+                else { self.hist_pos = Some(p - 1); set = Some(self.history[len - p].clone()); }
+                down = false;
+            }
+            if let Some(q) = set {
+                self.hist_applied = q.clone();
+                self.query = q;
+                self.last_change = Instant::now() - Duration::from_millis(200);
+                self.cursor_end = true;
+            }
+        }
         // Esc closes the innermost thing first: menu, then properties, then the window
         if esc && !self.popup {
             if self.menu_at.is_some() { self.menu_at = None; self.menu_hit = None; }
