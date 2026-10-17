@@ -71,7 +71,13 @@ BIND_IP = _env_or_fatal("CLAUDE_AGENTS_BIND_IP")
 PORT = int(os.environ.get("CLAUDE_AGENTS_PORT", "8790"))
 ALLOWED_SUBNET = ipaddress.ip_network(_env_or_fatal("CLAUDE_AGENTS_ALLOWED_SUBNET"))
 
-ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3", "claude4": HOME / ".claude4"}
+ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3", "claude4": HOME / ".claude4", "claude5": HOME / ".claude5"}
+# Accounts 2-4 symlink projects/ to ~/.claude/projects; claude5 has its own
+# real directory, so every distinct one is read (primary first).
+PROJECTS_DIRS = []
+for _d in [PROJECTS_DIR] + [d / "projects" for d in ACCOUNT_DIRS.values()]:
+    if _d.is_dir() and _d.resolve() not in [x.resolve() for x in PROJECTS_DIRS]:
+        PROJECTS_DIRS.append(_d)
 
 CLAUDE_PROC_RE = re.compile(r'(^|/)claude(\s|$)')
 
@@ -232,10 +238,14 @@ def read_proc_cwd(pid):
         return None
 
 
-def cwd_to_project_dir(cwd):
+def cwd_to_project_dir(cwd, dir_key=None):
     if not cwd:
         return None
-    return PROJECTS_DIR / cwd.replace("/", "-")
+    name = cwd.replace("/", "-")
+    own = ACCOUNT_DIRS.get(dir_key, HOME) / "projects" / name
+    if own.is_dir():
+        return own
+    return PROJECTS_DIR / name
 
 
 def owner_account_uuid_of_jsonl(path):
@@ -392,7 +402,7 @@ def scan_live_sessions():
             _record_live(result, session_id, dir_key, pane["pane_id"], "exact")
         else:
             cwd = read_proc_cwd(pid)
-            proj_dir = cwd_to_project_dir(cwd)
+            proj_dir = cwd_to_project_dir(cwd, dir_key)
             if proj_dir and proj_dir.is_dir():
                 pending[str(proj_dir)].append((pane["pane_id"], dir_key))
     for proj_dir_str, group in pending.items():
@@ -442,11 +452,13 @@ def _projects_signature():
     # (plus PROJECTS_DIR itself, so a new subdirectory is caught too) fixes
     # detection without turning this into a full recursive walk.
     try:
-        top_mtime = PROJECTS_DIR.stat().st_mtime
-        sub_mtimes = [d.stat().st_mtime for d in PROJECTS_DIR.iterdir() if d.is_dir()]
+        mtimes = []
+        for root in PROJECTS_DIRS:
+            mtimes.append(root.stat().st_mtime)
+            mtimes += [d.stat().st_mtime for d in root.iterdir() if d.is_dir()]
     except Exception:
         return 0.0
-    return max(sub_mtimes + [top_mtime])
+    return max(mtimes, default=0.0)
 
 
 def PROJECTS_DIR_glob_by_id(session_id):
@@ -455,10 +467,11 @@ def PROJECTS_DIR_glob_by_id(session_id):
     if signature != _jsonl_index_cache["mtime"]:
         idx = {}
         try:
-            for d in PROJECTS_DIR.iterdir():
-                if d.is_dir():
-                    for f in d.glob("*.jsonl"):
-                        idx[f.stem] = f
+            for root in PROJECTS_DIRS:
+                for d in root.iterdir():
+                    if d.is_dir():
+                        for f in d.glob("*.jsonl"):
+                            idx.setdefault(f.stem, f)
         except Exception:
             pass
         _jsonl_index_cache["mtime"] = signature
@@ -2055,11 +2068,7 @@ def list_conversations(account_filter=None):
     live = get_live_sessions()
     history_titles = load_history_titles()
     out = []
-    if not PROJECTS_DIR.is_dir():
-        return out
-    for proj_dir in PROJECTS_DIR.iterdir():
-        if not proj_dir.is_dir():
-            continue
+    for proj_dir in [d for root in PROJECTS_DIRS for d in root.iterdir() if d.is_dir()]:
         for f in proj_dir.glob("*.jsonl"):
             try:
                 meta = dict(conversation_meta(f, history_titles))
