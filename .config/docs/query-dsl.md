@@ -802,6 +802,37 @@ directly after a `//tag` (`//path / /sort dm asc` - the value is the lone
 Photo (`//clip`, `//face`) queries are handled by the photo engine and do
 not group quoted words.
 
+### Quote auto-pairing
+
+Typing a quote completes it, in every picker's search box, so a quoted term
+is never left open by accident (an unterminated quote is only a substring,
+see "Resolution, precisely"):
+
+- after a word, the quote wraps it: `5"` becomes `"5"`, `word"` becomes
+  `"word"`, `title:abc"` becomes `title:"abc"` (the opening quote goes after
+  the `:`), caret after the closing quote;
+- on an empty spot (start of the box, after a space, `:` or `!`) it inserts
+  the pair with the caret between: `"|"`;
+- before a word it wraps that word: `|abc` + `"` becomes `"abc"|`;
+- typing the closing quote over the one that is already there just steps
+  past it (no `""`);
+- a quote that closes an already-open quote is left as typed;
+- backspace never re-pairs.
+
+`'` pairs the same way where it could open a quote (start of a token, or
+right after `:`) but never wraps the word behind it, so an apostrophe in
+`don't` stays text. Implemented in `theme/DslHighlight.qml` (one component,
+so the launcher, winswitch, clipboard, notification, revit-remote, rss-reader
+and claude-usage inputs all get it), `auto_pair()` in the images picker,
+`QueryDsl.autoPair` in the Android app, and for the fzf pickers
+(`focus-picker`, `window-search`, `claude-history`) `~/bin/dsl-autopair`
+bound to fzf's `change` event. fzf exposes no caret position and no `'`
+quoting, so those three only pair `"` typed at the END of the query (the
+usual case) and keep the caret between a fresh pair. The exact-match meaning
+of a closed quote applies to every non-BM25 implementation (the QML
+pickers, `focus-picker`, the Android app); the BM25 pickers keep a quoted
+run as a required phrase.
+
 ## Syntax highlighting
 
 Every search box that implements this DSL colours the **commands** in its own text,

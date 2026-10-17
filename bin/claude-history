@@ -1897,6 +1897,12 @@ def drive():
                                                   suffix=".txt", dir=sdir)
     os.close(history_fd)
     atexit.register(lambda: _rm(history_path))
+    # quote auto-pairing (query-dsl.md "Quoted terms"): fzf's `change` event runs
+    # ~/bin/dsl-autopair, which compares against this state file and rewrites the query
+    state_path = complete_path + ".ap"
+    atexit.register(lambda: _rm(state_path))
+    atexit.register(lambda: _rm(state_path + ".q"))
+    autopair_cmd = f"{shlex.quote(os.path.expanduser('~/bin/dsl-autopair'))} --state {shlex.quote(state_path)} --query={{q}}"
     os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
     client_fd, client_path = tempfile.mkstemp(prefix=f"{SNAP_PREFIX}{os.getpid()}-client-",
                                               suffix=".py", dir=sdir)
@@ -1999,7 +2005,7 @@ def drive():
         "--preview", preview_cmd,
         "--preview-window", "down,50%,border-top,wrap",
         "--bind", f"start:reload:{search_cmd}",
-        "--bind", f"change:reload:{search_cmd}",
+        "--bind", f"change:transform({autopair_cmd})+reload({search_cmd})",
         "--bind", f"result:transform:{resize_on_result}",
         # `result` alone only re-runs this on a filtering change - a
         # terminal resize while sitting on an unchanged query never fired
