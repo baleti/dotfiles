@@ -89,3 +89,21 @@ Everything here is generic code. The private parts are kept outside the repo:
   keys (Esc cancels, Backspace removes, bare letters are refused). Arrows, Enter, Tab, Esc, paging, Delete and
   Shift+arrows are fixed. Colours follow the wallpaper: the picker re-reads `~/.local/state/quickshell/scheme.json`
   when it changes.
+
+## Command line (`search`) and `/chroma`
+
+- **`bin/search`** (symlinked into `~/.local/bin`) asks the search server the same question the picker asks, with the
+  same query language, ordering and view settings: `search montgomer bm3 '!pdf-to-png' .pdf`. Options: `-n`, `-s/--asc`,
+  `-c` (count and summary), `-l`, `--json`, `-0`, `--score`, `--snippets`, `--dotfiles/--no-dotfiles`,
+  `--backup restic|btrfs|all|none`, `--start` (start the server if it is down), `--raw`, `--syntax` (the query
+  language). Exit 0 results / 1 none / 2 server unreachable. Photo results are mapped to real mount paths.
+  `tools/search_cli_check.py` verifies it against the live server (17 checks).
+- **`/chroma words`** is semantic search over the Chroma text indexes (about 1.4M chunks): files whose text means
+  something close to the words, best first, with a score; it takes `//path //mime //name //size`, `/chroma/<index>`
+  for one index, and shows the matching chunks as snippets. The Chroma indexes live in a separate on-demand worker
+  (`photos/chroma_worker.py`, `chroma-search.service`, 127.0.0.1:8766, about 3.5 GB while loaded, exits after 15 idle
+  minutes); the search server starts it on the first `/chroma` query (about 30 s) and the panel refreshes when it
+  is ready. Queries are embedded on the CPU with the ONNX MiniLM model (`photos/minilm_text.py`).
+- **Typing speed**: the name scan is multi-threaded C (`catalog/scan.c`), requests for characters you have typed
+  past are dropped by the server (client id + sequence number), thumbnail workers run at low priority, summaries over
+  500k matches are sampled and shown with a leading `≈`.

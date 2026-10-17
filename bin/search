@@ -1,28 +1,204 @@
 #!/usr/bin/env python3
-"""search: the mod+1 search from the command line, with the same query language and the same results.
+"""search: the mod+1 file search from the command line - same query language, same results, same ordering.
 
-It asks the search server (images-search, 127.0.0.1:8765) the same question the picker asks, so counts, ordering,
-verbs (/show-dotfiles, /show-backup-restic, //ext, //size, //path, /fts ...) and the view settings behave
-identically. Everything after the options is the query, so it may be quoted as one argument or not:
+It asks the search server (images-search) the question the picker asks, so counts, ordering, verbs and the
+view settings behave identically. Everything that is not an option is the query, quoted as one argument or not:
 
     search montgomer bm3 '!pdf-to-png' .pdf          # '!' needs quoting in most shells
     search 'montgomer bm3 !pdf-to-png .pdf' -n 20 -l
-    search -c '//ext .pdf //size >10M'               # only the total and the summary line
-    search --json '/fts dgcl design //mime pdf' -n 5
+    search -c '//ext .pdf //size >10M'               # only the total and the summary (size, dates, kinds)
+    search --json '/fts dgcl design //mime pdf' --snippets -n 5
+    search -l --score '/chroma clash tolerances for BIM coordination //mime pdf'   # semantic, best first
+    search -l --score '/clip brick wall'            # photos by what they show
     search -0 'name //ext .py' | xargs -0 wc -l      # NUL-separated paths for xargs
+    search --no-dotfiles --backup restic 'report //ext .docx'
+    search --syntax                                  # the query language in one page
 
 Exit status: 0 results, 1 none (like grep), 2 the server could not be reached or refused the query.
 """
-import argparse, json, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 PAGE = 1000
+SYNTAX = """QUERY LANGUAGE (identical to the mod+1 picker)
 
-def fetch(server, query, sort, desc, offset, top):
-    url = f"{server}/query?" + urllib.parse.urlencode(
-        {"q": query, "sort": sort, "desc": "1" if desc else "0", "offset": offset, "top": top})
-    with urllib.request.urlopen(url, timeout=300) as r:
-        return json.load(r)
+  words              every word must occur somewhere in the full path, case-insensitive:  montgomer bm3
+  !word              leave out paths containing it:  !pdf-to-png        "a b"  a phrase with a space
+  //name X           file name contains X                //path X   path contains X (gdrive/x = the Drive, ~/x = home)
+  //ext .pdf         exact extension (repeat to OR)      //mime K    kind: image pdf text code document audio video archive ebook
+  //size >5M <200K   file size (K M G T)                //dm 2024-06   modified in that month;  //dm >2015-06  after;  //dm <2020  before
+  !//tag value       negates a tag, e.g.  !//ext .tmp
 
+VERBS (anywhere in the query)
+
+  /fts [words]       full-text search inside files (Recoll: AND, OR, "phrase", -term), narrowed by //path //mime //name //size;
+                     /fts/<index> searches one index (a unique prefix is enough, e.g. /fts/part3)
+  /chroma words      semantic search: files whose TEXT MEANS something close to the words (MiniLM embeddings over the same
+                     content indexes), best first with a score; takes //path //mime //name //size too; /chroma/<index> for one.
+                     The first use starts the worker (about 30 s); the total is what the nearest chunks cover, not every file.
+  /clip words        photos matching what they show      /face name   photos showing a registered person
+                     (--score shows the match score; --snippets prints the matching passages for /fts and /chroma)
+  /s FIELD [asc|desc]   sort by name, path, size, date-modified, extension, depth (chain with /, e.g. /s size/name);  /rv  reverse
+  /show-dotfiles  /hide-dotfiles                         names starting with a dot
+  /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
+
+The same settings exist as options: --dotfiles/--no-dotfiles, --backup restic|btrfs|all|none, -s/--sort, --asc.
+Backup results have real paths under /mnt/backup-restic-host3/ids/<id>/... and <subvolume>/.snapshots/<n>/snapshot/...
+"""
+
+SORT_FIELDS = [("name", "name"), ("path", "path"), ("size", "size"), ("date-modified", "date"),
+               ("extension", "ext"), ("depth", "depth")]
+
+# ---- a faithful port of the picker's /s and /rv handling (images/src/main.rs parse_sort) --------------------------
+def tokenize(q):
+    out, cur, inq = [], [], False
+    for ch in q:
+        if ch == '"':
+            inq = not inq
+            cur.append(ch)
+        elif ch.isspace() and not inq:
+            if cur:
+                out.append("".join(cur)); cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        out.append("".join(cur))
+    return out
+
+def resolve_sort_field(seg):
+    seg = seg.lower()
+    if not seg:
+        return None
+    if seg in ("dm", "date"):
+        return "date"
+    for name, key in SORT_FIELDS:
+        if name == seg:
+            return key
+    hits = [key for name, key in SORT_FIELDS if seg in name]
+    return hits[0] if len(hits) == 1 else None
+
+def sort_direction(tok):
+    t = tok.lower()
+    if not t:
+        return None
+    asc, desc = t in "ascending", t in "descending"
+    if asc and not desc:
+        return False
+    if desc and not asc:
+        return True
+    return None
+
+def parse_sort(q):
+    """(query without /s and /rv, sort keys, descending?, explicit?)"""
+    toks, rest, keys, desc, reverse, explicit, i = tokenize(q), [], [], None, False, False, 0
+    while i < len(toks):
+        t = toks[i]; i += 1
+        if t in ("/rv", "/reverse"):
+            reverse = True
+            continue
+        if t.startswith("//") or t.startswith("!//"):      # a //tag owns the next token, whatever it looks like
+            rest.append(t)
+            if i < len(toks):
+                rest.append(toks[i]); i += 1
+            continue
+        if t.startswith("/sort"):
+            chain = t[5:]
+        elif t.startswith("/s"):
+            chain = t[2:]
+        else:
+            rest.append(t)
+            continue
+        if chain == "":
+            path = None
+        elif chain.startswith("/"):
+            path = chain[1:]
+        else:
+            rest.append(t)
+            continue
+        dir_first = None
+        if path is None and i < len(toks) and not toks[i].startswith("/"):
+            if resolve_sort_field(toks[i]) is None:
+                d = sort_direction(toks[i])
+                if d is not None:
+                    dir_first = d; i += 1
+            if i < len(toks) and not toks[i].startswith("/"):
+                path = toks[i]; i += 1
+        segs = [resolve_sort_field(p) for p in path.split("/")] if path is not None else []
+        direction = dir_first
+        if i < len(toks):
+            d = sort_direction(toks[i])
+            if d is not None:
+                i += 1; direction = d
+        if segs and all(x is not None for x in segs):
+            if direction is not None:
+                desc = direction
+            explicit = True
+            for k in segs:
+                if k not in keys:
+                    keys.append(k)
+    desc_v = True if not keys else (desc if desc is not None else False)
+    if not keys:
+        keys.append("date")
+    if reverse:
+        desc_v = not desc_v
+    return " ".join(rest), keys, desc_v, explicit or reverse
+
+# ---- paths ---------------------------------------------------------------------------------------------------------
+_remotes = None
+
+def local_path(remote):
+    """Photo results come as rclone paths (gdrive-crypt:photos/x.jpg); give the real path under the mount."""
+    global _remotes
+    if remote.startswith("/") or ":" not in remote:
+        return remote
+    if _remotes is None:
+        _remotes = []
+        try:
+            cfg = json.load(open(os.path.expanduser("~/.config/indexes/photos.json")))
+            _remotes = [(r["remote"], os.path.expanduser(r["mount"])) for r in cfg.get("catalog", {}).get("rclone", [])]
+        except (OSError, ValueError, KeyError):
+            pass
+        if not _remotes:
+            _remotes = [("gdrive-crypt:", os.path.expanduser("~/gdrive-rclone-crypt"))]
+    for prefix, mount in _remotes:
+        if remote.startswith(prefix):
+            return mount.rstrip("/") + "/" + remote[len(prefix):].lstrip("/")
+    return remote
+
+# ---- server --------------------------------------------------------------------------------------------------------
+class ServerDown(Exception):
+    pass
+
+def get(server, path, params, timeout=300):
+    url = f"{server}{path}?" + urllib.parse.urlencode(params)
+    last = None
+    for attempt in range(2):                      # one retry: the server may have just restarted
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"the server answered {e.code} {e.reason}")
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            last = e
+            time.sleep(0.5)
+    raise ServerDown(str(getattr(last, "reason", last)))
+
+def fetch(server, query, keys, desc, offset, top):
+    return get(server, "/query", {"q": query, "sort": ",".join(keys), "desc": "1" if desc else "0",
+                                  "offset": offset, "top": top})
+
+def start_server(server):
+    print("search: the server is not running; starting images-search (about 30 s) ...", file=sys.stderr)
+    subprocess.run(["systemctl", "--user", "start", "images-search.service"], check=False)
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            get(server, "/ver", {}, timeout=3)
+            return True
+        except (ServerDown, RuntimeError):
+            time.sleep(2)
+    return False
+
+# ---- output --------------------------------------------------------------------------------------------------------
 def human(n):
     if n is None:
         return "-"
@@ -45,50 +221,115 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("\n\n", 1)[1])
     ap.add_argument("query", nargs="*", help="the query (empty: the newest files)")
-    ap.add_argument("-n", "--limit", type=int, default=50, help="rows to print (default 50, 0 = all)")
-    ap.add_argument("-s", "--sort", default="date", help="date (default), name, size, path, ext, depth, or a,b list")
-    ap.add_argument("--asc", action="store_true", help="oldest / smallest / first first (default: newest first)")
-    ap.add_argument("-c", "--count", action="store_true", help="print only the summary line (count, size, dates, kinds)")
-    ap.add_argument("-l", "--long", action="store_true", help="tab-separated: size, modified, path")
-    ap.add_argument("--json", action="store_true", help="one JSON object per result line")
-    ap.add_argument("-0", dest="nul", action="store_true", help="separate paths with NUL, for xargs -0")
-    ap.add_argument("-q", "--quiet", action="store_true", help="no summary line on stderr")
-    ap.add_argument("--server", default="http://127.0.0.1:8765", help="search server (default %(default)s)")
+    sel = ap.add_argument_group("what to return")
+    sel.add_argument("-n", "--limit", type=int, default=50, help="rows to print (default 50, 0 = all)")
+    sel.add_argument("-s", "--sort", default=None, help="date (default), name, size, path, extension, depth; a/b chains keys")
+    sel.add_argument("--asc", action="store_true", help="oldest / smallest / first first (default: newest first)")
+    sel.add_argument("--dotfiles", dest="dotfiles", action="store_true", default=None, help="include names starting with a dot")
+    sel.add_argument("--no-dotfiles", dest="dotfiles", action="store_false", help="leave them out")
+    sel.add_argument("--backup", choices=["restic", "btrfs", "all", "none"], help="include / exclude backup copies")
+    out = ap.add_argument_group("output")
+    out.add_argument("-c", "--count", action="store_true", help="only the summary: count, size, dates, kinds")
+    out.add_argument("-l", "--long", action="store_true", help="tab-separated: size, modified, path")
+    out.add_argument("--json", action="store_true", help="JSON: one object per result (with -c: one summary object)")
+    out.add_argument("-0", dest="nul", action="store_true", help="separate paths with NUL, for xargs -0")
+    out.add_argument("--score", action="store_true", help="with -l: a leading score column (/clip, /face)")
+    out.add_argument("--snippets", action="store_true", help="for /fts: the matching passages of each result (up to 50 rows)")
+    out.add_argument("--raw", action="store_true", help="paths exactly as the server returns them (no mount mapping)")
+    out.add_argument("-q", "--quiet", action="store_true", help="no summary line on stderr")
+    srv = ap.add_argument_group("server")
+    srv.add_argument("--server", default=os.environ.get("SEARCH_SERVER", "http://127.0.0.1:8765"),
+                     help="search server (default %(default)s, or $SEARCH_SERVER)")
+    srv.add_argument("--start", action="store_true", help="start images-search if it is not running, and wait")
+    srv.add_argument("--syntax", action="store_true", help="print the query language and exit")
     a = ap.parse_args()
-    query = " ".join(a.query)
+    if a.syntax:
+        print(SYNTAX)
+        return 0
+
+    # query + sort: the /s and /rv verbs win over the options, as in the picker
+    query, keys, desc, explicit = parse_sort(" ".join(a.query))
+    if not explicit:
+        if a.sort:
+            keys = [k for k in (resolve_sort_field(p) for p in a.sort.split("/")) if k] or ["date"]
+            desc = not a.asc and keys == ["date"]
+        elif a.asc:
+            desc = False
+    verbs = []
+    if a.dotfiles is not None:
+        verbs.append("/show-dotfiles" if a.dotfiles else "/hide-dotfiles")
+    if a.backup:
+        verbs.append({"restic": "/show-backup-restic", "btrfs": "/show-backup-btrfs", "all": "/show-backup", "none": "/hide-backup"}[a.backup])
+    query = " ".join([query] + verbs).strip()
+
     t0 = time.time()
     try:
-        first = fetch(a.server, query, a.sort, not a.asc, 0, 1 if a.count else min(PAGE, a.limit or PAGE))
-    except (urllib.error.URLError, OSError) as e:
-        print(f"search: cannot reach the search server at {a.server}: {e}", file=sys.stderr)
+        try:
+            first = fetch(a.server, query, keys, desc, 0, 1 if a.count else min(PAGE, a.limit or PAGE))
+        except ServerDown:
+            if not (a.start and start_server(a.server)):
+                raise
+            first = fetch(a.server, query, keys, desc, 0, 1 if a.count else min(PAGE, a.limit or PAGE))
+    except ServerDown as e:
+        print(f"search: cannot reach the search server at {a.server} ({e}).\n"
+              f"        start it with:  systemctl --user start images-search   (or use --start)", file=sys.stderr)
         return 2
-    except ValueError as e:
-        print(f"search: unexpected reply from the server: {e}", file=sys.stderr)
+    except (RuntimeError, ValueError) as e:
+        print(f"search: {e}", file=sys.stderr)
         return 2
     for err in first.get("errors") or []:
         print(f"search: {err}", file=sys.stderr)
     count, stats = first["count"], first.get("stats") or {}
     if a.count:
-        print(summary(count, stats))
+        if a.json:
+            print(json.dumps({"query": query, "count": count, "size": stats.get("size"), "approximate": bool(stats.get("approx")),
+                              "oldest": stats.get("dmin"), "newest": stats.get("dmax"),
+                              "kinds": {k: n for k, n in stats.get("kinds", [])}}))
+        else:
+            print(summary(count, stats))
         return 0 if count else 1
     want = count if not a.limit else min(a.limit, count)
     rows, page = list(first["results"]), first
-    while len(rows) < want:
-        page = fetch(a.server, query, a.sort, not a.asc, len(rows), min(PAGE, want - len(rows)))
-        if not page["results"]:
-            break
-        rows += page["results"]
-    out = sys.stdout
+    try:
+        while len(rows) < want:
+            page = fetch(a.server, query, keys, desc, len(rows), min(PAGE, want - len(rows)))
+            if not page["results"]:
+                break
+            rows += page["results"]
+    except (ServerDown, RuntimeError, ValueError) as e:
+        print(f"search: lost the server while paging: {e}", file=sys.stderr)
+        return 2
+    rows = rows[:want]
+    snippets = {}
+    if a.snippets:
+        if len(rows) > 50:
+            print("search: --snippets is limited to the first 50 rows", file=sys.stderr)
+        for r in rows[:50]:
+            try:
+                snippets[r["remote"]] = get(a.server, "/snippets", {"remote": r["remote"], "q": query}, timeout=90).get("snippets") or []
+            except (ServerDown, RuntimeError, ValueError):
+                snippets[r["remote"]] = []
     end = "\0" if a.nul else "\n"
     try:
-        for r in rows[:want]:
+        for r in rows:
+            path = r["remote"] if a.raw else local_path(r["remote"])
             if a.json:
-                out.write(json.dumps({"path": r["remote"], "size": r.get("size"), "mtime": r.get("mtime")}) + "\n")
+                o = {"path": path, "size": r.get("size"), "mtime": r.get("mtime")}
+                if r.get("score") is not None:
+                    o["score"] = r["score"]
+                if a.snippets:
+                    o["snippets"] = [{"page": s.get("page"), "text": s.get("text")} for s in snippets.get(r["remote"], [])]
+                sys.stdout.write(json.dumps(o) + "\n")
             elif a.long:
-                out.write(f"{r.get('size') if r.get('size') is not None else '-'}\t{r.get('mtime') or '-'}\t{r['remote']}\n")
+                score = f"{r['score']:.4f}\t" if a.score and r.get("score") is not None else ("-\t" if a.score else "")
+                sys.stdout.write(f"{score}{r['size'] if r.get('size') is not None else '-'}\t{r.get('mtime') or '-'}\t{path}\n")
             else:
-                out.write(r["remote"] + end)
-        out.flush()
+                sys.stdout.write(path + end)
+            if a.snippets and not a.json:
+                for s in snippets.get(r["remote"], [])[:3]:
+                    page_no = f"p.{s['page']}: " if s.get("page") is not None else ""
+                    sys.stdout.write(f"    {page_no}{' '.join((s.get('text') or '').split())}\n")
+        sys.stdout.flush()
     except BrokenPipeError:
         pass
     if not a.quiet and sys.stderr.isatty():

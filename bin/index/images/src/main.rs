@@ -211,7 +211,8 @@ fn query_terms(q: &str) -> Vec<String> {
     let mut skip_value = false;
     for tok in tokenize(q) {
         let tok = tok.as_str();
-        if tok == "/fts" || tok == "/full-text-search" { continue; }
+        if tok == "/fts" || tok == "/full-text-search" || tok == "/chroma" || tok == "/semantic"
+            || tok.starts_with("/show-") || tok.starts_with("/hide-") { continue; }
         // a negated term ("!word", "!//tag value") is something the results must NOT have: nothing to highlight
         if let Some(neg) = tok.strip_prefix('!') {
             if neg.starts_with("//") || neg == "/clip" || neg == "/face" { skip_value = true; }
@@ -230,7 +231,9 @@ fn query_terms(q: &str) -> Vec<String> {
 /// the images picker's verbs, `/verb/via`, and `//tag`. Quoted runs, a `//tag`'s value and
 /// anything else that merely starts with `/` (a path such as /mnt/x) are not commands.
 fn command_spans(q: &str) -> Vec<(usize, usize)> {
-    const VERBS: [&str; 7] = ["fts", "full-text-search", "clip", "face", "s", "sort", "rv"];
+    const VERBS: [&str; 17] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort", "rv",
+        "show-dotfiles", "hide-dotfiles", "show-backup", "hide-backup", "show-backup-restic", "hide-backup-restic",
+        "show-backup-btrfs", "hide-backup-btrfs"];
     const REVERSE: &str = "reverse";
     const TAGS: [&str; 7] = ["name", "path", "size", "dm", "mime", "ext", "file"];
     let b = q.as_bytes();
@@ -544,7 +547,7 @@ fn fetch_snippets(remote: &str, q: &str) -> Result<Vec<Snip>, String> {
 
 /// True for a `/fts` (full-text search) query: those results get a snippet preview pane.
 fn is_fts(q: &str) -> bool {
-    ["/fts", "/full-text-search"].iter().any(|v| {
+    ["/fts", "/full-text-search", "/chroma", "/semantic"].iter().any(|v| {
         q.strip_prefix(v).map_or(false, |r| r.is_empty() || r.starts_with('/') || r.starts_with(char::is_whitespace))
     })
 }
@@ -570,6 +573,7 @@ struct App {
     last_refresh: Instant,
     settings: Settings,
     settings_open: bool,
+    appmenu: Arc<AppMenu>,
     keys: Keymap,
     /// shortcut being rebound in the settings window: (action, index of the chord, or the number of chords to add one)
     rebind: Option<(&'static str, usize)>,
@@ -717,8 +721,9 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 13] = [
+        const VERBS: [(&str, &str); 14] = [
             ("/fts ", "full-text search over every content index: /fts dgcl design //mime pdf"),
+            ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
             ("/sort ", "order the results by a field, e.g. /s size desc"),
@@ -986,6 +991,68 @@ fn fetch_facets() -> FacetsReply {
 }
 
 /// The server's data version (it changes whenever files appear, change or vanish in the catalog).
+/// One entry of the picker's menu for the global menu.
+#[derive(Clone)]
+struct MenuEntry { id: String, label: String, checked: Option<bool> }
+
+/// The picker's menu for the desktop's global menu (mod+a, ~/.config/hypr/scripts/appmenu-atspi.py). The usual way,
+/// an accessible menu bar over AT-SPI, cannot start here: AccessKit's Linux backend waits for the accessibility
+/// bus property `ScreenReaderEnabled`, which the installed at-spi2-core no longer has. So the picker serves the
+/// menu itself on a unix socket named after its process id, `$XDG_RUNTIME_DIR/appmenu/<pid>.sock`, one JSON line
+/// per request: {"cmd":"menu"} -> {"title":..,"items":[{"id","label","checked"}]}, {"cmd":"activate","id":..} -> {"ok":true}.
+#[derive(Default)]
+struct AppMenu {
+    items: std::sync::Mutex<Vec<MenuEntry>>,
+    pending: std::sync::Mutex<Vec<String>>,
+    ctx: std::sync::Mutex<Option<egui::Context>>,
+}
+
+fn appmenu_socket_path() -> PathBuf {
+    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc_getuid() }));
+    PathBuf::from(dir).join("appmenu").join(format!("{}.sock", std::process::id()))
+}
+
+extern "C" { #[link_name = "getuid"] fn libc_getuid() -> u32; }
+
+fn serve_appmenu(menu: Arc<AppMenu>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let path = appmenu_socket_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    }
+    let _ = std::fs::remove_file(&path);
+    let Ok(listener) = std::os::unix::net::UnixListener::bind(&path) else { return };
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let menu = menu.clone();
+            std::thread::spawn(move || {
+                let _ = conn.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut line = String::new();
+                if BufReader::new((&conn).take(4096)).read_line(&mut line).is_err() { return; }
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                let reply = match req["cmd"].as_str() {
+                    Some("menu") => {
+                        let items: Vec<serde_json::Value> = menu.items.lock().map(|i| i.iter().map(|e| serde_json::json!({
+                            "id": e.id, "label": e.label, "checked": e.checked })).collect()).unwrap_or_default();
+                        serde_json::json!({ "title": "Search files", "items": items })
+                    }
+                    Some("activate") => {
+                        if let Some(id) = req["id"].as_str() {
+                            if let Ok(mut p) = menu.pending.lock() { p.push(id.to_string()); }
+                            if let Ok(c) = menu.ctx.lock() { if let Some(c) = c.as_ref() { c.request_repaint(); } }
+                        }
+                        serde_json::json!({ "ok": true })
+                    }
+                    _ => serde_json::json!({ "error": "unknown command" }),
+                };
+                let mut conn = conn;
+                let _ = writeln!(conn, "{reply}");
+            });
+        }
+    });
+}
+
 /// View settings, shared with the search server through ~/.config/indexes/picker-settings.json
 /// (a verb in the query overrides them for that search: /show-dotfiles /hide-dotfiles /show-backup[-restic|-btrfs] /hide-backup[-...]).
 #[derive(Clone, Copy, PartialEq)]
@@ -1233,6 +1300,7 @@ impl App {
             wake: cc.egui_ctx.clone(),
             settings: Settings::load(),
             settings_open: false,
+            appmenu: { let m = Arc::new(AppMenu::default()); serve_appmenu(m.clone()); m },
             keys: Keymap::load(),
             rebind: None,
             rebind_msg: String::new(),
@@ -1335,51 +1403,37 @@ impl App {
         for p in pages { self.request_page(p); }
     }
 
-    /// The picker's menu for the global menu (mod+a -> ~/.config/hypr/scripts/appmenu-atspi.py): an accessible menu bar
-    /// with Settings and the view toggles, exposed through AccessKit (AT-SPI). Off-screen and zero-sized, so it
-    /// never shows or changes the layout; it only exists while an assistive client has the tree switched on, and an
-    /// AT-SPI "click" on an item arrives here as a click on that widget.
-    fn a11y_menu(&mut self, ui: &mut egui::Ui) {
-        use egui::accesskit::{Role, Toggled};
-        if ui.ctx().accesskit_node_builder(ui.id(), |_| ()).is_none() {
-            return;
+    /// Publishes the picker's menu for the global menu (mod+a) and runs what it picks: the entries are refreshed here
+    /// every frame, and activations that arrived on the menu socket (see AppMenu) are carried out on this thread.
+    fn sync_appmenu(&mut self, ctx: &egui::Context) {
+        if self.appmenu.ctx.lock().map(|c| c.is_none()).unwrap_or(false) {
+            *self.appmenu.ctx.lock().unwrap() = Some(ctx.clone());
         }
-        let mut open_settings = false;
-        let mut toggled: Option<&'static str> = None;
-        let (dots, restic, btrfs) = (self.settings.show_dotfiles, self.settings.show_backup_restic, self.settings.show_backup_btrfs);
         let settings_key = self.keys.chords("settings").first().map(|c| c.label()).unwrap_or_default();
-        let off = egui::Rect::from_min_size(egui::pos2(-50.0, -50.0), egui::Vec2::ZERO);
-        ui.scope_builder(egui::UiBuilder::new().id_salt("a11y_menubar").max_rect(off), |ui| {
-            ui.ctx().accesskit_node_builder(ui.unique_id(), |n| n.set_role(Role::MenuBar));
-            ui.scope_builder(egui::UiBuilder::new().id_salt("a11y_menu_search"), |ui| {
-                ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
-                    n.set_role(Role::Menu);
-                    n.set_label("Search files");
-                });
-                let mut item = |ui: &mut egui::Ui, label: String, check: Option<bool>| -> bool {
-                    let r = ui.allocate_response(egui::Vec2::ZERO, egui::Sense::click());
-                    ui.ctx().accesskit_node_builder(r.id, |n| {
-                        n.set_role(if check.is_some() { Role::MenuItemCheckBox } else { Role::MenuItem });
-                        n.set_label(label);
-                        if let Some(c) = check { n.set_toggled(if c { Toggled::True } else { Toggled::False }); }
-                    });
-                    r.clicked()
-                };
-                if item(ui, format!("Settings… ({settings_key})"), None) { open_settings = true; }
-                if item(ui, "Show dotfiles".into(), Some(dots)) { toggled = Some("dotfiles"); }
-                if item(ui, "Show restic backups".into(), Some(restic)) { toggled = Some("restic"); }
-                if item(ui, "Show btrfs snapshots".into(), Some(btrfs)) { toggled = Some("btrfs"); }
-            });
-        });
-        if open_settings { self.settings_open = true; }
-        if let Some(t) = toggled {
-            match t {
-                "dotfiles" => self.settings.show_dotfiles = !self.settings.show_dotfiles,
-                "restic" => self.settings.show_backup_restic = !self.settings.show_backup_restic,
-                _ => self.settings.show_backup_btrfs = !self.settings.show_backup_btrfs,
+        let entry = |id: &str, label: String, checked: Option<bool>| MenuEntry { id: id.into(), label, checked };
+        if let Ok(mut items) = self.appmenu.items.lock() {
+            *items = vec![
+                entry("settings", format!("Settings… ({settings_key})"), None),
+                entry("dotfiles", "Show dotfiles".into(), Some(self.settings.show_dotfiles)),
+                entry("restic", "Show restic backups".into(), Some(self.settings.show_backup_restic)),
+                entry("btrfs", "Show btrfs snapshots".into(), Some(self.settings.show_backup_btrfs)),
+            ];
+        }
+        let pending: Vec<String> = self.appmenu.pending.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
+        for id in pending {
+            match id.as_str() {
+                "settings" => self.settings_open = true,
+                "dotfiles" | "restic" | "btrfs" => {
+                    match id.as_str() {
+                        "dotfiles" => self.settings.show_dotfiles = !self.settings.show_dotfiles,
+                        "restic" => self.settings.show_backup_restic = !self.settings.show_backup_restic,
+                        _ => self.settings.show_backup_btrfs = !self.settings.show_backup_btrfs,
+                    }
+                    self.settings.save(&self.keys);
+                    self.send_query();
+                }
+                _ => {}
             }
-            self.settings.save(&self.keys);
-            self.send_query();
         }
     }
 
@@ -2515,7 +2569,7 @@ impl eframe::App for App {
             }
             if !open { self.settings_open = false; self.rebind = None; }
         }
-        self.a11y_menu(ui);
+        self.sync_appmenu(&ctx);
         if let Some(idx) = self.props {
             match self.hit_now(idx) {
                 None => self.props = None,
@@ -2972,7 +3026,9 @@ fn main() -> eframe::Result {
             .with_always_on_top(),
         ..Default::default()
     };
-    eframe::run_native("images", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    let result = eframe::run_native("images", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))));
+    let _ = std::fs::remove_file(appmenu_socket_path());
+    result
 }
 
 #[cfg(test)]
@@ -3009,6 +3065,8 @@ mod highlight_tests {
     fn only_real_commands() {
         assert_eq!(words("/mnt/host1-backups/office/bm3/monier/01 WIP/"), Vec::<&str>::new());
         assert_eq!(words("/fts part3-books cdm"), vec!["/fts"]);
+        assert_eq!(words("/chroma/hwo digital twin //mime pdf"), vec!["/chroma/hwo", "//mime"]);
+        assert_eq!(words("report /hide-dotfiles /show-backup-restic"), vec!["/hide-dotfiles", "/show-backup-restic"]);
         assert_eq!(words("/fts/part3 cdm //mime pdf /s size"), vec!["/fts/part3", "//mime", "/s"]);
         assert_eq!(words("//path /etc /sort"), vec!["//path", "/sort"]);
         assert_eq!(words("!//path /x \"/fts no\" /rv"), vec!["//path", "/rv"]);

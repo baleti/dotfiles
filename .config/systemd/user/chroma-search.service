@@ -1,0 +1,9 @@
+[Unit]
+Description=Chroma semantic text search worker for /chroma (starts on demand, exits when idle)
+
+[Service]
+WorkingDirectory=%h/bin/index/photos
+ExecStart=%h/.cache/indexes/venv/bin/python %h/bin/index/photos/chroma_worker.py
+Environment=CHROMA_WORKER_IDLE=900
+MemoryMax=8G
+Nice=5
