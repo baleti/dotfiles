@@ -1,10 +1,12 @@
 [Unit]
-Description=Refresh the local file-name catalog regularly
+Description=Nightly safety-net walk of the local file-name catalog (live changes come from the fanotify watcher)
 
 [Timer]
-OnBootSec=5min
-OnUnitInactiveSec=30min
-RandomizedDelaySec=60
+# once after every boot (changes made while the machine was off), and nightly; Persistent runs a missed night at the next start
+OnBootSec=10min
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=15min
+Persistent=true
 
 [Install]
 WantedBy=timers.target

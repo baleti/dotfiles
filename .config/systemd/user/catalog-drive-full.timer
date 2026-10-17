@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily full Google Drive listing for the file-name catalog
+Description=Weekly full Google Drive listing for the file-name catalog (the changes poll does the daily work)
 
 [Timer]
-OnCalendar=*-*-* 04:20:00
+OnCalendar=Sun *-*-* 04:20:00
 RandomizedDelaySec=5min
 Persistent=true
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Full Google Drive listing for the file-name catalog (safety net behind the changes poll)
+Description=Full Google Drive listing for the file-name catalog (weekly safety net behind the changes poll)
 
 [Service]
 Type=oneshot
