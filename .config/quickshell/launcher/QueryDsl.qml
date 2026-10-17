@@ -62,8 +62,8 @@ QtObject {
     // A scoped value typed as path:"5" / path:'5' -> { v, quoted }.
     function unquoteValue(v) {
         const c = v.charAt(0);
-        if (c !== '"' && c !== "'") return { v: v, quoted: false };
-        return { v: v.slice(1, v.length > 1 && v.charAt(v.length - 1) === c ? -1 : undefined), quoted: true };
+        if ((c !== '"' && c !== "'") || v.length < 2 || v.charAt(v.length - 1) !== c) return { v: v, quoted: false };
+        return { v: v.slice(1, -1), quoted: true };
     }
 
     function tokenize(text) {
@@ -81,8 +81,8 @@ QtObject {
             if (text[i] === "!") { neg = true; i++; }
             if (text[i] === '"' || text[i] === "'") {
                 const end = text.indexOf(text[i], i + 1);
-                if (end < 0) { out.push({ q: true, neg: neg, v: text.slice(i + 1) }); break; }
-                out.push({ q: true, neg: neg, v: text.slice(i + 1, end) });
+                if (end < 0) { out.push({ q: true, closed: false, neg: neg, v: text.slice(i + 1) }); break; }
+                out.push({ q: true, closed: true, neg: neg, v: text.slice(i + 1, end) });
                 i = end + 1;
             } else {
                 let j = i;
@@ -182,7 +182,7 @@ QtObject {
                 const t = toks[k];
                 const midTyping = !t.q && t.v[0] === "/" && root.isVerbPrefix(t.v.slice(1));
                 if (!midTyping && t.v.length > 0)
-                    res.terms.push({ text: t.v.toLowerCase(), quoted: t.q, neg: !!t.neg });
+                    res.terms.push({ text: t.v.toLowerCase(), quoted: t.q && t.closed, neg: !!t.neg });
                 k++;
                 continue;
             }
@@ -201,7 +201,7 @@ QtObject {
                 if (verb === "/fv") {
                     if (k < toks.length && !root.startsCommand(toks[k])) {
                         R.terms.push({ field: via, value: toks[k].v.toLowerCase(),
-                                         quoted: toks[k].q,
+                                         quoted: toks[k].q && toks[k].closed,
                                          neg: verbNeg || !!toks[k].neg });
                         k++;
                     } else {
@@ -281,11 +281,11 @@ QtObject {
                 res.terms.push({
                     field: a0.slice(0, colon).toLowerCase(),
                     value: root.unquoteValue(a0.slice(colon + 1)).v.toLowerCase(),
-                    quoted: args[0].q || root.unquoteValue(a0.slice(colon + 1)).quoted,
+                    quoted: (args[0].q && args[0].closed) || root.unquoteValue(a0.slice(colon + 1)).quoted,
                     neg: neg
                 });
             } else {
-                res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q, neg: neg });
+                res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q && args[0].closed, neg: neg });
             }
         } else if (verb === "/s") {
             // Space form: single-key only, no chaining (see the via form
