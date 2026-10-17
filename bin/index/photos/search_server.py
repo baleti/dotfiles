@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
+import base64, collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -85,25 +85,35 @@ def is_subsequence(frag, name):
     it = iter(name)
     return all(c in it for c in frag)
 
-def fts_matches(terms, confs, cap=5000):
-    """Paths whose contents match a Recoll query, from the given content indexes, with sizes (at most `cap` per index)."""
+FTS_CAP = 1000000          # per index; Recoll's slice is cheap, and a lower cap silently truncates counts
+
+def fts_matches(terms, confs, cap=FTS_CAP):
+    """Paths whose contents match a Recoll query, from the given content indexes, with sizes and mtimes, in relevance order."""
     key = (terms, tuple(confs), cap)
     with _fts_lock:
         if key in _fts_cache:
             return _fts_cache[key]
     rows, seen = [], set()
     for conf in confs:
-        out = subprocess.run(["recollq", "-c", conf, "-n", f"0-{cap}", terms], capture_output=True, text=True).stdout
+        # "--": a query that starts with -term must not be read as a recollq option; -F gives base64 fields on one line
+        out = subprocess.run(["recollq", "-c", conf, "-n", f"0-{cap}", "-F", "url fbytes mtime", "--", terms],
+                             capture_output=True, text=True).stdout
         for line in out.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 4 or not parts[1].startswith("[file://"):
+            parts = line.split()
+            if len(parts) != 3:
                 continue
-            path = config.to_local(urllib.parse.unquote(parts[1][len("[file://"):-1]))
+            try:
+                url, size, mtime = (base64.b64decode(p).decode("utf-8", "replace") for p in parts)
+            except ValueError:
+                continue
+            if not url.startswith("file://"):
+                continue
+            path = config.to_local(url[len("file://"):])           # Recoll writes plain paths into file:// urls, not percent-encoded ones
             if path in seen:
                 continue
             seen.add(path)
-            size = int(parts[3]) if parts[3].isdigit() else None
-            rows.append({"remote": path, "size": size, "mtime": None})
+            rows.append({"remote": path, "size": int(size) if size.isdigit() else None,
+                         "mtime": int(mtime) if mtime.isdigit() and int(mtime) > 0 else None})
     with _fts_lock:
         _fts_cache.clear()
         _fts_cache[key] = rows
@@ -188,44 +198,66 @@ def fts_pick_indexes(via, terms):
         return [], terms, f"no content index named '{via}'" if not hit else f"'{via}' matches several indexes: {', '.join(hit)}"
     return [names[hit[0]]], terms, None
 
-def fts_query(text, sort, desc, offset, limit, via=None, before=""):
-    """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match.
-    Searches every content index; //path narrows by folder."""
-    from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, path_matches, hidden_folders
+def apply_sort(rows, sort, desc):
+    """Orders result rows by a comma list of name, path, size, date, ext, depth (ties fall back to path order).
+    `sort` None keeps the engine's own order (relevance for /fts)."""
+    if not sort:
+        return rows
+    keyfn = {"name": lambda r: r["remote"].rsplit("/", 1)[-1].lower(),
+             "path": lambda r: r["remote"].lower(),
+             "size": lambda r: r["size"] or 0,
+             "date": lambda r: r["mtime"] or 0,
+             "ext": lambda r: (r["remote"].rsplit("/", 1)[-1].rpartition(".")[2].lower() if "." in r["remote"].rsplit("/", 1)[-1] else ""),
+             "depth": lambda r: r["remote"].count("/")}
+    keys = [keyfn[k] for k in sort.split(",") if k in keyfn]
+    if not keys:
+        return rows
+    return sorted(rows, key=lambda r: (tuple(k(r) for k in keys), r["remote"].lower()), reverse=desc)
+
+def recoll_terms(text):
+    """The words after a content verb as a Recoll query: `!word` (this DSL's negation) becomes Recoll's `-word`."""
+    out = []
+    for t in filesearch.tokens(text):
+        out.append("-" + t[1:] if t.startswith("!") and len(t) > 1 else t)
+    return " ".join(out)
+
+def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=False):
+    """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M] [//dm 2024]: only content-indexed files can match.
+    Searches every content index; //path narrows by folder. Relevance order unless a sort is explicit."""
+    from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, _date_ok, path_matches, hidden_folders
     wanted, not_wanted, rest = split_mime_all(text)
     paths, rest = split_path_tags(rest)
     tags, terms = split_tags(rest)
-    # "!" negation of free terms has no Recoll meaning here (Recoll has its own -term): inert
-    terms = " ".join(t for t in filesearch.tokens(terms) if not t.startswith("!"))
+    if content_verb(terms):
+        return [], 0, "only one /fts or /chroma per query", None
+    terms = recoll_terms(terms)
     confs, terms, err = fts_pick_indexes(via, terms)
     if err:
         return [], 0, err, None
     if not terms.strip():
-        return [], 0, None, None
+        return [], 0, "/fts needs some words to look for inside files", None
     hidden = hidden_folders(text)
     prefilter = make_prefilter(before, before + " " + text)
-    # with a name filter in front the Recoll pool must be big enough not to cut off files that would pass it
-    pool = fts_matches(terms.strip(), confs, 100000 if prefilter else 5000)
+    pool = fts_matches(terms.strip(), confs)
     if prefilter:
-        pool = [r for r in pool if prefilter(r["remote"], r["size"], None)]
+        pool = [r for r in pool if prefilter(r["remote"], r["size"], r["mtime"])]
+    def name(r): return r["remote"].rsplit("/", 1)[-1].lower()
     rows = [r for r in pool if (not wanted or matches_mime(r["remote"], wanted))
             and not (not_wanted and matches_mime(r["remote"], not_wanted))
             and not any(path_matches(r["remote"], v) for v in tags["!path"])
-            and not any(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["!name"])
+            and not any(t.lower() in name(r) for t in tags["!name"])
             and not any(_size_ok(r["size"], c) for c in tags["!size"])
+            and not any(_date_ok(r["mtime"], c) for c in tags["!dm"])
             and not any(r["remote"].startswith(f) for f in hidden)
             and all(path_matches(r["remote"], v) for v in paths)
-            and all(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["name"])
-            and all(_size_ok(r["size"], c) for c in tags["size"])]
-    if sort in ("name", "path", "size"):
-        key = {"name": lambda r: r["remote"].rsplit("/", 1)[-1].lower(),
-               "path": lambda r: r["remote"].lower(),
-               "size": lambda r: r["size"] or 0}[sort]
-        rows.sort(key=key, reverse=desc)
+            and all(t.lower() in name(r) for t in tags["name"])
+            and all(_size_ok(r["size"], c) for c in tags["size"])
+            and all(_date_ok(r["mtime"], c) for c in tags["dm"])]
+    rows = apply_sort(rows, sort if explicit else None, desc)
     from collections import Counter
     kinds = Counter(filesearch.kind_of(r["remote"]) or "no ext" for r in rows).most_common(5)
     stats = {"size": sum(r["size"] or 0 for r in rows), "kinds": [[k, n] for k, n in kinds]}
-    return rows[offset: offset + limit], len(rows), None, stats
+    return [dict(r) for r in rows[offset: offset + limit]], len(rows), None, stats     # copies: the caller edits them, the cache must not change
 
 # ---- /chroma: semantic search over the Chroma text indexes, done by a separate on-demand worker (chroma_worker.py) -
 CHROMA_URL = "http://127.0.0.1:8766"
@@ -278,50 +310,64 @@ def chroma_words(text):
     words = " ".join(t for t in filesearch.tokens(words) if not t.startswith("!")).replace('"', "")
     return wanted, not_wanted, paths, tags, words.strip()
 
-def chroma_query(text, sort, desc, offset, limit, via=None, before=""):
+CHROMA_MAX_N = 16000        # chunks per index; Chroma's SQLite backend fails above ~32k, and 20k already takes ~10 s
+
+def chroma_query(text, sort, desc, offset, limit, via=None, before="", explicit=False):
     """/chroma <what it is about> [//mime kind] [//name x] [//path x] [//size >5M]: documents whose text is closest in
     meaning to the words (MiniLM embeddings over the content indexes), best first, one row per file with the score.
     The pool is the nearest chunks of every index, so the total is what the closest chunks cover, not every file."""
-    from filesearch import matches_mime, _size_ok, path_matches, hidden_folders
+    from filesearch import matches_mime, _size_ok, _date_ok, path_matches, hidden_folders
     wanted, not_wanted, paths, tags, words = chroma_words(text)
+    if content_verb(words):
+        return [], 0, "only one /fts or /chroma per query", None
     if not words:
-        return [], 0, None, None
+        return [], 0, "/chroma needs some words to look for inside files", None
     prefilter = make_prefilter(before, before + " " + text)
-    res, err = chroma_call("/search", {"q": words, "via": via or "", "n": max(2000 if prefilter else 400, 8 * (offset + limit))})
-    if res is None:
-        return [], 0, err, None
-    if res["errors"]:
-        return [], 0, "; ".join(res["errors"]), None
-    best = {}
-    for h in res["hits"]:
-        url = h["url"]
-        path = config.to_local(urllib.parse.unquote(url[len("file://"):])) if url.startswith("file://") else url
-        if path not in best or h["score"] > best[path]["score"]:
-            best[path] = h
-            _chroma_urls[path] = url
-            _chroma_urls.move_to_end(path)
-    while len(_chroma_urls) > 20000:
-        _chroma_urls.popitem(last=False)
     hidden = hidden_folders(text)
-    rows = []
-    for path, h in best.items():
+    def passes(path):
         size, mtime = name_attrs(path)
         if prefilter and not prefilter(path, size, mtime):
-            continue
+            return None
         if (wanted and not matches_mime(path, wanted)) or (not_wanted and matches_mime(path, not_wanted)):
-            continue
+            return None
         base = path.rsplit("/", 1)[-1].lower()
         if (any(path_matches(path, v) for v in tags["!path"]) or any(t.lower() in base for t in tags["!name"])
                 or any(_size_ok(size, c) for c in tags["!size"]) or any(path.startswith(f) for f in hidden)
                 or not all(path_matches(path, v) for v in paths) or not all(t.lower() in base for t in tags["name"])
-                or not all(_size_ok(size, c) for c in tags["size"])):
-            continue
-        rows.append({"remote": path, "size": size, "mtime": mtime, "score": h["score"]})
+                or not all(_size_ok(size, c) for c in tags["size"])
+                or any(_date_ok(mtime, c) for c in tags["!dm"]) or not all(_date_ok(mtime, c) for c in tags["dm"])):
+            return None
+        return size, mtime
+    def path_of(h):
+        url = h["url"]
+        return config.to_local(urllib.parse.unquote(url[len("file://"):])) if url.startswith("file://") else url
+    filtered = bool(prefilter or wanted or not_wanted or paths or any(tags.values()))
+    n = max(2000 if filtered else 400, 8 * (offset + limit))
+    while True:
+        res, err = chroma_call("/search", {"q": words, "via": via or "", "n": n})
+        if res is None:
+            return [], 0, err, None
+        if res["errors"]:
+            return [], 0, "; ".join(res["errors"]), None
+        if not filtered or n >= CHROMA_MAX_N or sum(1 for h in res["hits"] if passes(path_of(h))) >= 20:
+            break
+        n = CHROMA_MAX_N            # few survivors of the filters: look much deeper (about 8 s) before giving up
+    best = {}
+    for h in res["hits"]:
+        path = path_of(h)
+        if path not in best or h["score"] > best[path]["score"]:
+            best[path] = h
+            _chroma_urls[path] = h["url"]
+            _chroma_urls.move_to_end(path)
+    while len(_chroma_urls) > 20000:
+        _chroma_urls.popitem(last=False)
+    rows = []
+    for path, h in best.items():
+        ok = passes(path)
+        if ok:
+            rows.append({"remote": path, "size": ok[0], "mtime": ok[1], "score": h["score"]})
     rows.sort(key=lambda r: -r["score"])
-    if sort in ("name", "path", "size"):
-        key = {"name": lambda r: r["remote"].rsplit("/", 1)[-1].lower(), "path": lambda r: r["remote"].lower(),
-               "size": lambda r: r["size"] or 0}[sort]
-        rows.sort(key=key, reverse=desc)
+    rows = apply_sort(rows, sort if explicit else None, desc)
     kinds = collections.Counter(filesearch.kind_of(r["remote"]) or "no ext" for r in rows).most_common(5)
     stats = {"size": sum(r["size"] or 0 for r in rows), "kinds": [[k, n] for k, n in kinds]}
     return rows[offset: offset + limit], len(rows), None, stats
@@ -719,6 +765,8 @@ class H(BaseHTTPRequestHandler):
             # default: file-name search over everything the catalog knows; /clip and /face
             # switch to photo search; the explicit //file prefix is still accepted
             photo_mode = re.search(r"(?:^|\s)/(?:clip|face)(?:\s|$)", q) is not None
+            if photo_mode and content_verb(q):
+                return self._json(200, {"count": 0, "results": [], "errors": ["/clip and /face search photos; they cannot be combined with /fts or /chroma"], "stats": {}})
             if not photo_mode:
                 rest = q[len("//file"):].strip() if q.startswith("//file") else q
                 sort = qs.get("sort", ["date"])[0]
@@ -732,11 +780,15 @@ class H(BaseHTTPRequestHandler):
                     else:
                         rest = (rest + " !/.").strip()
                 errors = []
-                if cv and cv[0] == "fts":
-                    results, count, err, stats = fts_query(cv[3], sort, desc, offset, top, cv[2], cv[1])
-                    errors = [err] if err else []
-                elif cv:
-                    results, count, err, stats = chroma_query(cv[3], sort, desc, offset, top, cv[2], cv[1])
+                if cv:
+                    try:
+                        if cv[0] == "fts":
+                            results, count, err, stats = fts_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date")
+                        else:
+                            results, count, err, stats = chroma_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date")
+                    except Exception as e:      # a bad query must come back as an error line, not a dropped connection
+                        import traceback; traceback.print_exc()
+                        results, count, err, stats = [], 0, f"/{cv[0]} failed: {e}", None
                     errors = [err] if err else []
                 else:
                     extras = []
