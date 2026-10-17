@@ -15,6 +15,8 @@ Settings: "catalog" section of ~/.config/indexes/photos.json (private).
 import argparse, json, os, re, shlex, sqlite3, subprocess, sys, time, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/photos")
 import config
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import index_dirs
 C = config.CFG["catalog"]
 DB = os.environ.get("CATALOG_DB") or C["db"]
 HOME = os.path.expanduser("~")
@@ -669,7 +671,7 @@ def main():
 
 def run(a, db):
     if a.cmd == "build-local":
-        build_local(db, json.loads(os.environ["CATALOG_LOCAL_ROOTS"]) if os.environ.get("CATALOG_LOCAL_ROOTS") else C["local_roots"])
+        build_local(db, json.loads(os.environ["CATALOG_LOCAL_ROOTS"]) if os.environ.get("CATALOG_LOCAL_ROOTS") else index_dirs.path_roots(C["local_roots"]))   # Settings > Indexing overrides the config list
     elif a.cmd == "build-extra":
         build_extra(db)
     elif a.cmd == "poll-drive":
