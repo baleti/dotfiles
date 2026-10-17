@@ -5,7 +5,7 @@ the restic snapshots, deduplicated by (path, size, mtime).
   build-local      walk the local roots (skips mount points, excluded names)
   build-extra      walk the extra_roots (NFS shares outside $HOME)
   build-rclone     list each rclone remote through its API (no FUSE walk)
-  build-restic     add restic snapshot listings (latest N, or --all)
+  build-restic     ingest new restic snapshots into catalog-restic.db (see restic_store.py)
   find TEXT        substring search over file names (scans the entries table), optional filters
   stats            counts per source
 
@@ -623,45 +623,6 @@ def drive_poll(db):
     deliver(db, sync.touched)
     print(f"{len(changes)} changes -> {len(done)} folders relisted, +{sync.added} -{sync.removed}, {time.time()-t0:.1f}s", file=sys.stderr)
 
-def restic_snapshots(rep):
-    pw = os.path.expanduser(rep["password_file"])
-    cmd = ["restic", "--no-lock", "--repo", rep["repo"], "--password-file", pw]
-    out = subprocess.run(cmd + ["snapshots", "--json"], capture_output=True, text=True, check=True).stdout
-    return cmd, json.loads(out)
-
-def build_restic(db, which):
-    for rep in C.get("restic", []):
-        cmd, snaps = restic_snapshots(rep)
-        if which == "latest":
-            snaps = snaps[-1:]
-        for s in snaps:
-            label = f"restic:{rep['name']}:{s['short_id']}"
-            if db.execute("SELECT 1 FROM sources WHERE label=?", (label,)).fetchone():
-                continue                       # already catalogued
-            t0 = time.time()
-            sid = source_id(db, label, "restic", s["time"][:19])
-            w = Writer(db, sid)
-            proc = subprocess.Popen(cmd + ["ls", "--json", s["short_id"]],
-                                    stdout=subprocess.PIPE, text=True)   # streamed: the listing is GBs
-            for line in proc.stdout:
-                r = json.loads(line)
-                if r.get("struct_type") != "node":
-                    continue
-                t = r.get("type")
-                if t not in ("file", "dir", "symlink"):
-                    continue
-                mt = r.get("mtime", "")
-                try:
-                    ts = int(time.mktime(time.strptime(mt[:19], "%Y-%m-%dT%H:%M:%S")))
-                except ValueError:
-                    ts = None
-                w.add(r["path"], r.get("size") if t == "file" else None, ts,
-                      {"file": "file", "dir": "dir", "symlink": "link"}[t])
-            if proc.wait() != 0:
-                raise RuntimeError(f"restic ls failed for {label}")
-            db.commit()
-            print(f"{label}: {w.n} rows, {time.time()-t0:.1f}s", file=sys.stderr)
-
 def find(db, text, limit, source=None, size=None, dm=None):
     where, args = [], []
     sql = "SELECT e.path, e.size, e.mtime, e.kind FROM entries e WHERE instr(lower(e.name), lower(?)) > 0"
@@ -685,7 +646,7 @@ def main():
     sub.add_parser("build-local")
     sub.add_parser("build-rclone")
     sub.add_parser("poll-drive")
-    b = sub.add_parser("build-restic"); b.add_argument("--all", action="store_true")
+    sub.add_parser("build-restic")
     sub.add_parser("build-extra")
     sub.add_parser("stats")
     f = sub.add_parser("find"); f.add_argument("text"); f.add_argument("--limit", type=int, default=50)
@@ -698,7 +659,7 @@ def main():
         open(lock, "w").close()
     try:
         run(a, db)
-        if a.cmd in ("build-extra", "build-restic", "build-rclone"):
+        if a.cmd in ("build-extra", "build-rclone"):
             touch_generation()      # the server reloads; build-local and poll-drive deliver their changes live instead
     finally:
         if building and os.path.exists(lock):
@@ -714,7 +675,8 @@ def run(a, db):
     elif a.cmd == "build-rclone":
         build_rclone(db)
     elif a.cmd == "build-restic":
-        build_restic(db, "all" if a.all else "latest")
+        import restic_store           # the restic snapshots live in their own database (catalog-restic.db)
+        restic_store.build()
     elif a.cmd == "stats":
         print("entries:", db.execute("SELECT count(*) FROM entries").fetchone()[0])
         for label, n in db.execute("SELECT s.label, count(*) FROM entry_sources es JOIN sources s ON s.id=es.source_id GROUP BY s.label ORDER BY s.label"):
