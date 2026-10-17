@@ -119,10 +119,6 @@ TestCase {
         compare(r[0], "cid20:DeselectRandomly");
         compare(r[1], "cid20:ExportToPDF");
     }
-    function test_reverse_flips_the_default_order() {
-        compare(make("/rv").results[0].command, "CloseWorksets");
-        compare(make("/rv /rv").results[0].command, "CloseWorksets");      // idempotent, not a toggle
-    }
     function test_sort_and_filter_split_the_trailing_word() {
         compare(ids(make("/s command pdf")).length, 4);          // `pdf` is not a direction, so it filters
     }

@@ -17,9 +17,8 @@
 //!   /at /add-type       add columns whose name matches into view
 //!   /rt /remove-type    drop columns whose name matches from view
 //!   /s  /sort           order rows by one type, optional direction
-//!   /rv /reverse        reverse the current order
 //!
-//! Every path-taking verb (all but `/rv`) can carry its type path glued
+//! Every path-taking verb can carry its type path glued
 //! directly onto the verb with a second `/` instead of as a separate
 //! space-separated argument - `/fv/claude.title foo` means exactly what
 //! `/fv claude.title:foo` already did, no colon involved. `tok_verb`
@@ -43,8 +42,7 @@
 //!
 //! Three orthogonal axes, three entry points: `matches_str` (row
 //! filters), `active_columns` (column verbs, left-to-right pipeline over
-//! the picker defaults), `parse_actions` (`/sort` last-wins + `/reverse`
-//! idempotent). `compare_field_values` carries the age-bucket "direction
+//! the picker defaults), `parse_actions` (`/sort` last-wins). `compare_field_values` carries the age-bucket "direction
 //! trap" for sorting `date`-shaped values - see query-dsl.md.
 
 use crate::enrich::TmuxClaudeMeta;
@@ -86,7 +84,6 @@ pub enum Verb {
     AddType,
     RemoveType,
     Sort,
-    Reverse,
 }
 
 impl Verb {
@@ -99,7 +96,6 @@ impl Verb {
             "at" | "add-type" => Some(Verb::AddType),
             "rt" | "remove-type" => Some(Verb::RemoveType),
             "s" | "sort" => Some(Verb::Sort),
-            "rv" | "reverse" => Some(Verb::Reverse),
             _ => None,
         }
     }
@@ -107,17 +103,16 @@ impl Verb {
     /// Whether this verb's argument (the first one, for `/sort`) is a type
     /// path - used by completion to know it's in the path stage.
     fn takes_path(self) -> bool {
-        !matches!(self, Verb::Reverse)
+        true
     }
 }
 
 /// Every verb short form, for top-level completion, in canonical order.
-const VERB_SHORTS: &[&str] = &["fv", "ft", "at", "rt", "s", "rv"];
+const VERB_SHORTS: &[&str] = &["fv", "ft", "at", "rt", "s"];
 
 /// Every accepted verb spelling, short and long.
 const VERB_FORMS: &[&str] = &[
-    "fv", "ft", "at", "rt", "s", "rv", "filter-value", "filter-type", "add-type", "remove-type", "sort",
-    "reverse",
+    "fv", "ft", "at", "rt", "s", "filter-value", "filter-type", "add-type", "remove-type", "sort",
 ];
 
 /// True if `s` is a prefix of some verb form - i.e. a `/s...` token (down
@@ -206,16 +201,13 @@ pub enum Direction {
     Descending,
 }
 
-/// `/sort` result plus whether `/reverse` was also typed. Both can apply
-/// at once: `/sort` picks an order, `/reverse` flips whatever order is in
-/// effect. The field list is the multi-key chain (query-dsl.md's `/sort`
+/// `/sort` result. The field list is the multi-key chain (query-dsl.md's `/sort`
 /// via-form chaining, added 2026-09-02) - one field for the space form or
 /// a single-segment via, more for `/sort/path1/path2/...`; one `Direction`
 /// applies to every key in the chain uniformly.
 #[derive(Clone, Default)]
 pub struct Actions {
     pub sort: Option<(Vec<ResolvedField>, Direction)>,
-    pub reverse: bool,
 }
 
 /// A parsed row-filter term, from a bare word or a `/fv` command (via
@@ -429,7 +421,6 @@ struct Parsed {
     /// `/at`/`/rt` carry it too, for symmetry, but never act on it.
     col_ops: Vec<(ColOp, String, bool)>,
     sort: Option<(Vec<ResolvedField>, Direction)>,
-    reverse: bool,
 }
 
 /// One raw filter argument -> a `FilterTerm`. A colon makes it scoped; a
@@ -447,7 +438,7 @@ fn filter_term(arg: &str) -> FilterTerm {
 
 fn parse(query: &str) -> Parsed {
     let toks = tokenize(query);
-    let mut out = Parsed { filters: Vec::new(), col_ops: Vec::new(), sort: None, reverse: false };
+    let mut out = Parsed { filters: Vec::new(), col_ops: Vec::new(), sort: None };
 
     let mut i = 0;
     while i < toks.len() {
@@ -518,7 +509,6 @@ fn parse(query: &str) -> Parsed {
                         }
                     }
                 }
-                Verb::Reverse => out.reverse = true, // via is meaningless here - ignored, harmless
             }
             continue;
         }
@@ -528,7 +518,6 @@ fn parse(query: &str) -> Parsed {
         // arity).
         let mut args: Vec<String> = Vec::new();
         let max_args = match verb {
-            Verb::Reverse => 0,
             Verb::Sort => 2,
             _ => 1,
         };
@@ -571,7 +560,6 @@ fn parse(query: &str) -> Parsed {
                     out.sort = Some((vec![field], dir));
                 }
             }
-            Verb::Reverse => out.reverse = true,
         }
     }
     out
@@ -721,11 +709,11 @@ pub fn active_columns(
     cols
 }
 
-// --- axis 3: sort / reverse -------------------------------------------
+// --- axis 3: sort -------------------------------------------
 
 pub fn parse_actions(query: &str) -> Actions {
     let p = parse(query);
-    Actions { sort: p.sort, reverse: p.reverse }
+    Actions { sort: p.sort }
 }
 
 /// A value's shape, sniffed on each side of a comparison independently.
@@ -874,7 +862,6 @@ fn replay(context: &[Tok]) -> Open {
                 Open::None => {
                     match tok_verb(tok) {
                         None => {} // bare value or inert /... - nothing to track
-                        Some((Verb::Reverse, _)) => {} // consumes nothing (via ignored), stays closed
                         // FilterType/AddType/RemoveType have no argument
                         // beyond their one path - a via already supplies
                         // it, so there's nothing left open.
@@ -901,7 +888,6 @@ fn replay(context: &[Tok]) -> Open {
                                 continue;
                             }
                         }
-                        Verb::Reverse => unreachable!(),
                         _ => {
                             open = Open::None; // single arg consumed
                         }
@@ -1392,15 +1378,12 @@ mod tests {
     }
 
     #[test]
-    fn last_sort_wins_reverse_idempotent() {
+    fn last_sort_wins() {
         assert_eq!(
             parse_actions("/sort workspace /sort title").sort,
             Some((vec![ResolvedField::Flat("title")], Direction::Ascending))
         );
-        assert!(parse_actions("/reverse").reverse);
-        assert!(parse_actions("/rv").reverse);
-        assert!(parse_actions("/rv /rv").reverse);
-        assert!(!parse_actions("plain text").reverse);
+        assert!(parse_actions("plain text").sort.is_none());
     }
 
     #[test]
@@ -1462,7 +1445,7 @@ mod tests {
         let Some(Completion::Verb { fragment, .. }) = completion_context("/") else { panic!() };
         assert_eq!(fragment, "");
         let cands = completion_candidates(&Completion::Verb { start: 0, fragment }, &[], &[]);
-        assert_eq!(cands, vec!["fv", "ft", "at", "rt", "s", "rv"]);
+        assert_eq!(cands, vec!["fv", "ft", "at", "rt", "s"]);
         let Some(Completion::Verb { fragment, .. }) = completion_context("/f") else { panic!() };
         let cands = completion_candidates(&Completion::Verb { start: 0, fragment }, &[], &[]);
         assert_eq!(cands, vec!["fv", "ft"]);

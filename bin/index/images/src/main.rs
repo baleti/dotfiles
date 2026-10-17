@@ -231,10 +231,9 @@ fn query_terms(q: &str) -> Vec<String> {
 /// the images picker's verbs, `/verb/via`, and `//tag`. Quoted runs, a `//tag`'s value and
 /// anything else that merely starts with `/` (a path such as /mnt/x) are not commands.
 fn command_spans(q: &str) -> Vec<(usize, usize)> {
-    const VERBS: [&str; 21] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort", "rv",
+    const VERBS: [&str; 20] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort",
         "show-dotfiles", "hide-dotfiles", "show-backup", "hide-backup", "show-backup-restic", "hide-backup-restic",
         "show-backup-btrfs", "hide-backup-btrfs", "show-fts-rvt", "hide-fts-rvt", "show-fts-dwg", "hide-fts-dwg"];
-    const REVERSE: &str = "reverse";
     const TAGS: [&str; 7] = ["name", "path", "size", "dm", "mime", "ext", "file"];
     let b = q.as_bytes();
     let (mut i, mut out, mut owns_value) = (0, Vec::new(), false);
@@ -255,7 +254,7 @@ fn command_spans(q: &str) -> Vec<(usize, usize)> {
             if TAGS.contains(&name) { out.push((start, i)); owns_value = true; }
         } else if let Some(rest) = tok.strip_prefix('/') {
             let name = rest.split('/').next().unwrap_or("");
-            if VERBS.contains(&name) || name == REVERSE { out.push((start, i)); }
+            if VERBS.contains(&name) { out.push((start, i)); }
         }
     }
     out
@@ -731,13 +730,12 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 18] = [
+        const VERBS: [(&str, &str); 17] = [
             ("/fts ", "full-text search over every content index: /fts dgcl design //mime pdf"),
             ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
             ("/sort ", "order the results by a field, e.g. /s size desc"),
-            ("/reverse ", "flip the order"),
             ("/show-dotfiles ", "include names starting with a dot (this search only)"),
             ("/hide-dotfiles ", "leave out names starting with a dot (this search only)"),
             ("/show-backup ", "include restic backups and btrfs snapshots (this search only)"),
@@ -921,7 +919,7 @@ fn sort_direction(tok: &str) -> Option<bool> {
     }
 }
 
-/// Splits `/s`, `/sort` and `/rv` commands out of the query. Returns the rest (what the server
+/// Splits `/s` and `/sort` commands out of the query. Returns the rest (what the server
 /// sees) and the requested order. Each `/s` adds keys (`/s a /s b` == `/s/a/b`: a, then b on ties);
 /// a segment that resolves to nothing makes that whole `/s` inert. One direction for every key.
 fn parse_sort(q: &str) -> (String, SortSpec) {
@@ -930,13 +928,11 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
     let mut rest: Vec<&str> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
     let mut desc = None;
-    let mut reverse = false;
     let mut explicit = false;
     let mut i = 0;
     while i < toks.len() {
         let t = toks[i];
         i += 1;
-        if t == "/rv" || t == "/reverse" { reverse = true; continue; }
         // a `//tag` owns the next token as its value, whatever it looks like (`//path /etc`, `//path /sort`)
         if t.starts_with("//") || t.starts_with("!//") {
             rest.push(t);
@@ -967,10 +963,9 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
             }
         }
     }
-    let mut desc_v = if keys.is_empty() { true } else { desc.unwrap_or(false) };
+    let desc_v = if keys.is_empty() { true } else { desc.unwrap_or(false) };
     if keys.is_empty() { keys.push("date".into()); }
-    if reverse { desc_v = !desc_v; }
-    (rest.join(" "), SortSpec { keys, desc: desc_v, explicit: explicit || reverse })
+    (rest.join(" "), SortSpec { keys, desc: desc_v, explicit })
 }
 
 fn fts_subsequence(frag: &str, name: &str) -> bool {
@@ -1696,7 +1691,7 @@ impl App {
         self.open_hit(self.selected);
     }
 
-    /// Clicking a header writes `/s <field>` into the query (replacing any /s and /rv there):
+    /// Clicking a header writes `/s <field>` into the query (replacing any /s there):
     /// the same primary column flips the direction, another column sorts ascending.
     fn set_sort(&mut self, key: &str) {
         let (rest, cur) = parse_sort(&self.query);
@@ -3085,7 +3080,6 @@ mod sort_tests {
         assert_eq!(p("/sort/dm/size de x"), ("x".into(), "date,size".into(), true));
         assert_eq!(p("/s name blender"), ("blender".into(), "name".into(), false));
         assert_eq!(p("/s nonsense //name a"), ("//name a".into(), "date".into(), true));
-        assert_eq!(p("/s size /rv"), ("".into(), "size".into(), true));
         assert_eq!(p("/s size \"a  /s name\" b"), ("\"a  /s name\" b".into(), "size".into(), false));
         assert_eq!(p("!//path /etc"), ("!//path /etc".into(), "date".into(), true));
         assert_eq!(p("!//path /sort /s size"), ("!//path /sort".into(), "size".into(), false));
@@ -3111,7 +3105,7 @@ mod highlight_tests {
         assert_eq!(words("report /hide-dotfiles /show-backup-restic"), vec!["/hide-dotfiles", "/show-backup-restic"]);
         assert_eq!(words("/fts/part3 cdm //mime pdf /s size"), vec!["/fts/part3", "//mime", "/s"]);
         assert_eq!(words("//path /etc /sort"), vec!["//path", "/sort"]);
-        assert_eq!(words("!//path /x \"/fts no\" /rv"), vec!["//path", "/rv"]);
+        assert_eq!(words("!//path /x \"/fts no\" /rv"), vec!["//path"]);
         assert_eq!(words("/fvv /nonsense //bogus"), Vec::<&str>::new());
     }
 }
