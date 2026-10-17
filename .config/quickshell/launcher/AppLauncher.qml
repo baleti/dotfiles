@@ -680,7 +680,11 @@ PanelWindow {
     Rectangle {
         id: card
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.verticalCenter: parent.verticalCenter
+        // Pinned by its top edge (where the 60%-tall card's top sits when
+        // centred), so the search box never moves when the card's height
+        // changes -- only the results area grows/shrinks below it.
+        anchors.top: parent.top
+        anchors.topMargin: Math.round((root.screen ? root.screen.height : 1080) * 0.2)
         width: root.cardWidth
         // Fixed at 60% of the screen height, centred -- the results list
         // fills whatever's left under the search box (and the autocomplete
