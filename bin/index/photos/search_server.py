@@ -526,6 +526,9 @@ class H(BaseHTTPRequestHandler):
                     rows = search.face_pane(n, seed)
                 faces = [{"id": r["id"], "thumb": face_crop(r)} for r in rows]
             return self._json(200, {"faces": [f for f in faces if f["thumb"]]})
+        if u.path == "/ver":
+            # bumps whenever the name table changes (live delta or reload): the picker polls this to refresh itself
+            return self._json(200, {"ver": NAMES._ver})
         if u.path == "/facets":
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),

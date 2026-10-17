@@ -11,7 +11,9 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Key, Ma
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Read from ~/.config/indexes/photos.json (IMAGES_CONFIG overrides), so no paths are compiled in.
@@ -506,6 +508,10 @@ struct App {
     query: String,
     last_sent: String,
     last_change: Instant,
+    /// live refresh: the server's data version (polled once a second), the one the shown results are from, last user input
+    ver: Arc<AtomicU64>,
+    ver_applied: u64,
+    last_input: Instant,
     cursor_end: bool,
     seq: u64,
     snip_tx: Sender<(String, String, Result<Vec<Snip>, String>)>,
@@ -904,6 +910,17 @@ fn fetch_facets() -> FacetsReply {
         .unwrap_or_default()
 }
 
+/// The server's data version (it changes whenever files appear, change or vanish in the catalog).
+fn fetch_ver() -> Option<u64> {
+    ureq::get(&format!("{}/ver", cfg().server))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .ok()
+        .and_then(|r| r.into_string().ok())
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["ver"].as_u64())
+}
+
 fn fetch_people() -> Vec<String> {
     ureq::get(&format!("{}/people", cfg().server))
         .timeout(Duration::from_secs(3))
@@ -955,6 +972,9 @@ impl App {
             query: String::new(),
             last_sent: "\u{0}".into(), // force the first browse request
             last_change: Instant::now() - Duration::from_secs(1),
+            ver: Arc::new(AtomicU64::new(0)),
+            ver_applied: 0,
+            last_input: Instant::now(),
             cursor_end: false,
             seq: 0,
             tx,
@@ -1018,6 +1038,11 @@ impl App {
         app.people = fetch_people();
         app.facets = fetch_facets();
         app.send_query();
+        let ver = app.ver.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(1));
+            if let Some(v) = fetch_ver() { ver.store(v, Ordering::Relaxed); }
+        });
         app
     }
 
@@ -1546,6 +1571,20 @@ impl eframe::App for App {
 
         // debounced live search: fire once typing pauses
         if self.query != self.last_sent && self.last_change.elapsed() >= Duration::from_millis(160) {
+            self.send_query();
+        }
+        // live refresh: when the catalog changed and you have been idle for a moment, run the same query again
+        // (never while typing, with a menu or properties open, or mid-navigation, so the list does not move under you)
+        if ctx.input(|i| !i.events.is_empty() || i.pointer.delta() != egui::Vec2::ZERO) {
+            self.last_input = Instant::now();
+        }
+        let ver = self.ver.load(Ordering::Relaxed);
+        if self.ver_applied == 0 {
+            self.ver_applied = ver;
+        } else if ver != self.ver_applied && self.query == self.last_sent && !self.busy
+            && self.last_input.elapsed() >= Duration::from_millis(1500)
+            && self.props.is_none() && self.menu_at.is_none() {
+            self.ver_applied = ver;
             self.send_query();
         }
         if self.first_frame {
