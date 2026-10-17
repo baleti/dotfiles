@@ -221,7 +221,7 @@ def recoll_terms(text):
         out.append("-" + t[1:] if t.startswith("!") and len(t) > 1 else t)
     return " ".join(out)
 
-def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=False):
+def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=False, skip_ext=()):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M] [//dm 2024]: only content-indexed files can match.
     Searches every content index; //path narrows by folder. Relevance order unless a sort is explicit."""
     from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, _date_ok, path_matches, hidden_folders
@@ -241,6 +241,8 @@ def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=Fal
     pool = fts_matches(terms.strip(), confs)
     if prefilter:
         pool = [r for r in pool if prefilter(r["remote"], r["size"], r["mtime"])]
+    if skip_ext:
+        pool = [r for r in pool if filesearch.kind_of(r["remote"]) not in skip_ext]
     def name(r): return r["remote"].rsplit("/", 1)[-1].lower()
     rows = [r for r in pool if (not wanted or matches_mime(r["remote"], wanted))
             and not (not_wanted and matches_mime(r["remote"], not_wanted))
@@ -312,7 +314,7 @@ def chroma_words(text):
 
 CHROMA_MAX_N = 16000        # chunks per index; Chroma's SQLite backend fails above ~32k, and 20k already takes ~10 s
 
-def chroma_query(text, sort, desc, offset, limit, via=None, before="", explicit=False):
+def chroma_query(text, sort, desc, offset, limit, via=None, before="", explicit=False, skip_ext=()):
     """/chroma <what it is about> [//mime kind] [//name x] [//path x] [//size >5M]: documents whose text is closest in
     meaning to the words (MiniLM embeddings over the content indexes), best first, one row per file with the score.
     The pool is the nearest chunks of every index, so the total is what the closest chunks cover, not every file."""
@@ -326,6 +328,8 @@ def chroma_query(text, sort, desc, offset, limit, via=None, before="", explicit=
     hidden = hidden_folders(text)
     def passes(path):
         size, mtime = name_attrs(path)
+        if skip_ext and filesearch.kind_of(path) in skip_ext:
+            return None
         if prefilter and not prefilter(path, size, mtime):
             return None
         if (wanted and not matches_mime(path, wanted)) or (not_wanted and matches_mime(path, not_wanted)):
@@ -622,7 +626,11 @@ def enqueue(remote, tag=None):
 
 # ---- view settings: defaults in the picker's settings file, overridden per query by verbs ------------------
 SETTINGS_PATH = os.path.expanduser("~/.config/indexes/picker-settings.json")
-SETTINGS_DEFAULT = {"show_dotfiles": True, "show_backup_restic": False, "show_backup_btrfs": False}
+SETTINGS_DEFAULT = {"show_dotfiles": True, "show_backup_restic": False, "show_backup_btrfs": False,
+                    "show_fts_rvt": True, "show_fts_dwg": True}
+# file formats a content search (/fts, /chroma) can leave out: Revit (project, family, template, family template) and
+# AutoCAD drawings. The dwg contents are not indexed yet; the setting is the place for that intention.
+FTS_FORMATS = {"show_fts_rvt": {"rvt", "rfa", "rte", "rft"}, "show_fts_dwg": {"dwg", "dxf", "dwt"}}
 _settings = {"mtime": None, "value": dict(SETTINGS_DEFAULT)}
 VIEW_VERBS = {
     "/show-dotfiles": (("show_dotfiles",), True), "/hide-dotfiles": (("show_dotfiles",), False),
@@ -630,6 +638,8 @@ VIEW_VERBS = {
     "/hide-backup": (("show_backup_restic", "show_backup_btrfs"), False),
     "/show-backup-restic": (("show_backup_restic",), True), "/hide-backup-restic": (("show_backup_restic",), False),
     "/show-backup-btrfs": (("show_backup_btrfs",), True), "/hide-backup-btrfs": (("show_backup_btrfs",), False),
+    "/show-fts-rvt": (("show_fts_rvt",), True), "/hide-fts-rvt": (("show_fts_rvt",), False),
+    "/show-fts-dwg": (("show_fts_dwg",), True), "/hide-fts-dwg": (("show_fts_dwg",), False),
 }
 
 def picker_settings():
@@ -651,6 +661,7 @@ def view_options(q):
     """(query without the view verbs, effective view options). Verbs apply left to right, so a later one wins;
     /show-backup and /hide-backup set both backup kinds, the specific ones set just one."""
     opts = picker_settings()
+    opts["explicit"] = set()                  # the settings a verb in this very query set (never stored)
     toks = filesearch.tokens(q)
     if not any(t.lower() in VIEW_VERBS for t in toks):
         return q, opts
@@ -662,6 +673,7 @@ def view_options(q):
         else:
             for name in v[0]:
                 opts[name] = v[1]
+                opts["explicit"].add(name)
     return " ".join(kept), opts
 
 # ---- backups: tables of their own (restic, btrfs snapshots), loaded in the background the first time a query asks --
@@ -780,16 +792,22 @@ class H(BaseHTTPRequestHandler):
                     else:
                         rest = (rest + " !/.").strip()
                 errors = []
+                skip_ext = set()                         # formats the view settings leave out of content searches
+                for flag, exts in FTS_FORMATS.items():
+                    if not view[flag]:
+                        skip_ext |= exts
                 if cv:
                     try:
                         if cv[0] == "fts":
-                            results, count, err, stats = fts_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date")
+                            results, count, err, stats = fts_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date", skip_ext)
                         else:
-                            results, count, err, stats = chroma_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date")
+                            results, count, err, stats = chroma_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date", skip_ext)
                     except Exception as e:      # a bad query must come back as an error line, not a dropped connection
                         import traceback; traceback.print_exc()
                         results, count, err, stats = [], 0, f"/{cv[0]} failed: {e}", None
                     errors = [err] if err else []
+                    if view["show_fts_dwg"] and "show_fts_dwg" in view["explicit"]:
+                        errors.append("dwg contents are not indexed yet (there is no DWG parser): only Revit and document text is searched")
                 else:
                     extras = []
                     for kind in ("restic", "btrfs"):
