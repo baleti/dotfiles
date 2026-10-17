@@ -392,6 +392,50 @@ def enqueue(remote):
             _queued.add(remote); _pending.put(remote)
     return False
 
+# ---- view settings: defaults in the picker's settings file, overridden per query by verbs ------------------
+SETTINGS_PATH = os.path.expanduser("~/.config/indexes/picker-settings.json")
+SETTINGS_DEFAULT = {"show_dotfiles": True, "show_backup_restic": False, "show_backup_btrfs": False}
+_settings = {"mtime": None, "value": dict(SETTINGS_DEFAULT)}
+VIEW_VERBS = {
+    "/show-dotfiles": (("show_dotfiles",), True), "/hide-dotfiles": (("show_dotfiles",), False),
+    "/show-backup": (("show_backup_restic", "show_backup_btrfs"), True),
+    "/hide-backup": (("show_backup_restic", "show_backup_btrfs"), False),
+    "/show-backup-restic": (("show_backup_restic",), True), "/hide-backup-restic": (("show_backup_restic",), False),
+    "/show-backup-btrfs": (("show_backup_btrfs",), True), "/hide-backup-btrfs": (("show_backup_btrfs",), False),
+}
+
+def picker_settings():
+    """The settings file (re-read when it changes), over the defaults; a missing or broken file means defaults."""
+    try:
+        m = os.path.getmtime(SETTINGS_PATH)
+    except OSError:
+        m = None
+    if m != _settings["mtime"]:
+        value = dict(SETTINGS_DEFAULT)
+        try:
+            value.update({k: bool(v) for k, v in json.load(open(SETTINGS_PATH)).items() if k in SETTINGS_DEFAULT})
+        except (OSError, ValueError):
+            pass
+        _settings.update(mtime=m, value=value)
+    return dict(_settings["value"])
+
+def view_options(q):
+    """(query without the view verbs, effective view options). Verbs apply left to right, so a later one wins;
+    /show-backup and /hide-backup set both backup kinds, the specific ones set just one."""
+    opts = picker_settings()
+    toks = filesearch.tokens(q)
+    if not any(t.lower() in VIEW_VERBS for t in toks):
+        return q, opts
+    kept = []
+    for t in toks:
+        v = VIEW_VERBS.get(t.lower())
+        if v is None:
+            kept.append(t)
+        else:
+            for name in v[0]:
+                opts[name] = v[1]
+    return " ".join(kept), opts
+
 def delta_token():
     """Shared secret for POST /delta (the live file-change feed); created on first use, readable only by the user."""
     path = NAMES.db_path + ".delta-token"
@@ -435,7 +479,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/query":
-            q = (qs.get("q", [""])[0]).strip()
+            q, view = view_options((qs.get("q", [""])[0]).strip())
             top = int(qs.get("top", ["60"])[0])
             offset = int(qs.get("offset", ["0"])[0])
             # default: file-name search over everything the catalog knows; /clip and /face
@@ -447,6 +491,8 @@ class H(BaseHTTPRequestHandler):
                 desc = qs.get("desc", ["1"])[0] == "1"
                 offset = int(qs.get("offset", ["0"])[0])
                 fts = re.match(r"^/(?:fts|full-text-search)(?:/([\w.-]+))?(?:\s+|$)(.*)$", rest, re.S)
+                if not view["show_dotfiles"] and not fts:
+                    rest = (rest + " !/.").strip()      # the same negated term typed by hand: no path with a dot component
                 errors = []
                 if fts:
                     results, count, err, stats = fts_query(fts.group(2), sort, desc, offset, top, fts.group(1))
