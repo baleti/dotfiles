@@ -678,6 +678,9 @@ struct App {
     handlers: HashMap<String, Vec<(String, String)>>,
     status: String,
     busy: bool,
+    busy_since: Instant,
+    /// the list's current scroll offset (from the last frame), for scrolling only when the selection leaves the view
+    list_off: f32,
     textures: HashMap<String, TextureHandle>,
     missing: HashSet<String>,
     first_frame: bool,
@@ -1507,6 +1510,8 @@ impl App {
             handlers: HashMap::new(),
             status: "connecting to search server…".into(),
             busy: false,
+            busy_since: Instant::now(),
+            list_off: 0.0,
             textures: HashMap::new(),
             missing: HashSet::new(),
             first_frame: true,
@@ -1548,6 +1553,7 @@ impl App {
         self.refreshing = false;
         // keep showing the old rows until the new first page arrives (no flicker while typing)
         self.pending.clear();
+        if !self.busy { self.busy_since = Instant::now(); }
         self.busy = true;
         self.request_page(0);
     }
@@ -1992,7 +1998,7 @@ impl App {
         self.grid_cols = cols;
         let t = ((avail - gap * (cols as f32 - 1.0)) / cols as f32).floor().max(16.0);
         let rows = self.total.div_ceil(cols);
-        let view_h = ui.available_height() - 30.0;
+        let view_h = ui.available_height() - 2.0;
         let mut area = egui::ScrollArea::vertical().max_height(view_h).auto_shrink([false, false]);
         // the spacing is set before show_rows so its row stride is exactly the one computed here
         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
@@ -2193,10 +2199,12 @@ impl eframe::App for App {
 
         // debounced live search: fire once typing pauses
         if self.query != self.last_sent {
-            if self.last_change.elapsed() >= Duration::from_millis(25) {
+            // a content search (/fts, /chroma) is heavy: wait for a real pause in typing before asking
+            let pause = if is_fts(&self.query) { 300 } else { 25 };
+            if self.last_change.elapsed() >= Duration::from_millis(pause) {
                 self.send_query();
             } else {
-                ctx.request_repaint_after(Duration::from_millis(25));      // come back right after the pause
+                ctx.request_repaint_after(Duration::from_millis(if is_fts(&self.query) { 300 } else { 25 }));      // come back right after the pause
             }
         }
         // follow the wallpaper: re-read the colour scheme when the recolour script rewrote it
@@ -2621,6 +2629,10 @@ impl eframe::App for App {
                 if self.last_change.elapsed() >= Duration::from_millis(400) { self.record_history(); }
                 let target = abs.unwrap_or_else(|| (cur + delta).clamp(0, n as i64 - 1) as usize);
                 self.move_cursor(target, extend);
+                // Down into the results puts the keyboard focus on the list (so Up moves back up, instead of walking the query
+                // history); Up from the first row hands it back to the query box, where the next Up opens the history
+                if down_steps > 0 && !was_list { self.list_focus = true; }
+                else if was_list && cur == 0 && up_steps > 0 && delta < 0 && down_steps == 0 { self.list_focus = false; }
             }
         }
         if enter && n > 0 && !self.popup && !self.hist_popup {
@@ -3175,6 +3187,36 @@ impl eframe::App for App {
                         if resp.drag_stopped() { self.save_sort(); }
                     }
                 }
+                // the status line is its own bottom panel, so the list gets exactly the rest of the height (no blank line under it)
+                egui::Panel::bottom("statusline").frame(egui::Frame::NONE).show_separator_line(false).resizable(false).show_inside(ui, |ui| {
+                    ui.add_space(3.0);
+                    if self.busy {
+                        const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+                        let t = self.busy_since.elapsed();
+                        let what = if is_fts(&self.last_sent) { "searching file contents" } else { "searching" };
+                        let old = if self.total > 0 { " · showing the previous results" } else { "" };
+                        ui.label(RichText::new(format!("{} {what}… {}s{old}", SPIN[(t.as_millis() / 100) as usize % 8], t.as_secs()))
+                            .color(pal.accent).size(11.0));
+                    } else {
+                        ui.label(
+                            RichText::new({
+                                let mut line = format!("{} shown", group_digits(self.total));
+                                if let (Some(st), true) = (&self.stats, self.total > 0) {
+                                    line.push_str(&format!(" · {}{}", if st.approx { "≈ " } else { "" }, human_size(st.size)));
+                                    if let (Some(a), Some(b)) = (&st.dmin, &st.dmax) {
+                                        line.push_str(&if a == b { format!(" · {a}") } else { format!(" · {a} → {b}") });
+                                    }
+                                    if !st.kinds.is_empty() {
+                                        let k: Vec<String> = st.kinds.iter().filter(|(n, _)| n != "no ext").map(|(n, c)| format!("{n} {}", group_digits(*c))).collect();
+                                        if !k.is_empty() { line.push_str(&format!(" · {}", k.join(", "))); }
+                                    }
+                                }
+                                line
+                            })
+                                .color(pal.dim).size(11.0),
+                        );
+                    }
+                });
                 let frac = self.col_frac;
                 let mut clicked: Option<(usize, bool)> = None;
                 let mut dbl = false;
@@ -3188,18 +3230,27 @@ impl eframe::App for App {
                         right_at = Some(at);
                     }
                 } else {
-                self.results_h = ui.available_height() - 30.0;
+                self.results_h = ui.available_height() - 2.0;
                 // one line per result: the row is just tall enough for the thumbnail and text
                 let row_h = (self.thumb + 4.0).max(20.0);
                 let mut area = egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - 30.0)
+                    .max_height(ui.available_height() - 2.0)
                     .auto_shrink([false, false]);
                 if self.scroll_pending {
-                    let target = self.selected as f32 * row_h - (ui.available_height() - 30.0) * 0.4;
-                    area = area.vertical_scroll_offset(target.max(0.0));
+                    // keep the list still while the selection moves inside the view; scroll just enough when it leaves, and only
+                    // a jump (Home, End, PageUp/Down, a new query) re-centres. The offset is clamped to the real range: asking
+                    // for more at the bottom made the whole list shake on every key press.
+                    let view_h = ui.available_height() - 2.0;
+                    let max_off = (self.total as f32 * row_h - view_h).max(0.0);
+                    let (top, bottom, off) = (self.selected as f32 * row_h, (self.selected + 1) as f32 * row_h, self.list_off);
+                    let new = if top < off - row_h || bottom > off + view_h + row_h { Some(top - view_h * 0.4) }
+                        else if top < off { Some(top) }
+                        else if bottom > off + view_h { Some(bottom - view_h) }
+                        else { None };
+                    if let Some(n) = new { area = area.vertical_scroll_offset(n.clamp(0.0, max_off)); }
                 }
                 ui.spacing_mut().item_spacing.y = 0.0;
-                area.show_rows(ui, row_h, self.total, |ui, range| {
+                let area_out = area.show_rows(ui, row_h, self.total, |ui, range| {
                         self.ensure_rows(range.start, range.end.saturating_sub(1));
                         let thumb = self.thumb;
                         let terms = query_terms(&self.last_sent);
@@ -3276,6 +3327,7 @@ impl eframe::App for App {
                             ui.label(RichText::new("no matches").color(pal.dim));
                         }
                     });
+                self.list_off = area_out.state.offset.y;
                 }
                 if let (Some(hit), Some(at)) = (right_hit, right_at) {
                     // right-click on a row outside the selection selects just that row first
@@ -3287,24 +3339,6 @@ impl eframe::App for App {
                 if let Some((i, extend)) = clicked { self.move_cursor(i, extend); self.list_focus = true; }
                 if dbl { self.open_selected(); }
 
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new({
-                        let mut line = format!("{} shown", group_digits(self.total));
-                        if let (Some(st), true) = (&self.stats, self.total > 0) {
-                            line.push_str(&format!(" · {}{}", if st.approx { "≈ " } else { "" }, human_size(st.size)));
-                            if let (Some(a), Some(b)) = (&st.dmin, &st.dmax) {
-                                line.push_str(&if a == b { format!(" · {a}") } else { format!(" · {a} → {b}") });
-                            }
-                            if !st.kinds.is_empty() {
-                                let k: Vec<String> = st.kinds.iter().filter(|(n, _)| n != "no ext").map(|(n, c)| format!("{n} {}", group_digits(*c))).collect();
-                                if !k.is_empty() { line.push_str(&format!(" · {}", k.join(", "))); }
-                            }
-                        }
-                        line
-                    })
-                        .color(pal.dim).size(11.0),
-                );
             });
 
         self.scroll_pending = false;

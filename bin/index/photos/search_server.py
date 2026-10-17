@@ -100,9 +100,29 @@ FTS_CAP = 1000000          # per index; Recoll's slice is cheap, and a lower cap
 class FtsError(Exception):
     pass
 
-def _recoll_index(conf, terms, cap):
-    # "--": a query that starts with -term must not be read as a recollq option; -F gives base64 fields on one line
-    r = subprocess.run(["recollq", "-c", conf, "-n", f"0-{cap}", "-F", "url fbytes mtime", "--", terms], capture_output=True, text=True)
+class FtsCancelled(Exception):
+    pass
+
+def _recoll_index(conf, terms, cap, cancel=None):
+    # "--": a query that starts with -term must not be read as a recollq option; -F gives base64 fields on one line.
+    # Output goes to a temp file and the process is polled, so a request the client has already typed past (cancel() true)
+    # kills it instead of letting every keystroke's 14 recollq runs pile up.
+    import tempfile
+    with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+        proc = subprocess.Popen(["recollq", "-c", conf, "-n", f"0-{cap}", "-F", "url fbytes mtime", "--", terms], stdout=out, stderr=err)
+        while True:
+            try:
+                proc.wait(timeout=0.05)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel and cancel():
+                    proc.kill(); proc.wait()
+                    raise FtsCancelled()
+        out.seek(0); err.seek(0)
+        stdout, stderr = out.read(), err.read()
+    class r:            # what the parsing below reads
+        pass
+    r.stdout, r.stderr = stdout, stderr
     bad = [l for l in (r.stdout + r.stderr).splitlines() if "interpretation failed" in l or "syntax error" in l]
     if bad:
         raise FtsError("Recoll could not read the search words (" + bad[0].split("failed:")[-1].strip() + ")")
@@ -120,7 +140,7 @@ def _recoll_index(conf, terms, cap):
                          int(size) if size.isdigit() else None, int(mtime) if mtime.isdigit() and int(mtime) > 0 else None))
     return rows
 
-def fts_matches(terms, confs, cap=FTS_CAP):
+def fts_matches(terms, confs, cap=FTS_CAP, cancel=None):
     """Paths whose contents match a Recoll query, from the given content indexes, with sizes and mtimes, in relevance order.
     Raises FtsError when Recoll cannot parse the words."""
     def stamp(c):       # a rebuilt index (the user-dirs one, from Settings > Indexing) must not be answered from the cache
@@ -134,7 +154,7 @@ def fts_matches(terms, confs, cap=FTS_CAP):
             return _fts_cache[key]
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(confs)))) as ex:
-        per_index = list(ex.map(lambda c: _recoll_index(c, terms, cap), confs))      # index order kept: it is the relevance tie-break
+        per_index = list(ex.map(lambda c: _recoll_index(c, terms, cap, cancel), confs))      # index order kept: it is the relevance tie-break
     rows, seen = [], set()
     for found in per_index:
         for path, size, mtime in found:
@@ -249,7 +269,7 @@ def recoll_terms(text):
         out.append("-" + t[1:] if t.startswith("!") and len(t) > 1 else t)
     return " ".join(out)
 
-def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=False, skip_ext=()):
+def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=False, skip_ext=(), cancel=None):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M] [//dm 2024]: only content-indexed files can match.
     Searches every content index; //path narrows by folder. Relevance order unless a sort is explicit."""
     from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, _date_ok, path_matches, hidden_folders
@@ -269,9 +289,11 @@ def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=Fal
     if not any(not t.startswith("-") for t in filesearch.tokens(terms)):
         return [], 0, "/fts needs at least one word that must occur (a search of only -words would list every other file)", None
     try:
-        pool = fts_matches(terms.strip(), confs)
+        pool = fts_matches(terms.strip(), confs, cancel=cancel)
     except FtsError as e:
         return [], 0, str(e), None
+    except FtsCancelled:
+        return [], 0, None, None
     if prefilter:
         pool = [r for r in pool if prefilter(r["remote"], r["size"], r["mtime"])]
     if skip_ext:
@@ -837,7 +859,7 @@ class H(BaseHTTPRequestHandler):
                 if cv:
                     try:
                         if cv[0] == "fts":
-                            results, count, err, stats = fts_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date", skip_ext)
+                            results, count, err, stats = fts_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date", skip_ext, stale)
                         else:
                             results, count, err, stats = chroma_query(cv[3], sort, desc, offset, top, cv[2], cv[1], qs.get("explicit", ["0"])[0] == "1" or sort != "date", skip_ext)
                     except Exception as e:      # a bad query must come back as an error line, not a dropped connection
