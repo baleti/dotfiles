@@ -240,16 +240,16 @@ hl.bind(mainMod .. " + V", hl.dsp.exec_cmd("qs ipc call clipboardPicker toggle")
 hl.bind("Print",           hl.dsp.exec_cmd("qs ipc call shotty toggle"), { description = "Screenshot a region (annotate)" })
 hl.bind("SHIFT + Print",   hl.dsp.exec_cmd("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate, hyprshot+satty fallback)" })
 
--- Global menu prototype (KDE's mod+a equivalent): flattens the focused
--- window's AT-SPI accessible menu tree into a rofi picker and activates
--- the chosen item. AT-SPI rather than com.canonical.AppMenu.Registrar/
+-- Global menu (KDE's mod+a equivalent): flattens the focused window's AT-SPI
+-- accessible menu tree into the Quickshell picker (~/.config/quickshell/appmenu/,
+-- same query DSL as mod+v) and activates the chosen item. AT-SPI rather than com.canonical.AppMenu.Registrar/
 -- dbusmenu because that scheme keys off X11 window IDs, and every client
 -- here runs native Wayland (no XWayland id to register with). Coverage
 -- depends on the app exposing a real accessible menu tree -- confirmed
 -- working against LibreOffice; GTK apps with a classic menu bar should
 -- work too, Electron/Gecko apps are unlikely to unless they force their
 -- a11y bridge on.
-hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("python3 ~/.config/hypr/scripts/appmenu-atspi.py"), { description = "Show the focused window's menu (global menu)" })
+hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("python3 ~/.config/hypr/scripts/appmenu-atspi.py pick"), { description = "Show the focused window's menu (global menu)" })
 
 -- mainMod+Tab / mainMod+SHIFT+Tab (group tabs switcher) are bound in winswitch.lua next to ALT+Tab.
 hl.bind("CTRL + escape",     hl.dsp.exec_cmd("alacritty -e htop"), { description = "Open htop" })
