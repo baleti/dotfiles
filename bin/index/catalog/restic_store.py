@@ -193,12 +193,26 @@ def migrate(drop_old):
         log(f"{label}: +{added:,} new versions, {closed:,} ended, {kept:,} unchanged ({time.time()-t0:.0f}s)")
     build(db)                                   # fills the full ids, marks forgotten snapshots, adds newer ones
     if drop_old:
-        n = main.execute("SELECT count(*) FROM sources WHERE kind='restic'").fetchone()[0]
-        main.execute("DELETE FROM entry_sources WHERE source_id IN (SELECT id FROM sources WHERE kind='restic')")
+        # chunked, so the live watchers (which share the main database's writer lock) are never held up for long
+        main.execute("PRAGMA busy_timeout=120000")
+        ids = [r[0] for r in main.execute("SELECT id FROM sources WHERE kind='restic'")]
+        for i in ids:
+            main.execute("DELETE FROM entry_sources WHERE source_id=?", (i,))
+            main.commit()
         main.execute("DELETE FROM sources WHERE kind='restic'")
-        main.execute("DELETE FROM entries WHERE id NOT IN (SELECT entry_id FROM entry_sources)")
         main.commit()
-        log(f"removed {n} restic sources from the main catalog (run VACUUM to give the space back)")
+        lo, hi = main.execute("SELECT min(id), max(id) FROM entries").fetchone()
+        gone, step = 0, 200000
+        for a in range(lo or 0, (hi or 0) + 1, step):
+            cur = main.execute("DELETE FROM entries WHERE id>=? AND id<? AND id NOT IN (SELECT entry_id FROM entry_sources)", (a, a + step))
+            gone += cur.rowcount
+            main.commit()
+        log(f"removed {len(ids)} restic sources and {gone:,} entries only they held from the main catalog (VACUUM gives the space back)")
+        touch_main_generation()
+
+def touch_main_generation():
+    with open(MAIN_DB + ".gen", "a"):
+        os.utime(MAIN_DB + ".gen", None)
 
 def server_rows(db_path=RESTIC_DB):
     """(rows sorted by path, []) for the search server: one row per path, its newest retrievable version, with the
