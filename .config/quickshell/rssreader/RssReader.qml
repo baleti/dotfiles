@@ -54,7 +54,7 @@ PanelWindow {
 
     // Search box speaks the shared picker DSL (QueryDsl.qml /
     // ~/.config/docs/query-dsl.md): bare text + /fv over title/feed/tag/
-    // author, /s + /rv for order. /ft /at /rt are inert -- this is a list,
+    // author, /s for order. /ft /at /rt are inert -- this is a list,
     // not a column view.
     readonly property var typeNames: ["title", "feed", "author", "tag", "date"]
     readonly property var typeDescs: ({
@@ -163,8 +163,6 @@ PanelWindow {
             });
         } // else: RssSvc.items' own newest-first order stands
 
-        if (root.parsed.reverse)
-            rows = rows.slice().reverse();
         return rows;
     }
     onViewChanged: {
@@ -192,7 +190,7 @@ PanelWindow {
     }
 
     // ---- autocomplete (marginalia-style, mirrors launcher/AppLauncher.qml)
-    readonly property var _acVerbs: ["/fv", "/s", "/rv"] // /ft /at /rt are inert here
+    readonly property var _acVerbs: ["/fv", "/s"] // /ft /at /rt are inert here
 
     // ---- inline command-validity coloring (query-dsl.md) -----------
     // True if `v` (leading "/" included) is still a genuine prefix of some
@@ -262,7 +260,7 @@ PanelWindow {
     // (`_acVerbs`) plus `/fv` and `/s` - the two that take a real path -
     // crossed with every type name ("fv/tag", "s/date", ...), so a
     // fragment of the *type*, not just the verb, reaches a whole working
-    // command. `/rv` isn't crossed (takes no path). See query-dsl.md's
+    // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
         const bare = root._acVerbs.map(v => v.slice(1));

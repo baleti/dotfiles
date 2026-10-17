@@ -183,7 +183,7 @@ def tokenize(text):
 # and an unresolvable field name in *either* spelling (`/fv/qqq foo`,
 # `/fv qqq:foo`, or either still being typed) degrades to a plain bare-word
 # search over the literal text instead of being dropped. The other
-# shared-grammar verbs (/ft, /at, /rt, /s, /rv) are recognised but inert
+# shared-grammar verbs (/ft, /at, /rt, /s) are recognised but inert
 # here: this is a single BM25-ranked line, no columns and no re-sort.
 #
 #   path     session's working directory
@@ -219,7 +219,6 @@ QUERY_ELEM_RE = re.compile(
     r'/(?:filter-value|fv|)/([a-zA-Z]+)(?:\s+(\S+))?'
     r'|/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
-    r'|/(?:reverse|rv)'
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'

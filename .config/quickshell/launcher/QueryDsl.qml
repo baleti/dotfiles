@@ -17,10 +17,10 @@ import QtQuick
 QtObject {
     id: root
 
-    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/rv"]
+    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s"]
     readonly property var verbAliases: ({
         "/filter-value": "/fv", "/filter-type": "/ft", "/add-type": "/at",
-        "/remove-type": "/rt", "/sort": "/s", "/reverse": "/rv"
+        "/remove-type": "/rt", "/sort": "/s"
     })
     // { short: { long, desc } } -- the long-form alias + a one-line
     // description, for marginalia-style autocomplete hints (query-dsl.md).
@@ -29,15 +29,14 @@ QtObject {
         "/ft": { long: "/filter-type",  desc: "show only the matching columns" },
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
-        "/s":  { long: "/sort",         desc: "order rows by one field, optional asc / desc" },
-        "/rv": { long: "/reverse",      desc: "flip the current order" }
+        "/s":  { long: "/sort",         desc: "order rows by one field, optional asc / desc" }
     })
 
     // Every accepted verb spelling, WITHOUT the leading "/" (query.rs's
     // VERB_FORMS) -- for prefix detection on the verb-name portion only.
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "rv",
-        "filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"
+        "fv", "ft", "at", "rt", "s",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort"
     ]
 
     // Split on whitespace, keeping "quoted runs" as one token (quotes stripped).
@@ -168,11 +167,11 @@ QtObject {
     }
 
     // Parse into { terms:[{field,value,quoted}|{text,quoted}], sort:{field,dir}|null,
-    // reverse:bool, cols:[{op,path}] }. Incomplete trailing tokens are dropped
+    // cols:[{op,path}] }. Incomplete trailing tokens are dropped
     // (never flash to zero on a valid partial keystroke). Mirrors query.rs::parse.
     function parse(text) {
         const toks = root.tokenize(text);
-        const res = { terms: [], sort: null, reverse: false, cols: [], openPaths: [] };
+        const res = { terms: [], sort: null, cols: [], openPaths: [] };
         let k = 0;
         while (k < toks.length) {
             const tv = root.tokVerb(toks[k]);
@@ -192,7 +191,7 @@ QtObject {
             // "!" only means something on a row filter; "!/s", "!/ft" ... parse
             // (so their arguments are still consumed) but change nothing.
             const R = (verbNeg && verb !== "/fv")
-                ? { terms: [], sort: null, reverse: false, cols: [], openPaths: [] } : res;
+                ? { terms: [], sort: null, cols: [], openPaths: [] } : res;
 
             if (tv.via !== null) {
                 // Via form: path came glued onto the verb. Every verb still
@@ -248,8 +247,6 @@ QtObject {
                     // sort key, ties on the first broken by the next, and
                     // so on. The space form stays single-key only.
                     R.sort = { fields: via.split("/"), dir: dir };
-                } else if (verb === "/rv") {
-                    R.reverse = true; // via meaningless here, harmless
                 } else {
                     const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
                     R.cols.push({ op: op, path: via });
@@ -259,7 +256,7 @@ QtObject {
 
             // Space form: collect argument tokens up to this verb's arity.
             const args = [];
-            const maxArgs = verb === "/rv" ? 0 : (verb === "/s" ? 2 : 1);
+            const maxArgs = verb === "/s" ? 2 : 1;
             while (args.length < maxArgs && k < toks.length && !root.startsCommand(toks[k])) {
                 if (verb === "/s" && args.length === 1 && !root._isDirectionLike(toks[k].v)) break;
                 args.push(toks[k]);
@@ -271,7 +268,6 @@ QtObject {
     }
 
     function _applyVerb(res, verb, args, verbNeg) {
-        if (verb === "/rv") { res.reverse = true; return; }
         if (args.length === 0) return; // partial -> inert
         const a0 = args[0].v;
         const neg = !!verbNeg || !!args[0].neg;

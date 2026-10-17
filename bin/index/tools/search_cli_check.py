@@ -49,8 +49,6 @@ n_small = server(small)["count"]
 _, newest, _ = run("-q", "-n", "0", small)
 _, oldest, _ = run("-q", "-n", "0", "--asc", small)
 check("--asc reverses the date order", n_small > 1 and newest.splitlines() == oldest.splitlines()[::-1])
-_, oldest2, _ = run("-q", "-n", "0", small + " /rv")
-check("/rv in the query reverses too", oldest2.splitlines() == oldest.splitlines())
 _, bysize, _ = run("-q", "-n", "30", "-l", "montgomer .pdf /s size desc")
 sizes = [int(l.split("\t")[0]) for l in bysize.splitlines() if l.split("\t")[0].isdigit()]
 check("/s size desc orders by size", sizes == sorted(sizes, reverse=True) and len(sizes) > 5)
