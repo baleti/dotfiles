@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse
+import collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -164,6 +164,116 @@ def fts_query(text, sort, desc, offset, limit, via=None):
     kinds = Counter(filesearch.kind_of(r["remote"]) or "no ext" for r in rows).most_common(5)
     stats = {"size": sum(r["size"] or 0 for r in rows), "kinds": [[k, n] for k, n in kinds]}
     return rows[offset: offset + limit], len(rows), None, stats
+
+# ---- /chroma: semantic search over the Chroma text indexes, done by a separate on-demand worker (chroma_worker.py) -
+CHROMA_URL = "http://127.0.0.1:8766"
+CHROMA_RE = re.compile(r"^/(?:chroma|semantic)(?:/([\w.-]+))?(?:\s+|$)(.*)$", re.S)
+_chroma_up = [0]               # bumps when the worker becomes reachable, so an idle panel re-runs its query
+_chroma_starting = threading.Event()
+_chroma_urls = collections.OrderedDict()      # local path -> the url stored in Chroma (for the snippets lookup)
+
+def _chroma_wait_ready():
+    try:
+        for _ in range(90):
+            time.sleep(2)
+            try:
+                urllib.request.urlopen(CHROMA_URL + "/ping", timeout=3).read()
+                _chroma_up[0] += 1
+                return
+            except OSError:
+                pass
+    finally:
+        _chroma_starting.clear()
+
+def chroma_call(path, params, timeout=180):
+    """(json, None) from the worker, or (None, message) while it is starting; the first call starts it."""
+    try:
+        with urllib.request.urlopen(CHROMA_URL + path + "?" + urllib.parse.urlencode(params), timeout=timeout) as r:
+            return json.load(r), None
+    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+        if not _chroma_starting.is_set():
+            _chroma_starting.set()
+            subprocess.run(["systemctl", "--user", "start", "--no-block", "chroma-search.service"], capture_output=True)
+            threading.Thread(target=_chroma_wait_ready, daemon=True).start()
+        return None, "semantic search is starting (about 30 s the first time): the panel refreshes when it is ready"
+
+def name_attrs(path):
+    """(size, mtime) of a path from the in-memory file-name table, or (None, None)."""
+    import bisect
+    t = NAMES
+    with t.lock:
+        i = bisect.bisect_left(t.paths, path)
+        if i < len(t.paths) and t.paths[i] == path:
+            return t.sizes[i], t.mtimes[i]
+    return None, None
+
+def chroma_words(text):
+    """Split a /chroma query body into (mime wanted, not wanted, path tags, tags, the words to embed)."""
+    from filesearch import split_mime_all, split_tags
+    wanted, not_wanted, rest = split_mime_all(text)
+    paths, rest = split_path_tags(rest)
+    tags, words = split_tags(rest)
+    words = " ".join(t for t in filesearch.tokens(words) if not t.startswith("!")).replace('"', "")
+    return wanted, not_wanted, paths, tags, words.strip()
+
+def chroma_query(text, sort, desc, offset, limit, via=None):
+    """/chroma <what it is about> [//mime kind] [//name x] [//path x] [//size >5M]: documents whose text is closest in
+    meaning to the words (MiniLM embeddings over the content indexes), best first, one row per file with the score.
+    The pool is the nearest chunks of every index, so the total is what the closest chunks cover, not every file."""
+    from filesearch import matches_mime, _size_ok, path_matches, hidden_folders
+    wanted, not_wanted, paths, tags, words = chroma_words(text)
+    if not words:
+        return [], 0, None, None
+    res, err = chroma_call("/search", {"q": words, "via": via or "", "n": max(400, 8 * (offset + limit))})
+    if res is None:
+        return [], 0, err, None
+    if res["errors"]:
+        return [], 0, "; ".join(res["errors"]), None
+    best = {}
+    for h in res["hits"]:
+        url = h["url"]
+        path = config.to_local(urllib.parse.unquote(url[len("file://"):])) if url.startswith("file://") else url
+        if path not in best or h["score"] > best[path]["score"]:
+            best[path] = h
+            _chroma_urls[path] = url
+            _chroma_urls.move_to_end(path)
+    while len(_chroma_urls) > 20000:
+        _chroma_urls.popitem(last=False)
+    hidden = hidden_folders(text)
+    rows = []
+    for path, h in best.items():
+        size, mtime = name_attrs(path)
+        if (wanted and not matches_mime(path, wanted)) or (not_wanted and matches_mime(path, not_wanted)):
+            continue
+        base = path.rsplit("/", 1)[-1].lower()
+        if (any(path_matches(path, v) for v in tags["!path"]) or any(t.lower() in base for t in tags["!name"])
+                or any(_size_ok(size, c) for c in tags["!size"]) or any(path.startswith(f) for f in hidden)
+                or not all(path_matches(path, v) for v in paths) or not all(t.lower() in base for t in tags["name"])
+                or not all(_size_ok(size, c) for c in tags["size"])):
+            continue
+        rows.append({"remote": path, "size": size, "mtime": mtime, "score": h["score"]})
+    rows.sort(key=lambda r: -r["score"])
+    if sort in ("name", "path", "size"):
+        key = {"name": lambda r: r["remote"].rsplit("/", 1)[-1].lower(), "path": lambda r: r["remote"].lower(),
+               "size": lambda r: r["size"] or 0}[sort]
+        rows.sort(key=key, reverse=desc)
+    kinds = collections.Counter(filesearch.kind_of(r["remote"]) or "no ext" for r in rows).most_common(5)
+    stats = {"size": sum(r["size"] or 0 for r in rows), "kinds": [[k, n] for k, n in kinds]}
+    return rows[offset: offset + limit], len(rows), None, stats
+
+def chroma_snippets(remote, text):
+    """The chunks of one file closest to the query: [{"page": None, "text": ..., "ranges": []}]."""
+    m = CHROMA_RE.match(text.strip())
+    if not m:
+        return [], "not a /chroma query"
+    _, _, _, _, words = chroma_words(m.group(2))
+    if not words:
+        return [], None
+    url = _chroma_urls.get(remote) or ("file://" + remote)
+    res, err = chroma_call("/doc", {"url": url, "q": words, "via": m.group(1) or "", "n": 3}, timeout=60)
+    if res is None:
+        return [], err
+    return [{"page": None, "text": h["text"], "ranges": []} for h in res["hits"]], ("; ".join(res["errors"]) or None)
 
 _snip_dbs = {}
 _snip_lock = threading.Lock()
@@ -553,8 +663,12 @@ class H(BaseHTTPRequestHandler):
                 if not view["show_dotfiles"] and not fts:
                     rest = (rest + " !/.").strip()      # the same negated term typed by hand: no path with a dot component
                 errors = []
+                chroma = CHROMA_RE.match(rest) if not fts else None
                 if fts:
                     results, count, err, stats = fts_query(fts.group(2), sort, desc, offset, top, fts.group(1))
+                    errors = [err] if err else []
+                elif chroma:
+                    results, count, err, stats = chroma_query(chroma.group(2), sort, desc, offset, top, chroma.group(1))
                     errors = [err] if err else []
                 else:
                     extras = []
@@ -566,7 +680,7 @@ class H(BaseHTTPRequestHandler):
                             extras.append(t)
                     results, count, stats = NAMES.query(rest, sort, desc, offset, top, extras=extras, cancel=stale)
                 for r in results:
-                    r["score"] = None
+                    r.setdefault("score", None)
                     if r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
                         r["thumb"] = thumb_path(r["remote"])
                         r["ready"] = enqueue(r["remote"], tag)
@@ -596,7 +710,10 @@ class H(BaseHTTPRequestHandler):
                                     "results": results, "errors": errors})
         if u.path == "/snippets":
             try:
-                snips, err = fts_snippets(qs.get("remote", [""])[0], qs.get("q", [""])[0])
+                if CHROMA_RE.match(qs.get("q", [""])[0].strip()):
+                    snips, err = chroma_snippets(qs.get("remote", [""])[0], qs.get("q", [""])[0])
+                else:
+                    snips, err = fts_snippets(qs.get("remote", [""])[0], qs.get("q", [""])[0])
             except Exception as e:
                 return self._json(200, {"snippets": [], "error": str(e)})
             return self._json(200, {"snippets": snips, "error": err})
@@ -640,7 +757,7 @@ class H(BaseHTTPRequestHandler):
             return self._json(200, {"faces": [f for f in faces if f["thumb"]]})
         if u.path == "/ver":
             # bumps whenever the name table changes (live delta or reload): the picker polls this to refresh itself
-            return self._json(200, {"ver": NAMES._ver + sum(b["table"]._ver for b in BACKUPS.values())})
+            return self._json(200, {"ver": NAMES._ver + sum(b["table"]._ver for b in BACKUPS.values()) + _chroma_up[0]})
         if u.path == "/facets":
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),
