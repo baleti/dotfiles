@@ -87,33 +87,45 @@ def is_subsequence(frag, name):
 
 FTS_CAP = 1000000          # per index; Recoll's slice is cheap, and a lower cap silently truncates counts
 
+class FtsError(Exception):
+    pass
+
+def _recoll_index(conf, terms, cap):
+    # "--": a query that starts with -term must not be read as a recollq option; -F gives base64 fields on one line
+    r = subprocess.run(["recollq", "-c", conf, "-n", f"0-{cap}", "-F", "url fbytes mtime", "--", terms], capture_output=True, text=True)
+    bad = [l for l in (r.stdout + r.stderr).splitlines() if "interpretation failed" in l or "syntax error" in l]
+    if bad:
+        raise FtsError("Recoll could not read the search words (" + bad[0].split("failed:")[-1].strip() + ")")
+    rows = []
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        try:
+            url, size, mtime = (base64.b64decode(p).decode("utf-8", "replace") for p in parts)
+        except ValueError:
+            continue
+        if url.startswith("file://"):
+            rows.append((config.to_local(url[len("file://"):]),          # Recoll writes plain paths into file:// urls, not percent-encoded ones
+                         int(size) if size.isdigit() else None, int(mtime) if mtime.isdigit() and int(mtime) > 0 else None))
+    return rows
+
 def fts_matches(terms, confs, cap=FTS_CAP):
-    """Paths whose contents match a Recoll query, from the given content indexes, with sizes and mtimes, in relevance order."""
+    """Paths whose contents match a Recoll query, from the given content indexes, with sizes and mtimes, in relevance order.
+    Raises FtsError when Recoll cannot parse the words."""
     key = (terms, tuple(confs), cap)
     with _fts_lock:
         if key in _fts_cache:
             return _fts_cache[key]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(confs)))) as ex:
+        per_index = list(ex.map(lambda c: _recoll_index(c, terms, cap), confs))      # index order kept: it is the relevance tie-break
     rows, seen = [], set()
-    for conf in confs:
-        # "--": a query that starts with -term must not be read as a recollq option; -F gives base64 fields on one line
-        out = subprocess.run(["recollq", "-c", conf, "-n", f"0-{cap}", "-F", "url fbytes mtime", "--", terms],
-                             capture_output=True, text=True).stdout
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) != 3:
-                continue
-            try:
-                url, size, mtime = (base64.b64decode(p).decode("utf-8", "replace") for p in parts)
-            except ValueError:
-                continue
-            if not url.startswith("file://"):
-                continue
-            path = config.to_local(url[len("file://"):])           # Recoll writes plain paths into file:// urls, not percent-encoded ones
-            if path in seen:
-                continue
-            seen.add(path)
-            rows.append({"remote": path, "size": int(size) if size.isdigit() else None,
-                         "mtime": int(mtime) if mtime.isdigit() and int(mtime) > 0 else None})
+    for found in per_index:
+        for path, size, mtime in found:
+            if path not in seen:
+                seen.add(path)
+                rows.append({"remote": path, "size": size, "mtime": mtime})
     with _fts_lock:
         _fts_cache.clear()
         _fts_cache[key] = rows
@@ -238,7 +250,12 @@ def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=Fal
         return [], 0, "/fts needs some words to look for inside files", None
     hidden = hidden_folders(text)
     prefilter = make_prefilter(before, before + " " + text)
-    pool = fts_matches(terms.strip(), confs)
+    if not any(not t.startswith("-") for t in filesearch.tokens(terms)):
+        return [], 0, "/fts needs at least one word that must occur (a search of only -words would list every other file)", None
+    try:
+        pool = fts_matches(terms.strip(), confs)
+    except FtsError as e:
+        return [], 0, str(e), None
     if prefilter:
         pool = [r for r in pool if prefilter(r["remote"], r["size"], r["mtime"])]
     if skip_ext:
