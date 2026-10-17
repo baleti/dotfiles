@@ -12,6 +12,7 @@ Everything here is generic code. The private parts are kept outside the repo:
 | Part | Where | What it does |
 |---|---|---|
 | File-name index | `catalog/` (`catalog.py`, `filesearch.py`) | Walks the local home, rclone remotes and restic snapshots into `catalog.db`, then keeps every distinct path in memory for substring search. |
+| Restic store | `catalog/restic_store.py` | `catalog-restic.db`: every distinct version of a path stored once with its snapshot range (960k versions, 357 MB for 11 snapshots), ingested by `build-restic` (6-hourly, restic listing of snapshots newer than the newest stored). |
 | Photo search server | `photos/search_server.py`, `search.py` | HTTP on 127.0.0.1:8765. File-name search, `/fts` (Recoll), `/clip` and `/face` (photo embeddings), `/paths` (folder completion), `/faces/pane` (face crops). |
 | Picker | `images/` (Rust, egui) | The mod+1 "Search files" window. Talks only to the server. |
 | Photo embeddings | `photos/index_photos.py`, `face_index.py`, `clip_text.py` | CLIP and InsightFace on the ai1 GPU (`photos/ai1/`). |
@@ -69,3 +70,22 @@ Everything here is generic code. The private parts are kept outside the repo:
 - The helper keeps ONE client; a second consumer displaces the first (and both then rescan).
 - What none of this sees: files held open and still being written (updated on close), other filesystems on host3
   (the periodic walks cover them), changes while a piece was down (reconnect triggers a walk).
+
+## View settings, verbs and shortcuts
+
+- **Settings file** `~/.config/indexes/picker-settings.json` (`Ctrl+P` in the picker edits it): defaults for
+  `show_dotfiles` (true), `show_backup_restic` (false), `show_backup_btrfs` (false), and a `shortcuts` map
+  (action -> list of chords such as `"Ctrl+R"`, `"F4"`). The server reads the view defaults on every query.
+- **Query verbs** override the defaults for one search, anywhere in the query, later ones win:
+  `/show-dotfiles` `/hide-dotfiles`, `/show-backup` `/hide-backup` (both kinds), `/show-backup-restic`
+  `/hide-backup-restic`, `/show-backup-btrfs` `/hide-backup-btrfs`. Hiding dotfiles adds the negated term `!/.`.
+- **Restic backups** are a table of their own in the server, loaded in the background the first time a query asks
+  for them (about 10 s; the status line says so and the panel refreshes when ready). One row per path (its newest
+  version) with the path under the restic mount, `<mount>/ids/<short id><original path>`, so open, copy and
+  preview work like on any file. They are not part of the main catalog, so default searches pay nothing and no
+  longer show backup-only ghost paths. Cache churn is left out of the history (`restic_exclude` in the catalog
+  config). btrfs snapshots (snapper) are not indexed yet; `/show-backup-btrfs` says so.
+- **Shortcuts** (`ACTIONS` in `images/src/main.rs`) are rebindable in the settings window: click one, press the new
+  keys (Esc cancels, Backspace removes, bare letters are refused). Arrows, Enter, Tab, Esc, paging, Delete and
+  Shift+arrows are fixed. Colours follow the wallpaper: the picker re-reads `~/.local/state/quickshell/scheme.json`
+  when it changes.
