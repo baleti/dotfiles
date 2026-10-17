@@ -1629,6 +1629,8 @@ day.
   `5` is the ordinary substring and matches 599 too. A `'` only opens a
   quote at the start of a token or right after the `:` of a scoped value,
   so apostrophes inside words (`don't`) stay plain text.
+  The quote must be closed: while only the opening quote is typed (`"5`) the
+  term is still an ordinary substring, and becomes exact when the closing quote lands.
 - **BM25 pickers' bare words**: prefix-expansion against the corpus
   vocabulary, BM25-scored - their own thing, on top of the above.
 

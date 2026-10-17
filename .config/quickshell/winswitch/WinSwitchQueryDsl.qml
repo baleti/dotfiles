@@ -137,8 +137,8 @@ QtObject {
             if (inQuotes ? c === qc : opens) {
                 if (start < 0) leadQuote = true;
                 if (!inQuotes) qc = c;
+                else quoted = true; // closed: an unterminated quote is still being typed
                 inQuotes = !inQuotes;
-                quoted = true;
                 if (start < 0) start = i;
                 continue;
             }
