@@ -784,10 +784,32 @@ def list_sessions(base: Path, tty_panes: dict, procs: dict, hypr_by_session: dic
     return rows[:SESSIONS_KEEP]
 
 
+def expire_reset_windows(accounts_data: list) -> list:
+    """A carried-forward (stale/backoff) row still holds the last fetched
+    percentages; once a window's resets_at has passed, that window has
+    reset, so show 0 instead of the old number (otherwise a 99% session
+    sits stuck for the whole backoff after it already reset)."""
+    now = datetime.now(timezone.utc)
+    out = []
+    for row in accounts_data:
+        row = dict(row)
+        for w in ("session", "weekly"):
+            r = row.get(f"{w}_resets_at")
+            try:
+                gone = bool(r) and datetime.fromisoformat(r) <= now
+            except ValueError:
+                gone = False
+            if gone:
+                row[f"{w}_pct"] = 0
+                row[f"{w}_resets_at"] = None
+        out.append(row)
+    return out
+
+
 def write_state(accounts_data: list, sessions_data: dict, mode: str, interval: int) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
-        "accounts": accounts_data,
+        "accounts": expire_reset_windows(accounts_data),
         "sessions": sessions_data,
         "poll_mode": mode,
         "poll_interval_s": interval,
