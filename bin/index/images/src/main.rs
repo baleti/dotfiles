@@ -601,6 +601,10 @@ struct App {
     /// the text of the last selection made in a preview snippet (for the right-click Copy), and whether a snippet has the keyboard focus
     snip_sel: String,
     snip_focus: bool,
+    /// the selection (snippet number, range) to put back after a right-click, and the snippet whose menu is being kept open
+    snip_range: Option<(usize, egui::text::CCursorRange)>,
+    snip_keep: Option<usize>,
+    snip_key: Option<(String, String)>,
     /// Settings > Indexing: the lists being edited, the text boxes, the last run's state/message, when it was last asked
     idx: IndexDirs,
     idx_loaded: bool,
@@ -1447,6 +1451,9 @@ impl App {
             settings_open: false,
             snip_sel: String::new(),
             snip_focus: false,
+            snip_range: None,
+            snip_keep: None,
+            snip_key: None,
             idx: IndexDirs::default(),
             idx_loaded: false,
             idx_path_input: String::new(),
@@ -1855,6 +1862,11 @@ impl App {
                 let _ = tx.send((remote, q, r));
             });
         }
+        if self.snip_key.as_ref() != Some(&key) {      // another file or query: the remembered selection no longer applies
+            self.snip_key = Some(key.clone());
+            self.snip_range = None;
+            self.snip_sel.clear();
+        }
         let bold = FontFamily::Name("bold".into());
         let frame = egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(12));
         let panel = if self.settings.preview_bottom {
@@ -1864,6 +1876,9 @@ impl App {
         };
         let mut focus = false;
         let mut sel_now: Option<String> = None;
+        let mut range_now: Option<(usize, egui::text::CCursorRange)> = None;
+        let mut keep_now: Option<usize> = None;
+        let (saved_range, keep_prev) = (self.snip_range, self.snip_keep);
         panel.frame(frame)
             .show_inside(ui, |ui| {
                 let name = hit.remote.rsplit('/').next().unwrap_or(&hit.remote);
@@ -1912,11 +1927,35 @@ impl App {
                                     .desired_rows(1)
                                     .layouter(&mut layouter)
                                     .show(ui);
-                                if out.response.has_focus() {
+                                // Right-click must not lose the selection: the press would move the caret and the menu click would take the
+                                // focus (a selection is only drawn while the box has focus), so while the button is held, the menu is
+                                // open (and one frame after) the selection that was there is put back and the focus kept.
+                                let held = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary))
+                                    && (out.response.hovered() || keep_prev == Some(n));
+                                let menu_open = out.response.context_menu_opened();
+                                let keeping = menu_open || held || keep_prev == Some(n);
+                                let mut active: Option<egui::text::CCursorRange> = None;
+                                if keeping {
+                                    if let Some((m, r)) = saved_range.filter(|(m, _)| *m == n) {
+                                        let _ = m;
+                                        let id = out.response.id;
+                                        let mut st = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                                        st.cursor.set_char_range(Some(r));
+                                        st.store(ui.ctx(), id);
+                                        ui.memory_mut(|m| m.request_focus(id));
+                                        focus = true;
+                                        active = Some(r);
+                                    }
+                                    if menu_open || held { keep_now = Some(n); }
+                                } else if out.response.has_focus() {
                                     focus = true;
-                                    if let Some(r) = out.cursor_range {
-                                        let (a, b): (usize, usize) = (r.primary.index.min(r.secondary.index).into(), r.primary.index.max(r.secondary.index).into());
-                                        if b > a { sel_now = Some(sn.text.chars().skip(a).take(b - a).collect()); }
+                                    active = out.cursor_range.filter(|r| r.primary.index != r.secondary.index);
+                                }
+                                if let Some(r) = active {
+                                    let (a, b): (usize, usize) = (r.primary.index.min(r.secondary.index).into(), r.primary.index.max(r.secondary.index).into());
+                                    if b > a {
+                                        sel_now = Some(sn.text.chars().skip(a).take(b - a).collect());
+                                        range_now = Some((n, r));
                                     }
                                 }
                                 let whole = sn.text.clone();
@@ -1935,7 +1974,9 @@ impl App {
                 }
             });
         self.snip_focus = focus;
+        self.snip_keep = keep_now;
         if let Some(t) = sel_now { self.snip_sel = t; }
+        if range_now.is_some() { self.snip_range = range_now; }
     }
 
     /// Thumbnail grid for zoomed-in views: square cells with name, path, size and date under each.
