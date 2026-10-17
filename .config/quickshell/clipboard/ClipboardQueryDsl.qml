@@ -68,19 +68,22 @@ QtObject {
     // Case-insensitive substring containment; empty needle always matches
     // (picker.rs's substr).
     // Case-insensitive substring containment; empty needle always matches.
-    // An all-digit needle is a whole number instead: "5" matches 5 but not
-    // 15 or 599 (a digit run may not touch another digit). See query-dsl.md.
-    function substrIdx(needle, hay) {
+    // With `exact` (the term was quoted: "5" or '5') the needle must stand
+    // alone: no letter/digit/underscore directly before or after it, so "5"
+    // matches 5 but not 15 or 599. See query-dsl.md "Quoted terms".
+    function substrIdx(needle, hay, exact) {
         const n = String(needle).toLowerCase(), h = String(hay).toLowerCase();
-        if (!/^[0-9]+$/.test(n)) return h.indexOf(n);
         let i = h.indexOf(n);
+        if (!exact || n.length === 0) return i;
+        const w = /[a-z0-9_]/;
+        const lead = w.test(n.charAt(0)), trail = w.test(n.charAt(n.length - 1));
         while (i >= 0) {
-            if (!/[0-9]/.test(h.charAt(i - 1) || "") && !/[0-9]/.test(h.charAt(i + n.length) || "")) return i;
+            if (!(lead && w.test(h.charAt(i - 1))) && !(trail && w.test(h.charAt(i + n.length)))) return i;
             i = h.indexOf(n, i + 1);
         }
         return -1;
     }
-    function substr(needle, hay) { return root.substrIdx(needle, hay) >= 0; }
+    function substr(needle, hay, exact) { return root.substrIdx(needle, hay, exact) >= 0; }
 
     function isFilterValueVerb(rest) { return rest === "fv" || rest === "filter-value"; }
     function isVerb(rest) { return root.verbForms.indexOf(rest) >= 0; }
@@ -137,22 +140,29 @@ QtObject {
         let start = -1;
         let leadQuote = false;
         let inQuotes = false;
+        let qc = "";
+        let quoted = false;
         // Leading "!" negates the token (query-dsl.md "Negation"); not part
         // of it, so `start` stays on the char after it.
         let neg = false;
         for (let i = 0; i < query.length; i++) {
             const c = query[i];
             if (c === "!" && start < 0 && !neg) { neg = true; continue; }
-            if (c === "\"") {
+            // `'` only opens a quote at the start of a token or of a scoped
+            // value (after ":"), so apostrophes inside words stay text.
+            const opens = c === "\"" || (c === "'" && (start < 0 || query[i - 1] === ":"));
+            if (inQuotes ? c === qc : opens) {
                 if (start < 0) leadQuote = true;
+                if (!inQuotes) qc = c;
                 inQuotes = !inQuotes;
+                quoted = true;
                 if (start < 0) start = i;
                 continue;
             }
             if (/\s/.test(c) && !inQuotes) {
                 if (start >= 0) {
-                    tokens.push({ start: start, text: cur, leadQuote: leadQuote, neg: neg });
-                    cur = ""; start = -1; leadQuote = false;
+                    tokens.push({ start: start, text: cur, leadQuote: leadQuote, quoted: quoted, neg: neg });
+                    cur = ""; start = -1; leadQuote = false; quoted = false;
                 }
                 neg = false;
                 continue;
@@ -160,7 +170,7 @@ QtObject {
             if (start < 0) start = i;
             cur += c;
         }
-        if (start >= 0) tokens.push({ start: start, text: cur, leadQuote: leadQuote, neg: neg });
+        if (start >= 0) tokens.push({ start: start, text: cur, leadQuote: leadQuote, quoted: quoted, neg: neg });
         return tokens;
     }
 
@@ -200,10 +210,15 @@ QtObject {
         return fieldNames.filter(f => root.substr(frag, f));
     }
 
-    function _pushFvArg(arg, fieldNames, fieldTerms, words, neg, negWords) {
+    // `quoted` terms ("5" / '5') must stand alone, not sit inside a longer
+    // run (see `substrIdx`): they go to `exactWords`/`negExact`, or carry
+    // `exact` on a fieldTerm, instead of joining the plain phrase.
+    function _pushFvArg(arg, fieldNames, fieldTerms, words, neg, negWords, quoted, exactWords, negExact) {
         const colon = arg.indexOf(":");
         if (colon >= 0) {
-            fieldTerms.push({ fields: root.resolveFields(arg.slice(0, colon), fieldNames), value: arg.slice(colon + 1), neg: !!neg });
+            fieldTerms.push({ fields: root.resolveFields(arg.slice(0, colon), fieldNames), value: arg.slice(colon + 1), neg: !!neg, exact: !!quoted });
+        } else if (quoted) {
+            (neg ? negExact : exactWords).push(arg);
         } else if (neg) {
             negWords.push(arg);
         } else {
@@ -275,6 +290,8 @@ QtObject {
         const fieldTerms = [];
         const words = [];
         const negWords = []; // each "!word": the row must NOT contain it
+        const exactWords = []; // quoted words: must stand alone (see _pushFvArg)
+        const negExact = [];
         const openFields = [];
         const columnOps = [];
         let sort = null;
@@ -286,7 +303,11 @@ QtObject {
             if (tv === null) {
                 const rest = (!tok.leadQuote && tok.text[0] === "/") ? tok.text.slice(1) : null;
                 const midTyping = rest !== null && root.isVerbPrefix(rest);
-                if (!midTyping) (tok.neg ? negWords : words).push(tok.text); // real word, or a literal "/usr/bin"
+                if (!midTyping) {
+                    // real word, or a literal "/usr/bin"
+                    if (tok.quoted) (tok.neg ? negExact : exactWords).push(tok.text);
+                    else (tok.neg ? negWords : words).push(tok.text);
+                }
                 i++;
                 continue;
             }
@@ -304,7 +325,7 @@ QtObject {
             }
             if (tv.via !== null) {
                 if (tv.verb === "fv" && i < toks.length && !root.startsCmd(toks[i])) {
-                    root._pushFvArg(tv.via + ":" + toks[i].text, fieldNames, fieldTerms, words, verbNeg || toks[i].neg, negWords);
+                    root._pushFvArg(tv.via + ":" + toks[i].text, fieldNames, fieldTerms, words, verbNeg || toks[i].neg, negWords, toks[i].quoted, exactWords, negExact);
                     i++;
                 } else if (tv.verb === "fv" && tv.via.length > 0) {
                     // `tv.via.length > 0` matters on its own: an empty via
@@ -337,7 +358,7 @@ QtObject {
             }
             if (tv.verb === "fv") {
                 if (i < toks.length && !root.startsCmd(toks[i])) {
-                    root._pushFvArg(toks[i].text, fieldNames, fieldTerms, words, verbNeg || toks[i].neg, negWords);
+                    root._pushFvArg(toks[i].text, fieldNames, fieldTerms, words, verbNeg || toks[i].neg, negWords, toks[i].quoted, exactWords, negExact);
                     i++;
                 }
                 continue;
@@ -368,7 +389,7 @@ QtObject {
             }
         }
         return {
-            fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), negWords: negWords.map(w => w.toLowerCase()), openFields: openFields,
+            fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), negWords: negWords.map(w => w.toLowerCase()), exactWords: exactWords, negExact: negExact, openFields: openFields,
             columnOps: columnOps, sort: sort, reverse: reverse
         };
     }
@@ -424,7 +445,7 @@ QtObject {
             for (const f of t.fields) {
                 const v = entry.fields[f];
                 if (v === undefined) continue;
-                if (cmp !== null ? root._compareMatches(v, cmp.op, cmp.operand) : root.substr(t.value, v)) {
+                if (cmp !== null ? root._compareMatches(v, cmp.op, cmp.operand) : root.substr(t.value, v, t.exact)) {
                     ok = true; break;
                 }
             }
@@ -432,6 +453,10 @@ QtObject {
         }
         for (const w of (query.negWords || []))
             if (entry.haystack.indexOf(w) >= 0) return false;
+        for (const w of (query.negExact || []))
+            if (root.substr(w, entry.haystack, true)) return false;
+        for (const w of (query.exactWords || []))
+            if (!root.substr(w, entry.haystack, true)) return false;
         return query.text.length === 0 || entry.haystack.indexOf(query.text) >= 0;
     }
 

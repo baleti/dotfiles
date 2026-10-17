@@ -121,6 +121,8 @@ QtObject {
         let start = -1;
         let leadQuote = false;
         let inQuotes = false;
+        let qc = "";
+        let quoted = false;
         // A "!" at the start of a token negates it (query-dsl.md
         // "Negation"). It is not part of the token: `start` stays on the
         // char after it, so command spans / completion offsets see the
@@ -129,18 +131,24 @@ QtObject {
         for (let i = 0; i < query.length; i++) {
             const c = query[i];
             if (c === "!" && start < 0 && !neg) { neg = true; continue; }
-            if (c === '"') {
+            // `'` only opens a quote at the start of a token or of a scoped
+            // value (after ":"), so apostrophes inside words stay text.
+            const opens = c === '"' || (c === "'" && (start < 0 || query[i - 1] === ":"));
+            if (inQuotes ? c === qc : opens) {
                 if (start < 0) leadQuote = true;
+                if (!inQuotes) qc = c;
                 inQuotes = !inQuotes;
+                quoted = true;
                 if (start < 0) start = i;
                 continue;
             }
             if (/\s/.test(c) && !inQuotes) {
                 if (start >= 0) {
-                    tokens.push({ start, text: cur, leadQuote, neg });
+                    tokens.push({ start, text: cur, leadQuote, quoted, neg });
                     cur = "";
                     start = -1;
                     leadQuote = false;
+                    quoted = false;
                 }
                 neg = false;
                 continue;
@@ -149,7 +157,7 @@ QtObject {
             cur += c;
         }
         if (start >= 0)
-            tokens.push({ start, text: cur, leadQuote, neg });
+            tokens.push({ start, text: cur, leadQuote, quoted, neg });
         return tokens;
     }
 
@@ -212,19 +220,22 @@ QtObject {
 
     // --- substring matching, schema lookups -------------------------------
     // Case-insensitive substring containment; empty needle always matches.
-    // An all-digit needle is a whole number instead: "5" matches 5 but not
-    // 15 or 599 (a digit run may not touch another digit). See query-dsl.md.
-    function substrIdx(needle, hay) {
+    // With `exact` (the term was quoted: "5" or '5') the needle must stand
+    // alone: no letter/digit/underscore directly before or after it, so "5"
+    // matches 5 but not 15 or 599. See query-dsl.md "Quoted terms".
+    function substrIdx(needle, hay, exact) {
         const n = String(needle).toLowerCase(), h = String(hay).toLowerCase();
-        if (!/^[0-9]+$/.test(n)) return h.indexOf(n);
         let i = h.indexOf(n);
+        if (!exact || n.length === 0) return i;
+        const w = /[a-z0-9_]/;
+        const lead = w.test(n.charAt(0)), trail = w.test(n.charAt(n.length - 1));
         while (i >= 0) {
-            if (!/[0-9]/.test(h.charAt(i - 1) || "") && !/[0-9]/.test(h.charAt(i + n.length) || "")) return i;
+            if (!(lead && w.test(h.charAt(i - 1))) && !(trail && w.test(h.charAt(i + n.length)))) return i;
             i = h.indexOf(n, i + 1);
         }
         return -1;
     }
-    function substr(needle, hay) { return root.substrIdx(needle, hay) >= 0; }
+    function substr(needle, hay, exact) { return root.substrIdx(needle, hay, exact) >= 0; }
     // A label-line preview of `value`, capped at `maxLen` chars, as
     // `{ text, matchStart, matchLen }` - `matchStart` is -1 when there's no
     // needle or it wasn't found, so a caller can tell "no highlight" apart
@@ -380,13 +391,13 @@ QtObject {
     }
 
     // --- command parsing (query.rs's filter_term / parse) -----------------
-    function filterTerm(arg) {
+    function filterTerm(arg, quoted) {
         const colon = arg.indexOf(":");
         if (colon >= 0)
-            return { kind: "scoped", path: arg.slice(0, colon), value: arg.slice(colon + 1) };
-        if (arg.indexOf(".") < 0 && root.resolveGroups(arg).length > 0)
+            return { kind: "scoped", path: arg.slice(0, colon), value: arg.slice(colon + 1), exact: !!quoted };
+        if (!quoted && arg.indexOf(".") < 0 && root.resolveGroups(arg).length > 0)
             return { kind: "exists", seg: arg };
-        return { kind: "free", text: arg };
+        return { kind: "free", text: arg, exact: !!quoted };
     }
 
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
@@ -402,7 +413,7 @@ QtObject {
             if (tv === null) {
                 const midTyping = !tok.leadQuote && tok.text[0] === "/" && root.isVerbPrefix(tok.text.slice(1));
                 if (!midTyping)
-                    out.filters.push(root.negated(root.filterTerm(tok.text), tok.neg));
+                    out.filters.push(root.negated(root.filterTerm(tok.text, tok.quoted), tok.neg));
                 i++;
                 continue;
             }
@@ -421,7 +432,7 @@ QtObject {
                 // "/sw/windows 3" = "/sw" + "/fv/windows 3"
                 if (verb === "/fv" || verb === "/sw") {
                     if (i < toks.length && !root.startsCommand(toks[i])) {
-                        out.filters.push(root.negated(root.filterTerm(via + ":" + toks[i].text), verbNeg || toks[i].neg));
+                        out.filters.push(root.negated(root.filterTerm(via + ":" + toks[i].text, toks[i].quoted), verbNeg || toks[i].neg));
                         i++;
                     } else if (via.length > 0 && via.indexOf(".") < 0 && root.resolveGroups(via).length > 0) {
                         out.filters.push(root.negated({ kind: "exists", seg: via }, verbNeg));
@@ -489,7 +500,7 @@ QtObject {
             }
 
             if (verb === "/fv") {
-                if (args.length > 0) out.filters.push(root.negated(root.filterTerm(args[0].text), verbNeg || args[0].neg));
+                if (args.length > 0) out.filters.push(root.negated(root.filterTerm(args[0].text, args[0].quoted), verbNeg || args[0].neg));
             } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {
                 if (args.length > 0) {
                     const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
@@ -531,14 +542,14 @@ QtObject {
     function _termMatchesPos(win, meta, term) {
         if (term.kind === "free") {
             const haystack = (win.title || "") + " " + (win.class || "") + " " + (win.workspace || "");
-            return root.substr(term.text, haystack);
+            return root.substr(term.text, haystack, term.exact);
         }
         if (term.kind === "scoped") {
             const fields = root.resolveFilterFields(term.path);
             // a window count is a number: "3" means exactly 3, not 13 or 30
             return fields.length > 0 && fields.some(f => f.kind === "flat" && f.name === "windows"
                 ? (term.value === "" || root.fieldValue(win, meta, f) === term.value)
-                : root.substr(term.value, root.fieldValue(win, meta, f)));
+                : root.substr(term.value, root.fieldValue(win, meta, f), term.exact));
         }
         // "exists"
         const gs = root.resolveGroups(term.seg);
