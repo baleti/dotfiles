@@ -30,7 +30,7 @@ SYNTAX = """QUERY LANGUAGE (identical to the mod+1 picker)
 
 VERBS (anywhere in the query)
 
-  /fts [words]       full-text search inside files (Recoll: AND, OR, "phrase", -term), narrowed by //path //mime //name //size;
+  /fts [words]       full-text search inside files (Recoll: AND, OR, "phrase", -term or !term), narrowed by //path //mime //name //size //dm; anything written BEFORE the verb is the name filter (alpha road /fts masonry);
                      /fts/<index> searches one index (a unique prefix is enough, e.g. /fts/part3)
   /chroma words      semantic search: files whose TEXT MEANS something close to the words (MiniLM embeddings over the same
                      content indexes), best first with a score; takes //path //mime //name //size too; /chroma/<index> for one.
@@ -182,9 +182,9 @@ def get(server, path, params, timeout=300):
             time.sleep(0.5)
     raise ServerDown(str(getattr(last, "reason", last)))
 
-def fetch(server, query, keys, desc, offset, top):
+def fetch(server, query, keys, desc, offset, top, explicit=False):
     return get(server, "/query", {"q": query, "sort": ",".join(keys), "desc": "1" if desc else "0",
-                                  "offset": offset, "top": top})
+                                  "offset": offset, "top": top, "explicit": "1" if explicit else "0"})
 
 def start_server(server):
     print("search: the server is not running; starting images-search (about 30 s) ...", file=sys.stderr)
@@ -250,6 +250,7 @@ def main():
     # query + sort: the /s and /rv verbs win over the options, as in the picker
     query, keys, desc, explicit = parse_sort(" ".join(a.query))
     if not explicit:
+        explicit = bool(a.sort or a.asc)
         if a.sort:
             keys = [k for k in (resolve_sort_field(p) for p in a.sort.split("/")) if k] or ["date"]
             desc = not a.asc and keys == ["date"]
@@ -265,11 +266,11 @@ def main():
     t0 = time.time()
     try:
         try:
-            first = fetch(a.server, query, keys, desc, 0, 1 if a.count else min(PAGE, a.limit or PAGE))
+            first = fetch(a.server, query, keys, desc, 0, 1 if a.count else min(PAGE, a.limit or PAGE), explicit)
         except ServerDown:
             if not (a.start and start_server(a.server)):
                 raise
-            first = fetch(a.server, query, keys, desc, 0, 1 if a.count else min(PAGE, a.limit or PAGE))
+            first = fetch(a.server, query, keys, desc, 0, 1 if a.count else min(PAGE, a.limit or PAGE), explicit)
     except ServerDown as e:
         print(f"search: cannot reach the search server at {a.server} ({e}).\n"
               f"        start it with:  systemctl --user start images-search   (or use --start)", file=sys.stderr)
@@ -292,7 +293,7 @@ def main():
     rows, page = list(first["results"]), first
     try:
         while len(rows) < want:
-            page = fetch(a.server, query, keys, desc, len(rows), min(PAGE, want - len(rows)))
+            page = fetch(a.server, query, keys, desc, len(rows), min(PAGE, want - len(rows)), explicit)
             if not page["results"]:
                 break
             rows += page["results"]

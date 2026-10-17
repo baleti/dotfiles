@@ -82,8 +82,16 @@ are the `fts` list in `/facets`. Only files that are in a Recoll (Xapian) conten
 never shows a file that has not been content-indexed. Name search (no verb) covers every file regardless.
 `/chroma words` is the semantic sibling: files whose text means something close to the words, best first with a score,
 over the Chroma indexes (`/chroma/<index>` for one; it does not cover the corpus collections yet), with the same
-name filter in front and the same `//` tags. When there is a name filter in front, the Recoll pool grows from 5,000
-to 100,000 hits per index so that nothing the filter would let through is cut off.
+name filter in front and the same `//` tags. `/fts` lists every matching file (no cap per index; a file reachable from two roots is listed once). Its words are Recoll
+query language, so `masonry -support` excludes and a leading `-term` works; the DSL's own `!word` is accepted as the same
+thing (`masonry !support`). All the `//` tags work on `/fts` and `/chroma` results, `//dm` included (the date comes from
+the index). Order is relevance (best first) unless a sort is explicit: `/s size`, `/s date`, `/s name`, `/s path`,
+`/s extension`, `/s depth` (stackable) and `/rv` all apply to `/fts`/`/chroma`; with no `/s` the column sort is not applied.
+One content verb per query: `/fts` with `/chroma`, or either with `/clip` or `/face`, is reported as an error, as are
+an unknown index and a verb with no words. For `/chroma` with any filter (before the verb or a `//` tag) the nearest 2,000
+chunks per index are searched instead of 400, and when fewer than 20 files survive the filters it looks up to 16,000 deep
+(about 8 s), so a filtered total is "within the nearest chunks", not exhaustive.
+Checks: `~/bin/index/tools/query_dsl_check.py` (compositions and edge cases through the `search` CLI) and `search_cli_check.py`.
 
 **Preview pane.** While a `/fts` query is showing results (list view), a
 second pane on the right previews the highlighted file: Recoll's own
