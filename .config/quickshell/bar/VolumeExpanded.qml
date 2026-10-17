@@ -310,18 +310,13 @@ Rectangle {
                 active: AudioSvc.sourceMuted
                 onClicked: AudioSvc.toggleSourceMute()
             }
-            Rectangle {
+            VolumeSlider {
                 width: parent.width - 30 - 52 - 20
                 anchors.verticalCenter: parent.verticalCenter
-                height: 6
-                radius: 3
-                color: Qt.rgba(1, 1, 1, 0.1)
-                Rectangle {
-                    width: Math.min(1, AudioSvc.sourceVolume) * parent.width
-                    height: parent.height
-                    radius: 3
-                    color: AudioSvc.sourceMuted ? Theme.muted : Theme.green
-                }
+                maxValue: 1
+                value: AudioSvc.sourceVolume
+                dimmed: AudioSvc.sourceMuted
+                onMoved: v => AudioSvc.setSourceVolume(v)
             }
             Text {
                 width: 52
