@@ -479,7 +479,7 @@ a silent no-op).
 Filters which rows survive. Three forms:
 
 - **`/fv text`** (or just `text` typed bare, no verb) - substring-match
-  `text` (an all-digit `text` matches whole numbers only: `5` is not `599`),
+  `text` (quote it, `"5"`, to match only the standalone `5`, not `599`),
   case-insensitively, against the picker's always-present
   free-text haystack (window title+class+workspace; clipboard preview; pane
   scrollback; notification app+summary+body; app name + generic name;
@@ -775,7 +775,9 @@ segment span whitespace without splitting into separate tokens:
 `/fv title:"imperial rome"`, `/fv app:"discord canary"`.
 
 A quoted value is matched as a **literal contiguous substring**,
-whitespace included - `/fv title:"imp rom"` matches only a title that
+whitespace included, that must also **stand alone** (no letter/digit
+directly before or after it - see "Resolution, precisely") -
+`/fv title:"imp rom"` matches only a title that
 actually contains the run `imp rom`, not "Imperial Rome". (This is a
 change from the older behaviour, where quoting meant subsequence-across-
 whitespace. Substring is now the single matching rule everywhere;
@@ -1620,12 +1622,13 @@ day.
   containment, case-insensitive (`"dsl" in name`, `"rome" in value`).
   Every match is unioned for a path segment; a value/direction just needs
   the one containment to hold.
-- **All-digit filter values are whole numbers, not substrings**: `5`
-  matches `5` but not `15` or `599` (the digit run in the value must not
-  touch another digit, so `workspace 5` and `Chapter 5 notes` still
-  match). This applies to bare text and to every scoped `/fv path:value`,
-  in every picker, and is the one exception to plain substring
-  containment. Mixed text (`5a`, `v2`) is still ordinary substring.
+- **Quoted values stand alone**: a value in `"double"` or `'single'`
+  quotes (bare, `/fv`, or scoped `path:"5"`) must not touch a letter,
+  digit or underscore on either side, so `"5"` matches `5` but not `15`
+  or `599`, and `"rome"` matches "Rome wasn't" but not "Romeo". Unquoted
+  `5` is the ordinary substring and matches 599 too. A `'` only opens a
+  quote at the start of a token or right after the `:` of a scoped value,
+  so apostrophes inside words (`don't`) stay plain text.
 - **BM25 pickers' bare words**: prefix-expansion against the corpus
   vocabulary, BM25-scored - their own thing, on top of the above.
 
