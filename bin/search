@@ -34,7 +34,7 @@ def human(n):
 def summary(count, stats):
     parts = [f"{count:,} shown"]
     if stats.get("size") is not None:
-        parts.append(human(stats["size"]))
+        parts.append(("≈ " if stats.get("approx") else "") + human(stats["size"]))   # sampled totals for huge result sets
     if stats.get("dmin"):
         parts.append(f"{stats['dmin']} → {stats['dmax']}")
     if stats.get("kinds"):
