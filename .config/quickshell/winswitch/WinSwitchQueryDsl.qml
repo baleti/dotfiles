@@ -519,7 +519,7 @@ QtObject {
 
     function _termMatchesPos(win, meta, term) {
         if (term.kind === "free") {
-            const haystack = (win.title || "") + " " + (win.class || "");
+            const haystack = (win.title || "") + " " + (win.class || "") + " " + (win.workspace || "");
             return root.substr(term.text, haystack);
         }
         if (term.kind === "scoped") {

@@ -480,7 +480,7 @@ Filters which rows survive. Three forms:
 
 - **`/fv text`** (or just `text` typed bare, no verb) - substring-match
   `text`, case-insensitively, against the picker's always-present
-  free-text haystack (window title+class; clipboard preview; pane
+  free-text haystack (window title+class+workspace; clipboard preview; pane
   scrollback; notification app+summary+body; app name + generic name;
   article title+feed+tag+body). This is the one form every picker
   guarantees and the one a casual user needs no syntax for. `/fv val` and
