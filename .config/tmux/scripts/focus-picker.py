@@ -392,6 +392,31 @@ REV_FORMS = {"rv", "reverse"}
 DIRECTIONS = ["ascending", "descending"]
 
 
+class Exact(str):
+    """Marks a term that was typed in closed quotes ("5"): it must stand alone,
+    not sit inside a longer run (query-dsl.md "Quoted terms")."""
+
+
+def _quoted(text, closed):
+    return Exact(text) if closed else text
+
+
+def _term(text):
+    """Lowercase a filter term, keeping the Exact marker."""
+    low = text.lower()
+    return Exact(low) if isinstance(text, Exact) else low
+
+
+def _has(term, hay):
+    """Substring test; an Exact term must not touch a letter/digit/underscore on either side."""
+    if not isinstance(term, Exact) or not term:
+        return term in hay
+    pat = (r"(?<![A-Za-z0-9_])" if (term[0].isalnum() or term[0] == "_") else "") \
+        + re.escape(term) \
+        + (r"(?![A-Za-z0-9_])" if (term[-1].isalnum() or term[-1] == "_") else "")
+    return re.search(pat, hay) is not None
+
+
 def tokenize(query, negs=None):
     """[(start, text, lead_quote)] - whitespace split, "..." kept whole
     (quotes dropped), unterminated quote still closes at end-of-input.
@@ -402,6 +427,7 @@ def tokenize(query, negs=None):
     toks, cur = [], []
     start = None
     lead_quote = in_quotes = False
+    closed = False  # a quote in this token has been closed (query-dsl.md "Quoted terms")
     bang = False
     for i, c in enumerate(query):
         if c == "!" and start is None and not bang:
@@ -410,14 +436,16 @@ def tokenize(query, negs=None):
         if c == '"':
             if start is None:
                 start, lead_quote = i, True
+            if in_quotes:
+                closed = True
             in_quotes = not in_quotes
             if start == i and bang and negs is not None:
                 negs.add(i)
             continue
         if c.isspace() and not in_quotes:
             if start is not None:
-                toks.append((start, "".join(cur), lead_quote))
-                cur, start, lead_quote = [], None, False
+                toks.append((start, _quoted("".join(cur), closed), lead_quote))
+                cur, start, lead_quote, closed = [], None, False, False
             bang = False
             continue
         if start is None:
@@ -426,7 +454,7 @@ def tokenize(query, negs=None):
                 negs.add(i)
         cur.append(c)
     if start is not None:
-        toks.append((start, "".join(cur), lead_quote))
+        toks.append((start, _quoted("".join(cur), closed), lead_quote))
     return toks
 
 
@@ -503,12 +531,13 @@ def _add_filter(arg, bare_terms, field_terms, neg=False):
     """One /fv argument (or a bare word): scoped when it has a colon and
     the field resolves, else a plain bare term."""
     field_pfx, sep, term = arg.partition(":")
+    term = _quoted(term, isinstance(arg, Exact))
     if sep:
         fields = resolve_by_substring(field_pfx, FILTER_FIELDS)
         if fields:
-            field_terms.append((fields, term.lower(), neg))
+            field_terms.append((fields, _term(term), neg))
             return
-    bare_terms.append((arg.lower(), neg))
+    bare_terms.append((_term(arg), neg))
 
 
 def parse_query(query):
@@ -561,8 +590,8 @@ def parse_query(query):
                 if verb_part in FV_FORMS or verb_part == "":
                     arg = take_arg()
                     if arg is not None:
-                        _add_filter(f"{via_path}:{arg}", bare_terms, field_terms,
-                                    verb_neg or arg_neg)
+                        _add_filter(_quoted(f"{via_path}:{arg}", isinstance(arg, Exact)),
+                                    bare_terms, field_terms, verb_neg or arg_neg)
                     continue
                 if verb_neg and verb_part not in REV_FORMS and not is_verb_prefix(verb_part):
                     # "!" means nothing on a non-filter verb: inert (its
@@ -631,10 +660,10 @@ def parse_query(query):
             if is_verb_prefix(rest):
                 continue  # mid-typing a verb - inert
             # a literal /usr/bin etc
-            bare_terms.append((text.lower(), verb_neg))
+            bare_terms.append((_term(text), verb_neg))
             continue
         # bare word or "-quoted literal
-        bare_terms.append((text.lower(), verb_neg))
+        bare_terms.append((_term(text), verb_neg))
     return bare_terms, field_terms, active_cols, sort, reverse
 
 
@@ -1117,9 +1146,9 @@ def search(snapshot_path, query):
         if p["ssh"]:
             haystack_parts.extend(p["ssh"].values())
         haystack = " ".join(haystack_parts).lower()
-        if not all((t in haystack) != neg for t, neg in bare_terms):
+        if not all(_has(t, haystack) != neg for t, neg in bare_terms):
             continue
-        if not all(any(term in p[FIELD_KEY[f]].lower() for f in fields) != neg
+        if not all(any(_has(term, p[FIELD_KEY[f]].lower()) for f in fields) != neg
                    for fields, term, neg in field_terms):
             continue
         matched.append(p)
@@ -1173,6 +1202,12 @@ def drive():
     with os.fdopen(fd, "w") as f:
         json.dump(panes, f)
 
+    # quote auto-pairing (query-dsl.md "Quoted terms"): fzf's `change` event runs
+    # ~/bin/dsl-autopair, which compares against this state file and rewrites the query
+    state_path = complete_path + ".ap"
+    atexit.register(lambda: _rm(state_path))
+    atexit.register(lambda: _rm(state_path + ".q"))
+    autopair_cmd = f"{shlex.quote(os.path.expanduser('~/bin/dsl-autopair'))} --state {shlex.quote(state_path)} --query={{q}}"
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     # --query={q}, not --query {q}: fzf shell-quotes {q} correctly, but argparse
     # is a second parsing layer that refuses an option value which itself looks
@@ -1240,7 +1275,7 @@ def drive():
                 # template text, so a paren typed into the live query can't
                 # break the chain).
                 "--bind", f"start:reload({self_cmd})+transform-header({header_cmd})",
-                "--bind", f"change:reload({self_cmd})+transform-header({header_cmd})",
+                "--bind", f"change:transform({autopair_cmd})+reload({self_cmd})+transform-header({header_cmd})",
                 # tab completes the query's trailing "+$group[.sub]"/"$field"
                 # token to what it's about to resolve to (see
                 # completion_stage): a unique candidate completes directly,
