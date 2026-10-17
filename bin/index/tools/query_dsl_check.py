@@ -104,7 +104,6 @@ ex = [(lambda f: f.rpartition(".")[2].lower() if "." in f else "")(x["path"].rsp
 check("/s extension", ex == sorted(ex))
 r = rows(f"/fts {W} /s size /s name", 100)
 check("stacked /s keys", all((a["size"], ) <= (b["size"], ) for a, b in zip(r, r[1:])))
-check("/rv reverses", rows(f"/fts {W} /s size", 50) == rows(f"/fts {W} /s size /rv", 50)[::-1] or True)
 check("-s name works with /fts", [x["path"].rsplit("/", 1)[-1].lower() for x in rows(f"/fts {W}", 60, "-s", "name")] == sorted(x["path"].rsplit("/", 1)[-1].lower() for x in rows(f"/fts {W}", 60, "-s", "name")))
 # paging
 allr = paths(f"/fts {W}", 0)[0]

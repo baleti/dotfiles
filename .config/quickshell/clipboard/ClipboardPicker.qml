@@ -12,7 +12,7 @@ import "../services"
 // see its own module doc) that just talks to cliphist/wl-copy; this file
 // owns the search box, the DSL (ClipboardQueryDsl.qml, its own hand-port --
 // see that file's header for why it's not a shared import, and for why
-// `/ft`/`/at`/`/rt`/`/sort`/`/reverse` are real here as of 2026-09-28, not
+// `/ft`/`/at`/`/rt`/`/sort` are real here as of 2026-09-28, not
 // just recognised-but-inert), keyboard nav, column rendering and
 // thumbnails. `notification-picker` (this same crate's other bin) made its
 // own GTK->Quickshell move on 2026-09-28.
@@ -174,7 +174,17 @@ PanelWindow {
         function onMonitorChanged() { root._recompute(); }
     }
 
+    // Top edge of the box, latched shortly after opening (-1 = not yet).
+    property real _pinTop: -1
+    Timer {
+        id: pinTimer
+        interval: 150
+        onTriggered: if (root.open && root._pinTop < 0) root._pinTop = box.y
+    }
+
     onOpenChanged: {
+        root._pinTop = -1;
+        if (root.open) pinTimer.restart(); else pinTimer.stop();
         root._hoverOrigin = null;
         root._hoverArmed = false;
         if (root.open) {
@@ -587,8 +597,12 @@ PanelWindow {
         // sit) -- rather than a fixed 0.5 fraction of screen width
         // (reported too narrow once columns started eating into the
         // preview text).
+        // Centred as first shown, then the top edge is latched (`_pinTop`,
+        // shortly after open) so the search box stays exactly where it
+        // appeared while the list grows/shrinks below it; the list's max
+        // height keeps a bottom margin and longer lists scroll.
+        y: root._pinTop >= 0 ? root._pinTop : Math.round((parent.height - height) / 2)
         anchors {
-            verticalCenter: parent.verticalCenter
             left: parent.left
             right: parent.right
             leftMargin: HyprGaps.left + HyprGaps.extraInset
@@ -605,7 +619,7 @@ PanelWindow {
         border.color: Theme.cyan
         border.width: 1
 
-        readonly property real _maxTotal: root.screen ? root.screen.height * 0.8 : 800
+        readonly property real _maxTotal: root.screen ? (root._pinTop >= 0 ? root.screen.height * 0.92 - root._pinTop : root.screen.height * 0.8) : 800
         readonly property int bottomPad: 14
 
         Item {

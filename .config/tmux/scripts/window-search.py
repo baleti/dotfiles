@@ -49,7 +49,7 @@ here - see parse_query/phrase_re). Two orthogonal rules: quotes mean exact,
                  tmux.title, body.
 
 `/fv` is the one DSL verb this picker uses. The column verbs (/ft, /at,
-/rt) and order verbs (/s, /rv) from the shared grammar
+/rt) and order verb (/s) from the shared grammar
 (~/.config/docs/query-dsl.md) are recognised but do nothing here - this
 is a single BM25-ranked line, not a table.
 
@@ -127,7 +127,6 @@ def tokenize(text):
 # plus the other DSL verbs, which this ranked single-line picker has no
 # use for (no columns, BM25 score is the order) and so matches-and-drops:
 #   /ft /at /rt /s /sort  ... and their long forms, with an optional arg
-#   /rv /reverse          ... no arg
 # See ~/.config/docs/query-dsl.md. Verb names are exact; `field` in a
 # /fv term is substring-resolved (see resolve_fields).
 # Long verb forms are listed before their short forms so ordered
@@ -136,7 +135,6 @@ QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
     r'/(?:filter-value|fv)\s+([a-zA-Z.]+):(\S+)'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
-    r'|/(?:reverse|rv)'
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'

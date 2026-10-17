@@ -13,7 +13,7 @@ import "../services"
 // match name + generic name only (short, controlled strings - matching
 // prose Comment= / Keywords= in the free haystack made `ala` hit
 // "scALAble" and "bALAnce"); comment/keywords/exec/categories are
-// searchable but only when named (`/fv comment:vector`). /s and /rv for
+// searchable but only when named (`/fv comment:vector`). /s for
 // order. The column verbs (/ft /at /rt) are inert here -- no columns.
 // One instance per monitor; only the focused one is ever shown.
 PanelWindow {
@@ -287,8 +287,6 @@ PanelWindow {
                 return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
             });
         }
-        if (root.parsed.reverse)
-            rows = rows.slice().reverse();
         return rows;
     }
 
@@ -361,7 +359,7 @@ PanelWindow {
     // (`/frag`, only the verbs that do something here) and `/fv path`
     // (before the `:`), including the bare `/fv ` / `/s ` case (empty
     // fragment -> all candidates).
-    readonly property var _acVerbs: ["/fv", "/s", "/rv"] // /ft /at /rt are inert here
+    readonly property var _acVerbs: ["/fv", "/s"] // /ft /at /rt are inert here
 
     // ---- inline command-validity coloring (query-dsl.md) -----------
     // True if `v` (leading "/" included) is still a genuine prefix of some
@@ -412,7 +410,7 @@ PanelWindow {
     // (`_acVerbs`) plus `/fv` and `/s` - the two that take a real path -
     // crossed with every type name ("fv/comment", "s/name", ...), so a
     // fragment of the *type*, not just the verb, reaches a whole working
-    // command. `/rv` isn't crossed (takes no path). See query-dsl.md's
+    // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
         const bare = root._acVerbs.map(v => v.slice(1)).concat(Object.keys(root.actionVerbs).map(v => v.slice(1)));
@@ -690,7 +688,7 @@ PanelWindow {
         // fills whatever's left under the search box (and the autocomplete
         // popup when it's up).
         height: root.wsPrompt
-            ? Math.min(Math.round((root.screen ? root.screen.height : 1080) * 0.8),
+            ? Math.min(Math.round((root.screen ? root.screen.height : 1080) * 0.6),
                        header.height + (ac.visible ? ac.height : 0) + wsHead.height + list.topMargin
                        + root.results.length * 30 + list.bottomMargin + 12)
             : Math.round((root.screen ? root.screen.height : 1080) * 0.6)

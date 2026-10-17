@@ -37,7 +37,7 @@ VERBS (anywhere in the query)
                      The first use starts the worker (about 30 s); the total is what the nearest chunks cover, not every file.
   /clip words        photos matching what they show      /face name   photos showing a registered person
                      (--score shows the match score; --snippets prints the matching passages for /fts and /chroma)
-  /s FIELD [asc|desc]   sort by name, path, size, date-modified, extension, depth (chain with /, e.g. /s size/name);  /rv  reverse
+  /s FIELD [asc|desc]   sort by name, path, size, date-modified, extension, depth (chain with /, e.g. /s size/name)
   /show-dotfiles  /hide-dotfiles                         names starting with a dot
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
   /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
@@ -51,7 +51,7 @@ Backup results have real paths under /mnt/backup-restic-host3/ids/<id>/... and <
 SORT_FIELDS = [("name", "name"), ("path", "path"), ("size", "size"), ("date-modified", "date"),
                ("extension", "ext"), ("depth", "depth")]
 
-# ---- a faithful port of the picker's /s and /rv handling (images/src/main.rs parse_sort) --------------------------
+# ---- a faithful port of the picker's /s handling (images/src/main.rs parse_sort) --------------------------
 def tokenize(q):
     out, cur, inq = [], [], False
     for ch in q:
@@ -91,13 +91,10 @@ def sort_direction(tok):
     return None
 
 def parse_sort(q):
-    """(query without /s and /rv, sort keys, descending?, explicit?)"""
-    toks, rest, keys, desc, reverse, explicit, i = tokenize(q), [], [], None, False, False, 0
+    """(query without /s, sort keys, descending?, explicit?)"""
+    toks, rest, keys, desc, explicit, i = tokenize(q), [], [], None, False, 0
     while i < len(toks):
         t = toks[i]; i += 1
-        if t in ("/rv", "/reverse"):
-            reverse = True
-            continue
         if t.startswith("//") or t.startswith("!//"):      # a //tag owns the next token, whatever it looks like
             rest.append(t)
             if i < len(toks):
@@ -141,9 +138,7 @@ def parse_sort(q):
     desc_v = True if not keys else (desc if desc is not None else False)
     if not keys:
         keys.append("date")
-    if reverse:
-        desc_v = not desc_v
-    return " ".join(rest), keys, desc_v, explicit or reverse
+    return " ".join(rest), keys, desc_v, explicit
 
 # ---- paths ---------------------------------------------------------------------------------------------------------
 _remotes = None
@@ -254,7 +249,7 @@ def main():
         print(SYNTAX)
         return 0
 
-    # query + sort: the /s and /rv verbs win over the options, as in the picker
+    # query + sort: the /s verb wins over the options, as in the picker
     query, keys, desc, explicit = parse_sort(" ".join(a.query))
     if not explicit:
         explicit = bool(a.sort or a.asc)

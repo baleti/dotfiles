@@ -31,10 +31,10 @@ add a new consumer, add its row here too.
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 | claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
-| claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s`, `/rv` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone) and always completes to whichever form (colon or via) is already being typed, never steers to via the way rss-reader/claude-history do |
+| claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone) and always completes to whichever form (colon or via) is already being typed, never steers to via the way rss-reader/claude-history do |
 | images (photo search) | mod+Super_l → "Search files" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/.cache/indexes/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
 
-**app-launcher action commands.** Besides the six verbs, the launcher has
+**app-launcher action commands.** Besides the five verbs, the launcher has
 `/move-to-workspace` (exact-matched like the others, not a filter/sort verb):
 Enter on it opens a second list of existing workspaces for the window that was
 focused when the launcher opened. Typing filters; Enter moves the window there.
@@ -86,7 +86,7 @@ name filter in front and the same `//` tags. `/fts` lists every matching file (n
 query language, so `masonry -support` excludes and a leading `-term` works; the DSL's own `!word` is accepted as the same
 thing (`masonry !support`). All the `//` tags work on `/fts` and `/chroma` results, `//dm` included (the date comes from
 the index). Order is relevance (best first) unless a sort is explicit: `/s size`, `/s date`, `/s name`, `/s path`,
-`/s extension`, `/s depth` (stackable) and `/rv` all apply to `/fts`/`/chroma`; with no `/s` the column sort is not applied.
+`/s extension`, `/s depth` (stackable) all apply to `/fts`/`/chroma`; with no `/s` the column sort is not applied.
 One content verb per query: `/fts` with `/chroma`, or either with `/clip` or `/face`, is reported as an error, as are
 an unknown index and a verb with no words. For `/chroma` with any filter (before the verb or a `//` tag) the nearest 2,000
 chunks per index are searched instead of 400, and when fewer than 20 files survive the filters it looks up to 16,000 deep
@@ -118,8 +118,8 @@ Keys follow
 the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 `Home`/`End` jump, `Enter` opens, `Esc` closes.
 
-**Ordering (`/s`, `/sort`, `/rv`).** The one place this picker uses the verb
-grammar: `/s <field> [asc|desc]`, `/sort/f1/f2 [dir]` (via chain) and `/rv`
+**Ordering (`/s`, `/sort`).** The one place this picker uses the verb
+grammar: `/s <field> [asc|desc]`, `/sort/f1/f2 [dir]` (via chain)
 behave as in `/sort` below, with these differences. Fields: `name`, `path`,
 `size`, `date-modified` (alias `dm`, `date`) - the four columns - plus
 `extension` and `depth` (number of path components), which have no column.
@@ -216,8 +216,7 @@ The DSL does three orthogonal things to that set, and nothing else:
   typed text, which is the same thing)
 - **filter columns** - which types are shown (`/filter-type`,
   `/add-type`, `/remove-type`)
-- **order** - what sequence the survivors appear in (`/sort`,
-  `/reverse`)
+- **order** - what sequence the survivors appear in (`/sort`)
 
 This is the `SELECT ... WHERE ... ORDER BY` triad, in the interactive
 piped-verb dialect that Kusto/KQL (`where` / `project` / `project-away` /
@@ -274,7 +273,6 @@ inside `/sort`'s argument span.
 | `/at` | `/add-type` | columns | 1 | add the columns whose name matches into view |
 | `/rt` | `/remove-type` | columns | 1 | drop the columns whose name matches from view |
 | `/s` | `/sort` | order | 1-2 | order rows by one type, optional direction |
-| `/rv` | `/reverse` | order | 0 | reverse whatever order is currently in effect |
 
 **Arity is a ceiling, not a requirement** - it's the most tokens a verb
 will ever reach for, not how many it must have. `/sort`'s second slot is
@@ -290,15 +288,15 @@ one slot, however many `/`-separated keys it holds - arity counts
 *space*-separated argument tokens, not the `/`-separated segments glued
 onto a single via-form argument.
 
-**Verb names are exact-matched** against exactly the six short forms and
-six long forms above - nothing else, no substring or fuzzy resolution on
+**Verb names are exact-matched** against exactly the five short forms and
+five long forms above - nothing else, no substring or fuzzy resolution on
 the verb itself, ever. That's the one property this grammar was built
 around and never gives up, no matter how the rest of it grows: the old
 `/claude.title:value` form (and, briefly, a since-reverted design that
 registered `/claude`, `/claude.title` etc. as their own verbs) both made
 a type name sit in the same position a command would, so every new type
 risked colliding with the verb vocabulary. Exact-matching the verb token
-itself - always these twelve spellings, plus the one empty spelling
+itself - always these ten spellings, plus the one empty spelling
 `//` (see Default verb, below) that only ever appears with a via `/`
 after it, never as a fuzzy match - keeps that
 ambiguity closed permanently; it's a *typed argument*'s (or, now, a *via
@@ -448,7 +446,7 @@ other via spelling. The unused `query.rs` was left alone.
 
 ### Type paths
 
-Every verb except `/reverse` takes a **type path**: dot-separated
+Every verb takes a **type path**: dot-separated
 segments naming a flat type or a group subfield - `.` is the **subset**
 operator, picking one piece out of the group to its left (see Via paths,
 above, for the *other* separator this grammar uses, `/`, and how the two
@@ -574,7 +572,7 @@ alacritty !//path gdrive/      terms still AND: contains "alacritty", NOT under 
   (positive: narrows to nothing) negates to "keep everything", and a row
   whose value is missing or not comparable (`!//lines >4` on a non-numeric
   row) is kept, because the positive form did not match it.
-- **Only row filters.** `!/s`, `!/rv`, `!/ft`, `!/at`, `!/rt` parse (so their
+- **Only row filters.** `!/s`, `!/ft`, `!/at`, `!/rt` parse (so their
   arguments are still consumed and don't leak out as bare words) but do
   nothing. Negation is not a column or order operation.
 - **Still forming is inert.** A lone `!`, or `!` followed by space, is a
@@ -691,7 +689,7 @@ subfields, each its own column - unlike its filter/sort meaning
 (default subfield only). `/at claude.*` is the same as `/at claude`;
 `/at claude.title` is just the one.
 
-### `/sort` (`/s`), `/reverse` (`/rv`)
+### `/sort` (`/s`)
 
 Reorder the survivors; never filter or hide.
 
@@ -724,20 +722,13 @@ Reorder the survivors; never filter or hide.
   by `name` *and* filter to `blender`, instead of `blender` silently
   vanishing as a rejected direction argument. One direction applies to
   every key in a chain uniformly - there is no per-key direction syntax;
-  reach for `/reverse` (below) if a chain needs to run backwards as a
-  whole, or drop a key that needs to run the other way into its own
-  second `/sort` and accept the last-wins replacement (see next). Only
+  to run a chain backwards, say `desc`; a key that needs to run the other
+  way gets its own second `/sort` and the last-wins replacement (see next). Only
   the **last** `/sort` in a query takes effect (replace, not stack).
   Absent entirely, the picker's own default order stands (MRU, cliphist
   recency, winswitch focus-history, BM25 score). Honoured by winswitch,
   focus-picker, clipboard-picker and notification-picker (2026-09-28);
   inert in the BM25 pickers (score *is* the order).
-- **`/reverse`** - flips whatever order is in effect (default, or a
-  `/sort`, chained or not - reverses the whole ordered sequence, not any
-  one key within it). No arguments. Idempotent: any number of `/reverse`
-  tokens == one, not a toggle. Useful alone to flip a picker's default
-  order (see the least-recently-used window first) without naming a
-  field.
 
 Multi-key chaining was added 2026-09-02, prompted by wanting
 `/sort/tokens/title` - sort by token count, and within an equal count,
@@ -803,7 +794,7 @@ values: `"career essay"` is one search term (a literal contiguous substring
 of the file name or path, and highlighted as one run), `//name "tasks of"`
 and `//path "part 3"` take the whole quoted run as their value, and
 `/fts/part3-books daniel "career essay"` passes the quoted run to Recoll as
-a phrase. `/s`, `/sort` and `/rv` inside quotes are plain text, never
+a phrase. `/s` and `/sort` inside quotes are plain text, never
 commands, and quoted runs keep their inner spacing when the order verbs are
 taken out of the query. An unterminated quote runs to the end of the box.
 
@@ -853,7 +844,7 @@ so you can see at a glance what the parser will treat as a command and what it w
 treat as plain text.
 
 - **Painted:** a token that the app's parser recognises as a command: an exact verb
-  (`/fv /ft /at /rt /s /rv`, plus an app's own such as `/fts /clip /face`), the
+  (`/fv /ft /at /rt /s`, plus an app's own such as `/fts /clip /face`), the
   `/verb/via` form, and a `//tag` default-verb form that names a real field. The
   leading `!` of a negated command is not part of the command and stays plain.
 - **Not painted:** barewords, `"quoted phrases"`, a `//tag`'s value (it owns the next
@@ -975,7 +966,7 @@ RSS reader grow the equivalent in QML. Stages:
    are `ascending` / `descending`, narrowed by `frag`.
 
 **An empty fragment lists everything for that stage, once Tab asks.** `/`
-+ Tab is the six verbs plus every verb/path combination the grammar can
++ Tab is the five verbs plus every verb/path combination the grammar can
 build (see Verb-stage depth, below); `/ft ` / `/at ` / `/rt ` / `/s ` /
 `/fv ` + Tab
 (verb, one space, nothing typed yet) is every type name; `/fv path: ` +
@@ -988,7 +979,7 @@ against it.
 
 Added 2026-09-11 (superseding an earlier, same-day attempt at a hardcoded
 single shortcut - see below): the Verb stage (stage 1, above) doesn't stop
-at the six short verb forms - its candidate list is the six verb shorts
+at the five short verb forms - its candidate list is the five verb shorts
 **plus every path-taking verb crossed with every resolvable path**
 (flat types, groups, and group subfields - the same universe stage 2's
 type-path completion already draws from), rendered as the complete
@@ -1000,7 +991,7 @@ containing `wo`); `/cla` + Tab reaches all five verbs crossed with
 `claude` and each of its five subfields (`claude.title`, `claude.path`,
 `claude.session`, `claude.age`, `claude.contents`) - thirty rows, further
 narrowed by typing more (`/claude.t` cuts it to the two subfields
-containing `t`). `/reverse` takes no path and is never crossed.
+containing `t`).
 
 Matching reuses the exact rule stage 1 already used for the plain verbs -
 `substr(fragment, candidate_text)` against the *complete* `verb/path`
@@ -1011,7 +1002,7 @@ parsed to when typed by hand (see Via paths) - this only adds completion
 candidates, nothing new to the grammar or to matching. An empty fragment
 now surfaces this whole depth too (see "An empty fragment lists
 everything," above, updated by this change) - `/` + Tab is no longer just
-the six verbs, it's the six verbs plus every verb/path combination the
+the five verbs, it's the five verbs plus every verb/path combination the
 grammar can build, the complete stage-1 vocabulary in one popup.
 
 Computed from the existing type registry (`COLUMNS`/`GROUPS`/group
@@ -1276,7 +1267,6 @@ quickshell launcher reads them from `QueryDsl.qml`'s `verbInfo`):
 | `/at` | `/add-type` | add the matching columns |
 | `/rt` | `/remove-type` | drop the matching columns |
 | `/s` | `/sort` | order rows by one field, optional asc / desc |
-| `/rv` | `/reverse` | flip the current order |
 
 Shared popup UI: `Tab` triggers completion when nothing's open yet (see
 above - unique candidate applies directly, 2+ opens the popup). Once the
@@ -1384,7 +1374,7 @@ different mechanism and hasn't been built.
 
 **Per-picker autocomplete scope.** A picker only offers the verbs that do
 something for it. The app launcher shows no columns, so it offers `/fv`,
-`/s`, `/rv` only - `/ft`/`/at`/`/rt` are still *parsed* (shared grammar)
+`/s` only - `/ft`/`/at`/`/rt` are still *parsed* (shared grammar)
 but inert, so they're left out of the popup rather than suggested and
 then ignored. claude-history only acts on `/fv` at all (see its own
 header), so its Tab-completion only ever offers that - the verb stage
@@ -1721,9 +1711,9 @@ predictable, and at these corpus sizes the looseness bought nothing.
   segment, not a wildcard engine.
 - **The three axes are orthogonal.** Row filters (`/fv`, bare text) never
   change columns; column verbs (`/ft`, `/at`, `/rt`) never change which
-  rows survive; order verbs (`/sort`, `/reverse`) never change either.
+  rows survive; order verbs (`/sort`) never change either.
 - **Column verbs are a left-to-right pipeline;** row filters are an
-  order-independent AND; `/sort` is last-wins; `/reverse` is idempotent.
+  order-independent AND; `/sort` is last-wins.
 - **Quoting is the universal escape hatch,** checked before every other
   grammar form.
 - **An unresolvable *complete* path narrows to nothing** (honest empty

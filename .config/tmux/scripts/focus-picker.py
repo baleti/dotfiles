@@ -41,7 +41,7 @@ many rows as it has matches, the preview gets the rest.
 
 Query DSL (parse_query) - the /verb command grammar shared with winswitch
 and the GTK pickers (see ~/.config/docs/query-dsl.md). The base list is
-MRU-ordered; /sort and /reverse are opt-in on top of that.
+MRU-ordered; /sort is opt-in on top of that.
 
   foo bar              every bare word must appear (case-insensitive
                        substring) somewhere in the pane's searchable text -
@@ -72,7 +72,6 @@ MRU-ordered; /sort and /reverse are opt-in on top of that.
                        spelling; single-key only - this picker's /sort
                        never grew the doc's multi-key via chaining
                        (/sort/a/b/c).
-  /rv  /reverse        reverse the current order.
 
 Verb names are exact-matched (short or long form); everything else -
 field names, group/sub, directions - is substring containment. "..."
@@ -378,17 +377,15 @@ SORT_KEYS = {
 #   /rt /remove-type   drop one
 #   /ft /filter-type   narrow the displayed extra columns to matches
 #   /s  /sort          order the (MRU) list by a type [+ direction]
-#   /rv /reverse       reverse the current order
 # The base AGE/SESSION/NAME/TITLE columns are always shown; only the
 # tracked group columns (COLUMN_GROUPS) are toggled by /at//rt//ft.
-VERB_SHORTS = ["fv", "ft", "at", "rt", "s", "rv"]
-VERB_FORMS = VERB_SHORTS + ["filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"]
+VERB_SHORTS = ["fv", "ft", "at", "rt", "s"]
+VERB_FORMS = VERB_SHORTS + ["filter-value", "filter-type", "add-type", "remove-type", "sort"]
 FV_FORMS = {"fv", "filter-value"}
 FT_FORMS = {"ft", "filter-type"}
 AT_FORMS = {"at", "add-type"}
 RT_FORMS = {"rt", "remove-type"}
 SORT_FORMS = {"s", "sort"}
-REV_FORMS = {"rv", "reverse"}
 DIRECTIONS = ["ascending", "descending"]
 
 
@@ -541,10 +538,10 @@ def _add_filter(arg, bare_terms, field_terms, neg=False):
 
 
 def parse_query(query):
-    """-> (bare_terms, field_terms, active_cols, sort, reverse).
+    """-> (bare_terms, field_terms, active_cols, sort).
 
     sort is (SORT_KEYS name, "ascending"/"descending") or None (last /sort
-    wins); reverse is a bool (any number of /rv == one). A bare word is an
+    wins). A bare word is an
     implicit /fv term - identical to /fv <word>. A "-led token is literal
     text; a /xyz that is neither a verb nor a verb-prefix (e.g. /usr/bin)
     is literal text too; a /prefix still on its way to a verb is inert."""
@@ -553,7 +550,6 @@ def parse_query(query):
     bare_terms, field_terms, active_cols = [], [], []
     seen_cols = set()
     sort = None
-    reverse = False
     i, n = 0, len(toks)
 
     arg_neg = False  # whether the arg take_arg() just returned carried a "!"
@@ -593,7 +589,7 @@ def parse_query(query):
                         _add_filter(_quoted(f"{via_path}:{arg}", isinstance(arg, Exact)),
                                     bare_terms, field_terms, verb_neg or arg_neg)
                     continue
-                if verb_neg and verb_part not in REV_FORMS and not is_verb_prefix(verb_part):
+                if verb_neg and not is_verb_prefix(verb_part):
                     # "!" means nothing on a non-filter verb: inert (its
                     # sort direction, if any, is still consumed below)
                     if verb_part in SORT_FORMS and i < n \
@@ -615,8 +611,8 @@ def parse_query(query):
                                 i += 1
                         sort = (fields[0], direction)
                     continue
-                if verb_part in REV_FORMS or is_verb_prefix(verb_part):
-                    continue  # /rv takes no path; a still-forming verb/path is inert
+                if is_verb_prefix(verb_part):
+                    continue  # a still-forming verb/path is inert
                 # not a real verb - falls through to the plain checks below,
                 # which will also miss and land it as literal text (e.g.
                 # /usr/bin)
@@ -627,10 +623,8 @@ def parse_query(query):
                     _add_filter(arg, bare_terms, field_terms, verb_neg or arg_neg)
                 continue
             if verb_neg and (rest in AT_FORMS or rest in RT_FORMS or rest in FT_FORMS
-                             or rest in SORT_FORMS or rest in REV_FORMS):
+                             or rest in SORT_FORMS):
                 # "!" means nothing on a non-filter verb: inert, args consumed
-                if rest in REV_FORMS:
-                    continue
                 if take_arg() is not None and rest in SORT_FORMS and i < n \
                         and not starts_cmd(toks[i][1], toks[i][2]) \
                         and parse_direction(toks[i][1]) is not None:
@@ -654,9 +648,6 @@ def parse_query(query):
                                 i += 1
                         sort = (fields[0], direction)
                 continue
-            if rest in REV_FORMS:
-                reverse = True
-                continue
             if is_verb_prefix(rest):
                 continue  # mid-typing a verb - inert
             # a literal /usr/bin etc
@@ -664,7 +655,7 @@ def parse_query(query):
             continue
         # bare word or "-quoted literal
         bare_terms.append((_term(text), verb_neg))
-    return bare_terms, field_terms, active_cols, sort, reverse
+    return bare_terms, field_terms, active_cols, sort
 
 
 def _column_paths():
@@ -679,7 +670,7 @@ def _column_paths():
 
 def verb_stage_universe():
     """Every Verb-stage candidate (query-dsl.md's "Verb-stage depth"): the
-    six bare short verbs, plus every path-taking verb (all but /rv)
+    five bare short verbs, plus every path-taking verb
     crossed with every path it can actually take - "fv/tmux.session",
     "at/ssh.host", ... so a fragment of the *path*, not just the verb, is
     enough to reach a whole command in one Tab. Two disjoint path
@@ -694,8 +685,6 @@ def verb_stage_universe():
     }
     out = list(VERB_SHORTS)
     for v in VERB_SHORTS:
-        if v == "rv":
-            continue
         out.extend(f"{v}/{p}" for p in paths[v])
     return out
 
@@ -752,7 +741,7 @@ def completion_stage(query):
                     suffix = ""  # a bare group - ready for ".sub"
                 cands = [c for c in cands if c != via_frag]
                 return (base, suffix, cands) if cands else ("", "", [])
-            return "", "", []  # /rv takes no path; an unrecognized verb_part isn't a command
+            return "", "", []  # an unrecognized verb_part isn't a command
         # no second "/" yet - still choosing the verb, or a whole deep
         # verb/path combo in one step ("Verb-stage depth"): cross every
         # path-taking verb with every path it can take, rendered as the
@@ -824,7 +813,7 @@ def header_line(active_cols):
 
 
 def header(query):
-    _, _, active_cols, _, _ = parse_query(query)
+    _, _, active_cols, _ = parse_query(query)
     sys.stdout.write(header_line(active_cols))
 
 
@@ -1138,7 +1127,7 @@ def search(snapshot_path, query):
     directly, the header area just stayed permanently blank."""
     with open(snapshot_path) as f:
         panes = json.load(f)
-    bare_terms, field_terms, active_cols, sort, reverse = parse_query(query)
+    bare_terms, field_terms, active_cols, sort = parse_query(query)
 
     matched = []
     for p in panes:
@@ -1153,13 +1142,11 @@ def search(snapshot_path, query):
             continue
         matched.append(p)
 
-    # Default order is MRU (snapshot file order); /sort and /reverse are
+    # Default order is MRU (snapshot file order); /sort is
     # opt-in on top of it.
     if sort is not None:
         key_name, direction = sort
         matched.sort(key=SORT_KEYS[key_name], reverse=(direction == "descending"))
-    if reverse:
-        matched.reverse()
 
     sys.stdout.write("\n".join(row(p, active_cols) for p in matched))
 

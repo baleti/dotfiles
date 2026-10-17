@@ -37,10 +37,10 @@ QtObject {
     // /sw (workspace view): what each workspace shows under its thumbnail.
     readonly property var workspaceColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "monitor" }, { kind: "flat", name: "windows" }]
 
-    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/rv", "/sw"]
+    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/sw"]
     readonly property var verbAliases: ({
         "/filter-value": "/fv", "/filter-type": "/ft", "/add-type": "/at",
-        "/remove-type": "/rt", "/sort": "/s", "/reverse": "/rv",
+        "/remove-type": "/rt", "/sort": "/s",
         "/switch-workspace": "/sw"
     })
     readonly property var verbInfo: ({
@@ -49,12 +49,11 @@ QtObject {
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
         "/s":  { long: "/sort",         desc: "order windows by one field, optional asc / desc" },
-        "/rv": { long: "/reverse",      desc: "flip the current order" },
         "/sw": { long: "/switch-workspace", desc: "show workspaces instead of windows; pick one to switch to it" }
     })
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "rv", "sw",
-        "filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse", "switch-workspace"
+        "fv", "ft", "at", "rt", "s", "sw",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort", "switch-workspace"
     ]
     // All resolvable type paths (flat types, groups, and group.subfields),
     // bare, no "*" -- the full depth the Verb stage's completion crosses
@@ -109,7 +108,7 @@ QtObject {
         if (!a || !b || a.kind !== b.kind) return false;
         return a.kind === "flat" ? a.name === b.name : a.group === b.group && a.sub === b.sub;
     }
-    function takesPath(verb) { return verb !== "/rv"; }
+    function takesPath(verb) { return true; }
 
     // --- tokenizer (query.rs's Tok / tokenize) ----------------------------
     // Unlike QueryDsl.qml's own tokenize, this keeps each token's byte
@@ -403,7 +402,7 @@ QtObject {
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
     function parse(query) {
         const toks = root.tokenize(query);
-        let out = { filters: [], colOps: [], sort: null, reverse: false, switchWorkspace: false };
+        let out = { filters: [], colOps: [], sort: null, switchWorkspace: false };
         const top = out;
         let i = 0;
         while (i < toks.length) {
@@ -423,7 +422,7 @@ QtObject {
             // still consume their arguments but change nothing.
             const verbNeg = !!tok.neg;
             if (verbNeg && verb !== "/fv")
-                out = { filters: [], colOps: [], sort: null, reverse: false, switchWorkspace: false };
+                out = { filters: [], colOps: [], sort: null, switchWorkspace: false };
 
             if (tv.via !== null) {
                 const via = tv.via;
@@ -482,8 +481,6 @@ QtObject {
                     const fields = via.split("/").map(p => root.resolveOne(p));
                     if (fields.every(f => f !== null) && fields.length > 0)
                         out.sort = { fields, dir };
-                } else if (verb === "/rv") {
-                    out.reverse = true;
                 } else if (verb === "/sw") {
                     top.switchWorkspace = true;
                 }
@@ -491,7 +488,7 @@ QtObject {
             }
 
             const args = [];
-            const maxArgs = (verb === "/rv" || verb === "/sw") ? 0 : (verb === "/s" ? 2 : 1);
+            const maxArgs = (verb === "/sw") ? 0 : (verb === "/s" ? 2 : 1);
             while (args.length < maxArgs && i < toks.length && !root.startsCommand(toks[i])) {
                 if (verb === "/s" && args.length === 1 && root.parseDirection(toks[i].text) === null)
                     break;
@@ -514,8 +511,6 @@ QtObject {
                         out.sort = { fields: [field], dir };
                     }
                 }
-            } else if (verb === "/rv") {
-                out.reverse = true;
             } else if (verb === "/sw") {
                 top.switchWorkspace = true;
             }
@@ -673,10 +668,10 @@ QtObject {
         return cols;
     }
 
-    // --- axis 3: sort / reverse ---------------------------------------------
+    // --- axis 3: sort ---------------------------------------------
     function parseActions(query) {
         const p = root.parse(query);
-        return { sort: p.sort, reverse: p.reverse };
+        return { sort: p.sort };
     }
 
     function _tryInt(s) { return /^\d+$/.test(s) ? parseInt(s, 10) : null; }
@@ -748,7 +743,7 @@ QtObject {
                     const tv = root.tokVerb(tok);
                     if (tv === null) {
                         // nothing to track
-                    } else if (tv.verb === "/rv" || (tv.verb === "/sw" && tv.via === null)) {
+                    } else if ((tv.verb === "/sw" && tv.via === null)) {
                         // consumes nothing
                     } else if ((tv.verb === "/ft" || tv.verb === "/at" || tv.verb === "/rt") && tv.via !== null) {
                         // via already supplies the one path this verb takes

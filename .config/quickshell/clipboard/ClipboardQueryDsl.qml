@@ -11,7 +11,7 @@ import QtQuick
 // contiguous substring against the haystack (picker.rs's `Query::text`),
 // not independent AND'd terms the way the launcher/winswitch treat them.
 //
-// `/ft` `/at` `/rt` `/s` `/rv` (columns + sort) went live 2026-09-28 --
+// `/ft` `/at` `/rt` `/s` (columns + sort) went live 2026-09-28 --
 // through 2026-09-27 these were recognised (so their tokens didn't leak
 // into the free-text phrase) but otherwise inert, matching picker.rs's own
 // GTK engine, which had no column/re-sort machinery at all. Both pickers
@@ -49,8 +49,8 @@ QtObject {
 
     // picker.rs's VERB_FORMS.
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "rv",
-        "filter-value", "filter-type", "add-type", "remove-type", "sort", "reverse"
+        "fv", "ft", "at", "rt", "s",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort"
     ]
 
     // picker.rs's verb_meta -- long-form alias + one-line description, for
@@ -61,8 +61,7 @@ QtObject {
         "ft": { alias: "/filter-type",  desc: "show only the matching columns" },
         "at": { alias: "/add-type",     desc: "add the matching columns" },
         "rt": { alias: "/remove-type",  desc: "drop the matching columns" },
-        "s":  { alias: "/sort",         desc: "order rows by one field, optional asc / desc" },
-        "rv": { alias: "/reverse",      desc: "flip the current order" }
+        "s":  { alias: "/sort",         desc: "order rows by one field, optional asc / desc" }
     })
 
     // Case-insensitive substring containment; empty needle always matches
@@ -101,9 +100,9 @@ QtObject {
     // which spelling was typed (winswitch's `_canonName`).
     readonly property var _aliasToShort: ({
         "filter-value": "fv", "filter-type": "ft", "add-type": "at",
-        "remove-type": "rt", "sort": "s", "reverse": "rv"
+        "remove-type": "rt", "sort": "s"
     })
-    readonly property var _shortForms: ["fv", "ft", "at", "rt", "s", "rv"]
+    readonly property var _shortForms: ["fv", "ft", "at", "rt", "s"]
     // "" (the empty verb slot of "//path") is the default verb /fv -
     // query-dsl.md "Default verb". Only reachable with a via slash after
     // it; tokVerb guards the bare-"/" case.
@@ -281,8 +280,7 @@ QtObject {
     // one path plus an optional direction token; via form: `/`-chained
     // paths, e.g. `/s/tokens/title`, with the same optional direction
     // token following) into `sort` (`{paths, direction}`, last one wins);
-    // `/reverse`/`/rv` just flips `reverse` (idempotent -- any count is
-    // the same as one). See `activeColumns`/`applySort` for how these are
+    // See `activeColumns`/`applySort` for how these are
     // actually applied; `parse` only ever records raw path text, same
     // "resolve later" split `fieldTerms`/`matches` already keeps.
     function parse(text, fieldNames) {
@@ -295,7 +293,6 @@ QtObject {
         const openFields = [];
         const columnOps = [];
         let sort = null;
-        let reverse = false;
         let i = 0;
         while (i < toks.length) {
             const tok = toks[i];
@@ -316,7 +313,7 @@ QtObject {
             // still consume their arguments but change nothing.
             const verbNeg = !!tok.neg;
             if (verbNeg && tv.verb !== "fv") {
-                if (tv.via === null && tv.verb !== "rv" && i < toks.length && !root.startsCmd(toks[i])) {
+                if (tv.via === null && i < toks.length && !root.startsCmd(toks[i])) {
                     i++;
                     if (tv.verb === "s" && i < toks.length && !root.startsCmd(toks[i])
                             && root._sortDirection(toks[i].text.toLowerCase()) !== null) i++;
@@ -348,8 +345,6 @@ QtObject {
                         if (d !== null) { direction = d; i++; }
                     }
                     if (paths.length > 0) sort = { paths: paths, direction: direction };
-                } else if (tv.verb === "rv") {
-                    reverse = true;
                 }
                 // else: an empty via on ft/at/rt/s (nothing typed after
                 // the second "/" yet) -- stays inert, same "nothing typed
@@ -383,14 +378,10 @@ QtObject {
                 }
                 continue;
             }
-            if (tv.verb === "rv") {
-                reverse = true;
-                continue;
-            }
         }
         return {
             fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), negWords: negWords.map(w => w.toLowerCase()), exactWords: exactWords, negExact: negExact, openFields: openFields,
-            columnOps: columnOps, sort: sort, reverse: reverse
+            columnOps: columnOps, sort: sort
         };
     }
 
@@ -520,12 +511,11 @@ QtObject {
         return a < b ? -1 : (a > b ? 1 : 0);
     }
 
-    // query-dsl.md's `/sort`/`/reverse` application -- `entries` already
+    // query-dsl.md's `/sort` application -- `entries` already
     // filtered (`matches`), returns a new re-ordered array. An unresolvable
     // or ambiguous sort path (any chain segment not resolving to exactly
     // one field) makes the *whole* `/sort` inert, per spec -- falls back to
-    // `entries`' own incoming order (backend recency), which `/reverse` can
-    // still flip on its own.
+    // `entries`' own incoming order (backend recency).
     function applySort(entries, query, fieldNames) {
         let result = entries;
         if (query.sort) {
@@ -550,7 +540,6 @@ QtObject {
                 });
             }
         }
-        if (query.reverse) result = result.slice().reverse();
         return result;
     }
 
@@ -571,8 +560,6 @@ QtObject {
                     const tv = root.tokVerb(tok);
                     if (tv === null) {
                         // nothing to track
-                    } else if (tv.verb === "rv") {
-                        // consumes nothing
                     } else if (tv.via !== null) {
                         open = { verb: tv.verb, args: [tv.via] };
                     } else {
@@ -629,7 +616,7 @@ QtObject {
                 const name = rest.slice(0, slash), viaFrag = rest.slice(slash + 1);
                 const verb = root._canon(name);
                 // /fv and the four column/sort path-taking verbs all reach
-                // a field/path stage this way; /reverse takes no path, and
+                // a field/path stage this way; 
                 // an unrecognised verb name isn't a command at all.
                 if (verb !== "fv" && root._pathOnlyVerbs.indexOf(verb) < 0) return null;
                 return { kind: "field", start: start + 1 + name.length + 1, frag: viaFrag, via: true, verb: verb };
@@ -664,13 +651,13 @@ QtObject {
     }
 
     // picker.rs's verb_stage_universe, extended once `/ft`/`/at`/`/rt`/`/s`
-    // went live (2026-09-28): the six bare verb shorts, plus every
-    // path-taking verb (all but `/reverse`, which takes no path) crossed
+    // went live (2026-09-28): the five bare verb shorts, plus every
+    // path-taking verb crossed
     // with every field name (query-dsl.md "Verb-stage depth" -- this
     // picker's flat `fieldNames` stands in for the type registry a
     // group-aware consumer like winswitch draws deep candidates from).
     function verbStageUniverse(fieldNames) {
-        const out = ["fv", "ft", "at", "rt", "s", "rv"];
+        const out = ["fv", "ft", "at", "rt", "s"];
         for (const v of ["fv", "ft", "at", "rt", "s"])
             for (const f of fieldNames) out.push(v + "/" + f);
         return out;

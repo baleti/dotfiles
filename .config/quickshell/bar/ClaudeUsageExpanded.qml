@@ -322,8 +322,8 @@ Rectangle {
     // consumer, add its row" convention. A flat list of rows (the single
     // merged table, all 3 accounts) rather than a variable column view, so
     // /ft /at /rt are inert (same call the RSS reader made for the same
-    // reason) -- only /fv (bare text or field:value) and /s /rv actually
-    // do anything. Its /s /rv, when present, override the table's own
+    // reason) -- only /fv (bare text or field:value) and /s actually
+    // do anything. Its /s, when present, override the table's own
     // column-click sort (root.sort).
     property string searchText: ""
     readonly property var searchTypeNames: [
@@ -405,7 +405,7 @@ Rectangle {
     // before any account-2/3 row -- each account alone had enough
     // sessions to fill the row budget on its own, since the un-sorted
     // fallback used to just be root.allProcs's own concatenation order).
-    // The search box's own /s /rv, when present, overrides it (see
+    // The search box's own /s, when present, overrides it (see
     // root.searchParsed).
     readonly property var sortedProcs: {
         const base = root.searchFilteredProcs;
@@ -441,7 +441,7 @@ Rectangle {
             // so swap the comparator args rather than sort-then-reverse.
             arr = base.slice().sort((a, b) => root.compareForSort(b, a, "active"));
         }
-        return root.searchParsed.reverse ? arr.slice().reverse() : arr;
+        return arr;
     }
 
     // Keep the keyboard selection in range as the daemon's row set (or a
@@ -490,7 +490,7 @@ Rectangle {
         "hypr.monitor": "hyprland monitor",
         "hypr.window": "hyprland window address",
     })
-    readonly property var _acVerbs: ["/fv", "/s", "/rv"]
+    readonly property var _acVerbs: ["/fv", "/s"]
 
     function _isVerbPrefix(v) {
         if (v.length <= 1) return false;
@@ -558,7 +558,7 @@ Rectangle {
     // (`_acVerbs`) plus `/fv` and `/s` - the two that take a real path -
     // crossed with every type name ("fv/tokens", "s/tmux.session", ...), so
     // a fragment of the *type*, not just the verb, reaches a whole working
-    // command. `/rv` isn't crossed (takes no path). See query-dsl.md's
+    // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
         const bare = root._acVerbs.map(v => v.slice(1));

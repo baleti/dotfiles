@@ -176,8 +176,6 @@ PanelWindow {
                 return 0;
             });
         }
-        if (root.parsedQuery.reverse)
-            rows = rows.slice().reverse();
         return rows;
     }
     // Visual position of the selection in `results`, -1 if not visible.
