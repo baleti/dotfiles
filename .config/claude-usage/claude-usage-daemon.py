@@ -93,7 +93,7 @@ STATE_FILE = STATE_DIR / "state.json"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 
 INTERVAL_LOCKED = 3600
-INTERVAL_ACTIVE = 120
+INTERVAL_ACTIVE = 300
 INTERVAL_IDLE = 300
 ACTIVITY_WINDOW = 90
 # How often the main loop wakes to re-evaluate which tier it's in --
@@ -236,6 +236,12 @@ def fetch_usage(cred_path: Path) -> dict:
         result = {"error": f"http {e.code}", "http_status": e.code}
         if e.code == 429:
             result["retry_after"] = parse_retry_after(e.headers)
+            try:
+                body = e.read(300).decode("utf-8", "replace")
+            except Exception:
+                body = ""
+            log(f"429 from {cred_path.parent.name}: retry-after={e.headers.get('Retry-After')!r} "
+                f"headers={dict(e.headers)} body={body!r}")
         return result
     except Exception as e:
         return {"error": f"{e.__class__.__name__}: {e}"}
