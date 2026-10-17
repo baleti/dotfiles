@@ -757,7 +757,7 @@ PanelWindow {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.wsPrompt ? (root.promptKind === "workspace" ? qsTr("move this workspace after   ·   pick one") : qsTr("move window to workspace   ·   pick or type a new name")) : qsTr("search apps   ·   / ")
+                    text: root.wsPrompt ? (root.promptKind === "workspace" ? qsTr("move this workspace after   ·   pick one") : qsTr("move window to workspace   ·   pick or type a new name")) : ""
                     color: Theme.muted
                     font: query.font
                     visible: query.text.length === 0
