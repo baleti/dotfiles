@@ -9,6 +9,7 @@ import "background"
 import "osd"
 import "notifications"
 import "revitremote"
+import "appmenu"
 import "rdpvm"
 import "launcher"
 import "rssreader"
@@ -97,6 +98,17 @@ ShellRoot {
         function toggle(): void {
             RevitRemotePickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
         }
+    }
+
+    // Global-menu picker (mod+a): `appmenu-atspi.py pick` stashes the focused window's menu items, then calls open (or close when
+    // already showing). Same latched-monitor pattern as the others -- see AppMenuPickerState.qml.
+    IpcHandler {
+        target: "appMenu"
+        function open(): void {
+            if (!AppMenuPickerState.active) AppMenuPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
+        }
+        function close(): void { AppMenuPickerState.close(); }
+        function isOpen(): bool { return AppMenuPickerState.active; }
     }
 
     // Revit VM RDP picker (launcher entry "RDP: Revit VM", ~/bin/rdp-revit-vm-menu).
@@ -262,6 +274,15 @@ ShellRoot {
         model: Quickshell.screens
 
         NotificationPicker {
+            required property var modelData
+            screen: modelData
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+
+        AppMenuPicker {
             required property var modelData
             screen: modelData
         }

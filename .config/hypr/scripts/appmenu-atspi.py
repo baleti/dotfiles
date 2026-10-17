@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-# mod+a "global menu" prototype: flattens the focused window's AT-SPI
-# accessible menu tree into a wofi picker, then activates whatever is chosen.
+# mod+a "global menu": flattens the focused window's AT-SPI accessible menu tree (or the menu the app serves on its own
+# socket, see provider_request) into rows for the Quickshell picker (~/.config/quickshell/appmenu/, same query DSL as
+# mod+v, ~/.config/docs/query-dsl.md), and activates whatever is chosen there.
+#
+#   appmenu-atspi.py pick              (mod+a) collect the focused window's menu, stash it, open/close the picker
+#   appmenu-atspi.py rows [pid]        NDJSON rows on stdout (debugging)
+#   appmenu-atspi.py activate PID ID   activate one item (the picker runs this after Enter)
 #
 # Why AT-SPI and not com.canonical.AppMenu.Registrar/dbusmenu: that scheme is
 # keyed on X11 window IDs, and every client on this Hyprland session runs as
@@ -141,7 +146,7 @@ def collect_leaves(obj, breadcrumb, out, state, depth=0):
             if idx is None:
                 return
             name = obj.get_name() or "(unnamed)"
-            out.append((" › ".join(breadcrumb + [name]), obj, idx))
+            out.append((breadcrumb + [name], obj, idx))
         return
 
     # nc > 0: a container to recurse into. This covers classic "menu"/"menu
@@ -165,14 +170,6 @@ def collect_leaves(obj, breadcrumb, out, state, depth=0):
         collect_leaves(child, next_breadcrumb, out, state, depth + 1)
 
 
-def rofi_pick(labels):
-    result = subprocess.run(
-        ["rofi", "-dmenu", "-i", "-theme-str", "inputbar { children: [ entry ]; }"],
-        input="\n".join(labels), capture_output=True, text=True,
-    )
-    return result.stdout.strip()
-
-
 def provider_request(pid, req, timeout=1.5):
     """Apps that cannot expose an AT-SPI menu bar (AccessKit's Linux backend waits for the bus property
     ScreenReaderEnabled, which at-spi2-core 2.62 no longer has, so egui apps never register) can serve their menu on a
@@ -194,87 +191,172 @@ def provider_request(pid, req, timeout=1.5):
         s.close()
 
 
-def provider_menu(pid):
-    """True when the focused app served its own menu (shown and handled here), False to fall back to AT-SPI."""
+def key_hint(obj, idx):
+    """'F;<Control>o;<Control>o' (mnemonic;accelerator;shortcut) -> 'Ctrl+o'."""
+    try:
+        raw = Atspi.Action.get_key_binding(obj, idx) or ""
+    except Exception:
+        return ""
+    parts = [p for p in raw.split(";") if p]
+    if not parts:
+        return ""
+    hint = parts[-1] if len(parts) > 1 else ""
+    for src, dst in (("<Control>", "Ctrl+"), ("<Primary>", "Ctrl+"), ("<Shift>", "Shift+"), ("<Alt>", "Alt+"), ("<Super>", "Super+")):
+        hint = hint.replace(src, dst)
+    return hint
+
+
+def unique_ids(entries):
+    """Label paths can repeat (two separators, two 'Recent' entries); the n-th repeat gets '#n', in tree order, so a
+    later re-collect maps the id back to the same item."""
+    seen = {}
+    for e in entries:
+        n = seen.get(e["path"], 0) + 1
+        seen[e["path"]] = n
+        e["id"] = e["path"] if n == 1 else f'{e["path"]}#{n}'
+
+
+def collect_atspi(pid, title):
+    """-> (entries, atspi_objs, note). entries are plain dicts; atspi_objs maps id -> (obj, action index)."""
+    app = find_app(pid)
+    if app is None:
+        return [], {}, f"'{title}' has no accessible menu (not AT-SPI registered, and no menu socket)."
+    frame = find_active_frame(app)
+    if frame is None:
+        return [], {}, f"'{title}': no window frame found via AT-SPI."
+    menubar = find_menubar(frame)
+    if menubar is None:
+        return [], {}, f"'{title}': no menu bar exposed via AT-SPI."
+    leaves = []
+    state = {"opened_any": False}
+    collect_leaves(menubar, [], leaves, state)
+    if state["opened_any"]:
+        # Close whatever lazy-populated submenu we forced open above (GTK/Gecko menu bars show one open menu at a time,
+        # so this closes the last one regardless of how many we stepped through). Runs before the picker opens, while
+        # the app still has the keyboard.
+        subprocess.run(["wtype", "-k", "Escape"], check=False)
+    if not leaves:
+        return [], {}, f"'{title}': menu bar has no actionable items."
+    try:
+        app_name = app.get_name() or title
+    except Exception:
+        app_name = title
+    entries, objs = [], []
+    for parts, obj, idx in leaves:
+        checked = ""
+        try:
+            ss = obj.get_state_set()
+            if ss.contains(Atspi.StateType.CHECKED):
+                checked = "checked"
+            elif obj.get_role_name() in ("check menu item", "radio menu item"):
+                checked = "unchecked"
+        except Exception:
+            pass
+        entries.append({"parts": parts, "path": " › ".join(parts), "app": app_name, "shortcut": key_hint(obj, idx),
+                        "state": checked, "src": "atspi"})
+        objs.append((obj, idx))
+    unique_ids(entries)
+    return entries, {e["id"]: o for e, o in zip(entries, objs)}, ""
+
+
+def collect_provider(pid):
     menu = provider_request(pid, {"cmd": "menu"})
     if not menu or not menu.get("items"):
-        return False
+        return None
     title = menu.get("title") or "Menu"
-    labels, ids = [], {}
+    entries = []
     for item in menu["items"]:
-        mark = "✔ " if item.get("checked") else ("   " if item.get("checked") is False else "")
-        label = f"{title} › {mark}{item['label']}"
-        labels.append(label)
-        ids[label] = item["id"]
-    choice = rofi_pick(labels)
-    if choice in ids:
-        provider_request(pid, {"cmd": "activate", "id": ids[choice]})
-    return True
+        c = item.get("checked")
+        entries.append({"parts": [title, item["label"]], "path": f"{title} › {item['label']}", "app": title, "shortcut": "",
+                        "state": "checked" if c else ("unchecked" if c is False else ""), "src": "provider",
+                        "provider_id": item["id"]})
+    unique_ids(entries)
+    return entries
 
 
-def main():
+def collect(pid, title):
+    """-> (entries, atspi_objs, note); the app's own menu socket wins over AT-SPI."""
+    prov = collect_provider(pid)
+    if prov is not None:
+        return prov, {}, ""
+    return collect_atspi(pid, title)
+
+
+def row_of(e):
+    parts = e["parts"]
+    menu = " › ".join(parts[:-1])
+    hay = " ".join([e["path"], e["app"], e["shortcut"], e["state"]]).lower()
+    return {"id": e["id"], "preview": e["path"], "haystack": hay, "src": e["src"],
+            "fields": {"item": parts[-1], "menu": menu, "path": e["path"], "app": e["app"],
+                       "shortcut": e["shortcut"], "state": e["state"]}}
+
+
+def stash_dir():
+    d = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "appmenu-picker")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def qs_call(*args):
+    return subprocess.run(["qs", "ipc", "call", "appMenu", *args], capture_output=True, text=True, check=False)
+
+
+def cmd_pick():
+    if qs_call("isOpen").stdout.strip() == "true":
+        qs_call("close")
+        return
     pid, title = focused_pid()
     if pid is None:
         notify("No focused window.")
         return
-
-    if provider_menu(pid):
+    entries, _, note = collect(pid, title)
+    if not entries:
+        notify(note or f"'{title}': no menu.")
         return
+    with open(os.path.join(stash_dir(), "rows.ndjson"), "w") as f:
+        f.write(json.dumps({"pid": pid, "title": title}) + "\n")
+        for e in entries:
+            f.write(json.dumps(row_of(e)) + "\n")
+    qs_call("open")
 
-    app = find_app(pid)
-    if app is None:
-        notify(f"'{title}' has no accessible menu (not AT-SPI registered, and no menu socket).")
-        return
 
-    frame = find_active_frame(app)
-    if frame is None:
-        notify(f"'{title}': no window frame found via AT-SPI.")
-        return
+def cmd_rows(pid):
+    title = ""
+    if pid is None:
+        pid, title = focused_pid()
+    entries, _, note = collect(pid, title)
+    for e in entries:
+        print(json.dumps(row_of(e)))
+    if note:
+        print(note, file=sys.stderr)
 
-    menubar = find_menubar(frame)
-    if menubar is None:
-        notify(f"'{title}': no menu bar exposed via AT-SPI.")
-        return
 
-    items = []
-    state = {"opened_any": False}
-    collect_leaves(menubar, [], items, state)
-    if state["opened_any"]:
-        # Close whatever lazy-populated submenu we forced open above (GTK/Gecko
-        # menu bars show one open menu at a time, so this closes the last one
-        # regardless of how many we stepped through).
-        subprocess.run(["wtype", "-k", "Escape"], check=False)
-    if not items:
-        notify(f"'{title}': menu bar has no actionable items.")
-        return
-
-    labels = "\n".join(label for label, _, _ in items)
-    result = subprocess.run(
-        [
-            "rofi",
-            "-dmenu",
-            "-i",
-            # The active theme's inputbar has its own hardcoded
-            # textbox-prompt-colon widget that renders ":" regardless of -p,
-            # so an empty prompt alone still leaves a stray colon -- drop the
-            # prompt/colon widgets from the inputbar entirely.
-            "-theme-str",
-            "inputbar { children: [ entry ]; }",
-        ],
-        input=labels,
-        capture_output=True,
-        text=True,
-    )
-    choice = result.stdout.strip()
-    if not choice:
-        return
-
-    for label, obj, idx in items:
-        if label == choice:
+def cmd_activate(pid, item_id):
+    entries, objs, note = collect(pid, "")
+    for e in entries:
+        if e["id"] != item_id:
+            continue
+        if e["src"] == "provider":
+            provider_request(pid, {"cmd": "activate", "id": e["provider_id"]})
+        else:
+            obj, idx = objs[item_id]
             Atspi.Action.do_action(obj, idx)
-            return
+        return
+    notify(f"Could not find the menu item any more: {item_id}")
 
-    notify(f"Could not map selection back to a menu item: {choice!r}")
+
+def main():
+    argv = sys.argv[1:]
+    mode = argv[0] if argv else "pick"
+    if mode == "pick":
+        cmd_pick()
+    elif mode == "rows":
+        cmd_rows(int(argv[1]) if len(argv) > 1 else None)
+    elif mode == "activate" and len(argv) >= 3:
+        cmd_activate(int(argv[1]), argv[2])
+    else:
+        print(__doc__ or "usage: appmenu-atspi.py pick | rows [pid] | activate PID ID", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
