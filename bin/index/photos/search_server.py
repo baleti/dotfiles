@@ -436,6 +436,32 @@ def view_options(q):
                 opts[name] = v[1]
     return " ".join(kept), opts
 
+# ---- restic backups: a table of their own, loaded in the background the first time a query asks for them -----------
+RESTIC_DB = os.path.join(os.path.dirname(NAMES.db_path), "catalog-restic.db")
+RESTIC = filesearch.ResticTable(RESTIC_DB)
+_restic_loading = threading.Event()
+
+def _restic_load():
+    try:
+        RESTIC.load()
+    except Exception as e:
+        print("restic table load failed:", repr(e), file=sys.stderr, flush=True)
+    finally:
+        _restic_loading.clear()
+
+def restic_table():
+    """(table or None, status message or None). Starts a background (re)load when there is no table yet or the
+    store changed; the answer meanwhile comes without the restic rows and says so."""
+    if not os.path.exists(RESTIC_DB):
+        return None, "no restic index yet (run: restic_store.py migrate)"
+    stale = (not RESTIC.paths) or RESTIC._stale_marker() > RESTIC.loaded_mtime
+    if stale and not _restic_loading.is_set():
+        _restic_loading.set()
+        threading.Thread(target=_restic_load, daemon=True).start()
+    if not RESTIC.paths:
+        return None, "restic backups are loading (first use, about 10 s): the panel refreshes when they are ready"
+    return RESTIC, None
+
 def delta_token():
     """Shared secret for POST /delta (the live file-change feed); created on first use, readable only by the user."""
     path = NAMES.db_path + ".delta-token"
@@ -498,7 +524,14 @@ class H(BaseHTTPRequestHandler):
                     results, count, err, stats = fts_query(fts.group(2), sort, desc, offset, top, fts.group(1))
                     errors = [err] if err else []
                 else:
-                    results, count, stats = NAMES.query(rest, sort, desc, offset, top)
+                    extra = None
+                    if view["show_backup_restic"]:
+                        extra, note = restic_table()
+                        if note:
+                            errors.append(note)
+                    if view["show_backup_btrfs"]:
+                        errors.append("btrfs snapshots are not indexed yet")
+                    results, count, stats = NAMES.query(rest, sort, desc, offset, top, extra=extra)
                 for r in results:
                     r["score"] = None
                     if r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
@@ -574,7 +607,7 @@ class H(BaseHTTPRequestHandler):
             return self._json(200, {"faces": [f for f in faces if f["thumb"]]})
         if u.path == "/ver":
             # bumps whenever the name table changes (live delta or reload): the picker polls this to refresh itself
-            return self._json(200, {"ver": NAMES._ver})
+            return self._json(200, {"ver": NAMES._ver + RESTIC._ver})
         if u.path == "/facets":
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),
