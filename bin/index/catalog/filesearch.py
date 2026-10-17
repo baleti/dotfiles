@@ -253,11 +253,16 @@ def _extras(paths, sizes, mtimes):
     return codes, ext_names, size_arr, mt_arr, orders, keys
 
 SLOW_MS = float(os.environ.get("SEARCH_SLOW_MS", "0"))
+NARROW_MAX = 400_000            # filter the previous matches only when there are few; otherwise the parallel scan is faster
+STAT_SAMPLE_OVER = 500_000      # matches above this get a sampled (approximate) summary line
+STAT_SAMPLE_SIZE = 250_000
 
 def _merge_stats(parts):
     """Combine _stat_parts results into the stats dict the picker shows."""
     fmt = lambda t: time.strftime("%Y-%m-%d", time.localtime(int(t)))
     out = {"size": sum(p[0] for p in parts)}
+    if any(p[4] for p in parts):
+        out["approx"] = True
     lo = [p[1] for p in parts if p[1] is not None]
     hi = [p[2] for p in parts if p[2] is not None]
     if lo:
@@ -439,6 +444,7 @@ class NameTable:
                 del self.d_entries[k]
         self._delta = None
         self._cache = None
+        self._last = None
         self._ver += 1
         if len(self.d_entries) > 150000:
             self.needs_reload = True
@@ -491,11 +497,6 @@ class NameTable:
             t_match = time.perf_counter()
             if cancel is not None and cancel():          # a newer query was typed meanwhile: do not spend the rest
                 return [], 0, {}
-            with self.lock:
-                dead = self.dead
-                has_overlay = bool(self.d_entries) or bool(dead.any())
-            if has_overlay:
-                base = base[~dead[base]] if len(base) else base
             delta = self._delta_table()
             d_idx = delta._match(q, sort, desc) if delta is not None else np.zeros(0, np.int64)
             e_idx = [t._match(q, sort, desc) for t in extras]
@@ -534,17 +535,23 @@ class NameTable:
         return [{"remote": r[0], "size": r[1], "mtime": r[2]} for _, r in window], total, stats
 
     def _stat_parts(self, idx):
-        """Totals over the matches idx: (size sum, oldest, newest, count per file type)."""
+        """Totals over the matches idx: (size sum, oldest, newest, count per file type, approximate?). Past
+        STAT_SAMPLE_OVER matches the totals come from an evenly spaced sample and are scaled up (flagged
+        approximate), so a one-letter query over millions of files does not wait for a full pass."""
+        step = 1
+        if len(idx) > STAT_SAMPLE_OVER:
+            step = max(2, len(idx) // STAT_SAMPLE_SIZE)
+            idx = idx[::step]
         with self.lock:
             sizes, mts, codes, names = self.size_arr[idx], self.mt_arr[idx], self.ext_codes[idx], self.ext_names
         known = sizes >= 0
         dated = mts > 0
         counts = np.bincount(codes, minlength=len(names)) if len(codes) else np.zeros(0, int)
-        by_kind = {names[k] or "no ext": int(c) for k, c in enumerate(counts) if c > 0}
-        return (int(sizes[known].sum()) if known.any() else 0,
+        by_kind = {names[k] or "no ext": int(c) * step for k, c in enumerate(counts) if c > 0}
+        return ((int(sizes[known].sum()) if known.any() else 0) * step,
                 int(mts[dated].min()) if dated.any() else None,
                 int(mts[dated].max()) if dated.any() else None,
-                by_kind)
+                by_kind, step > 1)
 
     def _match(self, q, sort, desc):
         wanted, not_wanted, rest = split_mime_all(q)
@@ -558,6 +565,7 @@ class NameTable:
                 order = self.orders["date_desc"]
             sort_keys = self.sort_keys
             ext_codes, ext_names, size_arr = self.ext_codes, self.ext_names, self.size_arr
+            dead = self.dead if len(self.dead) == N and self.dead.any() else None
         rest_key = (tuple(sorts), desc, tuple(wanted), tuple(tags["size"]), tuple(tags["path"]),
                     tuple(tags["name"]), tuple(tags["dm"]), tuple(hidden_folders(q)),
                     tuple(not_wanted), tuple(neg_terms), tuple(tags["!name"]), tuple(tags["!path"]),
@@ -571,9 +579,11 @@ class NameTable:
                 return last[2]
             narrow = (len(terms) == len(old) + 1 and terms[:len(old)] == old) or \
                      (len(terms) == len(old) and terms[:-1] == old[:-1] and bool(old) and terms[-1].startswith(old[-1]))
-            if narrow:
+            if narrow and len(last[2]) <= NARROW_MAX:
                 keep = self._filter_candidates(last[2], terms[-1].encode("utf-8"))
                 idx = last[2][keep]
+                if dead is not None:
+                    idx = idx[~dead[idx]]
                 if tags["name"] or tags["dm"] or tags["!name"] or tags["!dm"]:
                     rest_tags = {"name": tags["name"], "path": [], "size": [], "dm": tags["dm"],
                                  "!name": tags["!name"], "!dm": tags["!dm"]}
@@ -582,7 +592,7 @@ class NameTable:
                 with self.lock:
                     self._last = (rest_key, terms, idx)
                 return idx
-        mask = np.ones(N, bool)
+        mask = np.ones(N, bool) if dead is None else ~dead
         for f in hidden_folders(q):
             if f in self.off_masks:
                 mask &= ~self.off_masks[f]

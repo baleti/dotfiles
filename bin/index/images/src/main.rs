@@ -442,6 +442,9 @@ struct Stats {
     dmax: Option<String>,
     #[serde(default)]
     kinds: Vec<(String, usize)>,
+    /// the totals come from a sample (huge result sets), so they are shown with a leading ≈
+    #[serde(default)]
+    approx: bool,
 }
 
 #[derive(Deserialize)]
@@ -2938,7 +2941,7 @@ impl eframe::App for App {
                     RichText::new({
                         let mut line = format!("{} shown", group_digits(self.total));
                         if let (Some(st), true) = (&self.stats, self.total > 0) {
-                            line.push_str(&format!(" · {}", human_size(st.size)));
+                            line.push_str(&format!(" · {}{}", if st.approx { "≈ " } else { "" }, human_size(st.size)));
                             if let (Some(a), Some(b)) = (&st.dmin, &st.dmax) {
                                 line.push_str(&if a == b { format!(" · {a}") } else { format!(" · {a} → {b}") });
                             }

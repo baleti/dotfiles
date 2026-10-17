@@ -378,18 +378,25 @@ def make_thumb(remote):
     cv2.imwrite(dst, img, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
 def thumb_worker():
+    # thumbnails are background work: a low priority for this thread (and for the pdftoppm it starts) keeps
+    # the interactive queries from competing with them for the CPU
+    try: os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 15)
+    except OSError: pass
     while True:
-        remote = _pending.get()
-        try: make_thumb(remote)
+        remote, tag = _pending.get()
+        try:
+            if tag is not None and tag[1] < _latest_seq.get(tag[0], 0):
+                continue                          # asked for by a query that has been typed past: not needed any more
+            make_thumb(remote)
         except Exception as e: print("thumb failed", remote, e, file=sys.stderr, flush=True)
         finally:
             with _queued_lock: _queued.discard(remote)
 
-def enqueue(remote):
+def enqueue(remote, tag=None):
     if os.path.exists(thumb_path(remote)): return True
     with _queued_lock:
         if remote not in _queued:
-            _queued.add(remote); _pending.put(remote)
+            _queued.add(remote); _pending.put((remote, tag))
     return False
 
 # ---- view settings: defaults in the picker's settings file, overridden per query by verbs ------------------
@@ -527,7 +534,9 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/query":
             q, view = view_options((qs.get("q", [""])[0]).strip())
-            stale = note_request(qs.get("cid", [""])[0], int(qs.get("seq", ["0"])[0] or 0))
+            cid, seqv = qs.get("cid", [""])[0], int(qs.get("seq", ["0"])[0] or 0)
+            tag = (cid, seqv) if cid and seqv else None
+            stale = note_request(cid, seqv)
             if stale is not None and stale():
                 return self._json(200, {"count": 0, "results": [], "errors": [], "stats": {}, "stale": True})
             top = int(qs.get("top", ["60"])[0])
@@ -560,7 +569,7 @@ class H(BaseHTTPRequestHandler):
                     r["score"] = None
                     if r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
                         r["thumb"] = thumb_path(r["remote"])
-                        r["ready"] = enqueue(r["remote"])
+                        r["ready"] = enqueue(r["remote"], tag)
                     else:
                         r["thumb"] = icon_for(r["remote"])
                         r["ready"] = bool(r["thumb"])
@@ -582,7 +591,7 @@ class H(BaseHTTPRequestHandler):
             for r in results:
                 with_meta(r)
                 r["thumb"] = thumb_path(r["remote"])
-                r["ready"] = enqueue(r["remote"])
+                r["ready"] = enqueue(r["remote"], tag)
             return self._json(200, {"count": count if count is not None else len(results),
                                     "results": results, "errors": errors})
         if u.path == "/snippets":
