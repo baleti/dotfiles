@@ -22,6 +22,7 @@ import cv2, numpy as np  # noqa: E402
 # file-name search: the in-memory name table lives in the catalog package
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "catalog"))
 import filesearch  # noqa: E402
+import index_dirs  # noqa: E402  (directories chosen in the picker's Settings > Indexing)
 from filesearch import path_matches  # noqa: E402
 
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic")
@@ -73,7 +74,15 @@ def icon_for(path):
 NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
 
 # Recoll/Xapian content indexes (each one is a Recoll config directory) searched by /fts
-FTS_INDEXES = [os.path.expanduser(p) for p in config.CFG.get("fts", {}).get("indexes", [])]
+FTS_CONFIGURED = [os.path.expanduser(p) for p in config.CFG.get("fts", {}).get("indexes", [])]
+
+def fts_indexes():
+    """The Recoll indexes /fts searches: the configured collections, plus "user-dirs" (the directories chosen in the
+    picker's Settings > Indexing) once it has been built."""
+    out = list(FTS_CONFIGURED)
+    if index_dirs.fts_dirs() and index_dirs.fts_types()["bm25"] and os.path.isdir(os.path.join(index_dirs.FTS_INDEX, "xapiandb")) and index_dirs.FTS_INDEX not in out:
+        out.append(index_dirs.FTS_INDEX)
+    return out
 _fts_cache = {}
 _fts_lock = threading.Lock()
 
@@ -113,7 +122,12 @@ def _recoll_index(conf, terms, cap):
 def fts_matches(terms, confs, cap=FTS_CAP):
     """Paths whose contents match a Recoll query, from the given content indexes, with sizes and mtimes, in relevance order.
     Raises FtsError when Recoll cannot parse the words."""
-    key = (terms, tuple(confs), cap)
+    def stamp(c):       # a rebuilt index (the user-dirs one, from Settings > Indexing) must not be answered from the cache
+        try:
+            return os.stat(os.path.join(c, "xapiandb")).st_mtime_ns
+        except OSError:
+            return 0
+    key = (terms, tuple(confs), tuple(stamp(c) for c in confs), cap)
     with _fts_lock:
         if key in _fts_cache:
             return _fts_cache[key]
@@ -199,12 +213,13 @@ def fts_pick_indexes(via, terms):
     """Which content indexes a /fts query searches: `/fts/<index> terms` names one (a unique prefix of the
     index folder name is enough); a leading bare word that is exactly an index name also selects it.
     Returns (confs, terms, error)."""
-    names = {fts_name(c): c for c in FTS_INDEXES}
+    indexes = fts_indexes()
+    names = {fts_name(c): c for c in indexes}
     if not via:
         first, _, rest = terms.strip().partition(" ")
         if first in names:
             return [names[first]], rest, None
-        return FTS_INDEXES, terms, None
+        return indexes, terms, None
     hit = [n for n in names if n == via] or [n for n in names if n.startswith(via)]
     if len(hit) != 1:
         return [], terms, f"no content index named '{via}'" if not hit else f"'{via}' matches several indexes: {', '.join(hit)}"
@@ -863,6 +878,14 @@ class H(BaseHTTPRequestHandler):
                 r["ready"] = enqueue(r["remote"], tag)
             return self._json(200, {"count": count if count is not None else len(results),
                                     "results": results, "errors": errors})
+        if u.path == "/index-dirs":
+            # Settings > Indexing: the effective directory lists (the config's local roots when none are chosen yet) and the
+            # progress of the last apply_index_dirs.py run
+            try:
+                st = json.load(open(index_dirs.STATUS))
+            except (OSError, ValueError):
+                st = {"state": "idle", "message": ""}
+            return self._json(200, {**index_dirs.load(config.CFG["catalog"]["local_roots"]), "status": st})
         if u.path == "/snippets":
             try:
                 if (content_verb(qs.get("q", [""])[0]) or ("",))[0] == "chroma":
@@ -917,7 +940,7 @@ class H(BaseHTTPRequestHandler):
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),
                                     "exts": NAMES.top_exts(),
-                                    "fts": [fts_name(c) for c in FTS_INDEXES]})
+                                    "fts": [fts_name(c) for c in fts_indexes()]})
         if u.path == "/people":
             with _q_lock:
                 search._refresh()
