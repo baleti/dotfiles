@@ -1,0 +1,10 @@
+[Unit]
+Description=Ingest new btrfs snapshots into the snapshot index every few hours
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
