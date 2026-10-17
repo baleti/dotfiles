@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh the file-name catalog from the local home (images picker)
+Description=Safety-net walk of the local file-name catalog (live changes come from catalog-watcher)
 
 [Service]
 Type=oneshot
