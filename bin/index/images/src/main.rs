@@ -517,6 +517,9 @@ struct App {
     last_refresh: Instant,
     settings: Settings,
     settings_open: bool,
+    /// the Material You scheme file (rewritten when the wallpaper changes): when it changes the colours are reloaded live
+    scheme_mtime: Option<std::time::SystemTime>,
+    scheme_check: Instant,
     cursor_end: bool,
     seq: u64,
     snip_tx: Sender<(String, String, Result<Vec<Snip>, String>)>,
@@ -1049,6 +1052,8 @@ impl App {
             last_refresh: Instant::now(),
             settings: Settings::load(),
             settings_open: false,
+            scheme_mtime: std::fs::metadata(&cfg().scheme).and_then(|m| m.modified()).ok(),
+            scheme_check: Instant::now(),
             cursor_end: false,
             seq: 0,
             tx,
@@ -1664,6 +1669,15 @@ impl eframe::App for App {
         // debounced live search: fire once typing pauses
         if self.query != self.last_sent && self.last_change.elapsed() >= Duration::from_millis(160) {
             self.send_query();
+        }
+        // follow the wallpaper: re-read the colour scheme when the recolour script rewrote it
+        if self.scheme_check.elapsed() >= Duration::from_secs(1) {
+            self.scheme_check = Instant::now();
+            let m = std::fs::metadata(&cfg().scheme).and_then(|m| m.modified()).ok();
+            if m != self.scheme_mtime {
+                self.scheme_mtime = m;
+                self.pal = load_palette(&cfg().scheme);
+            }
         }
         // live refresh: when the catalog changed and you have been idle for a moment, run the same query again
         // (never while typing, with a menu or properties open, or mid-navigation, so the list does not move under you)
