@@ -425,14 +425,29 @@ fn clipboard_files(paths: &[PathBuf], cut: bool) {
 struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, date_x: f32, score_r: f32, right: f32 }
 const MIN_FRAC: f32 = 0.04;
 const DEFAULT_COLS: [f32; 5] = [0.30, 0.40, 0.10, 0.14, 0.06];
-fn cols(left: f32, right: f32, f: &[f32; 5]) -> Cols {
+fn cols(left: f32, right: f32, f: &[f32; 5], show_score: bool) -> Cols {
     let w = (right - left).max(1.0);
-    let x1 = left + f[0] * w;
-    let x2 = x1 + f[1] * w;
-    let x3 = x2 + f[2] * w;
-    let x4 = x3 + f[3] * w;
+    // size, modified and score hold fixed-width text: they never get narrower than it, whatever the fractions say
+    // (a narrow window used to push their text out over the preview pane); name and path give up the difference
+    let mins = [0.0, 0.0, SIZE_MIN_W, DATE_MIN_W, if show_score { SCORE_MIN_W } else { 0.0 }];
+    let mut wd: Vec<f32> = f.iter().map(|x| x * w).collect();
+    for i in 2..5 { wd[i] = wd[i].max(mins[i]); }
+    let fixed: f32 = wd[2] + wd[3] + wd[4];
+    let flex = (w - fixed).max(NAME_MIN_W + PATH_MIN_W);
+    let share = (wd[0] + wd[1]).max(1.0);
+    wd[0] = (flex * wd[0] / share).clamp(NAME_MIN_W, flex - PATH_MIN_W);
+    wd[1] = flex - wd[0];
+    let x1 = left + wd[0];
+    let x2 = x1 + wd[1];
+    let x3 = x2 + wd[2];
+    let x4 = x3 + wd[3];
     Cols { name_x: left, path_x: x1, path_r: x2, size_r: x2, date_x: x3, score_r: x4, right }
 }
+const SIZE_MIN_W: f32 = 76.0;
+const DATE_MIN_W: f32 = 122.0;
+const SCORE_MIN_W: f32 = 44.0;
+const NAME_MIN_W: f32 = 60.0;
+const PATH_MIN_W: f32 = 60.0;
 
 /// Totals over every match, computed by the server.
 #[derive(Deserialize, Clone, Default)]
@@ -2873,7 +2888,7 @@ impl eframe::App for App {
                     // same left edge as the rows: thumbnail (6 px margin) + gap
                     let frac = self.col_frac;
                     let left = hr.left() + 6.0 + self.thumb + 12.0;
-                    let c = cols(left, hr.right(), &frac);
+                    let c = cols(left, hr.right(), &frac, show_score);
                     let hf = egui::FontId::monospace(10.0);
                     let cur_sort = parse_sort(&self.query).1;
                     let mut columns: Vec<(&str, f32, &str)> = vec![
@@ -2975,7 +2990,7 @@ impl eframe::App for App {
                                     ui.painter().rect_filled(thumb_rect, 4.0, pal.border.gamma_multiply(0.5));
                                 }
                             }
-                            let c = cols(thumb_rect.right() + 12.0, rect.right(), &frac);
+                            let c = cols(thumb_rect.right() + 12.0, rect.right(), &frac, show_score);
                             let y = rect.center().y;
                             let short = short_name(&h.remote);
                             let (dir, base) = split_dir(&short);
@@ -3171,5 +3186,28 @@ mod auto_pair_tests {
         assert_eq!(typed("\"5", 2, '"'), None); // closing an open quote
         assert_eq!(typed("don", 3, '\''), None); // apostrophe
         assert_eq!(typed("ab", 1, 'x'), None);
+    }
+}
+
+#[cfg(test)]
+mod cols_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_width_columns_never_overflow_the_list() {
+        for width in [200.0_f32, 300.0, 420.0, 520.0, 700.0, 1000.0] {
+            for show_score in [false, true] {
+                for f in [DEFAULT_COLS, [0.10, 0.20, 0.04, 0.04, 0.04], [0.5, 0.1, 0.1, 0.2, 0.1]] {
+                    let c = cols(10.0, 10.0 + width, &f, show_score);
+                    let end = if show_score { c.score_r + SCORE_MIN_W } else { c.score_r };
+                    assert!(c.date_x - c.size_r >= SIZE_MIN_W - 0.01, "size column too narrow at {width}");
+                    assert!(c.score_r - c.date_x >= DATE_MIN_W - 0.01, "date column too narrow at {width}");
+                    assert!(c.path_x > c.name_x && c.path_r > c.path_x, "name/path collapsed at {width}");
+                    if width >= 500.0 {
+                        assert!(end <= 10.0 + width + 0.5, "columns run past the list at {width} (score {show_score}): {end}");
+                    }
+                }
+            }
+        }
     }
 }
