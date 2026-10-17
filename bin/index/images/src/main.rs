@@ -517,6 +517,10 @@ struct App {
     last_refresh: Instant,
     settings: Settings,
     settings_open: bool,
+    keys: Keymap,
+    /// shortcut being rebound in the settings window: (action, index of the chord, or the number of chords to add one)
+    rebind: Option<(&'static str, usize)>,
+    rebind_msg: String,
     /// the Material You scheme file (rewritten when the wallpaper changes): when it changes the colours are reloaded live
     scheme_mtime: Option<std::time::SystemTime>,
     scheme_check: Instant,
@@ -949,11 +953,12 @@ impl Settings {
         }
         s
     }
-    fn save(&self) {
+    fn save(&self, keys: &Keymap) {
         let v = serde_json::json!({
             "show_dotfiles": self.show_dotfiles,
             "show_backup_restic": self.show_backup_restic,
             "show_backup_btrfs": self.show_backup_btrfs,
+            "shortcuts": keys.to_json(),
         });
         let path = Settings::path();
         if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
@@ -961,27 +966,147 @@ impl Settings {
     }
 }
 
-/// Every shortcut the picker handles, for the settings window (read-only for now).
-const SHORTCUTS: [(&str, &str); 19] = [
-    ("Ctrl+P", "settings (this window)"),
+/// A key with modifiers, e.g. Ctrl+Shift+K.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Chord { ctrl: bool, alt: bool, shift: bool, key: Key }
+
+impl Chord {
+    fn mods(&self) -> egui::Modifiers {
+        egui::Modifiers { alt: self.alt, ctrl: self.ctrl, shift: self.shift, mac_cmd: false, command: false }
+    }
+    fn label(&self) -> String {
+        format!("{}{}{}{}", if self.ctrl { "Ctrl+" } else { "" }, if self.alt { "Alt+" } else { "" },
+                if self.shift { "Shift+" } else { "" }, self.key.name())
+    }
+    fn parse(text: &str) -> Option<Chord> {
+        let mut c = Chord { ctrl: false, alt: false, shift: false, key: Key::A };
+        let mut key = None;
+        for part in text.split('+') {
+            match part.trim().to_ascii_lowercase().as_str() {
+                "ctrl" => c.ctrl = true,
+                "alt" => c.alt = true,
+                "shift" => c.shift = true,
+                other if !other.is_empty() => key = Key::from_name(part.trim()).or_else(|| Key::ALL.iter().copied().find(|k| k.name().eq_ignore_ascii_case(other))),
+                _ => {}
+            }
+        }
+        c.key = key?;
+        Some(c)
+    }
+}
+
+/// The shortcuts that can be rebound: (action id, what it does). Arrows, Enter, Tab, Esc, paging, Delete and
+/// Shift+arrows stay fixed.
+const ACTIONS: [(&str, &str); 13] = [
+    ("settings", "Open settings"),
+    ("complete", "Complete (query box; same as Tab)"),
+    ("caret_end", "Caret to the end of the query"),
+    ("history", "Search history popup"),
+    ("next", "Next result (also in popups; from the query box: focus the first result)"),
+    ("prev", "Previous result (from the query box: focus the last result)"),
+    ("item_prev", "Previous item (also across the grid)"),
+    ("item_next", "Next item (also across the grid)"),
+    ("reveal", "Show in the file manager"),
+    ("properties", "Properties"),
+    ("menu", "Context menu"),
+    ("copy", "Copy the selection"),
+    ("cut", "Cut the selection"),
+];
+
+#[derive(Clone)]
+struct Keymap { map: HashMap<String, Vec<Chord>> }
+
+impl Keymap {
+    fn defaults() -> Keymap {
+        let c = |ctrl, alt, key| Chord { ctrl, alt, shift: false, key };
+        let mut map: HashMap<String, Vec<Chord>> = HashMap::new();
+        for (act, chords) in [
+            ("settings", vec![c(true, false, Key::P)]),
+            ("complete", vec![c(true, false, Key::Space)]),
+            ("caret_end", vec![c(true, false, Key::E)]),
+            ("history", vec![c(true, false, Key::R), c(false, false, Key::F4)]),
+            ("next", vec![c(true, false, Key::J)]),
+            ("prev", vec![c(true, false, Key::K)]),
+            ("item_prev", vec![c(true, false, Key::H)]),
+            ("item_next", vec![c(true, false, Key::L)]),
+            ("reveal", vec![c(true, false, Key::Enter)]),
+            ("properties", vec![c(false, true, Key::Enter)]),
+            ("menu", vec![c(false, false, Key::F10)]),
+            ("copy", vec![c(true, false, Key::C)]),
+            ("cut", vec![c(true, false, Key::X)]),
+        ] {
+            map.insert(act.to_string(), chords);
+        }
+        Keymap { map }
+    }
+    /// Defaults overlaid with the "shortcuts" object of the settings file ({"history": ["Ctrl+R", "F4"], ...}).
+    fn load() -> Keymap {
+        let mut km = Keymap::defaults();
+        let v = std::fs::read_to_string(Settings::path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        if let Some(obj) = v.as_ref().and_then(|v| v.get("shortcuts")).and_then(|s| s.as_object()) {
+            for (act, list) in obj {
+                if let (Some(slot), Some(list)) = (km.map.get_mut(act), list.as_array()) {
+                    *slot = list.iter().filter_map(|x| x.as_str()).filter_map(Chord::parse).collect();
+                }
+            }
+        }
+        km
+    }
+    fn to_json(&self) -> serde_json::Value {
+        let mut o = serde_json::Map::new();
+        for (act, _) in ACTIONS {
+            let list: Vec<String> = self.chords(act).iter().map(|c| c.label()).collect();
+            o.insert(act.to_string(), serde_json::json!(list));
+        }
+        serde_json::Value::Object(o)
+    }
+    fn chords(&self, act: &str) -> &[Chord] {
+        self.map.get(act).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+    /// Consumes every press of any chord bound to `act` this frame; true if there was one.
+    fn consume_in(&self, i: &mut egui::InputState, act: &str) -> bool {
+        let mut hit = false;
+        for c in self.chords(act) {
+            if i.consume_key(c.mods(), c.key) { hit = true; }
+        }
+        hit
+    }
+    /// True when a chord of `act` was pressed this frame (not consumed).
+    fn pressed_in(&self, i: &egui::InputState, act: &str) -> bool {
+        self.chords(act).iter().any(|c| {
+            i.key_pressed(c.key) && i.modifiers.ctrl == c.ctrl && i.modifiers.alt == c.alt && i.modifiers.shift == c.shift
+        })
+    }
+    fn consume(&self, ui: &mut egui::Ui, act: &str) -> bool {
+        ui.input_mut(|i| self.consume_in(i, act))
+    }
+    /// Which other action already uses this chord.
+    fn conflict(&self, chord: Chord, except: &str) -> Option<&'static str> {
+        ACTIONS.iter().find(|(a, _)| *a != except && self.chords(a).contains(&chord)).map(|(_, label)| *label)
+    }
+}
+
+/// Counts and consumes every queued press of the chords bound to `act` this frame (repeats included).
+fn take_act(ui: &mut egui::Ui, keys: &Keymap, act: &str) -> usize {
+    let mut c = 0;
+    while c < 500 && keys.consume(ui, act) {
+        c += 1;
+    }
+    c
+}
+
+/// Keys that cannot be rebound (shown in the settings window).
+const FIXED_KEYS: [(&str, &str); 10] = [
     ("Tab", "query box: complete; results: back to the query box"),
-    ("Ctrl+Space", "complete (same as Tab in the query box)"),
     ("Up / Down", "query box: walk the search history; Down also enters the results"),
-    ("Ctrl+R / F4", "search history popup"),
-    ("Ctrl+J / Ctrl+K", "focus the results (first / last); in the results: next / previous"),
-    ("Ctrl+H / Ctrl+L", "previous / next item (also across the grid)"),
+    ("Arrows", "move through the results; Left / Right also across the grid"),
     ("Shift+arrows", "extend the selection"),
     ("PgUp / PgDn, Home / End", "move through the results"),
     ("Enter", "open the selected file"),
-    ("Ctrl+Enter", "show it in the file manager"),
-    ("Alt+Enter", "properties"),
-    ("F10", "context menu"),
-    ("Ctrl+C / Ctrl+X", "copy / cut the selection"),
-    ("Ctrl+E", "caret to the end of the query"),
+    ("Delete", "move the selection to the trash"),
     ("Ctrl+A", "select the whole query"),
     ("Esc", "close the menu or dialog, then the window"),
     ("Ctrl+wheel / pinch", "zoom the thumbnails"),
-    ("/ then Tab", "list the query verbs"),
 ];
 
 fn fetch_ver() -> Option<u64> {
@@ -1052,6 +1177,9 @@ impl App {
             last_refresh: Instant::now(),
             settings: Settings::load(),
             settings_open: false,
+            keys: Keymap::load(),
+            rebind: None,
+            rebind_msg: String::new(),
             scheme_mtime: std::fs::metadata(&cfg().scheme).and_then(|m| m.modified()).ok(),
             scheme_check: Instant::now(),
             cursor_end: false,
@@ -1614,6 +1742,7 @@ fn short_name(remote: &str) -> String {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let keys = self.keys.clone();
         let ctx = ui.ctx().clone();
         let pal = self.pal;
         ui.painter().rect_filled(ui.max_rect(), 0.0, pal.bg);
@@ -1743,8 +1872,41 @@ impl eframe::App for App {
             (take_count(ui, egui::Modifiers::SHIFT, Key::ArrowLeft), take_count(ui, egui::Modifiers::SHIFT, Key::ArrowRight))
         } else { (0, 0) };
 
-        // Ctrl+P: settings (the same key as Everything's Tools > Options)
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::P)) {
+        // rebinding a shortcut in the settings window: the next key press (with its modifiers) becomes the binding
+        if let Some((act, idx)) = self.rebind {
+            let ev = ui.input(|i| i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                _ => None,
+            }));
+            if let Some((key, m)) = ev {
+                let bare = !m.ctrl && !m.alt && !m.shift;
+                let f_key = { let n = key.name(); n.starts_with('F') && n[1..].parse::<u8>().is_ok() };
+                if key == Key::Escape && bare {
+                    self.rebind_msg.clear();
+                } else if key == Key::Backspace && bare {
+                    if let Some(list) = self.keys.map.get_mut(act) { if idx < list.len() { list.remove(idx); } }
+                    self.rebind_msg.clear();
+                    self.settings.save(&self.keys);
+                } else if bare && !f_key {
+                    self.rebind_msg = "Use Ctrl, Alt or Shift with the key (a bare letter would type into the query), or an F key.".into();
+                } else {
+                    let chord = Chord { ctrl: m.ctrl, alt: m.alt, shift: m.shift, key };
+                    if let Some(other) = self.keys.conflict(chord, act) {
+                        self.rebind_msg = format!("{} is already used for: {}", chord.label(), other);
+                    } else {
+                        let list = self.keys.map.entry(act.to_string()).or_default();
+                        if idx < list.len() { list[idx] = chord; } else { list.push(chord); }
+                        self.rebind_msg.clear();
+                        self.settings.save(&self.keys);
+                    }
+                }
+                self.rebind = None;
+            }
+            // while rebinding nothing else may react to the keys
+            ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_))));
+        }
+        // settings: Ctrl+P by default (the same key as Everything's Tools > Options)
+        if keys.consume(ui, "settings") {
             self.settings_open = !self.settings_open;
         }
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
@@ -1759,10 +1921,10 @@ impl eframe::App for App {
             tab
         };
         // emacs-style Ctrl+E: caret to the end of the query (Ctrl+A keeps selecting everything)
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::E)) {
+        if keys.consume(ui, "caret_end") {
             self.cursor_end = true;
         }
-        let ctrl_space = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Space));
+        let ctrl_space = keys.consume(ui, "complete");
         if (tab || ctrl_space) && !self.popup && self.path_pane.is_none() && path_fragment(&self.query).is_some() {
             let (start, frag) = path_fragment(&self.query).unwrap_or((0, String::new()));
             let (tx, rx) = channel();
@@ -1820,8 +1982,8 @@ impl eframe::App for App {
         }
         if let Some(p) = self.path_pane.as_mut() {
             let (down, up, enter, esc) = ui.input_mut(|i| (
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | i.consume_key(egui::Modifiers::CTRL, Key::J),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | i.consume_key(egui::Modifiers::CTRL, Key::K),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | keys.consume_in(i, "next"),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | keys.consume_in(i, "prev"),
                 i.consume_key(egui::Modifiers::NONE, Key::Enter) | i.consume_key(egui::Modifiers::NONE, Key::Tab),
                 i.consume_key(egui::Modifiers::NONE, Key::Escape),
             ));
@@ -1844,10 +2006,10 @@ impl eframe::App for App {
         }
         if self.face_pane.is_some() {
             let (l, r, u, d, enter, esc) = ui.input_mut(|i| (
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft) | i.consume_key(egui::Modifiers::CTRL, Key::H),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowRight) | i.consume_key(egui::Modifiers::CTRL, Key::L),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | i.consume_key(egui::Modifiers::CTRL, Key::K),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | i.consume_key(egui::Modifiers::CTRL, Key::J),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft) | keys.consume_in(i, "item_prev"),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowRight) | keys.consume_in(i, "item_next"),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | keys.consume_in(i, "prev"),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | keys.consume_in(i, "next"),
                 i.consume_key(egui::Modifiers::NONE, Key::Enter),
                 i.consume_key(egui::Modifiers::NONE, Key::Escape),
             ));
@@ -1886,7 +2048,7 @@ impl eframe::App for App {
                     false,
                 )
             });
-            let (cj_n, ck_n) = (take_count(ui, egui::Modifiers::CTRL, Key::J), take_count(ui, egui::Modifiers::CTRL, Key::K));
+            let (cj_n, ck_n) = (take_act(ui, &keys, "next"), take_act(ui, &keys, "prev"));
             let n = self.cands.len();
             if esc { self.popup = false; }
             else if enter { self.accept_candidate(); }
@@ -1907,16 +2069,15 @@ impl eframe::App for App {
         // keys (only the ones the list owns; typing goes to the query box)
         let n = self.total;
         // Ctrl+R / F4: search history popup, seeded from the current text
-        let hist_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::R))
-            | ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F4));
+        let hist_key = keys.consume(ui, "history");
         if hist_key && !self.hist_popup && !self.popup && self.trash_pending.is_none() && self.props.is_none() {
             self.hist_popup = true;
             self.hist_sel = 0;
         }
         if self.hist_popup {
             let (down, up, enter, esc) = ui.input_mut(|i| (
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | i.consume_key(egui::Modifiers::CTRL, Key::J),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | i.consume_key(egui::Modifiers::CTRL, Key::K),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | keys.consume_in(i, "next"),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | keys.consume_in(i, "prev"),
                 i.consume_key(egui::Modifiers::NONE, Key::Enter),
                 i.consume_key(egui::Modifiers::NONE, Key::Escape),
             ));
@@ -1940,8 +2101,8 @@ impl eframe::App for App {
         // Ctrl+J / Ctrl+K from the query box: focus the list at the first / last entry
         // Ctrl+J/K/H/L: count every queued press (holding the key auto-repeats), so holding moves smoothly
         // while the completion popup is open, Ctrl+J/K belong to it (read further below), not the list
-        let ctrl_j_n = if self.popup { 0 } else { take_count(ui, egui::Modifiers::CTRL, Key::J) };
-        let ctrl_k_n = if self.popup { 0 } else { take_count(ui, egui::Modifiers::CTRL, Key::K) };
+        let ctrl_j_n = if self.popup { 0 } else { take_act(ui, &keys, "next") };
+        let ctrl_k_n = if self.popup { 0 } else { take_act(ui, &keys, "prev") };
         let ctrl_j = ctrl_j_n > 0;
         let ctrl_k = ctrl_k_n > 0;
         let was_list = self.list_focus;
@@ -1960,7 +2121,7 @@ impl eframe::App for App {
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::End),
                 i.key_pressed(Key::Enter) && !i.modifiers.ctrl && !i.modifiers.alt,
-                i.key_pressed(Key::Enter) && i.modifiers.ctrl,
+                keys.pressed_in(i, "reveal"),
                 i.key_pressed(Key::Escape),
                 false,
                 false,
@@ -2003,17 +2164,17 @@ impl eframe::App for App {
             else if self.props.is_some() { self.props = None; }
             else { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
-        let alt_enter = ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.alt);
+        let alt_enter = ui.input(|i| keys.pressed_in(i, "properties"));
         if alt_enter && n > 0 && !self.popup && self.trash_pending.is_none() { self.open_props(self.selected); }
-        let f10 = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::F10));
+        let f10 = keys.consume(ui, "menu");
         if f10 && n > 0 && !self.popup && self.trash_pending.is_none() {
             let at = self.row_rects.get(&self.selected).map(|r| r.left_bottom()).unwrap_or(egui::pos2(40.0, 120.0));
             self.open_menu(at, self.selected);
         }
         let qsel = query_has_selection(&ctx);
         if !qsel && !self.popup && self.trash_pending.is_none() && self.props.is_none() && n > 0 {
-            let key_c = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::C));
-            let key_x = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::X));
+            let key_c = keys.consume(ui, "copy");
+            let key_x = keys.consume(ui, "cut");
             // egui-winit may report Ctrl+C / Ctrl+X as copy/cut events instead of key presses
             let ev_copy = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Copy)); i.events.retain(|e| !matches!(e, egui::Event::Copy)); had });
             let ev_cut = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Cut)); i.events.retain(|e| !matches!(e, egui::Event::Cut)); had });
@@ -2024,8 +2185,8 @@ impl eframe::App for App {
             let cols = if grid { self.grid_cols.max(1) } else { 1 };
             let shift_any = ui.input(|i| i.modifiers.shift);
             // Ctrl+H / Ctrl+L: previous / next item, in grid and list alike (consumed before the query box)
-            let h_n = take_count(ui, egui::Modifiers::CTRL, Key::H);
-            let l_n = take_count(ui, egui::Modifiers::CTRL, Key::L);
+            let h_n = take_act(ui, &keys, "item_prev");
+            let l_n = take_act(ui, &keys, "item_next");
             let j_n = if was_list { ctrl_j_n } else { 0 };
             let k_n = if was_list { ctrl_k_n } else { 0 };
             let cur = self.selected as i64;
@@ -2175,6 +2336,7 @@ impl eframe::App for App {
         if self.settings_open {
             let mut open = true;
             let mut changed = false;
+            let mut start_rebind: Option<(&'static str, usize)> = None;
             egui::Window::new("Settings")
                 .open(&mut open)
                 .collapsible(false)
@@ -2183,30 +2345,65 @@ impl eframe::App for App {
                 .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
                 .show(&ctx, |ui| {
                     ui.label(RichText::new("Search").strong().color(pal.accent));
-                    changed |= ui.checkbox(&mut self.settings.show_dotfiles, "Show dotfiles (names starting with a dot, and everything inside them)").changed();
-                    changed |= ui.checkbox(&mut self.settings.show_backup_restic, "Show restic backups").changed();
-                    changed |= ui.checkbox(&mut self.settings.show_backup_btrfs, "Show btrfs snapshots").changed();
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("In a query, /show-dotfiles /hide-dotfiles /show-backup /hide-backup\n(add -restic or -btrfs for one kind) override these for that search only.")
-                        .size(11.0).color(pal.dim));
+                    let cmd = |ui: &mut egui::Ui, text: &str| { ui.label(RichText::new(text).monospace().size(11.0).color(pal.dim)); };
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut self.settings.show_dotfiles, "Show dotfiles").changed();
+                        cmd(ui, "/show-dotfiles  /hide-dotfiles");
+                    });
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut self.settings.show_backup_restic, "Show restic backups").changed();
+                        cmd(ui, "/show-backup-restic  /hide-backup-restic");
+                    });
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut self.settings.show_backup_btrfs, "Show btrfs snapshots").changed();
+                        cmd(ui, "/show-backup-btrfs  /hide-backup-btrfs");
+                    });
                     ui.add_space(10.0);
                     ui.label(RichText::new("Shortcuts").strong().color(pal.accent));
-                    egui::Grid::new("shortcuts").num_columns(2).spacing([18.0, 3.0]).show(ui, |ui| {
-                        for (k, v) in SHORTCUTS {
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        egui::Grid::new("shortcuts").num_columns(2).spacing([18.0, 4.0]).show(ui, |ui| {
+                            for (act, label) in ACTIONS {
+                                ui.label(RichText::new(label).color(pal.text));
+                                ui.horizontal(|ui| {
+                                    let n = self.keys.chords(act).len();
+                                    for i in 0..n {
+                                        let text = if self.rebind == Some((act, i)) { "press keys…".to_string() } else { self.keys.chords(act)[i].label() };
+                                        if ui.button(RichText::new(text).monospace()).clicked() { start_rebind = Some((act, i)); }
+                                    }
+                                    if n < 3 && ui.small_button("+").clicked() { start_rebind = Some((act, n)); }
+                                });
+                                ui.end_row();
+                            }
+                        });
+                    });
+                    if !self.rebind_msg.is_empty() {
+                        ui.label(RichText::new(self.rebind_msg.clone()).size(11.0).color(pal.error));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Reset shortcuts").clicked() {
+                            self.keys = Keymap::defaults();
+                            self.rebind = None;
+                            self.rebind_msg.clear();
+                            self.settings.save(&self.keys);
+                        }
+                        ui.label(RichText::new("Click a shortcut, then press the new keys. Esc cancels, Backspace removes it.").size(11.0).color(pal.dim));
+                    });
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Fixed keys").strong().color(pal.accent));
+                    egui::Grid::new("fixedkeys").num_columns(2).spacing([18.0, 3.0]).show(ui, |ui| {
+                        for (k, v) in FIXED_KEYS {
                             ui.label(RichText::new(k).monospace().color(pal.text));
                             ui.label(RichText::new(v).color(pal.dim));
                             ui.end_row();
                         }
                     });
-                    ui.add_space(6.0);
-                    ui.label(RichText::new("Settings are saved in ~/.config/indexes/picker-settings.json. Esc or Ctrl+P closes this window.")
-                        .size(11.0).color(pal.dim));
                 });
+            if let Some(r) = start_rebind { self.rebind = Some(r); self.rebind_msg.clear(); }
             if changed {
-                self.settings.save();
+                self.settings.save(&self.keys);
                 self.send_query();
             }
-            if !open { self.settings_open = false; }
+            if !open { self.settings_open = false; self.rebind = None; }
         }
         if let Some(idx) = self.props {
             match self.hit_now(idx) {
@@ -2689,5 +2886,31 @@ mod highlight_tests {
         assert_eq!(words("//path /etc /sort"), vec!["//path", "/sort"]);
         assert_eq!(words("!//path /x \"/fts no\" /rv"), vec!["//path", "/rv"]);
         assert_eq!(words("/fvv /nonsense //bogus"), Vec::<&str>::new());
+    }
+}
+
+#[cfg(test)]
+mod keymap_tests {
+    use super::*;
+
+    #[test]
+    fn default_chords_round_trip_through_their_text_form() {
+        let km = Keymap::defaults();
+        for (act, _) in ACTIONS {
+            assert!(!km.chords(act).is_empty(), "{act} has no default");
+            for c in km.chords(act) {
+                assert_eq!(Chord::parse(&c.label()), Some(*c), "{} does not round trip", c.label());
+                assert!(km.conflict(*c, act).is_none(), "{} is bound twice", c.label());
+            }
+        }
+    }
+
+    #[test]
+    fn user_text_forms_parse() {
+        for (text, ctrl, alt, shift) in [("Ctrl+Shift+K", true, false, true), ("alt+enter", false, true, false), ("F4", false, false, false)] {
+            let c = Chord::parse(text).unwrap_or_else(|| panic!("{text} did not parse"));
+            assert_eq!((c.ctrl, c.alt, c.shift), (ctrl, alt, shift), "{text}");
+        }
+        assert!(Chord::parse("Ctrl+").is_none());
     }
 }
