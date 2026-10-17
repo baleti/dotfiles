@@ -19,12 +19,12 @@ def check(name, ok, detail=""):
     print(f"{'ok  ' if ok else 'FAIL'} {name}{(' - ' + str(detail)[:220]) if detail and not ok else ''}")
     fails += 0 if ok else 1
 
-S = "alpha"                                   # a scope of a few tens of thousands of files
+S = "alpha //path /mnt/backups/"      # a static scope of tens of thousands of files (the live home index changes between calls)
 base = count(S)
 check("scope exists", 5000 < base < 200000, base)
 
 # token order and repetition do not matter
-for a, b in (("alpha road", "road alpha"), ("alpha road !dwg", "!dwg road alpha"), ("alpha //ext .pdf road", "road alpha //ext .pdf"),
+for a, b in (("alpha road //path /mnt/backups/", "road alpha //path /mnt/backups/"), ("alpha road !dwg //path /mnt/backups/", "!dwg road alpha //path /mnt/backups/"),
              ("alpha alpha", "alpha"), ("alpha //ext .pdf //ext .pdf", "alpha //ext .pdf"), ("alpha RoAd", "alpha road"),
              ("alpha   road", "alpha road"), ("alpha //size >1M //size >1M", "alpha //size >1M")):
     check(f"'{a}' == '{b}'", count(a) == count(b) > 0, (count(a), count(b)))
