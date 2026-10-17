@@ -93,6 +93,12 @@ chunks per index are searched instead of 400, and when fewer than 20 files survi
 (about 8 s), so a filtered total is "within the nearest chunks", not exhaustive.
 Checks: `~/bin/index/tools/query_dsl_check.py` (compositions and edge cases through the `search` CLI) and `search_cli_check.py`.
 
+**Revit matches are gron.** For `.rvt/.rfa/.rte/.rft` results the preview pane shows each match as gron lines
+(`json.levels[3].name = "Level 1";`, one snippet per matching model element, its fields kept together) instead of a text slice
+(`photos/gron_rvt.py`, built on the rvt2text outline; swap `outline_leaves` when the extractor gets structured output).
+In the preview pane the text can be selected with the mouse; Ctrl+C or right-click > Copy copies it (Settings can put the
+pane below the results instead of beside them).
+
 **Preview pane.** While a `/fts` query is showing results (list view), a
 second pane on the right previews the highlighted file: Recoll's own
 snippets (`Query.getsnippets` with its default context-word and occurrence

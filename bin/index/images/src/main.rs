@@ -598,6 +598,9 @@ struct App {
     last_refresh: Instant,
     settings: Settings,
     settings_open: bool,
+    /// the text of the last selection made in a preview snippet (for the right-click Copy), and whether a snippet has the keyboard focus
+    snip_sel: String,
+    snip_focus: bool,
     /// Settings > Indexing: the lists being edited, the text boxes, the last run's state/message, when it was last asked
     idx: IndexDirs,
     idx_loaded: bool,
@@ -1105,6 +1108,8 @@ struct Settings {
     /// content searches (/fts, /chroma) include Revit files (rvt rfa rte rft) / AutoCAD drawings (dwg; not indexed yet)
     show_fts_rvt: bool,
     show_fts_dwg: bool,
+    /// the /fts preview pane under the results (horizontal split) instead of beside them
+    preview_bottom: bool,
 }
 
 impl Settings {
@@ -1112,13 +1117,14 @@ impl Settings {
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/indexes/picker-settings.json")
     }
     fn load() -> Settings {
-        let mut s = Settings { show_dotfiles: true, show_backup_restic: false, show_backup_btrfs: false, show_fts_rvt: true, show_fts_dwg: true };
+        let mut s = Settings { show_dotfiles: true, show_backup_restic: false, show_backup_btrfs: false, show_fts_rvt: true, show_fts_dwg: true, preview_bottom: false };
         if let Some(v) = std::fs::read_to_string(Settings::path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
             if let Some(b) = v["show_dotfiles"].as_bool() { s.show_dotfiles = b; }
             if let Some(b) = v["show_backup_restic"].as_bool() { s.show_backup_restic = b; }
             if let Some(b) = v["show_backup_btrfs"].as_bool() { s.show_backup_btrfs = b; }
             if let Some(b) = v["show_fts_rvt"].as_bool() { s.show_fts_rvt = b; }
             if let Some(b) = v["show_fts_dwg"].as_bool() { s.show_fts_dwg = b; }
+            if let Some(b) = v["preview_bottom"].as_bool() { s.preview_bottom = b; }
         }
         s
     }
@@ -1129,6 +1135,7 @@ impl Settings {
             "show_backup_btrfs": self.show_backup_btrfs,
             "show_fts_rvt": self.show_fts_rvt,
             "show_fts_dwg": self.show_fts_dwg,
+            "preview_bottom": self.preview_bottom,
             "shortcuts": keys.to_json(),
         });
         let path = Settings::path();
@@ -1438,6 +1445,8 @@ impl App {
             wake: cc.egui_ctx.clone(),
             settings: Settings::load(),
             settings_open: false,
+            snip_sel: String::new(),
+            snip_focus: false,
             idx: IndexDirs::default(),
             idx_loaded: false,
             idx_path_input: String::new(),
@@ -1847,11 +1856,15 @@ impl App {
             });
         }
         let bold = FontFamily::Name("bold".into());
-        egui::Panel::right("preview")
-            .resizable(true)
-            .default_size(340.0)
-            .size_range(200.0..=900.0)
-            .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(12)))
+        let frame = egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(12));
+        let panel = if self.settings.preview_bottom {
+            egui::Panel::bottom("preview").resizable(true).default_size(220.0).size_range(90.0..=700.0)
+        } else {
+            egui::Panel::right("preview").resizable(true).default_size(340.0).size_range(200.0..=900.0)
+        };
+        let mut focus = false;
+        let mut sel_now: Option<String> = None;
+        panel.frame(frame)
             .show_inside(ui, |ui| {
                 let name = hit.remote.rsplit('/').next().unwrap_or(&hit.remote);
                 let dir = split_dir(&hit.remote).0;
@@ -1865,31 +1878,64 @@ impl App {
                         ui.label(RichText::new("no matching passages").color(pal.dim).size(11.0));
                     }
                     Some(SnipState::Done(v)) => {
+                        let remembered = self.snip_sel.clone();
                         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                            for sn in v {
+                            for (n, sn) in v.iter().enumerate() {
                                 if let Some(p) = sn.page {
                                     ui.label(RichText::new(format!("page {p}")).color(pal.dim).size(10.0));
                                 }
-                                let font = egui::FontId::proportional(12.0);
-                                let plain = egui::TextFormat::simple(font.clone(), pal.text);
-                                let hl = egui::TextFormat::simple(egui::FontId::new(12.0, bold.clone()), pal.accent);
-                                let mut job = egui::text::LayoutJob::default();
-                                job.wrap.max_width = ui.available_width();
-                                let mut pos = 0;
-                                for &(s, e) in &sn.ranges {
-                                    if s < pos || e > sn.text.len() || !sn.text.is_char_boundary(s) || !sn.text.is_char_boundary(e) { continue; }
-                                    job.append(&sn.text[pos..s], 0.0, plain.clone());
-                                    job.append(&sn.text[s..e], 0.0, hl.clone());
-                                    pos = e;
+                                // a read-only text box instead of a label: its text can be selected with the mouse, Ctrl+C copies the
+                                // selection, and the right-click menu has Copy
+                                let mut buf: &str = &sn.text;
+                                let ranges = sn.ranges.clone();
+                                let (bold2, text_col, hl_col) = (bold.clone(), pal.text, pal.accent);
+                                let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
+                                    let text = text.as_str();
+                                    let plain = egui::TextFormat::simple(egui::FontId::proportional(12.0), text_col);
+                                    let hl = egui::TextFormat::simple(egui::FontId::new(12.0, bold2.clone()), hl_col);
+                                    let mut job = egui::text::LayoutJob::default();
+                                    job.wrap.max_width = wrap;
+                                    let mut pos = 0;
+                                    for &(s, e) in &ranges {
+                                        if s < pos || e > text.len() || !text.is_char_boundary(s) || !text.is_char_boundary(e) { continue; }
+                                        job.append(&text[pos..s], 0.0, plain.clone());
+                                        job.append(&text[s..e], 0.0, hl.clone());
+                                        pos = e;
+                                    }
+                                    job.append(&text[pos..], 0.0, plain);
+                                    ui.painter().layout_job(job)
+                                };
+                                let out = egui::TextEdit::multiline(&mut buf)
+                                    .id_salt(("snippet", n))
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(1)
+                                    .layouter(&mut layouter)
+                                    .show(ui);
+                                if out.response.has_focus() {
+                                    focus = true;
+                                    if let Some(r) = out.cursor_range {
+                                        let (a, b): (usize, usize) = (r.primary.index.min(r.secondary.index).into(), r.primary.index.max(r.secondary.index).into());
+                                        if b > a { sel_now = Some(sn.text.chars().skip(a).take(b - a).collect()); }
+                                    }
                                 }
-                                job.append(&sn.text[pos..], 0.0, plain);
-                                ui.label(job);
+                                let whole = sn.text.clone();
+                                let chosen = sel_now.clone().unwrap_or_else(|| remembered.clone());
+                                out.response.context_menu(|ui| {
+                                    let has = !chosen.is_empty() && whole.contains(chosen.as_str());
+                                    if ui.button(if has { "Copy" } else { "Copy passage" }).clicked() {
+                                        ui.ctx().copy_text(if has { chosen.clone() } else { whole.clone() });
+                                        ui.close();
+                                    }
+                                });
                                 ui.add_space(10.0);
                             }
                         });
                     }
                 }
             });
+        self.snip_focus = focus;
+        if let Some(t) = sel_now { self.snip_sel = t; }
     }
 
     /// Thumbnail grid for zoomed-in views: square cells with name, path, size and date under each.
@@ -2485,7 +2531,7 @@ impl eframe::App for App {
             self.open_menu(at, self.selected);
         }
         let qsel = query_has_selection(&ctx);
-        if !qsel && !self.popup && self.trash_pending.is_none() && self.props.is_none() && n > 0 {
+        if !qsel && !self.snip_focus && !self.popup && self.trash_pending.is_none() && self.props.is_none() && n > 0 {
             let key_c = keys.consume(ui, "copy");
             let key_x = keys.consume(ui, "cut");
             // egui-winit may report Ctrl+C / Ctrl+X as copy/cut events instead of key presses
@@ -2680,6 +2726,10 @@ impl eframe::App for App {
                         changed |= ui.checkbox(&mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings (dwg; not indexed yet)").changed();
                         cmd(ui, "/show-fts-dwg  /hide-fts-dwg");
                     });
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut self.settings.preview_bottom, "Preview pane below the results (horizontal split)").changed();
+                        cmd(ui, "default: beside them");
+                    });
                     ui.add_space(10.0);
                     ui.label(RichText::new("Indexing").strong().color(pal.accent));
                     if !self.idx_loaded {
@@ -2806,8 +2856,9 @@ impl eframe::App for App {
             }
         }
 
-        if self.list_focus && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
+        if (self.list_focus || self.snip_focus) && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
             self.list_focus = false;
+            self.snip_focus = false;
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
         }
         if is_fts(&self.req_q) && self.total > 0 && !grid {
@@ -2893,7 +2944,7 @@ impl eframe::App for App {
                             }
                             if r.clicked() { self.list_focus = false; }
                             // keep focus here unless the list was focused on purpose
-                            if !self.list_focus && !r.has_focus() { r.request_focus(); }
+                            if !self.list_focus && !self.snip_focus && !r.has_focus() { r.request_focus(); }
                         });
                     });
                 let y = row.response.rect.bottom() + 2.0;

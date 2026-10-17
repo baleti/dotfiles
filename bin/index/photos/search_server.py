@@ -22,7 +22,8 @@ import cv2, numpy as np  # noqa: E402
 # file-name search: the in-memory name table lives in the catalog package
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "catalog"))
 import filesearch  # noqa: E402
-import index_dirs  # noqa: E402  (directories chosen in the picker's Settings > Indexing)
+import index_dirs  # noqa: E402
+import gron_rvt  # noqa: E402  (Revit /fts matches as gron lines)  (directories chosen in the picker's Settings > Indexing)
 from filesearch import path_matches  # noqa: E402
 
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic")
@@ -446,6 +447,11 @@ def fts_snippets(remote, text):
     terms = terms.strip()
     if err or not terms:
         return [], err
+    if remote.lower().endswith(gron_rvt.REVIT_EXT):
+        # Revit matches are shown as gron lines (json.levels[3].name = "Level 1";): where in the model, and what it says
+        snips = gron_rvt.gron_snippets(gron_rvt.revit_text(remote), terms)
+        if snips:
+            return snips, None
     with _snip_lock:
         for conf in confs:
             if conf not in _snip_dbs:
