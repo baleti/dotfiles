@@ -476,11 +476,11 @@ class NameTable:
             return [(val(sorts[0]), sign), (path, sign)]
         return [(val(k), sign) for k in sorts] + [(path, 1)]
 
-    def query(self, q, sort="date", desc=True, offset=0, limit=200, extra=None):
+    def query(self, q, sort="date", desc=True, offset=0, limit=200, extras=()):
         """(rows, total, stats) for one window of the matches; the full match list is cached per query.
-        `extra`: a second, separately loaded table (the restic backups) whose matches are merged in."""
-        have_extra = extra is not None and len(extra.paths) > 0
-        key = (q, sort, bool(desc), id(extra) if have_extra else 0, extra._ver if have_extra else 0)
+        `extras`: further, separately loaded tables (the restic and btrfs backups) whose matches are merged in."""
+        extras = [t for t in extras if t is not None and len(t.paths) > 0]
+        key = (q, sort, bool(desc), tuple((id(t), t._ver) for t in extras))
         with self.lock:
             cached, ver = self._cache, self._ver
         if cached is None or cached[0] != key:
@@ -492,17 +492,17 @@ class NameTable:
                 base = base[~dead[base]] if len(base) else base
             delta = self._delta_table()
             d_idx = delta._match(q, sort, desc) if delta is not None else np.zeros(0, np.int64)
-            e_idx = extra._match(q, sort, desc) if have_extra else np.zeros(0, np.int64)
+            e_idx = [t._match(q, sort, desc) for t in extras]
             parts = [self._stat_parts(base)] + ([delta._stat_parts(d_idx)] if delta is not None else []) \
-                + ([extra._stat_parts(e_idx)] if have_extra else [])
+                + [t._stat_parts(ix) for t, ix in zip(extras, e_idx)]
             stats = _merge_stats(parts)
             with self.lock:
                 if self._ver == ver:
                     self._cache = (key, base, d_idx, delta, stats, e_idx)
         else:
             base, d_idx, delta, stats, e_idx = cached[1], cached[2], cached[3], cached[4], cached[5]
-        total = len(base) + len(d_idx) + len(e_idx)
-        if not len(d_idx) and not len(e_idx):
+        total = len(base) + len(d_idx) + sum(len(ix) for ix in e_idx)
+        if not len(d_idx) and not any(len(ix) for ix in e_idx):
             window = base[offset: offset + limit].tolist()
             return [{"remote": self.paths[i], "size": self.sizes[i], "mtime": self.mtimes[i]} for i in window], total, stats
         # merge the sorted lists: the window of the union lies within the first offset+limit of each
@@ -511,8 +511,8 @@ class NameTable:
         rows = [(self.paths[i], self.sizes[i], self.mtimes[i]) for i in base[:k].tolist()]
         if len(d_idx):
             rows += [(delta.paths[i], delta.sizes[i], delta.mtimes[i]) for i in d_idx[:k].tolist()]
-        if len(e_idx):
-            rows += [(extra.paths[i], extra.sizes[i], extra.mtimes[i]) for i in e_idx[:k].tolist()]
+        for t, ix in zip(extras, e_idx):
+            rows += [(t.paths[i], t.sizes[i], t.mtimes[i]) for i in ix[:k].tolist()]
         keyed = [(self._sort_key(p, s_, m, sorts, bool(desc)), (p, s_, m)) for p, s_, m in rows]
         def cmp(a, b):
             for (va, da), (vb, db_) in zip(a[0], b[0]):
@@ -665,6 +665,12 @@ class ResticTable(NameTable):
     def _fetch(self):
         import restic_store
         return restic_store.server_rows(self.db_path)
+
+class BtrfsTable(NameTable):
+    """The btrfs (snapper) snapshots as a table of their own (catalog-btrfs.db), loaded only on demand."""
+    def _fetch(self):
+        import btrfs_store
+        return btrfs_store.server_rows(self.db_path)
 
 def start_refresh(table, every=60):
     def loop():

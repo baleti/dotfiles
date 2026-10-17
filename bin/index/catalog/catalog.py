@@ -6,6 +6,7 @@ the restic snapshots, deduplicated by (path, size, mtime).
   build-extra      walk the extra_roots (NFS shares outside $HOME)
   build-rclone     list each rclone remote through its API (no FUSE walk)
   build-restic     ingest new restic snapshots into catalog-restic.db (see restic_store.py)
+  build-btrfs      ingest new snapper snapshots into catalog-btrfs.db (see btrfs_store.py)
   find TEXT        substring search over file names (scans the entries table), optional filters
   stats            counts per source
 
@@ -647,6 +648,7 @@ def main():
     sub.add_parser("build-rclone")
     sub.add_parser("poll-drive")
     sub.add_parser("build-restic")
+    sub.add_parser("build-btrfs")
     sub.add_parser("build-extra")
     sub.add_parser("stats")
     f = sub.add_parser("find"); f.add_argument("text"); f.add_argument("--limit", type=int, default=50)
@@ -674,6 +676,9 @@ def run(a, db):
         drive_poll(db)
     elif a.cmd == "build-rclone":
         build_rclone(db)
+    elif a.cmd == "build-btrfs":
+        import btrfs_store            # snapper snapshots, in their own database (catalog-btrfs.db)
+        btrfs_store.build()
     elif a.cmd == "build-restic":
         import restic_store           # the restic snapshots live in their own database (catalog-restic.db)
         restic_store.build()
