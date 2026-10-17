@@ -133,14 +133,14 @@ PanelWindow {
 
     function _matchesPos(app, term) {
         if (term.text !== undefined)
-            return QueryDsl.substr(term.text, app.haystack);
+            return QueryDsl.substr(term.text, app.haystack, term.quoted);
         // scoped path:value
         const fields = QueryDsl.resolvePath(term.field, root.typeNames);
         if (fields.length === 0)
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
             for (const v of root._fieldVals(app, f)) {
-                if (QueryDsl.substr(term.value, String(v)))
+                if (QueryDsl.substr(term.value, String(v), term.quoted))
                     return true;
             }
         }

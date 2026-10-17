@@ -42,19 +42,29 @@ QtObject {
 
     // Split on whitespace, keeping "quoted runs" as one token (quotes stripped).
     // Case-insensitive substring containment; empty needle always matches.
-    // An all-digit needle is a whole number instead: "5" matches 5 but not
-    // 15 or 599 (a digit run may not touch another digit). See query-dsl.md.
-    function substrIdx(needle, hay) {
+    // With `exact` (the term was quoted: "5" or '5') the needle must stand
+    // alone: no letter/digit/underscore directly before or after it, so "5"
+    // matches 5 but not 15 or 599. See query-dsl.md "Quoted terms".
+    function substrIdx(needle, hay, exact) {
         const n = String(needle).toLowerCase(), h = String(hay).toLowerCase();
-        if (!/^[0-9]+$/.test(n)) return h.indexOf(n);
         let i = h.indexOf(n);
+        if (!exact || n.length === 0) return i;
+        const w = /[a-z0-9_]/;
+        const lead = w.test(n.charAt(0)), trail = w.test(n.charAt(n.length - 1));
         while (i >= 0) {
-            if (!/[0-9]/.test(h.charAt(i - 1) || "") && !/[0-9]/.test(h.charAt(i + n.length) || "")) return i;
+            if (!(lead && w.test(h.charAt(i - 1))) && !(trail && w.test(h.charAt(i + n.length)))) return i;
             i = h.indexOf(n, i + 1);
         }
         return -1;
     }
-    function substr(needle, hay) { return root.substrIdx(needle, hay) >= 0; }
+    function substr(needle, hay, exact) { return root.substrIdx(needle, hay, exact) >= 0; }
+
+    // A scoped value typed as path:"5" / path:'5' -> { v, quoted }.
+    function unquoteValue(v) {
+        const c = v.charAt(0);
+        if (c !== '"' && c !== "'") return { v: v, quoted: false };
+        return { v: v.slice(1, v.length > 1 && v.charAt(v.length - 1) === c ? -1 : undefined), quoted: true };
+    }
 
     function tokenize(text) {
         const out = [];
@@ -69,8 +79,8 @@ QtObject {
             // token, which parse() drops as still-forming.
             let neg = false;
             if (text[i] === "!") { neg = true; i++; }
-            if (text[i] === '"') {
-                const end = text.indexOf('"', i + 1);
+            if (text[i] === '"' || text[i] === "'") {
+                const end = text.indexOf(text[i], i + 1);
                 if (end < 0) { out.push({ q: true, neg: neg, v: text.slice(i + 1) }); break; }
                 out.push({ q: true, neg: neg, v: text.slice(i + 1, end) });
                 i = end + 1;
@@ -270,8 +280,8 @@ QtObject {
             if (colon >= 0) {
                 res.terms.push({
                     field: a0.slice(0, colon).toLowerCase(),
-                    value: a0.slice(colon + 1).toLowerCase(),
-                    quoted: args[0].q,
+                    value: root.unquoteValue(a0.slice(colon + 1)).v.toLowerCase(),
+                    quoted: args[0].q || root.unquoteValue(a0.slice(colon + 1)).quoted,
                     neg: neg
                 });
             } else {
