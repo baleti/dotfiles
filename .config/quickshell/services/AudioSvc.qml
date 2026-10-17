@@ -145,6 +145,12 @@ Singleton {
         Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]);
     }
 
+    function setSourceVolume(fraction: real): void {
+        root.sourceVolume = Math.max(0, Math.min(1, fraction));
+        Quickshell.execDetached(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@",
+                                 Math.round(root.sourceVolume * 100) + "%"]);
+    }
+
     function toggleSourceMute(): void {
         root.sourceMuted = !root.sourceMuted;
         Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]);
