@@ -1,9 +1,9 @@
 [Unit]
-Description=Ingest new btrfs snapshots into the snapshot index every few hours
+Description=Ingest new btrfs snapshots into the snapshot index every 20 minutes
 
 [Timer]
 OnBootSec=15min
-OnUnitInactiveSec=6h
+OnUnitInactiveSec=20min
 RandomizedDelaySec=10min
 
 [Install]

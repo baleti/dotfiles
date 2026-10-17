@@ -125,12 +125,14 @@ def walk_rows(snap_root, subvol):
 def build(db=None):
     db = db or connect()
     exclude = R.excluded_prefixes()
+    changed = False
     for config, subvol in configs():
         on_disk = snapshot_dirs(subvol)
         known = {n: (i, a) for i, n, a in db.execute("SELECT id, num, alive FROM snapshots WHERE config=?", (config,))}
         for n, (i, a) in known.items():                              # snapper cleaned it up
             if n not in on_disk and a:
                 db.execute("UPDATE snapshots SET alive=0 WHERE id=?", (i,))
+                changed = True
         db.commit()
         newest = max(known, default=-1)
         todo = sorted(n for n in on_disk if n not in known and n > newest)
@@ -158,17 +160,21 @@ def build(db=None):
                 log(f"{config}#{n} skipped (will be retried)")
                 continue
             prev = sid
+            changed = True
             log(f"{config}#{n}: +{added:,} new versions, {closed:,} ended, {kept:,} unchanged ({time.time()-t0:.0f}s)")
-    R.touch_generation(BTRFS_DB)
+    if changed:
+        R.touch_generation(BTRFS_DB)      # the search server reloads its snapshot table only when something moved
 
 def server_rows(db_path=BTRFS_DB):
     """(rows sorted by path, []): one row per path, its newest retrievable version, at its real snapshot path."""
     db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     subvols = dict(configs())
     snap = {i: (c, n) for i, c, n in db.execute("SELECT id, config, num FROM snapshots")}
+    on_disk = {c: snapshot_dirs(sv) for c, sv in subvols.items()}
     alive = {}
     for i, c, n in db.execute("SELECT id, config, num FROM snapshots WHERE alive=1 ORDER BY id"):
-        alive.setdefault(c, []).append(i)
+        if n in on_disk.get(c, {}):                  # snapper may have deleted it since the last build
+            alive.setdefault(c, []).append(i)
     best = {}
     for path, size, mtime, first, last in db.execute("SELECT path, size, mtime, first_snap, last_snap FROM versions"):
         config = snap[first][0]
