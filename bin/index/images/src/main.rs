@@ -547,9 +547,19 @@ fn fetch_snippets(remote: &str, q: &str) -> Result<Vec<Snip>, String> {
 
 /// True for a `/fts` (full-text search) query: those results get a snippet preview pane.
 fn is_fts(q: &str) -> bool {
-    ["/fts", "/full-text-search", "/chroma", "/semantic"].iter().any(|v| {
-        q.strip_prefix(v).map_or(false, |r| r.is_empty() || r.starts_with('/') || r.starts_with(char::is_whitespace))
-    })
+    // a content search (/fts or /chroma, with an optional /<index>) anywhere in the query: whatever is written before it is
+    // the name filter it runs on top of. A //tag owns the token after it, so `//path /fts` is no verb.
+    let toks = tokenize(q);
+    let mut i = 0;
+    while i < toks.len() {
+        let t = toks[i].as_str();
+        if t.starts_with("//") || t.starts_with("!//") { i += 2; continue; }
+        if let Some(rest) = t.strip_prefix('/') {
+            if matches!(rest.split('/').next().unwrap_or(""), "fts" | "full-text-search" | "chroma" | "semantic") { return true; }
+        }
+        i += 1;
+    }
+    false
 }
 
 struct Fetch {
@@ -3071,6 +3081,23 @@ mod highlight_tests {
         assert_eq!(words("//path /etc /sort"), vec!["//path", "/sort"]);
         assert_eq!(words("!//path /x \"/fts no\" /rv"), vec!["//path", "/rv"]);
         assert_eq!(words("/fvv /nonsense //bogus"), Vec::<&str>::new());
+    }
+}
+
+#[cfg(test)]
+mod content_verb_tests {
+    use super::is_fts;
+
+    #[test]
+    fn content_search_is_recognised_anywhere_in_the_query() {
+        assert!(is_fts("/fts masonry"));
+        assert!(is_fts("alpha road /fts masonry support angle"));
+        assert!(is_fts("alpha //ext .pdf /fts/corpus-alpha angle"));
+        assert!(is_fts("report /chroma/proj digital twin"));
+        assert!(!is_fts("alpha road masonry"));
+        assert!(!is_fts("//path /fts"));
+        assert!(!is_fts("/ftsx notes"));
+        assert!(!is_fts("/clip brick"));
     }
 }
 
