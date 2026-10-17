@@ -40,8 +40,11 @@ VERBS (anywhere in the query)
   /s FIELD [asc|desc]   sort by name, path, size, date-modified, extension, depth (chain with /, e.g. /s size/name);  /rv  reverse
   /show-dotfiles  /hide-dotfiles                         names starting with a dot
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
+  /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
+  /show-fts-dwg  /hide-fts-dwg                           the same for AutoCAD drawings (dwg dxf dwt); the contents are not indexed yet
 
-The same settings exist as options: --dotfiles/--no-dotfiles, --backup restic|btrfs|all|none, -s/--sort, --asc.
+The same settings exist as options: --dotfiles/--no-dotfiles, --backup restic|btrfs|all|none, --fts-rvt/--no-fts-rvt,
+--fts-dwg/--no-fts-dwg, -s/--sort, --asc.
 Backup results have real paths under /mnt/backup-restic-host3/ids/<id>/... and <subvolume>/.snapshots/<n>/snapshot/...
 """
 
@@ -228,6 +231,10 @@ def main():
     sel.add_argument("--dotfiles", dest="dotfiles", action="store_true", default=None, help="include names starting with a dot")
     sel.add_argument("--no-dotfiles", dest="dotfiles", action="store_false", help="leave them out")
     sel.add_argument("--backup", choices=["restic", "btrfs", "all", "none"], help="include / exclude backup copies")
+    sel.add_argument("--fts-rvt", dest="fts_rvt", action="store_true", default=None, help="content searches (/fts /chroma) include Revit files (rvt rfa rte rft)")
+    sel.add_argument("--no-fts-rvt", dest="fts_rvt", action="store_false", help="content searches leave out Revit files")
+    sel.add_argument("--fts-dwg", dest="fts_dwg", action="store_true", default=None, help="include AutoCAD drawings (dwg contents are not indexed yet)")
+    sel.add_argument("--no-fts-dwg", dest="fts_dwg", action="store_false", help="content searches leave out AutoCAD drawings")
     out = ap.add_argument_group("output")
     out.add_argument("-c", "--count", action="store_true", help="only the summary: count, size, dates, kinds")
     out.add_argument("-l", "--long", action="store_true", help="tab-separated: size, modified, path")
@@ -259,6 +266,10 @@ def main():
     verbs = []
     if a.dotfiles is not None:
         verbs.append("/show-dotfiles" if a.dotfiles else "/hide-dotfiles")
+    if a.fts_rvt is not None:
+        verbs.append("/show-fts-rvt" if a.fts_rvt else "/hide-fts-rvt")
+    if a.fts_dwg is not None:
+        verbs.append("/show-fts-dwg" if a.fts_dwg else "/hide-fts-dwg")
     if a.backup:
         verbs.append({"restic": "/show-backup-restic", "btrfs": "/show-backup-btrfs", "all": "/show-backup", "none": "/hide-backup"}[a.backup])
     query = " ".join([query] + verbs).strip()

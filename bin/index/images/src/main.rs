@@ -231,9 +231,9 @@ fn query_terms(q: &str) -> Vec<String> {
 /// the images picker's verbs, `/verb/via`, and `//tag`. Quoted runs, a `//tag`'s value and
 /// anything else that merely starts with `/` (a path such as /mnt/x) are not commands.
 fn command_spans(q: &str) -> Vec<(usize, usize)> {
-    const VERBS: [&str; 17] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort", "rv",
+    const VERBS: [&str; 21] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort", "rv",
         "show-dotfiles", "hide-dotfiles", "show-backup", "hide-backup", "show-backup-restic", "hide-backup-restic",
-        "show-backup-btrfs", "hide-backup-btrfs"];
+        "show-backup-btrfs", "hide-backup-btrfs", "show-fts-rvt", "hide-fts-rvt", "show-fts-dwg", "hide-fts-dwg"];
     const REVERSE: &str = "reverse";
     const TAGS: [&str; 7] = ["name", "path", "size", "dm", "mime", "ext", "file"];
     let b = q.as_bytes();
@@ -731,7 +731,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 14] = [
+        const VERBS: [(&str, &str); 18] = [
             ("/fts ", "full-text search over every content index: /fts dgcl design //mime pdf"),
             ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
@@ -746,6 +746,10 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/hide-backup-restic ", "leave out restic backups"),
             ("/show-backup-btrfs ", "include btrfs snapshots only"),
             ("/hide-backup-btrfs ", "leave out btrfs snapshots"),
+            ("/show-fts-rvt ", "content searches (/fts, /chroma) include Revit files: rvt rfa rte rft"),
+            ("/hide-fts-rvt ", "content searches leave out Revit files"),
+            ("/show-fts-dwg ", "content searches include AutoCAD drawings (dwg contents are not indexed yet)"),
+            ("/hide-fts-dwg ", "content searches leave out AutoCAD drawings"),
         ];
         for (v, label) in VERBS {
             if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort ") {
@@ -1079,6 +1083,9 @@ struct Settings {
     show_dotfiles: bool,
     show_backup_restic: bool,
     show_backup_btrfs: bool,
+    /// content searches (/fts, /chroma) include Revit files (rvt rfa rte rft) / AutoCAD drawings (dwg; not indexed yet)
+    show_fts_rvt: bool,
+    show_fts_dwg: bool,
 }
 
 impl Settings {
@@ -1086,11 +1093,13 @@ impl Settings {
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/indexes/picker-settings.json")
     }
     fn load() -> Settings {
-        let mut s = Settings { show_dotfiles: true, show_backup_restic: false, show_backup_btrfs: false };
+        let mut s = Settings { show_dotfiles: true, show_backup_restic: false, show_backup_btrfs: false, show_fts_rvt: true, show_fts_dwg: true };
         if let Some(v) = std::fs::read_to_string(Settings::path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
             if let Some(b) = v["show_dotfiles"].as_bool() { s.show_dotfiles = b; }
             if let Some(b) = v["show_backup_restic"].as_bool() { s.show_backup_restic = b; }
             if let Some(b) = v["show_backup_btrfs"].as_bool() { s.show_backup_btrfs = b; }
+            if let Some(b) = v["show_fts_rvt"].as_bool() { s.show_fts_rvt = b; }
+            if let Some(b) = v["show_fts_dwg"].as_bool() { s.show_fts_dwg = b; }
         }
         s
     }
@@ -1099,6 +1108,8 @@ impl Settings {
             "show_dotfiles": self.show_dotfiles,
             "show_backup_restic": self.show_backup_restic,
             "show_backup_btrfs": self.show_backup_btrfs,
+            "show_fts_rvt": self.show_fts_rvt,
+            "show_fts_dwg": self.show_fts_dwg,
             "shortcuts": keys.to_json(),
         });
         let path = Settings::path();
@@ -1436,17 +1447,21 @@ impl App {
                 entry("dotfiles", "Show dotfiles".into(), Some(self.settings.show_dotfiles)),
                 entry("restic", "Show restic backups".into(), Some(self.settings.show_backup_restic)),
                 entry("btrfs", "Show btrfs snapshots".into(), Some(self.settings.show_backup_btrfs)),
+                entry("rvt", "Search inside Revit files".into(), Some(self.settings.show_fts_rvt)),
+                entry("dwg", "Search inside AutoCAD drawings (not indexed yet)".into(), Some(self.settings.show_fts_dwg)),
             ];
         }
         let pending: Vec<String> = self.appmenu.pending.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
         for id in pending {
             match id.as_str() {
                 "settings" => self.settings_open = true,
-                "dotfiles" | "restic" | "btrfs" => {
+                "dotfiles" | "restic" | "btrfs" | "rvt" | "dwg" => {
                     match id.as_str() {
                         "dotfiles" => self.settings.show_dotfiles = !self.settings.show_dotfiles,
                         "restic" => self.settings.show_backup_restic = !self.settings.show_backup_restic,
-                        _ => self.settings.show_backup_btrfs = !self.settings.show_backup_btrfs,
+                        "btrfs" => self.settings.show_backup_btrfs = !self.settings.show_backup_btrfs,
+                        "rvt" => self.settings.show_fts_rvt = !self.settings.show_fts_rvt,
+                        _ => self.settings.show_fts_dwg = !self.settings.show_fts_dwg,
                     }
                     self.settings.save(&self.keys);
                     self.send_query();
@@ -2540,6 +2555,14 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         changed |= ui.checkbox(&mut self.settings.show_backup_btrfs, "Show btrfs snapshots").changed();
                         cmd(ui, "/show-backup-btrfs  /hide-backup-btrfs");
+                    });
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut self.settings.show_fts_rvt, "Content search covers Revit files (rvt rfa rte rft)").changed();
+                        cmd(ui, "/show-fts-rvt  /hide-fts-rvt");
+                    });
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings (dwg; not indexed yet)").changed();
+                        cmd(ui, "/show-fts-dwg  /hide-fts-dwg");
                     });
                     ui.add_space(10.0);
                     ui.label(RichText::new("Shortcuts").strong().color(pal.accent));

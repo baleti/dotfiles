@@ -10,6 +10,16 @@ def run(*args, timeout=300):
     r = subprocess.run(["search", *args], capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 
+def run_chroma(*args):
+    """/chroma starts its worker on the first call (the server answers 'starting' with no rows): wait for it."""
+    import time
+    deadline = time.time() + 120
+    while True:
+        rc, out, err = run(*args, timeout=600)
+        if out.strip() or "starting" not in err or time.time() > deadline:
+            return rc, out, err
+        time.sleep(5)
+
 def server(q, top=1, sort="date", desc=1):
     url = f"{SERVER}/query?" + urllib.parse.urlencode({"q": q, "sort": sort, "desc": desc, "offset": 0, "top": top})
     return json.load(urllib.request.urlopen(url, timeout=300))
@@ -57,11 +67,11 @@ check("--no-dotfiles shows fewer than --dotfiles", 0 < na < nb, f"{na} vs {nb}")
 rc, out, err = run("--json", "-q", "--snippets", "-n", "3", "/fts dgcl design //mime pdf")
 rows = [json.loads(l) for l in out.splitlines()]
 check("/fts returns files with snippets", rc == 0 and rows and any(r.get("snippets") for r in rows), err[:100])
-rc, out, err = run("--json", "-q", "-n", "10", "/chroma clash tolerances for BIM coordination", timeout=600)
+rc, out, err = run_chroma("--json", "-q", "-n", "10", "/chroma clash tolerances for BIM coordination")
 rows = [json.loads(l) for l in out.splitlines()]
 scores = [r.get("score") for r in rows]
 check("/chroma returns scored results, best first", rc == 0 and len(rows) >= 5 and None not in scores and scores == sorted(scores, reverse=True), (err or out)[:120])
-rc, out, err = run("--json", "-q", "--snippets", "-n", "2", "/chroma/hwo handover requirements")
+rc, out, err = run_chroma("--json", "-q", "--snippets", "-n", "2", "/chroma/hwo handover requirements")
 rows = [json.loads(l) for l in out.splitlines()]
 check("/chroma/<index> with snippets", rc == 0 and rows and all(r["path"].startswith("/") for r in rows) and any(r.get("snippets") for r in rows), (err or out)[:120])
 rc, out, err = run("--json", "-q", "-n", "5", "/clip brick wall")
