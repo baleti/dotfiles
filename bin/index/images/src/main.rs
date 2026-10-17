@@ -1662,6 +1662,15 @@ impl eframe::App for App {
 
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
+        // Tab in the results list hands focus back to the query box (and does not complete anything);
+        // Tab in the query box stays completion only
+        let tab = if tab && self.list_focus && !self.popup {
+            self.list_focus = false;
+            ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+            false
+        } else {
+            tab
+        };
         // emacs-style Ctrl+E: caret to the end of the query (Ctrl+A keeps selecting everything)
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::E)) {
             self.cursor_end = true;
