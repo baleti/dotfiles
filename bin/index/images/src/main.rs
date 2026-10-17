@@ -512,6 +512,9 @@ struct App {
     ver: Arc<AtomicU64>,
     ver_applied: u64,
     last_input: Instant,
+    /// an in-place refresh is under way (rows stay on screen; pages are replaced as they arrive)
+    refreshing: bool,
+    last_refresh: Instant,
     cursor_end: bool,
     seq: u64,
     snip_tx: Sender<(String, String, Result<Vec<Snip>, String>)>,
@@ -975,6 +978,8 @@ impl App {
             ver: Arc::new(AtomicU64::new(0)),
             ver_applied: 0,
             last_input: Instant::now(),
+            refreshing: false,
+            last_refresh: Instant::now(),
             cursor_end: false,
             seq: 0,
             tx,
@@ -1053,10 +1058,23 @@ impl App {
         self.req_sort = sort.keys.join(",");
         self.req_desc = sort.desc;
         self.last_sent = self.query.clone();
+        self.refreshing = false;
         // keep showing the old rows until the new first page arrives (no flicker while typing)
         self.pending.clear();
         self.busy = true;
         self.request_page(0);
+    }
+
+    /// Re-run the current query without disturbing what is on screen: every loaded page is fetched again and
+    /// replaced when its reply arrives (a plain send_query clears all pages, leaving blank rows below the top).
+    fn refresh_in_place(&mut self) {
+        self.seq += 1;
+        self.refreshing = true;
+        self.last_refresh = Instant::now();
+        self.pending.clear();
+        let mut pages: Vec<usize> = self.pages.keys().copied().collect();
+        if !pages.contains(&0) { pages.push(0); }      // page 0 carries the totals, stats and status line
+        for p in pages { self.request_page(p); }
     }
 
     fn request_page(&mut self, page: usize) {
@@ -1109,7 +1127,7 @@ impl App {
             match f.result {
                 Ok(r) => {
                     self.total = r.count;
-                    if f.page == 0 { self.stats = r.stats.clone(); self.pages.clear(); }
+                    if f.page == 0 { self.stats = r.stats.clone(); if !self.refreshing { self.pages.clear(); } }
                     self.pages.insert(f.page, r.results);
                     self.selected = self.selected.min(self.total.saturating_sub(1));
                     if f.page == 0 {
@@ -1128,6 +1146,11 @@ impl App {
                     if f.page == 0 { self.busy = false; self.status = e; }
                 }
             }
+        }
+        if self.refreshing && self.pending.is_empty() {
+            self.refreshing = false;
+            let total = self.total;
+            self.pages.retain(|p, _| p * PAGE < total.max(1));     // the list may have shrunk
         }
     }
 
@@ -1583,9 +1606,10 @@ impl eframe::App for App {
             self.ver_applied = ver;
         } else if ver != self.ver_applied && self.query == self.last_sent && !self.busy
             && self.last_input.elapsed() >= Duration::from_millis(1500)
+            && !self.refreshing && self.last_refresh.elapsed() >= Duration::from_secs(3)
             && self.props.is_none() && self.menu_at.is_none() {
             self.ver_applied = ver;
-            self.send_query();
+            self.refresh_in_place();
         }
         if self.first_frame {
             self.first_frame = false;
