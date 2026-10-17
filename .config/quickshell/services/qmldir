@@ -22,3 +22,4 @@ singleton HyprGaps 1.0 HyprGaps.qml
 singleton HyprDecoration 1.0 HyprDecoration.qml
 singleton RdpVmPickerState 1.0 RdpVmPickerState.qml
 singleton AudioSvc 1.0 AudioSvc.qml
+singleton AppMenuPickerState 1.0 AppMenuPickerState.qml
