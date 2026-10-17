@@ -1031,6 +1031,15 @@ fn serve_appmenu(menu: Arc<AppMenu>) {
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
     }
+    // sockets of pickers that were killed (no chance to clean up) are removed here
+    if let Some(dir) = path.parent() {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(pid) = name.strip_suffix(".sock").and_then(|p| p.parse::<u32>().ok()) {
+                if !Path::new(&format!("/proc/{pid}")).exists() { let _ = std::fs::remove_file(e.path()); }
+            }
+        }
+    }
     let _ = std::fs::remove_file(&path);
     let Ok(listener) = std::os::unix::net::UnixListener::bind(&path) else { return };
     std::thread::spawn(move || {
