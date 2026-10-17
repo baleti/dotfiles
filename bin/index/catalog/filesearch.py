@@ -306,12 +306,7 @@ class NameTable:
             self._loading, self._buffer = True, []      # live changes that arrive while loading are replayed afterwards
         try:
             stamp = self._stale_marker()
-            con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-            rows = con.execute("SELECT path, size, mtime FROM entries ORDER BY path, mtime DESC").fetchall()
-            dates = [r[0] for r in con.execute(
-                "SELECT DISTINCT strftime('%Y-%m', mtime, 'unixepoch', 'localtime') d FROM entries "
-                "WHERE mtime IS NOT NULL ORDER BY d DESC")]
-            con.close()
+            rows, dates = self._fetch()
             paths, sizes, mtimes, prev = [], [], [], None
             for p, s, m in rows:            # the same path can come from several sources
                 if p == prev:
@@ -324,6 +319,16 @@ class NameTable:
             with self.lock:
                 self._loading = False
         print(f"name table: {len(paths)} paths, {len(self.blob)/1e6:.0f} MB blob, {time.time()-t0:.1f}s", flush=True)
+
+    def _fetch(self):
+        """(rows of path, size, mtime ordered by path then newest first, months with files) from the database."""
+        con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        rows = con.execute("SELECT path, size, mtime FROM entries ORDER BY path, mtime DESC").fetchall()
+        dates = [r[0] for r in con.execute(
+            "SELECT DISTINCT strftime('%Y-%m', mtime, 'unixepoch', 'localtime') d FROM entries "
+            "WHERE mtime IS NOT NULL ORDER BY d DESC")]
+        con.close()
+        return rows, dates
 
     def _set(self, paths, sizes, mtimes, dates, stamp=0.0, install_lock=True):
         """Build every lookup structure for (paths sorted ascending) and swap them in."""
@@ -471,9 +476,11 @@ class NameTable:
             return [(val(sorts[0]), sign), (path, sign)]
         return [(val(k), sign) for k in sorts] + [(path, 1)]
 
-    def query(self, q, sort="date", desc=True, offset=0, limit=200):
-        """(rows, total, stats) for one window of the matches; the full match list is cached per query."""
-        key = (q, sort, bool(desc))
+    def query(self, q, sort="date", desc=True, offset=0, limit=200, extra=None):
+        """(rows, total, stats) for one window of the matches; the full match list is cached per query.
+        `extra`: a second, separately loaded table (the restic backups) whose matches are merged in."""
+        have_extra = extra is not None and len(extra.paths) > 0
+        key = (q, sort, bool(desc), id(extra) if have_extra else 0, extra._ver if have_extra else 0)
         with self.lock:
             cached, ver = self._cache, self._ver
         if cached is None or cached[0] != key:
@@ -485,22 +492,27 @@ class NameTable:
                 base = base[~dead[base]] if len(base) else base
             delta = self._delta_table()
             d_idx = delta._match(q, sort, desc) if delta is not None else np.zeros(0, np.int64)
-            parts = [self._stat_parts(base)] + ([delta._stat_parts(d_idx)] if delta is not None else [])
+            e_idx = extra._match(q, sort, desc) if have_extra else np.zeros(0, np.int64)
+            parts = [self._stat_parts(base)] + ([delta._stat_parts(d_idx)] if delta is not None else []) \
+                + ([extra._stat_parts(e_idx)] if have_extra else [])
             stats = _merge_stats(parts)
             with self.lock:
                 if self._ver == ver:
-                    self._cache = (key, base, d_idx, delta, stats)
+                    self._cache = (key, base, d_idx, delta, stats, e_idx)
         else:
-            base, d_idx, delta, stats = cached[1], cached[2], cached[3], cached[4]
-        total = len(base) + len(d_idx)
-        if not len(d_idx):
+            base, d_idx, delta, stats, e_idx = cached[1], cached[2], cached[3], cached[4], cached[5]
+        total = len(base) + len(d_idx) + len(e_idx)
+        if not len(d_idx) and not len(e_idx):
             window = base[offset: offset + limit].tolist()
             return [{"remote": self.paths[i], "size": self.sizes[i], "mtime": self.mtimes[i]} for i in window], total, stats
-        # merge the two sorted lists: the window of the union lies within the first offset+limit of each
+        # merge the sorted lists: the window of the union lies within the first offset+limit of each
         sorts = [k for k in sort.split(",") if k in self.sort_keys] or ["date"]
         k = offset + limit
         rows = [(self.paths[i], self.sizes[i], self.mtimes[i]) for i in base[:k].tolist()]
-        rows += [(delta.paths[i], delta.sizes[i], delta.mtimes[i]) for i in d_idx[:k].tolist()]
+        if len(d_idx):
+            rows += [(delta.paths[i], delta.sizes[i], delta.mtimes[i]) for i in d_idx[:k].tolist()]
+        if len(e_idx):
+            rows += [(extra.paths[i], extra.sizes[i], extra.mtimes[i]) for i in e_idx[:k].tolist()]
         keyed = [(self._sort_key(p, s_, m, sorts, bool(desc)), (p, s_, m)) for p, s_, m in rows]
         def cmp(a, b):
             for (va, da), (vb, db_) in zip(a[0], b[0]):
@@ -647,6 +659,12 @@ class NameTable:
         if cand.size:
             mask[np.searchsorted(self.starts, cand, side="right") - 1] = True
         return mask
+
+class ResticTable(NameTable):
+    """The restic backups as a table of their own (catalog-restic.db), loaded only when a query asks for them."""
+    def _fetch(self):
+        import restic_store
+        return restic_store.server_rows(self.db_path)
 
 def start_refresh(table, every=60):
     def loop():
