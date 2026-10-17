@@ -68,7 +68,7 @@ def _native():
         so, src = os.path.join(here, "libscan.so"), os.path.join(here, "scan.c")
         try:
             if not os.path.exists(so) or os.path.getmtime(src) > os.path.getmtime(so):
-                subprocess.run(["gcc", "-O3", "-shared", "-fPIC", "-o", so, src], check=True, capture_output=True)
+                subprocess.run(["gcc", "-O3", "-shared", "-fPIC", "-pthread", "-o", so, src], check=True, capture_output=True)
             lib = ctypes.CDLL(so)
             P, I = ctypes.c_void_p, ctypes.c_int64
             lib.mark_lines.argtypes = [P, I, P, I, P, I, P]
@@ -251,6 +251,8 @@ def _extras(paths, sizes, mtimes):
         "depth": np.array([p.count("/") for p in paths], np.int64),
     }
     return codes, ext_names, size_arr, mt_arr, orders, keys
+
+SLOW_MS = float(os.environ.get("SEARCH_SLOW_MS", "0"))
 
 def _merge_stats(parts):
     """Combine _stat_parts results into the stats dict the picker shows."""
@@ -476,15 +478,19 @@ class NameTable:
             return [(val(sorts[0]), sign), (path, sign)]
         return [(val(k), sign) for k in sorts] + [(path, 1)]
 
-    def query(self, q, sort="date", desc=True, offset=0, limit=200, extras=()):
+    def query(self, q, sort="date", desc=True, offset=0, limit=200, extras=(), cancel=None):
         """(rows, total, stats) for one window of the matches; the full match list is cached per query.
         `extras`: further, separately loaded tables (the restic and btrfs backups) whose matches are merged in."""
         extras = [t for t in extras if t is not None and len(t.paths) > 0]
+        t_start = time.perf_counter()
         key = (q, sort, bool(desc), tuple((id(t), t._ver) for t in extras))
         with self.lock:
             cached, ver = self._cache, self._ver
         if cached is None or cached[0] != key:
             base = self._match(q, sort, desc)
+            t_match = time.perf_counter()
+            if cancel is not None and cancel():          # a newer query was typed meanwhile: do not spend the rest
+                return [], 0, {}
             with self.lock:
                 dead = self.dead
                 has_overlay = bool(self.d_entries) or bool(dead.any())
@@ -496,9 +502,13 @@ class NameTable:
             parts = [self._stat_parts(base)] + ([delta._stat_parts(d_idx)] if delta is not None else []) \
                 + [t._stat_parts(ix) for t, ix in zip(extras, e_idx)]
             stats = _merge_stats(parts)
+            t_stats = time.perf_counter()
             with self.lock:
                 if self._ver == ver:
                     self._cache = (key, base, d_idx, delta, stats, e_idx)
+            if SLOW_MS and (t_stats - t_start) * 1000 > SLOW_MS:
+                print(f"slow query {q!r}: match {1000*(t_match-t_start):.0f} ms (incl. waiting for the GIL/locks), "
+                      f"overlay+extras+stats {1000*(t_stats-t_match):.0f} ms, {len(base):,} base matches", flush=True)
         else:
             base, d_idx, delta, stats, e_idx = cached[1], cached[2], cached[3], cached[4], cached[5]
         total = len(base) + len(d_idx) + sum(len(ix) for ix in e_idx)
