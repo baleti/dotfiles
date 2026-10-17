@@ -427,11 +427,12 @@ const MIN_FRAC: f32 = 0.04;
 const DEFAULT_COLS: [f32; 5] = [0.30, 0.40, 0.10, 0.14, 0.06];
 fn cols(left: f32, right: f32, f: &[f32; 5], show_score: bool) -> Cols {
     let w = (right - left).max(1.0);
-    // size, modified and score hold fixed-width text: they never get narrower than it, whatever the fractions say
-    // (a narrow window used to push their text out over the preview pane); name and path give up the difference
+    // size, modified and score hold fixed-width text, so they are exactly as wide as it needs (no gap before the preview pane,
+    // no overflow into it in a narrow window); name and path share everything else in the ratio of their fractions
     let mins = [0.0, 0.0, SIZE_MIN_W, DATE_MIN_W, if show_score { SCORE_MIN_W } else { 0.0 }];
     let mut wd: Vec<f32> = f.iter().map(|x| x * w).collect();
-    for i in 2..5 { wd[i] = wd[i].max(mins[i]); }
+    if !show_score { wd[4] = 0.0; }        // no score column: its share goes to name and path, the list ends at MODIFIED
+    for i in 2..5 { wd[i] = mins[i]; }       // fixed-width text: exactly as wide as it needs, the rest of the width is for name and path
     let fixed: f32 = wd[2] + wd[3] + wd[4];
     let flex = (w - fixed).max(NAME_MIN_W + PATH_MIN_W);
     let share = (wd[0] + wd[1]).max(1.0);
@@ -444,7 +445,7 @@ fn cols(left: f32, right: f32, f: &[f32; 5], show_score: bool) -> Cols {
     Cols { name_x: left, path_x: x1, path_r: x2, size_r: x2, date_x: x3, score_r: x4, right }
 }
 const SIZE_MIN_W: f32 = 76.0;
-const DATE_MIN_W: f32 = 122.0;
+const DATE_MIN_W: f32 = 116.0;
 const SCORE_MIN_W: f32 = 44.0;
 const NAME_MIN_W: f32 = 60.0;
 const PATH_MIN_W: f32 = 60.0;
