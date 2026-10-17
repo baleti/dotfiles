@@ -30,6 +30,66 @@ Item {
         }
     }
 
+    // Auto-pairing of quotes (query-dsl.md "Quoted terms"): typing one quote
+    // completes it. After a word (`5"`, `title:abc"`) it wraps that word
+    // (`"5"`); on an empty spot it inserts the pair with the caret between;
+    // before a word it wraps the word; typing the closing quote over an
+    // existing one just steps past it. `'` only pairs where it could open a
+    // quote (apostrophes in words stay plain). Detected from the text change
+    // itself, so no picker needs its own key handler.
+    property string _prev: input.text
+    property bool _busy: false
+    function _pair(prev, t, p) {
+        const q = t.charAt(p);
+        const next = t.charAt(p + 1), before = p > 0 ? t.charAt(p - 1) : "";
+        const isSpace = c => c === "" || /\s/.test(c);
+        const isBoundary = c => isSpace(c) || c === ":" || c === "!";
+        const word = c => !isSpace(c);
+        if (next === q && (q === '"' ? (t.slice(0, p).split('"').length - 1) % 2 === 1 : word(before)))
+            return { text: prev, cursor: p + 1 };           // step over the closing quote
+        if (q === '"' && (t.slice(0, p).split('"').length - 1) % 2 === 1)
+            return null;                                     // closing a quote that is open
+        if (isBoundary(before) && isSpace(next))
+            return { text: t.slice(0, p + 1) + q + t.slice(p + 1), cursor: p + 1 };  // empty pair
+        if (isBoundary(before) && word(next)) {              // wrap the word ahead
+            let e = p + 1;
+            while (e < t.length && !isSpace(t.charAt(e))) e++;
+            return { text: t.slice(0, e) + q + t.slice(e), cursor: e + 1 };
+        }
+        if (q === '"' && word(before) && before !== '"') {   // wrap the word behind
+            let b = p;
+            while (b > 0 && !isBoundary(t.charAt(b - 1))) b--;
+            return { text: t.slice(0, b) + q + t.slice(b, p) + q + t.slice(p + 1), cursor: p + 2 };
+        }
+        return null;
+    }
+    Connections {
+        target: root.input
+        function onTextChanged() {
+            if (root._busy) return;
+            const t = root.input.text, prev = root._prev;
+            root._prev = t;
+            if (t.length !== prev.length + 1) return;
+            // the caret sits right after the typed char (a diff alone is
+            // ambiguous when it equals its neighbour, as in "5""); fall back
+            // to the diff if the caret is somewhere unexpected
+            let p = root.input.cursorPosition - 1;
+            if (p < 0 || t.slice(0, p) + t.slice(p + 1) !== prev) {
+                p = 0;
+                while (p < prev.length && prev.charAt(p) === t.charAt(p)) p++;
+            }
+            const c = t.charAt(p);
+            if ((c !== '"' && c !== "'") || t.slice(0, p) + t.slice(p + 1) !== prev) return;
+            const r = root._pair(prev, t, p);
+            if (!r) return;
+            root._busy = true;
+            root.input.text = r.text;
+            root.input.cursorPosition = r.cursor;
+            root._busy = false;
+            root._prev = r.text;
+        }
+    }
+
     function _esc(s) {
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/ /g, "&nbsp;");
     }
