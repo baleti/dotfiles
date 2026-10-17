@@ -4,8 +4,8 @@ import QtQuick
 // the search TextInput: the input's own glyphs are made transparent and this
 // overlay paints the same text, with each recognised /command in the theme's
 // accent colour and bold. Everything else (barewords, "phrases", paths such as
-// /mnt/x, unknown /tokens) stays the normal text colour. The input still draws
-// the caret and the selection. Colours come from Theme, i.e. the wallpaper
+// /mnt/x, unknown /tokens) stays the normal text colour. The input still places
+// the caret (drawn in Theme.text) and the selection. Colours come from Theme, i.e. the wallpaper
 // palette in scheme.json.
 //   spans: [{start, end, valid}] char offsets of command tokens; only valid ones are painted
 Item {
@@ -15,6 +15,20 @@ Item {
 
     Binding { target: root.input; property: "color"; value: "transparent" }
     Binding { target: root.input; property: "selectedTextColor"; value: "transparent" }
+
+    // The default caret is painted in the input's text colour, which is
+    // transparent here, so supply an explicit one (the input still places
+    // and blinks it).
+    Binding {
+        target: root.input
+        property: "cursorDelegate"
+        value: Component {
+            Rectangle {
+                width: 2
+                color: Theme.text
+            }
+        }
+    }
 
     function _esc(s) {
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/ /g, "&nbsp;");
