@@ -515,6 +515,8 @@ struct App {
     /// an in-place refresh is under way (rows stay on screen; pages are replaced as they arrive)
     refreshing: bool,
     last_refresh: Instant,
+    settings: Settings,
+    settings_open: bool,
     cursor_end: bool,
     seq: u64,
     snip_tx: Sender<(String, String, Result<Vec<Snip>, String>)>,
@@ -653,12 +655,20 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 5] = [
+        const VERBS: [(&str, &str); 13] = [
             ("/fts ", "full-text search over every content index: /fts dgcl design //mime pdf"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
             ("/sort ", "order the results by a field, e.g. /s size desc"),
             ("/reverse ", "flip the order"),
+            ("/show-dotfiles ", "include names starting with a dot (this search only)"),
+            ("/hide-dotfiles ", "leave out names starting with a dot (this search only)"),
+            ("/show-backup ", "include restic backups and btrfs snapshots (this search only)"),
+            ("/hide-backup ", "leave out restic backups and btrfs snapshots"),
+            ("/show-backup-restic ", "include restic backups only"),
+            ("/hide-backup-restic ", "leave out restic backups"),
+            ("/show-backup-btrfs ", "include btrfs snapshots only"),
+            ("/hide-backup-btrfs ", "leave out btrfs snapshots"),
         ];
         for (v, label) in VERBS {
             if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort ") {
@@ -914,6 +924,63 @@ fn fetch_facets() -> FacetsReply {
 }
 
 /// The server's data version (it changes whenever files appear, change or vanish in the catalog).
+/// View settings, shared with the search server through ~/.config/indexes/picker-settings.json
+/// (a verb in the query overrides them for that search: /show-dotfiles /hide-dotfiles /show-backup[-restic|-btrfs] /hide-backup[-...]).
+#[derive(Clone, Copy, PartialEq)]
+struct Settings {
+    show_dotfiles: bool,
+    show_backup_restic: bool,
+    show_backup_btrfs: bool,
+}
+
+impl Settings {
+    fn path() -> PathBuf {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/indexes/picker-settings.json")
+    }
+    fn load() -> Settings {
+        let mut s = Settings { show_dotfiles: true, show_backup_restic: false, show_backup_btrfs: false };
+        if let Some(v) = std::fs::read_to_string(Settings::path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+            if let Some(b) = v["show_dotfiles"].as_bool() { s.show_dotfiles = b; }
+            if let Some(b) = v["show_backup_restic"].as_bool() { s.show_backup_restic = b; }
+            if let Some(b) = v["show_backup_btrfs"].as_bool() { s.show_backup_btrfs = b; }
+        }
+        s
+    }
+    fn save(&self) {
+        let v = serde_json::json!({
+            "show_dotfiles": self.show_dotfiles,
+            "show_backup_restic": self.show_backup_restic,
+            "show_backup_btrfs": self.show_backup_btrfs,
+        });
+        let path = Settings::path();
+        if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+        let _ = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n");
+    }
+}
+
+/// Every shortcut the picker handles, for the settings window (read-only for now).
+const SHORTCUTS: [(&str, &str); 19] = [
+    ("Ctrl+P", "settings (this window)"),
+    ("Tab", "query box: complete; results: back to the query box"),
+    ("Ctrl+Space", "complete (same as Tab in the query box)"),
+    ("Up / Down", "query box: walk the search history; Down also enters the results"),
+    ("Ctrl+R / F4", "search history popup"),
+    ("Ctrl+J / Ctrl+K", "focus the results (first / last); in the results: next / previous"),
+    ("Ctrl+H / Ctrl+L", "previous / next item (also across the grid)"),
+    ("Shift+arrows", "extend the selection"),
+    ("PgUp / PgDn, Home / End", "move through the results"),
+    ("Enter", "open the selected file"),
+    ("Ctrl+Enter", "show it in the file manager"),
+    ("Alt+Enter", "properties"),
+    ("F10", "context menu"),
+    ("Ctrl+C / Ctrl+X", "copy / cut the selection"),
+    ("Ctrl+E", "caret to the end of the query"),
+    ("Ctrl+A", "select the whole query"),
+    ("Esc", "close the menu or dialog, then the window"),
+    ("Ctrl+wheel / pinch", "zoom the thumbnails"),
+    ("/ then Tab", "list the query verbs"),
+];
+
 fn fetch_ver() -> Option<u64> {
     ureq::get(&format!("{}/ver", cfg().server))
         .timeout(Duration::from_secs(2))
@@ -980,6 +1047,8 @@ impl App {
             last_input: Instant::now(),
             refreshing: false,
             last_refresh: Instant::now(),
+            settings: Settings::load(),
+            settings_open: false,
             cursor_end: false,
             seq: 0,
             tx,
@@ -1660,6 +1729,10 @@ impl eframe::App for App {
             (take_count(ui, egui::Modifiers::SHIFT, Key::ArrowLeft), take_count(ui, egui::Modifiers::SHIFT, Key::ArrowRight))
         } else { (0, 0) };
 
+        // Ctrl+P: settings (the same key as Everything's Tools > Options)
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::P)) {
+            self.settings_open = !self.settings_open;
+        }
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         // Tab in the results list hands focus back to the query box (and does not complete anything);
@@ -1912,6 +1985,7 @@ impl eframe::App for App {
         // Esc closes the innermost thing first: menu, then properties, then the window
         if esc && !self.popup {
             if self.menu_at.is_some() { self.menu_at = None; self.menu_hit = None; }
+            else if self.settings_open { self.settings_open = false; }
             else if self.props.is_some() { self.props = None; }
             else { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
@@ -2084,6 +2158,42 @@ impl eframe::App for App {
         }
 
         // properties (Alt+Enter)
+        if self.settings_open {
+            let mut open = true;
+            let mut changed = false;
+            egui::Window::new("Settings")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
+                .show(&ctx, |ui| {
+                    ui.label(RichText::new("Search").strong().color(pal.accent));
+                    changed |= ui.checkbox(&mut self.settings.show_dotfiles, "Show dotfiles (names starting with a dot, and everything inside them)").changed();
+                    changed |= ui.checkbox(&mut self.settings.show_backup_restic, "Show restic backups").changed();
+                    changed |= ui.checkbox(&mut self.settings.show_backup_btrfs, "Show btrfs snapshots").changed();
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("In a query, /show-dotfiles /hide-dotfiles /show-backup /hide-backup\n(add -restic or -btrfs for one kind) override these for that search only.")
+                        .size(11.0).color(pal.dim));
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("Shortcuts").strong().color(pal.accent));
+                    egui::Grid::new("shortcuts").num_columns(2).spacing([18.0, 3.0]).show(ui, |ui| {
+                        for (k, v) in SHORTCUTS {
+                            ui.label(RichText::new(k).monospace().color(pal.text));
+                            ui.label(RichText::new(v).color(pal.dim));
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Settings are saved in ~/.config/indexes/picker-settings.json. Esc or Ctrl+P closes this window.")
+                        .size(11.0).color(pal.dim));
+                });
+            if changed {
+                self.settings.save();
+                self.send_query();
+            }
+            if !open { self.settings_open = false; }
+        }
         if let Some(idx) = self.props {
             match self.hit_now(idx) {
                 None => self.props = None,
