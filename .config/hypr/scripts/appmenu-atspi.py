@@ -8,6 +8,8 @@
 # with. AT-SPI works over its own a11y DBus bus regardless of X11/Wayland.
 
 import json
+import os
+import socket
 import subprocess
 import sys
 import time
@@ -163,15 +165,65 @@ def collect_leaves(obj, breadcrumb, out, state, depth=0):
         collect_leaves(child, next_breadcrumb, out, state, depth + 1)
 
 
+def rofi_pick(labels):
+    result = subprocess.run(
+        ["rofi", "-dmenu", "-i", "-theme-str", "inputbar { children: [ entry ]; }"],
+        input="\n".join(labels), capture_output=True, text=True,
+    )
+    return result.stdout.strip()
+
+
+def provider_request(pid, req, timeout=1.5):
+    """Apps that cannot expose an AT-SPI menu bar (AccessKit's Linux backend waits for the bus property
+    ScreenReaderEnabled, which at-spi2-core 2.62 no longer has, so egui apps never register) can serve their menu on a
+    unix socket named after their process id: $XDG_RUNTIME_DIR/appmenu/<pid>.sock, one JSON line per request:
+    {"cmd":"menu"} -> {"title","items":[{"id","label","checked"}]} and {"cmd":"activate","id":..} -> {"ok":true}."""
+    path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "appmenu", f"{pid}.sock")
+    if not os.path.exists(path):
+        return None
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(path)
+        s.sendall((json.dumps(req) + "\n").encode())
+        line = s.makefile().readline()
+        return json.loads(line) if line else None
+    except (OSError, ValueError):
+        return None
+    finally:
+        s.close()
+
+
+def provider_menu(pid):
+    """True when the focused app served its own menu (shown and handled here), False to fall back to AT-SPI."""
+    menu = provider_request(pid, {"cmd": "menu"})
+    if not menu or not menu.get("items"):
+        return False
+    title = menu.get("title") or "Menu"
+    labels, ids = [], {}
+    for item in menu["items"]:
+        mark = "✔ " if item.get("checked") else ("   " if item.get("checked") is False else "")
+        label = f"{title} › {mark}{item['label']}"
+        labels.append(label)
+        ids[label] = item["id"]
+    choice = rofi_pick(labels)
+    if choice in ids:
+        provider_request(pid, {"cmd": "activate", "id": ids[choice]})
+    return True
+
+
 def main():
     pid, title = focused_pid()
     if pid is None:
         notify("No focused window.")
         return
 
+    if provider_menu(pid):
+        return
+
     app = find_app(pid)
     if app is None:
-        notify(f"'{title}' has no accessible menu (not AT-SPI registered).")
+        notify(f"'{title}' has no accessible menu (not AT-SPI registered, and no menu socket).")
         return
 
     frame = find_active_frame(app)
