@@ -479,7 +479,8 @@ a silent no-op).
 Filters which rows survive. Three forms:
 
 - **`/fv text`** (or just `text` typed bare, no verb) - substring-match
-  `text`, case-insensitively, against the picker's always-present
+  `text` (an all-digit `text` matches whole numbers only: `5` is not `599`),
+  case-insensitively, against the picker's always-present
   free-text haystack (window title+class+workspace; clipboard preview; pane
   scrollback; notification app+summary+body; app name + generic name;
   article title+feed+tag+body). This is the one form every picker
@@ -1619,6 +1620,12 @@ day.
   containment, case-insensitive (`"dsl" in name`, `"rome" in value`).
   Every match is unioned for a path segment; a value/direction just needs
   the one containment to hold.
+- **All-digit filter values are whole numbers, not substrings**: `5`
+  matches `5` but not `15` or `599` (the digit run in the value must not
+  touch another digit, so `workspace 5` and `Chapter 5 notes` still
+  match). This applies to bare text and to every scoped `/fv path:value`,
+  in every picker, and is the one exception to plain substring
+  containment. Mixed text (`5a`, `v2`) is still ordinary substring.
 - **BM25 pickers' bare words**: prefix-expansion against the corpus
   vocabulary, BM25-scored - their own thing, on top of the above.
 

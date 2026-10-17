@@ -356,14 +356,14 @@ Rectangle {
         if (term.text !== undefined) {
             const hay = (row.title + " " + row.pid + " " + (row.status || "") + " "
                          + root.shortCwd(row.cwd) + " " + account).toLowerCase();
-            return hay.indexOf(term.text) >= 0;
+            return QueryDsl.substr(term.text, hay);
         }
         const fields = QueryDsl.resolvePath(term.field, root.searchTypeNames);
         if (fields.length === 0)
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
             for (const v of root._searchFieldVals(row, f, account)) {
-                if (String(v).toLowerCase().indexOf(term.value) >= 0)
+                if (QueryDsl.substr(term.value, String(v)))
                     return true;
             }
         }

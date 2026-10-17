@@ -41,6 +41,21 @@ QtObject {
     ]
 
     // Split on whitespace, keeping "quoted runs" as one token (quotes stripped).
+    // Case-insensitive substring containment; empty needle always matches.
+    // An all-digit needle is a whole number instead: "5" matches 5 but not
+    // 15 or 599 (a digit run may not touch another digit). See query-dsl.md.
+    function substrIdx(needle, hay) {
+        const n = String(needle).toLowerCase(), h = String(hay).toLowerCase();
+        if (!/^[0-9]+$/.test(n)) return h.indexOf(n);
+        let i = h.indexOf(n);
+        while (i >= 0) {
+            if (!/[0-9]/.test(h.charAt(i - 1) || "") && !/[0-9]/.test(h.charAt(i + n.length) || "")) return i;
+            i = h.indexOf(n, i + 1);
+        }
+        return -1;
+    }
+    function substr(needle, hay) { return root.substrIdx(needle, hay) >= 0; }
+
     function tokenize(text) {
         const out = [];
         let i = 0;

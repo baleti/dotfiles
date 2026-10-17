@@ -115,7 +115,7 @@ PanelWindow {
         if (term.text !== undefined) {
             const hay = (item.title + " " + item.feed_title + " "
                          + (item.author || "") + " " + (item.tags || []).join(" ")).toLowerCase();
-            return hay.indexOf(term.text) >= 0;
+            return QueryDsl.substr(term.text, hay);
         }
         // scoped path:value
         const fields = QueryDsl.resolvePath(term.field, root.typeNames);
@@ -123,7 +123,7 @@ PanelWindow {
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
             for (const v of root._fieldVals(item, f)) {
-                if (String(v).toLowerCase().indexOf(term.value) >= 0)
+                if (QueryDsl.substr(term.value, String(v)))
                     return true;
             }
         }
