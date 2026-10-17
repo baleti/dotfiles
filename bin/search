@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""search: the mod+1 search from the command line, with the same query language and the same results.
+
+It asks the search server (images-search, 127.0.0.1:8765) the same question the picker asks, so counts, ordering,
+verbs (/show-dotfiles, /show-backup-restic, //ext, //size, //path, /fts ...) and the view settings behave
+identically. Everything after the options is the query, so it may be quoted as one argument or not:
+
+    search montgomer bm3 '!pdf-to-png' .pdf          # '!' needs quoting in most shells
+    search 'montgomer bm3 !pdf-to-png .pdf' -n 20 -l
+    search -c '//ext .pdf //size >10M'               # only the total and the summary line
+    search --json '/fts dgcl design //mime pdf' -n 5
+    search -0 'name //ext .py' | xargs -0 wc -l      # NUL-separated paths for xargs
+
+Exit status: 0 results, 1 none (like grep), 2 the server could not be reached or refused the query.
+"""
+import argparse, json, sys, time, urllib.error, urllib.parse, urllib.request
+
+PAGE = 1000
+
+def fetch(server, query, sort, desc, offset, top):
+    url = f"{server}/query?" + urllib.parse.urlencode(
+        {"q": query, "sort": sort, "desc": "1" if desc else "0", "offset": offset, "top": top})
+    with urllib.request.urlopen(url, timeout=300) as r:
+        return json.load(r)
+
+def human(n):
+    if n is None:
+        return "-"
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+def summary(count, stats):
+    parts = [f"{count:,} shown"]
+    if stats.get("size") is not None:
+        parts.append(human(stats["size"]))
+    if stats.get("dmin"):
+        parts.append(f"{stats['dmin']} → {stats['dmax']}")
+    if stats.get("kinds"):
+        parts.append(", ".join(f"{k} {n:,}" for k, n in stats["kinds"]))
+    return " · ".join(parts)
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog=__doc__.split("\n\n", 1)[1])
+    ap.add_argument("query", nargs="*", help="the query (empty: the newest files)")
+    ap.add_argument("-n", "--limit", type=int, default=50, help="rows to print (default 50, 0 = all)")
+    ap.add_argument("-s", "--sort", default="date", help="date (default), name, size, path, ext, depth, or a,b list")
+    ap.add_argument("--asc", action="store_true", help="oldest / smallest / first first (default: newest first)")
+    ap.add_argument("-c", "--count", action="store_true", help="print only the summary line (count, size, dates, kinds)")
+    ap.add_argument("-l", "--long", action="store_true", help="tab-separated: size, modified, path")
+    ap.add_argument("--json", action="store_true", help="one JSON object per result line")
+    ap.add_argument("-0", dest="nul", action="store_true", help="separate paths with NUL, for xargs -0")
+    ap.add_argument("-q", "--quiet", action="store_true", help="no summary line on stderr")
+    ap.add_argument("--server", default="http://127.0.0.1:8765", help="search server (default %(default)s)")
+    a = ap.parse_args()
+    query = " ".join(a.query)
+    t0 = time.time()
+    try:
+        first = fetch(a.server, query, a.sort, not a.asc, 0, 1 if a.count else min(PAGE, a.limit or PAGE))
+    except (urllib.error.URLError, OSError) as e:
+        print(f"search: cannot reach the search server at {a.server}: {e}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        print(f"search: unexpected reply from the server: {e}", file=sys.stderr)
+        return 2
+    for err in first.get("errors") or []:
+        print(f"search: {err}", file=sys.stderr)
+    count, stats = first["count"], first.get("stats") or {}
+    if a.count:
+        print(summary(count, stats))
+        return 0 if count else 1
+    want = count if not a.limit else min(a.limit, count)
+    rows, page = list(first["results"]), first
+    while len(rows) < want:
+        page = fetch(a.server, query, a.sort, not a.asc, len(rows), min(PAGE, want - len(rows)))
+        if not page["results"]:
+            break
+        rows += page["results"]
+    out = sys.stdout
+    end = "\0" if a.nul else "\n"
+    try:
+        for r in rows[:want]:
+            if a.json:
+                out.write(json.dumps({"path": r["remote"], "size": r.get("size"), "mtime": r.get("mtime")}) + "\n")
+            elif a.long:
+                out.write(f"{r.get('size') if r.get('size') is not None else '-'}\t{r.get('mtime') or '-'}\t{r['remote']}\n")
+            else:
+                out.write(r["remote"] + end)
+        out.flush()
+    except BrokenPipeError:
+        pass
+    if not a.quiet and sys.stderr.isatty():
+        shown = f" (showing {want:,})" if want < count else ""
+        print(f"{summary(count, stats)}{shown} · {time.time() - t0:.2f}s", file=sys.stderr)
+    return 0 if count else 1
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -495,7 +495,7 @@ fn load_palette(scheme: &str) -> Palette {
 }
 
 /// One page of results for a query, sorted on the server.
-fn fetch_page(q: &str, sort: &str, desc: bool, page: usize) -> Result<Reply, String> {
+fn fetch_page(q: &str, sort: &str, desc: bool, page: usize, seq: u64) -> Result<Reply, String> {
     let url = format!("{}/query", cfg().server);
     ureq::get(&url)
         .query("q", q)
@@ -503,6 +503,8 @@ fn fetch_page(q: &str, sort: &str, desc: bool, page: usize) -> Result<Reply, Str
         .query("desc", if desc { "1" } else { "0" })
         .query("offset", &(page * PAGE).to_string())
         .query("top", &PAGE.to_string())
+        .query("seq", &seq.to_string())
+        .query("cid", &std::process::id().to_string())
         .timeout(Duration::from_secs(120))
         .call()
         .map_err(|e| format!("search server unreachable: {e}"))
@@ -579,6 +581,8 @@ struct App {
     /// preview pane: snippets per (file, query)
     snips: HashMap<(String, String), SnipState>,
     tx: Sender<Fetch>,
+    /// lets worker threads wake the UI the moment a reply arrives
+    wake: egui::Context,
     /// sharp PDF first pages: remotes wanted (sent from the grid), and finished (remote, thumb path)
     hq_map: HashMap<String, String>,
     hq_asked: HashMap<String, Instant>,
@@ -1223,6 +1227,7 @@ impl App {
             last_input: Instant::now(),
             refreshing: false,
             last_refresh: Instant::now(),
+            wake: cc.egui_ctx.clone(),
             settings: Settings::load(),
             settings_open: false,
             keys: Keymap::load(),
@@ -1327,13 +1332,63 @@ impl App {
         for p in pages { self.request_page(p); }
     }
 
+    /// The picker's menu for the global menu (mod+a -> ~/.config/hypr/scripts/appmenu-atspi.py): an accessible menu bar
+    /// with Settings and the view toggles, exposed through AccessKit (AT-SPI). Off-screen and zero-sized, so it
+    /// never shows or changes the layout; it only exists while an assistive client has the tree switched on, and an
+    /// AT-SPI "click" on an item arrives here as a click on that widget.
+    fn a11y_menu(&mut self, ui: &mut egui::Ui) {
+        use egui::accesskit::{Role, Toggled};
+        if ui.ctx().accesskit_node_builder(ui.id(), |_| ()).is_none() {
+            return;
+        }
+        let mut open_settings = false;
+        let mut toggled: Option<&'static str> = None;
+        let (dots, restic, btrfs) = (self.settings.show_dotfiles, self.settings.show_backup_restic, self.settings.show_backup_btrfs);
+        let settings_key = self.keys.chords("settings").first().map(|c| c.label()).unwrap_or_default();
+        let off = egui::Rect::from_min_size(egui::pos2(-50.0, -50.0), egui::Vec2::ZERO);
+        ui.scope_builder(egui::UiBuilder::new().id_salt("a11y_menubar").max_rect(off), |ui| {
+            ui.ctx().accesskit_node_builder(ui.unique_id(), |n| n.set_role(Role::MenuBar));
+            ui.scope_builder(egui::UiBuilder::new().id_salt("a11y_menu_search"), |ui| {
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
+                    n.set_role(Role::Menu);
+                    n.set_label("Search files");
+                });
+                let mut item = |ui: &mut egui::Ui, label: String, check: Option<bool>| -> bool {
+                    let r = ui.allocate_response(egui::Vec2::ZERO, egui::Sense::click());
+                    ui.ctx().accesskit_node_builder(r.id, |n| {
+                        n.set_role(if check.is_some() { Role::MenuItemCheckBox } else { Role::MenuItem });
+                        n.set_label(label);
+                        if let Some(c) = check { n.set_toggled(if c { Toggled::True } else { Toggled::False }); }
+                    });
+                    r.clicked()
+                };
+                if item(ui, format!("Settings… ({settings_key})"), None) { open_settings = true; }
+                if item(ui, "Show dotfiles".into(), Some(dots)) { toggled = Some("dotfiles"); }
+                if item(ui, "Show restic backups".into(), Some(restic)) { toggled = Some("restic"); }
+                if item(ui, "Show btrfs snapshots".into(), Some(btrfs)) { toggled = Some("btrfs"); }
+            });
+        });
+        if open_settings { self.settings_open = true; }
+        if let Some(t) = toggled {
+            match t {
+                "dotfiles" => self.settings.show_dotfiles = !self.settings.show_dotfiles,
+                "restic" => self.settings.show_backup_restic = !self.settings.show_backup_restic,
+                _ => self.settings.show_backup_btrfs = !self.settings.show_backup_btrfs,
+            }
+            self.settings.save(&self.keys);
+            self.send_query();
+        }
+    }
+
     fn request_page(&mut self, page: usize) {
         if !self.pending.insert(page) && page != 0 { return; }
         let tx: Sender<Fetch> = self.tx.clone();
         let (seq, q, sort, desc) = (self.seq, self.req_q.clone(), self.req_sort.clone(), self.req_desc);
+        let wake = self.wake.clone();
         std::thread::spawn(move || {
-            let r = fetch_page(&q, &sort, desc, page);
+            let r = fetch_page(&q, &sort, desc, page, seq);
             let _ = tx.send(Fetch { seq, page, query: q, result: r });
+            wake.request_repaint();                 // draw the reply now, not at the next 120 ms tick
         });
     }
 
@@ -1358,7 +1413,7 @@ impl App {
         if i >= self.total { return None; }
         if self.hit(i).is_none() {
             let page = i / PAGE;
-            let rows = fetch_page(&self.req_q, &self.req_sort, self.req_desc, page).ok()?.results;
+            let rows = fetch_page(&self.req_q, &self.req_sort, self.req_desc, page, self.seq).ok()?.results;
             self.pages.insert(page, rows);
         }
         self.hit(i).cloned()
@@ -1844,8 +1899,12 @@ impl eframe::App for App {
         self.drain();
 
         // debounced live search: fire once typing pauses
-        if self.query != self.last_sent && self.last_change.elapsed() >= Duration::from_millis(160) {
-            self.send_query();
+        if self.query != self.last_sent {
+            if self.last_change.elapsed() >= Duration::from_millis(25) {
+                self.send_query();
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(25));      // come back right after the pause
+            }
         }
         // follow the wallpaper: re-read the colour scheme when the recolour script rewrote it
         if self.scheme_check.elapsed() >= Duration::from_secs(1) {
@@ -2453,6 +2512,7 @@ impl eframe::App for App {
             }
             if !open { self.settings_open = false; self.rebind = None; }
         }
+        self.a11y_menu(ui);
         if let Some(idx) = self.props {
             match self.hit_now(idx) {
                 None => self.props = None,
