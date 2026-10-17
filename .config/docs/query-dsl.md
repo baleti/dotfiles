@@ -68,17 +68,21 @@ is just an extension, such as `.jpeg`, is a file-name substring filter and never
 CLIP text. So `/clip brick .jpeg` is the bricks, kept only where the name contains `.jpeg`,
 and `/clip brick //ext .jpg //ext .png` keeps jpg or png.
 
-**Full-text search (`/fts`, `/full-text-search`) - images picker only.** The
-verb takes the rest of the query as Recoll query-language terms (words are
-ANDed, `OR`, `"phrase"`, `-term` as in Recoll), so `/fts dgcl design //mime pdf`
-finds PDFs whose contents contain both words. `/fts/<index> terms` searches one content index (a unique prefix of its
-folder name is enough, e.g. `/fts/part3 cdm`; an unknown name is reported as an error),
-and a first word that is exactly an index name does the same (`/fts part3-books cdm`).
-The names are the `fts` list in `/facets`. Other `//` filters still apply
-to its results. Only files that are in a Recoll (Xapian) content index can
-match: a `/fts` query never shows a file that has not been content-indexed, so
-there is no "not indexed" row to explain. Name search (no verb) covers every
-file regardless of content indexing.
+**Content search (`/fts`, `/full-text-search`, `/chroma`) - images picker and the `search` command.** Anything written
+*before* the verb is the ordinary name filter (the default function: words in the full path, `!word`, `//name`
+`//path` `//size` `//dm` `//mime` `//ext`); the verb then searches the contents of exactly the files that filter lets
+through, so `monier road /fts masonry support angle` finds the files with "monier" and "road" in their path whose
+text contains all three words. The verb takes the words after it as Recoll query-language terms (words are ANDed,
+`OR`, `"phrase"`, `-term`), and `//` tags still filter its results wherever they are written, so
+`/fts dgcl design //mime pdf` finds PDFs whose contents contain both words. `/fts/<index> terms` searches one content
+index (a unique prefix of its folder name is enough, e.g. `/fts/part3 cdm`; an unknown name is reported as an error),
+and a first word after the verb that is exactly an index name does the same (`/fts part3-books cdm`). The names
+are the `fts` list in `/facets`. Only files that are in a Recoll (Xapian) content index can match: a content search
+never shows a file that has not been content-indexed. Name search (no verb) covers every file regardless.
+`/chroma words` is the semantic sibling: files whose text means something close to the words, best first with a score,
+over the Chroma indexes (`/chroma/<index>` for one; it does not cover the BM3 collections yet), with the same
+name filter in front and the same `//` tags. When there is a name filter in front, the Recoll pool grows from 5,000
+to 100,000 hits per index so that nothing the filter would let through is cut off.
 
 **Preview pane.** While a `/fts` query is showing results (list view), a
 second pane on the right previews the highlighted file: Recoll's own

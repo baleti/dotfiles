@@ -85,15 +85,15 @@ def is_subsequence(frag, name):
     it = iter(name)
     return all(c in it for c in frag)
 
-def fts_matches(terms, confs):
-    """Paths whose contents match a Recoll query, from the given content indexes, with sizes."""
-    key = (terms, tuple(confs))
+def fts_matches(terms, confs, cap=5000):
+    """Paths whose contents match a Recoll query, from the given content indexes, with sizes (at most `cap` per index)."""
+    key = (terms, tuple(confs), cap)
     with _fts_lock:
         if key in _fts_cache:
             return _fts_cache[key]
     rows, seen = [], set()
     for conf in confs:
-        out = subprocess.run(["recollq", "-c", conf, "-n", "0-5000", terms], capture_output=True, text=True).stdout
+        out = subprocess.run(["recollq", "-c", conf, "-n", f"0-{cap}", terms], capture_output=True, text=True).stdout
         for line in out.splitlines():
             parts = line.split("\t")
             if len(parts) < 4 or not parts[1].startswith("[file://"):
@@ -116,6 +116,63 @@ def split_path_tags(text):
     values = [m.group(1) for m in PATH_TAG.finditer(text)]
     return values, PATH_TAG.sub(" ", text).strip()
 
+FTS_TOKEN = re.compile(r"^/(?:fts|full-text-search)(?:/([\w.-]+))?$")
+CHROMA_TOKEN = re.compile(r"^/(?:chroma|semantic)(?:/([\w.-]+))?$")
+
+def content_verb(q):
+    """Finds the first /fts or /chroma verb anywhere in a query: (kind, words before it, index, words after it) or None.
+    Everything before the verb is the ordinary name/path filter (default function); the verb then searches the
+    contents of exactly the files that filter lets through. A //tag owns the token after it, so `//path /fts` is no verb."""
+    toks = filesearch.tokens(q)
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t.startswith("//") or t.startswith("!//"):
+            i += 2
+            continue
+        for kind, rx in (("fts", FTS_TOKEN), ("chroma", CHROMA_TOKEN)):
+            m = rx.match(t)
+            if m:
+                return kind, " ".join(toks[:i]), m.group(1), " ".join(toks[i + 1:])
+        i += 1
+    return None
+
+def make_prefilter(before, whole):
+    """A predicate (path, size, mtime) -> bool for the name filter written before a content verb, or None if there is
+    none: words must occur in the full path (case-insensitive), !words must not, plus //name //path //size //dm //mime //ext
+    and their negations, exactly as in name search."""
+    from filesearch import split_mime_all, split_tags, split_neg_terms, matches_mime, _size_ok, _date_ok, path_matches
+    if not before.strip():
+        return None
+    wanted, not_wanted, rest = split_mime_all(before)
+    paths, rest = split_path_tags(rest)
+    tags, rest = split_tags(rest)
+    pos, neg = split_neg_terms(rest)
+    hidden = filesearch.hidden_folders(whole)
+    def ok(path, size, mtime):
+        low = path.lower()
+        base = low.rsplit("/", 1)[-1]
+        if any(t not in low for t in pos) or any(t in low for t in neg):
+            return False
+        if (wanted and not matches_mime(path, wanted)) or (not_wanted and matches_mime(path, not_wanted)):
+            return False
+        if any(path.startswith(f) for f in hidden):
+            return False
+        if not all(path_matches(path, v) for v in paths) or any(path_matches(path, v) for v in tags["!path"]):
+            return False
+        if not all(t.lower() in base for t in tags["name"]) or any(t.lower() in base for t in tags["!name"]):
+            return False
+        if tags["size"] or tags["!size"]:
+            if not all(_size_ok(size, c) for c in tags["size"]) or any(_size_ok(size, c) for c in tags["!size"]):
+                return False
+        if tags["dm"] or tags["!dm"]:
+            if mtime is None:
+                mtime = name_attrs(path)[1]
+            if not all(_date_ok(mtime, c) for c in tags["dm"]) or any(_date_ok(mtime, c) for c in tags["!dm"]):
+                return False
+        return True
+    return ok
+
 def fts_pick_indexes(via, terms):
     """Which content indexes a /fts query searches: `/fts/<index> terms` names one (a unique prefix of the
     index folder name is enough); a leading bare word that is exactly an index name also selects it.
@@ -131,7 +188,7 @@ def fts_pick_indexes(via, terms):
         return [], terms, f"no content index named '{via}'" if not hit else f"'{via}' matches several indexes: {', '.join(hit)}"
     return [names[hit[0]]], terms, None
 
-def fts_query(text, sort, desc, offset, limit, via=None):
+def fts_query(text, sort, desc, offset, limit, via=None, before=""):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M]: only content-indexed files can match.
     Searches every content index; //path narrows by folder."""
     from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, path_matches, hidden_folders
@@ -146,7 +203,12 @@ def fts_query(text, sort, desc, offset, limit, via=None):
     if not terms.strip():
         return [], 0, None, None
     hidden = hidden_folders(text)
-    rows = [r for r in fts_matches(terms.strip(), confs) if (not wanted or matches_mime(r["remote"], wanted))
+    prefilter = make_prefilter(before, before + " " + text)
+    # with a name filter in front the Recoll pool must be big enough not to cut off files that would pass it
+    pool = fts_matches(terms.strip(), confs, 100000 if prefilter else 5000)
+    if prefilter:
+        pool = [r for r in pool if prefilter(r["remote"], r["size"], None)]
+    rows = [r for r in pool if (not wanted or matches_mime(r["remote"], wanted))
             and not (not_wanted and matches_mime(r["remote"], not_wanted))
             and not any(path_matches(r["remote"], v) for v in tags["!path"])
             and not any(t.lower() in r["remote"].rsplit("/", 1)[-1].lower() for t in tags["!name"])
@@ -216,7 +278,7 @@ def chroma_words(text):
     words = " ".join(t for t in filesearch.tokens(words) if not t.startswith("!")).replace('"', "")
     return wanted, not_wanted, paths, tags, words.strip()
 
-def chroma_query(text, sort, desc, offset, limit, via=None):
+def chroma_query(text, sort, desc, offset, limit, via=None, before=""):
     """/chroma <what it is about> [//mime kind] [//name x] [//path x] [//size >5M]: documents whose text is closest in
     meaning to the words (MiniLM embeddings over the content indexes), best first, one row per file with the score.
     The pool is the nearest chunks of every index, so the total is what the closest chunks cover, not every file."""
@@ -224,7 +286,8 @@ def chroma_query(text, sort, desc, offset, limit, via=None):
     wanted, not_wanted, paths, tags, words = chroma_words(text)
     if not words:
         return [], 0, None, None
-    res, err = chroma_call("/search", {"q": words, "via": via or "", "n": max(400, 8 * (offset + limit))})
+    prefilter = make_prefilter(before, before + " " + text)
+    res, err = chroma_call("/search", {"q": words, "via": via or "", "n": max(2000 if prefilter else 400, 8 * (offset + limit))})
     if res is None:
         return [], 0, err, None
     if res["errors"]:
@@ -243,6 +306,8 @@ def chroma_query(text, sort, desc, offset, limit, via=None):
     rows = []
     for path, h in best.items():
         size, mtime = name_attrs(path)
+        if prefilter and not prefilter(path, size, mtime):
+            continue
         if (wanted and not matches_mime(path, wanted)) or (not_wanted and matches_mime(path, not_wanted)):
             continue
         base = path.rsplit("/", 1)[-1].lower()
@@ -263,14 +328,14 @@ def chroma_query(text, sort, desc, offset, limit, via=None):
 
 def chroma_snippets(remote, text):
     """The chunks of one file closest to the query: [{"page": None, "text": ..., "ranges": []}]."""
-    m = CHROMA_RE.match(text.strip())
-    if not m:
+    cv = content_verb(text)
+    if not cv or cv[0] != "chroma":
         return [], "not a /chroma query"
-    _, _, _, _, words = chroma_words(m.group(2))
+    _, _, _, _, words = chroma_words(cv[3])
     if not words:
         return [], None
     url = _chroma_urls.get(remote) or ("file://" + remote)
-    res, err = chroma_call("/doc", {"url": url, "q": words, "via": m.group(1) or "", "n": 3}, timeout=60)
+    res, err = chroma_call("/doc", {"url": url, "q": words, "via": cv[2] or "", "n": 3}, timeout=60)
     if res is None:
         return [], err
     return [{"page": None, "text": h["text"], "ranges": []} for h in res["hits"]], ("; ".join(res["errors"]) or None)
@@ -289,13 +354,13 @@ def fts_snippets(remote, text):
     import html
     from recoll import recoll
     from filesearch import split_mime, split_tags
-    m = re.match(r"^/(?:fts|full-text-search)(?:/([\w.-]+))?(?:\s+|$)(.*)$", text.strip(), re.S)
-    if not m:
+    cv = content_verb(text)
+    if not cv or cv[0] != "fts":
         return [], "not a /fts query"
-    _, rest = split_mime(m.group(2))
+    _, rest = split_mime(cv[3])
     _, rest = split_path_tags(rest)
     _, terms = split_tags(rest)
-    confs, terms, err = fts_pick_indexes(m.group(1), terms.strip())
+    confs, terms, err = fts_pick_indexes(cv[2], terms.strip())
     terms = terms.strip()
     if err or not terms:
         return [], err
@@ -659,16 +724,19 @@ class H(BaseHTTPRequestHandler):
                 sort = qs.get("sort", ["date"])[0]
                 desc = qs.get("desc", ["1"])[0] == "1"
                 offset = int(qs.get("offset", ["0"])[0])
-                fts = re.match(r"^/(?:fts|full-text-search)(?:/([\w.-]+))?(?:\s+|$)(.*)$", rest, re.S)
-                if not view["show_dotfiles"] and not fts:
-                    rest = (rest + " !/.").strip()      # the same negated term typed by hand: no path with a dot component
+                cv = content_verb(rest)                 # /fts or /chroma, with the name filter written before it
+                if not view["show_dotfiles"]:
+                    # the same negated term typed by hand: no path with a dot component (for a content verb it joins the name filter)
+                    if cv:
+                        cv = (cv[0], (cv[1] + " !/.").strip(), cv[2], cv[3])
+                    else:
+                        rest = (rest + " !/.").strip()
                 errors = []
-                chroma = CHROMA_RE.match(rest) if not fts else None
-                if fts:
-                    results, count, err, stats = fts_query(fts.group(2), sort, desc, offset, top, fts.group(1))
+                if cv and cv[0] == "fts":
+                    results, count, err, stats = fts_query(cv[3], sort, desc, offset, top, cv[2], cv[1])
                     errors = [err] if err else []
-                elif chroma:
-                    results, count, err, stats = chroma_query(chroma.group(2), sort, desc, offset, top, chroma.group(1))
+                elif cv:
+                    results, count, err, stats = chroma_query(cv[3], sort, desc, offset, top, cv[2], cv[1])
                     errors = [err] if err else []
                 else:
                     extras = []
@@ -710,7 +778,7 @@ class H(BaseHTTPRequestHandler):
                                     "results": results, "errors": errors})
         if u.path == "/snippets":
             try:
-                if CHROMA_RE.match(qs.get("q", [""])[0].strip()):
+                if (content_verb(qs.get("q", [""])[0]) or ("",))[0] == "chroma":
                     snips, err = chroma_snippets(qs.get("remote", [""])[0], qs.get("q", [""])[0])
                 else:
                     snips, err = fts_snippets(qs.get("remote", [""])[0], qs.get("q", [""])[0])
