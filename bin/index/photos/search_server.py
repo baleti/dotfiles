@@ -467,6 +467,22 @@ def backup_table(kind):
         return None, f"{b['name']} are loading (first use, about 10 s): the panel refreshes when they are ready"
     return t, None
 
+# ---- a picker types faster than queries finish: remember the newest request of each client and drop older ones ----
+_latest_seq = {}
+_latest_lock = threading.Lock()
+
+def note_request(cid, seq):
+    """Register a request; returns a function telling whether a newer one from the same client has arrived."""
+    if not cid or not seq:
+        return None
+    with _latest_lock:
+        if seq > _latest_seq.get(cid, 0):
+            _latest_seq[cid] = seq
+        if len(_latest_seq) > 64:
+            for k in list(_latest_seq)[:32]:
+                _latest_seq.pop(k, None)
+    return lambda: seq < _latest_seq.get(cid, 0)
+
 def delta_token():
     """Shared secret for POST /delta (the live file-change feed); created on first use, readable only by the user."""
     path = NAMES.db_path + ".delta-token"
@@ -511,6 +527,9 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/query":
             q, view = view_options((qs.get("q", [""])[0]).strip())
+            stale = note_request(qs.get("cid", [""])[0], int(qs.get("seq", ["0"])[0] or 0))
+            if stale is not None and stale():
+                return self._json(200, {"count": 0, "results": [], "errors": [], "stats": {}, "stale": True})
             top = int(qs.get("top", ["60"])[0])
             offset = int(qs.get("offset", ["0"])[0])
             # default: file-name search over everything the catalog knows; /clip and /face
@@ -536,7 +555,7 @@ class H(BaseHTTPRequestHandler):
                             if note:
                                 errors.append(note)
                             extras.append(t)
-                    results, count, stats = NAMES.query(rest, sort, desc, offset, top, extras=extras)
+                    results, count, stats = NAMES.query(rest, sort, desc, offset, top, extras=extras, cancel=stale)
                 for r in results:
                     r["score"] = None
                     if r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
