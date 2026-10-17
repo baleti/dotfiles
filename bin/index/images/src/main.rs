@@ -598,6 +598,14 @@ struct App {
     last_refresh: Instant,
     settings: Settings,
     settings_open: bool,
+    /// Settings > Indexing: the lists being edited, the text boxes, the last run's state/message, when it was last asked
+    idx: IndexDirs,
+    idx_loaded: bool,
+    idx_path_input: String,
+    idx_fts_input: String,
+    idx_state: String,
+    idx_msg: String,
+    idx_polled: Instant,
     appmenu: Arc<AppMenu>,
     keys: Keymap,
     /// shortcut being rebound in the settings window: (action, index of the chord, or the number of chords to add one)
@@ -1129,6 +1137,95 @@ impl Settings {
     }
 }
 
+/// Settings > Indexing: the directories to index, shared with the indexers through ~/.config/indexes/index-dirs.json
+/// (see catalog/index_dirs.py). `path` is walked for name search; `fts` is content-indexed with the switched-on types.
+#[derive(Clone, PartialEq, Default)]
+struct IndexDirs {
+    path: Vec<String>,
+    fts: Vec<String>,
+    bm25: bool,
+    chroma: bool,
+    clip: bool,
+    face: bool,
+}
+
+impl IndexDirs {
+    fn file() -> PathBuf {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/indexes/index-dirs.json")
+    }
+    /// The effective lists and the last run's status, from the search server ((dirs, state, message)).
+    fn fetch() -> Option<(IndexDirs, String, String)> {
+        let body = ureq::get(&format!("{}/index-dirs", cfg().server)).timeout(Duration::from_secs(2)).call().ok()?.into_string().ok()?;
+        let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+        let list = |x: &serde_json::Value| x.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default();
+        let f = &v["fts"];
+        let d = IndexDirs {
+            path: list(&v["path"]), fts: list(&f["dirs"]),
+            bm25: f["bm25"].as_bool().unwrap_or(true), chroma: f["chroma"].as_bool().unwrap_or(false),
+            clip: f["clip"].as_bool().unwrap_or(false), face: f["face"].as_bool().unwrap_or(false),
+        };
+        Some((d, v["status"]["state"].as_str().unwrap_or("idle").into(), v["status"]["message"].as_str().unwrap_or("").into()))
+    }
+    fn save(&self) {
+        let v = serde_json::json!({
+            "path": self.path,
+            "fts": {"dirs": self.fts, "bm25": self.bm25, "chroma": self.chroma, "clip": self.clip, "face": self.face},
+        });
+        let path = IndexDirs::file();
+        if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+        let _ = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n");
+    }
+    /// Starts apply_index_dirs.py detached (it outlives the picker; one run at a time). Err = why not.
+    fn apply() -> Result<(), String> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let out = std::process::Command::new("systemd-run")
+            .args(["--user", "--collect", "--quiet", "--unit=apply-index-dirs", "--nice=19", "-p", "IOSchedulingClass=idle", "-p", "CPUQuota=200%",
+                   "/usr/bin/python3", &format!("{home}/bin/index/photos/apply_index_dirs.py")])
+            .output().map_err(|e| format!("cannot start the indexer: {e}"))?;
+        if out.status.success() { Ok(()) } else {
+            let msg = String::from_utf8_lossy(&out.stderr);
+            Err(if msg.contains("already") || msg.contains("exists") { "an indexing run is already in progress".into() } else { msg.trim().to_string() })
+        }
+    }
+}
+
+/// One editable directory list of Settings > Indexing: a row per directory (red when it does not exist) with a remove
+/// button, and a text box with Add. True when the list changed.
+fn dir_list_editor(ui: &mut egui::Ui, pal: &Palette, id: &str, dirs: &mut Vec<String>, input: &mut String) -> bool {
+    let mut changed = false;
+    let mut remove: Option<usize> = None;
+    for (i, d) in dirs.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if ui.small_button("✕").on_hover_text("Remove").clicked() { remove = Some(i); }
+            let ok = expand_dir(d).is_dir();
+            ui.label(RichText::new(d).monospace().size(11.5).color(if ok { pal.text } else { pal.error }));
+            if !ok { ui.label(RichText::new("not found").size(10.0).color(pal.error)); }
+        });
+    }
+    if let Some(i) = remove { dirs.remove(i); changed = true; }
+    ui.horizontal(|ui| {
+        let resp = ui.add(egui::TextEdit::singleline(input).id_salt(id).hint_text("add a directory, e.g. ~/notes").desired_width(300.0));
+        let add = ui.button("Add").clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
+        if add && !input.trim().is_empty() {
+            let d = input.trim().trim_end_matches('/').to_string();
+            let d = if d.is_empty() { "/".to_string() } else { d };
+            if !dirs.contains(&d) { dirs.push(d); changed = true; }
+            input.clear();
+        }
+    });
+    changed
+}
+
+/// Expands a typed directory (~ and relative-to-home) for the existence check in the settings window.
+fn expand_dir(d: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let d = d.trim();
+    if d == "~" { PathBuf::from(home) }
+    else if let Some(r) = d.strip_prefix("~/") { PathBuf::from(home).join(r) }
+    else if d.starts_with('/') { PathBuf::from(d) }
+    else { PathBuf::from(home).join(d) }
+}
+
 /// A key with modifiers, e.g. Ctrl+Shift+K.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Chord { ctrl: bool, alt: bool, shift: bool, key: Key }
@@ -1341,6 +1438,13 @@ impl App {
             wake: cc.egui_ctx.clone(),
             settings: Settings::load(),
             settings_open: false,
+            idx: IndexDirs::default(),
+            idx_loaded: false,
+            idx_path_input: String::new(),
+            idx_fts_input: String::new(),
+            idx_state: String::new(),
+            idx_msg: String::new(),
+            idx_polled: Instant::now(),
             appmenu: { let m = Arc::new(AppMenu::default()); serve_appmenu(m.clone()); m },
             keys: Keymap::load(),
             rebind: None,
@@ -2369,7 +2473,7 @@ impl eframe::App for App {
         // Esc closes the innermost thing first: menu, then properties, then the window
         if esc && !self.popup {
             if self.menu_at.is_some() { self.menu_at = None; self.menu_hit = None; }
-            else if self.settings_open { self.settings_open = false; }
+            else if self.settings_open { self.settings_open = false; self.idx_loaded = false; }
             else if self.props.is_some() { self.props = None; }
             else { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
@@ -2553,6 +2657,7 @@ impl eframe::App for App {
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
                 .show(&ctx, |ui| {
+                  egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 120.0).max(300.0)).auto_shrink([true, true]).show(ui, |ui| {
                     ui.label(RichText::new("Search").strong().color(pal.accent));
                     let cmd = |ui: &mut egui::Ui, text: &str| { ui.label(RichText::new(text).monospace().size(11.0).color(pal.dim)); };
                     ui.horizontal(|ui| {
@@ -2575,6 +2680,52 @@ impl eframe::App for App {
                         changed |= ui.checkbox(&mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings (dwg; not indexed yet)").changed();
                         cmd(ui, "/show-fts-dwg  /hide-fts-dwg");
                     });
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("Indexing").strong().color(pal.accent));
+                    if !self.idx_loaded {
+                        self.idx_loaded = true;
+                        if let Some((d, st, msg)) = IndexDirs::fetch() { self.idx = d; self.idx_state = st; self.idx_msg = msg; }
+                    }
+                    let mut idx_changed = false;
+                    ui.label(RichText::new("File names (path search)").strong().size(12.0));
+                    ui.label(RichText::new("Directories walked for name search. Changes inside them show up live; Google Drive, the NFS backups and restic snapshots have their own sources.").size(10.5).color(pal.dim));
+                    idx_changed |= dir_list_editor(ui, &pal, "idx_path_add", &mut self.idx.path, &mut self.idx_path_input);
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("File contents (full-text search)").strong().size(12.0));
+                    ui.label(RichText::new("Directories whose contents are indexed, with the indexes to build for them (the existing collections stay as they are).").size(10.5).color(pal.dim));
+                    for (flag, label, verb) in [
+                        (0, "BM25 word search", "/fts"),
+                        (1, "ChromaDB semantic search (embeds on the GPU box)", "/chroma"),
+                        (2, "Image contents (CLIP)", "/clip"),
+                        (3, "Faces (InsightFace)", "/face"),
+                    ] {
+                        ui.horizontal(|ui| {
+                            let b = match flag { 0 => &mut self.idx.bm25, 1 => &mut self.idx.chroma, 2 => &mut self.idx.clip, _ => &mut self.idx.face };
+                            idx_changed |= ui.checkbox(b, label).changed();
+                            cmd(ui, verb);
+                        });
+                    }
+                    idx_changed |= dir_list_editor(ui, &pal, "idx_fts_add", &mut self.idx.fts, &mut self.idx_fts_input);
+                    if idx_changed { self.idx.save(); }
+                    ui.horizontal(|ui| {
+                        let running = self.idx_state == "running";
+                        if ui.add_enabled(!running, egui::Button::new("Apply and index now")).clicked() {
+                            self.idx.save();
+                            match IndexDirs::apply() {
+                                Ok(()) => { self.idx_state = "running".into(); self.idx_msg = "starting…".into(); self.idx_polled = Instant::now() - Duration::from_secs(5); }
+                                Err(e) => { self.idx_state = "error".into(); self.idx_msg = e; }
+                            }
+                        }
+                        let col = match self.idx_state.as_str() { "error" => pal.error, "running" => pal.accent, _ => pal.dim };
+                        if !self.idx_msg.is_empty() { ui.label(RichText::new(self.idx_msg.clone()).size(11.0).color(col)); }
+                    });
+                    if self.idx_state == "running" {
+                        ui.ctx().request_repaint_after(Duration::from_secs(2));
+                        if self.idx_polled.elapsed() >= Duration::from_secs(2) {
+                            self.idx_polled = Instant::now();
+                            if let Some((_, st, msg)) = IndexDirs::fetch() { self.idx_state = st; self.idx_msg = msg; }
+                        }
+                    }
                     ui.add_space(10.0);
                     ui.label(RichText::new("Shortcuts").strong().color(pal.accent));
                     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
@@ -2614,13 +2765,14 @@ impl eframe::App for App {
                             ui.end_row();
                         }
                     });
+                  });
                 });
             if let Some(r) = start_rebind { self.rebind = Some(r); self.rebind_msg.clear(); }
             if changed {
                 self.settings.save(&self.keys);
                 self.send_query();
             }
-            if !open { self.settings_open = false; self.rebind = None; }
+            if !open { self.settings_open = false; self.rebind = None; self.idx_loaded = false; }
         }
         self.sync_appmenu(&ctx);
         if let Some(idx) = self.props {

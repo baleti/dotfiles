@@ -107,3 +107,17 @@ Everything here is generic code. The private parts are kept outside the repo:
 - **Typing speed**: the name scan is multi-threaded C (`catalog/scan.c`), requests for characters you have typed
   past are dropped by the server (client id + sequence number), thumbnail workers run at low priority, summaries over
   500k matches are sampled and shown with a leading `≈`.
+
+## Choosing the indexed directories (picker: Settings > Indexing, Ctrl+P)
+
+- **File names (path search)**: the directories the local catalog walk covers (default: the config's `catalog.local_roots`).
+  Stored in `~/.config/indexes/index-dirs.json` (`path`), read by `catalog.py build-local` and by the live watcher
+  (changes outside the list are ignored). Google Drive, NFS roots and restic keep their own sources.
+- **File contents**: `fts.dirs` plus four switches, built as the managed collection `user-dirs`
+  (`~/.cache/indexes/user-dirs/`): `bm25` = Recoll (`/fts`, searched together with the other indexes, `/fts/user-dirs` alone),
+  `chroma` = semantic text index (`/chroma/user-dirs`, embeds on ai1), `clip` = image contents and `face` = InsightFace
+  (`index_photos.py --base /`, records keyed by absolute path, ai1 GPU, resumable; records stay if a directory is removed later).
+  A changed directory list resets the Recoll and Chroma indexes of `user-dirs`.
+- **Apply and index now** runs `photos/apply_index_dirs.py` as the transient user unit `apply-index-dirs` (nice 19, idle I/O;
+  one run at a time); the window follows its progress from `GET /index-dirs` (`~/.cache/indexes/index-dirs-status.json`).
+  Existing collections in `collections.json` are untouched and not shown there.

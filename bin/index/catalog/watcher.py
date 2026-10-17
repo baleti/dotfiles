@@ -18,6 +18,7 @@ import collections, json, os, socket, stat, subprocess, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import catalog
 from catalog import C, HOME
+import index_dirs
 
 SOCK = os.environ.get("FANWATCH_SOCK", "/run/fanwatch/events.sock")
 QUIET = 1.0         # a path is written once nothing touched it for this long ...
@@ -71,6 +72,7 @@ class Watcher:
         self.excl = set(C.get("exclude_names", []))            # relative to $HOME
         self.anywhere = set(C.get("exclude_anywhere", []))     # names skipped wherever they occur (.snapshots)
         self.exclude_paths = [os.path.expanduser(x).rstrip("/") for x in C.get("exclude_paths", [])]
+        self.roots, self.roots_mtime = None, None          # Settings > Indexing: only changes under these directories are indexed
         self.lock = threading.Lock()
         self.puts = {}            # path -> [first event time, last event time]
         self.struct = []          # ("scan" | "delprefix", path), in event order
@@ -82,7 +84,9 @@ class Watcher:
         self.stats_every = float(os.environ.get("WATCHER_STATS", "600"))
 
     def excluded(self, path):
-        """Same policy as the walk: names relative to $HOME, names anywhere, absolute paths."""
+        """Same policy as the walk: names relative to $HOME, names anywhere, absolute paths, and the chosen directories."""
+        if not index_dirs.under(path, self.path_roots()):
+            return True
         if path.startswith(HOME + "/"):
             rel = path[len(HOME) + 1:]
             if any(rel == e or rel.startswith(e + "/") for e in self.excl):
@@ -90,6 +94,16 @@ class Watcher:
         if self.anywhere and any(c in self.anywhere for c in path.split("/")):
             return True
         return any(path == x or path.startswith(x + "/") for x in self.exclude_paths)
+
+    def path_roots(self):
+        """The directories chosen in Settings > Indexing (re-read when the file changes)."""
+        try:
+            m = os.path.getmtime(index_dirs.PATH)
+        except OSError:
+            m = None
+        if self.roots is None or m != self.roots_mtime:
+            self.roots, self.roots_mtime = index_dirs.path_roots(C["local_roots"]), m
+        return self.roots
 
     def put(self, path):
         now = time.time()
