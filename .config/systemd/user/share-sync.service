@@ -1,0 +1,18 @@
+[Unit]
+Description=share-sync: WireGuard-only file store for the Companion app folder sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SHARE_SYNC_BIND_IP=10.10.0.2
+Environment=SHARE_SYNC_ALLOWED_SUBNET=10.10.0.0/24
+Environment=SHARE_SYNC_ROOT=%h/share/pixel6
+Environment=SHARE_SYNC_PHONE=10.10.0.5:8788
+ExecStart=%h/.config/share-sync/share-sync-daemon.py
+Restart=always
+RestartSec=10
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target
