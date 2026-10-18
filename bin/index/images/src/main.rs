@@ -2836,7 +2836,7 @@ impl eframe::App for App {
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
                 .show(&ctx, |ui| {
-                  egui::ScrollArea::vertical().max_height((ctx.content_rect().height() * 0.70).max(300.0)).auto_shrink([false, true]).show(ui, |ui| {
+                  egui::ScrollArea::vertical().max_height((ctx.content_rect().height() * 0.80 - 60.0).max(300.0)).auto_shrink([false, true]).show(ui, |ui| {
                     ui.set_min_width(640.0);
                     ui.set_max_width(640.0);
                     ui.label(RichText::new("Search").strong().color(pal.accent));

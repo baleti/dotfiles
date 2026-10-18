@@ -128,11 +128,10 @@ Revit (`.rvt .rfa .rte .rft`) and DWG/DXF contents live in their own Recoll inde
 `~/.config/indexes/photos.json`, so `/fts` searches them (`/fts/revit words`, `/fts/dwg words` select one).
 - `photos/index_cad.py revit|dwg [--limit N] [--batch N] [--roots ...]` takes the file list from the catalog and runs
   `recollindex -i` on batches (unchanged files are skipped). Topdirs: `/mnt/backups/office`, `~/gdrive-rclone-crypt/office`.
-- Revit filter: `~/rvt-research/rvt2recoll.py` (decoded and cached on host1). DWG filter: `~/dwg-research/dwg2recoll.py`
-  (LibreDWG 0.13.3 `dwgread -O json`, installed in `~/.local`; keeps TEXT, MTEXT, ATTRIB/ATTDEF tags and values, dimension text,
-  block, layer and layout names; files over 60 MB are skipped; about 0.2-2 s per file).
-- First builds run as transient units `index-revit` and `index-dwg` (nice 19, idle IO). Nightly updates: `nightly-cad-index.timer` (04:30, revit).
-  Add `dwg` to its loop once the first dwg build has finished.
+- Revit filter: `~/rvt-research/rvt2recoll.py` (decoded and cached on host1; one decode at a time, only when host1 has >11 GB
+  free, capped at 4 GB / 200% CPU, and it writes `~/.cache/indexes/revit/HALT` if the ai1 VM restarts). DWG: NOT indexed yet. LibreDWG/dwgread
+  was dropped by decision; the filter will be built on our own parser (`~/dwg-research/dwg2text.py`) when it is ready, see `~/dwg-research/NEEDS-FROM-INDEX.md`.
+- The Revit build runs as the transient unit `index-revit` (nice 19, idle IO). Nightly updates: `nightly-cad-index.timer` (04:30, revit only).
 - The corpus-*, part3-books and professional-reference collections skip these extensions (`skippedNames+` in their recoll.conf) so nothing is indexed twice.
 
 Settings > Indexing also shows the real setup, read live by `photos/index_info.py` (`GET /index-dirs`): the Excluded list for
