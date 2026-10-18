@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly incremental Revit/DWG content indexing (separate Recoll indexes) - low priority
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nice -n 19 /usr/bin/ionice -c3 /usr/bin/bash -c 'for k in revit; do python3 %h/bin/index/photos/index_cad.py $k >> %h/.cache/indexes/$k/index.log 2>&1; done'
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=8G
+TimeoutStartSec=12h
+KillMode=control-group

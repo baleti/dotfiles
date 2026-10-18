@@ -41,7 +41,7 @@ VERBS (anywhere in the query)
   /show-dotfiles  /hide-dotfiles                         names starting with a dot
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
   /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
-  /show-fts-dwg  /hide-fts-dwg                           the same for AutoCAD drawings (dwg dxf dwt); the contents are not indexed yet
+  /show-fts-dwg  /hide-fts-dwg                           the same for AutoCAD drawings (dwg dxf dwt)
 
 The same settings exist as options: --dotfiles/--no-dotfiles, --backup restic|btrfs|all|none, --fts-rvt/--no-fts-rvt,
 --fts-dwg/--no-fts-dwg, -s/--sort, --asc.
@@ -266,7 +266,7 @@ def main():
     sel.add_argument("--backup", choices=["restic", "btrfs", "all", "none"], help="include / exclude backup copies")
     sel.add_argument("--fts-rvt", dest="fts_rvt", action="store_true", default=None, help="content searches (/fts /chroma) include Revit files (rvt rfa rte rft)")
     sel.add_argument("--no-fts-rvt", dest="fts_rvt", action="store_false", help="content searches leave out Revit files")
-    sel.add_argument("--fts-dwg", dest="fts_dwg", action="store_true", default=None, help="include AutoCAD drawings (dwg contents are not indexed yet)")
+    sel.add_argument("--fts-dwg", dest="fts_dwg", action="store_true", default=None, help="include AutoCAD drawings")
     sel.add_argument("--no-fts-dwg", dest="fts_dwg", action="store_false", help="content searches leave out AutoCAD drawings")
     out = ap.add_argument_group("output")
     out.add_argument("-c", "--count", action="store_true", help="only the summary: count, size, dates, kinds")

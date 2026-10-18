@@ -780,7 +780,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/hide-backup-btrfs ", "leave out btrfs snapshots"),
             ("/show-fts-rvt ", "content searches (/fts, /chroma) include Revit files: rvt rfa rte rft"),
             ("/hide-fts-rvt ", "content searches leave out Revit files"),
-            ("/show-fts-dwg ", "content searches include AutoCAD drawings (dwg contents are not indexed yet)"),
+            ("/show-fts-dwg ", "content searches include AutoCAD drawings"),
             ("/hide-fts-dwg ", "content searches leave out AutoCAD drawings"),
         ];
         for (v, label) in VERBS {
@@ -1112,7 +1112,7 @@ struct Settings {
     show_dotfiles: bool,
     show_backup_restic: bool,
     show_backup_btrfs: bool,
-    /// content searches (/fts, /chroma) include Revit files (rvt rfa rte rft) / AutoCAD drawings (dwg; not indexed yet)
+    /// content searches (/fts, /chroma) include Revit files (rvt rfa rte rft) / AutoCAD drawings
     show_fts_rvt: bool,
     show_fts_dwg: bool,
     /// the /fts preview pane under the results (horizontal split) instead of beside them
@@ -1585,7 +1585,7 @@ impl App {
                 entry("restic", "Show restic backups".into(), Some(self.settings.show_backup_restic)),
                 entry("btrfs", "Show btrfs snapshots".into(), Some(self.settings.show_backup_btrfs)),
                 entry("rvt", "Search inside Revit files".into(), Some(self.settings.show_fts_rvt)),
-                entry("dwg", "Search inside AutoCAD drawings (not indexed yet)".into(), Some(self.settings.show_fts_dwg)),
+                entry("dwg", "Search inside AutoCAD drawings".into(), Some(self.settings.show_fts_dwg)),
             ];
         }
         let pending: Vec<String> = self.appmenu.pending.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
@@ -2776,7 +2776,7 @@ impl eframe::App for App {
                         cmd(ui, "/show-fts-rvt  /hide-fts-rvt");
                     });
                     ui.horizontal(|ui| {
-                        changed |= ui.checkbox(&mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings (dwg; not indexed yet)").changed();
+                        changed |= ui.checkbox(&mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings").changed();
                         cmd(ui, "/show-fts-dwg  /hide-fts-dwg");
                     });
                     ui.horizontal(|ui| {
