@@ -45,6 +45,13 @@ VERBS (anywhere in the query)
 
 The same settings exist as options: --dotfiles/--no-dotfiles, --backup restic|btrfs|all|none, --fts-rvt/--no-fts-rvt,
 --fts-dwg/--no-fts-dwg, -s/--sort, --asc.
+Attachments: text inside email attachments (.eml/.msg: pdf, docx, xlsx ...) IS full-text indexed - /fts on a word that only occurs
+in an attached pdf returns the email file. Use --snippets to see the matching passage; --fields subject,from,date,attachments
+(and --group-by thread) show what the email is without opening it.
+
+NEVER bulk-read the file mounts (/mnt/host1-backups, the Drive and other FUSE/NFS mounts: cat/grep -r/find over them is very slow
+and hammers the server). Choose files with /fts ... --snippets (or -l), then read only the few you need.
+
 Backup results have real paths under /mnt/backup-restic-host3/ids/<id>/... and <subvolume>/.snapshots/<n>/snapshot/...
 """
 
@@ -181,8 +188,18 @@ def get(server, path, params, timeout=300):
     raise ServerDown(str(getattr(last, "reason", last)))
 
 def fetch(server, query, keys, desc, offset, top, explicit=False):
-    return get(server, "/query", {"q": query, "sort": ",".join(keys), "desc": "1" if desc else "0",
-                                  "offset": offset, "top": top, "explicit": "1" if explicit else "0"})
+    params = {"q": query, "sort": ",".join(keys), "desc": "1" if desc else "0", "offset": offset, "top": top,
+              "explicit": "1" if explicit else "0"}
+    waited = False
+    for _ in range(60):                           # /chroma: the semantic worker starts on first use (about 30 s); wait for it
+        r = get(server, "/query", params)
+        if not any("semantic search is starting" in e for e in r.get("errors") or []):
+            return r
+        if not waited:
+            print("search: starting the semantic search worker (about 30 s) ...", file=sys.stderr)
+            waited = True
+        time.sleep(3)
+    return r
 
 def start_server(server):
     print("search: the server is not running; starting images-search (about 30 s) ...", file=sys.stderr)
@@ -197,6 +214,27 @@ def start_server(server):
     return False
 
 # ---- output --------------------------------------------------------------------------------------------------------
+def email_info(path):
+    """Headers (and attachment names) of one .eml, read from the file; {} when unreadable."""
+    import email, email.policy
+    try:
+        with open(path, "rb") as f:
+            m = email.message_from_binary_file(f, policy=email.policy.default)
+        atts = [a.get_filename() for a in m.iter_attachments() if a.get_filename()]
+        return {"subject": str(m["subject"] or ""), "from": str(m["from"] or ""), "to": str(m["to"] or ""),
+                "date": str(m["date"] or ""), "attachments": atts}
+    except Exception:
+        return {}
+
+def thread_key(subject):
+    import re
+    s = subject.lower()
+    while True:
+        t = re.sub(r"^\s*(re|fw|fwd|aw)\s*[:\-]\s*", "", s)
+        if t == s:
+            return " ".join(s.split())
+        s = t
+
 def human(n):
     if n is None:
         return "-"
@@ -238,6 +276,8 @@ def main():
     out.add_argument("--score", action="store_true", help="with -l: a leading score column (/clip, /face)")
     out.add_argument("--snippets", action="store_true", help="for /fts: the matching passages of each result (up to 50 rows)")
     out.add_argument("--raw", action="store_true", help="paths exactly as the server returns them (no mount mapping)")
+    out.add_argument("--fields", help="comma list for .eml results: subject,from,to,date,attachments (read from the files; other rows show -)")
+    out.add_argument("--group-by", choices=["thread"], help="with --fields/-l: group emails into threads (subject without Re:/Fw:), newest thread first")
     out.add_argument("-q", "--quiet", action="store_true", help="no summary line on stderr")
     srv = ap.add_argument_group("server")
     srv.add_argument("--server", default=os.environ.get("SEARCH_SERVER", "http://127.0.0.1:8765"),
@@ -317,13 +357,50 @@ def main():
             except (ServerDown, RuntimeError, ValueError):
                 snippets[r["remote"]] = []
     end = "\0" if a.nul else "\n"
+    fields = [f.strip() for f in a.fields.split(",")] if a.fields else []
+    if a.group_by and not fields:
+        fields = ["subject", "from", "date", "attachments"]
+    info = {}
+    if fields:
+        bad = [f for f in fields if f not in ("subject", "from", "to", "date", "attachments")]
+        if bad:
+            print(f"search: unknown field {bad[0]} (subject, from, to, date, attachments)", file=sys.stderr)
+            return 2
+        for r in rows:
+            pth = r["remote"] if a.raw else local_path(r["remote"])
+            info[r["remote"]] = email_info(pth) if pth.lower().endswith(".eml") else {}
+        def cell(r, f):
+            v = info[r["remote"]].get(f)
+            return "-" if not v else ("; ".join(v) if isinstance(v, list) else " ".join(str(v).split()))
+        if a.group_by:
+            groups = {}
+            for r in rows:
+                i = info[r["remote"]]
+                groups.setdefault(thread_key(i.get("subject") or r["remote"]), []).append(r)
+            rows = [r for g in groups.values() for r in sorted(g, key=lambda x: x.get("mtime") or "")]
+            if not a.json:
+                for key, g in groups.items():
+                    sys.stdout.write(f"## {key or '(no subject)'}  [{len(g)} emails]\n")
+                    for r in sorted(g, key=lambda x: x.get("mtime") or ""):
+                        pth = r["remote"] if a.raw else local_path(r["remote"])
+                        sys.stdout.write("\t".join([cell(r, f) for f in fields] + [pth]) + "\n")
+                sys.stdout.flush()
+                rows = []
     try:
         for r in rows:
+            if fields and not a.json:
+                pth = r["remote"] if a.raw else local_path(r["remote"])
+                sys.stdout.write("\t".join([cell(r, f) for f in fields] + [pth]) + end)
+                continue
             path = r["remote"] if a.raw else local_path(r["remote"])
             if a.json:
                 o = {"path": path, "size": r.get("size"), "mtime": r.get("mtime")}
                 if r.get("score") is not None:
                     o["score"] = r["score"]
+                for f in fields:
+                    o[f] = info[r["remote"]].get(f)
+                if a.group_by:
+                    o["thread"] = thread_key(info[r["remote"]].get("subject") or "")
                 if a.snippets:
                     o["snippets"] = [{"page": s.get("page"), "text": s.get("text")} for s in snippets.get(r["remote"], [])]
                 sys.stdout.write(json.dumps(o) + "\n")
@@ -339,9 +416,13 @@ def main():
         sys.stdout.flush()
     except BrokenPipeError:
         pass
-    if not a.quiet and sys.stderr.isatty():
-        shown = f" (showing {want:,})" if want < count else ""
-        print(f"{summary(count, stats)}{shown} · {time.time() - t0:.2f}s", file=sys.stderr)
+    if not a.quiet:
+        trunc = want < count
+        if trunc:
+            print(f"search: showing {want:,} of {count:,} - use -n N (or -n 0 for all) to see more, or narrow the query", file=sys.stderr)
+        if sys.stderr.isatty():
+            shown = f" (showing {want:,})" if trunc else ""
+            print(f"{summary(count, stats)}{shown} · {time.time() - t0:.2f}s", file=sys.stderr)
     return 0 if count else 1
 
 if __name__ == "__main__":
