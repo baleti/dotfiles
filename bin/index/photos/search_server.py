@@ -689,7 +689,7 @@ SETTINGS_PATH = os.path.expanduser("~/.config/indexes/picker-settings.json")
 SETTINGS_DEFAULT = {"show_dotfiles": True, "show_backup_restic": False, "show_backup_btrfs": False,
                     "show_fts_rvt": True, "show_fts_dwg": True}
 # file formats a content search (/fts, /chroma) can leave out: Revit (project, family, template, family template) and
-# AutoCAD drawings. The dwg contents are not indexed yet; the setting is the place for that intention.
+# AutoCAD drawings. Both have their own Recoll index (revit, dwg; see index_cad.py).
 FTS_FORMATS = {"show_fts_rvt": {"rvt", "rfa", "rte", "rft"}, "show_fts_dwg": {"dwg", "dxf", "dwt"}}
 _settings = {"mtime": None, "value": dict(SETTINGS_DEFAULT)}
 VIEW_VERBS = {
@@ -866,8 +866,6 @@ class H(BaseHTTPRequestHandler):
                         import traceback; traceback.print_exc()
                         results, count, err, stats = [], 0, f"/{cv[0]} failed: {e}", None
                     errors = [err] if err else []
-                    if view["show_fts_dwg"] and "show_fts_dwg" in view["explicit"]:
-                        errors.append("dwg contents are not indexed yet (there is no DWG parser): only Revit and document text is searched")
                 else:
                     extras = []
                     for kind in ("restic", "btrfs"):
