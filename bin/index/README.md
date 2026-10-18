@@ -121,3 +121,16 @@ Everything here is generic code. The private parts are kept outside the repo:
 - **Apply and index now** runs `photos/apply_index_dirs.py` as the transient user unit `apply-index-dirs` (nice 19, idle I/O;
   one run at a time); the window follows its progress from `GET /index-dirs` (`~/.cache/indexes/index-dirs-status.json`).
   Existing collections in `collections.json` are untouched and not shown there.
+
+## Revit and DWG content indexes (separate Recoll indexes)
+Revit (`.rvt .rfa .rte .rft`) and DWG/DXF contents live in their own Recoll indexes, `~/.cache/indexes/revit/recoll` and
+`~/.cache/indexes/dwg/recoll`, because they are large and slow to build. Both are listed in `fts.indexes` in
+`~/.config/indexes/photos.json`, so `/fts` searches them (`/fts/revit words`, `/fts/dwg words` select one).
+- `photos/index_cad.py revit|dwg [--limit N] [--batch N] [--roots ...]` takes the file list from the catalog and runs
+  `recollindex -i` on batches (unchanged files are skipped). Topdirs: `/mnt/host1-backups/office`, `~/gdrive-rclone-crypt/office`.
+- Revit filter: `~/rvt-research/rvt2recoll.py` (decoded and cached on host1). DWG filter: `~/dwg-research/dwg2recoll.py`
+  (LibreDWG 0.13.3 `dwgread -O json`, installed in `~/.local`; keeps TEXT, MTEXT, ATTRIB/ATTDEF tags and values, dimension text,
+  block, layer and layout names; files over 60 MB are skipped; about 0.2-2 s per file).
+- First builds run as transient units `index-revit` and `index-dwg` (nice 19, idle IO). Nightly updates: `nightly-cad-index.timer` (04:30, revit).
+  Add `dwg` to its loop once the first dwg build has finished.
+- The bm3-*, part3-books and professional-reference collections skip these extensions (`skippedNames+` in their recoll.conf) so nothing is indexed twice.
