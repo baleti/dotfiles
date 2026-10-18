@@ -153,7 +153,7 @@ def fts_matches(terms, confs, cap=FTS_CAP, cancel=None):
         if key in _fts_cache:
             return _fts_cache[key]
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(confs)))) as ex:
+    with ThreadPoolExecutor(max_workers=min(16, max(1, len(confs)))) as ex:
         per_index = list(ex.map(lambda c: _recoll_index(c, terms, cap, cancel), confs))      # index order kept: it is the relevance tie-break
     rows, seen = [], set()
     for found in per_index:
@@ -911,7 +911,8 @@ class H(BaseHTTPRequestHandler):
                 st = json.load(open(index_dirs.STATUS))
             except (OSError, ValueError):
                 st = {"state": "idle", "message": ""}
-            return self._json(200, {**index_dirs.load(config.CFG["catalog"]["local_roots"]), "status": st})
+            import index_info
+            return self._json(200, {**index_info.overview(config.CFG["catalog"], fts_indexes()), "status": st})
         if u.path == "/snippets":
             try:
                 if (content_verb(qs.get("q", [""])[0]) or ("",))[0] == "chroma":

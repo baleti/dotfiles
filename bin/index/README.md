@@ -134,3 +134,9 @@ Revit (`.rvt .rfa .rte .rft`) and DWG/DXF contents live in their own Recoll inde
 - First builds run as transient units `index-revit` and `index-dwg` (nice 19, idle IO). Nightly updates: `nightly-cad-index.timer` (04:30, revit).
   Add `dwg` to its loop once the first dwg build has finished.
 - The bm3-*, part3-books and professional-reference collections skip these extensions (`skippedNames+` in their recoll.conf) so nothing is indexed twice.
+
+Settings > Indexing also shows the real setup, read live by `photos/index_info.py` (`GET /index-dirs`): the Excluded list for
+the file-name walk (`exclude` in index-dirs.json: a path, or a bare folder name wherever it occurs; applied by the walk and
+the live watcher) next to the config's own exclusions and mount points, every content index with documents and size on disk,
+and the schedule of each indexing job (fanotify watcher, Drive changes and weekly full listing, local safety-net walk, restic
+and btrfs ingestion, NFS stream and monthly walk, nightly collections, nightly Revit/DWG) with last and next run.
