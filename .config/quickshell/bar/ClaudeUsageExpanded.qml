@@ -1491,6 +1491,11 @@ Rectangle {
                     id: acctSummaryPill
                     required property var modelData
                     Layout.alignment: Qt.AlignVCenter
+                    // Never let the RowLayout squeeze a pill below its
+                    // content (cropped numbers); the panel grows instead
+                    // via pillsNaturalWidth.
+                    Layout.minimumWidth: implicitWidth
+                    Layout.preferredWidth: implicitWidth
                     implicitWidth: acctSummary.implicitWidth + 16
                     implicitHeight: acctSummary.implicitHeight + 6
                     onImplicitWidthChanged: root.recalcPillsWidth()
