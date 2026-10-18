@@ -1387,7 +1387,7 @@ def label_window(profile):
     if not pane:
         return
     base = os.path.basename((profile or CLAUDE_DIR).rstrip("/"))
-    name = {".claude2": "claude2", ".claude3": "claude3", ".claude4": "claude4"}.get(base, "claude")
+    name = {".claude2": "claude2", ".claude3": "claude3", ".claude4": "claude4", ".claude5": "claude5", ".claude6": "claude6"}.get(base, "claude")
     subprocess.run(["tmux", "rename-window", "-t", pane, name],
                    stderr=subprocess.DEVNULL)
     subprocess.run(["tmux", "set-window-option", "-t", pane,
