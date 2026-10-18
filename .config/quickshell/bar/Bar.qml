@@ -338,7 +338,9 @@ Item {
     readonly property real claudeUsageMinWidth: 320
     readonly property real claudeUsagePanelWidth: Math.min(
         Math.max(claudeUsageExpanded.naturalContentWidth, root.claudeUsageMinWidth),
-        1196, root.panelAreaWidth)
+        // 1196 ceiling for the table, but the account pills must never be
+        // cropped (6 accounts need ~1240), so they can raise it.
+        Math.max(1196, claudeUsageExpanded.pillsNaturalWidth + 24), root.panelAreaWidth)
 
     function preferredWidthFor(name: string): real {
         if (name === "calendar")
