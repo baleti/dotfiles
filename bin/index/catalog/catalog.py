@@ -242,6 +242,7 @@ def build_local(db, roots):
         db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (eid, sid))
         seen.add(eid)
 
+    user_ex = index_dirs.user_excluded()            # Settings > Indexing > Excluded
     stack = [os.path.expanduser(r) for r in roots]
     skipped_mounts = n = 0
     while stack:
@@ -256,7 +257,7 @@ def build_local(db, roots):
                 if p in mounts:
                     skipped_mounts += 1
                     continue
-                if e.name in anywhere:
+                if e.name in anywhere or user_ex(p, e.name):
                     continue
                 if p.startswith(HOME + "/") and os.path.relpath(p, HOME) in excl:
                     continue

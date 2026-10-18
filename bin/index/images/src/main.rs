@@ -608,6 +608,9 @@ struct App {
     /// Settings > Indexing: the lists being edited, the text boxes, the last run's state/message, when it was last asked
     idx: IndexDirs,
     idx_loaded: bool,
+    /// the server's description of the real setup (config excludes, content indexes, schedule), fetched when Settings opens
+    idx_info: serde_json::Value,
+    idx_exclude_input: String,
     idx_path_input: String,
     idx_fts_input: String,
     idx_state: String,
@@ -1156,6 +1159,7 @@ impl Settings {
 #[derive(Clone, PartialEq, Default)]
 struct IndexDirs {
     path: Vec<String>,
+    exclude: Vec<String>,
     fts: Vec<String>,
     bm25: bool,
     chroma: bool,
@@ -1168,21 +1172,23 @@ impl IndexDirs {
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/indexes/index-dirs.json")
     }
     /// The effective lists and the last run's status, from the search server ((dirs, state, message)).
-    fn fetch() -> Option<(IndexDirs, String, String)> {
+    fn fetch() -> Option<(IndexDirs, String, String, serde_json::Value)> {
         let body = ureq::get(&format!("{}/index-dirs", cfg().server)).timeout(Duration::from_secs(2)).call().ok()?.into_string().ok()?;
         let v: serde_json::Value = serde_json::from_str(&body).ok()?;
         let list = |x: &serde_json::Value| x.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default();
         let f = &v["fts"];
         let d = IndexDirs {
-            path: list(&v["path"]), fts: list(&f["dirs"]),
+            path: list(&v["path"]), exclude: list(&v["exclude"]), fts: list(&f["dirs"]),
             bm25: f["bm25"].as_bool().unwrap_or(true), chroma: f["chroma"].as_bool().unwrap_or(false),
             clip: f["clip"].as_bool().unwrap_or(false), face: f["face"].as_bool().unwrap_or(false),
         };
-        Some((d, v["status"]["state"].as_str().unwrap_or("idle").into(), v["status"]["message"].as_str().unwrap_or("").into()))
+        let (st, msg) = (v["status"]["state"].as_str().unwrap_or("idle").to_string(), v["status"]["message"].as_str().unwrap_or("").to_string());
+        Some((d, st, msg, v))
     }
     fn save(&self) {
         let v = serde_json::json!({
             "path": self.path,
+            "exclude": self.exclude,
             "fts": {"dirs": self.fts, "bm25": self.bm25, "chroma": self.chroma, "clip": self.clip, "face": self.face},
         });
         let path = IndexDirs::file();
@@ -1205,7 +1211,7 @@ impl IndexDirs {
 
 /// One editable directory list of Settings > Indexing: a row per directory (red when it does not exist) with a remove
 /// button, and a text box with Add. True when the list changed.
-fn dir_list_editor(ui: &mut egui::Ui, pal: &Palette, id: &str, dirs: &mut Vec<String>, input: &mut String) -> bool {
+fn dir_list_editor(ui: &mut egui::Ui, pal: &Palette, id: &str, hint: &str, dirs: &mut Vec<String>, input: &mut String) -> bool {
     let mut changed = false;
     let mut remove: Option<usize> = None;
     for (i, d) in dirs.iter().enumerate() {
@@ -1218,7 +1224,7 @@ fn dir_list_editor(ui: &mut egui::Ui, pal: &Palette, id: &str, dirs: &mut Vec<St
     }
     if let Some(i) = remove { dirs.remove(i); changed = true; }
     ui.horizontal(|ui| {
-        let resp = ui.add(egui::TextEdit::singleline(input).id_salt(id).hint_text("add a directory, e.g. ~/notes").desired_width(300.0));
+        let resp = ui.add(egui::TextEdit::singleline(input).id_salt(id).hint_text(hint).desired_width(300.0));
         let add = ui.button("Add").clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
         if add && !input.trim().is_empty() {
             let d = input.trim().trim_end_matches('/').to_string();
@@ -1228,6 +1234,78 @@ fn dir_list_editor(ui: &mut egui::Ui, pal: &Palette, id: &str, dirs: &mut Vec<St
         }
     });
     changed
+}
+
+/// Settings > Indexing: the content indexes that exist (from the server), as a table with the index types each has.
+fn show_indexes(ui: &mut egui::Ui, pal: &Palette, info: &serde_json::Value) {
+    let Some(rows) = info["indexes"].as_array() else { return };
+    let total: u64 = rows.iter().map(|r| r["bytes"].as_u64().unwrap_or(0)).sum();
+    let docs: u64 = rows.iter().map(|r| r["docs"].as_u64().unwrap_or(0)).sum();
+    egui::CollapsingHeader::new(RichText::new(format!("Existing content indexes ({}): {} documents, {} on disk", rows.len(), group_digits(docs as usize), human_size(total))).size(12.0))
+        .default_open(false).show(ui, |ui| {
+        let tick = |b: bool| if b { RichText::new("✓").color(pal.accent) } else { RichText::new("·").color(pal.dim) };
+        egui::Grid::new("idx_table").num_columns(7).spacing([10.0, 2.0]).show(ui, |ui| {
+            for h in ["index", "BM25", "Chroma", "CLIP pg", "Faces", "docs", "size"] {
+                ui.label(RichText::new(h).size(10.0).color(pal.dim));
+            }
+            ui.end_row();
+            for r in rows {
+                let roots: Vec<&str> = r["roots"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+                let tip = if roots.is_empty() { "no folders recorded".to_string() } else { roots.join("\n") };
+                ui.label(RichText::new(r["name"].as_str().unwrap_or("?")).monospace().size(11.0).color(pal.text)).on_hover_text(tip);
+                ui.label(tick(r["bm25"].as_bool().unwrap_or(false)));
+                ui.label(tick(r["chroma"].as_bool().unwrap_or(false)));
+                ui.label(tick(r["clip_pages"].as_bool().unwrap_or(false)));
+                ui.label(tick(r["faces"].as_bool().unwrap_or(false)));
+                ui.label(RichText::new(group_digits(r["docs"].as_u64().unwrap_or(0) as usize)).monospace().size(11.0).color(pal.dim));
+                ui.label(RichText::new(human_size(r["bytes"].as_u64().unwrap_or(0))).monospace().size(11.0).color(pal.dim));
+                ui.end_row();
+            }
+        });
+        ui.label(RichText::new("Hover a name for the folders it covers. CLIP pg = CLIP on large images inside PDFs. Photos (/clip, /face) have their own index, built when the photo folders are indexed by hand.").size(10.0).color(pal.dim));
+    });
+}
+
+/// Settings > Indexing: what the file-name walk leaves out by itself (config, mount points, hidden-by-default folders).
+fn show_config_excludes(ui: &mut egui::Ui, pal: &Palette, info: &serde_json::Value) {
+    let c = &info["config_exclude"];
+    let list = |k: &str| -> Vec<String> { c[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default() };
+    let (names, paths, anywhere, mounts, hidden) = (list("names_under_home"), list("paths"), list("anywhere"), list("mounts"), list("hidden_by_default"));
+    egui::CollapsingHeader::new(RichText::new(format!("Also left out automatically ({} mount points, {} rules)", mounts.len(), names.len() + paths.len() + anywhere.len())).size(12.0))
+        .default_open(false).show(ui, |ui| {
+        let line = |ui: &mut egui::Ui, label: &str, items: &[String]| {
+            if items.is_empty() { return; }
+            ui.label(RichText::new(label).size(10.5).color(pal.dim));
+            ui.add(egui::Label::new(RichText::new(items.join("   ")).monospace().size(10.5).color(pal.text)).wrap());
+        };
+        line(ui, "Folders under your home, by configuration:", &names);
+        line(ui, "Absolute paths, by configuration:", &paths);
+        line(ui, "Names skipped wherever they occur:", &anywhere);
+        line(ui, "Mount points under your home (separate subvolumes, rclone and other FUSE mounts: walked by their own source or not at all):", &mounts);
+        line(ui, "Indexed but hidden from results unless the query says otherwise:", &hidden);
+    });
+}
+
+/// Settings > Indexing: every indexing job with its frequency, last and next run and what its logic is.
+fn show_schedule(ui: &mut egui::Ui, pal: &Palette, info: &serde_json::Value) {
+    let Some(rows) = info["schedule"].as_array() else { return };
+    for r in rows {
+        let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
+        let running = r["running"].as_bool().unwrap_or(false);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(if running { "●" } else { "○" }).size(11.0).color(if running { pal.accent } else { pal.dim }));
+            ui.label(RichText::new(s("name")).strong().size(11.5).color(pal.text));
+            ui.label(RichText::new(s("when")).size(11.0).color(pal.accent));
+        });
+        let (last, next) = (s("last"), s("next"));
+        let mut when = String::new();
+        if !last.is_empty() { when += &format!("last run {last}"); }
+        if !next.is_empty() { if !when.is_empty() { when += "  ·  "; } when += &format!("next {next}"); }
+        if running { if !when.is_empty() { when += "  ·  "; } when += "running now"; }
+        ui.add(egui::Label::new(RichText::new(format!("{} - {}", s("what"), s("logic"))).size(10.5).color(pal.dim)).wrap());
+        if !when.is_empty() { ui.label(RichText::new(when).size(10.5).color(pal.dim)); }
+        ui.add_space(4.0);
+    }
 }
 
 /// Expands a typed directory (~ and relative-to-home) for the existence check in the settings window.
@@ -1459,6 +1537,8 @@ impl App {
             snip_key: None,
             idx: IndexDirs::default(),
             idx_loaded: false,
+            idx_info: serde_json::Value::Null,
+            idx_exclude_input: String::new(),
             idx_path_input: String::new(),
             idx_fts_input: String::new(),
             idx_state: String::new(),
@@ -2756,7 +2836,9 @@ impl eframe::App for App {
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
                 .show(&ctx, |ui| {
-                  egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 120.0).max(300.0)).auto_shrink([true, true]).show(ui, |ui| {
+                  egui::ScrollArea::vertical().max_height((ctx.content_rect().height() * 0.70).max(300.0)).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.set_min_width(640.0);
+                    ui.set_max_width(640.0);
                     ui.label(RichText::new("Search").strong().color(pal.accent));
                     let cmd = |ui: &mut egui::Ui, text: &str| { ui.label(RichText::new(text).monospace().size(11.0).color(pal.dim)); };
                     ui.horizontal(|ui| {
@@ -2787,15 +2869,21 @@ impl eframe::App for App {
                     ui.label(RichText::new("Indexing").strong().color(pal.accent));
                     if !self.idx_loaded {
                         self.idx_loaded = true;
-                        if let Some((d, st, msg)) = IndexDirs::fetch() { self.idx = d; self.idx_state = st; self.idx_msg = msg; }
+                        if let Some((d, st, msg, info)) = IndexDirs::fetch() { self.idx = d; self.idx_state = st; self.idx_msg = msg; self.idx_info = info; }
                     }
                     let mut idx_changed = false;
                     ui.label(RichText::new("File names (path search)").strong().size(12.0));
-                    ui.label(RichText::new("Directories walked for name search. Changes inside them show up live; Google Drive, the NFS backups and restic snapshots have their own sources.").size(10.5).color(pal.dim));
-                    idx_changed |= dir_list_editor(ui, &pal, "idx_path_add", &mut self.idx.path, &mut self.idx_path_input);
+                    ui.add(egui::Label::new(RichText::new("Directories walked for name search. Changes inside them show up live (fanotify); Google Drive, the NFS backups, restic and btrfs snapshots have their own sources (see the schedule below).").size(10.5).color(pal.dim)).wrap());
+                    ui.label(RichText::new("Included").size(11.0).color(pal.dim));
+                    idx_changed |= dir_list_editor(ui, &pal, "idx_path_add", "add a directory, e.g. ~/notes", &mut self.idx.path, &mut self.idx_path_input);
+                    ui.label(RichText::new("Excluded").size(11.0).color(pal.dim));
+                    idx_changed |= dir_list_editor(ui, &pal, "idx_excl_add", "add a path (~/temp) or a folder name (node_modules) to leave out", &mut self.idx.exclude, &mut self.idx_exclude_input);
+                    show_config_excludes(ui, &pal, &self.idx_info);
                     ui.add_space(6.0);
                     ui.label(RichText::new("File contents (full-text search)").strong().size(12.0));
-                    ui.label(RichText::new("Directories whose contents are indexed, with the indexes to build for them (the existing collections stay as they are).").size(10.5).color(pal.dim));
+                    show_indexes(ui, &pal, &self.idx_info);
+                    ui.add_space(2.0);
+                    ui.add(egui::Label::new(RichText::new("Extra directories, indexed as the collection \"user-dirs\" with the indexes switched on here. The collections above are managed in collections.json and run nightly; these boxes only concern the directories listed below.").size(10.5).color(pal.dim)).wrap());
                     for (flag, label, verb) in [
                         (0, "BM25 word search", "/fts"),
                         (1, "ChromaDB semantic search (embeds on the GPU box)", "/chroma"),
@@ -2808,7 +2896,7 @@ impl eframe::App for App {
                             cmd(ui, verb);
                         });
                     }
-                    idx_changed |= dir_list_editor(ui, &pal, "idx_fts_add", &mut self.idx.fts, &mut self.idx_fts_input);
+                    idx_changed |= dir_list_editor(ui, &pal, "idx_fts_add", "add a directory whose contents to index, e.g. ~/notes", &mut self.idx.fts, &mut self.idx_fts_input);
                     if idx_changed { self.idx.save(); }
                     ui.horizontal(|ui| {
                         let running = self.idx_state == "running";
@@ -2826,9 +2914,13 @@ impl eframe::App for App {
                         ui.ctx().request_repaint_after(Duration::from_secs(2));
                         if self.idx_polled.elapsed() >= Duration::from_secs(2) {
                             self.idx_polled = Instant::now();
-                            if let Some((_, st, msg)) = IndexDirs::fetch() { self.idx_state = st; self.idx_msg = msg; }
+                            if let Some((_, st, msg, info)) = IndexDirs::fetch() { self.idx_state = st; self.idx_msg = msg; self.idx_info = info; }
                         }
                     }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Scheduled reindexing").strong().size(12.0));
+                    ui.add(egui::Label::new(RichText::new("What keeps each index current, how often, and the logic behind it. ● = running now.").size(10.5).color(pal.dim)).wrap());
+                    show_schedule(ui, &pal, &self.idx_info);
                     ui.add_space(10.0);
                     ui.label(RichText::new("Shortcuts").strong().color(pal.accent));
                     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
