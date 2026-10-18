@@ -21,7 +21,7 @@ def main():
     ap.add_argument("kind", choices=KINDS)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--roots", default=",".join(ROOTS))
-    ap.add_argument("--batch", type=int, default=100)
+    ap.add_argument("--batch", type=int, default=20)
     a = ap.parse_args()
     conf = os.path.join(IDX, a.kind, "recoll")
     todo = files(a.kind, a.roots.split(","))
@@ -29,6 +29,8 @@ def main():
         todo = todo[:a.limit]
     print(f"{time.strftime('%T')} {a.kind}: {len(todo)} files", flush=True)
     for i in range(0, len(todo), a.batch):
+        if os.path.exists(os.path.join(IDX, a.kind, "HALT")):
+            print(f"{time.strftime('%T')} HALT file present, stopping", flush=True); sys.exit(1)
         chunk = todo[i:i + a.batch]
         r = subprocess.run(["recollindex", "-c", conf, "-i", *chunk], capture_output=True)
         print(f"{time.strftime('%T')} {min(i + a.batch, len(todo))}/{len(todo)} rc={r.returncode}", flush=True)
