@@ -2,6 +2,8 @@
 
 ~/.config/indexes/index-dirs.json:
     {"path": ["~", "/"],            # walked for the file-name catalog (what name search finds); absent = catalog.local_roots
+     "exclude": ["~/temp", "node_modules"],   # left out of that walk and of the live watcher, on top of the config's exclusions:
+                                              # a path (contains / or starts with ~) with everything under it, or a bare name wherever it occurs
      "fts":  {"dirs": ["~/notes", ...],   # content-indexed, as the managed collection "user-dirs", with the index types switched on:
               "bm25": true,                #   /fts    Recoll word search (index ~/.cache/indexes/user-dirs/recoll)
               "chroma": false,             #   /chroma semantic search over the extracted text (needs the Recoll index; embeds on ai1)
@@ -24,6 +26,17 @@ def norm(d):
         return ""
     d = os.path.normpath(os.path.join(HOME, d)) if not os.path.isabs(d) else os.path.normpath(d)
     return d
+
+def clean_ex(xs):
+    out = []
+    for x in xs if isinstance(xs, list) else []:
+        if not isinstance(x, str) or not x.strip():
+            continue
+        x = x.strip()
+        v = norm(x) if ("/" in x or x.startswith("~")) else x
+        if v and v not in out:
+            out.append(v)
+    return out
 
 FTS_TYPES = ("bm25", "chroma", "clip", "face")
 FTS_DEFAULT = {"bm25": True, "chroma": False, "clip": False, "face": False}
@@ -49,7 +62,7 @@ def load(default_path_roots=None):
     fts = {"dirs": clean(f.get("dirs"))}
     for t in FTS_TYPES:
         fts[t] = bool(f[t]) if isinstance(f.get(t), bool) else FTS_DEFAULT[t]
-    return {"path": path, "fts": fts}
+    return {"path": path, "exclude": clean_ex(v.get("exclude")), "fts": fts}
 
 def path_roots(default):
     return load(default)["path"]
@@ -63,3 +76,14 @@ def fts_types():
 
 def under(path, roots):
     return any(r == "/" or path == r or path.startswith(r + "/") for r in roots)
+
+def excluder(exclude):
+    """(path, name) -> True for what the user excluded in Settings > Indexing."""
+    paths = [e for e in exclude if e.startswith("/")]
+    names = {e for e in exclude if not e.startswith("/")}
+    def hit(path, name):
+        return name in names or any(path == p or path.startswith(p + "/") for p in paths)
+    return hit
+
+def user_excluded():
+    return excluder(load()["exclude"])

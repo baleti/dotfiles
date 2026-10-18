@@ -72,7 +72,8 @@ class Watcher:
         self.excl = set(C.get("exclude_names", []))            # relative to $HOME
         self.anywhere = set(C.get("exclude_anywhere", []))     # names skipped wherever they occur (.snapshots)
         self.exclude_paths = [os.path.expanduser(x).rstrip("/") for x in C.get("exclude_paths", [])]
-        self.roots, self.roots_mtime = None, None          # Settings > Indexing: only changes under these directories are indexed
+        self.roots, self.roots_mtime = None, None
+        self.user_ex = lambda path: False          # Settings > Indexing: only changes under these directories are indexed
         self.lock = threading.Lock()
         self.puts = {}            # path -> [first event time, last event time]
         self.struct = []          # ("scan" | "delprefix", path), in event order
@@ -86,6 +87,8 @@ class Watcher:
     def excluded(self, path):
         """Same policy as the walk: names relative to $HOME, names anywhere, absolute paths, and the chosen directories."""
         if not index_dirs.under(path, self.path_roots()):
+            return True
+        if self.user_ex(path):
             return True
         if path.startswith(HOME + "/"):
             rel = path[len(HOME) + 1:]
@@ -103,6 +106,8 @@ class Watcher:
             m = None
         if self.roots is None or m != self.roots_mtime:
             self.roots, self.roots_mtime = index_dirs.path_roots(C["local_roots"]), m
+            ex = index_dirs.user_excluded()
+            self.user_ex = lambda path: ex(path, path.rsplit("/", 1)[-1]) or any(ex("", c) for c in path.split("/"))
         return self.roots
 
     def put(self, path):
