@@ -1434,13 +1434,15 @@ Rectangle {
     readonly property real errorLineH: valueFontMetrics.height + content.spacing
 
     readonly property real processAreaBudget: {
-        // 20: the mode-line/summary row. 24: root's own implicitHeight
+        // pillsFlow.height: the account-pills row, which wraps onto several
+        // lines with many accounts (a fixed 20 here let the wrapped extra
+        // lines push the tally below the clipped bottom, 2026-10-19). 24: root's own implicitHeight
         // padding (content.implicitHeight + 24). 16: safety margin.
         // groupHeaderH: the table's own header block (tmux/hyprland row +
         // column-header row). tallyLineH: the total-sessions line below
         // the table. errorLineCount * errorLineH: one line per account
         // currently showing an error.
-        const fixedOverhead = 20 + 14 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH
+        const fixedOverhead = Math.max(20, pillsFlow.height) + 14 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH
             + root.errorLineCount * root.errorLineH;
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
     }
@@ -1462,6 +1464,7 @@ Rectangle {
         // printed inline (it was hover-only for one revision, reported
         // "bring back resets in... we had before").
         Flow {
+            id: pillsFlow
             width: parent.width
             spacing: 10
 
