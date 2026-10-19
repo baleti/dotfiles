@@ -878,6 +878,33 @@ def notify_fields_for(transcript_path: Path):
     return None, ""
 
 
+def transcript_ends_with_assistant_text(transcript_path: Path) -> bool:
+    """True if the newest user/assistant record near EOF is an assistant
+    record carrying text (i.e. the turn's closing message is on disk)."""
+    try:
+        size = transcript_path.stat().st_size
+        with transcript_path.open("rb") as fh:
+            fh.seek(max(0, size - 262144))
+            data = fh.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return False
+    for line in reversed(data.split("\n")):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("type") not in ("user", "assistant"):
+            continue
+        if rec.get("type") != "assistant":
+            return False
+        content = (rec.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return bool(content.strip())
+        return any(isinstance(c, dict) and c.get("type") == "text" and c.get("text")
+                   for c in content or [])
+    return False
+
+
 def fmt_tokens(n):
     """274308 -> '274k', 850 -> '850' -- same rule as
     ClaudeUsageExpanded.qml's fmtTokens, for consistency with the panel."""
@@ -929,6 +956,25 @@ def notify_turn_done(account: str, base: Path, row: dict) -> None:
         session_id, cwd = row.get("session_id"), row.get("cwd")
         transcript = base / "projects" / cwd_to_slug(cwd) / f"{session_id}.jsonl" if session_id and cwd else None
         ai_title, body = notify_fields_for(transcript) if transcript else (None, "")
+        if transcript:
+            # The status flip lands before Claude Code has flushed the turn's
+            # final assistant record, so the first read can return the
+            # *previous* message. Re-read until the transcript is quiet and
+            # its newest conversational record is assistant text.
+            deadline = time.monotonic() + 4.0
+            while time.monotonic() < deadline:
+                try:
+                    size = transcript.stat().st_size
+                except OSError:
+                    break
+                time.sleep(0.4)
+                try:
+                    settled = transcript.stat().st_size == size
+                except OSError:
+                    break
+                ai_title, body = notify_fields_for(transcript)
+                if settled and transcript_ends_with_assistant_text(transcript):
+                    break
 
         title = ai_title or row.get("title") or (Path(cwd).name if cwd else None) or "Claude Code"
         body = body.strip()
