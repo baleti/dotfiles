@@ -475,7 +475,10 @@ def fts_snippets(remote, text):
         if snips:
             return snips, None
     with _snip_lock:
+      for attempt in (0, 1):
         for conf in confs:
+            if attempt:
+                _snip_dbs.pop(conf, None)   # a reindex since the connection was opened: it does not see the new documents
             if conf not in _snip_dbs:
                 _snip_dbs[conf] = recoll.connect(confdir=conf)
             q = _snip_dbs[conf].query()
@@ -484,7 +487,7 @@ def fts_snippets(remote, text):
                 doc = q.fetchone()
                 if doc is None:
                     break
-                if urllib.parse.unquote(doc.url[len("file://"):]) != config.to_index(remote):
+                if urllib.parse.unquote(doc.url[len("file://"):]) not in (config.to_index(remote), remote):   # remote itself: indexes built on this host over the NFS mount
                     continue
                 out = []
                 for page, _term, snip in q.getsnippets(doc, methods=_Mark()):
