@@ -3,6 +3,7 @@
 # user-owned so gen-theme.py (theme_sddm) can rewrite theme.conf + wallpaper.png
 # on every wallpaper change without sudo. Re-run after editing Main.qml.
 set -euo pipefail
+[ "$(id -u)" -ne 0 ] || { echo "run without sudo (it calls sudo itself)" >&2; exit 1; }
 here="$(cd "$(dirname "$0")" && pwd)"
 dest=/usr/share/sddm/themes/material-you
 sudo install -d -o "$USER" -g "$(id -gn)" -m 755 "$dest"
