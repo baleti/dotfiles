@@ -123,12 +123,12 @@ for _, app in ipairs(apps) do
     end
 end
 
--- Launch-or-focus (never hides) for .desktop entries, so the app launcher
--- behaves like the keybind for single-window apps: `hyprctl eval 'summon_app("whatsapp")'`
+-- Same launch / focus / hide toggle as the mod+N keybinds, for .desktop entries,
+-- so the app launcher behaves like the keybind for single-window apps: `hyprctl eval 'summon_app("whatsapp")'`
 function summon_app(slug)
     for _, app in ipairs(apps) do
         if app.slug == slug then
-            toggle_app(app.class, app.slug, app.cmd, true)()
+            toggle_app(app.class, app.slug, app.cmd)()
             return
         end
     end
