@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
@@ -1026,7 +1027,7 @@ Rectangle {
         let w = 0;
         for (let i = 0; i < acctPillsRepeater.count; i++) {
             const it = acctPillsRepeater.itemAt(i);
-            if (it) w += it.implicitWidth + 10;
+            if (it) w = Math.max(w, it.implicitWidth);
         }
         root.pillsNaturalWidth = w;
     }
@@ -1460,7 +1461,7 @@ Rectangle {
         // fit, and each percentage's "resets in..." is back to being
         // printed inline (it was hover-only for one revision, reported
         // "bring back resets in... we had before").
-        RowLayout {
+        Flow {
             width: parent.width
             spacing: 10
 
@@ -1468,13 +1469,12 @@ Rectangle {
             // to sit here with Layout.fillWidth, sharing this row with the
             // account pills -- routinely lost the width fight and got
             // elided down to "polling every ..." (reported 2026-09-11), so
-            // it's gone outright rather than fixed; this filler keeps the
-            // pills right-aligned the way they already were.
-            Item { Layout.fillWidth: true }
-
+            // it's gone outright rather than fixed.
+            // (Now a Flow: with 7 accounts + codex the pills wrap onto
+            // several lines instead of widening the panel.)
             Repeater {
                 id: acctPillsRepeater
-                model: ClaudeUsageSvc.accounts
+                model: ClaudeUsageSvc.codex ? ClaudeUsageSvc.accounts.concat([ClaudeUsageSvc.codex]) : ClaudeUsageSvc.accounts
                 onItemAdded: root.recalcPillsWidth()
                 onItemRemoved: root.recalcPillsWidth()
 
@@ -1490,12 +1490,6 @@ Rectangle {
                 Rectangle {
                     id: acctSummaryPill
                     required property var modelData
-                    Layout.alignment: Qt.AlignVCenter
-                    // Never let the RowLayout squeeze a pill below its
-                    // content (cropped numbers); the panel grows instead
-                    // via pillsNaturalWidth.
-                    Layout.minimumWidth: implicitWidth
-                    Layout.preferredWidth: implicitWidth
                     implicitWidth: acctSummary.implicitWidth + 16
                     implicitHeight: acctSummary.implicitHeight + 6
                     onImplicitWidthChanged: root.recalcPillsWidth()
@@ -1509,17 +1503,39 @@ Rectangle {
                         anchors.centerIn: parent
                         spacing: 4
 
+                        // Provider logo (same tinted-PNG recipe as
+                        // ClaudeUsagePill), then the account number for
+                        // the Claude accounts; codex is just its logo.
+                        Item {
+                            id: acctLogo
+                            readonly property bool isCodex: acctSummaryPill.modelData.account === "codex"
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: isCodex ? 22 : 13
+                            height: isCodex ? 22 : 13
+                            Image {
+                                id: acctLogoSrc
+                                anchors.fill: parent
+                                source: acctLogo.isCodex ? "assets/openai-logo.png" : "assets/claude-logo.png"
+                                sourceSize: Qt.size(64, 64)
+                                smooth: true
+                                visible: false
+                            }
+                            MultiEffect {
+                                anchors.fill: parent
+                                source: acctLogoSrc
+                                colorization: 1
+                                colorizationColor: acctLogo.isCodex ? Theme.text : Theme.orange
+                            }
+                        }
                         Text {
                             id: acctSummaryName
+                            visible: !acctLogo.isCodex
                             anchors.verticalCenter: parent.verticalCenter
                             text: String(root.acctIndex(acctSummaryPill.modelData.account))
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 1
                             font.bold: true
-                            // A touch more air after the account number
-                            // than the Row's own 4px spacing gives the
-                            // rest of the fields (request 2026-09-05).
                             rightPadding: 4
                         }
                         // Session and weekly limits each on their own

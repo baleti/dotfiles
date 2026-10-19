@@ -145,6 +145,37 @@ Rectangle {
             }
         }
 
+        // Codex: OpenAI logo + its own session%, after the Claude accounts.
+        Image {
+            id: codexLogoSrc
+            visible: false
+            source: "assets/openai-logo.png"
+            sourceSize: Qt.size(64, 64)
+            width: 18
+            height: 18
+            smooth: true
+        }
+        MultiEffect {
+            visible: !!ClaudeUsageSvc.codex
+            source: codexLogoSrc
+            anchors.verticalCenter: parent.verticalCenter
+            width: 18
+            height: 18
+            colorization: 1
+            colorizationColor: Theme.text
+        }
+        Text {
+            visible: !!ClaudeUsageSvc.codex
+            readonly property var cx: ClaudeUsageSvc.codex || ({})
+            text: (typeof cx.session_pct === "number") ? Math.round(cx.session_pct) + "%" : "--"
+            font.family: Theme.fontFamily
+            font.pixelSize: root.fontSize
+            font.bold: true
+            opacity: cx.stale ? 0.55 : 1
+            color: (typeof cx.session_pct === "number") ? Theme.rampColor(cx.session_pct / 100) : Theme.muted
+            anchors.verticalCenter: parent.verticalCenter
+        }
+
         Text {
             visible: !ClaudeUsageSvc.hasData
             text: "--"
