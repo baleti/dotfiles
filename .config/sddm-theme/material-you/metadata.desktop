@@ -1,0 +1,12 @@
+[SddmGreeterTheme]
+Name=Material You (wallpaper)
+Description=Login screen recoloured from the desktop wallpaper by gen-theme.py
+Author=user1
+Type=sddm-theme
+Version=1.0
+Screenshot=preview.png
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-Id=material-you
+Theme-API=2.0
+QtVersion=6
