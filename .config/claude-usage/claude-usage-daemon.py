@@ -819,6 +819,7 @@ def write_state(accounts_data: list, sessions_data: dict, mode: str, interval: i
     payload = {
         "accounts": expire_reset_windows(accounts_data),
         "sessions": sessions_data,
+        "codex": expire_reset_windows([dict(_codex_row)])[0] if _codex_row else None,
         "poll_mode": mode,
         "poll_interval_s": interval,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1025,6 +1026,69 @@ _fetch_shared = {
 }
 
 
+CODEX_AUTH = Path.home() / ".codex" / "auth.json"
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
+CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+# Latest codex row ({account: "codex", session_pct, ...}) for write_state;
+# stays out of ACCOUNTS since there are no ~/.codex sessions to list.
+_codex_row: dict = {}
+
+
+def _codex_refresh(auth: dict) -> None:
+    """Same refresh-token grant the codex CLI does; the refresh token
+    rotates, so the new set is written straight back to auth.json."""
+    body = json.dumps({
+        "client_id": CODEX_CLIENT_ID, "grant_type": "refresh_token",
+        "refresh_token": auth["tokens"]["refresh_token"],
+        "scope": "openid profile email",
+    }).encode()
+    req = urllib.request.Request(CODEX_TOKEN_URL, data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        new = json.load(r)
+    for k in ("id_token", "access_token", "refresh_token"):
+        if new.get(k):
+            auth["tokens"][k] = new[k]
+    auth["last_refresh"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tmp = CODEX_AUTH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(auth, indent=2))
+    tmp.chmod(0o600)
+    tmp.replace(CODEX_AUTH)
+
+
+def fetch_codex() -> dict:
+    def get(auth):
+        t = auth["tokens"]
+        req = urllib.request.Request(CODEX_USAGE_URL, headers={
+            "Authorization": f"Bearer {t['access_token']}",
+            "chatgpt-account-id": t["account_id"],
+            "User-Agent": "codex-cli",
+        })
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    try:
+        auth = json.loads(CODEX_AUTH.read_text())
+        try:
+            data = get(auth)
+        except urllib.error.HTTPError as e:
+            if e.code != 401:
+                raise
+            _codex_refresh(auth)
+            data = get(auth)
+    except Exception as e:
+        return {"error": f"{e.__class__.__name__}: {e}"}
+    rl = data.get("rate_limit") or {}
+    pw, sw = rl.get("primary_window") or {}, rl.get("secondary_window") or {}
+
+    def iso(w):
+        return datetime.fromtimestamp(w["reset_at"], timezone.utc).isoformat() if w.get("reset_at") else None
+    return {
+        "session_pct": pw.get("used_percent"), "session_resets_at": iso(pw),
+        "weekly_pct": sw.get("used_percent"), "weekly_resets_at": iso(sw),
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def fetch_loop() -> None:
     next_fetch = 0.0
     backoff_until = 0.0
@@ -1077,6 +1141,17 @@ def fetch_loop() -> None:
                 result["account"] = name
                 last_good[name] = {k: v for k, v in result.items() if k != "account"}
                 accounts_data.append(result)
+
+        time.sleep(ACCOUNT_STAGGER)
+        res = fetch_codex()
+        if "error" in res:
+            log(f"codex: {res['error']}")
+            prev = dict(_codex_row) if _codex_row.get("session_pct") is not None else {}
+            _codex_row.clear()
+            _codex_row.update(prev, account="codex", error=res["error"], stale=bool(prev))
+        else:
+            _codex_row.clear()
+            _codex_row.update(res, account="codex")
 
         if hit_429:
             consecutive_429 += 1

@@ -24,6 +24,10 @@ Singleton {
     // ClaudeUsagePill/ClaudeUsageExpanded both iterate this directly, not
     // an aggregate -- each account's own number is what matters here.
     property var accounts: []
+    // Same row shape as `accounts` entries (account: "codex"), or null.
+    // Kept out of `accounts` since everything indexing that list (acct
+    // column, session grouping) assumes ~/.claude* accounts only.
+    property var codex: null
     // {account: [{pid, status, cwd, tmux, updated_at_ms, context_tokens,
     //   last_output_tokens}]} -- up to 6 most-recently-active live `claude`
     // processes per account (of routinely 20-40 alive at once here, almost
@@ -47,6 +51,7 @@ Singleton {
             try {
                 const d = JSON.parse(stateFile.text());
                 root.accounts = d.accounts || [];
+                root.codex = d.codex || null;
                 root.sessions = d.sessions || ({});
                 root.pollMode = d.poll_mode || "";
                 root.pollIntervalS = d.poll_interval_s || 0;
