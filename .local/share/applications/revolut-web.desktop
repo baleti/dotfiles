@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Revolut (PWA)
+GenericName=Banking
+Comment=Revolut web app in a sandboxed Brave app window
+Exec=/home/user1/bin/summon-app revolut
+Icon=revolut-web
+Terminal=false
+Categories=Network;Finance;
+Keywords=revolut;bank;banking;pwa;
+StartupWMClass=brave-app.revolut.com__-Default

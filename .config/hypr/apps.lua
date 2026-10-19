@@ -25,4 +25,6 @@ return {
     { slug = "teams",       class = "brave-teams.microsoft.com__v2_-Default", cmd = "/home/user1/bin/teams-web", no_autostart = true },
     -- Zoom web client for comparing mic behaviour with Teams; same no-key/no-autostart pattern.
     { slug = "zoom",        class = "brave-app.zoom.us__wc-Default", cmd = "/home/user1/bin/zoom-web", no_autostart = true },
+    -- Revolut web app while the Android app crashes on launch; same no-key/no-autostart pattern.
+    { slug = "revolut",     class = "brave-app.revolut.com__-Default", cmd = "/home/user1/bin/revolut-web", no_autostart = true },
 }
