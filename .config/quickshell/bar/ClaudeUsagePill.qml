@@ -3,10 +3,10 @@ import QtQuick.Effects
 import "../theme"
 import "../services"
 
-// Compact per-account session% readout for all 6 Claude Code accounts on
-// this machine (~/.claude, ~/.claude2, ~/.claude3, ~/.claude4, ~/.claude5, ~/.claude6), in that fixed order --
+// Compact per-account session% readout for all 7 Claude Code accounts on
+// this machine (~/.claude, ~/.claude2, ~/.claude3, ~/.claude4, ~/.claude5, ~/.claude6, ~/.claude7), in that fixed order --
 // weekly% lives only in the detail panel (too much for a bar pill to carry
-// at a glance across 6 accounts). Backed by ClaudeUsageSvc, which just
+// at a glance across 7 accounts). Backed by ClaudeUsageSvc, which just
 // reads the JSON the standalone claude-usage-daemon.py poller writes; this
 // pill never touches the network. Hovering shows the detail panel
 // (ClaudeUsageExpanded) as a passing preview; clicking, or CTRL+ALT+c
