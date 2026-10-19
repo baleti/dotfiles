@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Revolut web app as a Brave app window, isolated in firejail with its own profile.
+# mkdir is required: firejail --whitelist ignores a missing dir and the profile is lost on exit.
+d="$HOME/.brave-revolut"
+mkdir -p "$d"
+exec firejail --whitelist="$d" brave --user-data-dir="$d" \
+    --ozone-platform=wayland ${REVOLUT_DEBUG:+--remote-debugging-port=0} \
+    --app=https://app.revolut.com/
