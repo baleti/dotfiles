@@ -96,6 +96,7 @@ ROFI_CONFIG = ROFI_DIR / "config.rasi"
 TMUX_THEME = Path.home() / ".config/tmux/theme.conf"
 NSXIV_XRESOURCES = Path.home() / ".config/nsxiv/xresources"
 MPV_THEME = Path.home() / ".config/mpv/theme.conf"
+SDDM_THEME_DIR = Path("/usr/share/sddm/themes/material-you")
 HYPR_BORDER_COLORS = STATE_DIR / "hyprland-border-colors.lua"
 
 
@@ -881,6 +882,29 @@ def theme_mpv(out: dict) -> None:
     print(f"wrote {MPV_THEME}")
 
 
+def theme_sddm(out: dict) -> None:
+    """Login-screen theme (~/.config/sddm-theme/install.sh makes the theme dir
+    user-owned once). theme.conf carries the palette, wallpaper.png a copy of
+    the current wallpaper -- sddm cannot read $HOME. Skipped if not installed."""
+    if not os.access(SDDM_THEME_DIR, os.W_OK):
+        return
+    wp = STATE_DIR / "wallpaper.png"
+    if wp.exists():
+        tmp = SDDM_THEME_DIR / "wallpaper.png.tmp"
+        tmp.write_bytes(wp.read_bytes())
+        tmp.chmod(0o644)
+        os.replace(tmp, SDDM_THEME_DIR / "wallpaper.png")
+    conf = "[General]\nbackground=wallpaper.png\nbackground_dim=0.45\n" + "".join(
+        f"{k}={out[v]}\n" for k, v in (
+            ("surface", "surface"), ("surfaceContainer", "surfaceContainer"),
+            ("onSurface", "onSurface"), ("onSurfaceVariant", "onSurfaceVariant"),
+            ("outline", "outline"), ("primary", "primary"),
+            ("onPrimary", "onPrimary"), ("error", "error")))
+    atomic_write(SDDM_THEME_DIR / "theme.conf", conf)
+    (SDDM_THEME_DIR / "theme.conf").chmod(0o644)
+    print(f"wrote {SDDM_THEME_DIR}/theme.conf")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=Path, help="extract seed colors from this image instead of the hardcoded accent")
@@ -903,6 +927,7 @@ def main() -> None:
     theme_tmux(out)
     theme_nsxiv(out)
     theme_mpv(out)
+    theme_sddm(out)
 
 
 if __name__ == "__main__":
