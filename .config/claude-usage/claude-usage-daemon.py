@@ -1139,7 +1139,10 @@ def fetch_codex() -> dict:
 def fetch_loop() -> None:
     next_fetch = 0.0
     backoff_until = 0.0
-    consecutive_429 = 0
+    # Per-account 429 state: a rate-limited account backs off on its own
+    # (name -> resume time / consecutive hits) while the others keep polling.
+    acct_backoff_until: dict[str, float] = {}
+    acct_429: dict[str, int] = {}
     # account name -> last successful fetch_usage() result (no "account" key)
     last_good: dict[str, dict] = {}
     mode, interval = "idle", INTERVAL_IDLE
@@ -1164,16 +1167,21 @@ def fetch_loop() -> None:
 
         mode, interval = current_tier()
         accounts_data = []
-        hit_429 = False
-        retry_after_max = 0.0
         for i, (name, base) in enumerate(ACCOUNTS):
             if i > 0:
                 time.sleep(ACCOUNT_STAGGER)
-            result = fetch_usage(base / ".credentials.json")
-
-            if result.get("http_status") == 429:
-                hit_429 = True
-                retry_after_max = max(retry_after_max, result.get("retry_after") or 0.0)
+            if time.time() < acct_backoff_until.get(name, 0.0):
+                result = {"error": "http 429", "http_status": 429, "skipped": True}
+            else:
+                result = fetch_usage(base / ".credentials.json")
+                if result.get("http_status") == 429:
+                    n = acct_429[name] = acct_429.get(name, 0) + 1
+                    wait = min(BACKOFF_MAX, max(BACKOFF_MIN, result.get("retry_after") or 0.0) * (2 ** (n - 1)))
+                    acct_backoff_until[name] = time.time() + wait
+                    log(f"{name}: 429 (consecutive={n}), skipping this account for {wait:.0f}s")
+                else:
+                    acct_429.pop(name, None)
+                    acct_backoff_until.pop(name, None)
 
             if "error" in result:
                 prev = last_good.get(name)
@@ -1199,19 +1207,6 @@ def fetch_loop() -> None:
         else:
             _codex_row.clear()
             _codex_row.update(res, account="codex")
-
-        if hit_429:
-            consecutive_429 += 1
-            backoff_s = min(
-                BACKOFF_MAX,
-                max(BACKOFF_MIN, retry_after_max) * (2 ** (consecutive_429 - 1)),
-            )
-            backoff_until = time.time() + backoff_s
-            mode = "backoff"
-            interval = int(backoff_s)
-            log(f"hit 429 (consecutive={consecutive_429}), backing off {backoff_s:.0f}s")
-        else:
-            consecutive_429 = 0
 
         next_fetch = time.time() + interval
 
