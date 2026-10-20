@@ -483,7 +483,7 @@ Rectangle {
         "status": "busy / wait / idle",
         "tokens": "context tokens used",
         "path": "working directory",
-        "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7",
+        "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7 / claude8",
         "tmux.session": "tmux session id",
         "tmux.window": "tmux window id",
         "tmux.pane": "tmux pane id",
