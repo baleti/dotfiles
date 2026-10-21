@@ -1809,20 +1809,23 @@ predictable, and at these corpus sizes the looseness bought nothing.
 
 ### Full-text search over Claude conversations: one engine (2026-10-21)
 
-One source for every consumer: `claude-history`'s BM25 index (every transcript
-of every `~/.claude*` profile, whole history - not a recent-N-days subset).
-`claude-fts-server.service` (user unit, `claude-history --fts-server`) keeps it
-warm, refreshing from the parse cache every 60s, and answers on
-`$XDG_RUNTIME_DIR/claude-fts.sock`; `claude-history --fts QUERY` prints
-`session_id<TAB>score` best first (falls back to the on-disk cache if the
-server is down).
+One source for every consumer: a Recoll/Xapian index of Claude conversations,
+`~/.cache/indexes/claude/recoll`, a collection like the others under
+`~/.cache/indexes/` (not registered in photos.json's `fts.indexes`, so mod+1's
+`/fts` doesn't search it). `~/bin/claude-fts-index` (`claude-fts-index.timer`,
+every 2 min) writes `~/.cache/indexes/claude/sessions/<session-id>.txt` for each
+transcript of every `~/.claude*` profile - whole history, AI title first line,
+then user + assistant text blocks only - re-extracting only changed transcripts,
+then runs `recollindex` (which re-reads only changed files).
 
-- tmux picker (prefix+C-c): the engine itself; `/fv/fts term` (alias of
-  `body`).
+`claude-history --fts QUERY` is the single query entry (recollq underneath):
+prints `session_id<TAB>relevance%`, best first. `!word` -> `-word`, `"phrases"`
+as is, the last bare word matches as a prefix (live typing).
+
+- tmux picker (prefix+C-c): its words, phrases, `!neg` and `/fv/body` (alias
+  `/fv/fts`) go through it; title/path/tmux/time stay filters over the
+  picker's own rows.
 - alt-tab: `/fts.claude term` (sugar for `/fv/claude.fts term`) keeps windows
-  whose session is in the hit set. Windows no longer carry transcript text.
+  whose session is a hit. Windows carry no transcript text.
 - Claude usage panel (ctrl+alt+c): `/fts term`; with no explicit sort, rows
-  order by score.
-
-Query language is the picker's (prefix-expanded ANDed words, `"phrases"`,
-`!neg`). The old `claude-fts-indexer` timer and `~/.cache/claude-fts` are gone.
+  order by relevance.

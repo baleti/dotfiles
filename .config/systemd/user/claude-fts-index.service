@@ -1,0 +1,8 @@
+[Unit]
+Description=Update the Recoll index of Claude Code conversations (/fts.claude, usage panel /fts)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=%h/bin/claude-fts-index
