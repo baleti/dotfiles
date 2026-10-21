@@ -329,7 +329,7 @@ Row {
     // convention) -- these back the mod+<key> pinned-app scratch feature in
     // hyprland/keybinds.lua, not a real workspace to switch to. Scoped to
     // this bar's own monitor.
-    readonly property var allWs: Hyprland.workspaces.values.filter(ws => ws.id > 0 && ws.monitor?.name === root.screen.name)
+    readonly property var allWs: Hyprland.workspaces.values.filter(ws => ws.id > 0 && ws.monitor?.name === root.screen.name).sort((a, b) => a.id - b.id)
 
     // [lo, hi] inclusive indices into allWs that stay visible.
     readonly property var range: {
