@@ -235,13 +235,14 @@ QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
     r'/(?:filter-value|fv|)/([a-zA-Z]+)(?:\s+(\S+))?'
     r'|/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
+    r'|/fts(?:\s+("[^"]*"|\S+))?'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'
 )
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms")
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts")
 
 
 def resolve_fields(prefix):
@@ -257,7 +258,11 @@ def resolve_fields(prefix):
 def parse_query(query):
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     field_terms, neg_field_terms = [], []
-    for neg, via_field, via_word, fprefix, fterm, quoted, bare in QUERY_ELEM_RE.findall(query):
+    fts, neg_fts = [], []
+    for neg, via_field, via_word, fprefix, fterm, fts_arg, quoted, bare in QUERY_ELEM_RE.findall(query):
+        if fts_arg:  # `/fts words` - full text over the conversations (Recoll)
+            (neg_fts if neg else fts).append(fts_arg.lower())
+            continue
         if via_field:
             fields = resolve_fields(via_field)
             if fields:
@@ -291,7 +296,7 @@ def parse_query(query):
                 soft.append(bare.lower())
         elif quoted.strip():
             (neg_phrases if neg else phrases).append(quoted.strip().lower())
-    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms)
+    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts)
 
 
 def phrase_hint(raw):
@@ -1020,15 +1025,19 @@ def rank(snap, q, live_map, targets):
     other_terms = [(f, t) for f, t in q.field_terms if f != ["body"]]
     neg_other_terms = [(f, t) for f, t in q.neg_field_terms if f != ["body"]]
 
-    # a bare word with punctuation ("submission-examples") was split into
-    # several terms by parse_query; Recoll gets it back whole, as a phrase
+    # Bare words, "phrases" and !negation are plain substring filters over
+    # the table's own values (tmux location, time, path, title). Full text
+    # is only searched through an explicit `/fts words` (or /fv/body).
     words = list(q.terms)
-    for x in q.soft:
+    for x in q.soft:           # a punctuated word was split by parse_query; use it whole
         for tok in tokenize(x):
             if tok in words:
                 words.remove(tok)
-    pos = words + body_terms + ['"%s"' % p for p in q.phrases + q.soft]
-    neg = list(q.neg_terms) + neg_body_terms + ['"%s"' % p for p in q.neg_phrases]
+    table_pos = words + list(q.phrases) + list(q.soft)
+    table_neg = list(q.neg_terms) + list(q.neg_phrases)
+
+    pos = list(q.fts) + body_terms
+    neg = list(q.neg_fts) + neg_body_terms
     hits = None
     if pos:
         hits = dict(fts_search(" ".join(pos + ["!" + n for n in neg])))
@@ -1048,6 +1057,11 @@ def rank(snap, q, live_map, targets):
         if hits is not None and sid not in hits:
             continue
         filter_text = session_filter_text(sid, s, live_map, targets)
+        if table_pos or table_neg:
+            title = (s["ai_title"] or (s["turns"][0][1][:80] if s["turns"] else "")).lower()
+            table = " ".join([filter_text["tmux"], filter_text["time"], filter_text["path"], title])
+            if not all(t in table for t in table_pos) or any(t in table for t in table_neg):
+                continue
         if any(field_term_matches(fields, subtoks, s, filter_text, vocabs)
                for fields, subtoks in neg_field_terms):
             continue
@@ -1062,7 +1076,8 @@ def rank(snap, q, live_map, targets):
         scored.append((score, sid, s) if has_positive else (s["mtime"], sid, s))
 
     scored.sort(key=lambda t: -t[0])
-    qset = set(q.terms) | set(tokenize(" ".join(body_terms))) | {tok for _, subtoks in field_terms for tok in subtoks}
+    fts_text = " ".join(pos).replace('"', " ")
+    qset = set(q.terms) | set(tokenize(fts_text)) | {tok for _, subtoks in field_terms for tok in subtoks}
     show_rxs = [phrase_re(p) for p in q.phrases] + [phrase_re(x, prefix=True) for x in q.soft]
     return scored, qset, show_rxs
 
@@ -1182,9 +1197,9 @@ def preview(session_id, query, snap):
     out = []
 
     q = parse_query(query)
-    qset = set(q.terms) | {tok for _, term in q.field_terms for tok in tokenize(term)}
-    rxs = ([phrase_re(p) for p in q.phrases]
-           + [phrase_re(soft, prefix=True) for soft in q.soft])
+    fts_text = " ".join(q.fts).replace('"', " ")
+    qset = set(tokenize(fts_text)) | {tok for _, term in q.field_terms for tok in tokenize(term)}
+    rxs = [phrase_re(p, prefix=True) for p in q.fts if p.startswith('"')]
 
     live_map = get_live_sessions()
     live = live_map.get(session_id)
@@ -1963,11 +1978,12 @@ def drive():
         # FZF_LINES, so the preview never drops below half regardless of
         # match count, and grows past half on its own the fewer results
         # there are to list
+        'case "$FZF_QUERY" in *"/fts"*) ;; *) echo hide-preview; exit;; esac; '
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
         'half=$((FZF_LINES / 2)); '
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
-        'echo "change-preview-window(down,$((FZF_LINES - list_rows)))"'
+        'echo "show-preview+change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
     fzf_argv = [
         # fzf's default full-screen mode already takes over the terminal
@@ -1985,7 +2001,7 @@ def drive():
         "--prompt", "claude history> ",
         "--header", header,
         "--preview", preview_cmd,
-        "--preview-window", "down,50%,border-top,wrap",
+        "--preview-window", "down,50%,border-top,wrap,hidden",
         "--bind", f"start:reload:{search_cmd}",
         "--bind", f"change:transform({autopair_cmd})+reload({search_cmd})",
         "--bind", f"result:transform:{resize_on_result}",
