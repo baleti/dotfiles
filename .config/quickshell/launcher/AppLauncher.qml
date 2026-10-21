@@ -248,7 +248,20 @@ PanelWindow {
             + "elseif not names[tostring(base + 1)] then name = tostring(base + 1) "
             + "else local k = 1 while names[cur.name .. '.' .. k] do k = k + 1 end name = cur.name .. '.' .. k end end "
             + "if names[name] then return end "
-            + "local id = (cur and cur.id or 0) + 1 while used[id] do id = id + 1 end "
+            + "local id = (cur and cur.id or 0) + 1 "
+            // id cur+1 is taken: shift the contiguous run of workspaces
+            // above the current one up by one (windows move, names are
+            // kept) so the new one really lands right after it. Skipped
+            // (falls back to the first free id) when a window in the run
+            // is grouped or a run workspace is showing on another monitor.
+            + "if used[id] then local k = id while used[k + 1] do k = k + 1 end local ok = true "
+            + "local by = {} for _, w in ipairs(hl.get_windows()) do local wid = w.workspace.id "
+            + "if wid >= id and wid <= k then if w.group then ok = false end by[wid] = by[wid] or {} table.insert(by[wid], w) end end "
+            + "for _, m in ipairs(hl.get_monitors()) do local a = m.active_workspace if a and a.id >= id and a.id <= k and not m.focused then ok = false end end "
+            + "if ok then local nm = {} for _, x in ipairs(hl.get_workspaces()) do nm[x.id] = x.name end "
+            + "for i = k, id, -1 do if by[i] then for _, w in ipairs(by[i]) do hl.dispatch(hl.dsp.window.move({ workspace = i + 1, window = w, follow = false })) end "
+            + "hl.dispatch(hl.dsp.workspace.rename({ workspace = i + 1, name = nm[i] })) end end "
+            + "else while used[id] do id = id + 1 end end end "
             + "hl.dispatch(hl.dsp.focus({ workspace = id })) "
             + "hl.dispatch(hl.dsp.workspace.rename({ workspace = id, name = name }))";
         moveProc.exec(["hyprctl", "repl", lua]);

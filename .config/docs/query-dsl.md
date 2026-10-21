@@ -44,7 +44,7 @@ orders workspaces by integer id and cannot renumber, so this is the nearest
 free slot after the current one, not guaranteed adjacent) and names it. Esc
 returns to the app list.
 `/add-workspace [name]` adds an empty workspace right after the current one
-(same smallest-unused-id placement) and focuses it; the usual empty-workspace
+and focuses it. If the id right after the current one is taken, the contiguous run of workspaces above it is shifted up by one (windows move, names kept) so it really lands adjacent; that shift is skipped (first free id instead) when a window in the run is grouped or a run workspace is visible on another monitor; the usual empty-workspace
 cleanup removes it when focus leaves. No name = current number + 1 if that name is free,
 otherwise a decimal (`590.1`, `590.2`...).
 `/move-workspace` is the sibling: the same second list (minus the current
