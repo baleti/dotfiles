@@ -373,6 +373,41 @@ Rectangle {
         ftsProc.running = true;
     }
     onSearchParsedChanged: root._ftsRefresh()
+
+    // Match preview (only while /fts is in the query): excerpts of the
+    // highlighted row's conversation around the searched words.
+    readonly property bool ftsActive: root._ftsTerms().length > 0
+    readonly property real snippetH: 150
+    property string snippetHtml: ""
+    property string _snipKey: ""
+    function _snipRefresh() {
+        const terms = root._ftsTerms();
+        const row = root.sortedProcs[root.selActive ? root.selIndex : 0];
+        if (terms.length === 0 || !row || !row.session_id) {
+            root._snipKey = ""; root.snippetHtml = "";
+            return;
+        }
+        const key = row.session_id + "|" + terms.join(" ");
+        if (key === root._snipKey) return;
+        root._snipKey = key;
+        snipProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--snippets", row.session_id, terms.join(" ")];
+        snipProc.running = false;
+        snipProc.running = true;
+    }
+    onSelIndexChanged: root._snipRefresh()
+    onSelActiveChanged: root._snipRefresh()
+    Process {
+        id: snipProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                const hit = "<b><font color=\"" + Theme.cyan + "\">";
+                root.snippetHtml = text.split("\n").filter(l => l.length > 0)
+                    .map(l => esc(l).replace(/\x01/g, hit).replace(/\x02/g, "</font></b>"))
+                    .join("<br><br>");
+            }
+        }
+    }
     Process {
         id: ftsProc
         stdout: StdioCollector {
@@ -515,6 +550,7 @@ Rectangle {
     // Keep the keyboard selection in range as the daemon's row set (or a
     // search filter) shrinks under it.
     onSortedProcsChanged: {
+        root._snipRefresh();
         if (root.selIndex > root.sortedProcs.length - 1)
             root.selIndex = Math.max(0, root.sortedProcs.length - 1);
     }
@@ -1529,7 +1565,8 @@ Rectangle {
         // the table. errorLineCount * errorLineH: one line per account
         // currently showing an error.
         const fixedOverhead = Math.max(20, pillsFlow.height) + 14 + 24 + 16 + root.searchBoxH + root.groupHeaderH + root.tallyLineH
-            + root.errorLineCount * root.errorLineH;
+            + root.errorLineCount * root.errorLineH
+            + (root.ftsActive ? root.snippetH + content.spacing : 0);
         return Math.max(0, root.maxPanelHeight - fixedOverhead);
     }
 
@@ -2684,6 +2721,29 @@ Rectangle {
                         ? Math.max(16, (rowsFlick.height / rowsFlick.contentHeight) * scrollTrack.height)
                         : scrollTrack.height
                 }
+            }
+        }
+
+        // /fts match preview for the highlighted row.
+        Rectangle {
+            width: content.width
+            height: root.snippetH
+            visible: root.ftsActive
+            color: Theme.bgAlpha
+            border.color: Theme.border
+            border.width: 1
+            radius: 4
+            clip: true
+            Text {
+                anchors.fill: parent
+                anchors.margins: 6
+                textFormat: Text.RichText
+                wrapMode: Text.Wrap
+                elide: Text.ElideRight
+                color: Theme.muted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 2
+                text: root.snippetHtml.length > 0 ? root.snippetHtml : qsTr("no excerpts")
             }
         }
 

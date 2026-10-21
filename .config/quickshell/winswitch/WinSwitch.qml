@@ -155,6 +155,40 @@ PanelWindow {
         root._ftsQueue = terms.filter(v => WinSwitchQueryDsl.ftsHits[v] === undefined);
         root._ftsNext();
     }
+    // Match preview strip (only while a full-text term is in the query):
+    // excerpts of the highlighted window's Claude conversation.
+    readonly property var _ftsActiveTerms: WinSwitchQueryDsl.ftsTerms(root.parsedQuery.filters)
+    readonly property bool ftsActive: root._ftsActiveTerms.length > 0
+    readonly property int snippetH: 120
+    property string snippetHtml: ""
+    property string _snipKey: ""
+    function _snipRefresh() {
+        const meta = root.metas[root.selected] || {};
+        if (!root.ftsActive || !meta.claude_session) {
+            root._snipKey = ""; root.snippetHtml = "";
+            return;
+        }
+        const key = meta.claude_session + "|" + root._ftsActiveTerms.join(" ");
+        if (key === root._snipKey) return;
+        root._snipKey = key;
+        snipProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--snippets", meta.claude_session, root._ftsActiveTerms.join(" ")];
+        snipProc.running = false;
+        snipProc.running = true;
+    }
+    on_FtsActiveTermsChanged: root._snipRefresh()
+    onSelectedChanged: root._snipRefresh()
+    Process {
+        id: snipProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                const hit = "<b><font color=\"" + Theme.cyan + "\">";
+                root.snippetHtml = text.split("\n").filter(l => l.length > 0)
+                    .map(l => esc(l).replace(/\x01/g, hit).replace(/\x02/g, "</font></b>"))
+                    .join("<br><br>");
+            }
+        }
+    }
     function _ftsNext() {
         if (ftsProc.running || root._ftsQueue.length === 0) return;
         root._ftsCurrent = root._ftsQueue[0];
@@ -686,7 +720,7 @@ PanelWindow {
         // Grows to fit the search box + autocomplete popup once locked,
         // capped so the GridView's own scrolling takes over beyond that.
         readonly property int maxCardH: root.screen ? Math.round(root.screen.height * 0.92) : 1000
-        height: Math.min(card.maxCardH, (root.locked ? searchHeader.height : 0) + acPopup.height + gridScroll.contentHeightHint + 32)
+        height: Math.min(card.maxCardH, (root.locked ? searchHeader.height : 0) + acPopup.height + gridScroll.contentHeightHint + (root.ftsActive ? root.snippetH + 4 : 0) + 32)
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.cyan
@@ -1029,7 +1063,7 @@ PanelWindow {
             Item {
                 id: gridScroll
                 width: parent.width
-                height: parent.height - searchHeader.height - acPopup.height - contentColumn.spacing * 2
+                height: parent.height - searchHeader.height - acPopup.height - (root.ftsActive ? root.snippetH + 4 : 0) - contentColumn.spacing * 2
                 readonly property int contentHeightHint: root.rows * root.cellHeight
 
                 GridView {
@@ -1265,6 +1299,29 @@ PanelWindow {
                             onClicked: root.confirm(cellItem.modelData.index)
                         }
                     }
+                }
+            }
+
+            // /fts match preview for the highlighted window.
+            Rectangle {
+                width: parent.width
+                height: root.ftsActive ? root.snippetH : 0
+                visible: root.ftsActive
+                color: "transparent"
+                border.color: Theme.border
+                border.width: 1
+                radius: 4
+                clip: true
+                Text {
+                    anchors.fill: parent
+                    anchors.margins: 6
+                    textFormat: Text.RichText
+                    wrapMode: Text.Wrap
+                    elide: Text.ElideRight
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 2
+                    text: root.snippetHtml.length > 0 ? root.snippetHtml : qsTr("no excerpts")
                 }
             }
         }
