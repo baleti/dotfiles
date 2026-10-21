@@ -332,7 +332,7 @@ Rectangle {
         "tmux.session", "tmux.window", "tmux.pane",
         "hypr.workspace", "hypr.monitor", "hypr.window", "fts",
     ]
-    // "/fts term" is full-text search of the Claude conversations (BM25 via
+    // "/fts term" is full-text search of the Claude conversations (Recoll via
     // `claude-history --fts`, the same engine as alt-tab's /fts.claude and
     // the tmux picker): sugar for
     // "/fv/fts term", rewritten before the shared parser sees it.
@@ -341,7 +341,7 @@ Rectangle {
     }
     readonly property var searchParsed: QueryDsl.parse(root._rewriteFts(root.searchText))
 
-    // fts hits: lowercase term -> { sessionId: bm25 score }, filled by one
+    // fts hits: lowercase term -> { sessionId: relevance % }, filled by one
     // query per distinct term (queue drained by ftsProc).
     property var ftsHits: ({})
     property var _ftsQueue: []
