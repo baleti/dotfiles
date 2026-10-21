@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Wayland
 import Quickshell.Hyprland
+import Quickshell.Io
 import "../theme"
 import "../services"
 import "../launcher" // QueryDsl -- shared picker DSL, see query-dsl.md
@@ -1253,7 +1254,55 @@ PanelWindow {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: root.openCurrent()
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onClicked: mouse => {
+                                    if (mouse.button === Qt.RightButton) {
+                                        linkMenu.visible = true;
+                                        linkMenuClose.restart();
+                                    } else {
+                                        linkMenu.visible = false;
+                                        root.openCurrent();
+                                    }
+                                }
+                            }
+                            Process {
+                                id: copyProc
+                                command: ["wl-copy", "--", root.current ? root.current.link : ""]
+                            }
+                            Timer { id: linkMenuClose; interval: 4000; onTriggered: linkMenu.visible = false }
+                            Connections {
+                                target: root
+                                function onCurrentChanged() { linkMenu.visible = false; }
+                            }
+                            Rectangle {
+                                id: linkMenu
+                                visible: false
+                                z: 100
+                                y: parent.height + 4
+                                width: copyTxt.width + 24
+                                height: 30
+                                radius: Theme.rounding - 4
+                                color: copyArea.containsMouse ? Theme.cyan : Theme.bg
+                                border.color: Theme.cyan
+                                border.width: 1
+                                Text {
+                                    id: copyTxt
+                                    anchors.centerIn: parent
+                                    text: "copy link"
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSize - 1
+                                    color: copyArea.containsMouse ? Theme.bg : Theme.cyan
+                                }
+                                MouseArea {
+                                    id: copyArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        copyProc.running = true;
+                                        linkMenu.visible = false;
+                                    }
+                                }
                             }
                         }
 
