@@ -91,7 +91,9 @@ impl Verb {
     /// after the leading `/`.
     fn parse(tok: &str) -> Option<Verb> {
         match tok {
-            "fv" | "filter-value" => Some(Verb::FilterValue),
+            // `/fts.claude foo` is full-text search scoped to Claude
+            // conversations: tok_verb turns it into `/fv/claude.fts foo`.
+            "fv" | "filter-value" | "fts.claude" => Some(Verb::FilterValue),
             "ft" | "filter-type" => Some(Verb::FilterType),
             "at" | "add-type" => Some(Verb::AddType),
             "rt" | "remove-type" => Some(Verb::RemoveType),
@@ -108,11 +110,11 @@ impl Verb {
 }
 
 /// Every verb short form, for top-level completion, in canonical order.
-const VERB_SHORTS: &[&str] = &["fv", "ft", "at", "rt", "s"];
+const VERB_SHORTS: &[&str] = &["fv", "ft", "at", "rt", "s", "fts.claude"];
 
 /// Every accepted verb spelling, short and long.
 const VERB_FORMS: &[&str] = &[
-    "fv", "ft", "at", "rt", "s", "filter-value", "filter-type", "add-type", "remove-type", "sort",
+    "fv", "ft", "at", "rt", "s", "fts.claude", "filter-value", "filter-type", "add-type", "remove-type", "sort",
 ];
 
 /// True if `s` is a prefix of some verb form - i.e. a `/s...` token (down
@@ -293,6 +295,7 @@ fn tok_verb(tok: &Tok) -> Option<(Verb, Option<&str>)> {
     let rest = tok.text.strip_prefix('/')?;
     match rest.split_once('/') {
         Some((name, via)) => Verb::parse(name).map(|v| (v, Some(via))),
+        None if rest == "fts.claude" => Some((Verb::FilterValue, Some("claude.fts"))),
         None => Verb::parse(rest).map(|v| (v, None)),
     }
 }
@@ -1200,6 +1203,9 @@ mod tests {
         assert!(!matches_str(&w, &meta, "/fv/claude.fts quickshell")); // .fts only, not .title
         assert!(matches_str(&w, &meta, "/fv/claude.title quickshell"));
         assert!(matches_str(&w, &meta, "/fv/claude.path dotfiles"));
+        // `/fts.claude` is the full-text-search spelling of the same thing
+        assert!(matches_str(&w, &meta, "/fts.claude sysmond"));
+        assert!(!matches_str(&w, &meta, "/fts.claude quickshell"));
         // same thing, the original colon spelling
         assert!(matches_str(&w, &meta, "/fv claude.fts:sysmond"));
 
