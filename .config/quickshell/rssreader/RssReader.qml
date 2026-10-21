@@ -1048,6 +1048,14 @@ PanelWindow {
                     model: root.view
                     currentIndex: root.selected
                     boundsBehavior: Flickable.StopAtBounds
+                    // Faster wheel scrolling than Qt's default step.
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse
+                        onWheel: e => {
+                            const maxY = Math.max(0, listView.contentHeight - listView.height);
+                            listView.contentY = Math.max(0, Math.min(maxY, listView.contentY - e.angleDelta.y * 1.2));
+                        }
+                    }
 
                     delegate: Rectangle {
                         id: articleRow
@@ -1165,6 +1173,14 @@ PanelWindow {
                     contentWidth: width
                     contentHeight: readCol.height + 40
                     boundsBehavior: Flickable.StopAtBounds
+                    // Faster wheel scrolling than Qt's default step.
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse
+                        onWheel: e => {
+                            const maxY = Math.max(0, reader.contentHeight - reader.height);
+                            reader.contentY = Math.max(0, Math.min(maxY, reader.contentY - e.angleDelta.y * 1.2));
+                        }
+                    }
 
                     Column {
                         id: readCol
