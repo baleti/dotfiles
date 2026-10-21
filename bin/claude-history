@@ -100,6 +100,7 @@ import math
 import os
 import pickle
 import re
+import base64
 import shlex
 import signal
 import socket
@@ -239,7 +240,6 @@ QUERY_ELEM_RE = re.compile(
     r'|(\S+)'
     r')'
 )
-MATCH_MODE = os.environ.get("TMUX_WINDOW_SEARCH_MATCH", "all").lower()
 
 Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms")
 
@@ -664,34 +664,10 @@ def _aggregate_snapshot(sessions):
     avgdl = sum(s["doclen"] for s in sessions.values()) / n
     avgdl_title = sum(s["doclen_title"] for s in sessions.values()) / n
     avgdl_body = sum(s["doclen_body"] for s in sessions.values()) / n
-    # "text_low" (see snap_text_low) is filled in lazily by the first query
-    # that needs it, not here: this rollup is on the path to the first row
-    # on screen, and lowercasing 7.5MB of transcript text is 40ms of it
-    # that only phrase/soft queries ever use
-    return {"sessions": sessions, "n": len(sessions), "text_low": None,
+    return {"sessions": sessions, "n": len(sessions),
             "df": df, "avgdl": avgdl, "vocab": sorted(df.keys()),
             "df_title": df_title, "avgdl_title": avgdl_title, "vocab_title": sorted(df_title.keys()),
             "df_body": df_body, "avgdl_body": avgdl_body, "vocab_body": sorted(df_body.keys())}
-
-
-_text_low_lock = threading.Lock()
-
-
-def snap_text_low(snap):
-    """session_id -> the joined, lowercased conversation text every phrase/
-    soft regex runs against - built once per snapshot, on first use, not
-    re-joined per session per query (and, before the df fix in search(),
-    per session per *matching* session: a 5-hit phrase query used to
-    rebuild the whole corpus's text six times over, 0.87s vs 0.04s for a
-    bare word). Kept beside the sessions rather than inside each one so it
-    never leaks into what build_snapshot() pickles back to the cache. The
-    lock only matters for the picker's server threads, which can be asked
-    for a search and a preview of the same fresh snapshot at once."""
-    with _text_low_lock:
-        if snap["text_low"] is None:
-            snap["text_low"] = {sid: "\n".join(t for _, t in s["turns"]).lower()
-                                for sid, s in snap["sessions"].items()}
-    return snap["text_low"]
 
 
 def build_snapshot_fast():
@@ -1032,60 +1008,38 @@ def search(snap, query):
     return [row(sid, s, live_map, targets, qset, show_rxs) for _, sid, s in scored]
 
 
-def fts_scores(snap, text):
-    """session_id -> BM25 score for every session matching `text` (the same
-    query language as the picker: prefix-expanded ANDed words, "phrases",
-    !negation). The one full-text search every consumer shares - the
-    picker itself, alt-tab's /fts.claude and the usage panel's /fts (the
-    last two via claude-fts-server)."""
-    q = parse_query(text)
-    if not any(q):
-        return {}
-    scored, _, _ = rank(snap, q, {}, {})
-    return {sid: score for score, sid, _ in scored}
-
-
 def rank(snap, q, live_map, targets):
     """Scored survivors of parsed query `q` as ([(score, sid, session)]
-    best first, qset, regexes to highlight)."""
-    sessions, df, n, avgdl = snap["sessions"], snap["df"], snap["n"], snap["avgdl"]
-    vocab = snap["vocab"]
-    groups = [expand_prefix(tok, vocab) for tok in q.terms]
-    terms = [t for g in groups for t in g]
-    neg_terms = {t for tok in q.neg_terms for t in expand_prefix(tok, vocab)}
+    best first, qset, regexes to highlight). Words, "phrases", !negation and
+    /fv/body terms go to the Recoll conversation index (fts_search - the same
+    engine alt-tab and the usage panel use); the other field terms
+    (title/path/tmux/time...) stay filters over the picker's own rows."""
+    sessions = snap["sessions"]
+    body_terms = [t for f, t in q.field_terms if f == ["body"]]
+    neg_body_terms = [t for f, t in q.neg_field_terms if f == ["body"]]
+    other_terms = [(f, t) for f, t in q.field_terms if f != ["body"]]
+    neg_other_terms = [(f, t) for f, t in q.neg_field_terms if f != ["body"]]
 
-    rxs = [phrase_re(p) for p in q.phrases]
-    neg_rxs = [phrase_re(p) for p in q.neg_phrases]
-    soft_rxs = [phrase_re(s, prefix=True) for s in q.soft]
-    hint = {rx: phrase_hint(p) for rx, p in zip(rxs, q.phrases)}
-    text_low = snap_text_low(snap) if (rxs or neg_rxs or soft_rxs) else None
-    # a phrase's document frequency is a property of the corpus, not of
-    # the session being scored - one pass per phrase here, not one per
-    # surviving session inside the loop below (which is what it was)
-    rx_df = {rx: sum(1 for t in text_low.values() if hint[rx] in t and rx.search(t))
-             for rx in rxs}
+    pos = list(q.terms) + body_terms + ['"%s"' % p for p in q.phrases]
+    neg = list(q.neg_terms) + neg_body_terms + ['"%s"' % p for p in q.neg_phrases]
+    hits = None
+    if pos:
+        hits = dict(fts_search(" ".join(pos + ["!" + n for n in neg])))
+    elif neg:
+        excluded = {sid for sid, _ in fts_search(" ".join(neg))}
+        hits = {sid: 0.0 for sid in sessions if sid not in excluded}
 
-    # subtoks computed once per field-term here, not per session below -
-    # tokenizing/lowering doesn't depend on any one session
-    field_terms = [(fields, tokenize(term)) for fields, term in q.field_terms]
-    neg_field_terms = [(fields, tokenize(term)) for fields, term in q.neg_field_terms]
+    field_terms = [(fields, tokenize(term)) for fields, term in other_terms]
+    neg_field_terms = [(fields, tokenize(term)) for fields, term in neg_other_terms]
     vocabs = {"title": snap["vocab_title"], "body": snap["vocab_body"]}
     dfs = {"title": snap["df_title"], "body": snap["df_body"]}
     avgdls = {"title": snap["avgdl_title"], "body": snap["avgdl_body"]}
+    n = snap["n"]
 
     scored = []
     for sid, s in sessions.items():
-        if neg_terms and not neg_terms.isdisjoint(s["tf"]):
+        if hits is not None and sid not in hits:
             continue
-        text = text_low[sid] if text_low is not None else ""
-        if any(rx.search(text) for rx in neg_rxs):
-            continue
-        if rxs and not all(hint[rx] in text and rx.search(text) for rx in rxs):
-            continue
-        if MATCH_MODE == "all" and not all(
-                any(s["tf"].get(t) for t in g) for g in groups):
-            continue
-
         filter_text = session_filter_text(sid, s, live_map, targets)
         if any(field_term_matches(fields, subtoks, s, filter_text, vocabs)
                for fields, subtoks in neg_field_terms):
@@ -1093,40 +1047,16 @@ def rank(snap, q, live_map, targets):
         if not all(field_term_matches(fields, subtoks, s, filter_text, vocabs)
                    for fields, subtoks in field_terms):
             continue
-
-        score = 0.0
-        dl = s["doclen"]
-        for term in terms:
-            f = s["tf"].get(term, 0)
-            if f:
-                score += bm25_term_score(f, df.get(term, 0), dl, n, avgdl)
-        for rx in rxs:
-            hits = len(rx.findall(text))
-            if hits:
-                score += bm25_term_score(hits, rx_df[rx], dl, n, avgdl)
-        for rx in soft_rxs:
-            hits = len(rx.findall(text))
-            if hits:
-                score += bm25_term_score(hits, 1, dl, n, avgdl)
+        score = hits[sid] if hits is not None else 0.0
         for fields, subtoks in field_terms:
             score += field_term_score(fields, subtoks, s, vocabs, dfs, avgdls, n)
-
-        # every session reaching this point has already passed every
-        # required filter above (neg_terms/neg_rxs/rxs/groups/field_terms/
-        # neg_field_terms) - score only decides ranking ORDER among
-        # survivors from here, not whether one survives. A pure
-        # score>0 gate used to double as that inclusion check too, which
-        # broke the moment a field-term could legitimately match without
-        # ever contributing score: path/tmux/session/window/pane/time are
-        # filter-only fields (see field_term_score, which only scores
-        # BM25_FIELDS) - a real "$path:home" match was silently vanishing
-        # here even though it had already survived field_term_matches above.
-        has_positive = bool(terms or rxs or field_terms)
+        # a query with only filter-only field terms (path/tmux/time...) ranks by recency
+        has_positive = bool(pos or field_terms)
         scored.append((score, sid, s) if has_positive else (s["mtime"], sid, s))
 
     scored.sort(key=lambda t: -t[0])
-    qset = set(q.terms) | {tok for _, subtoks in field_terms for tok in subtoks}
-    show_rxs = rxs + soft_rxs
+    qset = set(q.terms) | set(tokenize(" ".join(body_terms))) | {tok for _, subtoks in field_terms for tok in subtoks}
+    show_rxs = [phrase_re(p) for p in q.phrases] + [phrase_re(x, prefix=True) for x in q.soft]
     return scored, qset, show_rxs
 
 
@@ -2122,96 +2052,57 @@ def drive():
     resolve(session_id, s["cwd"])
 
 
-FTS_SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "claude-fts.sock")
-FTS_REFRESH_S = 60
+FTS_CONF = os.path.expanduser("~/.cache/indexes/claude/recoll")
 
 
-def fts_server():
-    """Long-lived full-text-search service: keeps this tool's own BM25
-    snapshot warm (refreshed from the parse cache every FTS_REFRESH_S) and
-    answers one query line per connection with {session_id: score} JSON.
-    The single source behind alt-tab's /fts.claude and the usage panel's
-    /fts (via `claude-history --fts QUERY`), so all three rank identically."""
-    try:
-        snap, stale = build_snapshot_fast()
-    except SystemExit:
-        snap, stale = {"sessions": {}, "df": {}, "n": 0, "avgdl": 1, "vocab": []}, True
-    lock = threading.Lock()
-    box = [snap]
+def fts_terms(text):
+    """This DSL's words as a Recoll query: `!word` -> `-word` (same mapping as
+    the search server's /fts for every other content index)."""
+    toks = ["-" + t[1:] if t.startswith("!") and len(t) > 1 else t
+            for t in shlex.split(text.replace("\n", " "), posix=False)]
+    # live typing: the last bare word is still being typed, so it matches as a prefix
+    if toks and toks[-1].isalnum():
+        toks[-1] += "*"
+    return " ".join(toks)
 
-    def refresher():
-        first = stale  # cold or stale cache: full build right away
-        while True:
-            if not first:
-                time.sleep(FTS_REFRESH_S)
-            first = False
-            try:
-                fresh = build_snapshot()
-            except Exception as e:  # keep serving the last good snapshot
-                print("fts refresh failed:", e, file=sys.stderr)
-                continue
-            with lock:
-                box[0] = fresh
 
-    threading.Thread(target=refresher, daemon=True).start()
-
-    class H(socketserver.StreamRequestHandler):
-        def handle(self):
-            text = self.rfile.readline().decode(errors="replace").strip()
-            with lock:
-                cur = box[0]
-            try:
-                out = fts_scores(cur, text)
-            except Exception as e:
-                print("fts query failed:", e, file=sys.stderr)
-                out = {}
-            self.wfile.write(json.dumps(out).encode() + b"\n")
-
-    try:
-        os.unlink(FTS_SOCK)
-    except OSError:
-        pass
-    srv = PickerServer(FTS_SOCK, H)
-    os.chmod(FTS_SOCK, 0o600)
-    srv.serve_forever()
+def fts_search(text):
+    """[(session_id, relevance %)] best first, from the Recoll index of Claude
+    conversations (~/.cache/indexes/claude, kept by claude-fts-index). The one
+    full-text engine behind alt-tab's /fts.claude, the usage panel's /fts and
+    this tool's own --fts."""
+    terms = fts_terms(text)
+    if not terms.strip():
+        return []
+    r = subprocess.run(["recollq", "-c", FTS_CONF, "-n", "0-5000", "-F", "url relevancyrating", "--", terms],
+                       capture_output=True, text=True)
+    out = []
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            url, rating = (base64.b64decode(p).decode("utf-8", "replace") for p in parts)
+        except ValueError:
+            continue
+        out.append((os.path.basename(url)[:-4], float(rating.rstrip("%") or 0)))
+    return out
 
 
 def fts_client(text):
-    """Print 'session_id<TAB>score' lines, best first, for `text`; asks the
-    running fts_server, or falls back to the on-disk cache in-process."""
-    sock = socket.socket(socket.AF_UNIX)
-    try:
-        sock.connect(FTS_SOCK)
-        sock.sendall(text.replace("\n", " ").encode() + b"\n")
-        buf = b""
-        while not buf.endswith(b"\n"):
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-        scores = json.loads(buf or b"{}")
-    except OSError:
-        snap, _ = build_snapshot_fast()
-        scores = fts_scores(snap, text)
-    finally:
-        sock.close()
-    for sid, sc in sorted(scores.items(), key=lambda kv: -kv[1]):
-        print(f"{sid}\t{sc:.4f}")
+    for sid, score in fts_search(text):
+        print(f"{sid}\t{score:.0f}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fts-server", action="store_true",
-                        help="serve full-text search over a unix socket (systemd user unit)")
     parser.add_argument("--fts", metavar="QUERY",
                         help="print session_id<TAB>score for QUERY, best first")
     parser.add_argument("--reindex-and-notify", metavar="SOCKET",
                         help="internal: reparse changed transcripts, stream them to the picker at SOCKET")
     args = parser.parse_args()
 
-    if args.fts_server:
-        fts_server()
-    elif args.fts is not None:
+    if args.fts is not None:
         fts_client(args.fts)
     elif args.reindex_and_notify:
         reindex_and_stream(args.reindex_and_notify)

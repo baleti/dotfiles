@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Keeps the Recoll index of Claude Code conversations (~/.cache/indexes/claude/recoll),
+the one behind alt-tab's /fts.claude, the usage panel's /fts and `claude-history --fts`.
+
+Each transcript (every ~/.claude* profile, whole history) becomes
+~/.cache/indexes/claude/sessions/<session-id>.txt = its AI title on the first line, then the
+user + assistant "text" blocks (tool calls and thinking skipped; same filter as claude-history).
+A transcript is re-extracted only when its mtime/size changed; recollindex then re-reads only
+the changed .txt files. Run by claude-fts-index.timer."""
+import glob, json, os, subprocess, sys
+
+ROOT = os.path.expanduser("~/.cache/indexes/claude")
+OUT = os.path.join(ROOT, "sessions")
+CONF = os.path.join(ROOT, "recoll")
+STATE = os.path.join(ROOT, "state.json")
+MAX_CHARS = 2_000_000     # per session; keep the tail (recent wins)
+
+
+def transcripts():
+    seen, files = set(), []
+    for d in sorted(glob.glob(os.path.expanduser("~/.claude*/projects"))):
+        real = os.path.realpath(d)
+        if real not in seen:
+            seen.add(real)
+            files += glob.glob(os.path.join(real, "*", "*.jsonl"))
+    return files
+
+
+def extract(path):
+    title, parts = "", []
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                v = json.loads(line)
+            except ValueError:
+                continue
+            t = v.get("type")
+            if t == "ai-title":
+                title = v.get("aiTitle") or title
+            if t not in ("user", "assistant"):
+                continue
+            c = (v.get("message") or {}).get("content")
+            if isinstance(c, str):
+                parts.append(c)
+            elif isinstance(c, list):
+                parts += [b.get("text", "") for b in c
+                          if isinstance(b, dict) and b.get("type") == "text"]
+    body = " ".join(p for p in parts if len(p) > 2)[-MAX_CHARS:]
+    return (title + "\n" + body) if title else body
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    try:
+        state = json.load(open(STATE))
+    except (OSError, ValueError):
+        state = {}
+    seen, changed = set(), 0
+    for path in transcripts():
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        sid = os.path.basename(path)[:-6]
+        seen.add(sid)
+        stamp = [st.st_mtime, st.st_size]
+        dest = os.path.join(OUT, sid + ".txt")
+        if state.get(sid) == stamp and os.path.exists(dest):
+            continue
+        tmp = os.path.join(OUT, f".{sid}.tmp")
+        with open(tmp, "w") as f:
+            f.write(extract(path))
+        os.replace(tmp, dest)
+        state[sid] = stamp
+        changed += 1
+    for sid in set(state) - seen:       # transcript deleted
+        state.pop(sid)
+        try:
+            os.unlink(os.path.join(OUT, sid + ".txt"))
+        except OSError:
+            pass
+        changed += 1
+    json.dump(state, open(STATE + ".tmp", "w"))
+    os.replace(STATE + ".tmp", STATE)
+    if changed or not os.path.isdir(os.path.join(CONF, "xapiandb")):
+        r = subprocess.run(["recollindex", "-c", CONF], capture_output=True, text=True)
+        if r.returncode:
+            sys.stderr.write(r.stderr)
+            sys.exit(r.returncode)
+    print(f"claude-fts-index: {changed} changed, {len(seen)} sessions")
+
+
+main()
