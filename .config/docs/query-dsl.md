@@ -46,7 +46,7 @@ returns to the app list.
 `/add-workspace [name]` adds an empty workspace right after the current one
 and focuses it. If the id right after the current one is taken, the contiguous run of workspaces above it is shifted up by one (windows move, names kept) so it really lands adjacent; that shift is skipped (first free id instead) when a window in the run is grouped or a run workspace is visible on another monitor; the usual empty-workspace
 cleanup removes it when focus leaves. No name = current number + 1 if that name is free,
-otherwise a decimal (`590.1`, `590.2`...).
+otherwise a decimal (`590.1`, `590.2`...). On a decimal workspace (`590.1`) it continues that series (`590.2`, ... `590.10`, `590.11`), never `591.1`.
 `/move-workspace` is the sibling: the same second list (minus the current
 workspace, no "new" row), and choosing one moves the *current workspace* to the
 smallest unused id above the chosen one (windows move, name is kept, view
