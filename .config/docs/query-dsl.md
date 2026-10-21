@@ -1654,6 +1654,42 @@ ones only `cargo check`/`test`-checked) - live behavior should be
 confirmed via each picker's own keybind before relying on this day to
 day.
 
+## Focus between search box and results (Down / Tab)
+
+Added 2026-10-21 (alt+tab, rss-reader, app-launcher). One rule for every
+picker that has a search box above a results area, whatever the results
+look like (thumbnail grid, article list, schedule, plain rows):
+
+- **Down** in the search box moves focus *into the results*, when no
+  completion/history popup is open and the box is not mid-history-cycle.
+  With a popup open Down still moves its highlight; while cycling history
+  (an Up press has happened and the draft hasn't been restored yet) Down
+  still walks history forward (see Search-box history, above) - so the
+  first Down after typing, or after cycling back to the draft, leaves the
+  box. The query text is left exactly as typed.
+- **Tab** in the results returns focus to the search box (cursor at the
+  end of the query). Tab *inside* the search box is unchanged: it is
+  completion (see Autocompletion); where completion has nothing to offer
+  and the picker already had a list-focus mode (rss-reader) it falls
+  through to the same toggle.
+- Typing a printable character while the results have focus returns to
+  the search box and appends it (alt+tab). Escape keeps its usual
+  meaning (close the picker); Enter acts on the selection.
+- While results have focus, the picker's bare-key navigation (arrows,
+  Ctrl+J/K, j/k where the list has them) applies as in an unlocked view.
+- **Single-focus pickers** (query entry never loses focus; row navigation
+  is Up/Down or Ctrl+J/K on top of it: clipboard, notification, app-menu,
+  revit-remote pickers, and the fzf TUIs) have no separate results focus
+  to move to, so the rule degrades to: Down walks the results (app-launcher
+  gained this: it used to be dead unless history-cycling). They need no
+  Tab-back.
+
+Per implementation: `winswitch/WinSwitch.qml` (`listFocused`,
+`_focusList()`/`_focusSearch()`; unlocked Alt+Tab cycling is untouched -
+Tab still advances there), `rssreader/RssReader.qml`
+(`_returnFocusToList()`, existing Tab toggle), `launcher/AppLauncher.qml`
+(single-focus form). Not yet live-tested.
+
 ## Resolution, precisely
 
 - **Verb**: exact match against the 12 fixed forms (6 short, 6 long).
