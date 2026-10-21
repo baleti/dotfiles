@@ -71,7 +71,6 @@ PanelWindow {
         root._hoverOrigin = null;
         root._hoverArmed = false;
         if (root.open) {
-            root.wsPrompt = false;
             query.text = "";
             root.selected = 0;
             ac.visible = false;
@@ -173,11 +172,13 @@ PanelWindow {
         "/move-workspace": "move the current workspace to just after a chosen one"
     })
     readonly property var _actionMatch: query.text.match(/^\s*(\/move-to-workspace|\/move-workspace)(?:\s+(.*))?$/)
-    property bool wsPrompt: false
-    // which action the open workspace list serves: "window" | "workspace"
-    property string promptKind: "window"
+    // Typing the full verb swaps the results for the workspace list in
+    // place; whatever follows the verb is the filter / the target name.
+    readonly property bool wsPrompt: root._actionMatch !== null
+    // which action the workspace list serves: "window" | "workspace"
+    readonly property string promptKind: root._actionMatch && root._actionMatch[1] === "/move-workspace" ? "workspace" : "window"
     readonly property bool actionMode: root.wsPrompt
-    readonly property string actionArg: root.wsPrompt ? query.text.trim() : ""
+    readonly property string actionArg: root._actionMatch && root._actionMatch[2] ? root._actionMatch[2].trim() : ""
 
     readonly property var workspaceRows: {
         const arg = root.actionArg.toLowerCase();
@@ -196,7 +197,7 @@ PanelWindow {
                 const c = t.lastIpcObject && t.lastIpcObject["class"] ? String(t.lastIpcObject["class"]) : "";
                 if (c && classes.indexOf(c) < 0) classes.push(c);
             }
-            out.push({ ws: true, name: n, target: n, id: w.id, cnt: tl.length,
+            out[n.toLowerCase() === arg ? "unshift" : "push"]({ ws: true, name: n, target: n, id: w.id, cnt: tl.length,
                        mon: w.monitor ? w.monitor.name : "", apps: classes.join(", "),
                        entry: { icon: "" } });
         }
@@ -235,7 +236,10 @@ PanelWindow {
         const find = "for _, w in ipairs(hl.get_windows()) do if tostring(w.address):gsub('^0x', '') == "
             + root._luaStr(addr) + " then ";
         let lua;
-        if (row.create) {
+        if (row.create && /^[0-9]+$/.test(t)) {
+            // numeric name = the workspace id itself
+            lua = find + "hl.dispatch(hl.dsp.window.move({ workspace = " + t + ", window = w })) break end end";
+        } else if (row.create) {
             // Hyprland orders workspaces by integer id and can't renumber,
             // so "right after the current one" = the smallest unused id
             // above the window's workspace, then named via rename.
@@ -254,10 +258,6 @@ PanelWindow {
     readonly property var results: {
         if (root.actionMode)
             return root.workspaceRows;
-        if (root._actionMatch)
-            return [{ action: root._actionMatch[1], name: root._actionMatch[1] === "/move-workspace"
-                      ? "Move workspace after\u2026" : "Move window to workspace\u2026",
-                      detail: "", entry: { icon: "" } }];
         let rows = root.apps.filter(app => root.parsed.terms.every(t => root._matches(app, t)));
 
         const s = root.parsed.sort;
@@ -299,14 +299,6 @@ PanelWindow {
     function launch(i) {
         const app = root.results[i];
         if (!app) return;
-        if (app.action) {
-            LauncherQueryHistory.record(query.text);
-            root.wsPrompt = true;
-            root.promptKind = app.action === "/move-workspace" ? "workspace" : "window";
-            query.text = "";
-            root.selected = 0;
-            return;
-        }
         if (app.ws) {
             LauncherQueryHistory.record(query.text);
             if (root.promptKind === "workspace") root.moveWorkspaceAfter(app);
@@ -847,7 +839,6 @@ PanelWindow {
                     }
                     if (event.key === Qt.Key_Escape) {
                         if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; root.acHistoryMode = false; }
-                        else if (root.wsPrompt) { root.wsPrompt = false; query.text = ""; root.selected = 0; }
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
