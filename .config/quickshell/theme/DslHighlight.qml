@@ -109,8 +109,11 @@ Item {
 
     Text {
         // positionToRectangle is scroll-adjusted, so a long query that has scrolled still lines up
-        x: root.input.positionToRectangle(0).x
-        y: root.input.positionToRectangle(0).y
+        // positionToRectangle() itself doesn't notify, so also depend on
+        // cursorRectangle/contentHeight to re-evaluate once layout settles
+        // (otherwise y stuck at 0 in a vertically centred input = too high).
+        x: (root.input.cursorRectangle, root.input.contentWidth, root.input.positionToRectangle(0).x)
+        y: (root.input.cursorRectangle, root.input.contentHeight, root.input.height, root.input.positionToRectangle(0).y)
         textFormat: Text.RichText
         text: root.html
         color: Theme.text
