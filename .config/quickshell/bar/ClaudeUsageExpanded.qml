@@ -1810,7 +1810,8 @@ Rectangle {
                         // bullet - Up/Down are claimed for history here,
                         // same trade the other QML pickers make); row
                         // navigation moves to Ctrl+J/Ctrl+K below instead.
-                        root._historyNext();
+                        if (root.acHistIndex >= 0) root._historyNext();
+                        else { searchInput.focus = false; root.forceActiveFocus(); } // query-dsl.md "Focus between search box and results"
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Up) {
                         root._historyPrev();
