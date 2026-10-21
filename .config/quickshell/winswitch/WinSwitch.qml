@@ -159,7 +159,7 @@ PanelWindow {
         if (ftsProc.running || root._ftsQueue.length === 0) return;
         root._ftsCurrent = root._ftsQueue[0];
         root._ftsQueue = root._ftsQueue.slice(1);
-        ftsProc.command = ["claude-history", "--fts", root._ftsCurrent];
+        ftsProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--fts", root._ftsCurrent];
         ftsProc.running = true;
     }
     Process {
