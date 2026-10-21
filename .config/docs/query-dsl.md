@@ -39,7 +39,7 @@ add a new consumer, add its row here too.
 Enter on it opens a second list of existing workspaces for the window that was
 focused when the launcher opened. Typing filters; Enter moves the window there.
 A typed name with no exact match offers `+ new workspace "name"`, which creates
-it at the smallest unused id above the window's current workspace (Hyprland
+it (numeric names such as `37` included - they are names, not ids) at the smallest unused id above the window's current workspace (Hyprland
 orders workspaces by integer id and cannot renumber, so this is the nearest
 free slot after the current one, not guaranteed adjacent) and names it. Esc
 returns to the app list.
