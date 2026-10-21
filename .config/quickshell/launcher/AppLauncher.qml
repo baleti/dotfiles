@@ -186,7 +186,7 @@ PanelWindow {
         if (root.promptKind === "add")
             return [{ ws: true, name: "+ add workspace " + (root.actionArg ? "\"" + root.actionArg + "\"" : "(next number)"),
                       target: root.actionArg, create: true, cnt: -1, mon: "",
-                      apps: "added empty after the current workspace, focus stays", entry: { icon: "" } }];
+                      apps: "added empty after the current workspace and focused", entry: { icon: "" } }];
         const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0
             && !(root.promptKind === "workspace" && w.id === LauncherState.workspaceId));
         list.sort((a, b) => a.id - b.id);
@@ -235,8 +235,8 @@ PanelWindow {
     }
 
     // /add-workspace: an empty workspace at the smallest unused id above the
-    // current one. Hyprland drops empty unfocused workspaces, so a persistent
-    // workspace rule keeps it alive; focus is not moved. No name = the next
+    // current one and focused (the existing empty-workspace cleanup removes it
+    // once focus leaves). No name = the next
     // free integer name after the current workspace's (or 1).
     function addWorkspace(row) {
         const lua = "local cur = hl.get_workspace(" + LauncherState.workspaceId + ") "
@@ -245,7 +245,7 @@ PanelWindow {
             + "if name == '' then local n = (cur and tonumber(cur.name) or 0) + 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) end "
             + "if names[name] then return end "
             + "local id = (cur and cur.id or 0) + 1 while used[id] do id = id + 1 end "
-            + "hl.workspace_rule({ workspace = tostring(id), persistent = true, default_name = name }) "
+            + "hl.dispatch(hl.dsp.focus({ workspace = id })) "
             + "hl.dispatch(hl.dsp.workspace.rename({ workspace = id, name = name }))";
         moveProc.exec(["hyprctl", "repl", lua]);
     }
