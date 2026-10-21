@@ -49,11 +49,12 @@ QtObject {
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
         "/s":  { long: "/sort",         desc: "order windows by one field, optional asc / desc" },
-        "/fts.claude": { long: "", desc: "full-text search of Claude conversations (periodically indexed)" },
+        "/fts.claude": { long: "", desc: "full-text search of the running Claude conversations" },
+        "/fts.claude.resume": { long: "", desc: "search past Claude conversations; Enter resumes one in a new window" },
         "/sw": { long: "/switch-workspace", desc: "show workspaces instead of windows; pick one to switch to it" }
     })
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "sw", "fts.claude",
+        "fv", "ft", "at", "rt", "s", "sw", "fts.claude", "fts.claude.resume",
         "filter-value", "filter-type", "add-type", "remove-type", "sort", "switch-workspace"
     ]
     // All resolvable type paths (flat types, groups, and group.subfields),
@@ -84,7 +85,7 @@ QtObject {
             for (const p of root.allPaths())
                 deep.push(v + "/" + p);
         }
-        return bareVerbs.concat(["fts.claude"], deep);
+        return bareVerbs.concat(["fts.claude", "fts.claude.resume"], deep);
     }
     // One-line description of a type path, for the type-path autocomplete
     // stage -- mirrors ui.rs's `type_desc`.
@@ -171,6 +172,7 @@ QtObject {
         // /fts.claude = full-text search over Claude conversations; tokVerb
         // maps it to /fv with via claude.fts.
         if (name === "fts.claude" || name === "fts") return "/fv";
+        if (name === "fts.claude.resume") return "/fts.resume";
         if (root.shortVerbs.indexOf("/" + name) >= 0) return "/" + name;
         if (root.verbAliases["/" + name]) return root.verbAliases["/" + name];
         return null;
@@ -187,6 +189,7 @@ QtObject {
         }
         if (rest === "") return null; // bare "/" - not the default verb
         if (rest === "fts.claude" || rest === "fts") return { verb: "/fv", via: "claude.fts" };
+        if (rest === "fts.claude.resume") return { verb: "/fts.resume", via: null };
         const v = root._canonName(rest);
         return v === null ? null : { verb: v, via: null };
     }
@@ -409,7 +412,7 @@ QtObject {
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
     function parse(query) {
         const toks = root.tokenize(query);
-        let out = { filters: [], colOps: [], sort: null, switchWorkspace: false };
+        let out = { filters: [], colOps: [], sort: null, switchWorkspace: false, resume: null };
         const top = out;
         let i = 0;
         while (i < toks.length) {
@@ -425,6 +428,15 @@ QtObject {
             }
             i++;
             const verb = tv.verb;
+            if (verb === "/fts.resume") {
+                // /fts.claude.resume [term]: the grid becomes the past-conversations table
+                top.resume = { term: "" };
+                if (i < toks.length && !root.startsCommand(toks[i])) {
+                    top.resume.term = toks[i].text.replace(/"/g, "");
+                    i++;
+                }
+                continue;
+            }
             // "!" only means something on a row filter: "!/s", "!/ft" ...
             // still consume their arguments but change nothing.
             const verbNeg = !!tok.neg;

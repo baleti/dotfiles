@@ -1836,3 +1836,30 @@ Alt-tab and the usage panel show a match-preview strip (excerpts of the
 highlighted entry's conversation around the searched words, from
 `claude-history --snippets SESSION QUERY`) only while a full-text term is in
 the query.
+
+#### /fts.resume - past conversations (2026-10-21)
+
+The index holds every conversation; which ones are *running* is decided at
+query time (sessions registry), not stored in it. So there are two views over
+the one Recoll collection:
+
+| Spelling | Searches | Rows |
+|---|---|---|
+| `/fts word` (alt-tab: `/fts.claude`) | running sessions | the picker's live columns / alt-tab windows |
+| `/fts.resume [word]` (alt-tab: `/fts.claude.resume`) | past sessions only (running ones excluded) | table: acct, title, tkns, msgs, age, path |
+
+**Exception to "a parent path searches all its children"**: `//tmux` covers
+`tmux.title`, `tmux.session`, ..., but `/fts` (running) deliberately does NOT
+include `/fts.resume` (past). Running and past are different result sets with
+different actions (jump to the window vs resume), so the child is opt-in.
+
+With `/fts.resume` the view switches to the past-conversation table: the
+columns that only exist for a running session (status, tmux sess/win/pane,
+workspace, pid) are dropped and `msgs` is added. The usage panel hides them,
+alt-tab replaces its window grid with the table, and prefix+C-c swaps its
+header. Enter/click resumes the conversation under the account it last ran as
+(`claude-history --resume-window` for the panel and alt-tab: new alacritty
+window in the session's cwd; prefix+C-c: new tmux window named after the
+account). prefix+C-c's default (no `/fts`) lists the running sessions in the
+panel's columns (`ACCT STATUS TITLE TKNS AGE SESS WIN PANE WKS PID PATH`);
+Enter jumps to the pane.

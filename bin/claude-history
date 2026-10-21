@@ -235,6 +235,7 @@ QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
     r'/(?:filter-value|fv|)/([a-zA-Z]+)(?:\s+(\S+))?'
     r'|/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
+    r'|/fts\.resume(?:\s+("[^"]*"|\S+))?'
     r'|/fts(?:\s+("[^"]*"|\S+))?'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
     r'|"([^"]*)"'
@@ -242,7 +243,7 @@ QUERY_ELEM_RE = re.compile(
     r')'
 )
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts")
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts resume")
 
 
 def resolve_fields(prefix):
@@ -258,8 +259,12 @@ def resolve_fields(prefix):
 def parse_query(query):
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     field_terms, neg_field_terms = [], []
-    fts, neg_fts = [], []
-    for neg, via_field, via_word, fprefix, fterm, fts_arg, quoted, bare in QUERY_ELEM_RE.findall(query):
+    fts, neg_fts, resume = [], [], []
+    for m in QUERY_ELEM_RE.finditer(query):
+        neg, via_field, via_word, fprefix, fterm, resume_arg, fts_arg, quoted, bare = (g or "" for g in m.groups())
+        if m.group(0).lstrip("!").startswith("/fts.resume"):  # past conversations view, optional search term
+            resume.append(resume_arg.strip('"').lower())
+            continue
         if fts_arg:  # `/fts words` - full text over the conversations (Recoll)
             (neg_fts if neg else fts).append(fts_arg.lower())
             continue
@@ -296,7 +301,7 @@ def parse_query(query):
                 soft.append(bare.lower())
         elif quoted.strip():
             (neg_phrases if neg else phrases).append(quoted.strip().lower())
-    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts)
+    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts, resume)
 
 
 def phrase_hint(raw):
@@ -354,20 +359,6 @@ def highlight(text, qset, rxs=()):
     for start, end in reversed(merged):
         text = text[:start] + "\x1b[1;33m" + text[start:end] + "\x1b[0m" + text[end:]
     return text
-
-
-def expand_prefix(prefix, vocab):
-    from bisect import bisect_left
-    lo = bisect_left(vocab, prefix)
-    hi = bisect_left(vocab, prefix + "￿")
-    return vocab[lo:hi]
-
-
-def bm25_term_score(f, n_q, dl, n, avgdl):
-    if f == 0:
-        return 0.0
-    idf = math.log((n - n_q + 0.5) / (n_q + 0.5) + 1)
-    return idf * (f * (K1 + 1)) / (f + K1 * (1 - B + B * dl / avgdl))
 
 
 # --- conversation parsing --------------------------------------------------
@@ -862,68 +853,6 @@ def relative_age(mtime):
 
 STATUS_COLOR = {"busy": "\x1b[1;33m", "waiting": "\x1b[1;33m"}  # default: green
 
-LOC_WIDTH = 16  # nominal width for the session:window.pane column - most
-AGE_WIDTH = 8
-CWD_WIDTH = 40
-MSGS_WIDTH = 5
-# session names here are short (tmux session numbers), so LOC_WIDTH
-# comfortably covers the common case; a rare long name (e.g.
-# "claude-remote-<ts>") overflows it - see row() for what happens then
-
-
-def location_field(live, targets):
-    """The raw (unpadded, uncolored) session:window.pane text - tmux's own
-    status-bar convention (session_name:window_index.pane_index) - plus its
-    color, colored by run status when the session is actually reachable
-    from THIS tmux server, "" otherwise - a session that's live but on a
-    different server, or not in tmux at all, has nothing here to switch to,
-    so there's nothing useful to print. This single column replaces what
-    used to be a separate busy/idle dot: the text itself already says
-    "live" (non-empty) or not, and its color still carries the busy/idle
-    distinction the dot used to.
-
-    Padding and color used to both happen here, but padding has to happen
-    on the plain text - see row() for why - so this only returns the two
-    pieces the caller needs to do that itself."""
-    loc = ""
-    if live and live.get("pane_id"):
-        entry = targets.get(live["pane_id"])
-        loc = entry["loc"] if entry else ""
-    color = STATUS_COLOR.get(live["status"], "\x1b[1;32m") if loc else None
-    return loc, color
-
-
-def row(sid, s, live_map, targets, qset=frozenset(), rxs=()):
-    loc, color = location_field(live_map.get(sid), targets)
-    age = relative_age(s["mtime"])
-    cwd = shorten(s["cwd"])
-    title = s["ai_title"] or (s["turns"][0][1][:80] if s["turns"] else "(empty)")
-    title = highlight(title.replace("\n", " ").strip(), qset, rxs)
-
-    msgs = str(s["msg_count"])
-
-    # loc/age/cwd/msgs share one padding budget instead of each column
-    # padding independently to its own fixed width. A rare long loc (a
-    # remote session's timestamp-suffixed name, wider than LOC_WIDTH) used
-    # to push every following column right by its own overflow regardless
-    # of whether a later column - cwd is usually "~", far under CWD_WIDTH -
-    # had slack to spare; padding the block as one lets a short cwd absorb
-    # a long loc's overflow instead, so title only actually moves once the
-    # combined content can't fit the combined budget at all.
-    plain = f"{loc:<{LOC_WIDTH}}  {age:>{AGE_WIDTH}}  {cwd:<{CWD_WIDTH}}  {msgs:>{MSGS_WIDTH}}"
-    padded = f"{plain:<{LOC_WIDTH + 2 + AGE_WIDTH + 2 + CWD_WIDTH + 2 + MSGS_WIDTH}}"
-    if color:
-        # loc is the first len(loc) characters of `padded` by construction
-        # (nothing before it in `plain`) - wrap just that slice, so the
-        # ANSI codes ride along without having been part of the width math
-        # above (inserted after, not before - they'd otherwise count
-        # towards the padding width themselves and throw it off)
-        padded = f"{color}{loc}\x1b[0m{padded[len(loc):]}"
-
-    label = f'{padded}  {title}'
-    return f"{sid}\t{label}"
-
-
 # --- search / preview / complete (served over the picker's socket on every
 # keystroke - see PickerServer; same shape as window-search.py's
 # --search/--preview, minus the per-keystroke process) --------------------
@@ -955,79 +884,82 @@ def session_filter_text(sid, s, live_map, targets):
     }
 
 
-def field_term_matches(fields, subtoks, s, filter_text, vocabs):
-    """True if EVERY subtoken of a $field:term is found in AT LEAST ONE of
-    its resolved fields - filter-substring for path/tmux/session/window/
-    pane/time, tf-presence-after-prefix-expansion for title/text. Mirrors
-    the top-level query's own "groups" logic (each typed word independent,
-    all required, each one satisfied by any of its own prefix expansions)
-    at the scale of one field-term instead of the whole query."""
-    for subtok in subtoks:
-        found = any(subtok in filter_text[f] for f in fields if f in FILTER_FIELDS)
-        if not found:
-            for f in fields:
-                if f in BM25_FIELDS and any(
-                        s[f"tf_{f}"].get(t) for t in expand_prefix(subtok, vocabs[f])):
-                    found = True
-                    break
-        if not found:
-            return False
-    return True
+# Columns shared with the ctrl+alt+c usage panel (one layout for both):
+#   live view    ACCT STATUS TITLE TKNS AGE SESS WIN PANE WKS PID PATH
+#   /fts.resume  ACCT TITLE TKNS MSGS AGE PATH   (what only a running session has is dropped)
+STATUS_LABELS = {"busy": "busy", "waiting": "wait", "idle": "idle"}
+W_ACCT, W_STATUS, W_TITLE, W_TKNS, W_MSGS, W_AGE, W_TMUX, W_WKS, W_PID = 7, 6, 38, 5, 5, 8, 4, 4, 7
 
 
-def field_term_score(fields, subtoks, s, vocabs, dfs, avgdls, n):
-    score = 0.0
-    for f in fields:
-        if f not in BM25_FIELDS:
-            continue
-        dl = s[f"doclen_{f}"]
-        for subtok in subtoks:
-            for t in expand_prefix(subtok, vocabs[f]):
-                tf = s[f"tf_{f}"].get(t, 0)
-                if tf:
-                    score += bm25_term_score(tf, dfs[f].get(t, 0), dl, n, avgdls[f])
-    return score
+def _clip(text, width):
+    text = " ".join((text or "").replace("✳", " ").split())
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def _tkns(n):
+    return "" if not n else (f"{n / 1000:.0f}k" if n >= 1000 else str(n))
+
+
+def live_rows():
+    """Running sessions, newest first, from the usage daemon's state (the
+    panel's own source: account, status, tokens, tmux ids, workspace, pid);
+    falls back to the sessions registry if the daemon isn't running."""
+    rows = []
+    try:
+        state = json.load(open(os.path.expanduser("~/.cache/claude-usage/state.json")))
+        for acct, lst in (state.get("sessions") or {}).items():
+            for r in lst:
+                rows.append({"sid": r.get("session_id") or "", "account": acct, "status": r.get("status") or "",
+                             "title": r.get("title") or "", "tokens": r.get("context_tokens"),
+                             "mtime": (r.get("updated_at_ms") or 0) / 1000, "sess": r.get("tmux_session") or "",
+                             "win": r.get("tmux_window") or "", "pane": r.get("tmux_pane") or "",
+                             "wks": r.get("hypr_workspace") or "", "pid": r.get("pid") or "",
+                             "cwd": r.get("cwd") or ""})
+    except (OSError, ValueError, AttributeError):
+        for sid, l in get_live_sessions().items():
+            rows.append({"sid": sid, "account": account_name(find_session_profile(sid)), "status": l.get("status") or "",
+                         "title": "", "tokens": None, "mtime": time.time(), "sess": "", "win": "", "pane": l.get("pane_id") or "",
+                         "wks": "", "pid": l.get("pid") or "", "cwd": l.get("cwd") or ""})
+    rows = [r for r in rows if r["sid"]]
+    rows.sort(key=lambda r: -r["mtime"])
+    return rows
+
+
+def _row_text(r):
+    return " ".join([r["account"], r["title"], r["cwd"], relative_age(r["mtime"]), r.get("sess", ""),
+                     r.get("win", ""), r.get("pane", "")]).lower()
+
+
+def _fmt_live(r):
+    return "  ".join([
+        f'{r["account"]:<{W_ACCT}}', f'{STATUS_LABELS.get(r["status"], r["status"]):<{W_STATUS}}',
+        f'{_clip(r["title"], W_TITLE):<{W_TITLE}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
+        f'{relative_age(r["mtime"]):>{W_AGE}}', f'{r["sess"]:<{W_TMUX}}', f'{r["win"]:<{W_TMUX}}',
+        f'{r["pane"]:<{W_TMUX}}', f'{r["wks"]:<{W_WKS}}', f'{r["pid"]!s:<{W_PID}}', shorten(r["cwd"])])
+
+
+def _fmt_archive(r):
+    return "  ".join([
+        f'{r["account"]:<{W_ACCT}}', f'{_clip(r["title"], W_TITLE):<{W_TITLE}}',
+        f'{_tkns(r["tokens"]):>{W_TKNS}}', f'{r["msgs"]:>{W_MSGS}}',
+        f'{relative_age(r["mtime"]):>{W_AGE}}', shorten(r["cwd"])])
+
+
+HEADER_LIVE = (f'{"ACCT":<{W_ACCT}}  {"STATUS":<{W_STATUS}}  {"TITLE":<{W_TITLE}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  '
+               f'{"SESS":<{W_TMUX}}  {"WIN":<{W_TMUX}}  {"PANE":<{W_TMUX}}  {"WKS":<{W_WKS}}  {"PID":<{W_PID}}  PATH')
+HEADER_ARCHIVE = (f'{"ACCT":<{W_ACCT}}  {"TITLE":<{W_TITLE}}  {"TKNS":>{W_TKNS}}  {"MSGS":>{W_MSGS}}  {"AGE":>{W_AGE}}  PATH')
 
 
 def search(snap, query):
-    """One ranked result list for `query` against the in-memory snapshot,
-    as the tab-delimited lines fzf displays (see row()). Called by the
-    picker's socket server on every keystroke - the snapshot lives in
-    drive()'s process for the whole picker session, never re-read from
-    disk per keystroke (a previous version did exactly that: every
-    keystroke was a fresh python process json.load-ing a 16MB file, 0.34s
-    before a single row could print)."""
-    sessions = snap["sessions"]
-    live_map = get_live_sessions()  # fetched fresh every keystroke - real
-    # process state, not the once-per-popup snapshot, so status updates
-    # (idle -> busy) show up live while you're still typing your search
-    targets = pane_targets() if in_tmux() else {}  # skip the tmux call
-    # entirely outside tmux, rather than let it fail every keystroke
+    """The fzf result lines ("session_id<TAB>label") for `query`. Default
+    view: the running sessions, in the usage panel's columns. `/fts word`
+    keeps those whose conversation contains the word (best match first);
+    `/fts.resume [word]` switches to past conversations (resumable).
+    Bare words, "phrases" and !neg are substring filters over the row's
+    own values. Called on every keystroke by the picker's socket server."""
     q = parse_query(query)
+    resume = bool(q.resume)
 
-    if not any(q):
-        ranked = sorted(sessions.items(), key=lambda kv: -kv[1]["mtime"])
-        return [row(sid, s, live_map, targets) for sid, s in ranked]
-
-    scored, qset, show_rxs = rank(snap, q, live_map, targets)
-    return [row(sid, s, live_map, targets, qset, show_rxs) for _, sid, s in scored]
-
-
-def rank(snap, q, live_map, targets):
-    """Scored survivors of parsed query `q` as ([(score, sid, session)]
-    best first, qset, regexes to highlight). Words, "phrases", !negation and
-    /fv/body terms go to the Recoll conversation index (fts_search - the same
-    engine alt-tab and the usage panel use); the other field terms
-    (title/path/tmux/time...) stay filters over the picker's own rows."""
-    sessions = snap["sessions"]
-    body_terms = [t for f, t in q.field_terms if f == ["body"]]
-    neg_body_terms = [t for f, t in q.neg_field_terms if f == ["body"]]
-    other_terms = [(f, t) for f, t in q.field_terms if f != ["body"]]
-    neg_other_terms = [(f, t) for f, t in q.neg_field_terms if f != ["body"]]
-
-    # Bare words, "phrases" and !negation are plain substring filters over
-    # the table's own values (tmux location, time, path, title). Full text
-    # is only searched through an explicit `/fts words` (or /fv/body).
     words = list(q.terms)
     for x in q.soft:           # a punctuated word was split by parse_query; use it whole
         for tok in tokenize(x):
@@ -1035,51 +967,45 @@ def rank(snap, q, live_map, targets):
                 words.remove(tok)
     table_pos = words + list(q.phrases) + list(q.soft)
     table_neg = list(q.neg_terms) + list(q.neg_phrases)
-
+    body_terms = [t for f, t in q.field_terms if f == ["body"]]
+    neg_body_terms = [t for f, t in q.neg_field_terms if f == ["body"]]
     pos = list(q.fts) + body_terms
     neg = list(q.neg_fts) + neg_body_terms
-    hits = None
-    if pos:
-        hits = dict(fts_search(" ".join(pos + ["!" + n for n in neg])))
-    elif neg:
-        excluded = {sid for sid, _ in fts_search(" ".join(neg))}
-        hits = {sid: 0.0 for sid in sessions if sid not in excluded}
 
-    field_terms = [(fields, tokenize(term)) for fields, term in other_terms]
-    neg_field_terms = [(fields, tokenize(term)) for fields, term in neg_other_terms]
-    vocabs = {"title": snap["vocab_title"], "body": snap["vocab_body"]}
-    dfs = {"title": snap["df_title"], "body": snap["df_body"]}
-    avgdls = {"title": snap["avgdl_title"], "body": snap["avgdl_body"]}
-    n = snap["n"]
+    if resume:
+        term = " ".join([t for t in q.resume if t] + pos)
+        base = archive_rows(" ".join([term] + ["!" + n for n in neg]) if term else "")
+        for r in base:
+            r["sid"] = r["session_id"]
+        fmt = _fmt_archive
+    else:
+        base = live_rows()
+        fmt = _fmt_live
+        if pos or neg:
+            hits = dict(fts_search(" ".join(pos + ["!" + n for n in neg]))) if pos else None
+            if hits is None:
+                excluded = {sid for sid, _ in fts_search(" ".join(neg))}
+                base = [r for r in base if r["sid"] not in excluded]
+            else:
+                base = sorted((r for r in base if r["sid"] in hits), key=lambda r: -hits[r["sid"]])
 
-    scored = []
-    for sid, s in sessions.items():
-        if hits is not None and sid not in hits:
+    other = [(f, t) for f, t in q.field_terms if f != ["body"]]
+    out = []
+    for r in base:
+        text = _row_text(r)
+        if not all(t in text for t in table_pos) or any(t in text for t in table_neg):
             continue
-        filter_text = session_filter_text(sid, s, live_map, targets)
-        if table_pos or table_neg:
-            title = (s["ai_title"] or (s["turns"][0][1][:80] if s["turns"] else "")).lower()
-            table = " ".join([filter_text["tmux"], filter_text["time"], filter_text["path"], title])
-            if not all(t in table for t in table_pos) or any(t in table for t in table_neg):
-                continue
-        if any(field_term_matches(fields, subtoks, s, filter_text, vocabs)
-               for fields, subtoks in neg_field_terms):
-            continue
-        if not all(field_term_matches(fields, subtoks, s, filter_text, vocabs)
-                   for fields, subtoks in field_terms):
-            continue
-        score = hits[sid] if hits is not None else 0.0
-        for fields, subtoks in field_terms:
-            score += field_term_score(fields, subtoks, s, vocabs, dfs, avgdls, n)
-        # a query with only filter-only field terms (path/tmux/time...) ranks by recency
-        has_positive = bool(pos or field_terms)
-        scored.append((score, sid, s) if has_positive else (s["mtime"], sid, s))
-
-    scored.sort(key=lambda t: -t[0])
-    fts_text = " ".join(pos).replace('"', " ")
-    qset = set(q.terms) | set(tokenize(fts_text)) | {tok for _, subtoks in field_terms for tok in subtoks}
-    show_rxs = [phrase_re(p) for p in q.phrases] + [phrase_re(x, prefix=True) for x in q.soft]
-    return scored, qset, show_rxs
+        ok = True
+        for fields, term in other:   # /fv/path x, /fv/title x, ...
+            vals = {"path": r["cwd"], "title": r["title"], "time": relative_age(r["mtime"]),
+                    "tmux": f'{r.get("sess", "")}:{r.get("win", "")}.{r.get("pane", "")}',
+                    "session": r.get("sess", ""), "window": r.get("win", ""), "pane": r.get("pane", "")}
+            if not any(term in str(vals.get(f, "")).lower() for f in fields if f in vals):
+                ok = False
+                break
+        if ok:
+            out.append(f'{r["sid"]}\t{fmt(r)}')
+    return out
 
 
 # --- Tab completion (bound to `tab` in drive(), see query-dsl.md's "Via
@@ -1493,7 +1419,7 @@ def resolve(session_id, cwd):
               f"resuming, that would start a second instance against the "
               f"same transcript", file=sys.stderr)
         return
-    exec_resume(session_id, cwd)
+    resume_tmux(session_id)  # past conversation: its own new tmux window, under its own account
 
 
 SNAP_PREFIX = "claude-history-search-"
@@ -1954,13 +1880,6 @@ def drive():
     os.environ["HISTNAV_BIN"] = os.path.expanduser("~/bin/fzf-histnav")
     os.environ["HISTNAV_RECORD"] = record_cmd
     histnav = shlex.quote(os.environ["HISTNAV_BIN"])
-    # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
-    # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
-    # cwd's slack (see row()), which is expected: the header marks the
-    # normal case, individual rows are still free to shift when they
-    # actually need to
-    header = (f'{"TMUX":<{LOC_WIDTH}}  {"TIME":>{AGE_WIDTH}}  {"PATH":<{CWD_WIDTH}}  '
-              f'{"MSGS":>{MSGS_WIDTH}}  TITLE')
     # the reload action re-sends {q} (fzf substitutes it from the CURRENT
     # query box, confirmed directly: an action posted to --listen still
     # gets {q}/{n}-style placeholders resolved against live state, not
@@ -2017,12 +1936,13 @@ def drive():
         # FZF_LINES, so the preview never drops below half regardless of
         # match count, and grows past half on its own the fewer results
         # there are to list
-        'case "$FZF_QUERY" in *"/fts"*) ;; *) echo hide-preview; exit;; esac; '
+        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts.resume"*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
+        'case "$FZF_QUERY" in *"/fts"*) ;; *) echo "change-header($hdr)+hide-preview"; exit;; esac; '
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
         'half=$((FZF_LINES / 2)); '
         '[ "$list_rows" -gt "$half" ] && list_rows=$half; '
-        'echo "show-preview+change-preview-window(down,$((FZF_LINES - list_rows)))"'
+        'echo "change-header($hdr)+show-preview+change-preview-window(down,$((FZF_LINES - list_rows)))"'
     )
     fzf_argv = [
         # fzf's default full-screen mode already takes over the terminal
@@ -2038,7 +1958,7 @@ def drive():
         "--border-label-pos=2", "--color=label:bold:yellow",
         "--delimiter", "\t", "--with-nth", "2..",
         "--prompt", "claude history> ",
-        "--header", header,
+        "--header", HEADER_LIVE,
         "--preview", preview_cmd,
         "--preview-window", "down,50%,border-top,wrap,hidden",
         "--bind", f"start:reload:{search_cmd}",
