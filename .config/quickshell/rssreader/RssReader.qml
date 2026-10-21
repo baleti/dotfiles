@@ -787,8 +787,9 @@ PanelWindow {
                                     (cursorPosition === text.length && !(root.acOpen)) ? RssQueryHistory.suggest(text) : ""
                                 Text {
                                     visible: search.ghost.length > 0
-                                    x: search.positionToRectangle(search.text.length).x
-                                    y: search.positionToRectangle(search.text.length).y
+                                    // cursorRectangle notifies on change; positionToRectangle() doesn't
+                                    x: search.cursorRectangle.x + search.cursorRectangle.width
+                                    y: search.cursorRectangle.y
                                     text: search.ghost
                                     color: Theme.muted
                                     font: search.font
