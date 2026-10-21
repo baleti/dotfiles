@@ -40,7 +40,7 @@ PanelWindow {
         }
         if (root.open) {
             search.text = "";
-            root.acVerbMulti = false;
+            root.acVerbMulti = false; root.acArgMulti = false;
             search.focus = false; // don't let a stale focus-scope memory re-trap into search on reopen
             focusGrab.active = true;
             Qt.callLater(() => { search.focus = false; keyScope.forceActiveFocus(); });
@@ -308,8 +308,25 @@ PanelWindow {
     property bool acVerbMulti: false
     property int acVerbMultiStart: 0
 
-    function _acCandidates() {
-        const t = search.text;
+    // Ctrl+Space AND-narrowing for the non-Verb popups (type-path, value,
+    // sort direction): "//cla" + Tab + Ctrl+Space + "fts" keeps the
+    // candidates matching both. `acArgMultiStart` freezes where the fragment
+    // began; the first word is completed as usual (via the `tIn` re-entry
+    // below) and the rest are ANDed against each candidate's label.
+    property bool acArgMulti: false
+    property int acArgMultiStart: 0
+
+    function _acCandidates(tIn) {
+        if (tIn === undefined && root.acArgMulti) {
+            const full = search.text;
+            if (root.acArgMultiStart <= full.length) {
+                const frags = full.slice(root.acArgMultiStart).split(/\s+/).filter(f => f.length > 0);
+                return root._acCandidates(full.slice(0, root.acArgMultiStart) + (frags.length > 0 ? frags[0] : ""))
+                    .filter(it => frags.slice(1).every(f => String(it.label).indexOf(f) >= 0));
+            }
+            root.acArgMulti = false;
+        }
+        const t = tIn !== undefined ? tIn : search.text;
         // "//path" is the default-verb spelling of "/fv/path" (query-dsl.md
         // "Default verb"); match the stage regexes against the expanded form,
         // but keep building replacement text from `t` (only the tail differs).
@@ -323,7 +340,7 @@ PanelWindow {
                     .filter(v => frags.every(f => v.indexOf(f) >= 0))
                     .map(v => root._verbStageItem(prefix, v));
             }
-            root.acVerbMulti = false;
+            root.acVerbMulti = false; root.acArgMulti = false;
         }
 
         // verb stage: "/frag" at the end of the box
@@ -401,7 +418,7 @@ PanelWindow {
     onAcItemsChanged: {
         acSel = 0;
         acDismissed = false;
-        if (acItems.length === 0) root.acVerbMulti = false;
+        if (acItems.length === 0) { root.acVerbMulti = false; root.acArgMulti = false; }
     }
 
     function _applyAcItem(it) {
@@ -816,7 +833,7 @@ PanelWindow {
                                         return;
                                     }
                                     if (e.key === Qt.Key_Escape) {
-                                        if (root.acOpen) { root.acDismissed = true; root.acVerbMulti = false; }
+                                        if (root.acOpen) { root.acDismissed = true; root.acVerbMulti = false; root.acArgMulti = false; }
                                         else if (search.text.length) search.text = "";
                                         else root._returnFocusToList();
                                         e.accepted = true;
@@ -857,6 +874,12 @@ PanelWindow {
                                             if (!root.acVerbMulti) {
                                                 root.acVerbMulti = true;
                                                 root.acVerbMultiStart = search.text.length - vm[1].length;
+                                            }
+                                            search.insert(search.cursorPosition, " ");
+                                        } else if (root.acArgMulti || root.acOpen) {
+                                            if (!root.acArgMulti) {
+                                                root.acArgMulti = true;
+                                                root.acArgMultiStart = search.text.search(/[^\s:\/]*$/);
                                             }
                                             search.insert(search.cursorPosition, " ");
                                         }

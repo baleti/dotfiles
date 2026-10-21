@@ -1066,10 +1066,18 @@ contains *both* `wo` and `fv`. Each fragment (space-separated, including
 the one the popup was already open on) must independently substring-match
 a candidate's complete text - an AND over the fragments, not a second,
 narrower substring search - so fragment order never matters and a third
-`Ctrl+Space` narrows further the same way a second one does. Scoped to the
-Verb stage only: a value or sort-direction popup has no `verb x path`
-universe to cross, so `Ctrl+Space` there is a no-op (the space isn't
-inserted). No-op, not a grammar change, either - the text that ends up
+`Ctrl+Space` narrows further the same way a second one does. Every other popup
+(type-path, value, bare value, sort direction) narrows the same way since
+2026-10-21: `//cla` + Tab + `Ctrl+Space` + `fts` keeps only candidates
+containing both `cla` and `fts` (`claude.fts`). The first word is still the
+real completion fragment (so the candidate set is whatever `cla` completes
+to); each further word must also substring-match the candidate's text. Accept
+replaces from the frozen fragment start, same as the Verb stage. Implemented
+in winswitch (`acArgMulti`), the ClipboardQueryDsl family (`_argMulti`:
+clipboard, notification, revit-remote, appmenu) and the launcher / rss-reader /
+claude-usage panel (`acArgMulti`, re-entering `_acCandidates` with the first
+word). Not applied to the Verb stage, which has its own universe-wide AND
+(above). No-op, not a grammar change, either - the text that ends up
 typed (`/wo fv`) is never itself parsed as two tokens the way plain typing
 normally would be (that would make `wo` a literal `/fv` text search once a
 space followed it, since `wo` isn't a prefix of any verb - see Design
