@@ -236,19 +236,17 @@ PanelWindow {
         const find = "for _, w in ipairs(hl.get_windows()) do if tostring(w.address):gsub('^0x', '') == "
             + root._luaStr(addr) + " then ";
         let lua;
-        if (row.create && /^[0-9]+$/.test(t)) {
-            // numeric name = the workspace id itself
-            lua = find + "hl.dispatch(hl.dsp.window.move({ workspace = " + t + ", window = w })) break end end";
-        } else if (row.create) {
+        if (row.create) {
             // Hyprland orders workspaces by integer id and can't renumber,
             // so "right after the current one" = the smallest unused id
-            // above the window's workspace, then named via rename.
+            // above the window's workspace, then named via rename (also for
+            // numeric names like 37, which are names here, not ids).
             lua = find + "local used = {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true end "
                 + "local id = w.workspace.id + 1 while used[id] do id = id + 1 end "
                 + "hl.dispatch(hl.dsp.window.move({ workspace = id, window = w })) "
                 + "hl.dispatch(hl.dsp.workspace.rename({ workspace = id, name = " + root._luaStr(t) + " })) break end end";
         } else {
-            const ws = /^[0-9]+$/.test(t) ? t : root._luaStr("name:" + t);
+            const ws = row.id !== undefined ? String(row.id) : /^[0-9]+$/.test(t) ? t : root._luaStr("name:" + t);
             lua = find + "hl.dispatch(hl.dsp.window.move({ workspace = " + ws + ", window = w })) break end end";
         }
         moveProc.exec(["hyprctl", "repl", lua]);
