@@ -43,6 +43,10 @@ it (numeric names such as `37` included - they are names, not ids) at the smalle
 orders workspaces by integer id and cannot renumber, so this is the nearest
 free slot after the current one, not guaranteed adjacent) and names it. Esc
 returns to the app list.
+`/add-workspace [name]` adds an empty workspace right after the current one
+(same smallest-unused-id placement; kept alive with a persistent workspace
+rule, so a config reload drops it again if still empty) without moving focus.
+No name = the next free integer name after the current workspace's.
 `/move-workspace` is the sibling: the same second list (minus the current
 workspace, no "new" row), and choosing one moves the *current workspace* to the
 smallest unused id above the chosen one (windows move, name is kept, view
