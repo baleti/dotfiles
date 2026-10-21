@@ -829,6 +829,10 @@ def _clip(text, width):
     return text if len(text) <= width else text[:width - 1] + "…"
 
 
+def _age(mtime):
+    return relative_age(mtime).replace(" ago", "")
+
+
 def _acct_no(account):
     """The panel's bare account number: claude -> 1, claude6 -> 6."""
     digits = "".join(ch for ch in account if ch.isdigit())
@@ -879,7 +883,7 @@ def _fmt_live(r):
     return "  ".join([
         f'{_acct_no(r["account"]):<{W_ACCT}}', f'{STATUS_LABELS.get(r["status"], r["status"]):<{W_STATUS}}',
         f'{_clip(r["title"], W_TITLE):<{W_TITLE}}', f'{r["msgs"]!s:>{W_MSGS}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
-        f'{relative_age(r["mtime"]):>{W_AGE}}', f'{r["sess"]:<{W_TMUX}}', f'{r["win"]:<{W_TMUX}}',
+        f'{_age(r["mtime"]):>{W_AGE}}', f'{r["sess"]:<{W_TMUX}}', f'{r["win"]:<{W_TMUX}}',
         f'{r["pane"]:<{W_TMUX}}', f'{r["wks"]:<{W_WKS}}', f'{r["pid"]!s:<{W_PID}}', shorten(r["cwd"])])
 
 
@@ -887,7 +891,7 @@ def _fmt_archive(r):
     return "  ".join([
         f'{_acct_no(r["account"]):<{W_ACCT}}', f'{_clip(r["title"], W_TITLE):<{W_TITLE}}',
         f'{r["msgs"]:>{W_MSGS}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
-        f'{relative_age(r["mtime"]):>{W_AGE}}', shorten(r["cwd"])])
+        f'{_age(r["mtime"]):>{W_AGE}}', shorten(r["cwd"])])
 
 
 HEADER_LIVE = (f'{"ACCT":<{W_ACCT}}  {"STATUS":<{W_STATUS}}  {"TITLE":<{W_TITLE}}  {"MSGS":>{W_MSGS}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  '
