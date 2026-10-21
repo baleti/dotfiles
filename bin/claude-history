@@ -1920,6 +1920,13 @@ def drive():
     complete_cmd = f"{client} complete {{q}} > {shlex.quote(complete_path)}"
     history_cmd = f"{client} history {{q}} > {shlex.quote(history_path)}"
     record_cmd = f"{client} record {{q}}"
+    # query-dsl.md "Search-box history": Up/Ctrl+K walk history back, Down/Ctrl+J
+    # forward only while a walk is on (else they move the results) - the
+    # state lives in ~/bin/fzf-histnav, driven through fzf's `transform`.
+    os.environ["HISTNAV_STATE"] = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), f"histnav-{os.getpid()}")
+    os.environ["HISTNAV_BIN"] = os.path.expanduser("~/bin/fzf-histnav")
+    os.environ["HISTNAV_RECORD"] = record_cmd
+    histnav = shlex.quote(os.environ["HISTNAV_BIN"])
     # column headers, aligned to row()'s own LOC_WIDTH/AGE_WIDTH/CWD_WIDTH/
     # MSGS_WIDTH - only approximate once a row's loc overflows and borrows
     # cwd's slack (see row()), which is expected: the header marks the
@@ -2027,10 +2034,10 @@ def drive():
         # current query into history the moment selection actually moves
         # - not just on a full accept (that's --history's own job) - see
         # history_candidates()'s "record" mode.
-        "--bind", "up:prev-history",
-        "--bind", "down:next-history",
-        "--bind", f"ctrl-j:down+execute-silent({record_cmd})",
-        "--bind", f"ctrl-k:up+execute-silent({record_cmd})",
+        "--bind", f"up:transform({histnav} up)",
+        "--bind", f"ctrl-k:transform({histnav} up)",
+        "--bind", f"down:transform({histnav} down)",
+        "--bind", f"ctrl-j:transform({histnav} down)",
         # `execute` hands the terminal over to complete_cmd (same as
         # fzf's own `execute(less {})` example) - a genuine nested
         # interactive picker when there's more than one candidate, see

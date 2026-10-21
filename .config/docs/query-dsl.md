@@ -1435,6 +1435,28 @@ with no new mechanism to learn.
   Up/Down are the *main list's* own navigation by default) - row
   navigation moves to `ctrl-j`/`ctrl-k` instead, which cost nothing new to
   bind since they're already fzf's own default synonyms for down/up.
+- **Ctrl+K / Ctrl+J are Up / Down in the search box** (added 2026-10-21),
+  wherever Up/Down are history: **Ctrl+K** cycles back through past entries
+  exactly like Up and so starts a history walk. **Ctrl+J** is Down, which
+  has two meanings: while a walk is on (an Up/Ctrl+K press has happened and
+  the pre-cycle draft hasn't been restored yet) it steps forward through
+  history; otherwise it is *not* history at all and does what plain Down does
+  in that picker - move on into the results (focus the list / the second
+  entry below the already-selected first one, per Focus between search box
+  and results, below). So Ctrl+J never starts a walk and never replays an
+  entry from a cold box. With a completion/history popup open Ctrl+J/K keep
+  moving its highlight, and with the results focused they navigate rows as
+  before. Consequence: in the pickers with history, row navigation back *up*
+  from the search box is no longer Ctrl+K (it is history now), same as Up.
+  Implemented in app-launcher, winswitch, rss-reader, claude-usage
+  (`Ctrl+J/K` branches next to the Down/Up ones), images (`kb_up`/`kb_down`
+  in `main.rs`), and focus-picker / claude-history via `~/bin/fzf-histnav`
+  (fzf `transform`: keeps a depth counter + the query history last put in
+  the box, so Down/Ctrl+J only step history forward while the box still holds
+  it; all four of Up/Ctrl+K/Down/Ctrl+J bind to it, and Down with no walk
+  moves the fzf list down and records the query as before). Pickers with no
+  search-box history (clipboard, notification, app-menu, revit-remote,
+  window-search) are unchanged: Ctrl+J/K stay plain row navigation.
 - **Ctrl+R** opens a popup - the same shared popup machinery
   Tab-completion already uses (nested fzf for the fzf-native pickers,
   in-layout `GtkListBox`/QML overlay elsewhere - see Autocompletion,

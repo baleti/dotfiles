@@ -1205,6 +1205,13 @@ def drive():
     complete_cmd = f"{py} --complete --query={{q}} > {shlex.quote(complete_path)}"
     history_cmd = f"{py} --history-search --query={{q}} > {shlex.quote(history_path)}"
     record_cmd = f"{py} --record-history --query={{q}}"
+    # query-dsl.md "Search-box history": Up/Ctrl+K walk history back, Down/Ctrl+J
+    # forward only while a walk is on (else they move the results) - the
+    # state lives in ~/bin/fzf-histnav, driven through fzf's `transform`.
+    os.environ["HISTNAV_STATE"] = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), f"histnav-{os.getpid()}")
+    os.environ["HISTNAV_BIN"] = os.path.expanduser("~/bin/fzf-histnav")
+    os.environ["HISTNAV_RECORD"] = record_cmd
+    histnav = shlex.quote(os.environ["HISTNAV_BIN"])
     preview_cmd = f"{py} --preview {{1}}"
     # same list/preview split as window-search.py and claude-history: react
     # to each match-set change (a reload here, not fzf's own filtering - the
@@ -1242,10 +1249,10 @@ def drive():
                 # synonyms for down/up so nothing new to bind for them);
                 # ctrl-r opens the fuzzy history popup (history_search()).
                 "--history", HISTORY_PATH,
-                "--bind", "up:prev-history",
-                "--bind", "down:next-history",
-                "--bind", f"ctrl-j:down+execute-silent({record_cmd})",
-                "--bind", f"ctrl-k:up+execute-silent({record_cmd})",
+                "--bind", f"up:transform({histnav} up)",
+                "--bind", f"ctrl-k:transform({histnav} up)",
+                "--bind", f"down:transform({histnav} down)",
+                "--bind", f"ctrl-j:transform({histnav} down)",
                 "--preview", preview_cmd,
                 "--preview-window", "down,50%,border-top,wrap",
                 # reload+transform-header chained with "+" into ONE bind per
