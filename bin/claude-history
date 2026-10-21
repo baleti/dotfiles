@@ -2092,9 +2092,20 @@ def resume_cmd(sid):
 
 
 def resume_window(sid):
-    """Resume `sid` in a new alacritty window (Hyprland), for alt-tab / the usage panel."""
-    cwd, env, _, argv = resume_cmd(sid)
-    subprocess.Popen(["alacritty", "--working-directory", cwd, "-e", *argv], env=env, cwd=cwd,
+    """Resume `sid` in its own new tmux session, shown in a new alacritty window
+    (Hyprland), for alt-tab / the usage panel."""
+    cwd, _, profile, argv = resume_cmd(sid)
+    cmd = ["tmux", "new-session", "-d", "-P", "-F", "#{session_id} #{pane_id}", "-c", cwd]
+    if profile:
+        cmd += ["-e", f"CLAUDE_CONFIG_DIR={profile}"]
+    r = subprocess.run(cmd + [shlex.join(argv)], capture_output=True, text=True)
+    parts = r.stdout.split()
+    if len(parts) != 2:
+        print(f"claude-history: tmux new-session failed: {r.stderr.strip()}", file=sys.stderr)
+        return
+    target, pane = parts
+    label_window(profile, pane)
+    subprocess.Popen(["alacritty", "-e", "tmux", "attach-session", "-t", target],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
 
