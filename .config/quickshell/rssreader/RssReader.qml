@@ -562,6 +562,18 @@ PanelWindow {
         anchors.fill: parent
         focus: root.open
 
+        // Click anywhere outside the open copy-link menu / its button dismisses
+        // the menu. Passive TapHandler, so the clicked item still gets the click.
+        TapHandler {
+            acceptedButtons: Qt.AllButtons
+            onTapped: pt => {
+                if (!linkMenu.visible) return;
+                const inBtn = openRect.contains(openRect.mapFromItem(keyScope, pt.position));
+                const inMenu = linkMenu.contains(linkMenu.mapFromItem(keyScope, pt.position));
+                if (!inBtn && !inMenu) linkMenu.visible = false;
+            }
+        }
+
         // Hold-to-repeat for article-list navigation (j/k, arrows,
         // PageUp/Down): the held key re-fires its own step on a timer
         // rather than relying on this layer-shell surface forwarding Qt's
@@ -1239,6 +1251,7 @@ PanelWindow {
                         Item { width: 1; height: 4 }
 
                         Rectangle {
+                            id: openRect
                             width: openBtn.width + 28
                             z: linkMenu.visible ? 100 : 0 // menu must paint over the tags row below
                             height: 32
@@ -1278,6 +1291,11 @@ PanelWindow {
                             Connections {
                                 target: root
                                 function onCurrentChanged() { linkMenu.visible = false; }
+                                function onOpenChanged() { linkMenu.visible = false; }
+                            }
+                            Connections {
+                                target: search
+                                function onActiveFocusChanged() { linkMenu.visible = false; }
                             }
                             Rectangle {
                                 id: linkMenu
