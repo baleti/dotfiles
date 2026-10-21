@@ -2112,6 +2112,34 @@ def fts_search(text):
     return out
 
 
+def fts_snippets(sid, text, limit=6, ctx=90):
+    """Lines of context around where `text`'s words occur in conversation
+    `sid` (read from the Recoll collection's text copy); hits are wrapped in
+    \\x01..\\x02 for the caller to style. Shared by alt-tab and the usage
+    panel's match preview."""
+    path = os.path.expanduser(f"~/.cache/indexes/claude/sessions/{sid}.txt")
+    try:
+        body = open(path, errors="replace").read()
+    except OSError:
+        return []
+    words = [w.strip("*") for w in re.findall(r"[^\s\"!]+", text) if not w.startswith("-")]
+    words = [w for w in words if w]
+    if not words:
+        return []
+    rx = re.compile("|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)), re.I)
+    out, last_end = [], -1
+    for m in rx.finditer(body):
+        if m.start() < last_end:
+            continue
+        a, b = max(0, m.start() - ctx), min(len(body), m.end() + ctx)
+        chunk = body[a:b]
+        out.append(("… " if a else "") + rx.sub(lambda h: "\x01" + h.group() + "\x02", " ".join(chunk.split())) + (" …" if b < len(body) else ""))
+        last_end = b
+        if len(out) >= limit:
+            break
+    return out
+
+
 def fts_client(text):
     for sid, score in fts_search(text):
         print(f"{sid}\t{score:.0f}")
@@ -2119,13 +2147,17 @@ def fts_client(text):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--snippets", nargs=2, metavar=("SESSION", "QUERY"),
+                        help="print match excerpts of QUERY in SESSION (hits wrapped in \\x01 \\x02)")
     parser.add_argument("--fts", metavar="QUERY",
                         help="print session_id<TAB>score for QUERY, best first")
     parser.add_argument("--reindex-and-notify", metavar="SOCKET",
                         help="internal: reparse changed transcripts, stream them to the picker at SOCKET")
     args = parser.parse_args()
 
-    if args.fts is not None:
+    if args.snippets:
+        print("\n".join(fts_snippets(*args.snippets)))
+    elif args.fts is not None:
         fts_client(args.fts)
     elif args.reindex_and_notify:
         reindex_and_stream(args.reindex_and_notify)

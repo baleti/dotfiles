@@ -1822,10 +1822,17 @@ then runs `recollindex` (which re-reads only changed files).
 prints `session_id<TAB>relevance%`, best first. `!word` -> `-word`, `"phrases"`
 as is, the last bare word matches as a prefix (live typing).
 
-- tmux picker (prefix+C-c): its words, phrases, `!neg` and `/fv/body` (alias
-  `/fv/fts`) go through it; title/path/tmux/time stay filters over the
-  picker's own rows.
+- tmux picker (prefix+C-c): bare words, `"phrases"` and `!neg` are plain
+  substring filters over the table's own values (tmux location, time, path,
+  title); full text only through `/fts word` (one word or one `"quoted
+  phrase"` per `/fts`; repeat it to AND more) or `/fv/body`. The preview pane
+  is hidden until `/fts` is in the query.
 - alt-tab: `/fts.claude term` (sugar for `/fv/claude.fts term`) keeps windows
   whose session is a hit. Windows carry no transcript text.
 - Claude usage panel (ctrl+alt+c): `/fts term`; with no explicit sort, rows
   order by relevance.
+
+Alt-tab and the usage panel show a match-preview strip (excerpts of the
+highlighted entry's conversation around the searched words, from
+`claude-history --snippets SESSION QUERY`) only while a full-text term is in
+the query.
