@@ -821,12 +821,18 @@ def session_filter_text(sid, s, live_map, targets):
 #   live view    ACCT STATUS TITLE TKNS AGE SESS WIN PANE WKS PID PATH
 #   /fts.resume  ACCT TITLE TKNS MSGS AGE PATH   (what only a running session has is dropped)
 STATUS_LABELS = {"busy": "busy", "waiting": "wait", "idle": "idle"}
-W_ACCT, W_STATUS, W_TITLE, W_TKNS, W_MSGS, W_AGE, W_TMUX, W_WKS, W_PID = 7, 6, 38, 5, 5, 8, 4, 4, 7
+W_ACCT, W_STATUS, W_TITLE, W_TKNS, W_MSGS, W_AGE, W_TMUX, W_WKS, W_PID = 4, 6, 38, 5, 5, 8, 4, 4, 7
 
 
 def _clip(text, width):
     text = " ".join((text or "").replace("✳", " ").split())
     return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def _acct_no(account):
+    """The panel's bare account number: claude -> 1, claude6 -> 6."""
+    digits = "".join(ch for ch in account if ch.isdigit())
+    return digits or "1"
 
 
 def _tkns(n):
@@ -865,7 +871,7 @@ def _row_text(r):
 
 def _fmt_live(r):
     return "  ".join([
-        f'{r["account"]:<{W_ACCT}}', f'{STATUS_LABELS.get(r["status"], r["status"]):<{W_STATUS}}',
+        f'{_acct_no(r["account"]):<{W_ACCT}}', f'{STATUS_LABELS.get(r["status"], r["status"]):<{W_STATUS}}',
         f'{_clip(r["title"], W_TITLE):<{W_TITLE}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
         f'{relative_age(r["mtime"]):>{W_AGE}}', f'{r["sess"]:<{W_TMUX}}', f'{r["win"]:<{W_TMUX}}',
         f'{r["pane"]:<{W_TMUX}}', f'{r["wks"]:<{W_WKS}}', f'{r["pid"]!s:<{W_PID}}', shorten(r["cwd"])])
@@ -873,7 +879,7 @@ def _fmt_live(r):
 
 def _fmt_archive(r):
     return "  ".join([
-        f'{r["account"]:<{W_ACCT}}', f'{_clip(r["title"], W_TITLE):<{W_TITLE}}',
+        f'{_acct_no(r["account"]):<{W_ACCT}}', f'{_clip(r["title"], W_TITLE):<{W_TITLE}}',
         f'{_tkns(r["tokens"]):>{W_TKNS}}', f'{r["msgs"]:>{W_MSGS}}',
         f'{relative_age(r["mtime"]):>{W_AGE}}', shorten(r["cwd"])])
 
@@ -1891,7 +1897,7 @@ def drive():
         # on the top border, left-anchored - the topmost line fzf draws
         "--border-label-pos=2", "--color=label:bold:yellow",
         "--delimiter", "\t", "--with-nth", "2..",
-        "--prompt", "claude history> ",
+        "--prompt", "",
         "--header", HEADER_LIVE,
         "--preview", preview_cmd,
         "--preview-window", "down,50%,border-top,wrap,hidden",
