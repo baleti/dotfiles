@@ -45,10 +45,11 @@ PanelWindow {
     // results"). searchInput regaining focus by any route clears it.
     property bool listFocused: false
     function _focusList() {
-        if (root.resumeMode) { root._resumeMove(1); return; }
         root.listFocused = true;
         searchInput.focus = false;
         card.forceActiveFocus();
+        // the table has no "first Down only moves focus" step: land on the row below
+        if (root.resumeMode) root._resumeMove(1);
     }
     function _focusSearch() {
         root.listFocused = false;

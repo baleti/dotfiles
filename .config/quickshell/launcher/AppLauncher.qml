@@ -641,6 +641,14 @@ PanelWindow {
     // Up/Down for popup-vs-list depending on state.
     property string acHistDraft: ""
     property int acHistIndex: -1  // -1 = sitting on the draft, not cycling
+    // Down/Ctrl+J walked the results from the search box: Up/Ctrl+K then walks
+    // them back up (until the first row) instead of cycling history. Cleared by
+    // any text change (history cycling included).
+    property bool resultsWalked: false
+    function _upKey() {
+        if (root.resultsWalked && root.selected > 0) root.selected = root.selected - 1;
+        else { root.resultsWalked = false; root._historyPrev(); }
+    }
     property bool _histCycling: false  // guards onTextChanged (below) from
     // treating OUR OWN text-set as a fresh edit that should cancel cycling
 
@@ -808,6 +816,7 @@ PanelWindow {
                     // the same way it does in a real shell) - but not when
                     // WE just set the text ourselves while cycling.
                     if (!root._histCycling) root.acHistIndex = -1;
+                    root.resultsWalked = false;
                     root.acItems = root.acActive
                         ? (root.acHistoryMode ? root._acHistoryCandidates() : root._acCandidates())
                         : [];
@@ -964,11 +973,11 @@ PanelWindow {
                         // trick the way it does for Tab-completion.
                         if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
                         else if (root.acHistIndex >= 0) root._historyNext();
-                        else root.selected = Math.min(root.results.length - 1, root.selected + 1); // single-focus: Down walks the results
+                        else { root.selected = Math.min(root.results.length - 1, root.selected + 1); root.resultsWalked = true; } // single-focus: Down walks the results
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Up) {
                         if (ac.visible) root.acSel = Math.max(0, root.acSel - 1);
-                        else root._historyPrev();
+                        else root._upKey();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier) && !ac.visible) {
                         // query-dsl.md "Search-box history": Ctrl+J == Down
@@ -977,11 +986,12 @@ PanelWindow {
                         if (root.acHistIndex >= 0) root._historyNext();
                         else {
                             root.selected = Math.min(root.results.length - 1, root.selected + 1);
+                            root.resultsWalked = true;
                             LauncherQueryHistory.record(query.text);
                         }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier) && !ac.visible) {
-                        root._historyPrev(); // Ctrl+K == Up
+                        root._upKey(); // Ctrl+K == Up
                         event.accepted = true;
                     } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
                         if (!event.isAutoRepeat) _startNavRepeat(() => {

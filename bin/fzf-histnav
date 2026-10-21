@@ -11,6 +11,13 @@ applied=$(cat "$state.applied" 2>/dev/null)
 case $1 in
 applied) printf '%s' "$FZF_QUERY" > "$state.applied" ;;
 up)
+    # Down/Ctrl+J moved the list with no history walk on: Up/Ctrl+K now moves it back up
+    # (until the first row, then the next Up starts history), instead of replaying history
+    if [ "$depth" -eq 0 ] && [ -f "$state.walked" ] && [ "$(cat "$state.walked")" = "$FZF_QUERY" ] && [ "${FZF_POS:-1}" -gt 1 ]; then
+        echo "up+execute-silent(${HISTNAV_RECORD})"
+        exit
+    fi
+    rm -f "$state.walked"
     if [ "$depth" -gt 0 ] && [ "$FZF_QUERY" != "$applied" ]; then depth=0; fi
     echo $((depth + 1)) > "$state.depth"
     echo "prev-history+transform(${HISTNAV_BIN:-fzf-histnav} applied)"
@@ -21,6 +28,7 @@ down)
         echo "next-history+transform(${HISTNAV_BIN:-fzf-histnav} applied)"
     else
         echo 0 > "$state.depth"
+        printf '%s' "$FZF_QUERY" > "$state.walked"
         echo "down+execute-silent(${HISTNAV_RECORD})"
     fi
     ;;
