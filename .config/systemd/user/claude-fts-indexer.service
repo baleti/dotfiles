@@ -1,0 +1,8 @@
+[Unit]
+Description=Index active Claude Code conversations for alt-tab //claude.fts
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=%h/bin/claude-fts-indexer

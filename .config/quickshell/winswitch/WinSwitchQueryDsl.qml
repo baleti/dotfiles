@@ -18,7 +18,7 @@ import QtQuick
 // A resolved field is `{ kind: "flat", name }` or
 // `{ kind: "group", group, sub }` (query.rs's `ResolvedField`). Group
 // subfield values are read off the enrich NDJSON payload's own key
-// naming (`tmux_session`, `claude_contents`, ...) via `group + "_" + sub`,
+// naming (`tmux_session`, `claude_fts`, ...) via `group + "_" + sub`,
 // which is exactly how `enrich.rs`'s `TmuxClaudeMeta` fields are already
 // named -- see `groupSubValue`.
 QtObject {
@@ -29,9 +29,9 @@ QtObject {
     readonly property var groupOrder: ["tmux", "claude"]
     readonly property var groups: ({
         tmux: ["session", "window", "title"],
-        claude: ["title", "path", "session", "age", "contents"]
+        claude: ["title", "path", "session", "age", "fts"]
     })
-    readonly property var groupDefaultSub: ({ tmux: "title", claude: "contents" })
+    readonly property var groupDefaultSub: ({ tmux: "title", claude: "fts" })
     readonly property var directions: ["ascending", "descending"]
     readonly property var defaultColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "workspace" }]
     // /sw (workspace view): what each workspace shows under its thumbnail.
@@ -100,7 +100,7 @@ QtObject {
         "claude.path": "Claude Code working directory",
         "claude.session": "Claude Code session id",
         "claude.age": "how long ago the transcript last changed",
-        "claude.contents": "Claude Code transcript text"
+        "claude.fts": "Claude Code conversation full-text (periodically indexed)"
     })
 
     function fieldKey(f) { return f.kind === "flat" ? f.name : f.group + "." + f.sub; }
@@ -242,7 +242,7 @@ QtObject {
     // `needle` this is a plain start-truncation (unchanged behaviour for
     // fields not tied to a matched filter value). With a `needle`, centers
     // the window on its first occurrence instead - a naive chars[0:maxLen]
-    // truncation of a long field (claude.contents, a whole transcript) very
+    // truncation of a long field (claude.fts, a whole transcript) very
     // rarely contains the matched substring itself within its first 80
     // characters, so the preview read as unrelated noise even though the
     // match was correct (reported 2026-09-13 against winswitch's alt-tab
@@ -295,7 +295,7 @@ QtObject {
         return "";
     }
     // Group subfield values come straight off the enrich NDJSON payload's
-    // own key naming (`tmux_session`, `claude_contents`, ...) -- see this
+    // own key naming (`tmux_session`, `claude_fts`, ...) -- see this
     // file's own doc.
     function groupSubValue(meta, g, s) {
         if (!meta) return "";
@@ -331,13 +331,13 @@ QtObject {
         // A bare group (no explicit subfield) searches *every* subfield for
         // a scoped value match, same shape as resolveColumnFields's bare-
         // group case just below - `/fv/claude foo` is meant to reach
-        // `claude.title`, `claude.contents`, etc. all at once, not just
+        // `claude.title`, `claude.fts`, etc. all at once, not just
         // GROUP_DEFAULT_SUB (query-dsl.md's "Type paths": a bare group used
         // to narrow filtering/sorting to one default subfield the same way
         // it does for /sort, but that made `/fv/claude ovh` silently miss a
-        // hit that only existed in `claude.title` while `claude.contents`
+        // hit that only existed in `claude.title` while `claude.fts`
         // had none - reported 2026-09-13 against winswitch's alt-tab
-        // search, screenshot showed unrelated `claude.contents` fragments
+        // search, screenshot showed unrelated `claude.fts` fragments
         // under thumbnails that had actually matched on `claude.title`).
         // `/sort`'s own bare-group resolution (`resolveOne`) is unchanged -
         // a sort key must be exactly one field, so it still needs

@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Periodic indexer behind alt-tab's `//claude.fts` (and claude-history's
+`$fts:`): keeps ~/.cache/claude-fts/<session-id>.txt = the lowercased
+conversation text (user + assistant "text" blocks only, same filter as
+winswitch/claude-history) of every recently-active transcript across all
+~/.claude*/ profiles, so a search never has to parse JSONL at invocation.
+
+Incremental: a transcript is re-extracted only when its mtime/size differ
+from the stamp recorded in .state.json. Run by claude-fts-indexer.timer.
+"""
+import glob, json, os, sys, time
+
+OUT = os.path.expanduser("~/.cache/claude-fts")
+STATE = os.path.join(OUT, ".state.json")
+ACTIVE_DAYS = 14          # transcripts untouched longer than this are dropped
+MAX_CHARS = 2_000_000     # per session; keep the tail (recent wins)
+
+
+def extract(path):
+    parts = []
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                v = json.loads(line)
+            except ValueError:
+                continue
+            if v.get("type") not in ("user", "assistant"):
+                continue
+            c = (v.get("message") or {}).get("content")
+            if isinstance(c, str):
+                parts.append(c)
+            elif isinstance(c, list):
+                parts += [b.get("text", "") for b in c
+                          if isinstance(b, dict) and b.get("type") == "text"]
+    return " ".join(p for p in parts if len(p) > 2).lower()[-MAX_CHARS:]
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    try:
+        state = json.load(open(STATE))
+    except (OSError, ValueError):
+        state = {}
+    cutoff = time.time() - ACTIVE_DAYS * 86400
+    seen, done = set(), 0
+    for path in glob.glob(os.path.expanduser("~/.claude*/projects/*/*.jsonl")):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        sid = os.path.basename(path)[:-6]
+        if st.st_mtime < cutoff:
+            continue
+        seen.add(sid)
+        stamp = [st.st_mtime, st.st_size]
+        if state.get(sid) == stamp and os.path.exists(os.path.join(OUT, sid + ".txt")):
+            continue
+        tmp = os.path.join(OUT, f".{sid}.tmp")
+        with open(tmp, "w") as f:
+            f.write(extract(path))
+        os.replace(tmp, os.path.join(OUT, sid + ".txt"))
+        state[sid] = stamp
+        done += 1
+    for sid in list(state):
+        if sid not in seen:
+            state.pop(sid)
+            try:
+                os.unlink(os.path.join(OUT, sid + ".txt"))
+            except OSError:
+                pass
+    with open(STATE + ".tmp", "w") as f:
+        json.dump(state, f)
+    os.replace(STATE + ".tmp", STATE)
+    print(f"indexed {done} changed, {len(seen)} active", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
