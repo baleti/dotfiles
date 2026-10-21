@@ -818,8 +818,8 @@ def session_filter_text(sid, s, live_map, targets):
 
 
 # Columns shared with the ctrl+alt+c usage panel (one layout for both):
-#   live view    ACCT STATUS TITLE TKNS AGE SESS WIN PANE WKS PID PATH
-#   /fts.resume  ACCT TITLE TKNS MSGS AGE PATH   (what only a running session has is dropped)
+#   live view    ACCT STATUS TITLE MSGS TKNS AGE SESS WIN PANE WKS PID PATH
+#   /fts.resume  ACCT TITLE MSGS TKNS AGE PATH   (what only a running session has is dropped)
 STATUS_LABELS = {"busy": "busy", "waiting": "wait", "idle": "idle"}
 W_ACCT, W_STATUS, W_TITLE, W_TKNS, W_MSGS, W_AGE, W_TMUX, W_WKS, W_PID = 4, 6, 38, 5, 5, 8, 4, 4, 7
 
@@ -859,6 +859,12 @@ def live_rows():
             rows.append({"sid": sid, "account": account_name(find_session_profile(sid)), "status": l.get("status") or "",
                          "title": "", "tokens": None, "mtime": time.time(), "sess": "", "win": "", "pane": l.get("pane_id") or "",
                          "wks": "", "pid": l.get("pid") or "", "cwd": l.get("cwd") or ""})
+    try:    # message counts come from the indexer's meta.json (a couple of minutes behind a live session)
+        meta = json.load(open(os.path.expanduser("~/.cache/indexes/claude/meta.json")))
+    except (OSError, ValueError):
+        meta = {}
+    for r in rows:
+        r["msgs"] = (meta.get(r["sid"]) or {}).get("msgs") or ""
     rows = [r for r in rows if r["sid"]]
     rows.sort(key=lambda r: -r["mtime"])
     return rows
@@ -872,7 +878,7 @@ def _row_text(r):
 def _fmt_live(r):
     return "  ".join([
         f'{_acct_no(r["account"]):<{W_ACCT}}', f'{STATUS_LABELS.get(r["status"], r["status"]):<{W_STATUS}}',
-        f'{_clip(r["title"], W_TITLE):<{W_TITLE}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
+        f'{_clip(r["title"], W_TITLE):<{W_TITLE}}', f'{r["msgs"]!s:>{W_MSGS}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
         f'{relative_age(r["mtime"]):>{W_AGE}}', f'{r["sess"]:<{W_TMUX}}', f'{r["win"]:<{W_TMUX}}',
         f'{r["pane"]:<{W_TMUX}}', f'{r["wks"]:<{W_WKS}}', f'{r["pid"]!s:<{W_PID}}', shorten(r["cwd"])])
 
@@ -880,13 +886,13 @@ def _fmt_live(r):
 def _fmt_archive(r):
     return "  ".join([
         f'{_acct_no(r["account"]):<{W_ACCT}}', f'{_clip(r["title"], W_TITLE):<{W_TITLE}}',
-        f'{_tkns(r["tokens"]):>{W_TKNS}}', f'{r["msgs"]:>{W_MSGS}}',
+        f'{r["msgs"]:>{W_MSGS}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
         f'{relative_age(r["mtime"]):>{W_AGE}}', shorten(r["cwd"])])
 
 
-HEADER_LIVE = (f'{"ACCT":<{W_ACCT}}  {"STATUS":<{W_STATUS}}  {"TITLE":<{W_TITLE}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  '
+HEADER_LIVE = (f'{"ACCT":<{W_ACCT}}  {"STATUS":<{W_STATUS}}  {"TITLE":<{W_TITLE}}  {"MSGS":>{W_MSGS}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  '
                f'{"SESS":<{W_TMUX}}  {"WIN":<{W_TMUX}}  {"PANE":<{W_TMUX}}  {"WKS":<{W_WKS}}  {"PID":<{W_PID}}  PATH')
-HEADER_ARCHIVE = (f'{"ACCT":<{W_ACCT}}  {"TITLE":<{W_TITLE}}  {"TKNS":>{W_TKNS}}  {"MSGS":>{W_MSGS}}  {"AGE":>{W_AGE}}  PATH')
+HEADER_ARCHIVE = (f'{"ACCT":<{W_ACCT}}  {"TITLE":<{W_TITLE}}  {"MSGS":>{W_MSGS}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  PATH')
 
 
 def search(snap, query):

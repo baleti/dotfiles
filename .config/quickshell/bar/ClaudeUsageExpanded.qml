@@ -352,6 +352,14 @@ Rectangle {
                    .replace(/(^|\s)(!?)\/fts(?=\s|$)/g, "$1$2/fv/fts");
     }
     property var archiveRows: []
+    // sid -> { title, cwd, msgs, tokens, mtime }, kept by claude-fts-index (what supplies the msgs column of live rows)
+    property var convMeta: ({})
+    FileView {
+        path: Quickshell.env("HOME") + "/.cache/indexes/claude/meta.json"
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: { try { root.convMeta = JSON.parse(text()); } catch (e) {} }
+    }
     onResumeTermChanged: root._archiveRefresh()
     onResumeModeChanged: root._archiveRefresh()
     function _archiveRefresh() {
@@ -537,7 +545,7 @@ Rectangle {
         const out = [];
         for (const a of ClaudeUsageSvc.accounts)
             for (const row of (ClaudeUsageSvc.sessions[a.account] || []))
-                out.push(Object.assign({ account: a.account }, row));
+                out.push(Object.assign({ account: a.account, msgs: (root.convMeta[row.session_id] || {}).msgs }, row));
         return out;
     }
     readonly property var searchFilteredProcs: {
@@ -1101,7 +1109,7 @@ Rectangle {
     property real colTokensW: colDefaults.tokens
     // "last" itself is short, but values like "2mo 1w" aren't.
     property real colLastW: colDefaults.last
-    readonly property real colMsgsW: 44   // resume view only
+    readonly property real colMsgsW: 44
     // tmux is a *grouped* column -- one "tmux" super-header spanning these
     // 3, each shrink-to-fit to its actual current values alone (see
     // tmuxSessionNaturalW etc. below for why these 3, unlike
@@ -2217,10 +2225,10 @@ Rectangle {
                 Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colTitleW }
                 Item { Layout.preferredWidth: root.handleW }
+                Item { Layout.preferredWidth: root.colMsgsW }
+                Item { Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colTokensW }
                 Item { Layout.preferredWidth: root.handleW }
-                Item { visible: root.resumeMode; Layout.preferredWidth: root.colMsgsW }
-                Item { visible: root.resumeMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colLastW }
                 Item { Layout.preferredWidth: root.handleW }
                 Text {
@@ -2317,6 +2325,15 @@ Rectangle {
                     onWidthChangeRequested: w => root.colTitleW = w
                 }
                 Text {
+                    text: qsTr("msgs")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    horizontalAlignment: Text.AlignRight
+                    Layout.preferredWidth: root.colMsgsW
+                }
+                Item { Layout.preferredWidth: root.handleW }
+                Text {
                     id: tokensHeader
                     text: qsTr("tkns") + root.sortArrow("tokens")
                     color: Theme.muted
@@ -2342,16 +2359,6 @@ Rectangle {
                     targetWidth: root.colTokensW
                     onWidthChangeRequested: w => root.colTokensW = w
                 }
-                Text {
-                    visible: root.resumeMode
-                    text: qsTr("msgs")
-                    color: Theme.muted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 3
-                    horizontalAlignment: Text.AlignRight
-                    Layout.preferredWidth: root.colMsgsW
-                }
-                Item { visible: root.resumeMode; Layout.preferredWidth: root.handleW }
                 Text {
                     text: qsTr("age") + root.sortArrow("active")
                     color: Theme.muted
@@ -2687,15 +2694,6 @@ Rectangle {
                         }
                         Item { Layout.preferredWidth: root.handleW }
                         Text {
-                            text: root.fmtTokens(modelData.context_tokens)
-                            color: root.tokenColor(modelData.context_tokens)
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            Layout.preferredWidth: root.colTokensW
-                        }
-                        Item { Layout.preferredWidth: root.handleW }
-                        Text {
-                            visible: root.resumeMode
                             text: String(modelData.msgs || "")
                             color: Theme.muted
                             font.family: Theme.fontFamily
@@ -2703,7 +2701,15 @@ Rectangle {
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: root.colMsgsW
                         }
-                        Item { visible: root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: root.fmtTokens(modelData.context_tokens)
+                            color: root.tokenColor(modelData.context_tokens)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            Layout.preferredWidth: root.colTokensW
+                        }
+                        Item { Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
                             color: Theme.muted
