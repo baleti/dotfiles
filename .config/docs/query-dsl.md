@@ -45,8 +45,8 @@ free slot after the current one, not guaranteed adjacent) and names it. Esc
 returns to the app list.
 `/add-workspace [name]` adds an empty workspace right after the current one
 (same smallest-unused-id placement) and focuses it; the usual empty-workspace
-cleanup removes it when focus leaves. No name = the next free integer name
-after the current workspace's.
+cleanup removes it when focus leaves. No name = current number + 1 if that name is free,
+otherwise a decimal (`590.1`, `590.2`...).
 `/move-workspace` is the sibling: the same second list (minus the current
 workspace, no "new" row), and choosing one moves the *current workspace* to the
 smallest unused id above the chosen one (windows move, name is kept, view
