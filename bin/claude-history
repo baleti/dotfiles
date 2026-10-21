@@ -1368,17 +1368,56 @@ def find_session_profile(session_id):
     return best
 
 
-def label_window(profile):
+ACCOUNT_NAMES = {".claude2": "claude2", ".claude3": "claude3", ".claude4": "claude4", ".claude5": "claude5",
+                 ".claude6": "claude6", ".claude7": "claude7", ".claude8": "claude8"}
+
+
+def account_name(profile):
+    return ACCOUNT_NAMES.get(os.path.basename((profile or CLAUDE_DIR).rstrip("/")), "claude")
+
+
+def profile_map():
+    """session_id -> profile dir (account) it was last used under, for every
+    session at once (find_session_profile's rules, one pass instead of one
+    per session): a profile's .claude.json projects[cwd].lastSessionId
+    (newest .claude.json wins), else its session-env / file-history dirs
+    (newest mtime wins)."""
+    best = {}
+    for d in glob.glob(os.path.expanduser("~/.claude*")):
+        cj = os.path.join(d, ".claude.json")
+        try:
+            with open(cj) as f:
+                projs = json.load(f).get("projects") or {}
+            m = os.stat(cj).st_mtime
+        except (OSError, ValueError, AttributeError):
+            continue
+        for v in projs.values():
+            sid = isinstance(v, dict) and v.get("lastSessionId")
+            if sid and (sid not in best or m > best[sid][1]):
+                best[sid] = (d, m + 1e12)       # a .claude.json record outranks any dir mtime
+    for d in glob.glob(os.path.expanduser("~/.claude*")):
+        for sub in ("session-env", "file-history"):
+            try:
+                with os.scandir(os.path.join(d, sub)) as it:
+                    for e in it:
+                        m = e.stat().st_mtime
+                        if e.name not in best or m > best[e.name][1]:
+                            best[e.name] = (d, m)
+            except OSError:
+                continue
+    return {sid: d for sid, (d, _) in best.items()}
+
+
+def label_window(profile, pane=None):
     """Name this pane's window after the account (claude/claude2/claude3/claude4)
     the way claude-account-window-rename-hook.sh does, and mark it as
     managed (@claude_autoname/@claude_lastset) so that hook/watcher keep
     it current afterwards. The exec below makes claude this pane's process
     without any window-renamed event we could rely on, so it's done here."""
-    pane = os.environ.get("TMUX_PANE")
+    pane = pane or os.environ.get("TMUX_PANE")
     if not pane:
         return
-    base = os.path.basename((profile or CLAUDE_DIR).rstrip("/"))
-    name = {".claude2": "claude2", ".claude3": "claude3", ".claude4": "claude4", ".claude5": "claude5", ".claude6": "claude6", ".claude7": "claude7", ".claude8": "claude8"}.get(base, "claude")
+    name = account_name(profile)
     subprocess.run(["tmux", "rename-window", "-t", pane, name],
                    stderr=subprocess.DEVNULL)
     subprocess.run(["tmux", "set-window-option", "-t", pane,
@@ -2140,6 +2179,68 @@ def fts_snippets(sid, text, limit=6, ctx=90):
     return out
 
 
+def archive_rows(text, limit=300):
+    """Past (not currently running) conversations for the resume views, from
+    the indexer's meta.json: the ones matching `text` best first, or the
+    newest when `text` is empty. Live is decided here, at query time, from
+    the sessions registry - the index itself doesn't know."""
+    try:
+        meta = json.load(open(os.path.expanduser("~/.cache/indexes/claude/meta.json")))
+    except (OSError, ValueError):
+        return []
+    live = set(get_live_sessions())
+    if text.strip():
+        order = [(sid, score) for sid, score in fts_search(text) if sid in meta and sid not in live]
+    else:
+        order = [(sid, 0.0) for sid, m in sorted(meta.items(), key=lambda kv: -kv[1].get("mtime", 0))
+                 if sid not in live]
+    profiles = profile_map()
+    rows = []
+    for sid, score in order[:limit]:
+        m = meta[sid]
+        prof = profiles.get(sid)
+        rows.append({"session_id": sid, "title": m.get("title") or "", "cwd": m.get("cwd") or "",
+                     "msgs": m.get("msgs") or 0, "tokens": m.get("tokens"), "mtime": m.get("mtime"),
+                     "account": account_name(prof), "profile": prof or "", "score": score})
+    return rows
+
+
+def resume_cmd(sid):
+    """(cwd, env, argv) to resume `sid` under the account it last ran as."""
+    try:
+        meta = json.load(open(os.path.expanduser("~/.cache/indexes/claude/meta.json"))).get(sid) or {}
+    except (OSError, ValueError):
+        meta = {}
+    cwd = meta.get("cwd") or HOME
+    if not os.path.isdir(cwd):
+        cwd = HOME
+    profile = find_session_profile(sid)
+    env = dict(os.environ)
+    if profile:
+        env["CLAUDE_CONFIG_DIR"] = profile
+    return cwd, env, profile, ["claude", "--resume", sid, "--dangerously-skip-permissions"]
+
+
+def resume_window(sid):
+    """Resume `sid` in a new alacritty window (Hyprland), for alt-tab / the usage panel."""
+    cwd, env, _, argv = resume_cmd(sid)
+    subprocess.Popen(["alacritty", "--working-directory", cwd, "-e", *argv], env=env, cwd=cwd,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def resume_tmux(sid):
+    """Resume `sid` in a new tmux window, labelled with its account."""
+    cwd, _, profile, argv = resume_cmd(sid)
+    cmd = ["tmux", "new-window", "-P", "-F", "#{pane_id}", "-c", cwd]
+    if profile:
+        cmd += ["-e", f"CLAUDE_CONFIG_DIR={profile}"]
+    r = subprocess.run(cmd + [shlex.join(argv)], capture_output=True, text=True)
+    pane = r.stdout.strip()
+    if pane:
+        label_window(profile, pane)
+
+
 def fts_client(text):
     for sid, score in fts_search(text):
         print(f"{sid}\t{score:.0f}")
@@ -2149,13 +2250,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--snippets", nargs=2, metavar=("SESSION", "QUERY"),
                         help="print match excerpts of QUERY in SESSION (hits wrapped in \\x01 \\x02)")
+    parser.add_argument("--archive", metavar="QUERY", nargs="?", const="",
+                        help="JSON list of past (not running) conversations matching QUERY, for the resume views")
+    parser.add_argument("--resume-window", metavar="SESSION", help="resume SESSION in a new alacritty window")
+    parser.add_argument("--resume-tmux", metavar="SESSION", help="resume SESSION in a new tmux window")
     parser.add_argument("--fts", metavar="QUERY",
                         help="print session_id<TAB>score for QUERY, best first")
     parser.add_argument("--reindex-and-notify", metavar="SOCKET",
                         help="internal: reparse changed transcripts, stream them to the picker at SOCKET")
     args = parser.parse_args()
 
-    if args.snippets:
+    if args.archive is not None:
+        print(json.dumps(archive_rows(args.archive)))
+    elif args.resume_window:
+        resume_window(args.resume_window)
+    elif args.resume_tmux:
+        resume_tmux(args.resume_tmux)
+    elif args.snippets:
         print("\n".join(fts_snippets(*args.snippets)))
     elif args.fts is not None:
         fts_client(args.fts)

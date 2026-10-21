@@ -13,6 +13,7 @@ ROOT = os.path.expanduser("~/.cache/indexes/claude")
 OUT = os.path.join(ROOT, "sessions")
 CONF = os.path.join(ROOT, "recoll")
 STATE = os.path.join(ROOT, "state.json")
+META = os.path.join(ROOT, "meta.json")
 MAX_CHARS = 2_000_000     # per session; keep the tail (recent wins)
 
 
@@ -27,7 +28,7 @@ def transcripts():
 
 
 def extract(path):
-    title, parts = "", []
+    title, parts, cwd, msgs, tokens = "", [], "", 0, None
     with open(path, errors="replace") as f:
         for line in f:
             try:
@@ -39,14 +40,22 @@ def extract(path):
                 title = v.get("aiTitle") or title
             if t not in ("user", "assistant"):
                 continue
+            cwd = cwd or v.get("cwd") or ""
             c = (v.get("message") or {}).get("content")
+            if t == "assistant":
+                u = (v.get("message") or {}).get("usage")
+                if u:       # context size = input + cache creation + cache read (as the usage panel's tkns)
+                    tokens = ((u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+                              + (u.get("cache_read_input_tokens") or 0))
+            if c:
+                msgs += 1
             if isinstance(c, str):
                 parts.append(c)
             elif isinstance(c, list):
                 parts += [b.get("text", "") for b in c
                           if isinstance(b, dict) and b.get("type") == "text"]
     body = " ".join(p for p in parts if len(p) > 2)[-MAX_CHARS:]
-    return (title + "\n" + body) if title else body
+    return ((title + "\n" + body) if title else body), {"title": title, "cwd": cwd, "msgs": msgs, "tokens": tokens}
 
 
 def main():
@@ -65,13 +74,16 @@ def main():
         seen.add(sid)
         stamp = [st.st_mtime, st.st_size]
         dest = os.path.join(OUT, sid + ".txt")
-        if state.get(sid) == stamp and os.path.exists(dest):
+        old = state.get(sid)
+        if isinstance(old, dict) and old.get("s") == stamp and os.path.exists(dest):
             continue
+        text, meta = extract(path)
+        meta["mtime"] = st.st_mtime
         tmp = os.path.join(OUT, f".{sid}.tmp")
         with open(tmp, "w") as f:
-            f.write(extract(path))
+            f.write(text)
         os.replace(tmp, dest)
-        state[sid] = stamp
+        state[sid] = {"s": stamp, "m": meta}
         changed += 1
     for sid in set(state) - seen:       # transcript deleted
         state.pop(sid)
@@ -82,6 +94,9 @@ def main():
         changed += 1
     json.dump(state, open(STATE + ".tmp", "w"))
     os.replace(STATE + ".tmp", STATE)
+    # sid -> {title, cwd, msgs, tokens, mtime}: what the resume views list (claude-history --archive)
+    json.dump({k: v["m"] for k, v in state.items()}, open(META + ".tmp", "w"))
+    os.replace(META + ".tmp", META)
     if changed or not os.path.isdir(os.path.join(CONF, "xapiandb")):
         r = subprocess.run(["recollindex", "-c", CONF], capture_output=True, text=True)
         if r.returncode:
