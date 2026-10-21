@@ -893,7 +893,8 @@ PanelWindow {
                         // can't just reuse Ctrl+J/Ctrl+K's dual-purpose
                         // trick the way it does for Tab-completion.
                         if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                        else root._historyNext();
+                        else if (root.acHistIndex >= 0) root._historyNext();
+                        else root.selected = Math.min(root.results.length - 1, root.selected + 1); // single-focus: Down walks the results
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Up) {
                         if (ac.visible) root.acSel = Math.max(0, root.acSel - 1);
