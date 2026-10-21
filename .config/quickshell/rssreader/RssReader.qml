@@ -878,14 +878,15 @@ PanelWindow {
                                         else root.move(d);
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Down) {
-                                        // Popup open: highlight-move,
-                                        // unchanged. Popup closed:
-                                        // history-cycle instead of returning
-                                        // focus to the list - Tab/Escape
-                                        // already do that, so nothing is lost.
+                                        // Popup open: highlight-move. Popup
+                                        // closed: continue history-cycling if
+                                        // already in it, else focus the list
+                                        // (query-dsl.md "Focus between search
+                                        // box and results"); Tab comes back.
                                         if (root.acOpen) {
                                             if (!e.isAutoRepeat) _startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
-                                        } else root._historyNext();
+                                        } else if (root.acHistIndex >= 0) root._historyNext();
+                                        else root._returnFocusToList();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Up) {
                                         if (root.acOpen) {
