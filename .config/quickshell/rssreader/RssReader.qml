@@ -855,6 +855,11 @@ PanelWindow {
                                         // (RssSvc.refresh()).
                                         root._triggerHistorySearch();
                                         e.accepted = true;
+                                    } else if ((e.key === Qt.Key_J || e.key === Qt.Key_K) && (e.modifiers & Qt.ControlModifier)) {
+                                        const d = e.key === Qt.Key_J ? 1 : -1;
+                                        if (root.acOpen) root.acSel = Math.max(0, Math.min(root.acItems.length - 1, root.acSel + d));
+                                        else root.move(d);
+                                        e.accepted = true;
                                     } else if (e.key === Qt.Key_Down) {
                                         // Popup open: highlight-move,
                                         // unchanged. Popup closed:
