@@ -237,18 +237,18 @@ PanelWindow {
     // /add-workspace: an empty workspace at the smallest unused id above the
     // current one and focused (the existing empty-workspace cleanup removes it
     // once focus leaves). No name = the current
-    // workspace's number + 1 if free, else a decimal (590.1, 590.2...), or
+    // workspace's number + 1 if free, else a child (590.1, or 590.1.1 if 590.1 exists, ...; from 590.1 the sibling 590.2), or
     // the first free integer when the current name isn't numeric.
     function addWorkspace(row) {
         const lua = "local cur = hl.get_workspace(" + LauncherState.workspaceId + ") "
             + "local used, names = {}, {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end "
             + "local name = " + root._luaStr(row.target) + " "
-            + "if name == '' then local ip, fp = tostring(cur and cur.name or ''):match('^(%d+)%.(%d+)$') "
+            + "if name == '' then local ip, fp = tostring(cur and cur.name or ''):match('^([%d%.]+)%.(%d+)$') "
             + "if ip then local k = tonumber(fp) + 1 while names[ip .. '.' .. k] do k = k + 1 end name = ip .. '.' .. k else "
             + "local base = cur and tonumber(cur.name) "
             + "if not base then local n = 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) "
             + "elseif not names[tostring(base + 1)] then name = tostring(base + 1) "
-            + "else local k = 1 while names[cur.name .. '.' .. k] do k = k + 1 end name = cur.name .. '.' .. k end end end "
+            + "else local ch = cur.name .. '.1' while names[ch] do ch = ch .. '.1' end name = ch end end end "
             + "if names[name] then return end "
             + "local anchor = cur and cur.id or 0 "
             // a decimal name lands after its series predecessor (590.2 after 590.1), not just after the current workspace
