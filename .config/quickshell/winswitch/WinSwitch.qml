@@ -38,6 +38,22 @@ PanelWindow {
     // late from a previous session can't close a newer one.
     property int _grabSession: -1
 
+    // Locked (search mode) but with keyboard focus moved down into the grid:
+    // Down in the search box (popup closed, not cycling history) puts focus
+    // here, Tab goes back (query-dsl.md "Focus between search box and
+    // results"). searchInput regaining focus by any route clears it.
+    property bool listFocused: false
+    function _focusList() {
+        root.listFocused = true;
+        searchInput.focus = false;
+        card.forceActiveFocus();
+    }
+    function _focusSearch() {
+        root.listFocused = false;
+        searchInput.forceActiveFocus();
+        searchInput.cursorPosition = searchInput.text.length;
+    }
+
     onOpenChanged: {
         // A held nav key's release is never delivered once the panel closes
         // (or a new session starts), which left the repeat timer stepping
@@ -48,6 +64,7 @@ PanelWindow {
             root._hideSuggestions();
             root._hoverOrigin = null;
             root._hoverArmed = false;
+            root.listFocused = false;
             root._grabSession = WinSwitchState.sessionId;
             focusGrab.active = true;
             root._claimFocus();
@@ -644,6 +661,7 @@ PanelWindow {
 
                 TextInput {
                     id: searchInput
+                    onActiveFocusChanged: if (activeFocus) root.listFocused = false
                     anchors.verticalCenter: parent.verticalCenter
                     x: 22
                     width: parent.width - 22
@@ -759,7 +777,8 @@ PanelWindow {
                             // see acHistIndex's own comment.
                             if (acPopup.visible) {
                                 if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
-                            } else root._historyNext();
+                            } else if (root.acHistIndex >= 0) root._historyNext();
+                            else root._focusList();
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Up) {
                             if (acPopup.visible) {
@@ -1191,13 +1210,16 @@ PanelWindow {
         // Alt+Tab never arrives here -- the compositor bind eats it -- so
         // this is Escape/Enter/arrows, plus typing to enter search mode.
         Keys.onPressed: event => {
-            if (root.locked)
+            if (root.locked && !root.listFocused)
                 return;
             if (event.key === Qt.Key_Escape) {
                 root.hide();
                 event.accepted = true;
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                 root.confirm(root.selected);
+                event.accepted = true;
+            } else if (root.listFocused && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
+                root._focusSearch();
                 event.accepted = true;
             } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
                 root._advance(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? "prev" : "next");
@@ -1238,9 +1260,10 @@ PanelWindow {
                 });
                 event.accepted = true;
             } else if (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
-                // Any printable key (Alt may still be held) locks into search.
+                // Any printable key (Alt may still be held) locks into search;
+                // from list focus it appends to the existing query instead.
                 WinSwitchState.locked = true;
-                root.queryText = event.text;
+                root.queryText = root.listFocused ? root.queryText + event.text : event.text;
                 Qt.callLater(() => {
                     searchInput.forceActiveFocus();
                     searchInput.cursorPosition = searchInput.text.length;
