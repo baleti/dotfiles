@@ -155,7 +155,6 @@ PanelWindow {
     property var archiveRows: []
     property int resumeSel: 0
     readonly property int resumeRowH: 24
-    readonly property int resumeTableH: Math.min(card.maxCardH * 0.6, root.resumeRowH * (root.archiveRows.length + 1) + 8)
     onResumeTermChanged: root._archiveRefresh()
     onResumeModeChanged: root._archiveRefresh()
     function _archiveRefresh() {
@@ -788,7 +787,7 @@ PanelWindow {
         // Grows to fit the search box + autocomplete popup once locked,
         // capped so the GridView's own scrolling takes over beyond that.
         readonly property int maxCardH: root.screen ? Math.round(root.screen.height * 0.92) : 1000
-        height: Math.min(card.maxCardH, (root.locked ? searchHeader.height : 0) + acPopup.height + gridScroll.contentHeightHint + (root.ftsActive ? root.snippetH + 4 : 0) + 32)
+        height: Math.min(card.maxCardH, (root.locked ? searchHeader.height : 0) + acPopup.height + gridScroll.contentHeightHint + (root.ftsActive && !root.resumeMode ? root.snippetH + 4 : 0) + 32)
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.cyan
@@ -1132,7 +1131,7 @@ PanelWindow {
                 id: gridScroll
                 width: parent.width
                 height: parent.height - searchHeader.height - acPopup.height - (root.ftsActive ? root.snippetH + 4 : 0) - contentColumn.spacing * 2
-                readonly property int contentHeightHint: root.resumeMode ? root.resumeTableH : root.rows * root.cellHeight
+                readonly property int contentHeightHint: root.rows * root.cellHeight   // the resume table keeps the grid's height
 
                 // Past-conversations table (/fts.claude.resume)
                 Column {
