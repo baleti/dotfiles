@@ -289,7 +289,11 @@ PanelWindow {
         }
         moveProc.exec(["hyprctl", "repl", lua]);
     }
-    Process { id: moveProc }
+    // Workspaces created/renamed/shifted through `hyprctl repl` can leave
+    // quickshell's workspace model (and so the bar pill) missing entries
+    // until the next event, so re-query once the command is done.
+    Process { id: moveProc; onExited: { Hyprland.refreshWorkspaces(); refreshTimer.restart(); } }
+    Timer { id: refreshTimer; interval: 400; onTriggered: Hyprland.refreshWorkspaces() }
 
     readonly property var results: {
         if (root.actionMode)
