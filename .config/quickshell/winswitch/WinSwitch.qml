@@ -186,6 +186,11 @@ PanelWindow {
         }
     }
     Process { id: resumeProc }
+    // the bare account number: claude -> 1, claude6 -> 6 (as in the usage panel)
+    function _acctNo(account) {
+        const d = String(account || "").replace(/\D/g, "");
+        return d.length > 0 ? d : "1";
+    }
     function _ago(mtime) {
         const d = Math.max(0, Date.now() / 1000 - (mtime || 0));
         if (d < 3600) return Math.max(1, Math.round(d / 60)) + "m ago";
@@ -1137,10 +1142,10 @@ PanelWindow {
                         height: root.resumeRowH
                         spacing: 8
                         Repeater {
-                            model: [["acct", 56], ["title", -1], ["tkns", 56], ["msgs", 48], ["age", 64], ["path", 220]]
+                            model: [["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]]
                             Text {
                                 required property var modelData
-                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - 56 - 56 - 48 - 64 - 220 - 8 * 6) : modelData[1]
+                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - 32 - 56 - 48 - 64 - 220 - 8 * 6) : modelData[1]
                                 text: modelData[0]
                                 color: Theme.muted
                                 font.family: Theme.fontFamily
@@ -1167,13 +1172,13 @@ PanelWindow {
                             Row {
                                 anchors.fill: parent
                                 spacing: 8
-                                Text { width: 56; text: resumeRow.modelData.account; color: Theme.muted; elide: Text.ElideRight
+                                Text { width: 32; text: root._acctNo(resumeRow.modelData.account); color: Theme.muted; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
-                                Text { width: Math.max(100, gridScroll.width - 56 - 56 - 48 - 64 - 220 - 8 * 6); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
+                                Text { width: Math.max(100, gridScroll.width - 32 - 56 - 48 - 64 - 220 - 8 * 6); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 2; anchors.verticalCenter: parent.verticalCenter }
-                                Text { width: 56; text: resumeRow.modelData.tokens ? Math.round(resumeRow.modelData.tokens / 1000) + "k" : ""; color: Theme.muted; horizontalAlignment: Text.AlignRight
-                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 48; text: String(resumeRow.modelData.msgs); color: Theme.muted; horizontalAlignment: Text.AlignRight
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
+                                Text { width: 56; text: resumeRow.modelData.tokens ? Math.round(resumeRow.modelData.tokens / 1000) + "k" : ""; color: Theme.muted; horizontalAlignment: Text.AlignRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 64; text: root._ago(resumeRow.modelData.mtime); color: Theme.muted; horizontalAlignment: Text.AlignRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
