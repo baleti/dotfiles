@@ -122,7 +122,8 @@ Item {
             if (event.key === Qt.Key_Escape) {
                 root.closeClaudeUsagePanel();
                 event.accepted = true;
-            } else if (event.key === Qt.Key_Slash) {
+            } else if (event.key === Qt.Key_Slash || event.key === Qt.Key_Tab) {
+                // (Tab = query-dsl.md "Focus between search box and results")
                 // Real keyboard focus moves into the search box itself here
                 // (ClaudeUsageExpanded.focusSearch()) -- subsequent keystrokes
                 // (including its own Escape-clears-query handling) go straight

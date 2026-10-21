@@ -32,7 +32,7 @@ add a new consumer, add its row here too.
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 | claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
 | claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone) and always completes to whichever form (colon or via) is already being typed, never steers to via the way rss-reader/claude-history do |
-| images (photo search) | mod+Super_l → "Search files" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/.cache/indexes/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
+| images (photo search) | mod+Super_l → "Search files" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/bin/index/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
 
 **app-launcher action commands.** Besides the five verbs, the launcher has
 `/move-to-workspace` (exact-matched like the others, not a filter/sort verb):
@@ -1656,7 +1656,7 @@ day.
 
 ## Focus between search box and results (Down / Tab)
 
-Added 2026-10-21 (alt+tab, rss-reader, app-launcher). One rule for every
+Added 2026-10-21 (alt+tab, rss-reader, claude-usage, app-launcher). One rule for every
 picker that has a search box above a results area, whatever the results
 look like (thumbnail grid, article list, schedule, plain rows):
 
@@ -1687,8 +1687,9 @@ look like (thumbnail grid, article list, schedule, plain rows):
 Per implementation: `winswitch/WinSwitch.qml` (`listFocused`,
 `_focusList()`/`_focusSearch()`; unlocked Alt+Tab cycling is untouched -
 Tab still advances there), `rssreader/RssReader.qml`
-(`_returnFocusToList()`, existing Tab toggle), `launcher/AppLauncher.qml`
-(single-focus form). Not yet live-tested.
+(`_returnFocusToList()`, existing Tab toggle), `bar/ClaudeUsageExpanded.qml`
+(Down hands focus to the panel's row selection, Tab in `Bar.qml` brings it
+back), `launcher/AppLauncher.qml` (single-focus form). Not yet live-tested.
 
 ## Resolution, precisely
 
