@@ -377,7 +377,9 @@ Rectangle {
     // Match preview (only while /fts is in the query): excerpts of the
     // highlighted row's conversation around the searched words.
     readonly property bool ftsActive: root._ftsTerms().length > 0
-    readonly property real snippetH: 150
+    // Sized to the excerpts (at least 150), but never past half the panel's
+    // height - the table's viewport gives up what the strip takes.
+    readonly property real snippetH: Math.min(root.maxPanelHeight * 0.5, Math.max(150, snippetText.implicitHeight + 14))
     property string snippetHtml: ""
     property string _snipKey: ""
     function _snipRefresh() {
@@ -2735,6 +2737,7 @@ Rectangle {
             radius: 4
             clip: true
             Text {
+                id: snippetText
                 anchors.fill: parent
                 anchors.margins: 6
                 textFormat: Text.RichText
