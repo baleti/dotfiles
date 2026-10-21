@@ -184,7 +184,7 @@ PanelWindow {
     readonly property var workspaceRows: {
         const arg = root.actionArg.toLowerCase();
         if (root.promptKind === "add")
-            return [{ ws: true, name: "+ add workspace " + (root.actionArg ? "\"" + root.actionArg + "\"" : "(next number)"),
+            return [{ ws: true, name: "+ add workspace " + (root.actionArg ? "\"" + root.actionArg + "\"" : "(next number or decimal)"),
                       target: root.actionArg, create: true, cnt: -1, mon: "",
                       apps: "added empty after the current workspace and focused", entry: { icon: "" } }];
         const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0
@@ -236,13 +236,17 @@ PanelWindow {
 
     // /add-workspace: an empty workspace at the smallest unused id above the
     // current one and focused (the existing empty-workspace cleanup removes it
-    // once focus leaves). No name = the next
-    // free integer name after the current workspace's (or 1).
+    // once focus leaves). No name = the current
+    // workspace's number + 1 if free, else a decimal (590.1, 590.2...), or
+    // the first free integer when the current name isn't numeric.
     function addWorkspace(row) {
         const lua = "local cur = hl.get_workspace(" + LauncherState.workspaceId + ") "
             + "local used, names = {}, {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end "
             + "local name = " + root._luaStr(row.target) + " "
-            + "if name == '' then local n = (cur and tonumber(cur.name) or 0) + 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) end "
+            + "if name == '' then local base = cur and tonumber(cur.name) "
+            + "if not base then local n = 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) "
+            + "elseif not names[tostring(base + 1)] then name = tostring(base + 1) "
+            + "else local k = 1 while names[cur.name .. '.' .. k] do k = k + 1 end name = cur.name .. '.' .. k end end "
             + "if names[name] then return end "
             + "local id = (cur and cur.id or 0) + 1 while used[id] do id = id + 1 end "
             + "hl.dispatch(hl.dsp.focus({ workspace = id })) "
