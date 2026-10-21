@@ -794,7 +794,7 @@ Rectangle {
             root.acVerbMulti = false; root.acArgMulti = false;
         }
 
-        const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
+        const vm = t.match(/(?:^|\s|!)(\/[a-z.-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
             const prefix = t.slice(0, t.length - vm[1].length);
@@ -1975,7 +1975,7 @@ Rectangle {
                         // AND-narrows instead of accepting (query-dsl.md) -
                         // see AppLauncher.qml's identical handler for the
                         // full rationale.
-                        const vm = searchInput.text.match(/(?:^|\s|!)(\/[a-z-]*)$/);
+                        const vm = searchInput.text.match(/(?:^|\s|!)(\/[a-z.-]*)$/);
                         if (vm || root.acVerbMulti) {
                             if (!root.acVerbMulti) {
                                 root.acVerbMulti = true;
