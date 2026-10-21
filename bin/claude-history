@@ -114,7 +114,22 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter, namedtuple
 
 CLAUDE_DIR = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
-PROJECTS_GLOB = os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl")
+PROJECTS_GLOB = os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl")  # (message text only)
+
+
+def project_files():
+    """Every transcript of every ~/.claude* profile, each distinct projects/
+    directory once (most profiles symlink to ~/.claude/projects, so a plain
+    union of globs would list every file seven times). One corpus for all
+    profiles = one index/cache and the same results from any pane."""
+    seen, files = set(), []
+    for d in sorted(glob.glob(os.path.expanduser("~/.claude*/projects"))):
+        real = os.path.realpath(d)
+        if real in seen:
+            continue
+        seen.add(real)
+        files += glob.glob(os.path.join(real, "*", "*.jsonl"))
+    return files
 # every CLAUDE_CONFIG_DIR-like directory keeps its own live-session
 # registry (see module docstring) - bounded to ~/.claude* (a handful of
 # dirs), never an unbounded $HOME scan
@@ -428,7 +443,7 @@ def parse_session(path):
 # the cheap stat-only path the caching comment above build_snapshot()
 # promises. One cache file per profile fixes that: each keeps its own
 # entries indefinitely regardless of which other profile ran in between.
-_cache_key = hashlib.sha1(CLAUDE_DIR.encode()).hexdigest()[:12]
+_cache_key = "all"  # one corpus for every profile, see project_files()
 PARSE_CACHE_PATH = os.path.expanduser(f"~/.cache/claude-history-parse-cache-{_cache_key}.pkl")
 # the pre-v5 JSON spelling of the same file - removed on the first save of
 # the pickle one so 15MB of dead cache doesn't sit in ~/.cache forever
@@ -564,7 +579,7 @@ def build_snapshot(progress=None):
     what lets reindex_and_stream() push sessions to an already-open picker
     one at a time instead of only once everything has finished.
     """
-    files = glob.glob(PROJECTS_GLOB)
+    files = project_files()
     if not files:
         die(f"no conversation history found matching {PROJECTS_GLOB}")
 
@@ -698,7 +713,7 @@ def build_snapshot_fast():
     Returns (snapshot, stale) - stale is True whenever anything in the
     corpus doesn't match the cache byte-for-byte, telling the caller a
     background full build_snapshot() pass is worth kicking off."""
-    files = glob.glob(PROJECTS_GLOB)
+    files = project_files()
     if not files:
         die(f"no conversation history found matching {PROJECTS_GLOB}")
 
@@ -1001,7 +1016,7 @@ def search(snap, query):
     disk per keystroke (a previous version did exactly that: every
     keystroke was a fresh python process json.load-ing a 16MB file, 0.34s
     before a single row could print)."""
-    sessions, df, n, avgdl = snap["sessions"], snap["df"], snap["n"], snap["avgdl"]
+    sessions = snap["sessions"]
     live_map = get_live_sessions()  # fetched fresh every keystroke - real
     # process state, not the once-per-popup snapshot, so status updates
     # (idle -> busy) show up live while you're still typing your search
@@ -1013,6 +1028,27 @@ def search(snap, query):
         ranked = sorted(sessions.items(), key=lambda kv: -kv[1]["mtime"])
         return [row(sid, s, live_map, targets) for sid, s in ranked]
 
+    scored, qset, show_rxs = rank(snap, q, live_map, targets)
+    return [row(sid, s, live_map, targets, qset, show_rxs) for _, sid, s in scored]
+
+
+def fts_scores(snap, text):
+    """session_id -> BM25 score for every session matching `text` (the same
+    query language as the picker: prefix-expanded ANDed words, "phrases",
+    !negation). The one full-text search every consumer shares - the
+    picker itself, alt-tab's /fts.claude and the usage panel's /fts (the
+    last two via claude-fts-server)."""
+    q = parse_query(text)
+    if not any(q):
+        return {}
+    scored, _, _ = rank(snap, q, {}, {})
+    return {sid: score for score, sid, _ in scored}
+
+
+def rank(snap, q, live_map, targets):
+    """Scored survivors of parsed query `q` as ([(score, sid, session)]
+    best first, qset, regexes to highlight)."""
+    sessions, df, n, avgdl = snap["sessions"], snap["df"], snap["n"], snap["avgdl"]
     vocab = snap["vocab"]
     groups = [expand_prefix(tok, vocab) for tok in q.terms]
     terms = [t for g in groups for t in g]
@@ -1091,7 +1127,7 @@ def search(snap, query):
     scored.sort(key=lambda t: -t[0])
     qset = set(q.terms) | {tok for _, subtoks in field_terms for tok in subtoks}
     show_rxs = rxs + soft_rxs
-    return [row(sid, s, live_map, targets, qset, show_rxs) for _, sid, s in scored]
+    return scored, qset, show_rxs
 
 
 # --- Tab completion (bound to `tab` in drive(), see query-dsl.md's "Via
@@ -1868,7 +1904,7 @@ def drive():
     # screen: build_snapshot_fast() would otherwise hit it on the loader
     # thread, where die()'s sys.exit only ends that thread and fzf would
     # sit on an empty list
-    if not glob.glob(PROJECTS_GLOB):
+    if not project_files():
         die(f"no conversation history found matching {PROJECTS_GLOB}")
     sweep_stale_snapshots()
     sdir = snapshot_dir()
@@ -2086,13 +2122,98 @@ def drive():
     resolve(session_id, s["cwd"])
 
 
+FTS_SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "claude-fts.sock")
+FTS_REFRESH_S = 60
+
+
+def fts_server():
+    """Long-lived full-text-search service: keeps this tool's own BM25
+    snapshot warm (refreshed from the parse cache every FTS_REFRESH_S) and
+    answers one query line per connection with {session_id: score} JSON.
+    The single source behind alt-tab's /fts.claude and the usage panel's
+    /fts (via `claude-history --fts QUERY`), so all three rank identically."""
+    try:
+        snap, stale = build_snapshot_fast()
+    except SystemExit:
+        snap, stale = {"sessions": {}, "df": {}, "n": 0, "avgdl": 1, "vocab": []}, True
+    lock = threading.Lock()
+    box = [snap]
+
+    def refresher():
+        first = stale  # cold or stale cache: full build right away
+        while True:
+            if not first:
+                time.sleep(FTS_REFRESH_S)
+            first = False
+            try:
+                fresh = build_snapshot()
+            except Exception as e:  # keep serving the last good snapshot
+                print("fts refresh failed:", e, file=sys.stderr)
+                continue
+            with lock:
+                box[0] = fresh
+
+    threading.Thread(target=refresher, daemon=True).start()
+
+    class H(socketserver.StreamRequestHandler):
+        def handle(self):
+            text = self.rfile.readline().decode(errors="replace").strip()
+            with lock:
+                cur = box[0]
+            try:
+                out = fts_scores(cur, text)
+            except Exception as e:
+                print("fts query failed:", e, file=sys.stderr)
+                out = {}
+            self.wfile.write(json.dumps(out).encode() + b"\n")
+
+    try:
+        os.unlink(FTS_SOCK)
+    except OSError:
+        pass
+    srv = PickerServer(FTS_SOCK, H)
+    os.chmod(FTS_SOCK, 0o600)
+    srv.serve_forever()
+
+
+def fts_client(text):
+    """Print 'session_id<TAB>score' lines, best first, for `text`; asks the
+    running fts_server, or falls back to the on-disk cache in-process."""
+    sock = socket.socket(socket.AF_UNIX)
+    try:
+        sock.connect(FTS_SOCK)
+        sock.sendall(text.replace("\n", " ").encode() + b"\n")
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        scores = json.loads(buf or b"{}")
+    except OSError:
+        snap, _ = build_snapshot_fast()
+        scores = fts_scores(snap, text)
+    finally:
+        sock.close()
+    for sid, sc in sorted(scores.items(), key=lambda kv: -kv[1]):
+        print(f"{sid}\t{sc:.4f}")
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--fts-server", action="store_true",
+                        help="serve full-text search over a unix socket (systemd user unit)")
+    parser.add_argument("--fts", metavar="QUERY",
+                        help="print session_id<TAB>score for QUERY, best first")
     parser.add_argument("--reindex-and-notify", metavar="SOCKET",
                         help="internal: reparse changed transcripts, stream them to the picker at SOCKET")
     args = parser.parse_args()
 
-    if args.reindex_and_notify:
+    if args.fts_server:
+        fts_server()
+    elif args.fts is not None:
+        fts_client(args.fts)
+    elif args.reindex_and_notify:
         reindex_and_stream(args.reindex_and_notify)
     else:
         drive()

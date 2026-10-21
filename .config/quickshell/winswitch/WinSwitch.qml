@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Wayland
+import Quickshell.Io
 import Quickshell.Hyprland
 import "../theme"
 import "../services"
@@ -143,6 +144,40 @@ PanelWindow {
 
     // ---- filtering / sorting (query DSL) -----------------------------
     readonly property var parsedQuery: WinSwitchQueryDsl.parse(root.queryText)
+    // /fts.claude: one `claude-history --fts` query per distinct term, queued
+    // through ftsProc; results land in WinSwitchQueryDsl.ftsHits.
+    property var _ftsQueue: []
+    property string _ftsCurrent: ""
+    onParsedQueryChanged: {
+        const terms = WinSwitchQueryDsl.ftsTerms(root.parsedQuery.filters);
+        if (terms.length === 0 && Object.keys(WinSwitchQueryDsl.ftsHits).length > 0)
+            WinSwitchQueryDsl.ftsHits = ({}); // fresh index next time
+        root._ftsQueue = terms.filter(v => WinSwitchQueryDsl.ftsHits[v] === undefined);
+        root._ftsNext();
+    }
+    function _ftsNext() {
+        if (ftsProc.running || root._ftsQueue.length === 0) return;
+        root._ftsCurrent = root._ftsQueue[0];
+        root._ftsQueue = root._ftsQueue.slice(1);
+        ftsProc.command = ["claude-history", "--fts", root._ftsCurrent];
+        ftsProc.running = true;
+    }
+    Process {
+        id: ftsProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const hits = {};
+                for (const line of text.split("\n")) {
+                    const m = line.split("\t");
+                    if (m.length === 2) hits[m[0]] = parseFloat(m[1]);
+                }
+                const nh = Object.assign({}, WinSwitchQueryDsl.ftsHits);
+                nh[root._ftsCurrent] = hits;
+                WinSwitchQueryDsl.ftsHits = nh;
+                root._ftsNext();
+            }
+        }
+    }
     // /sw (/switch-workspace): swap the rows for workspaces (state fetches them).
     readonly property bool wantWorkspaces: root.parsedQuery.switchWorkspace
     onWantWorkspacesChanged: {
