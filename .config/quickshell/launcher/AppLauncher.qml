@@ -169,19 +169,24 @@ PanelWindow {
     // a new workspace right after the window's current one.
     readonly property var actionVerbs: ({
         "/move-to-workspace": "move the focused window to a workspace (typed name may be new)",
-        "/move-workspace": "move the current workspace to just after a chosen one"
+        "/move-workspace": "move the current workspace to just after a chosen one",
+        "/add-workspace": "add an empty workspace after the current one (name optional, default next number)"
     })
-    readonly property var _actionMatch: query.text.match(/^\s*(\/move-to-workspace|\/move-workspace)(?:\s+(.*))?$/)
+    readonly property var _actionMatch: query.text.match(/^\s*(\/move-to-workspace|\/move-workspace|\/add-workspace)(?:\s+(.*))?$/)
     // Typing the full verb swaps the results for the workspace list in
     // place; whatever follows the verb is the filter / the target name.
     readonly property bool wsPrompt: root._actionMatch !== null
     // which action the workspace list serves: "window" | "workspace"
-    readonly property string promptKind: root._actionMatch && root._actionMatch[1] === "/move-workspace" ? "workspace" : "window"
+    readonly property string promptKind: root._actionMatch && root._actionMatch[1] === "/move-workspace" ? "workspace" : root._actionMatch[1] === "/add-workspace" ? "add" : "window"
     readonly property bool actionMode: root.wsPrompt
     readonly property string actionArg: root._actionMatch && root._actionMatch[2] ? root._actionMatch[2].trim() : ""
 
     readonly property var workspaceRows: {
         const arg = root.actionArg.toLowerCase();
+        if (root.promptKind === "add")
+            return [{ ws: true, name: "+ add workspace " + (root.actionArg ? "\"" + root.actionArg + "\"" : "(next number)"),
+                      target: root.actionArg, create: true, cnt: -1, mon: "",
+                      apps: "added empty after the current workspace, focus stays", entry: { icon: "" } }];
         const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0
             && !(root.promptKind === "workspace" && w.id === LauncherState.workspaceId));
         list.sort((a, b) => a.id - b.id);
@@ -226,6 +231,22 @@ PanelWindow {
             + " then hl.dispatch(hl.dsp.window.move({ workspace = id, window = w, follow = false })) end end "
             + "hl.dispatch(hl.dsp.workspace.rename({ workspace = id, name = name })) "
             + "hl.dispatch(hl.dsp.focus({ workspace = id }))";
+        moveProc.exec(["hyprctl", "repl", lua]);
+    }
+
+    // /add-workspace: an empty workspace at the smallest unused id above the
+    // current one. Hyprland drops empty unfocused workspaces, so a persistent
+    // workspace rule keeps it alive; focus is not moved. No name = the next
+    // free integer name after the current workspace's (or 1).
+    function addWorkspace(row) {
+        const lua = "local cur = hl.get_workspace(" + LauncherState.workspaceId + ") "
+            + "local used, names = {}, {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end "
+            + "local name = " + root._luaStr(row.target) + " "
+            + "if name == '' then local n = (cur and tonumber(cur.name) or 0) + 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) end "
+            + "if names[name] then return end "
+            + "local id = (cur and cur.id or 0) + 1 while used[id] do id = id + 1 end "
+            + "hl.workspace_rule({ workspace = tostring(id), persistent = true, default_name = name }) "
+            + "hl.dispatch(hl.dsp.workspace.rename({ workspace = id, name = name }))";
         moveProc.exec(["hyprctl", "repl", lua]);
     }
 
@@ -300,6 +321,7 @@ PanelWindow {
         if (app.ws) {
             LauncherQueryHistory.record(query.text);
             if (root.promptKind === "workspace") root.moveWorkspaceAfter(app);
+            else if (root.promptKind === "add") root.addWorkspace(app);
             else root.moveToWorkspace(app);
             root.hide();
             return;
@@ -766,7 +788,7 @@ PanelWindow {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.wsPrompt ? (root.promptKind === "workspace" ? qsTr("move this workspace after   ·   pick one") : qsTr("move window to workspace   ·   pick or type a new name")) : ""
+                    text: root.wsPrompt ? (root.promptKind === "workspace" ? qsTr("move this workspace after   ·   pick one") : root.promptKind === "add" ? qsTr("add workspace after this one   ·   optional name") : qsTr("move window to workspace   ·   pick or type a new name")) : ""
                     color: Theme.muted
                     font: query.font
                     visible: query.text.length === 0
