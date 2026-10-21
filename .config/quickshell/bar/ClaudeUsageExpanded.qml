@@ -1742,8 +1742,11 @@ Rectangle {
                     (cursorPosition === text.length && !(root.acOpen)) ? ClaudeUsageQueryHistory.suggest(text) : ""
                 Text {
                     visible: searchInput.ghost.length > 0
-                    x: searchInput.positionToRectangle(searchInput.text.length).x
-                    y: searchInput.positionToRectangle(searchInput.text.length).y
+                    // cursorRectangle (cursor is at the end whenever the ghost
+                    // shows) notifies on change; positionToRectangle() doesn't,
+                    // so the ghost kept the previous keystroke's x and overlapped.
+                    x: searchInput.cursorRectangle.x + searchInput.cursorRectangle.width
+                    y: searchInput.cursorRectangle.y
                     text: searchInput.ghost
                     color: Theme.muted
                     font: searchInput.font
