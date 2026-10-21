@@ -1020,7 +1020,14 @@ def rank(snap, q, live_map, targets):
     other_terms = [(f, t) for f, t in q.field_terms if f != ["body"]]
     neg_other_terms = [(f, t) for f, t in q.neg_field_terms if f != ["body"]]
 
-    pos = list(q.terms) + body_terms + ['"%s"' % p for p in q.phrases]
+    # a bare word with punctuation ("submission-examples") was split into
+    # several terms by parse_query; Recoll gets it back whole, as a phrase
+    words = list(q.terms)
+    for x in q.soft:
+        for tok in tokenize(x):
+            if tok in words:
+                words.remove(tok)
+    pos = words + body_terms + ['"%s"' % p for p in q.phrases + q.soft]
     neg = list(q.neg_terms) + neg_body_terms + ['"%s"' % p for p in q.neg_phrases]
     hits = None
     if pos:
