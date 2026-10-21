@@ -194,9 +194,9 @@ PanelWindow {
     }
     function _ago(mtime) {
         const d = Math.max(0, Date.now() / 1000 - (mtime || 0));
-        if (d < 3600) return Math.max(1, Math.round(d / 60)) + "m ago";
-        if (d < 86400) return Math.round(d / 3600) + "h ago";
-        return Math.round(d / 86400) + "d ago";
+        if (d < 3600) return Math.max(1, Math.round(d / 60)) + "m";
+        if (d < 86400) return Math.round(d / 3600) + "h";
+        return Math.round(d / 86400) + "d";
     }
     function _shortPath(p) {
         const h = Quickshell.env("HOME");
