@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Brave (sandboxed file)
+Exec=/home/user1/bin/brave-sandbox-open %f
+MimeType=text/html;application/xhtml+xml;
+NoDisplay=true
