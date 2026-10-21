@@ -1842,12 +1842,13 @@ Rectangle {
                     } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
                         if (root.acOpen) {
                             if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
-                        } else root.handleKey(event);
+                        } else if (root.acHistIndex >= 0) root._historyNext(); // Ctrl+J == Down (query-dsl.md "Search-box history")
+                        else { searchInput.focus = false; root.forceActiveFocus(); }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
                         if (root.acOpen) {
                             if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
-                        } else root.handleKey(event);
+                        } else root._historyPrev(); // Ctrl+K == Up
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageDown && root.acOpen) {
                         if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7); });

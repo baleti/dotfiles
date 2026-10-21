@@ -898,7 +898,9 @@ PanelWindow {
                                     } else if ((e.key === Qt.Key_J || e.key === Qt.Key_K) && (e.modifiers & Qt.ControlModifier)) {
                                         const d = e.key === Qt.Key_J ? 1 : -1;
                                         if (root.acOpen) root.acSel = Math.max(0, Math.min(root.acItems.length - 1, root.acSel + d));
-                                        else root.move(d);
+                                        else if (d < 0) root._historyPrev(); // Ctrl+K == Up (query-dsl.md "Search-box history")
+                                        else if (root.acHistIndex >= 0) root._historyNext(); // Ctrl+J == Down
+                                        else root._returnFocusToList();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Down) {
                                         // Popup open: highlight-move. Popup

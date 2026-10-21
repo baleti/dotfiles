@@ -947,6 +947,19 @@ PanelWindow {
                         if (ac.visible) root.acSel = Math.max(0, root.acSel - 1);
                         else root._historyPrev();
                         event.accepted = true;
+                    } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier) && !ac.visible) {
+                        // query-dsl.md "Search-box history": Ctrl+J == Down
+                        // (forward through history only once Up/Ctrl+K has
+                        // started cycling, else walk the results).
+                        if (root.acHistIndex >= 0) root._historyNext();
+                        else {
+                            root.selected = Math.min(root.results.length - 1, root.selected + 1);
+                            LauncherQueryHistory.record(query.text);
+                        }
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier) && !ac.visible) {
+                        root._historyPrev(); // Ctrl+K == Up
+                        event.accepted = true;
                     } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
                         if (!event.isAutoRepeat) _startNavRepeat(() => {
                             if (ac.visible) {

@@ -1450,7 +1450,7 @@ fn take_act(ui: &mut egui::Ui, keys: &Keymap, act: &str) -> usize {
 /// Keys that cannot be rebound (shown in the settings window).
 const FIXED_KEYS: [(&str, &str); 10] = [
     ("Tab", "query box: complete; results: back to the query box"),
-    ("Up / Down", "query box: walk the search history; Down also enters the results"),
+    ("Up / Down, Ctrl+K / Ctrl+J", "query box: walk the search history (Ctrl+J only once a walk started, else it enters the results); Down also enters the results"),
     ("Arrows", "move through the results; Left / Right also across the grid"),
     ("Shift+arrows", "extend the selection"),
     ("PgUp / PgDn, Home / End", "move through the results"),
@@ -2594,7 +2594,12 @@ impl eframe::App for App {
         let ctrl_j = ctrl_j_n > 0;
         let ctrl_k = ctrl_k_n > 0;
         let was_list = self.list_focus;
-        if !was_list && n > 0 && !self.popup && self.trash_pending.is_none() && self.props.is_none() && (ctrl_j || ctrl_k) {
+        // query-dsl.md "Search-box history": from the query box Ctrl+K is Up (history back) and Ctrl+J is Down
+        // (history forward, but only once a history walk is in progress; otherwise it enters the results)
+        let box_free = !was_list && !self.popup && !self.hist_popup && self.trash_pending.is_none() && self.props.is_none();
+        let kb_up = box_free && ctrl_k;
+        let kb_down = box_free && ctrl_j && self.hist_pos.is_some();
+        if !was_list && n > 0 && !self.popup && self.trash_pending.is_none() && self.props.is_none() && (ctrl_j || ctrl_k) && !kb_up && !kb_down {
             self.list_focus = true;
             self.move_cursor(if ctrl_j { 0 } else { n - 1 }, false);
         }
@@ -2618,9 +2623,12 @@ impl eframe::App for App {
         // Up / Down in the query box walk the search history like a shell (same list as Ctrl+R / F4);
         // typing anything resets it. Down with no history walk in progress still moves through the results.
         let (mut down, mut up) = (down, up);
+        let plain = !ui.input(|i| i.modifiers.ctrl || i.modifiers.shift || i.modifiers.alt);
         if !self.list_focus && !self.popup && !self.hist_popup && self.trash_pending.is_none() && self.props.is_none()
-            && !ui.input(|i| i.modifiers.ctrl || i.modifiers.shift || i.modifiers.alt)
+            && (plain || kb_up || kb_down)
         {
+            up = (up && plain) || kb_up;
+            down = (down && plain) || kb_down;
             if self.hist_pos.is_some() && self.query != self.hist_applied { self.hist_pos = None; }
             let len = self.history.len();
             let mut set: Option<String> = None;
@@ -2638,6 +2646,8 @@ impl eframe::App for App {
                 else { self.hist_pos = Some(p - 1); set = Some(self.history[len - p].clone()); }
                 down = false;
             }
+            if kb_up { up = false; }
+            if kb_down { down = false; }
             if let Some(q) = set {
                 self.hist_applied = q.clone();
                 self.query = q;

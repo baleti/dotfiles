@@ -1,0 +1,27 @@
+#!/bin/bash
+# fzf `transform` helper for query-dsl.md "Search-box history": Up/Ctrl+K step
+# back through history, Down/Ctrl+J step forward only while a history walk is
+# in progress (the box still holds what history put there), else they move the
+# results. Prints the fzf action to run. Needs env HISTNAV_STATE (state file
+# prefix) and HISTNAV_RECORD (fzf command run when the results move).
+#   fzf-histnav up | down | applied
+state=${HISTNAV_STATE:?}
+depth=$(cat "$state.depth" 2>/dev/null || echo 0)
+applied=$(cat "$state.applied" 2>/dev/null)
+case $1 in
+applied) printf '%s' "$FZF_QUERY" > "$state.applied" ;;
+up)
+    if [ "$depth" -gt 0 ] && [ "$FZF_QUERY" != "$applied" ]; then depth=0; fi
+    echo $((depth + 1)) > "$state.depth"
+    echo "prev-history+transform(${HISTNAV_BIN:-fzf-histnav} applied)"
+    ;;
+down)
+    if [ "$depth" -gt 0 ] && [ "$FZF_QUERY" = "$applied" ]; then
+        echo $((depth - 1)) > "$state.depth"
+        echo "next-history+transform(${HISTNAV_BIN:-fzf-histnav} applied)"
+    else
+        echo 0 > "$state.depth"
+        echo "down+execute-silent(${HISTNAV_RECORD})"
+    fi
+    ;;
+esac
