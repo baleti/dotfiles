@@ -329,6 +329,18 @@ Row {
     // convention) -- these back the mod+<key> pinned-app scratch feature in
     // hyprland/keybinds.lua, not a real workspace to switch to. Scoped to
     // this bar's own monitor.
+    // Workspaces filled/renamed via `hyprctl repl` (window.move, rename) can
+    // be missing from quickshell's model until something re-queries, so
+    // refresh (debounced) on any workspace-shaped raw event.
+    Connections {
+        target: Hyprland
+        function onRawEvent(ev) {
+            if (/workspace|movewindow|openwindow|closewindow/.test(ev.name))
+                wsRefreshTimer.restart();
+        }
+    }
+    Timer { id: wsRefreshTimer; interval: 150; onTriggered: Hyprland.refreshWorkspaces() }
+
     readonly property var allWs: Hyprland.workspaces.values.filter(ws => ws.id > 0 && ws.monitor?.name === root.screen.name).sort((a, b) => a.id - b.id)
 
     // [lo, hi] inclusive indices into allWs that stay visible.
