@@ -34,13 +34,16 @@ PanelWindow {
     }
 
     onOpenChanged: {
-        if (!root.open) root.keptKeys = ({});
+        if (!root.open) {
+            root.keptKeys = ({});
+            search.focus = false; // don't carry search focus (and its caret) into the next open
+        }
         if (root.open) {
             search.text = "";
             root.acVerbMulti = false;
             search.focus = false; // don't let a stale focus-scope memory re-trap into search on reopen
             focusGrab.active = true;
-            Qt.callLater(() => keyScope.forceActiveFocus());
+            Qt.callLater(() => { search.focus = false; keyScope.forceActiveFocus(); });
             if (RssSvc.items.length === 0)
                 RssSvc.refresh();
         } else {
@@ -1236,6 +1239,7 @@ PanelWindow {
 
                         Rectangle {
                             width: openBtn.width + 28
+                            z: linkMenu.visible ? 100 : 0 // menu must paint over the tags row below
                             height: 32
                             radius: Theme.rounding - 4
                             color: openArea.containsMouse ? Theme.cyan : "transparent"
@@ -1282,7 +1286,7 @@ PanelWindow {
                                 width: copyTxt.width + 24
                                 height: 30
                                 radius: Theme.rounding - 4
-                                color: copyArea.containsMouse ? Theme.cyan : Theme.bg
+                                color: copyArea.containsMouse ? Theme.cyan : Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 1)
                                 border.color: Theme.cyan
                                 border.width: 1
                                 Text {
