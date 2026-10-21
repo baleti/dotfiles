@@ -243,7 +243,7 @@ PanelWindow {
         const lua = "local cur = hl.get_workspace(" + LauncherState.workspaceId + ") "
             + "local used, names = {}, {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end "
             + "local name = " + root._luaStr(row.target) + " "
-            + "if name == '' then local ip, fp = cur and tostring(cur.name):match('^(%d+)%.(%d+)$') "
+            + "if name == '' then local ip, fp = tostring(cur and cur.name or ''):match('^(%d+)%.(%d+)$') "
             + "if ip then local k = tonumber(fp) + 1 while names[ip .. '.' .. k] do k = k + 1 end name = ip .. '.' .. k else "
             + "local base = cur and tonumber(cur.name) "
             + "if not base then local n = 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) "
