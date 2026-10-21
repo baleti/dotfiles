@@ -2325,12 +2325,23 @@ Rectangle {
                     onWidthChangeRequested: w => root.colTitleW = w
                 }
                 Text {
+                    id: msgsHeader
                     text: qsTr("msgs")
                     color: Theme.muted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     horizontalAlignment: Text.AlignRight
                     Layout.preferredWidth: root.colMsgsW
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onEntered: {
+                            root.showHint(qsTr("messages"));
+                            root.moveHint(msgsHeader.mapToItem(root, mouseX, mouseY));
+                        }
+                        onPositionChanged: mouse => root.moveHint(msgsHeader.mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
+                    }
                 }
                 Item { Layout.preferredWidth: root.handleW }
                 Text {
