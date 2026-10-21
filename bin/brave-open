@@ -3,8 +3,8 @@
 # whitelisted (brave-sandbox-open); everything else joins the shared firejail'd Brave.
 if [ "$#" -eq 1 ]; then
   case "$1" in
-    file://*) p=$(printf %s "${1#file://}" | python3 -c 'import sys,urllib.parse;print(urllib.parse.unquote(sys.stdin.read()),end="")'); exec brave-sandbox-open "$p" ;;
-    /*) exec brave-sandbox-open "$1" ;;
+    file://*) p=$(printf %s "${1#file://}" | python3 -c 'import sys,urllib.parse;print(urllib.parse.unquote(sys.stdin.read()),end="")'); exec /home/user1/bin/brave-sandbox-open "$p" ;;
+    /*) exec /home/user1/bin/brave-sandbox-open "$1" ;;
   esac
 fi
 exec firejail brave --force-renderer-accessibility "$@"
