@@ -330,9 +330,65 @@ Rectangle {
     readonly property var searchTypeNames: [
         "title", "pid", "status", "tokens", "path", "account",
         "tmux.session", "tmux.window", "tmux.pane",
-        "hypr.workspace", "hypr.monitor", "hypr.window",
+        "hypr.workspace", "hypr.monitor", "hypr.window", "fts",
     ]
-    readonly property var searchParsed: QueryDsl.parse(root.searchText)
+    // "/fts term" is full-text search of the Claude conversations (the same
+    // ~/.cache/claude-fts index alt-tab's /fts.claude reads): sugar for
+    // "/fv/fts term", rewritten before the shared parser sees it.
+    function _rewriteFts(text) {
+        return text.replace(/(^|\s)(!?)\/fts(?=\s|$)/g, "$1$2/fv/fts");
+    }
+    readonly property var searchParsed: QueryDsl.parse(root._rewriteFts(root.searchText))
+
+    // fts hits: lowercase term -> { sessionId: true }, filled by one grep
+    // over the index per distinct term (queue drained by ftsProc).
+    property var ftsHits: ({})
+    property var _ftsQueue: []
+    property string _ftsCurrent: ""
+    readonly property string _ftsDir: Quickshell.env("HOME") + "/.cache/claude-fts"
+    function _ftsTerms() {
+        const out = [];
+        for (const t of root.searchParsed.terms) {
+            if (t.field === undefined || !t.value) continue;
+            if (QueryDsl.resolvePath(t.field, root.searchTypeNames).indexOf("fts") < 0) continue;
+            const v = String(t.value).toLowerCase();
+            if (out.indexOf(v) < 0) out.push(v);
+        }
+        return out;
+    }
+    function _ftsRefresh() {
+        const terms = root._ftsTerms();
+        if (terms.length === 0) {
+            if (root.searchText === "") root.ftsHits = ({});
+            return;
+        }
+        root._ftsQueue = terms.filter(v => root.ftsHits[v] === undefined);
+        root._ftsNext();
+    }
+    function _ftsNext() {
+        if (ftsProc.running || root._ftsQueue.length === 0) return;
+        root._ftsCurrent = root._ftsQueue[0];
+        root._ftsQueue = root._ftsQueue.slice(1);
+        ftsProc.command = ["grep", "-rilF", "--", root._ftsCurrent, root._ftsDir];
+        ftsProc.running = true;
+    }
+    onSearchParsedChanged: root._ftsRefresh()
+    Process {
+        id: ftsProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const hits = {};
+                for (const line of text.split("\n")) {
+                    const m = line.match(/([^\/]+)\.txt$/);
+                    if (m) hits[m[1]] = true;
+                }
+                const nh = Object.assign({}, root.ftsHits);
+                nh[root._ftsCurrent] = hits;
+                root.ftsHits = nh;
+                root._ftsNext();
+            }
+        }
+    }
     function _searchFieldVals(row, field, account) {
         switch (field) {
         case "title": return [row.title || ""];
@@ -363,6 +419,13 @@ Rectangle {
         if (fields.length === 0)
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
+            if (f === "fts") {
+                // QueryDsl.substr's quoting/exactness doesn't apply: a plain
+                // substring grep over the indexed conversation text.
+                const hits = root.ftsHits[String(term.value).toLowerCase()];
+                if (hits && row.session_id && hits[row.session_id]) return true;
+                continue;
+            }
             for (const v of root._searchFieldVals(row, f, account)) {
                 if (QueryDsl.substr(term.value, String(v), term.quoted))
                     return true;
@@ -490,6 +553,7 @@ Rectangle {
         "hypr.workspace": "hyprland workspace",
         "hypr.monitor": "hyprland monitor",
         "hypr.window": "hyprland window address",
+        "fts": "full text of the Claude conversation (periodically indexed); /fts term",
     })
     readonly property var _acVerbs: ["/fv", "/s"]
 
@@ -522,7 +586,7 @@ Rectangle {
             const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (QueryDsl.canonVerb({ q: false, v: tok })) {
+                if (tok === "/fts" || QueryDsl.canonVerb({ q: false, v: tok })) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
@@ -562,7 +626,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1));
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -576,7 +640,8 @@ Rectangle {
         const slash = v.indexOf("/");
         if (slash < 0) {
             return { text: prefix + "/" + v + " ", label: "/" + v,
-                     alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
+                     alias: v === "fts" ? "" : QueryDsl.verbInfo["/" + v].long,
+                     desc: v === "fts" ? root.searchTypeDescs["fts"] : QueryDsl.verbInfo["/" + v].desc };
         }
         const verb = v.slice(0, slash), name = v.slice(slash + 1);
         return { text: `${prefix}/${verb}/${name} `, label: "/" + v,

@@ -49,10 +49,11 @@ QtObject {
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
         "/s":  { long: "/sort",         desc: "order windows by one field, optional asc / desc" },
+        "/fts.claude": { long: "", desc: "full-text search of Claude conversations (periodically indexed)" },
         "/sw": { long: "/switch-workspace", desc: "show workspaces instead of windows; pick one to switch to it" }
     })
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "sw",
+        "fv", "ft", "at", "rt", "s", "sw", "fts.claude",
         "filter-value", "filter-type", "add-type", "remove-type", "sort", "switch-workspace"
     ]
     // All resolvable type paths (flat types, groups, and group.subfields),
@@ -62,8 +63,10 @@ QtObject {
         const out = root.columns.slice();
         for (const g of root.groupOrder) {
             out.push(g);
-            for (const s of root.groupSubsOf(g))
+            for (const s of root.groupSubsOf(g)) {
+                if (g === "claude" && s === "fts") continue; // spelled /fts.claude now
                 out.push(g + "." + s);
+            }
         }
         return out;
     }
@@ -81,7 +84,7 @@ QtObject {
             for (const p of root.allPaths())
                 deep.push(v + "/" + p);
         }
-        return bareVerbs.concat(deep);
+        return bareVerbs.concat(["fts.claude"], deep);
     }
     // One-line description of a type path, for the type-path autocomplete
     // stage -- mirrors ui.rs's `type_desc`.
@@ -100,7 +103,7 @@ QtObject {
         "claude.path": "Claude Code working directory",
         "claude.session": "Claude Code session id",
         "claude.age": "how long ago the transcript last changed",
-        "claude.fts": "Claude Code conversation full-text (periodically indexed)"
+        "claude.fts": "Claude Code conversation full-text (periodically indexed); /fts.claude is the shortcut"
     })
 
     function fieldKey(f) { return f.kind === "flat" ? f.name : f.group + "." + f.sub; }
@@ -165,6 +168,9 @@ QtObject {
     // after it; tokVerb guards the bare-"/" case itself.
     function _canonName(name) {
         if (name === "") return "/fv";
+        // /fts.claude = full-text search over Claude conversations; tokVerb
+        // maps it to /fv with via claude.fts.
+        if (name === "fts.claude") return "/fv";
         if (root.shortVerbs.indexOf("/" + name) >= 0) return "/" + name;
         if (root.verbAliases["/" + name]) return root.verbAliases["/" + name];
         return null;
@@ -180,6 +186,7 @@ QtObject {
             return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
         }
         if (rest === "") return null; // bare "/" - not the default verb
+        if (rest === "fts.claude") return { verb: "/fv", via: "claude.fts" };
         const v = root._canonName(rest);
         return v === null ? null : { verb: v, via: null };
     }
