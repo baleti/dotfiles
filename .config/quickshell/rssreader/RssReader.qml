@@ -33,6 +33,7 @@ PanelWindow {
     }
 
     onOpenChanged: {
+        if (!root.open) root.keptKeys = ({});
         if (root.open) {
             search.text = "";
             root.acVerbMulti = false;
@@ -49,6 +50,15 @@ PanelWindow {
 
     // ---- filtering ------------------------------------------------
     property bool unreadOnly: false
+    // Articles touched (read/toggled) this open session stay listed in the
+    // unread-only view, only their dot changes; cleared when the reader closes.
+    property var keptKeys: ({})
+    function keep(key) {
+        if (root.keptKeys[key]) return;
+        const k = Object.assign({}, root.keptKeys);
+        k[key] = true;
+        root.keptKeys = k;
+    }
     property string tagFilter: ""
     property int selected: 0
 
@@ -133,10 +143,11 @@ PanelWindow {
     readonly property var view: {
         RssSvc.readRevision; // dependency
         root.parsed; // dependency
+        root.keptKeys; // dependency
         let rows = [];
         for (let i = 0; i < RssSvc.items.length; i++) {
             const it = RssSvc.items[i];
-            if (root.unreadOnly && RssSvc.isRead(it.key))
+            if (root.unreadOnly && RssSvc.isRead(it.key) && !root.keptKeys[it.key])
                 continue;
             if (root.tagFilter && (it.tags || []).indexOf(root.tagFilter) < 0)
                 continue;
@@ -177,7 +188,7 @@ PanelWindow {
     Timer {
         id: dwell
         interval: 1100
-        onTriggered: if (root.current) RssSvc.markRead(root.current.key)
+        onTriggered: if (root.current) { root.keep(root.current.key); RssSvc.markRead(root.current.key); }
     }
 
     // FocusScope remembers the last-focused child within it, so a bare
@@ -506,6 +517,7 @@ PanelWindow {
         // pickers.
         RssQueryHistory.record(search.text);
         Qt.openUrlExternally(root.current.link);
+        root.keep(root.current.key);
         RssSvc.markRead(root.current.key);
     }
     function move(d) {
@@ -589,7 +601,7 @@ PanelWindow {
             } else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_O) {
                 root.openCurrent();
             } else if (k === Qt.Key_M) {
-                if (root.current) RssSvc.toggleRead(root.current.key);
+                if (root.current) { root.keep(root.current.key); RssSvc.toggleRead(root.current.key); }
             } else if (k === Qt.Key_A) {
                 RssSvc.markReadKeys(root.view.map(i => i.key));
             } else if (k === Qt.Key_U) {
@@ -1106,6 +1118,7 @@ PanelWindow {
                             anchors.fill: parent
                             onClicked: {
                                 root.selected = index;
+                                root.keep(modelData.key);
                                 RssSvc.markRead(modelData.key);
                             }
                             onDoubleClicked: root.openCurrent();
