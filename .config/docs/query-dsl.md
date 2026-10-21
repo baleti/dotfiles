@@ -1827,7 +1827,7 @@ as is, the last bare word matches as a prefix (live typing).
   title); full text only through `/fts word` (one word or one `"quoted
   phrase"` per `/fts`; repeat it to AND more) or `/fv/body`. The preview pane
   is hidden until `/fts` is in the query.
-- alt-tab: `/fts.claude term` (sugar for `/fv/claude.fts term`) keeps windows
+- alt-tab: `/fts.claude term` (or plain `/fts term`; sugar for `/fv/claude.fts term`) keeps windows
   whose session is a hit. Windows carry no transcript text.
 - Claude usage panel (ctrl+alt+c): `/fts term`; with no explicit sort, rows
   order by relevance.

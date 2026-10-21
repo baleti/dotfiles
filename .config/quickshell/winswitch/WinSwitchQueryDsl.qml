@@ -170,7 +170,7 @@ QtObject {
         if (name === "") return "/fv";
         // /fts.claude = full-text search over Claude conversations; tokVerb
         // maps it to /fv with via claude.fts.
-        if (name === "fts.claude") return "/fv";
+        if (name === "fts.claude" || name === "fts") return "/fv";
         if (root.shortVerbs.indexOf("/" + name) >= 0) return "/" + name;
         if (root.verbAliases["/" + name]) return root.verbAliases["/" + name];
         return null;
@@ -186,7 +186,7 @@ QtObject {
             return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
         }
         if (rest === "") return null; // bare "/" - not the default verb
-        if (rest === "fts.claude") return { verb: "/fv", via: "claude.fts" };
+        if (rest === "fts.claude" || rest === "fts") return { verb: "/fv", via: "claude.fts" };
         const v = root._canonName(rest);
         return v === null ? null : { verb: v, via: null };
     }

@@ -159,7 +159,8 @@ PanelWindow {
     // excerpts of the highlighted window's Claude conversation.
     readonly property var _ftsActiveTerms: WinSwitchQueryDsl.ftsTerms(root.parsedQuery.filters)
     readonly property bool ftsActive: root._ftsActiveTerms.length > 0
-    readonly property int snippetH: 120
+    // Sized to the excerpts (at least 120), at most half the card's maximum height.
+    readonly property int snippetH: Math.min(card.maxCardH * 0.5, Math.max(120, snippetText.implicitHeight + 14))
     property string snippetHtml: ""
     property string _snipKey: ""
     function _snipRefresh() {
@@ -1313,6 +1314,7 @@ PanelWindow {
                 radius: 4
                 clip: true
                 Text {
+                    id: snippetText
                     anchors.fill: parent
                     anchors.margins: 6
                     textFormat: Text.RichText
