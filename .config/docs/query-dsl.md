@@ -1717,6 +1717,16 @@ look like (thumbnail grid, article list, schedule, plain rows):
   to move to, so the rule degrades to: Down walks the results (app-launcher
   gained this: it used to be dead unless history-cycling). They need no
   Tab-back.
+- **Up is not history once you have walked the results** (2026-10-21). Up/Ctrl+K
+  is history only from a cold box. After Down/Ctrl+J has moved the selection
+  from the search box (single-focus pickers: app-launcher, claude-history,
+  focus-picker), Up/Ctrl+K moves it back up the results; when it is back on the
+  first row the next Up starts history as usual. Any edit of the query ends the
+  walk. Where the results have their own focus (alt+tab, rss-reader,
+  claude-usage, images) Up/Ctrl+K already navigate rows there, and the table
+  views (`/fts.resume`) take the same focus hand-over as the grid.
+  fzf TUIs: `~/bin/fzf-histnav` remembers the query at the Down that walked the
+  list (`$state.walked`) and uses `$FZF_POS` to know when the first row is reached.
 
 Per implementation: `winswitch/WinSwitch.qml` (`listFocused`,
 `_focusList()`/`_focusSearch()`; unlocked Alt+Tab cycling is untouched -
