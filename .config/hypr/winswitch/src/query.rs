@@ -57,7 +57,7 @@ const COLUMNS: &[&str] = &["title", "workspace", "pid"];
 /// together.
 const GROUPS: &[(&str, &[&str])] = &[
     ("tmux", &["session", "window", "title"]),
-    ("claude", &["title", "path", "session", "time", "contents"]),
+    ("claude", &["title", "path", "session", "time", "fts"]),
 ];
 
 /// Per-group default subfield for a bare `group` path with no explicit
@@ -67,7 +67,7 @@ const GROUPS: &[(&str, &[&str])] = &[
 /// `contents`: transcript text is far more useful to search or sort by
 /// default than the title. `tmux` defaults to `title` - nothing more
 /// useful to default to there.
-const GROUP_DEFAULT_SUB: &[(&str, &str)] = &[("tmux", "title"), ("claude", "contents")];
+const GROUP_DEFAULT_SUB: &[(&str, &str)] = &[("tmux", "title"), ("claude", "fts")];
 
 fn group_default_sub(group: &str) -> &'static str {
     GROUP_DEFAULT_SUB.iter().find(|(g, _)| *g == group).map(|(_, s)| *s).unwrap_or("")
@@ -152,7 +152,7 @@ fn group_sub_value(meta: &TmuxClaudeMeta, group: &str, sub: &str) -> String {
         ("claude", "path") => meta.claude_path.clone(),
         ("claude", "session") => meta.claude_session.clone(),
         ("claude", "time") => meta.claude_time.clone(),
-        ("claude", "contents") => meta.claude_contents.clone(),
+        ("claude", "fts") => meta.claude_fts.clone(),
         _ => None,
     }
     .unwrap_or_default()
@@ -1192,18 +1192,18 @@ mod tests {
         let mut meta = TmuxClaudeMeta::default();
         meta.claude_title = Some("Waybar to quickshell migration".to_string());
         meta.claude_path = Some("/home/user1/dotfiles".to_string());
-        meta.claude_contents = Some("discussed sysmond socket reconnect".to_string());
+        meta.claude_fts = Some("discussed sysmond socket reconnect".to_string());
 
         // `/fv/path value` - the path glued onto the verb with a 2nd `/`,
         // no colon needed - means exactly what `/fv path:value` does.
-        assert!(matches_str(&w, &meta, "/fv/claude.contents sysmond"));
-        assert!(!matches_str(&w, &meta, "/fv/claude.contents quickshell")); // .contents only, not .title
+        assert!(matches_str(&w, &meta, "/fv/claude.fts sysmond"));
+        assert!(!matches_str(&w, &meta, "/fv/claude.fts quickshell")); // .fts only, not .title
         assert!(matches_str(&w, &meta, "/fv/claude.title quickshell"));
         assert!(matches_str(&w, &meta, "/fv/claude.path dotfiles"));
         // same thing, the original colon spelling
-        assert!(matches_str(&w, &meta, "/fv claude.contents:sysmond"));
+        assert!(matches_str(&w, &meta, "/fv claude.fts:sysmond"));
 
-        // Bare `/fv/claude` defaults to `.contents` specifically
+        // Bare `/fv/claude` defaults to `.fts` specifically
         // (`GROUP_DEFAULT_SUB`), not `.title` - transcript text is far
         // more useful to search by default than the title.
         assert!(matches_str(&w, &meta, "/fv/claude sysmond"));
@@ -1226,8 +1226,8 @@ mod tests {
 
         // A via term combines with an ordinary bare word, AND'ed like any
         // other pair of filter terms.
-        assert!(matches_str(&w, &meta, "/fv/claude.contents sysmond desk"));
-        assert!(!matches_str(&w, &meta, "/fv/claude.contents sysmond nope"));
+        assert!(matches_str(&w, &meta, "/fv/claude.fts sysmond desk"));
+        assert!(!matches_str(&w, &meta, "/fv/claude.fts sysmond nope"));
 
         // Every path-taking verb accepts a via path the same way -
         // `/s/claude.time`, `/ft/claude`, `/at/claude.*`, `/rt/tmux.session`
@@ -1335,7 +1335,7 @@ mod tests {
             ResolvedField::Group("claude", "path"),
             ResolvedField::Group("claude", "session"),
             ResolvedField::Group("claude", "time"),
-            ResolvedField::Group("claude", "contents"),
+            ResolvedField::Group("claude", "fts"),
         ];
         assert_eq!(cols("/at claude", &[]), expected);
         assert_eq!(cols("/at claude.*", &[]), expected);
@@ -1506,28 +1506,28 @@ mod tests {
 
     #[test]
     fn via_path_value_stage() {
-        // `/fv/claude.contents ` (space, no value typed yet) - live value
+        // `/fv/claude.fts ` (space, no value typed yet) - live value
         // completion for that one field, same corpus as `/fv path:`, but
         // as a `BareValue` (not `Value`) since accepting splices back
         // differently - no `field:` prefix to reconstruct (see
         // `SuggestionKind::BareValue` in ui.rs).
         let Some(Completion::BareValue { field: Some(field), fragment, .. }) =
-            completion_context("/fv/claude.contents ")
+            completion_context("/fv/claude.fts ")
         else {
             panic!()
         };
-        assert_eq!((field, fragment.as_str()), (ResolvedField::Group("claude", "contents"), ""));
+        assert_eq!((field, fragment.as_str()), (ResolvedField::Group("claude", "fts"), ""));
         let Some(Completion::BareValue { field: Some(field), fragment, .. }) =
-            completion_context("/fv/claude.contents li")
+            completion_context("/fv/claude.fts li")
         else {
             panic!()
         };
-        assert_eq!((field, fragment.as_str()), (ResolvedField::Group("claude", "contents"), "li"));
-        // bare `/fv/claude` defaults to `.contents` here too
+        assert_eq!((field, fragment.as_str()), (ResolvedField::Group("claude", "fts"), "li"));
+        // bare `/fv/claude` defaults to `.fts` here too
         let Some(Completion::BareValue { field: Some(field), .. }) = completion_context("/fv/claude ") else {
             panic!()
         };
-        assert_eq!(field, ResolvedField::Group("claude", "contents"));
+        assert_eq!(field, ResolvedField::Group("claude", "fts"));
     }
 
     #[test]

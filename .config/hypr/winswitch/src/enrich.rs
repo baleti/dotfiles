@@ -5,7 +5,7 @@
 //! which never even reaches this module), so nothing here may block the
 //! grid's first paint. `start()` spawns one thread that does all the
 //! subprocess/proc-tree work and streams results back as they're ready; a
-//! genuinely expensive step (`$claude.contents`, reading a whole transcript)
+//! genuinely expensive step (`$claude.fts`, reading a whole transcript)
 //! is deferred further still, one thread per matched window, so a single
 //! large conversation never delays the cheap fields on every other window.
 //!
@@ -36,7 +36,7 @@ use serde_json::Value;
 use crate::hyprctl::Window;
 
 /// Same convention as claude-history's MAX_MSG_CHARS: a bound on how much
-/// transcript text one window's `$claude.contents` carries, so one huge
+/// transcript text one window's `$claude.fts` carries, so one huge
 /// pasted-file conversation can't blow up per-keystroke matching cost.
 const CLAUDE_CONTENTS_BUDGET: usize = 20_000;
 
@@ -61,7 +61,7 @@ pub struct TmuxClaudeMeta {
     pub claude_time: Option<String>,
     /// Filled in last, by its own deferred thread -- see module doc.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_contents: Option<String>,
+    pub claude_fts: Option<String>,
 }
 
 impl TmuxClaudeMeta {
@@ -77,7 +77,7 @@ impl TmuxClaudeMeta {
         if other.claude_path.is_some() { self.claude_path = other.claude_path; }
         if other.claude_session.is_some() { self.claude_session = other.claude_session; }
         if other.claude_time.is_some() { self.claude_time = other.claude_time; }
-        if other.claude_contents.is_some() { self.claude_contents = other.claude_contents; }
+        if other.claude_fts.is_some() { self.claude_fts = other.claude_fts; }
     }
 }
 
@@ -453,7 +453,7 @@ fn humanize_ago(delta_secs: u64) -> String {
 
 /// `claude.time`'s value: how long ago the transcript file was last
 /// modified. Cheap (a `find_transcript` scan plus one `stat`), unlike
-/// `load_claude_contents`'s full read, so this doesn't need its own
+/// `load_claude_fts`'s full read, so this doesn't need its own
 /// deferred thread.
 fn claude_time_bucket(base_dir: &Path, session_id: &str) -> Option<String> {
     let path = find_transcript(base_dir, session_id)?;
@@ -493,6 +493,13 @@ fn load_claude_title_and_contents(base_dir: &Path, session_id: &str) -> Option<(
         }
     }
 
+    // Preferred: the periodic indexer's whole-conversation text (see
+    // `~/bin/claude-fts-indexer`), already extracted and lowercased, so
+    // this is one file read, no JSON parsing, and not budget-capped.
+    if let Some(text) = read_fts_index(session_id) {
+        return Some((ai_title, text));
+    }
+
     let mut out = String::new();
     for line in content.lines().rev() {
         if out.len() >= CLAUDE_CONTENTS_BUDGET {
@@ -508,6 +515,13 @@ fn load_claude_title_and_contents(base_dir: &Path, session_id: &str) -> Option<(
         }
     }
     Some((ai_title, out.to_lowercase()))
+}
+
+/// Text the `claude-fts-indexer` timer wrote for this session, if it has
+/// reached it yet (`~/.cache/claude-fts/<session>.txt`).
+fn read_fts_index(session_id: &str) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    fs::read_to_string(Path::new(&home).join(".cache/claude-fts").join(format!("{session_id}.txt"))).ok()
 }
 
 fn run_enrichment(win_specs: Vec<(usize, i32)>, tx: mpsc::Sender<(usize, TmuxClaudeMeta)>) {
@@ -608,7 +622,7 @@ fn run_enrichment(win_specs: Vec<(usize, i32)>, tx: mpsc::Sender<(usize, TmuxCla
         let tx = tx.clone();
         std::thread::spawn(move || {
             if let Some((ai_title, contents)) = load_claude_title_and_contents(&base_dir, &session_id) {
-                let meta = TmuxClaudeMeta { claude_title: ai_title, claude_contents: Some(contents), ..Default::default() };
+                let meta = TmuxClaudeMeta { claude_title: ai_title, claude_fts: Some(contents), ..Default::default() };
                 let _ = tx.send((idx, meta));
             }
         });
@@ -645,7 +659,7 @@ mod tests {
         for (idx, meta) in &results {
             let w = &windows[*idx];
             println!(
-                "window[{idx}] pid={} class={:?} title={:?}\n  tmux_session={:?} tmux_window={:?} tmux_title={:?}\n  claude_title={:?} claude_path={:?} claude_session={:?} claude_time={:?} claude_contents_len={:?}",
+                "window[{idx}] pid={} class={:?} title={:?}\n  tmux_session={:?} tmux_window={:?} tmux_title={:?}\n  claude_title={:?} claude_path={:?} claude_session={:?} claude_time={:?} claude_fts_len={:?}",
                 w.pid,
                 w.class,
                 w.title,
@@ -656,7 +670,7 @@ mod tests {
                 meta.claude_path,
                 meta.claude_session,
                 meta.claude_time,
-                meta.claude_contents.as_ref().map(|c| c.len()),
+                meta.claude_fts.as_ref().map(|c| c.len()),
             );
         }
         assert!(!results.is_empty(), "expected at least one open window to correlate with live tmux/claude state");
