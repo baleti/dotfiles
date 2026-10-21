@@ -177,7 +177,7 @@ PanelWindow {
     // place; whatever follows the verb is the filter / the target name.
     readonly property bool wsPrompt: root._actionMatch !== null
     // which action the workspace list serves: "window" | "workspace"
-    readonly property string promptKind: root._actionMatch && root._actionMatch[1] === "/move-workspace" ? "workspace" : root._actionMatch[1] === "/add-workspace" ? "add" : "window"
+    readonly property string promptKind: !root._actionMatch ? "window" : root._actionMatch[1] === "/move-workspace" ? "workspace" : root._actionMatch[1] === "/add-workspace" ? "add" : "window"
     readonly property bool actionMode: root.wsPrompt
     readonly property string actionArg: root._actionMatch && root._actionMatch[2] ? root._actionMatch[2].trim() : ""
 
