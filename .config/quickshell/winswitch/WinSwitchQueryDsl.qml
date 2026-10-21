@@ -541,6 +541,27 @@ QtObject {
         return term.neg ? !m : m;
     }
 
+    // claude.fts is answered by `claude-history --fts` (BM25 over every
+    // transcript), not by text carried on the window: WinSwitch.qml fills
+    // this { lowercase term: { sessionId: score } } for the query's terms.
+    property var ftsHits: ({})
+    function isFtsField(f) { return f.kind === "group" && f.group === "claude" && f.sub === "fts"; }
+    // Distinct lowercase values of every scoped term that reaches claude.fts.
+    function ftsTerms(filters) {
+        const out = [];
+        for (const t of filters) {
+            if (t.kind !== "scoped" || !t.value || t.neg) continue;
+            if (!root.resolveFilterFields(t.path).some(root.isFtsField)) continue;
+            const v = String(t.value).toLowerCase();
+            if (out.indexOf(v) < 0) out.push(v);
+        }
+        return out;
+    }
+    function _ftsMatch(meta, term) {
+        const hits = root.ftsHits[String(term.value).toLowerCase()];
+        return !!(hits && meta && meta.claude_session && hits[meta.claude_session] !== undefined);
+    }
+
     function _termMatchesPos(win, meta, term) {
         if (term.kind === "free") {
             const haystack = (win.title || "") + " " + (win.class || "") + " " + (win.workspace || "");
@@ -551,6 +572,7 @@ QtObject {
             // a window count is a number: "3" means exactly 3, not 13 or 30
             return fields.length > 0 && fields.some(f => f.kind === "flat" && f.name === "windows"
                 ? (term.value === "" || root.fieldValue(win, meta, f) === term.value)
+                : root.isFtsField(f) ? (term.value === "" || root._ftsMatch(meta, term))
                 : root.substr(term.value, root.fieldValue(win, meta, f), term.exact));
         }
         // "exists"
