@@ -948,6 +948,13 @@ Item {
     readonly property real gpuNvVram: root.gpuNvidia ? root.last(root.gpuNvidia.vram_pct ?? []) : NaN
 
     TextMetrics {
+        id: cpuCompactMetrics
+        font.family: Theme.fontFamily
+        font.pixelSize: root.pillFont
+        text: "88%"
+    }
+
+    TextMetrics {
         id: gpuCompactMetrics
         font.family: Theme.fontFamily
         font.pixelSize: root.pillFont
@@ -1140,6 +1147,7 @@ Item {
             icon: Icons.cpu
             title: qsTr("CPU")
             compactText: Math.round(root.last(SysmonSvc.cpuTotal)) + "%"
+            compactTextWidth: Math.ceil(cpuCompactMetrics.width) + 2
             valueLabel: compactText
             mode: "overlay"
             seriesList: root.cpuOverlayList
