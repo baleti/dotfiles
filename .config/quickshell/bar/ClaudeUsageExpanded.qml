@@ -330,14 +330,57 @@ Rectangle {
     readonly property var searchTypeNames: [
         "title", "pid", "status", "tokens", "path", "account",
         "tmux.session", "tmux.window", "tmux.pane",
-        "hypr.workspace", "hypr.monitor", "hypr.window", "fts",
+        "hypr.workspace", "hypr.monitor", "hypr.window",
     ]
+    // `/fts term` is rewritten to /fv/fts, so "fts" must resolve as a filter
+    // path - but it is a verb, not a type: kept out of completion and /s.
+    readonly property var _filterTypeNames: root.searchTypeNames.concat(["fts"])
     // "/fts term" is full-text search of the Claude conversations (Recoll via
     // `claude-history --fts`, the same engine as alt-tab's /fts.claude and
     // the tmux picker): sugar for
     // "/fv/fts term", rewritten before the shared parser sees it.
+    // "/fts.resume [term]" switches the panel to past (not running)
+    // conversations: archive rows from `claude-history --archive`, the
+    // columns that only make sense for a live session dropped, Enter/click
+    // resumes the conversation in a new terminal window.
+    readonly property var _resumeRe: /(^|\s)!?\/fts\.resume(?:\s+("[^"]*"|(?!\/)\S+))?/
+    readonly property var _resumeMatch: root._resumeRe.exec(root.searchText)
+    readonly property bool resumeMode: root._resumeMatch !== null
+    readonly property string resumeTerm: root._resumeMatch && root._resumeMatch[2] ? root._resumeMatch[2] : ""
     function _rewriteFts(text) {
-        return text.replace(/(^|\s)(!?)\/fts(?=\s|$)/g, "$1$2/fv/fts");
+        return text.replace(/(^|\s)!?\/fts\.resume(?:\s+("[^"]*"|(?!\/)\S+))?/g, "$1")
+                   .replace(/(^|\s)(!?)\/fts(?=\s|$)/g, "$1$2/fv/fts");
+    }
+    property var archiveRows: []
+    onResumeTermChanged: root._archiveRefresh()
+    onResumeModeChanged: root._archiveRefresh()
+    function _archiveRefresh() {
+        if (!root.resumeMode) { root.archiveRows = []; return; }
+        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--archive", root.resumeTerm];
+        archiveProc.running = false;
+        archiveProc.running = true;
+    }
+    Process {
+        id: archiveProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    root.archiveRows = JSON.parse(text).map(r => ({
+                        account: r.account, title: r.title, cwd: r.cwd, session_id: r.session_id,
+                        context_tokens: r.tokens, msgs: r.msgs, updated_at_ms: (r.mtime || 0) * 1000,
+                        status: "", pid: 0
+                    }));
+                } catch (e) {
+                    root.archiveRows = [];
+                }
+            }
+        }
+    }
+    Process { id: resumeProc }
+    function resumeRow(row) {
+        ClaudeUsageQueryHistory.record(root.searchText);
+        resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--resume-window", row.session_id]);
+        root.picked();
     }
     readonly property var searchParsed: QueryDsl.parse(root._rewriteFts(root.searchText))
 
@@ -350,7 +393,7 @@ Rectangle {
         const out = [];
         for (const t of root.searchParsed.terms) {
             if (t.field === undefined || !t.value) continue;
-            if (QueryDsl.resolvePath(t.field, root.searchTypeNames).indexOf("fts") < 0) continue;
+            if (QueryDsl.resolvePath(t.field, root._filterTypeNames).indexOf("fts") < 0) continue;
             const v = String(t.value).toLowerCase();
             if (out.indexOf(v) < 0) out.push(v);
         }
@@ -376,14 +419,19 @@ Rectangle {
 
     // Match preview (only while /fts is in the query): excerpts of the
     // highlighted row's conversation around the searched words.
-    readonly property bool ftsActive: root._ftsTerms().length > 0
+    function _snipTerms() {
+        if (root.resumeMode)
+            return root.resumeTerm ? [root.resumeTerm.replace(/"/g, "")] : [];
+        return root._ftsTerms();
+    }
+    readonly property bool ftsActive: root._snipTerms().length > 0
     // Sized to the excerpts (at least 150), but never past half the panel's
     // height - the table's viewport gives up what the strip takes.
     readonly property real snippetH: Math.min(root.maxPanelHeight * 0.5, Math.max(150, snippetText.implicitHeight + 14))
     property string snippetHtml: ""
     property string _snipKey: ""
     function _snipRefresh() {
-        const terms = root._ftsTerms();
+        const terms = root._snipTerms();
         const row = root.sortedProcs[root.selActive ? root.selIndex : 0];
         if (terms.length === 0 || !row || !row.session_id) {
             root._snipKey = ""; root.snippetHtml = "";
@@ -452,7 +500,7 @@ Rectangle {
                          + root.shortCwd(row.cwd) + " " + account).toLowerCase();
             return QueryDsl.substr(term.text, hay, term.quoted);
         }
-        const fields = QueryDsl.resolvePath(term.field, root.searchTypeNames);
+        const fields = QueryDsl.resolvePath(term.field, root._filterTypeNames);
         if (fields.length === 0)
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
@@ -484,6 +532,8 @@ Rectangle {
     // it's from -- what the one flat table is built from now, replacing
     // the old per-account Repeater-of-Repeaters shape.
     readonly property var allProcs: {
+        if (root.resumeMode)
+            return root.archiveRows;
         const out = [];
         for (const a of ClaudeUsageSvc.accounts)
             for (const row of (ClaudeUsageSvc.sessions[a.account] || []))
@@ -531,6 +581,8 @@ Rectangle {
                 }
                 return 0;
             });
+        } else if (root.resumeMode && !root.sort) {
+            arr = base.slice(); // archive rows arrive best match (or newest) first
         } else if (root._ftsTerms().length > 0 && !root.sort) {
             // /fts active and nothing explicitly sorted: best BM25 match first
             const score = r => root._ftsTerms().reduce((acc, t) =>
@@ -628,7 +680,7 @@ Rectangle {
             const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (tok === "/fts" || QueryDsl.canonVerb({ q: false, v: tok })) {
+                if (tok === "/fts" || tok === "/fts.resume" || QueryDsl.canonVerb({ q: false, v: tok })) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
@@ -668,7 +720,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts.resume"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -682,8 +734,10 @@ Rectangle {
         const slash = v.indexOf("/");
         if (slash < 0) {
             return { text: prefix + "/" + v + " ", label: "/" + v,
-                     alias: v === "fts" ? "" : QueryDsl.verbInfo["/" + v].long,
-                     desc: v === "fts" ? root.searchTypeDescs["fts"] : QueryDsl.verbInfo["/" + v].desc };
+                     alias: v.startsWith("fts") ? "" : QueryDsl.verbInfo["/" + v].long,
+                     desc: v === "fts" ? root.searchTypeDescs["fts"]
+                         : v === "fts.resume" ? "search past conversations and resume one in a new window"
+                         : QueryDsl.verbInfo["/" + v].desc };
         }
         const verb = v.slice(0, slash), name = v.slice(slash + 1);
         return { text: `${prefix}/${verb}/${name} `, label: "/" + v,
@@ -1047,6 +1101,7 @@ Rectangle {
     property real colTokensW: colDefaults.tokens
     // "last" itself is short, but values like "2mo 1w" aren't.
     property real colLastW: colDefaults.last
+    readonly property real colMsgsW: 44   // resume view only
     // tmux is a *grouped* column -- one "tmux" super-header spanning these
     // 3, each shrink-to-fit to its actual current values alone (see
     // tmuxSessionNaturalW etc. below for why these 3, unlike
@@ -1334,6 +1389,10 @@ Rectangle {
     property string _pendingAddress: ""
 
     function focusHyprWindow(row) {
+        if (root.resumeMode) {
+            root.resumeRow(row);
+            return;
+        }
         if (!row.hypr_address && !row.tmux_session)
             return;
         // query-dsl.md's "Search-box history": a real accept records the
@@ -2154,12 +2213,14 @@ Rectangle {
 
                 Item { Layout.preferredWidth: root.colAcctW }
                 Item { Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colStatusW }
-                Item { Layout.preferredWidth: root.handleW }
+                Item { visible: !root.resumeMode; Layout.preferredWidth: root.colStatusW }
+                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colTitleW }
                 Item { Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colTokensW }
                 Item { Layout.preferredWidth: root.handleW }
+                Item { visible: root.resumeMode; Layout.preferredWidth: root.colMsgsW }
+                Item { visible: root.resumeMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colLastW }
                 Item { Layout.preferredWidth: root.handleW }
                 Text {
@@ -2169,6 +2230,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     horizontalAlignment: Text.AlignHCenter
                     Layout.preferredWidth: root.colTmuxGroupW
+                    visible: !root.resumeMode
                     Rectangle {
                         anchors.left: parent.left
                         anchors.right: parent.right
@@ -2177,11 +2239,11 @@ Rectangle {
                         color: Theme.border
                     }
                 }
-                Item { Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colHyprWorkspaceW }
-                Item { Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colPidW }
-                Item { Layout.preferredWidth: root.handleW }
+                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                Item { visible: !root.resumeMode; Layout.preferredWidth: root.colHyprWorkspaceW }
+                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                Item { visible: !root.resumeMode; Layout.preferredWidth: root.colPidW }
+                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colPathW }
                 Item { Layout.fillWidth: true }
             }
@@ -2221,6 +2283,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colStatusW
+                    visible: !root.resumeMode
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2229,6 +2292,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
+                    visible: !root.resumeMode
                     Layout.fillHeight: true
                     targetWidth: root.colStatusW
                     onWidthChangeRequested: w => root.colStatusW = w
@@ -2279,6 +2343,16 @@ Rectangle {
                     onWidthChangeRequested: w => root.colTokensW = w
                 }
                 Text {
+                    visible: root.resumeMode
+                    text: qsTr("msgs")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    horizontalAlignment: Text.AlignRight
+                    Layout.preferredWidth: root.colMsgsW
+                }
+                Item { visible: root.resumeMode; Layout.preferredWidth: root.handleW }
+                Text {
                     text: qsTr("age") + root.sortArrow("active")
                     color: Theme.muted
                     font.family: Theme.fontFamily
@@ -2305,6 +2379,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxSessionW
+                    visible: !root.resumeMode
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2320,6 +2395,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
+                    visible: !root.resumeMode
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxSessionW
                     onWidthChangeRequested: w => root.colTmuxSessionW = w
@@ -2332,6 +2408,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxWindowW
+                    visible: !root.resumeMode
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2347,6 +2424,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
+                    visible: !root.resumeMode
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxWindowW
                     onWidthChangeRequested: w => root.colTmuxWindowW = w
@@ -2358,6 +2436,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxPaneW
+                    visible: !root.resumeMode
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2366,6 +2445,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
+                    visible: !root.resumeMode
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxPaneW
                     onWidthChangeRequested: w => root.colTmuxPaneW = w
@@ -2377,6 +2457,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colHyprWorkspaceW
+                    visible: !root.resumeMode
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2392,6 +2473,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
+                    visible: !root.resumeMode
                     Layout.fillHeight: true
                     targetWidth: root.colHyprWorkspaceW
                     onWidthChangeRequested: w => root.colHyprWorkspaceW = w
@@ -2402,6 +2484,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colPidW
+                    visible: !root.resumeMode
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2410,6 +2493,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
+                    visible: !root.resumeMode
                     Layout.fillHeight: true
                     targetWidth: root.colPidW
                     onWidthChangeRequested: w => root.colPidW = w
@@ -2590,8 +2674,9 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colStatusW
+                            visible: !root.resumeMode
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.title || "--"
                             color: Theme.text
@@ -2610,6 +2695,16 @@ Rectangle {
                         }
                         Item { Layout.preferredWidth: root.handleW }
                         Text {
+                            visible: root.resumeMode
+                            text: String(modelData.msgs || "")
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            horizontalAlignment: Text.AlignRight
+                            Layout.preferredWidth: root.colMsgsW
+                        }
+                        Item { visible: root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Text {
                             text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
@@ -2624,24 +2719,27 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxSessionW
+                            visible: !root.resumeMode
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_window || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxWindowW
+                            visible: !root.resumeMode
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_pane || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxPaneW
+                            visible: !root.resumeMode
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                         // hyprland cell: which real window is showing this
                         // session, if any (see root.startThumbCapture's own
                         // comment for why it's address-keyed rather than
@@ -2655,6 +2753,7 @@ Rectangle {
                         Item {
                             id: hyprCell
                             Layout.preferredWidth: root.colHyprWorkspaceW
+                            visible: !root.resumeMode
                             Layout.fillHeight: true
 
                             Text {
@@ -2672,15 +2771,16 @@ Rectangle {
                                 font.pixelSize: Theme.fontSize - 3
                             }
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: String(modelData.pid)
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colPidW
+                            visible: !root.resumeMode
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.shortCwd(modelData.cwd)
                             color: Theme.muted
