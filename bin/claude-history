@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-"""Standalone full-text search over Claude Code conversation history.
+"""The Claude Code session picker (prefix+C-c) and the one command-line entry
+to the conversation full-text index.
 
-Same query language and BM25-ish ranking idea as this dotfiles repo's tmux
+Default view: the running sessions in the ctrl+alt+c usage panel's columns
+(Enter jumps to the pane). `/fts word` searches the running ones' text;
+`/fts.resume [word]` lists past conversations (Enter resumes one in a new tmux
+window under its own account). Full text is the Recoll index kept by
+claude-fts-index (see fts_search); `--fts`, `--archive`, `--snippets` and
+`--resume-window` are the entry points alt-tab and the usage panel call.
+
+Same query language idea as this dotfiles repo's tmux
 window-search.py (prefix+C-w over live scrollback), but this tool is not a
 tmux script: it's a plain CLI, run directly (`claude-history`) in any
 terminal. fzf's own default full-screen mode already takes over the
@@ -13,12 +21,12 @@ nested */subagents/agent-*.jsonl files are forked subagent transcripts, not
 resumable top-level sessions, so the glob below deliberately stays at
 exactly one directory level and never recurses into them).
 
-One invocation shape, one path through Enter (resolve()): a live session
--> switch-client there and close the pane this was invoked from, since it
-was just a scratch launcher for the search, fair game once its job is
-done (see close_origin_pane). Not live -> exec `claude --resume <id>
---dangerously-skip-permissions` in place of this process, literally
-handing the terminal to claude the way `exec` hands it to anything.
+One path through Enter (resolve()): a live session -> switch-client there
+and close the pane this was invoked from, since it was just a scratch
+launcher for the search, fair game once its job is done (see
+close_origin_pane). Not live -> a new tmux window running `claude --resume
+<id> --dangerously-skip-permissions` under the account it last ran as
+(resume_tmux); outside tmux, exec in place of this process.
 
 prefix+C-c (.tmux.conf) runs this in a brand-new window
 (`new-window ... claude-history`), not via send-keys into the current pane
@@ -93,10 +101,8 @@ Deps: fzf, python3. tmux is optional - only needed for the live/switch path.
 import argparse
 import atexit
 import glob
-import hashlib
 import http.client
 import json
-import math
 import os
 import pickle
 import re
@@ -112,7 +118,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from collections import Counter, namedtuple
+from collections import namedtuple
 
 CLAUDE_DIR = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
 PROJECTS_GLOB = os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl")  # (message text only)
@@ -139,14 +145,6 @@ SESSIONS_GLOB = os.path.expanduser("~/.claude*/sessions/*.json")
 MAX_MSG_CHARS = 20000  # cap one message's indexed/stored text - same guard
 # window-search's CAPTURE_LINES is, against one pasted file dump or huge
 # tool transcript blowing up snapshot size/tokenize time for one outlier
-TITLE_BOOST = 8  # mirrors window-search's PANE_TITLE_BOOST: the AI-generated
-# title is a deliberate one-line summary of the whole conversation, a much
-# stronger signal than the same word merely occurring somewhere in it
-USER_BOOST = 2  # what you typed is what you'll later search for; the
-# assistant's (usually much longer) reply gets no boost so it doesn't drown
-# the user's own words out just by being verbose
-K1, B = 1.5, 0.75  # standard Okapi BM25 defaults, see window-search.py
-
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 _DEBUG = os.path.exists(os.path.expanduser("~/.cache/claude-history-search-debug"))
@@ -200,7 +198,8 @@ def tokenize(text):
 # `/fv qqq:foo`, or either still being typed) degrades to a plain bare-word
 # search over the literal text instead of being dropped. The other
 # shared-grammar verbs (/ft, /at, /rt, /s) are recognised but inert
-# here: this is a single BM25-ranked line, no columns and no re-sort.
+# here: fixed columns and no re-sort. Full text is `/fts word` (Recoll),
+# past conversations `/fts.resume`.
 #
 #   path     session's working directory
 #   tmux     session:window.pane, if currently live and reachable here
@@ -215,12 +214,9 @@ def tokenize(text):
 #
 # path/tmux/session/window/pane/time are short structured strings, not
 # prose - $path:conf is a plain case-insensitive substring test against the
-# whole field, not tokenized/ranked. title/body are real BM25-scored
-# fields, same prefix-expansion-against-vocabulary treatment as an unscoped
-# bare word gets, just scoped to that field's own vocabulary instead of the
-# combined one.
+# whole field, not tokenized/ranked. body is the conversation text, searched
+# through the Recoll index like /fts.
 FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "body"]
-BM25_FIELDS = {"title", "body"}
 FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 
 # Long verb forms before their short forms so ordered alternation doesn't
@@ -445,12 +441,13 @@ PARSE_CACHE_PATH = os.path.expanduser(f"~/.cache/claude-history-parse-cache-{_ca
 # the pickle one so 15MB of dead cache doesn't sit in ~/.cache forever
 _LEGACY_CACHE_PATH = PARSE_CACHE_PATH[:-len(".pkl")] + ".json"
 # (path, mtime, size) only tells you a *file* hasn't changed - it says
-# nothing about whether parse_session()/index_session() would still
+# nothing about whether parse_session() would still
 # compute the same thing from it. Bump this whenever their logic changes
-# (MAX_MSG_CHARS, USER_BOOST/TITLE_BOOST, extract_text's block filtering,
+# (MAX_MSG_CHARS, extract_text's block filtering,
 # etc.) so old entries can't silently outlive the code that produced them;
 # a mismatch just means "start over", not corruption.
-CACHE_VERSION = 5  # 2: tf_title/tf_body/time_text added (the $field: DSL).
+CACHE_VERSION = 6  # 6: the BM25 tf/doclen fields are gone (full text is Recoll now, see fts_search).
+# 2: tf_title/tf_body/time_text added (the $field: DSL).
 # 3: the body field was originally named "text" during development, then
 # renamed - the cached dict's own keys changed shape (tf_text ->
 # tf_body etc.) under what was still version 2, which is exactly the class
@@ -468,47 +465,6 @@ CACHE_VERSION = 5  # 2: tf_title/tf_body/time_text added (the $field: DSL).
 # _LEGACY_CACHE_PATH) rather than needing a format sniff. The file is
 # private (mkstemp, 0600) and only ever written by this tool, so
 # unpickling it is as trusted as reading its JSON predecessor was.
-
-
-def index_session(s):
-    """The tf/doclen computation that used to run unconditionally on every
-    build_snapshot() call, for every file, whether or not that file had
-    changed since the last run - pulled out so it can be cached alongside
-    parse_session()'s own output (see build_snapshot), not just skip the
-    file read/JSON-decode and still re-pay the tokenizing cost.
-
-    tf_title/tf_body are tracked separately (not just the combined tf) so
-    $title:/$body: can search one without the other - see the field-DSL
-    docs above parse_query(). The combined tf/doclen (the plain unscoped
-    search, unchanged from before the DSL existed) is then built BY SUMMING
-    these two rather than recomputed independently, so the combined search
-    and the two scoped ones can never quietly disagree about what a
-    document contains."""
-    tf_body, doclen_body = {}, 0
-    for role, text in s["turns"]:
-        counts = {}
-        for tok in TOKEN_RE.findall(text.lower()):
-            counts[tok] = counts.get(tok, 0) + 1
-        boost = USER_BOOST if role == "user" else 1
-        for tok, c in counts.items():
-            tf_body[tok] = tf_body.get(tok, 0.0) + c * boost
-        doclen_body += sum(counts.values()) * boost
-
-    tf_title, doclen_title = {}, 0
-    if s["ai_title"]:
-        title_tokens = tokenize(s["ai_title"])
-        for tok in title_tokens:
-            tf_title[tok] = tf_title.get(tok, 0) + 1.0
-        doclen_title = len(title_tokens)
-
-    tf = dict(tf_body)
-    for tok, c in tf_title.items():
-        tf[tok] = tf.get(tok, 0) + c * TITLE_BOOST
-    doclen = doclen_body + doclen_title * TITLE_BOOST
-
-    return {**s, "tf": tf, "doclen": doclen,
-            "tf_title": tf_title, "doclen_title": doclen_title,
-            "tf_body": tf_body, "doclen_body": doclen_body}
 
 
 def load_parse_cache():
@@ -612,7 +568,7 @@ def build_snapshot(progress=None):
             for fut in as_completed(futs):
                 path = futs[fut]
                 s = fut.result()
-                indexed = index_session(s) if s else None
+                indexed = s or None
                 freshly_indexed[path] = indexed
                 done_bytes += stats[path].st_size
                 if progress:
@@ -639,31 +595,8 @@ def build_snapshot(progress=None):
 
 
 def _aggregate_snapshot(sessions):
-    """The BM25 df/avgdl/vocab rollup, factored out of build_snapshot() so
-    build_snapshot_fast() (see below) can produce the exact same snapshot
-    shape from a cache-only, no-reparse session set."""
-    # df/avgdl/vocab per BM25 field - "df"/"avgdl"/"vocab" (no suffix) stay
-    # the combined ones the plain unscoped search has always used; _title/
-    # _body are the same aggregation over each field's own tf, for $title:/
-    # $body: to score and prefix-expand against
-    # Counter.update over a keys view counts each token once per session
-    # in C (_count_elements) - this rollup runs on every streamed refresh
-    # of the picker as well as at startup, and the per-token Python loop
-    # it replaces was the larger half of the fast path's ~0.1s
-    df, df_title, df_body = Counter(), Counter(), Counter()
-    for s in sessions.values():
-        df.update(s["tf"].keys())
-        df_title.update(s["tf_title"].keys())
-        df_body.update(s["tf_body"].keys())
-
-    n = max(1, len(sessions))
-    avgdl = sum(s["doclen"] for s in sessions.values()) / n
-    avgdl_title = sum(s["doclen_title"] for s in sessions.values()) / n
-    avgdl_body = sum(s["doclen_body"] for s in sessions.values()) / n
-    return {"sessions": sessions, "n": len(sessions),
-            "df": df, "avgdl": avgdl, "vocab": sorted(df.keys()),
-            "df_title": df_title, "avgdl_title": avgdl_title, "vocab_title": sorted(df_title.keys()),
-            "df_body": df_body, "avgdl_body": avgdl_body, "vocab_body": sorted(df_body.keys())}
+    """The snapshot shape build_snapshot() and build_snapshot_fast() share."""
+    return {"sessions": sessions, "n": len(sessions)}
 
 
 def build_snapshot_fast():
@@ -731,7 +664,7 @@ def _send_frame(sock, obj):
 def reindex_and_stream(server_sock):
     """Run as a detached child (see drive()) after the fast/stale snapshot
     is already on screen: does the real, canonical build_snapshot() -
-    reparse whatever changed, rewrite the cache, full df/vocab rollup -
+    reparse whatever changed, rewrite the cache -
     and, while doing it, streams each freshly-parsed session plus a
     byte-weighted progress figure back to the picker over its socket the
     moment it's ready, so the list updates incrementally (and the border
@@ -1070,7 +1003,7 @@ def complete_query(query, snap):
             # `/fv/via_frag` - completing the field name.
             name, via_frag = rest.split("/", 1)
             if name in ("fv", "filter-value", "") and ":" not in via_frag:
-                candidates = resolve_fields(via_frag)
+                candidates = [f for f in resolve_fields(via_frag) if f != "body"]  # full text is /fts
                 if candidates:
                     return {"query": query, "prefix": query[: len(query) - len(via_frag)],
                             "suffix": " ", "candidates": candidates}
@@ -1088,7 +1021,8 @@ def complete_query(query, snap):
         # to offer are gone since a field-less `/fv/` is a no-op anyway -
         # every candidate here is immediately useful once accepted.
         rest_lower = rest.lower()
-        candidates = [f"fv/{f}" for f in FIELD_NAMES if rest_lower in f"fv/{f}"]
+        candidates = [v for v in ("fts", "fts.resume") if rest_lower in v]
+        candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
                     "suffix": " ", "candidates": candidates}
