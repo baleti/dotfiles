@@ -1807,12 +1807,18 @@ predictable, and at these corpus sizes the looseness bought nothing.
   on the previously active window the instant a single Alt+Tab tap
   completes is the whole point of alt-tab.
 
-### claude.fts (renamed from claude.contents, 2026-10-21)
+### /fts.claude (was `//claude.fts`, was `claude.contents`; 2026-10-21)
 
-alt-tab's `//claude.fts` searches the whole conversation of a window's Claude
+alt-tab's `/fts.claude foo` (sugar for `/fv/claude.fts foo`; the field is no
+longer offered in path completion) searches the whole conversation of a window's Claude
 session. Text comes from `~/bin/claude-fts-indexer` (user timer, every 2 min,
 `claude-fts-indexer.timer`), which keeps `~/.cache/claude-fts/<session>.txt`
 for every transcript touched in the last 14 days, so nothing is parsed at
 invocation; winswitch falls back to the old tail read for a session the
 indexer hasn't reached. In prefix+C-c (`claude-history`) the equivalent field
 was `body`; `fts` is now accepted as an alias (`/fv fts:term`, `/fv/fts term`).
+
+
+The Claude usage panel (ctrl+alt+c) has the same thing as plain `/fts foo`
+(the panel is Claude-only, so no scope suffix): it greps `~/.cache/claude-fts`
+and keeps rows whose session id file contains the term.
