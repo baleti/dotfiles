@@ -74,7 +74,7 @@ PanelWindow {
             query.text = "";
             root.selected = 0;
             ac.visible = false;
-            root.acVerbMulti = false;
+            root.acVerbMulti = false; root.acArgMulti = false;
             root.acActive = false;
             focusGrab.active = true;
             Qt.callLater(() => query.forceActiveFocus());
@@ -439,8 +439,25 @@ PanelWindow {
     property bool acVerbMulti: false
     property int acVerbMultiStart: 0
 
-    function _acCandidates() {
-        const t = query.text;
+    // Ctrl+Space AND-narrowing for the non-Verb popups (type-path, value,
+    // sort direction): "//cla" + Tab + Ctrl+Space + "fts" keeps the
+    // candidates matching both. `acArgMultiStart` freezes where the fragment
+    // began; the first word is completed as usual (via the `tIn` re-entry
+    // below) and the rest are ANDed against each candidate's label.
+    property bool acArgMulti: false
+    property int acArgMultiStart: 0
+
+    function _acCandidates(tIn) {
+        if (tIn === undefined && root.acArgMulti) {
+            const full = query.text;
+            if (root.acArgMultiStart <= full.length) {
+                const frags = full.slice(root.acArgMultiStart).split(/\s+/).filter(f => f.length > 0);
+                return root._acCandidates(full.slice(0, root.acArgMultiStart) + (frags.length > 0 ? frags[0] : ""))
+                    .filter(it => frags.slice(1).every(f => String(it.label).indexOf(f) >= 0));
+            }
+            root.acArgMulti = false;
+        }
+        const t = tIn !== undefined ? tIn : query.text;
 
         if (root.acVerbMulti) {
             if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
@@ -450,7 +467,7 @@ PanelWindow {
                     .filter(v => frags.every(f => v.indexOf(f) >= 0))
                     .map(v => root._verbStageItem(prefix, v));
             }
-            root.acVerbMulti = false;
+            root.acVerbMulti = false; root.acArgMulti = false;
         }
 
         const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
@@ -493,7 +510,7 @@ PanelWindow {
         // completely unbound instead of showing an empty popup).
         ac.visible = acItems.length > 0 || root.acHistoryMode;
         acSel = 0;
-        if (!ac.visible) root.acVerbMulti = false;
+        if (!ac.visible) { root.acVerbMulti = false; root.acArgMulti = false; }
     }
 
     function _applyAcItem(it) {
@@ -838,7 +855,7 @@ PanelWindow {
                         return;
                     }
                     if (event.key === Qt.Key_Escape) {
-                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acActive = false; root.acHistoryMode = false; }
+                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acArgMulti = false; root.acActive = false; root.acHistoryMode = false; }
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -874,6 +891,12 @@ PanelWindow {
                             if (!root.acVerbMulti) {
                                 root.acVerbMulti = true;
                                 root.acVerbMultiStart = query.text.length - vm[1].length;
+                            }
+                            query.insert(query.cursorPosition, " ");
+                        } else if (root.acArgMulti || ac.visible) {
+                            if (!root.acArgMulti) {
+                                root.acArgMulti = true;
+                                root.acArgMultiStart = query.text.search(/[^\s:\/]*$/);
                             }
                             query.insert(query.cursorPosition, " ");
                         }

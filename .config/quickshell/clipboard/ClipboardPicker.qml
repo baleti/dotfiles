@@ -479,6 +479,9 @@ PanelWindow {
     property var _acCtx: null // {start, kind, field?} the current acItems were computed from
     property bool _verbMulti: false
     property int _verbMultiStart: 0
+    // Same Ctrl+Space AND-narrowing for the non-Verb popups (field/value):
+    // the _acCtx the popup was on when multi-mode began, start frozen.
+    property var _argMulti: null
     // Whether a completion session is open, independent of whether it
     // currently has any candidates to show -- see query's onTextChanged.
     property bool acActive: false
@@ -496,12 +499,23 @@ PanelWindow {
             }
             root._verbMulti = false;
         }
-        const ctx = ClipboardQueryDsl.completionContext(text, root.fieldNames);
+        let ctx, rest = [];
+        if (root._argMulti && root._argMulti.start <= text.length) {
+            const frags = text.slice(root._argMulti.start).split(/\s+/).filter(f => f.length > 0);
+            // a value ctx's start is the "field:" token start, its frag is what follows the colon
+            if (root._argMulti.kind === "value" && frags.length > 0) frags[0] = frags[0].slice(frags[0].indexOf(":") + 1);
+            ctx = Object.assign({}, root._argMulti, { frag: frags.length > 0 ? frags[0] : "" });
+            rest = frags.slice(1);
+        } else {
+            root._argMulti = null;
+            ctx = ClipboardQueryDsl.completionContext(text, root.fieldNames);
+        }
         if (!ctx) return null;
         let items;
         if (ctx.kind === "verb") items = ClipboardQueryDsl.verbSuggestions(ctx.frag, root.fieldNames);
         else if (ctx.kind === "field") items = ClipboardQueryDsl.fieldSuggestions(root.fieldNames, ctx.frag);
         else items = ClipboardQueryDsl.valueSuggestions(root._entries, ctx.field, ctx.frag);
+        items = items.filter(c => rest.every(f => ClipboardQueryDsl.substr(f, c)));
         if (items.length === 0) return null;
         return { start: ctx.start, kind: ctx.kind, field: ctx.field, via: ctx.via, verb: ctx.verb, items: items };
     }
@@ -514,6 +528,7 @@ PanelWindow {
         root.acItems = [];
         root._acCtx = null;
         root._verbMulti = false;
+        root._argMulti = null;
     }
 
     function _hideSuggestions() {
@@ -721,8 +736,13 @@ PanelWindow {
                                 const pos = query.cursorPosition;
                                 query.text = query.text.slice(0, pos) + " " + query.text.slice(pos);
                                 query.cursorPosition = pos + 1;
+                            } else if (root._acCtx) {
+                                if (!root._argMulti) root._argMulti = Object.assign({}, root._acCtx);
+                                const pos = query.cursorPosition;
+                                query.text = query.text.slice(0, pos) + " " + query.text.slice(pos);
+                                query.cursorPosition = pos + 1;
                             }
-                            event.accepted = true; return; // no-op outside Verb stage
+                            event.accepted = true; return;
                         }
                         if (event.key === Qt.Key_Space) {
                             root._acceptSuggestion();

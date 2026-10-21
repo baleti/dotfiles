@@ -365,6 +365,15 @@ PanelWindow {
     property bool acVerbMulti: false
     property int acVerbMultiStart: 0
 
+    // The same AND-narrowing for every non-Verb popup (typePath, value,
+    // bareValue, sortDirection): "//cla" + Tab + Ctrl+Space + "fts" narrows
+    // the candidates that contain "cla" to those that also contain "fts"
+    // (-> claude.fts). `acArgMulti` holds the completion object the popup
+    // was on when multi-mode began (its `start` is frozen); recompute takes
+    // the first fragment as the real completion fragment and ANDs the rest
+    // against each candidate's text.
+    property var acArgMulti: null
+
     function _hideSuggestions() {
         // Kind first: onAcItemsChanged keeps a "history" popup visible at zero
         // items, so clearing the items while the kind was still "history" left
@@ -372,6 +381,7 @@ PanelWindow {
         root.acSuggestionKind = null;
         root.acItems = [];
         root.acVerbMulti = false;
+        root.acArgMulti = null;
         root.acActive = false;
     }
 
@@ -422,6 +432,19 @@ PanelWindow {
                 return WinSwitchQueryDsl.verbStageUniverse().filter(v => frags.every(f => WinSwitchQueryDsl.substr(f, v)));
             }
             root.acVerbMulti = false;
+        }
+        if (root.acArgMulti !== null) {
+            const base = root.acArgMulti;
+            if (base.start <= root.queryText.length) {
+                const frags = root.queryText.slice(base.start).split(/\s+/).filter(f => f.length > 0);
+                // a "value" completion's start is the "field:" token start; its fragment is what follows the colon
+                if (base.kind === "value" && frags.length > 0) frags[0] = frags[0].slice(frags[0].indexOf(":") + 1);
+                const comp = Object.assign({}, base, { fragment: frags.length > 0 ? frags[0] : "" });
+                root.acSuggestionKind = Object.assign({}, comp, { fragment: frags.join(" ") });
+                return WinSwitchQueryDsl.completionCandidates(comp, root.windows, root.metas)
+                    .filter(c => frags.slice(1).every(f => WinSwitchQueryDsl.substr(f, c)));
+            }
+            root.acArgMulti = null;
         }
         const completion = WinSwitchQueryDsl.completionContext(root.queryText);
         root.acSuggestionKind = completion;
@@ -760,6 +783,10 @@ PanelWindow {
                                     root.acVerbMulti = true;
                                     root.acVerbMultiStart = root.acSuggestionKind.start;
                                 }
+                                searchInput.insert(searchInput.cursorPosition, " ");
+                            } else if (root.acSuggestionKind && root.acSuggestionKind.kind !== "history") {
+                                if (root.acArgMulti === null)
+                                    root.acArgMulti = Object.assign({}, root.acSuggestionKind);
                                 searchInput.insert(searchInput.cursorPosition, " ");
                             }
                             event.accepted = true;

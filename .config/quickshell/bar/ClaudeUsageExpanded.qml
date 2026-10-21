@@ -590,8 +590,25 @@ Rectangle {
     property bool acVerbMulti: false
     property int acVerbMultiStart: 0
 
-    function _acCandidates() {
-        const t = root.searchText;
+    // Ctrl+Space AND-narrowing for the non-Verb popups (type-path, value,
+    // sort direction): "//cla" + Tab + Ctrl+Space + "fts" keeps the
+    // candidates matching both. `acArgMultiStart` freezes where the fragment
+    // began; the first word is completed as usual (via the `tIn` re-entry
+    // below) and the rest are ANDed against each candidate's label.
+    property bool acArgMulti: false
+    property int acArgMultiStart: 0
+
+    function _acCandidates(tIn) {
+        if (tIn === undefined && root.acArgMulti) {
+            const full = root.searchText;
+            if (root.acArgMultiStart <= full.length) {
+                const frags = full.slice(root.acArgMultiStart).split(/\s+/).filter(f => f.length > 0);
+                return root._acCandidates(full.slice(0, root.acArgMultiStart) + (frags.length > 0 ? frags[0] : ""))
+                    .filter(it => frags.slice(1).every(f => String(it.label).indexOf(f) >= 0));
+            }
+            root.acArgMulti = false;
+        }
+        const t = tIn !== undefined ? tIn : root.searchText;
         // "//path" is the default-verb spelling of "/fv/path" (query-dsl.md
         // "Default verb"); match the stage regexes against the expanded form,
         // but keep building replacement text from `t` (only the tail differs).
@@ -605,7 +622,7 @@ Rectangle {
                     .filter(v => frags.every(f => v.indexOf(f) >= 0))
                     .map(v => root._verbStageItem(prefix, v));
             }
-            root.acVerbMulti = false;
+            root.acVerbMulti = false; root.acArgMulti = false;
         }
 
         const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
@@ -663,7 +680,7 @@ Rectangle {
     onAcItemsChanged: {
         acSel = 0;
         acDismissed = false;
-        if (acItems.length === 0) root.acVerbMulti = false;
+        if (acItems.length === 0) { root.acVerbMulti = false; root.acArgMulti = false; }
     }
     // Keep the highlighted row in view as arrow keys move acSel past
     // the popup's fixed 7-row window -- acList is the ListView defined
@@ -1743,7 +1760,7 @@ Rectangle {
                     if (event.key === Qt.Key_Escape) {
                         if (root.acOpen) {
                             root.acDismissed = true;
-                            root.acVerbMulti = false;
+                            root.acVerbMulti = false; root.acArgMulti = false;
                         } else {
                             searchInput.text = "";
                             // Clear the field's own focus *before* handing
@@ -1785,6 +1802,12 @@ Rectangle {
                             if (!root.acVerbMulti) {
                                 root.acVerbMulti = true;
                                 root.acVerbMultiStart = searchInput.text.length - vm[1].length;
+                            }
+                            searchInput.insert(searchInput.cursorPosition, " ");
+                        } else if (root.acArgMulti || root.acOpen) {
+                            if (!root.acArgMulti) {
+                                root.acArgMulti = true;
+                                root.acArgMultiStart = searchInput.text.search(/[^\s:\/]*$/);
                             }
                             searchInput.insert(searchInput.cursorPosition, " ");
                         }
