@@ -1807,18 +1807,22 @@ predictable, and at these corpus sizes the looseness bought nothing.
   on the previously active window the instant a single Alt+Tab tap
   completes is the whole point of alt-tab.
 
-### /fts.claude (was `//claude.fts`, was `claude.contents`; 2026-10-21)
+### Full-text search over Claude conversations: one engine (2026-10-21)
 
-alt-tab's `/fts.claude foo` (sugar for `/fv/claude.fts foo`; the field is no
-longer offered in path completion) searches the whole conversation of a window's Claude
-session. Text comes from `~/bin/claude-fts-indexer` (user timer, every 2 min,
-`claude-fts-indexer.timer`), which keeps `~/.cache/claude-fts/<session>.txt`
-for every transcript touched in the last 14 days, so nothing is parsed at
-invocation; winswitch falls back to the old tail read for a session the
-indexer hasn't reached. In prefix+C-c (`claude-history`) the equivalent field
-was `body`; `fts` is now accepted as an alias (`/fv fts:term`, `/fv/fts term`).
+One source for every consumer: `claude-history`'s BM25 index (every transcript
+of every `~/.claude*` profile, whole history - not a recent-N-days subset).
+`claude-fts-server.service` (user unit, `claude-history --fts-server`) keeps it
+warm, refreshing from the parse cache every 60s, and answers on
+`$XDG_RUNTIME_DIR/claude-fts.sock`; `claude-history --fts QUERY` prints
+`session_id<TAB>score` best first (falls back to the on-disk cache if the
+server is down).
 
+- tmux picker (prefix+C-c): the engine itself; `/fv/fts term` (alias of
+  `body`).
+- alt-tab: `/fts.claude term` (sugar for `/fv/claude.fts term`) keeps windows
+  whose session is in the hit set. Windows no longer carry transcript text.
+- Claude usage panel (ctrl+alt+c): `/fts term`; with no explicit sort, rows
+  order by score.
 
-The Claude usage panel (ctrl+alt+c) has the same thing as plain `/fts foo`
-(the panel is Claude-only, so no scope suffix): it greps `~/.cache/claude-fts`
-and keeps rows whose session id file contains the term.
+Query language is the picker's (prefix-expanded ANDed words, `"phrases"`,
+`!neg`). The old `claude-fts-indexer` timer and `~/.cache/claude-fts` are gone.

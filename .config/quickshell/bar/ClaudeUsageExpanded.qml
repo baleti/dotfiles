@@ -332,20 +332,20 @@ Rectangle {
         "tmux.session", "tmux.window", "tmux.pane",
         "hypr.workspace", "hypr.monitor", "hypr.window", "fts",
     ]
-    // "/fts term" is full-text search of the Claude conversations (the same
-    // ~/.cache/claude-fts index alt-tab's /fts.claude reads): sugar for
+    // "/fts term" is full-text search of the Claude conversations (BM25 via
+    // `claude-history --fts`, the same engine as alt-tab's /fts.claude and
+    // the tmux picker): sugar for
     // "/fv/fts term", rewritten before the shared parser sees it.
     function _rewriteFts(text) {
         return text.replace(/(^|\s)(!?)\/fts(?=\s|$)/g, "$1$2/fv/fts");
     }
     readonly property var searchParsed: QueryDsl.parse(root._rewriteFts(root.searchText))
 
-    // fts hits: lowercase term -> { sessionId: true }, filled by one grep
-    // over the index per distinct term (queue drained by ftsProc).
+    // fts hits: lowercase term -> { sessionId: bm25 score }, filled by one
+    // query per distinct term (queue drained by ftsProc).
     property var ftsHits: ({})
     property var _ftsQueue: []
     property string _ftsCurrent: ""
-    readonly property string _ftsDir: Quickshell.env("HOME") + "/.cache/claude-fts"
     function _ftsTerms() {
         const out = [];
         for (const t of root.searchParsed.terms) {
@@ -369,7 +369,7 @@ Rectangle {
         if (ftsProc.running || root._ftsQueue.length === 0) return;
         root._ftsCurrent = root._ftsQueue[0];
         root._ftsQueue = root._ftsQueue.slice(1);
-        ftsProc.command = ["grep", "-rilF", "--", root._ftsCurrent, root._ftsDir];
+        ftsProc.command = ["claude-history", "--fts", root._ftsCurrent];
         ftsProc.running = true;
     }
     onSearchParsedChanged: root._ftsRefresh()
@@ -379,8 +379,8 @@ Rectangle {
             onStreamFinished: {
                 const hits = {};
                 for (const line of text.split("\n")) {
-                    const m = line.match(/([^\/]+)\.txt$/);
-                    if (m) hits[m[1]] = true;
+                    const m = line.split("\t");
+                    if (m.length === 2) hits[m[0]] = parseFloat(m[1]);
                 }
                 const nh = Object.assign({}, root.ftsHits);
                 nh[root._ftsCurrent] = hits;
@@ -420,10 +420,9 @@ Rectangle {
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
             if (f === "fts") {
-                // QueryDsl.substr's quoting/exactness doesn't apply: a plain
-                // substring grep over the indexed conversation text.
+                // BM25 hit set from claude-history, not QueryDsl.substr.
                 const hits = root.ftsHits[String(term.value).toLowerCase()];
-                if (hits && row.session_id && hits[row.session_id]) return true;
+                if (hits && row.session_id && hits[row.session_id] !== undefined) return true;
                 continue;
             }
             for (const v of root._searchFieldVals(row, f, account)) {
@@ -495,6 +494,11 @@ Rectangle {
                 }
                 return 0;
             });
+        } else if (root._ftsTerms().length > 0 && !root.sort) {
+            // /fts active and nothing explicitly sorted: best BM25 match first
+            const score = r => root._ftsTerms().reduce((acc, t) =>
+                acc + ((root.ftsHits[t] || {})[r.session_id] || 0), 0);
+            arr = base.slice().sort((a, b) => score(b) - score(a));
         } else if (root.sort) {
             arr = base.slice().sort((a, b) => root.compareForSort(a, b, root.sort.col));
             if (!root.sort.asc)
