@@ -45,6 +45,7 @@ PanelWindow {
     // results"). searchInput regaining focus by any route clears it.
     property bool listFocused: false
     function _focusList() {
+        if (root.resumeMode) { root._resumeMove(1); return; }
         root.listFocused = true;
         searchInput.focus = false;
         card.forceActiveFocus();
@@ -100,6 +101,7 @@ PanelWindow {
         WinSwitchState.close(reason || "hide");
     }
     function confirm(i) {
+        if (root.resumeMode) { root._resumeConfirm(); return; }
         // query-dsl.md's "Search-box history": a real accept records the
         // query, same as fzf's own --history flag does for the tmux
         // pickers.
@@ -144,6 +146,57 @@ PanelWindow {
 
     // ---- filtering / sorting (query DSL) -----------------------------
     readonly property var parsedQuery: WinSwitchQueryDsl.parse(root.queryText)
+    // /fts.claude.resume [term]: the grid is replaced by a table of past
+    // (not running) conversations from `claude-history --archive`; Enter
+    // resumes the highlighted one in a new alacritty window.
+    readonly property bool resumeMode: root.parsedQuery.resume !== null && root.parsedQuery.resume !== undefined
+    readonly property string resumeTerm: root.resumeMode ? root.parsedQuery.resume.term : ""
+    property var archiveRows: []
+    property int resumeSel: 0
+    readonly property int resumeRowH: 24
+    readonly property int resumeTableH: Math.min(card.maxCardH * 0.6, root.resumeRowH * (root.archiveRows.length + 1) + 8)
+    onResumeTermChanged: root._archiveRefresh()
+    onResumeModeChanged: root._archiveRefresh()
+    function _archiveRefresh() {
+        root.resumeSel = 0;
+        if (!root.resumeMode) { root.archiveRows = []; return; }
+        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--archive", root.resumeTerm];
+        archiveProc.running = false;
+        archiveProc.running = true;
+    }
+    function _resumeMove(delta) {
+        const n = root.archiveRows.length;
+        if (n === 0) return;
+        root.resumeSel = Math.max(0, Math.min(n - 1, root.resumeSel + delta));
+        resumeList.positionViewAtIndex(root.resumeSel, ListView.Contain);
+    }
+    function _resumeConfirm() {
+        const row = root.archiveRows[root.resumeSel];
+        if (!row) return;
+        WinSwitchQueryHistory.record(root.queryText);
+        resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--resume-window", row.session_id]);
+        WinSwitchState.close("resume");
+    }
+    Process {
+        id: archiveProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try { root.archiveRows = JSON.parse(text); } catch (e) { root.archiveRows = []; }
+            }
+        }
+    }
+    Process { id: resumeProc }
+    function _ago(mtime) {
+        const d = Math.max(0, Date.now() / 1000 - (mtime || 0));
+        if (d < 3600) return Math.max(1, Math.round(d / 60)) + "m ago";
+        if (d < 86400) return Math.round(d / 3600) + "h ago";
+        return Math.round(d / 86400) + "d ago";
+    }
+    function _shortPath(p) {
+        const h = Quickshell.env("HOME");
+        return p && p.indexOf(h) === 0 ? "~" + p.slice(h.length) : (p || "");
+    }
+
     // /fts.claude: one `claude-history --fts` query per distinct term, queued
     // through ftsProc; results land in WinSwitchQueryDsl.ftsHits.
     property var _ftsQueue: []
@@ -157,14 +210,18 @@ PanelWindow {
     }
     // Match preview strip (only while a full-text term is in the query):
     // excerpts of the highlighted window's Claude conversation.
-    readonly property var _ftsActiveTerms: WinSwitchQueryDsl.ftsTerms(root.parsedQuery.filters)
+    readonly property var _ftsActiveTerms: root.resumeMode
+        ? (root.resumeTerm ? [root.resumeTerm] : [])
+        : WinSwitchQueryDsl.ftsTerms(root.parsedQuery.filters)
     readonly property bool ftsActive: root._ftsActiveTerms.length > 0
     // Sized to the excerpts (at least 120), at most half the card's maximum height.
     readonly property int snippetH: Math.min(card.maxCardH * 0.5, Math.max(120, snippetText.implicitHeight + 14))
     property string snippetHtml: ""
     property string _snipKey: ""
     function _snipRefresh() {
-        const meta = root.metas[root.selected] || {};
+        const meta = root.resumeMode
+            ? { claude_session: (root.archiveRows[root.resumeSel] || {}).session_id }
+            : (root.metas[root.selected] || {});
         if (!root.ftsActive || !meta.claude_session) {
             root._snipKey = ""; root.snippetHtml = "";
             return;
@@ -178,6 +235,8 @@ PanelWindow {
     }
     on_FtsActiveTermsChanged: root._snipRefresh()
     onSelectedChanged: root._snipRefresh()
+    onResumeSelChanged: root._snipRefresh()
+    onArchiveRowsChanged: root._snipRefresh()
     Process {
         id: snipProc
         stdout: StdioCollector {
@@ -274,6 +333,7 @@ PanelWindow {
     }
 
     function _advance(direction) {
+        if (root.resumeMode) { root._resumeMove(direction === "prev" ? -1 : 1); return; }
         const n = root.results.length;
         if (n === 0) return;
         const cur = root.visualSelected;
@@ -303,6 +363,7 @@ PanelWindow {
         }
     }
     function _advanceRow(delta) {
+        if (root.resumeMode) { root._resumeMove(delta < 0 ? -1 : 1); return; }
         const n = root.results.length;
         if (n === 0) return;
         const k = Math.max(0, Math.min(n - 1, Math.max(0, root.visualSelected) + delta));
@@ -1065,10 +1126,71 @@ PanelWindow {
                 id: gridScroll
                 width: parent.width
                 height: parent.height - searchHeader.height - acPopup.height - (root.ftsActive ? root.snippetH + 4 : 0) - contentColumn.spacing * 2
-                readonly property int contentHeightHint: root.rows * root.cellHeight
+                readonly property int contentHeightHint: root.resumeMode ? root.resumeTableH : root.rows * root.cellHeight
+
+                // Past-conversations table (/fts.claude.resume)
+                Column {
+                    anchors.fill: parent
+                    visible: root.resumeMode
+                    spacing: 0
+                    Row {
+                        height: root.resumeRowH
+                        spacing: 8
+                        Repeater {
+                            model: [["acct", 56], ["title", -1], ["tkns", 56], ["msgs", 48], ["age", 64], ["path", 220]]
+                            Text {
+                                required property var modelData
+                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - 56 - 56 - 48 - 64 - 220 - 8 * 6) : modelData[1]
+                                text: modelData[0]
+                                color: Theme.muted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 3
+                                horizontalAlignment: (modelData[0] === "tkns" || modelData[0] === "msgs" || modelData[0] === "age") ? Text.AlignRight : Text.AlignLeft
+                            }
+                        }
+                    }
+                    ListView {
+                        id: resumeList
+                        width: parent.width
+                        height: parent.height - root.resumeRowH
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+                        model: root.archiveRows
+                        delegate: Rectangle {
+                            id: resumeRow
+                            required property var modelData
+                            required property int index
+                            width: resumeList.width
+                            height: root.resumeRowH
+                            color: index === root.resumeSel ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.25) : "transparent"
+                            radius: 3
+                            Row {
+                                anchors.fill: parent
+                                spacing: 8
+                                Text { width: 56; text: resumeRow.modelData.account; color: Theme.muted; elide: Text.ElideRight
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
+                                Text { width: Math.max(100, gridScroll.width - 56 - 56 - 48 - 64 - 220 - 8 * 6); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 2; anchors.verticalCenter: parent.verticalCenter }
+                                Text { width: 56; text: resumeRow.modelData.tokens ? Math.round(resumeRow.modelData.tokens / 1000) + "k" : ""; color: Theme.muted; horizontalAlignment: Text.AlignRight
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
+                                Text { width: 48; text: String(resumeRow.modelData.msgs); color: Theme.muted; horizontalAlignment: Text.AlignRight
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
+                                Text { width: 64; text: root._ago(resumeRow.modelData.mtime); color: Theme.muted; horizontalAlignment: Text.AlignRight
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
+                                Text { width: 220; text: root._shortPath(resumeRow.modelData.cwd); color: Theme.muted; elide: Text.ElideRight
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: { root.resumeSel = resumeRow.index; root._resumeConfirm(); }
+                            }
+                        }
+                    }
+                }
 
                 GridView {
                     id: grid
+                    visible: !root.resumeMode
                     anchors.fill: parent
                     cellWidth: root.cellW + root.cellHOverhead
                     cellHeight: root.cellHeight
