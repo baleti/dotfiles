@@ -250,7 +250,11 @@ PanelWindow {
             + "elseif not names[tostring(base + 1)] then name = tostring(base + 1) "
             + "else local k = 1 while names[cur.name .. '.' .. k] do k = k + 1 end name = cur.name .. '.' .. k end end end "
             + "if names[name] then return end "
-            + "local id = (cur and cur.id or 0) + 1 "
+            + "local anchor = cur and cur.id or 0 "
+            // a decimal name lands after its series predecessor (590.2 after 590.1), not just after the current workspace
+            + "local aip, afp = name:match('^(%d+)%.(%d+)$') if aip and tonumber(afp) > 1 then "
+            + "for _, x in ipairs(hl.get_workspaces()) do if tostring(x.name) == aip .. '.' .. (tonumber(afp) - 1) and x.id > anchor then anchor = x.id end end end "
+            + "local id = anchor + 1 "
             // id cur+1 is taken: shift the contiguous run of workspaces
             // above the current one up by one (windows move, names are
             // kept) so the new one really lands right after it. Skipped
