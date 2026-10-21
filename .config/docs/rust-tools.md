@@ -166,7 +166,7 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
 - **`src/enrich.rs`** — cross-references an open terminal window against
   the live tmux server and any Claude Code session running in it
   (`TmuxClaudeMeta`: `tmux/session`, `tmux/window`, `tmux/title`,
-  `claude/title`, `claude/path`, `claude/session`, `claude/contents` —
+  `claude/title`, `claude/path`, `claude/session`, `claude.fts` —
   the `/group/sub` fields `query.rs` filters/sorts/displays on). Runs
   entirely off the main thread, spawned right after the grid's first
   paint, and streams results in via a channel polled every 50ms — the grid

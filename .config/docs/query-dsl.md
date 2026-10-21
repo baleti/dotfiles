@@ -470,10 +470,10 @@ claude.*           every subfield of the group
 **A bare group used as a `/fv` scope searches every subfield, not just its
 default one.** `/fv/claude ovh` (or `/fv claude:ovh`) keeps a row if *any*
 subfield - `claude.title`, `claude.path`, `claude.session`, `claude.age`,
-`claude.contents`, whichever the group has - contains `ovh`, the same union
+`claude.fts`, whichever the group has - contains `ovh`, the same union
 `claude.*` already means for a column verb (see `/add-type` etc., below).
 This changed 2026-09-13: it used to narrow to just `GROUP_DEFAULT_SUB`
-(`claude.contents` in winswitch), which silently missed a row whose only hit
+(`claude.fts` in winswitch), which silently missed a row whose only hit
 was in a different subfield, e.g. `claude.title`. `/sort` keeps the
 default-subfield behavior, since a sort key must resolve to exactly one
 field - see its own section, below.
@@ -995,7 +995,7 @@ therefore enough to reach a whole command: `/wo` + Tab reaches
 `/s/workspace` (every path-taking verb crossed with the one path
 containing `wo`); `/cla` + Tab reaches all five verbs crossed with
 `claude` and each of its five subfields (`claude.title`, `claude.path`,
-`claude.session`, `claude.age`, `claude.contents`) - thirty rows, further
+`claude.session`, `claude.age`, `claude.fts`) - thirty rows, further
 narrowed by typing more (`/claude.t` cuts it to the two subfields
 containing `t`).
 
@@ -1202,7 +1202,7 @@ name, and gated per row once the scoping term is a bare group.** Added
 2026-09-13, winswitch only (the one picker with groups today): since a bare
 group now searches every subfield rather than just `GROUP_DEFAULT_SUB` (see
 Type paths, above), which subfield actually matched can differ row to row -
-`/fv/claude ovh` might hit `claude.title` on one window and `claude.contents`
+`/fv/claude ovh` might hit `claude.title` on one window and `claude.fts`
 on another. Two changes follow from that:
 
 - **Labeling.** A group-subfield line now renders as `sub: value`
@@ -1215,14 +1215,14 @@ on another. Two changes follow from that:
 - **Per-row gating.** A field reached through a bare-group scoped filter is
   only shown on rows where it's actually the subfield that matched -
   `claude.title` doesn't get a line on a row whose hit was only in
-  `claude.contents`, and vice versa. A field shown for any other reason
+  `claude.fts`, and vice versa. A field shown for any other reason
   (`/at`, an explicit `claude.title` scope, the existence-filter default) is
   unaffected and always shown once it has a non-empty value, same as before.
 - **Match-centered preview.** The shown value is still capped (80 chars in
   winswitch), but when the line is tied to a matched filter value the window
   is now centered on the match's first occurrence instead of always starting
   at character 0 - a plain `value.slice(0, 80)` of a long field like
-  `claude.contents` (a whole transcript) essentially never contains the
+  `claude.fts` (a whole transcript) essentially never contains the
   matched substring within its first 80 characters, so the preview read as
   unrelated noise even on a correct match (reported 2026-09-13 against
   winswitch's alt-tab search: `/fv/claude ovh` matched real hits in
@@ -1735,3 +1735,13 @@ predictable, and at these corpus sizes the looseness bought nothing.
   is the deliberate exception - it auto-selects on open, because landing
   on the previously active window the instant a single Alt+Tab tap
   completes is the whole point of alt-tab.
+
+### claude.fts (renamed from claude.contents, 2026-10-21)
+
+alt-tab's `//claude.fts` searches the whole conversation of a window's Claude
+session. Text comes from `~/bin/claude-fts-indexer` (user timer, every 2 min,
+`claude-fts-indexer.timer`), which keeps `~/.cache/claude-fts/<session>.txt`
+for every transcript touched in the last 14 days, so nothing is parsed at
+invocation; winswitch falls back to the old tail read for a session the
+indexer hasn't reached. In prefix+C-c (`claude-history`) the equivalent field
+was `body`; `fts` is now accepted as an alias (`/fv fts:term`, `/fv/fts term`).

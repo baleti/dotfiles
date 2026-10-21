@@ -194,7 +194,8 @@ def tokenize(text):
 #   title    the AI-generated title
 #   time     the displayed relative age ("14d ago", "45m ago") - what's
 #            actually shown in the TIME column, not a raw timestamp
-#   body     the actual message content (title excluded - that's `title`)
+#   body     the actual message content (title excluded - that's `title`);
+#            also spelled `fts`, matching alt-tab's `//claude.fts`
 #
 # path/tmux/session/window/pane/time are short structured strings, not
 # prose - $path:conf is a plain case-insensitive substring test against the
@@ -233,6 +234,8 @@ def resolve_fields(prefix):
     FIELD_NAMES' own order (so highlight/display order stays predictable
     rather than depending on match position)."""
     prefix = prefix.lower()
+    if prefix == "fts":  # same name as alt-tab's //claude.fts; stored as "body"
+        return ["body"]
     return [f for f in FIELD_NAMES if prefix in f]
 
 
