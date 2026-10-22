@@ -1041,7 +1041,7 @@ def complete_query(query, snap):
             key_frag = keys[comma + 1:]
             prefix = query[: len(query) - len(key_frag)]
             if name == "fts":   # /fts/<scope names>
-                scopes = [x for x in ("claude-live", "claude-archive") if key_frag.lower() in x]
+                scopes = [x for x in ("claude", "claude-live", "claude-archive") if key_frag.lower() in x]
                 if scopes:
                     return {"query": query, "prefix": prefix, "suffix": " ", "candidates": scopes}
                 return none
@@ -1056,7 +1056,7 @@ def complete_query(query, snap):
         # it can scope to ("Verb-stage depth", query-dsl.md): one Tab from
         # bare "/" already reaches the full flat "/fv/field" list.
         rest_lower = rest.lower()
-        candidates = [v for v in ("fts", "fts/claude-live", "fts/claude-archive") if rest_lower in v]
+        candidates = [v for v in ("fts", "fts/claude", "fts/claude-live", "fts/claude-archive") if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
@@ -2075,7 +2075,8 @@ def session_rows(text, scope="archive", limit=300):
         meta = json.load(open(os.path.expanduser("~/.cache/indexes/claude/meta.json")))
     except (OSError, ValueError):
         return []
-    live = set(get_live_sessions())
+    live_map = get_live_sessions()
+    live = set(live_map)
     want = {"archive": lambda sid: sid not in live, "live": lambda sid: sid in live, "all": lambda sid: True}[scope]
     if text.strip():
         order = [(sid, score) for sid, score in fts_search(text) if sid in meta and want(sid)]
@@ -2090,7 +2091,7 @@ def session_rows(text, scope="archive", limit=300):
         rows.append({"session_id": sid, "title": m.get("title") or "", "cwd": m.get("cwd") or "",
                      "msgs": m.get("msgs") or 0, "tokens": m.get("tokens"), "mtime": m.get("mtime"),
                      "account": account_name(prof), "profile": prof or "", "score": score,
-                     "live": sid in live})
+                     "live": sid in live, "status": (live_map.get(sid) or {}).get("status", "")})
     return rows
 
 
