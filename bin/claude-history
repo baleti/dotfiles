@@ -241,12 +241,27 @@ QUERY_ELEM_RE = re.compile(
 Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts fts_scopes")
 
 
+FTS_SCOPE_NAMES = ["claude-live", "claude-archive", "tmux"]
+_SCOPE_KEY = {"claude-live": "live", "claude-archive": "archive", "tmux": "tmux"}
+
+
+def fts_scope_of(keys):
+    """`/fts/<keys>` -> set of scopes {"live", "archive", "tmux"}: the keys fuzzy-resolve (exact name wins,
+    else substring, comma list unioned) against claude-live / claude-archive / tmux; no keys = all three."""
+    if not keys:
+        return {"live", "archive", "tmux"}
+    hit = set()
+    for key in keys.lower().split(","):
+        if key:
+            hit.update([n for n in FTS_SCOPE_NAMES if n == key] or [n for n in FTS_SCOPE_NAMES if key in n])
+    return {_SCOPE_KEY[n] for n in hit}
+
+
 def fts_scope(q):
-    """None (no /fts), "live", "archive", or "all" (plain /fts, or both spelled out)."""
-    scopes = set(q.fts_scopes)
-    if not scopes:
+    """None (no /fts), else the union of every /fts token's scope set."""
+    if not q.fts_scopes:
         return None
-    return scopes.pop() if len(scopes) == 1 and scopes != {"all"} else "all"
+    return set().union(*q.fts_scopes)
 
 
 def resolve_fields(keys):
@@ -261,19 +276,6 @@ def resolve_fields(keys):
         exact = [f for f in FIELD_NAMES if f == key]
         hit.update(exact or [f for f in FIELD_NAMES if key in f])
     return [f for f in FIELD_NAMES if f in hit]
-
-
-def fts_scope_of(keys):
-    """`/fts/<keys>` -> "live" / "archive" / "all": the keys fuzzy-resolve
-    against the scope names claude-live / claude-archive."""
-    if not keys:
-        return "all"
-    hit = set()
-    names = ["claude-live", "claude-archive"]
-    for key in keys.lower().split(","):
-        if key:
-            hit.update([n for n in names if n == key] or [n for n in names if key in n])
-    return {"claude-live": "live", "claude-archive": "archive"}[next(iter(hit))] if len(hit) == 1 else "all"
 
 
 def parse_query(query):
@@ -850,6 +852,8 @@ def _age(mtime):
 
 def _acct_no(account):
     """The panel's bare account number: claude -> 1, claude6 -> 6."""
+    if not account:
+        return ""
     digits = "".join(ch for ch in account if ch.isdigit())
     return digits or "1"
 
@@ -938,9 +942,13 @@ def search(snap, query):
     neg = list(q.neg_fts) + neg_body_terms
     ftsq = " ".join(pos + ["!" + n for n in neg])
 
-    fmt = _fmt_live
+    live_on = scope is None or "live" in scope
+    arch_on = scope is not None and "archive" in scope
+    tmux_on = scope is not None and "tmux" in scope
+    archive_only = scope == {"archive"}
+    fmt = _fmt_archive if archive_only else _fmt_live
     base = []
-    if scope != "archive":
+    if live_on:
         base = live_rows()
         if pos or neg:
             hits = dict(fts_search(ftsq)) if pos else None
@@ -949,13 +957,15 @@ def search(snap, query):
                 base = [r for r in base if r["sid"] not in excluded]
             else:
                 base = [dict(r, score=hits[r["sid"]]) for r in base if r["sid"] in hits]
-    if scope == "archive" or (scope == "all" and (pos or neg)):
-        arch = session_rows(ftsq, "archive")
-        for r in arch:
+    extra = []
+    if arch_on and (pos or neg or archive_only):
+        extra += session_rows(ftsq, "archive")
+    if tmux_on and pos:
+        extra += session_rows(ftsq, "tmux")
+    if extra:
+        for r in extra:
             r["sid"] = r["session_id"]
-        if scope == "archive":
-            fmt = _fmt_archive
-        base = sorted(base + arch, key=lambda r: -r.get("score", 0)) if scope == "all" else arch
+        base = extra if archive_only else sorted(base + extra, key=lambda r: -r.get("score", 0))
 
     other = [(f, t, False) for f, t in q.field_terms if f != ["body"]] + \
             [(f, t, True) for f, t in q.neg_field_terms if f != ["body"]]
@@ -1043,7 +1053,7 @@ def complete_query(query, snap):
             key_frag = keys[comma + 1:]
             prefix = query[: len(query) - len(key_frag)]
             if name == "fts":   # /fts/<scope names>
-                scopes = [x for x in ("claude", "claude-live", "claude-archive") if key_frag.lower() in x]
+                scopes = [x for x in ("claude", "claude-live", "claude-archive", "tmux") if key_frag.lower() in x]
                 if scopes:
                     return {"query": query, "prefix": prefix, "suffix": " ", "candidates": scopes}
                 return none
@@ -1058,7 +1068,7 @@ def complete_query(query, snap):
         # it can scope to ("Verb-stage depth", query-dsl.md): one Tab from
         # bare "/" already reaches the full flat "/fv/field" list.
         rest_lower = rest.lower()
-        candidates = [v for v in ("fts", "fts/claude", "fts/claude-live", "fts/claude-archive") if rest_lower in v]
+        candidates = [v for v in ("fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux") if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
@@ -1083,6 +1093,14 @@ PREVIEW_CONTEXT_TURNS = 2  # turns of leading context kept above a jumped-to mat
 
 
 def preview(session_id, query, snap):
+    if session_id.startswith("tmux:"):
+        q = parse_query(query)
+        words = " ".join(w.strip('"') for w in q.fts)
+        lines = [f"tmux pane {session_id[5:]} - scrollback matches", "-" * 60]
+        for ex in fts_snippets(session_id, words, limit=12) if words else []:
+            lines.append(ex.replace("\x01", "\x1b[1;33m").replace("\x02", "\x1b[0m"))
+            lines.append("")
+        return "\n".join(lines)
     if not snap:
         return "[snapshot unavailable]"
     s = snap["sessions"].get(session_id)
@@ -1993,6 +2011,11 @@ def drive():
     if not selected:
         return
     session_id = selected.split("\t", 1)[0]
+    if session_id.startswith("tmux:"):          # a scrollback hit: go to that pane
+        client = current_client_tty()
+        if client:
+            jump_to_pane(client, session_id[5:])
+        return
     # the latest view, not the one fzf started with: the session actually
     # selected may only exist in what the reindex child streamed in later
     with state.lock:
@@ -2016,7 +2039,11 @@ def fts_terms(text):
     return " ".join(toks)
 
 
-def fts_search(text):
+TMUX_ROOT = os.path.expanduser("~/.cache/indexes/tmux")
+TMUX_CONF = os.path.join(TMUX_ROOT, "recoll")
+
+
+def fts_search(text, conf=None):
     """[(session_id, relevance %)] best first, from the Recoll index of Claude
     conversations (~/.cache/indexes/claude, kept by claude-fts-index). The one
     full-text engine behind alt-tab's and the usage panel's /fts and
@@ -2024,7 +2051,7 @@ def fts_search(text):
     terms = fts_terms(text)
     if not terms.strip():
         return []
-    r = subprocess.run(["recollq", "-c", FTS_CONF, "-n", "0-5000", "-F", "url relevancyrating", "--", terms],
+    r = subprocess.run(["recollq", "-c", conf or FTS_CONF, "-n", "0-5000", "-F", "url relevancyrating", "--", terms],
                        capture_output=True, text=True)
     out = []
     for line in r.stdout.splitlines():
@@ -2039,12 +2066,42 @@ def fts_search(text):
     return out
 
 
+def tmux_rows(text, limit=300):
+    """tmux scrollback hits (the Recoll index claude-fts-index keeps of every non-Claude pane), best
+    first, as rows shaped like session_rows' (kind "tmux", id "tmux:%12"); only panes that still exist."""
+    try:
+        meta = json.load(open(os.path.join(TMUX_ROOT, "meta.json")))
+    except (OSError, ValueError):
+        return []
+    r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"], capture_output=True, text=True)
+    alive = set(r.stdout.split())
+    hits = fts_search(text, TMUX_CONF) if text.strip() else \
+        [(d, 0.0) for d, m in sorted(meta.items(), key=lambda kv: -kv[1].get("mtime", 0))]
+    rows = []
+    for doc, score in hits:
+        m = meta.get(doc)
+        if not m or m["pane_id"] not in alive:
+            continue
+        rows.append({"session_id": "tmux:" + m["pane_id"], "kind": "tmux", "title": m["title"] or m["command"],
+                     "cwd": m["cwd"], "msgs": "", "tokens": None, "mtime": m["mtime"], "account": "",
+                     "profile": "", "score": score, "live": False, "status": "tmux",
+                     "sess": m["session_id"].lstrip("$"), "win": m["window_id"].lstrip("@"),
+                     "pane": m["pane_id"].lstrip("%"), "pane_id": m["pane_id"], "session_name": m["session"],
+                     "window_name": m["window_name"], "command": m["command"]})
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def fts_snippets(sid, text, limit=6, ctx=90):
     """Lines of context around where `text`'s words occur in conversation
     `sid` (read from the Recoll collection's text copy); hits are wrapped in
     \\x01..\\x02 for the caller to style. Shared by alt-tab and the usage
     panel's match preview."""
-    path = os.path.expanduser(f"~/.cache/indexes/claude/sessions/{sid}.txt")
+    if sid.startswith("tmux:"):      # a tmux pane's scrollback copy, see claude-fts-index
+        path = os.path.join(TMUX_ROOT, "panes", "p" + sid[5:].lstrip("%") + ".txt")
+    else:
+        path = os.path.expanduser(f"~/.cache/indexes/claude/sessions/{sid}.txt")
     try:
         body = open(path, errors="replace").read()
     except OSError:
@@ -2068,33 +2125,40 @@ def fts_snippets(sid, text, limit=6, ctx=90):
 
 
 def session_rows(text, scope="archive", limit=300):
-    """Conversations for the table views, from the indexer's meta.json: the
-    ones matching `text` best first, or the newest when `text` is empty.
-    scope: "archive" (not running), "live" (running) or "all". Whether one is
-    running is decided here, at query time, from the sessions registry - the
-    index itself doesn't know. Each row carries `live`."""
-    try:
-        meta = json.load(open(os.path.expanduser("~/.cache/indexes/claude/meta.json")))
-    except (OSError, ValueError):
-        return []
-    live_map = get_live_sessions()
-    live = set(live_map)
-    want = {"archive": lambda sid: sid not in live, "live": lambda sid: sid in live, "all": lambda sid: True}[scope]
-    if text.strip():
-        order = [(sid, score) for sid, score in fts_search(text) if sid in meta and want(sid)]
-    else:
-        order = [(sid, 0.0) for sid, m in sorted(meta.items(), key=lambda kv: -kv[1].get("mtime", 0))
-                 if want(sid)]
-    profiles = profile_map()
+    """Conversations (and tmux scrollback panes) for the table views: the ones matching `text` best
+    first, or the newest when `text` is empty. `scope` is a comma list of live / archive / tmux ("all" =
+    live,archive). Claude rows come from the indexer's meta.json; whether one is running is decided here,
+    at query time, from the sessions registry - the index itself doesn't know. Each row carries `live`."""
+    wanted = set()
+    for part in scope.split(","):
+        wanted |= {"live", "archive"} if part == "all" else {part}
     rows = []
-    for sid, score in order[:limit]:
-        m = meta[sid]
-        prof = profiles.get(sid)
-        rows.append({"session_id": sid, "title": m.get("title") or "", "cwd": m.get("cwd") or "",
-                     "msgs": m.get("msgs") or 0, "tokens": m.get("tokens"), "mtime": m.get("mtime"),
-                     "account": account_name(prof), "profile": prof or "", "score": score,
-                     "live": sid in live, "status": (live_map.get(sid) or {}).get("status", "")})
-    return rows
+    if wanted & {"live", "archive"}:
+        try:
+            meta = json.load(open(os.path.expanduser("~/.cache/indexes/claude/meta.json")))
+        except (OSError, ValueError):
+            meta = {}
+        live_map = get_live_sessions()
+        live = set(live_map)
+        want = lambda sid: (sid in live and "live" in wanted) or (sid not in live and "archive" in wanted)
+        if text.strip():
+            order = [(sid, score) for sid, score in fts_search(text) if sid in meta and want(sid)]
+        else:
+            order = [(sid, 0.0) for sid, m in sorted(meta.items(), key=lambda kv: -kv[1].get("mtime", 0))
+                     if want(sid)]
+        profiles = profile_map()
+        for sid, score in order[:limit]:
+            m = meta[sid]
+            prof = profiles.get(sid)
+            rows.append({"session_id": sid, "kind": "claude", "title": m.get("title") or "", "cwd": m.get("cwd") or "",
+                         "msgs": m.get("msgs") or 0, "tokens": m.get("tokens"), "mtime": m.get("mtime"),
+                         "account": account_name(prof), "profile": prof or "", "score": score,
+                         "live": sid in live, "status": (live_map.get(sid) or {}).get("status", "")})
+    if "tmux" in wanted:
+        rows += tmux_rows(text, limit)
+    if text.strip():
+        rows.sort(key=lambda r: -r["score"])
+    return rows[:limit]
 
 
 def resume_cmd(sid):
@@ -2155,8 +2219,8 @@ def main():
                         help="print match excerpts of QUERY in SESSION (hits wrapped in \\x01 \\x02)")
     parser.add_argument("--sessions", metavar="QUERY", nargs="?", const="",
                         help="JSON list of conversations matching QUERY (best first, or newest), for the table views")
-    parser.add_argument("--scope", choices=("archive", "live", "all"), default="archive",
-                        help="with --sessions: past (default), running, or both")
+    parser.add_argument("--scope", default="archive",
+                        help="with --sessions: comma list of live, archive, tmux (all = live,archive); default archive")
     parser.add_argument("--resume-window", metavar="SESSION", help="resume SESSION in a new alacritty window")
     parser.add_argument("--resume-tmux", metavar="SESSION", help="resume SESSION in a new tmux window")
     parser.add_argument("--fts", metavar="QUERY",

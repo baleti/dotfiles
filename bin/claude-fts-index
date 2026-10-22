@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Keeps the Recoll index of Claude Code conversations (~/.cache/indexes/claude/recoll),
-the one behind alt-tab's /fts.claude, the usage panel's /fts and `claude-history --fts`.
+"""Keeps the Recoll indexes behind /fts: Claude Code conversations (~/.cache/indexes/claude/recoll)
+and tmux scrollback (~/.cache/indexes/tmux/recoll, see index_tmux) - two separate Xapian databases,
+one daemon. Used by alt-tab's and the usage panel's /fts and `claude-history --fts`.
 
 Each transcript (every ~/.claude* profile, whole history) becomes
 ~/.cache/indexes/claude/sessions/<session-id>.txt = its AI title on the first line, then the
 user + assistant "text" blocks (tool calls and thinking skipped; same filter as claude-history).
 A transcript is re-extracted only when its mtime/size changed; recollindex then re-reads only
 the changed .txt files. Run by claude-fts-index.timer."""
-import glob, json, os, subprocess, sys
+import glob, hashlib, json, os, subprocess, sys, time
 
 ROOT = os.path.expanduser("~/.cache/indexes/claude")
 OUT = os.path.join(ROOT, "sessions")
@@ -58,6 +59,95 @@ def extract(path):
     return ((title + "\n" + body) if title else body), {"title": title, "cwd": cwd, "msgs": msgs, "tokens": tokens}
 
 
+# --- tmux scrollback -----------------------------------------------------------------------------
+TMUX_ROOT = os.path.expanduser("~/.cache/indexes/tmux")
+TMUX_DOCS = os.path.join(TMUX_ROOT, "panes")
+TMUX_CONF = os.path.join(TMUX_ROOT, "recoll")
+TMUX_STATE = os.path.join(TMUX_ROOT, "state.json")
+TMUX_META = os.path.join(TMUX_ROOT, "meta.json")
+SCROLLBACK_LINES = 20000       # per pane; the tail (recent wins)
+PANE_FMT = "\t".join(["#{session_id}", "#{session_name}", "#{window_id}", "#{window_index}", "#{window_name}",
+                      "#{pane_id}", "#{pane_pid}", "#{pane_current_command}", "#{pane_current_path}", "#{pane_title}"])
+
+
+def claude_panes():
+    """Pane ids ('%12') hosting a live Claude session: their text is already in the conversation index,
+    so the tmux index skips them (no second copy of the same words)."""
+    out = set()
+    try:
+        state = json.load(open(os.path.expanduser("~/.cache/claude-usage/state.json")))
+        for rows in (state.get("sessions") or {}).values():
+            for r in rows:
+                if r.get("tmux_pane"):
+                    out.add("%" + str(r["tmux_pane"]).lstrip("%"))
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def index_tmux():
+    """One document per tmux pane (its scrollback), skipping panes that host Claude. Re-written only when
+    the text changed; panes that no longer exist are dropped. Returns the number of changed documents."""
+    os.makedirs(TMUX_DOCS, exist_ok=True)
+    r = subprocess.run(["tmux", "list-panes", "-a", "-F", PANE_FMT], capture_output=True, text=True)
+    if r.returncode:
+        return 0                                   # no tmux server
+    skip = claude_panes()
+    try:
+        state = json.load(open(TMUX_STATE))
+    except (OSError, ValueError):
+        state = {}
+    try:
+        meta = json.load(open(TMUX_META))
+    except (OSError, ValueError):
+        meta = {}
+    seen, changed = set(), 0
+    for line in r.stdout.splitlines():
+        f = line.split("\t")
+        if len(f) != 10:
+            continue
+        sid, sname, wid, widx, wname, pid_, ppid, cmd, cwd, title = f
+        if pid_ in skip or cmd == "claude":
+            continue
+        doc = "p" + pid_.lstrip("%")
+        cap = subprocess.run(["tmux", "capture-pane", "-p", "-J", "-S", f"-{SCROLLBACK_LINES}", "-t", pid_],
+                             capture_output=True, text=True, errors="replace")
+        text = "\n".join(l.rstrip() for l in cap.stdout.splitlines()).strip()
+        if not text:
+            continue
+        seen.add(doc)
+        h = hashlib.sha1(text.encode(errors="replace")).hexdigest()
+        info = {"pane_id": pid_, "session_id": sid, "session": sname, "window_id": wid, "window_index": widx,
+                "window_name": wname, "pane_pid": ppid, "command": cmd, "cwd": cwd, "title": title}
+        if state.get(doc) != h or doc not in meta:
+            with open(os.path.join(TMUX_DOCS, doc + ".txt"), "w") as fh:
+                fh.write(text + "\n")
+            state[doc] = h
+            info["mtime"] = time.time()
+            changed += 1
+        else:
+            info["mtime"] = meta[doc].get("mtime", time.time())
+        meta[doc] = info
+    for doc in set(state) - seen:                  # pane gone (or became a Claude pane)
+        state.pop(doc, None)
+        meta.pop(doc, None)
+        try:
+            os.unlink(os.path.join(TMUX_DOCS, doc + ".txt"))
+        except OSError:
+            pass
+        changed += 1
+    for path, obj in ((TMUX_STATE, state), (TMUX_META, meta)):
+        json.dump(obj, open(path + ".tmp", "w"))
+        os.replace(path + ".tmp", path)
+    if changed or not os.path.isdir(os.path.join(TMUX_CONF, "xapiandb")):
+        os.makedirs(TMUX_CONF, exist_ok=True)
+        conf = os.path.join(TMUX_CONF, "recoll.conf")
+        if not os.path.exists(conf):
+            open(conf, "w").write(f'topdirs = "{TMUX_DOCS}"\n')
+        subprocess.run(["recollindex", "-c", TMUX_CONF], capture_output=True)
+    return changed
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     try:
@@ -102,7 +192,8 @@ def main():
         if r.returncode:
             sys.stderr.write(r.stderr)
             sys.exit(r.returncode)
-    print(f"claude-fts-index: {changed} changed, {len(seen)} sessions")
+    tmux_changed = index_tmux()
+    print(f"claude-fts-index: {changed} changed, {len(seen)} sessions; tmux: {tmux_changed} panes changed")
 
 
 main()
