@@ -1,0 +1,12 @@
+[Unit]
+Description=Incremental Recoll index of supplier-details (own unit so the nightly run cannot starve it)
+RequiresMountsFor=/mnt/host1-backups
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/recollindex -c %h/.cache/indexes/supplier-details/recoll
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=3G
+TimeoutStartSec=3h
