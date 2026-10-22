@@ -116,51 +116,8 @@ QtObject {
     // Unlike QueryDsl.qml's own tokenize, this keeps each token's byte
     // offset (`start`) -- needed for `commandSpans` and `completionContext`,
     // neither of which the launcher needs.
-    function tokenize(query) {
-        const tokens = [];
-        let cur = "";
-        let start = -1;
-        let leadQuote = false;
-        let inQuotes = false;
-        let qc = "";
-        let quoted = false;
-        // A "!" at the start of a token negates it (query-dsl.md
-        // "Negation"). It is not part of the token: `start` stays on the
-        // char after it, so command spans / completion offsets see the
-        // plain token and a replacement keeps the "!" in front.
-        let neg = false;
-        for (let i = 0; i < query.length; i++) {
-            const c = query[i];
-            if (c === "!" && start < 0 && !neg) { neg = true; continue; }
-            // `'` only opens a quote at the start of a token or of a scoped
-            // value (after ":"), so apostrophes inside words stay text.
-            const opens = c === '"' || (c === "'" && (start < 0 || query[i - 1] === ":"));
-            if (inQuotes ? c === qc : opens) {
-                if (start < 0) leadQuote = true;
-                if (!inQuotes) qc = c;
-                else quoted = true; // closed: an unterminated quote is still being typed
-                inQuotes = !inQuotes;
-                if (start < 0) start = i;
-                continue;
-            }
-            if (/\s/.test(c) && !inQuotes) {
-                if (start >= 0) {
-                    tokens.push({ start, text: cur, leadQuote, quoted, neg });
-                    cur = "";
-                    start = -1;
-                    leadQuote = false;
-                    quoted = false;
-                }
-                neg = false;
-                continue;
-            }
-            if (start < 0) start = i;
-            cur += c;
-        }
-        if (start >= 0)
-            tokens.push({ start, text: cur, leadQuote, quoted, neg });
-        return tokens;
-    }
+    // shared tokenizer (~/.config/quickshell/lib/dsl.js): { start, text, leadQuote, quoted, neg }
+    function tokenize(query) { return D.tokenize(query); }
 
     // "" (the empty verb slot of "//path") is the default verb /fv - see
     // query-dsl.md "Default verb". Callers only reach "" with a via slash

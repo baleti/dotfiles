@@ -409,43 +409,14 @@ def _has(term, hay):
 
 
 def tokenize(query, negs=None):
-    """[(start, text, lead_quote)] - whitespace split, "..." kept whole
-    (quotes dropped), unterminated quote still closes at end-of-input.
-    lead_quote marks a run that began with " (never read as a command).
-    A "!" at the start of a token negates it (query-dsl.md "Negation"):
-    it is not part of the token (start points past it) and, when `negs`
-    is a set, the token's start offset is added to it."""
-    toks, cur = [], []
-    start = None
-    lead_quote = in_quotes = False
-    closed = False  # a quote in this token has been closed (query-dsl.md "Quoted terms")
-    bang = False
-    for i, c in enumerate(query):
-        if c == "!" and start is None and not bang:
-            bang = True
-            continue
-        if c == '"':
-            if start is None:
-                start, lead_quote = i, True
-            if in_quotes:
-                closed = True
-            in_quotes = not in_quotes
-            if start == i and bang and negs is not None:
-                negs.add(i)
-            continue
-        if c.isspace() and not in_quotes:
-            if start is not None:
-                toks.append((start, _quoted("".join(cur), closed), lead_quote))
-                cur, start, lead_quote, closed = [], None, False, False
-            bang = False
-            continue
-        if start is None:
-            start = i
-            if bang and negs is not None:
-                negs.add(i)
-        cur.append(c)
-    if start is not None:
-        toks.append((start, _quoted("".join(cur), closed), lead_quote))
+    """[(start, text, lead_quote)] from the shared tokenizer (~/.config/dsl/dsl.py): whitespace split, a
+    quoted run kept whole (quotes dropped; a closed quote marks the text `Exact`), a leading "!" negating
+    the token (its start offset is added to `negs` when that is a set)."""
+    toks = []
+    for text, lead, quoted, neg, start in dsl.tokenize(query):
+        if neg and negs is not None:
+            negs.add(start)
+        toks.append((start, _quoted(text, quoted), lead))
     return toks
 
 

@@ -120,45 +120,8 @@ QtObject {
     // whole with the quote characters themselves stripped (not pushed into
     // the token text); `leadQuote` marks a run that started with `"`, which
     // makes it a literal, never a command, even unterminated.
-    function tokenize(query) {
-        const tokens = [];
-        let cur = "";
-        let start = -1;
-        let leadQuote = false;
-        let inQuotes = false;
-        let qc = "";
-        let quoted = false;
-        // Leading "!" negates the token (query-dsl.md "Negation"); not part
-        // of it, so `start` stays on the char after it.
-        let neg = false;
-        for (let i = 0; i < query.length; i++) {
-            const c = query[i];
-            if (c === "!" && start < 0 && !neg) { neg = true; continue; }
-            // `'` only opens a quote at the start of a token or of a scoped
-            // value (after ":"), so apostrophes inside words stay text.
-            const opens = c === "\"" || (c === "'" && (start < 0 || query[i - 1] === ":"));
-            if (inQuotes ? c === qc : opens) {
-                if (start < 0) leadQuote = true;
-                if (!inQuotes) qc = c;
-                else quoted = true; // closed: an unterminated quote is still being typed
-                inQuotes = !inQuotes;
-                if (start < 0) start = i;
-                continue;
-            }
-            if (/\s/.test(c) && !inQuotes) {
-                if (start >= 0) {
-                    tokens.push({ start: start, text: cur, leadQuote: leadQuote, quoted: quoted, neg: neg });
-                    cur = ""; start = -1; leadQuote = false; quoted = false;
-                }
-                neg = false;
-                continue;
-            }
-            if (start < 0) start = i;
-            cur += c;
-        }
-        if (start >= 0) tokens.push({ start: start, text: cur, leadQuote: leadQuote, quoted: quoted, neg: neg });
-        return tokens;
-    }
+    // shared tokenizer (~/.config/quickshell/lib/dsl.js): { start, text, leadQuote, quoted, neg }
+    function tokenize(query) { return D.tokenize(query); }
 
     // picker.rs's starts_cmd -- true if `tok` begins (or is still typing)
     // a command rather than serving as some other verb's argument.

@@ -23,5 +23,23 @@ sc = T["splitcmd"]
 for c in sc["cases"]:
     got = dsl.split_cmd(c["text"], sc["verbs"], sc["maxParts"])
     check(f'splitcmd {c["text"]!r}', list(got) if got else None, c["expect"])
+for c in T["tokenize"]:
+    check(f'tokenize {c["query"]!r}', [list(t) for t in dsl.tokenize(c["query"])], c["expect"])
+for c in T["splitraw"]:
+    check(f'splitraw {c["query"]!r}', dsl.split_raw(c["query"]), c["expect"])
+import importlib.machinery, importlib.util
+_l = importlib.machinery.SourceFileLoader("search_cli", os.path.expanduser("~/bin/search"))
+_m = importlib.util.module_from_spec(importlib.util.spec_from_loader("search_cli", _l))
+sys.modules["search_cli"] = _m
+try:
+    _l.exec_module(_m)
+except SystemExit:
+    pass
+for c in T["impl"]["images-sort"]["cases"]:
+    check(f'search resolve_sort_fields {c["keys"]!r}', _m.resolve_sort_fields(c["keys"]), c["expect"])
+for c in T["impl"]["images-parse-sort"]["cases"]:
+    check(f'search parse_sort {c["query"]!r}', list(_m.parse_sort(c["query"])), c["expect"])
+for c in T["splitraw"]:
+    check(f'search tokenize {c["query"]!r}', _m.tokenize(c["query"]), c["expect"])
 print("python dsl:", "ok" if not fails else f"{fails} failures")
 sys.exit(1 if fails else 0)
