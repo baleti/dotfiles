@@ -1050,7 +1050,9 @@ PanelWindow {
                 id: acPopup
                 visible: false
                 width: parent.width
-                readonly property int maxH: root.screen ? (card.maxCardH - searchHeader.height - 32) : 900
+                readonly property bool isHistory: root.acSuggestionKind !== null && root.acSuggestionKind.kind === "history"
+                // Ctrl+R history is capped at half the card's max height; completion keeps the full height.
+                readonly property int maxH: root.screen ? (isHistory ? Math.round(card.maxCardH / 2) : (card.maxCardH - searchHeader.height - 32)) : 900
                 height: visible ? Math.min(root.acItems.length * 24 + 8, acPopup.maxH) : 0
                 clip: true
 
