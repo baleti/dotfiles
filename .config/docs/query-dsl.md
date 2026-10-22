@@ -15,7 +15,7 @@ rss-reader, claude-usage, winswitch, the clipboard family - imports it) and
 `~/.config/dsl/dsl.py` (claude-history, focus-picker, window-search, the
 `search` command). They hold key resolution (exact name wins, else substring,
 comma list, alphabetical sort-key expansion), the `/verb/keys[/dir]` splitter,
-direction words, quoted-term matching and the sort comparator. What stays per
+direction words, the tokenizer (quotes, `!`), quoted-term matching and the sort comparator. What stays per
 picker is what depends on its data: the type registry, row values, tokenizer
 quirks, completion presentation, and the images picker's Rust and the Android
 app's Kotlin ports (neither can import them). **Conformance suite:**

@@ -62,19 +62,8 @@ SORT_FIELDS = [("name", "name"), ("path", "path"), ("size", "size"), ("date-modi
 
 # ---- a faithful port of the picker's /s handling (images/src/main.rs parse_sort) --------------------------
 def tokenize(q):
-    out, cur, inq = [], [], False
-    for ch in q:
-        if ch == '"':
-            inq = not inq
-            cur.append(ch)
-        elif ch.isspace() and not inq:
-            if cur:
-                out.append("".join(cur)); cur = []
-        else:
-            cur.append(ch)
-    if cur:
-        out.append("".join(cur))
-    return out
+    """Whitespace split that keeps quotes in the tokens (shared: dsl.split_raw)."""
+    return dsl.split_raw(q)
 
 def resolve_sort_fields(seg):
     """A /s key -> server keys: the exact name (or alias dm/date) alone, else EVERY field whose name contains it,
