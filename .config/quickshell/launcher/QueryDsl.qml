@@ -216,6 +216,19 @@ QtObject {
         return res;
     }
 
+    // The ordered sort keys a `/s/key,key` chain resolves to: per key, the type named exactly or - when
+    // the key is fuzzy - EVERY type containing it in alphabetical order (`/s/pa` = `/s/pages,path`),
+    // duplicates dropped. null when any key names nothing (the whole /s is inert).
+    function resolveSortKeys(keys, known) {
+        const out = [];
+        for (const p of keys) {
+            const r = root.resolvePath(p, known).slice().sort();
+            if (r.length === 0) return null;
+            for (const n of r) if (out.indexOf(n) < 0) out.push(n);
+        }
+        return out;
+    }
+
     // Completion for the key and direction stages of `/verb/keys[/dir]`
     // (shared by every consumer's _acCandidates). Returns the popup rows, or
     // null when `t` doesn't end inside one of those parts. Accepting a key

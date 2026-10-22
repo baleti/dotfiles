@@ -625,13 +625,11 @@ Rectangle {
     readonly property var sortedProcs: {
         const base = root.searchFilteredProcs;
         const s = root.searchParsed.sort;
-        // Each chain segment must resolve to exactly one field
-        // (query-dsl.md "/sort"); any segment that doesn't makes the
-        // *whole* /sort inert, not just that key.
-        const sortFields = s ? s.fields.map(p => QueryDsl.resolvePath(p, root.searchTypeNames)) : null;
+        // Each key resolves to one or more fields (fuzzy keys expand, query-dsl.md "Keys");
+        // a key that names nothing makes the *whole* /sort inert.
+        const keys = s ? QueryDsl.resolveSortKeys(s.fields, root.searchTypeNames) : null;
         let arr;
-        if (s && sortFields.every(fl => fl.length === 1)) {
-            const keys = sortFields.map(fl => fl[0]);
+        if (s && keys !== null) {
             arr = base.slice().sort((a, b) => {
                 for (const f of keys) {
                     const av = root._searchFieldVals(a, f, a.account)[0] || "";
@@ -1070,8 +1068,8 @@ Rectangle {
     readonly property var dslSort: {
         const s = root.searchParsed.sort;
         if (!s) return null;
-        const names = s.fields.map(p => QueryDsl.resolvePath(p, root.searchTypeNames));
-        return names.every(n => n.length === 1) ? { keys: names.map(n => n[0]), asc: s.dir !== "desc" } : null;
+        const keys = QueryDsl.resolveSortKeys(s.fields, root.searchTypeNames);
+        return keys !== null ? { keys, asc: s.dir !== "desc" } : null;
     }
     readonly property var _colField: ({ acct: "account", status: "status", title: "title", tokens: "tokens", path: "path", pid: "pid",
         tmuxSession: "tmux-session", tmuxWindow: "tmux-window", tmuxPane: "tmux-pane", hyprWorkspace: "hypr-workspace" })

@@ -162,12 +162,11 @@ PanelWindow {
         }
 
         const s = root.parsed.sort;
-        // Each chain segment must resolve to exactly one field (query-dsl.md
-        // "/sort"); any segment that doesn't makes the *whole* /sort inert,
+        // Each key resolves to one or more fields (fuzzy keys expand, query-dsl.md "Keys");
+        // a key that names nothing makes the *whole* /sort inert,
         // not just that key -- falls through to the default order below.
-        const sortFields = s ? s.fields.map(p => QueryDsl.resolvePath(p, root.typeNames)) : null;
-        if (s && sortFields.every(fl => fl.length === 1)) {
-            const keys = sortFields.map(fl => fl[0]);
+        const keys = s ? QueryDsl.resolveSortKeys(s.fields, root.typeNames) : null;
+        if (s && keys !== null) {
             rows = rows.slice().sort((a, b) => {
                 for (const f of keys) {
                     const av = root._fieldVals(a, f)[0] || "";

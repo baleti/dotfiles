@@ -56,7 +56,7 @@ Backup results have real paths under /mnt/backup-restic-host3/ids/<id>/... and <
 """
 
 SORT_FIELDS = [("name", "name"), ("path", "path"), ("size", "size"), ("date-modified", "date"),
-               ("extension", "ext"), ("depth", "depth")]
+               ("extension", "ext"), ("depth", "depth"), ("pages", "pages")]
 
 # ---- a faithful port of the picker's /s handling (images/src/main.rs parse_sort) --------------------------
 def tokenize(q):
@@ -74,17 +74,18 @@ def tokenize(q):
         out.append("".join(cur))
     return out
 
-def resolve_sort_field(seg):
+def resolve_sort_fields(seg):
+    """A /s key -> server keys: the exact name (or alias) alone, else EVERY field whose name contains it, in
+    alphabetical order of the names (/s/pa = /s/pages,path). [] when it names nothing."""
     seg = seg.lower()
     if not seg:
-        return None
+        return []
     if seg in ("dm", "date"):
-        return "date"
+        return ["date"]
     for name, key in SORT_FIELDS:
         if name == seg:
-            return key
-    hits = [key for name, key in SORT_FIELDS if seg in name]
-    return hits[0] if len(hits) == 1 else None
+            return [key]
+    return [key for name, key in sorted(SORT_FIELDS) if seg in name]
 
 def sort_direction(tok):
     t = tok.lower()
@@ -124,17 +125,17 @@ def parse_sort(q):
         parts = chain[1:].split("/")
         if len(parts) > 2:
             continue                                       # malformed: inert
-        segs = [resolve_sort_field(p) for p in parts[0].split(",") if p]
+        segs = [resolve_sort_fields(p) for p in parts[0].split(",") if p]
         direction = None
         if len(parts) == 2:
             direction = sort_direction(parts[1])
             if direction is None:
                 continue                                   # bad direction: the whole /s is inert
-        if segs and all(x is not None for x in segs):
+        if segs and all(segs):
             if direction is not None:
                 desc = direction
             explicit = True
-            for k in segs:
+            for k in (k for group in segs for k in group):
                 if k not in keys:
                     keys.append(k)
     desc_v = True if not keys else (desc if desc is not None else False)
