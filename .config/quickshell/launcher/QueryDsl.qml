@@ -1,6 +1,7 @@
 pragma Singleton
 
 import QtQuick
+import "../lib/dsl.js" as D
 
 // The shared picker query DSL (~/.config/docs/query-dsl.md), ported to JS
 // for the quickshell app launcher and RSS reader -- the same grammar
@@ -43,19 +44,8 @@ QtObject {
     // With `exact` (the term was quoted: "5" or '5') the needle must stand
     // alone: no letter/digit/underscore directly before or after it, so "5"
     // matches 5 but not 15 or 599. See query-dsl.md "Quoted terms".
-    function substrIdx(needle, hay, exact) {
-        const n = String(needle).toLowerCase(), h = String(hay).toLowerCase();
-        let i = h.indexOf(n);
-        if (!exact || n.length === 0) return i;
-        const w = /[a-z0-9_]/;
-        const lead = w.test(n.charAt(0)), trail = w.test(n.charAt(n.length - 1));
-        while (i >= 0) {
-            if (!(lead && w.test(h.charAt(i - 1))) && !(trail && w.test(h.charAt(i + n.length)))) return i;
-            i = h.indexOf(n, i + 1);
-        }
-        return -1;
-    }
-    function substr(needle, hay, exact) { return root.substrIdx(needle, hay, exact) >= 0; }
+    function substrIdx(needle, hay, exact) { return D.substrIdx(needle, hay, exact); }
+    function substr(needle, hay, exact) { return D.substr(needle, hay, exact); }
 
     // A scoped value typed as path:"5" / path:'5' -> { v, quoted }.
     function unquoteValue(v) {
@@ -105,15 +95,15 @@ QtObject {
     // `dir` the third part (/s only); `bad` marks a malformed token (too many
     // parts, or a direction on a verb that has none): inert. A "/xyz" that
     // isn't a verb (or "/usr/bin") is not a verb token -> null.
+    // verb spellings -> canonical short form, for D.splitCmd ("" = the default verb of `//keys`)
+    readonly property var _verbMap: ({ "": "/fv", "fv": "/fv", "ft": "/ft", "at": "/at", "rt": "/rt", "s": "/s",
+        "filter-value": "/fv", "filter-type": "/ft", "add-type": "/at", "remove-type": "/rt", "sort": "/s" })
+    readonly property var _maxParts: ({ "/s": 3 })
+    // { verb, via (the keys part), dir, bad } or null (query-dsl.md "Grammar"); a quoted token is never a command
     function tokVerb(tok) {
-        if (tok.q || tok.v[0] !== "/") return null;
-        const parts = tok.v.slice(1).split("/");
-        // "//keys": empty verb slot defaults to /fv (query-dsl.md "Default verb").
-        const v = parts[0] === "" ? (parts.length >= 2 ? "/fv" : null) : root._canonName(parts[0]);
-        if (v === null) return null;
-        const bad = parts.length > 3 || (parts.length === 3 && v !== "/s");
-        return { verb: v, via: parts.length >= 2 ? parts[1] : null,
-                 dir: parts.length === 3 ? parts[2] : null, bad: bad };
+        if (tok.q) return null;
+        const c = D.splitCmd(tok.v, root._verbMap, root._maxParts);
+        return c === null ? null : { verb: c.verb, via: c.keys, dir: c.dir, bad: c.bad };
     }
 
     // query.rs::is_verb_prefix -- `s` (no leading "/") is a prefix of some
@@ -152,15 +142,9 @@ QtObject {
 
     // True if `tok` reads as a (possibly abbreviated) sort direction -
     // substring-matches "ascending" or "descending".
-    function _isDirectionLike(tok) {
-        const d = tok.toLowerCase();
-        if (d.length === 0) return false;
-        return "ascending".indexOf(d) === 0 || "descending".indexOf(d) === 0;
-    }
+    function _isDirectionLike(tok) { return D.parseDirection(tok) !== null; }
 
-    function _dirOf(tok) {
-        return "descending".indexOf(tok.toLowerCase()) === 0 ? "desc" : "asc";
-    }
+    function _dirOf(tok) { return D.parseDirection(tok) || "asc"; }
 
     // Parse into { terms:[{field,value,quoted}|{text,quoted}], sort:{fields,dir}|null,
     // cols:[{op,path}] }. Incomplete trailing tokens are dropped
@@ -219,15 +203,7 @@ QtObject {
     // The ordered sort keys a `/s/key,key` chain resolves to: per key, the type named exactly or - when
     // the key is fuzzy - EVERY type containing it in alphabetical order (`/s/pa` = `/s/pages,path`),
     // duplicates dropped. null when any key names nothing (the whole /s is inert).
-    function resolveSortKeys(keys, known) {
-        const out = [];
-        for (const p of keys) {
-            const r = root.resolvePath(p, known).slice().sort();
-            if (r.length === 0) return null;
-            for (const n of r) if (out.indexOf(n) < 0) out.push(n);
-        }
-        return out;
-    }
+    function resolveSortKeys(keys, known) { return D.resolveSortKeys(keys, known); }
 
     // Completion for the key and direction stages of `/verb/keys[/dir]`
     // (shared by every consumer's _acCandidates). Returns the popup rows, or
@@ -266,25 +242,8 @@ QtObject {
     // the key (case-insensitive) wins alone, else every type containing it;
     // unioned across keys, in `known` order. Empty keys are skipped.
     // `known` is the list of type names for this picker.
-    function resolvePath(path, known) {
-        const hit = {};
-        for (const key of String(path).toLowerCase().split(",")) {
-            if (key.length === 0) continue;
-            const exact = known.filter(n => n.toLowerCase() === key);
-            for (const n of (exact.length > 0 ? exact : known.filter(n => n.toLowerCase().indexOf(key) >= 0)))
-                hit[n] = true;
-        }
-        return known.filter(n => hit[n]);
-    }
+    function resolvePath(path, known) { return D.resolveNames(path, known); }
 
-    function _tryInt(s) {
-        return /^\d+$/.test(s) ? parseInt(s, 10) : null;
-    }
-    function _tryAgeSeconds(s) {
-        const m = /^(\d+)([smhd])$/.exec(s);
-        if (!m) return null;
-        return parseInt(m[1], 10) * ({ s: 1, m: 60, h: 3600, d: 86400 }[m[2]]);
-    }
 
     // query-dsl.md "Sort comparison, precisely" -- the one comparator
     // every sort entry point a picker offers (a DSL-driven /sort, or a
@@ -299,16 +258,5 @@ QtObject {
     // first means *ascending* age); everything else is lexicographic.
     // `dir` ("asc"/"desc") is applied here too, so callers never need
     // their own `dir === "desc" ? -c : c` on the result.
-    function compareFieldValues(a, b, dir) {
-        const as = String(a), bs = String(b);
-        const ai = root._tryInt(as), bi = root._tryInt(bs);
-        if (ai !== null && bi !== null)
-            return dir === "desc" ? bi - ai : ai - bi;
-        const aa = root._tryAgeSeconds(as), ba = root._tryAgeSeconds(bs);
-        if (aa !== null && ba !== null)
-            return dir === "desc" ? aa - ba : ba - aa;
-        const al = as.toLowerCase(), bl = bs.toLowerCase();
-        const c = al < bl ? -1 : (al > bl ? 1 : 0);
-        return dir === "desc" ? -c : c;
-    }
+    function compareFieldValues(a, b, dir) { return D.compareFieldValues(a, b, dir); }
 }

@@ -1,6 +1,7 @@
 pragma Singleton
 
 import QtQuick
+import "../lib/dsl.js" as D
 
 // The shared picker query DSL (~/.config/docs/query-dsl.md), hand-ported a
 // 7th time -- for the Quickshell clipboard-picker (mod+v), the UI move
@@ -70,19 +71,8 @@ QtObject {
     // With `exact` (the term was quoted: "5" or '5') the needle must stand
     // alone: no letter/digit/underscore directly before or after it, so "5"
     // matches 5 but not 15 or 599. See query-dsl.md "Quoted terms".
-    function substrIdx(needle, hay, exact) {
-        const n = String(needle).toLowerCase(), h = String(hay).toLowerCase();
-        let i = h.indexOf(n);
-        if (!exact || n.length === 0) return i;
-        const w = /[a-z0-9_]/;
-        const lead = w.test(n.charAt(0)), trail = w.test(n.charAt(n.length - 1));
-        while (i >= 0) {
-            if (!(lead && w.test(h.charAt(i - 1))) && !(trail && w.test(h.charAt(i + n.length)))) return i;
-            i = h.indexOf(n, i + 1);
-        }
-        return -1;
-    }
-    function substr(needle, hay, exact) { return root.substrIdx(needle, hay, exact) >= 0; }
+    function substrIdx(needle, hay, exact) { return D.substrIdx(needle, hay, exact); }
+    function substr(needle, hay, exact) { return D.substr(needle, hay, exact); }
 
     function isFilterValueVerb(rest) { return rest === "fv" || rest === "filter-value"; }
     function isVerb(rest) { return root.verbForms.indexOf(rest) >= 0; }
@@ -116,15 +106,14 @@ QtObject {
     // short form), or null if `tok` isn't one (query-dsl.md "Grammar"): `via`
     // is the keys part, `dir` the third part (/s only), `bad` marks a
     // malformed token (too many parts): inert.
+    // { verb (canonical short form), via (the keys part), dir, bad } or null (query-dsl.md "Grammar")
+    readonly property var _verbMap: ({ "": "fv", "fv": "fv", "ft": "ft", "at": "at", "rt": "rt", "s": "s",
+        "filter-value": "fv", "filter-type": "ft", "add-type": "at", "remove-type": "rt", "sort": "s" })
+    readonly property var _maxParts: ({ "s": 3 })
     function tokVerb(tok) {
-        if (tok.leadQuote || tok.text[0] !== "/") return null;
-        const parts = tok.text.slice(1).split("/");
-        // "//keys": empty verb slot defaults to /fv
-        const v = parts[0] === "" ? (parts.length >= 2 ? "fv" : null) : root._canon(parts[0]);
-        if (v === null) return null;
-        return { verb: v, via: parts.length >= 2 ? parts[1] : null,
-                 dir: parts.length === 3 ? parts[2] : null,
-                 bad: parts.length > (v === "s" ? 3 : 2) };
+        if (tok.leadQuote) return null;
+        const c = D.splitCmd(tok.text, root._verbMap, root._maxParts);
+        return c === null ? null : { verb: c.verb, via: c.keys, dir: c.dir, bad: c.bad };
     }
 
     // picker.rs's tokenize -- whitespace-split, a `"..."`-quoted run kept
@@ -204,16 +193,7 @@ QtObject {
     // query-dsl.md "Keys": `keys` is a comma-separated list; per key a field
     // whose name equals it wins alone, else every field containing it as a
     // substring; unioned across the list, in `fieldNames` order.
-    function resolveFields(keys, fieldNames) {
-        const hit = {};
-        for (const key of String(keys).toLowerCase().split(",")) {
-            if (key.length === 0) continue;
-            const exact = fieldNames.filter(f => f.toLowerCase() === key);
-            for (const f of (exact.length > 0 ? exact : fieldNames.filter(f => root.substr(key, f))))
-                hit[f] = true;
-        }
-        return fieldNames.filter(f => hit[f]);
-    }
+    function resolveFields(keys, fieldNames) { return D.resolveNames(keys, fieldNames); }
 
     // `quoted` terms ("5" / '5') must stand alone, not sit inside a longer
     // run (see `substrIdx`): they go to `exactWords`/`negExact`, or carry
@@ -266,10 +246,8 @@ QtObject {
     // `tok` doesn't match either, so the caller knows to leave it
     // unconsumed (falls through to plain phrase text -- see `parse`).
     function _sortDirection(tok) {
-        if (tok.length === 0) return null;
-        if ("ascending".indexOf(tok) === 0) return "ascending";
-        if ("descending".indexOf(tok) === 0) return "descending";
-        return null;
+        const d = D.parseDirection(tok);
+        return d === "asc" ? "ascending" : (d === "desc" ? "descending" : null);
     }
 
     function parse(text, fieldNames) {

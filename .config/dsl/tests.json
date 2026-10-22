@@ -1,0 +1,90 @@
+{
+  "_doc": "Conformance vectors for the query DSL primitives (query-dsl.md). Every implementation runs these: dsl.js (QML), dsl.py, and the Rust / Kotlin ports through their own `impl` groups.",
+  "resolve": [
+    {"keys": "p",          "names": ["pid", "path", "title"],             "expect": ["pid", "path"]},
+    {"keys": "path",       "names": ["pid", "path", "title"],             "expect": ["path"]},
+    {"keys": "title",      "names": ["title", "tmux-title", "claude-title"], "expect": ["title"]},
+    {"keys": "tit",        "names": ["title", "tmux-title", "claude-title"], "expect": ["title", "tmux-title", "claude-title"]},
+    {"keys": "tmux",       "names": ["title", "tmux-session", "tmux-window"], "expect": ["tmux-session", "tmux-window"]},
+    {"keys": "title,pid",  "names": ["pid", "path", "title"],             "expect": ["pid", "title"]},
+    {"keys": "TITLE",      "names": ["pid", "title"],                     "expect": ["title"]},
+    {"keys": "",           "names": ["pid", "title"],                     "expect": []},
+    {"keys": ",,",         "names": ["pid", "title"],                     "expect": []},
+    {"keys": "a,,pid",     "names": ["pid", "path", "title"],             "expect": ["pid", "path"]},
+    {"keys": "zz",         "names": ["pid", "title"],                     "expect": []}
+  ],
+  "sortkeys": [
+    {"keys": ["pa"],            "names": ["size", "path", "pages", "name"], "expect": ["pages", "path"]},
+    {"keys": ["path"],          "names": ["size", "path", "pages"],         "expect": ["path"]},
+    {"keys": ["size", "pa"],    "names": ["size", "path", "pages"],         "expect": ["size", "pages", "path"]},
+    {"keys": ["pa", "path"],    "names": ["size", "path", "pages"],         "expect": ["pages", "path"]},
+    {"keys": ["tmux"],          "names": ["tmux-window", "tmux-session", "age"], "expect": ["tmux-session", "tmux-window"]},
+    {"keys": ["zz"],            "names": ["size", "path"],                  "expect": null},
+    {"keys": ["size", "zz"],    "names": ["size", "path"],                  "expect": null}
+  ],
+  "direction": [
+    {"word": "asc", "expect": "asc"}, {"word": "a", "expect": "asc"}, {"word": "ascending", "expect": "asc"},
+    {"word": "desc", "expect": "desc"}, {"word": "d", "expect": "desc"}, {"word": "DESCENDING", "expect": "desc"},
+    {"word": "", "expect": null}, {"word": "zz", "expect": null}, {"word": "descendingx", "expect": null}
+  ],
+  "splitcmd": {
+    "verbs": {"": "fv", "fv": "fv", "filter-value": "fv", "ft": "ft", "at": "at", "rt": "rt", "s": "s", "sort": "s", "sw": "sw"},
+    "maxParts": {"s": 3, "sw": 1},
+    "cases": [
+      {"text": "//title",          "expect": ["fv", "title", null, false]},
+      {"text": "/fv/title",        "expect": ["fv", "title", null, false]},
+      {"text": "/filter-value/p,q", "expect": ["fv", "p,q", null, false]},
+      {"text": "/s/title/desc",    "expect": ["s", "title", "desc", false]},
+      {"text": "/sort/a,b",        "expect": ["s", "a,b", null, false]},
+      {"text": "/s",               "expect": ["s", null, null, false]},
+      {"text": "/fv",              "expect": ["fv", null, null, false]},
+      {"text": "//",              "expect": ["fv", "", null, false]},
+      {"text": "/fv/title/x",      "expect": ["fv", "title", "x", true]},
+      {"text": "/s/a/b/c",         "expect": ["s", "a", null, true]},
+      {"text": "/sw",              "expect": ["sw", null, null, false]},
+      {"text": "/sw/x",            "expect": ["sw", "x", null, true]},
+      {"text": "/usr/bin",         "expect": null},
+      {"text": "/",                "expect": null},
+      {"text": "title",            "expect": null}
+    ]
+  },
+  "substr": [
+    {"needle": "rvt", "hay": "My RVT model", "exact": false, "expect": true},
+    {"needle": "5",   "hay": "5",            "exact": true,  "expect": true},
+    {"needle": "5",   "hay": "15",           "exact": true,  "expect": false},
+    {"needle": "5",   "hay": "a 5 b",        "exact": true,  "expect": true},
+    {"needle": "5",   "hay": "599",          "exact": true,  "expect": false},
+    {"needle": "imp rom", "hay": "Imperial Rome", "exact": true, "expect": false},
+    {"needle": "",    "hay": "anything",     "exact": false, "expect": true}
+  ],
+  "compare": [
+    {"a": "10", "b": "2",  "dir": "asc",  "sign": 1},
+    {"a": "10", "b": "2",  "dir": "desc", "sign": -1},
+    {"a": "5m", "b": "3h", "dir": "asc",  "sign": 1},
+    {"a": "5m", "b": "3h", "dir": "desc", "sign": -1},
+    {"a": "abc", "b": "ABD", "dir": "asc", "sign": -1},
+    {"a": "abc", "b": "ABD", "dir": "desc", "sign": 1},
+    {"a": "x", "b": "X", "dir": "asc", "sign": 0}
+  ],
+  "impl": {
+    "images-sort": {
+      "_doc": "images picker (Rust) and the search CLI: fixed sort fields name path size date-modified extension depth pages (aliases dm, date)",
+      "cases": [
+        {"keys": "pa", "expect": ["pages", "path"]},
+        {"keys": "path", "expect": ["path"]},
+        {"keys": "dm", "expect": ["date"]},
+        {"keys": "date", "expect": ["date"]},
+        {"keys": "d", "expect": ["date", "depth"]},
+        {"keys": "zz", "expect": []}
+      ]
+    },
+    "claudeagents-fields": {
+      "_doc": "Android app: fixed types title account tokens age",
+      "cases": [
+        {"keys": "t", "expect": ["title", "tokens"]},
+        {"keys": "acc", "expect": ["account"]},
+        {"keys": "title,age", "expect": ["title", "age"]}
+      ]
+    }
+  }
+}

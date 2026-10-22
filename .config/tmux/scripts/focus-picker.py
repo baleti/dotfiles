@@ -75,6 +75,9 @@ is visible.
 Deps: tmux, fzf, python3. ssh columns additionally use ps, lsof.
 """
 import argparse
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.expanduser("~/.config/dsl"))
+import dsl  # shared DSL primitives (~/.config/dsl/dsl.py)
 import atexit
 import json
 import os
@@ -470,44 +473,28 @@ def starts_cmd(text, lead_quote):
 
 
 def resolve_keys(keys, names):
-    """query-dsl.md "Keys": a comma list; per key the name equal to it wins
-    alone, else every name containing it; unioned, in `names` order."""
-    hit = set()
-    for key in keys.lower().split(","):
-        if not key:
-            continue
-        exact = [n for n in names if n == key]
-        hit.update(exact or [n for n in names if key in n])
-    return [n for n in names if n in hit]
+    """query-dsl.md "Keys" (shared: ~/.config/dsl/dsl.py)."""
+    return dsl.resolve_names(keys, names)
 
 
 def parse_direction(tok):
-    """A direction part -> "ascending"/"descending"/None: any non-empty
-    prefix of either word."""
-    t = tok.lower()
-    if t and "ascending".startswith(t):
-        return "ascending"
-    if t and "descending".startswith(t):
-        return "descending"
-    return None
+    """A direction part -> "ascending"/"descending"/None: any non-empty prefix of either word."""
+    d = dsl.parse_direction(tok)
+    return {"asc": "ascending", "desc": "descending"}.get(d)
 
 
 _SHORT = {"fv": "fv", "filter-value": "fv", "ft": "ft", "filter-type": "ft", "at": "at", "add-type": "at",
           "rt": "rt", "remove-type": "rt", "s": "s", "sort": "s", "fts": "fts"}
 
 
+_VERB_MAP = {"": "fv", **_SHORT}
+_MAX_PARTS = {"s": 3}
+
+
 def split_cmd(text):
-    """`/verb/keys[/dir]` or `//keys` -> (short_verb, keys|None, dir|None, bad),
-    or None if the token names no verb (query-dsl.md "Grammar")."""
-    parts = text[1:].split("/")
-    if parts[0] == "":
-        verb = "fv" if len(parts) >= 2 else None
-    else:
-        verb = _SHORT.get(parts[0])
-    if verb is None:
-        return None
-    return (verb, parts[1] if len(parts) >= 2 else None, parts[2] if len(parts) == 3 else None,
-            len(parts) > (3 if verb == "s" else 2))
+    """`/verb/keys[/dir]` or `//keys` -> (short_verb, keys|None, dir|None, bad), or None if the token names
+    no verb (query-dsl.md "Grammar"; shared splitter in ~/.config/dsl/dsl.py)."""
+    return dsl.split_cmd(text, _VERB_MAP, _MAX_PARTS)
 
 
 FTS_SCOPES = ["tmux"]    # this picker lists tmux panes: the only /fts scope that applies is tmux scrollback
@@ -602,15 +589,8 @@ def parse_query(query):
                 # /s: every key must resolve to exactly one SORT_KEYS name
                 if dirp is not None and parse_direction(dirp) is None:
                     continue
-                names, ok = [], False
-                for k in (k for k in keys.lower().split(",") if k):
-                    r = sorted(resolve_keys(k, list(SORT_KEYS)))   # a fuzzy key expands, alphabetical
-                    ok = bool(r) and (ok or not names)
-                    if not r:
-                        ok = False
-                        break
-                    names.extend(n for n in r if n not in names)
-                if names and ok:
+                names = dsl.resolve_sort_keys([k for k in keys.lower().split(",") if k], list(SORT_KEYS))
+                if names:
                     sort = (names, parse_direction(dirp) if dirp else "descending")
                 continue
             if "/" not in text[1:] and is_verb_prefix(text[1:]):
