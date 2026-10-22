@@ -772,7 +772,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
-            ("/sort ", "order the results by a field, e.g. /s size desc"),
+            ("/sort/", "order the results by a field, e.g. /s/size/desc"),
             ("/show-dotfiles ", "include names starting with a dot (this search only)"),
             ("/hide-dotfiles ", "leave out names starting with a dot (this search only)"),
             ("/show-backup ", "include restic backups and btrfs snapshots (this search only)"),
@@ -787,16 +787,25 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/hide-fts-dwg ", "content searches leave out AutoCAD drawings"),
         ];
         for (v, label) in VERBS {
-            if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort ") {
+            if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort/") {
                 out.push((v.to_string(), label.to_string()));
             }
         }
     }
-    if matches!(prev, "/s" | "/sort") && !frag.starts_with('/') {
-        // the field after /s, or a direction once a field is there
-        let f = frag.to_lowercase();
-        for (name, _) in SORT_FIELDS.iter() {
-            if name.contains(f.as_str()) { out.push((format!("{name} "), "sort field".to_string())); }
+    if let Some(chain) = frag.strip_prefix("/sort/").or_else(|| frag.strip_prefix("/s/")) {
+        // `/s/<keys>[/<dir>]`: a sort field after the last comma, or the direction part
+        let head = &frag[..frag.len() - chain.len()];
+        if let Some((keys, dirp)) = chain.split_once('/') {
+            let d = dirp.to_lowercase();
+            for (word, full) in [("asc", "ascending"), ("desc", "descending")] {
+                if full.starts_with(d.as_str()) { out.push((format!("{head}{keys}/{word} "), "sort direction".to_string())); }
+            }
+        } else {
+            let comma = chain.rfind(',').map(|c| c + 1).unwrap_or(0);
+            let f = chain[comma..].to_lowercase();
+            for (name, _) in SORT_FIELDS.iter() {
+                if name.contains(f.as_str()) { out.push((format!("{head}{}{name}", &chain[..comma]), "sort field".to_string())); }
+            }
         }
         return (start, out);
     } else if let Some(body) = frag.strip_prefix("//") {
@@ -957,8 +966,10 @@ fn sort_direction(tok: &str) -> Option<bool> {
 }
 
 /// Splits `/s` and `/sort` commands out of the query. Returns the rest (what the server
-/// sees) and the requested order. Each `/s` adds keys (`/s a /s b` == `/s/a/b`: a, then b on ties);
-/// a segment that resolves to nothing makes that whole `/s` inert. One direction for every key.
+/// sees) and the requested order. A command is one token, `/s/key[,key...][/dir]`
+/// (query-dsl.md "Grammar"): comma-separated keys, optional direction as the third part.
+/// Each `/s` adds keys (`/s/a /s/b` == `/s/a,b`: a, then b on ties); a key that resolves to
+/// nothing makes that whole `/s` inert. One direction for every key. A keyless `/s` is inert.
 fn parse_sort(q: &str) -> (String, SortSpec) {
     let owned = tokenize(q);
     let toks: Vec<&str> = owned.iter().map(String::as_str).collect();
@@ -977,21 +988,13 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
             continue;
         }
         let chain = if let Some(c) = t.strip_prefix("/sort") { c } else if let Some(c) = t.strip_prefix("/s") { c } else { rest.push(t); continue };
-        let mut path = if chain.is_empty() { None } else if let Some(c) = chain.strip_prefix('/') { Some(c) } else { rest.push(t); continue };
-        // direction may come before the field (`/s desc name`) or after it (`/s name desc`)
-        let mut dir_first = None;
-        if path.is_none() && i < toks.len() && !toks[i].starts_with('/') {
-            if resolve_sort_field(toks[i]).is_none() {
-                if let Some(d) = sort_direction(toks[i]) {
-                    dir_first = Some(d);
-                    i += 1;
-                }
-            }
-            if i < toks.len() && !toks[i].starts_with('/') { path = Some(toks[i]); i += 1; }
-        }
-        let segs: Vec<Option<&str>> = path.map(|p| p.split('/').map(resolve_sort_field).collect()).unwrap_or_default();
-        let mut dir = dir_first;
-        if let Some(d) = toks.get(i).and_then(|d| sort_direction(d)) { i += 1; dir = Some(d); }
+        let parts: Vec<&str> = if chain.is_empty() { Vec::new() } else if let Some(c) = chain.strip_prefix('/') { c.split('/').collect() } else { rest.push(t); continue };
+        if parts.is_empty() || parts.len() > 2 { continue; } // keyless or malformed: inert, takes no argument
+        let segs: Vec<Option<&str>> = parts[0].split(',').filter(|k| !k.is_empty()).map(resolve_sort_field).collect();
+        let dir = match parts.get(1) {
+            Some(d) => match sort_direction(d) { Some(x) => Some(x), None => continue },
+            None => None,
+        };
         if !segs.is_empty() && segs.iter().all(Option::is_some) {
             if dir.is_some() { desc = dir; }
             explicit = true;
@@ -1913,7 +1916,7 @@ impl App {
         self.open_hit(self.selected);
     }
 
-    /// Clicking a header writes `/s <field>` into the query (replacing any /s there):
+    /// Clicking a header writes `/s/<field>` into the query (replacing any /s there):
     /// the same primary column flips the direction, another column sorts ascending.
     fn set_sort(&mut self, key: &str) {
         let (rest, cur) = parse_sort(&self.query);
@@ -1921,7 +1924,7 @@ impl App {
         let field = SORT_FIELDS.iter().find(|f| f.1 == key).map(|f| f.0).unwrap_or(key);
         let mut q = rest;
         if !q.is_empty() { q.push(' '); }
-        q.push_str(&format!("/s {field}{}", if desc { " desc" } else { "" }));
+        q.push_str(&format!("/s/{field}{}", if desc { "/desc" } else { "" }));
         self.query = q;
         self.send_query();
         self.save_sort();
