@@ -220,6 +220,7 @@ PanelWindow {
         let items;
         if (ctx.kind === "verb") items = ClipboardQueryDsl.verbSuggestions(ctx.frag, root.fieldNames);
         else if (ctx.kind === "field") items = ClipboardQueryDsl.fieldSuggestions(root.fieldNames, ctx.frag);
+        else if (ctx.kind === "dir") items = ClipboardQueryDsl.dirSuggestions(ctx.frag);
         else items = ClipboardQueryDsl.valueSuggestions(root._entries, ctx.field, ctx.frag);
         items = items.filter(c => rest.every(f => ClipboardQueryDsl.substr(f, c)));
         if (items.length === 0) return null;
