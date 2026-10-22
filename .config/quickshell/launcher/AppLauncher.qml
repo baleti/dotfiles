@@ -190,7 +190,7 @@ PanelWindow {
     readonly property var workspaceRows: {
         const arg = root.actionArg.toLowerCase();
         if (root.promptKind === "add")
-            return [{ ws: true, name: "+ add workspace " + (root.actionArg ? "\"" + root.actionArg + "\"" : "(next number or decimal)"),
+            return [{ ws: true, name: "+ add workspace " + (root.actionArg ? "\"" + root.actionArg + "\"" : "(next free number)"),
                       target: root.actionArg, create: true, cnt: -1, mon: "",
                       apps: "added empty after the current workspace and focused", entry: { icon: "" } }];
         const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0
@@ -242,24 +242,16 @@ PanelWindow {
 
     // /add-workspace: an empty workspace at the smallest unused id above the
     // current one and focused (the existing empty-workspace cleanup removes it
-    // once focus leaves). No name = the current
-    // workspace's number + 1 if free, else a child (590.1, or 590.1.1 if 590.1 exists, ...; from 590.1 the sibling 590.2), or
-    // the first free integer when the current name isn't numeric.
+    // once focus leaves). No name = the first free integer above the current
+    // workspace's number (order of names doesn't matter, only list position).
     function addWorkspace(row) {
         const lua = "local cur = hl.get_workspace(" + LauncherState.workspaceId + ") "
             + "local used, names = {}, {} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end "
             + "local name = " + root._luaStr(row.target) + " "
-            + "if name == '' then local ip, fp = tostring(cur and cur.name or ''):match('^([%d%.]+)%.(%d+)$') "
-            + "if ip then local k = tonumber(fp) + 1 while names[ip .. '.' .. k] do k = k + 1 end name = ip .. '.' .. k else "
-            + "local base = cur and tonumber(cur.name) "
-            + "if not base then local n = 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) "
-            + "elseif not names[tostring(base + 1)] then name = tostring(base + 1) "
-            + "else local ch = cur.name .. '.1' while names[ch] do ch = ch .. '.1' end name = ch end end end "
+            + "if name == '' then local base = cur and tonumber(cur.name) or 0 "
+            + "local n = math.floor(base) + 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) end "
             + "if names[name] then return end "
             + "local anchor = cur and cur.id or 0 "
-            // a decimal name lands after its series predecessor (590.2 after 590.1), not just after the current workspace
-            + "local aip, afp = name:match('^(%d+)%.(%d+)$') if aip and tonumber(afp) > 1 then "
-            + "for _, x in ipairs(hl.get_workspaces()) do if tostring(x.name) == aip .. '.' .. (tonumber(afp) - 1) and x.id > anchor then anchor = x.id end end end "
             + "local id = anchor + 1 "
             // id cur+1 is taken: shift the contiguous run of workspaces
             // above the current one up by one (windows move, names are
@@ -313,12 +305,11 @@ PanelWindow {
         let rows = root.apps.filter(app => root.parsed.terms.every(t => root._matches(app, t)));
 
         const s = root.parsed.sort;
-        // Each chain segment must resolve to exactly one field (query-dsl.md
-        // "/sort"); any segment that doesn't makes the *whole* /sort inert,
+        // Each key resolves to one or more fields (fuzzy keys expand, query-dsl.md "Keys");
+        // a key that names nothing makes the *whole* /sort inert,
         // not just that key -- falls through to the default order below.
-        const sortFields = s ? s.fields.map(p => QueryDsl.resolvePath(p, root.typeNames)) : null;
-        if (s && sortFields.every(fl => fl.length === 1)) {
-            const keys = sortFields.map(fl => fl[0]);
+        const keys = s ? QueryDsl.resolveSortKeys(s.fields, root.typeNames) : null;
+        if (s && keys !== null) {
             rows = rows.slice().sort((a, b) => {
                 for (const f of keys) {
                     const av = root._fieldVals(a, f)[0] || "";

@@ -247,9 +247,12 @@ def fts_pick_indexes(via, terms):
         return [], terms, f"no content index named '{via}'" if not hit else f"'{via}' matches several indexes: {', '.join(hit)}"
     return [names[hit[0]]], terms, None
 
+PAGES_SORT_CAP = 5000          # /s/pages orders at most this many matches (those first by the other keys)
+
 def apply_sort(rows, sort, desc):
-    """Orders result rows by a comma list of name, path, size, date, ext, depth (ties fall back to path order).
-    `sort` None keeps the engine's own order (relevance for /fts)."""
+    """Orders result rows by a comma list of name, path, size, date, ext, depth, pages (ties fall back to path order).
+    `sort` None keeps the engine's own order (relevance for /fts). `pages` counts the pages of local PDFs (cached,
+    counted in parallel, up to ~20 s for a cold cache); rows with no page count (not a PDF) come last in both directions."""
     if not sort:
         return rows
     keyfn = {"name": lambda r: r["remote"].rsplit("/", 1)[-1].lower(),
@@ -257,11 +260,19 @@ def apply_sort(rows, sort, desc):
              "size": lambda r: r["size"] or 0,
              "date": lambda r: r["mtime"] or 0,
              "ext": lambda r: (r["remote"].rsplit("/", 1)[-1].rpartition(".")[2].lower() if "." in r["remote"].rsplit("/", 1)[-1] else ""),
-             "depth": lambda r: r["remote"].count("/")}
-    keys = [keyfn[k] for k in sort.split(",") if k in keyfn]
-    if not keys:
+             "depth": lambda r: r["remote"].count("/"),
+             "pages": lambda r: r.get("pages") or 0}
+    names = [k for k in sort.split(",") if k in keyfn]
+    if not names:
         return rows
-    return sorted(rows, key=lambda r: (tuple(k(r) for k in keys), r["remote"].lower()), reverse=desc)
+    keys = [keyfn[k] for k in names]
+    order = lambda rs, ks: sorted(rs, key=lambda r: (tuple(k(r) for k in ks), r["remote"].lower()), reverse=desc)
+    if "pages" not in names:
+        return order(rows, keys)
+    add_pages(rows, wait=20)
+    has = [r for r in rows if r.get("pages")]
+    none = [r for r in rows if not r.get("pages")]
+    return order(has, keys) + order(none, [keyfn[k] for k in names if k != "pages"])
 
 def recoll_terms(text):
     """The words after a content verb as a Recoll query: `!word` (this DSL's negation) becomes Recoll's `-word`."""
@@ -546,7 +557,11 @@ def add_pages(results, wait=1.5):
         path = r["remote"]
         if not (path.startswith("/") and path.lower().endswith(".pdf")):
             continue
-        key = (path, r.get("size"), r.get("mtime"))
+        mt = r.get("mtime")
+        if isinstance(mt, str):                 # the picker form (ISO text) and the catalog form (epoch) share one cache key
+            try: mt = int(time.mktime(time.strptime(mt, "%Y-%m-%dT%H:%M:%S")))
+            except ValueError: pass
+        key = (path, r.get("size"), mt)
         if key in _pages_cache:
             r["pages"] = _pages_cache[key] or None
             continue
@@ -911,7 +926,14 @@ class H(BaseHTTPRequestHandler):
                             if note:
                                 errors.append(note)
                             extras.append(t)
-                    results, count, stats = NAMES.query(rest, sort, desc, offset, top, extras=extras, cancel=stale)
+                    if "pages" in sort.split(","):
+                        # page counts exist only after the match list is known: take the first PAGES_SORT_CAP matches
+                        # (ordered by the other keys), count, sort, then cut the requested window
+                        other = ",".join(k for k in sort.split(",") if k != "pages") or "date"
+                        allrows, count, stats = NAMES.query(rest, other, desc, 0, PAGES_SORT_CAP, extras=extras, cancel=stale)
+                        results = apply_sort(allrows, sort, desc)[offset:offset + top]
+                    else:
+                        results, count, stats = NAMES.query(rest, sort, desc, offset, top, extras=extras, cancel=stale)
                 for r in results:
                     r.setdefault("score", None)
                     if r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):

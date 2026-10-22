@@ -213,9 +213,10 @@ PanelWindow {
         if (filters.length > 0)
             rows = rows.filter(r => filters.every(t => root._tableMatches(r, t)));
         if (q.sortRaw) {
-            const keys = q.sortRaw.keys.map(k => WinSwitchQueryDsl.resolveNames(k, root.tableTypeNames));
-            if (keys.every(k => k.length === 1)) {
-                const names = keys.map(k => k[0]);
+            const keys = q.sortRaw.keys.map(k => WinSwitchQueryDsl.resolveNames(k, root.tableTypeNames).slice().sort());
+            if (keys.every(k => k.length > 0)) {
+                const names = [];
+                for (const k of keys) for (const n of k) if (names.indexOf(n) < 0) names.push(n);
                 const sign = q.sortRaw.dir === "desc" ? -1 : 1;
                 const num = { msgs: true, tokens: true };
                 rows = rows.slice().sort((a, b) => {

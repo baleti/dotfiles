@@ -602,11 +602,15 @@ def parse_query(query):
                 # /s: every key must resolve to exactly one SORT_KEYS name
                 if dirp is not None and parse_direction(dirp) is None:
                     continue
-                names = []
+                names, ok = [], False
                 for k in (k for k in keys.lower().split(",") if k):
-                    r = resolve_keys(k, list(SORT_KEYS))
-                    names.append(r[0] if len(r) == 1 else None)
-                if names and None not in names:
+                    r = sorted(resolve_keys(k, list(SORT_KEYS)))   # a fuzzy key expands, alphabetical
+                    ok = bool(r) and (ok or not names)
+                    if not r:
+                        ok = False
+                        break
+                    names.extend(n for n in r if n not in names)
+                if names and ok:
                     sort = (names, parse_direction(dirp) if dirp else "ascending")
                 continue
             if "/" not in text[1:] and is_verb_prefix(text[1:]):

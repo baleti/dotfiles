@@ -467,9 +467,12 @@ QtObject {
     function applySort(entries, query, fieldNames) {
         let result = entries;
         if (query.sort) {
-            const keys = query.sort.paths.map(p => root.resolveFields(p, fieldNames));
-            if (keys.every(k => k.length === 1)) {
-                const flatKeys = keys.map(k => k[0]);
+            // fuzzy keys expand to every matching field, alphabetical (`/s/pa` = pages,path); a key that
+            // names nothing makes the whole /s inert (query-dsl.md "Keys")
+            const keys = query.sort.paths.map(p => root.resolveFields(p, fieldNames).slice().sort());
+            if (keys.every(k => k.length > 0)) {
+                const flatKeys = [];
+                for (const k of keys) for (const f of k) if (flatKeys.indexOf(f) < 0) flatKeys.push(f);
                 const dirSign = query.sort.direction === "descending" ? -1 : 1;
                 result = entries.slice().sort((ea, eb) => {
                     for (const k of flatKeys) {
