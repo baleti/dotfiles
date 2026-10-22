@@ -1,15 +1,27 @@
 # Picker query DSL
 
-The small query language typed into the search box of every fzf-driven
-picker in this repo, plus winswitch's grid search, the GTK
-clipboard/notification pickers, and the quickshell app launcher and RSS
-reader. Arrived at independently in `window-search.py`, then reused (by
-hand, not by import) in `claude-history` and `focus-picker.py`, then
-reimplemented in Rust for winswitch's `query.rs`, then ported by hand a
-second time into the shared `picker.rs` engine behind clipboard-picker
-and notification-picker, then a third time into JS for the quickshell
-launcher (`QueryDsl.qml`), then reused again (same `QueryDsl.qml` import,
-not a fourth port) for the RSS reader. **Shared code (2026-10-22).** The grammar's pure primitives live once per
+The small query language typed into the search box of every picker in this
+repo: the fzf-driven tmux pickers (window-search, claude-history,
+focus-picker), winswitch's grid search, the Quickshell pickers (clipboard,
+notification, revit-remote, appmenu, app launcher, RSS reader, the Claude usage
+panel), the images picker, the `search` command and the Android app. It
+arrived at independently in `window-search.py`, was reused in `claude-history`
+and `focus-picker.py`, then reimplemented for winswitch and the clipboard family
+(first in Rust/GTK - since replaced by Quickshell QML in 2026-09 - then in JS),
+and finally given one syntax and shared primitives (below). The code no longer
+exists in four languages' worth of copies; the *semantics* are what this doc
+fixes, and `~/.config/dsl/tests.json` checks them.
+
+> **Reading the older sections.** Several sections below were written while
+> winswitch and the clipboard/notification pickers were GTK programs sharing a
+> Rust `picker.rs`/`query.rs` engine. Both were replaced by QML
+> (`WinSwitchQueryDsl.qml`, `ClipboardQueryDsl.qml`, over the shared
+> `lib/dsl.js`); `picker.rs` is now a small helper crate (age formatting, cache
+> directory) with no DSL code. Where those sections say "GTK pickers",
+> `picker.rs` or `query.rs`, read the QML consumers in the table below - the
+> behaviour they describe is carried by them.
+
+**Shared code (2026-10-22).** The grammar's pure primitives live once per
 language: `~/.config/quickshell/lib/dsl.js` (every QML consumer - launcher,
 rss-reader, claude-usage, winswitch, the clipboard family - imports it) and
 `~/.config/dsl/dsl.py` (claude-history, focus-picker, window-search, the
@@ -171,7 +183,7 @@ popup, not the window. `Ctrl+Space` does not AND-narrow here: the photo
 grammar has no verb stage to narrow.
 
 See [tmux.md](tmux.md) for the tmux bindings and [rust-tools.md](rust-tools.md)
-for winswitch and the GTK pickers.
+for winswitch and the clipboard-family pickers.
 
 **Completion-UI maturity varies** - the grammar/semantics above are shared
 by every row in that table, but not every picker has caught up on how its
@@ -399,7 +411,7 @@ independent: every one must match a surviving row. Bare words are each
 their own term (`foo bar` requires both, independently) except in
 clipboard-picker / notification-picker, whose bare words join into one
 space-separated phrase matched as a single contiguous run - that predates
-this DSL and is left as-is (see `picker.rs`).
+this DSL and is left as-is (see `ClipboardQueryDsl.qml`).
 
 BM25-ranked pickers (window-search, claude-history) keep their own extra
 row-filter spelling on top of this - prefix-expanded bare words and
@@ -748,8 +760,8 @@ Tab is what asks "what could this become": if there's exactly one
 candidate, it completes immediately with no popup ever built or shown at
 all, the same way ordinary shell tab-completion silently completes an
 unambiguous path; only 2+ candidates actually reveal a popup, to choose
-among them. This applies uniformly everywhere: the GTK pickers show/hide
-an in-layout `GtkListBox`, the QML consumers an overlay `Rectangle`,
+among them. This applies uniformly everywhere: the QML consumers show/hide
+an overlay `Rectangle`,
 claude-history spawns/dismisses a nested fzf (see below) - always
 Tab-gated to *open*, never live. An always-on popup that repainted on
 every keystroke was tried first and dropped: it read as obtrusive, and
@@ -810,11 +822,9 @@ from scratch - that half of the original rule is unchanged, only the
 
 Typing `/` then pressing Tab is enough to discover the whole grammar (the
 list just won't appear until you actually press Tab - see above). All the
-GTK pickers (winswitch, clipboard-picker, notification-picker) grow a
-GTK-native completion popup - a plain in-layout `GtkListBox` under the
-search entry, not a `GtkPopover` (gtk-layer-shell's layer surface has no
-xdg_popup positioner to anchor one to); the quickshell app launcher and
-RSS reader grow the equivalent in QML. Stages:
+QML pickers grow the same popup: an overlay under the search box (winswitch,
+the clipboard family, the app launcher, rss-reader, claude-usage); the two fzf
+pickers spawn a nested fzf instead. Stages:
 
 1. **Verb** (`/frag`, nothing after it yet): candidates are every short
    verb form whose name contains `frag` as a substring (`/f` -> `/fv`,
@@ -842,76 +852,41 @@ against it.
 
 ### Verb-stage depth
 
-Added 2026-09-11 (superseding an earlier, same-day attempt at a hardcoded
-single shortcut - see below): the Verb stage (stage 1, above) doesn't stop
-at the five short verb forms - its candidate list is the five verb shorts
-**plus every path-taking verb crossed with every resolvable path**
-(flat types, groups, and group subfields - the same universe stage 2's
-type-path completion already draws from), rendered as the complete
-`verb/path` string. A fragment of the *path*, not just the verb, is
-therefore enough to reach a whole command: `/wo` + Tab reaches
-`/fv/workspace`, `/ft/workspace`, `/at/workspace`, `/rt/workspace`, and
-`/s/workspace` (every path-taking verb crossed with the one path
-containing `wo`); `/cla` + Tab reaches all five verbs crossed with
-`claude` and each of its five subfields (`claude-title`, `claude-path`,
-`claude-session`, `claude-age`, `claude-fts`) - thirty rows, further
-narrowed by typing more (`/claude.t` cuts it to the two subfields
-containing `t`).
+The Verb stage (stage 1, above) does not stop at the bare verbs: its candidate
+list is every verb **plus every key-taking verb crossed with every type name it
+can take**, rendered as the complete `verb/key` string (`fv/workspace`,
+`s/tmux-session`, `at/claude-title`, ...; the app verbs add their own, e.g.
+alt-tab's `fts/claude`, `fts/claude-live`, `fts/claude-archive`, `fts/tmux`). A
+fragment of the *type*, not just the verb, is therefore enough to reach a
+whole command: `/wo` + Tab reaches `/fv/workspace`, `/ft/workspace`,
+`/at/workspace`, `/rt/workspace` and `/s/workspace`, and `/cla` + Tab reaches
+every verb crossed with each `claude-*` type, narrowed by typing more
+(`/claude-t` keeps the types containing `t`).
 
-Matching reuses the exact rule stage 1 already used for the plain verbs -
-`substr(fragment, candidate_text)` against the *complete* `verb/path`
-string, not just one half of it - so a fragment of either the verb or the
-path reaches the same row. Accepting one inserts its full text
-(`/fv/workspace `) in one step, exactly the string `/fv/workspace` already
-parsed to when typed by hand (see Via paths) - this only adds completion
-candidates, nothing new to the grammar or to matching. An empty fragment
-now surfaces this whole depth too (see "An empty fragment lists
-everything," above, updated by this change) - `/` + Tab is no longer just
-the five verbs, it's the five verbs plus every verb/path combination the
-grammar can build, the complete stage-1 vocabulary in one popup.
+Matching is the one rule everywhere: `substr(fragment, candidate_text)` against
+the *complete* `verb/key` string, so a fragment of either half reaches the same
+row. Accepting one inserts its full text and nothing else: `/fv/workspace ` (a
+trailing space, the value follows) or `/s/workspace` (no space: a `,` or `/dir`
+can follow) - exactly what the same command parses to when typed by hand, so
+this adds completion candidates and changes nothing about the grammar. An
+empty fragment lists the whole vocabulary (`/` + Tab).
 
-Computed from the existing type registry (`COLUMNS`/`GROUPS`/group
-subfields), not hardcoded - the first attempt at this (hardcode just
-`/fv/claude` as a single Verb-stage candidate) was the wrong shape: it
-special-cased one group behind one verb instead of the general
-`verb x path` depth being asked for, and `/wo` + Tab correctly found
-nothing under it, since `/fv/workspace` was never in the hardcoded list.
-Superseded same-day, no version of the hardcoded-list design shipped
-beyond winswitch.
+The candidate list is computed from each picker's own type registry (winswitch's
+`typeNames`/`allPaths`, the clipboard family's `fieldNames`, the launcher's
+`typeNames`, ...), never hardcoded; a picker only crosses the verbs that do
+something there (the clipboard family and the launcher cross `/fv` and `/s`;
+claude-history crosses `/fv`; focus-picker also `/at /rt /ft` against its column
+names). Every picker with a completion popup implements it: the QML consumers
+in their `_verbStageUniverse`/`verbStageUniverse`, focus-picker and
+claude-history (nested fzf) in `completion_stage`/`complete_query`;
+window-search has no completion at all.
 
-**Row anatomy for a deep candidate** (extends Suggestion row anatomy,
-below): label is the full `/verb/path` string; alias is the verb's own
-`/long-form` (`/filter-value` for an `/fv/...` row), same role it already
-plays for a plain verb candidate; description is the *path's* one-liner
-(`typeDescs`/`type_desc` - "the Hyprland workspace" for `workspace`), not
-the verb's - the path is the newer, less-obvious half once the verb is
-visible in the label itself.
-
-**Rollout: winswitch first, ported everywhere else 2026-09-11-12.**
-Landed in winswitch first (`WinSwitchQueryDsl.qml`'s `completionCandidates`'s
-`"verb"` case, alongside the existing `shortVerbs` filter - not
-`query.rs`, which stopped being winswitch's live implementation once its
-UI was rewritten onto Quickshell/QML on 2026-09-09 and has since been deleted), confirmed correct there, then ported by hand to
-every other consumer that has a Tab-triggered popup at all: `picker.rs`'s
-`verb_stage_universe` (clipboard-picker/notification-picker - crosses only
-`/fv`, the one verb that's actually acting there, against its flat
-`field_names`, landing the colon form since this grammar has no via-path
-support at all) and each QML consumer's own
-`_verbStageUniverse`/`_acCandidates` (app-launcher, landing colon to match
-its established convention; rss-reader and claude-usage, landing via form
-to match theirs). window-search stays out of scope (see the maturity note
-at the top of Autocompletion - it has no completion assistance at all);
-focus-picker and claude-history caught up 2026-09-13, both via nested-fzf
-popups (`focus-picker.py`'s `completion_stage`/`verb_stage_universe`,
-crossing `/fv` and `/s` against this picker's flat filter/sort fields and
-`/at`/`/rt`/`/ft` against its column groups since it has no single shared
-type registry the way winswitch does; `claude-history`'s
-`complete_query`, crossing only `/fv` against `FIELD_NAMES` - the one verb
-that does anything there, same reasoning as `picker.rs`). Landing this in
-focus-picker also meant giving it the via-path grammar (`/verb/path ...`)
-it had never actually had - it silently degraded to dead literal-text
-bare terms before (reported 2026-09-13): a picker can't usefully offer
-Tab-completion toward a spelling its own parser can't read back.
+**Row anatomy for a deep candidate** (extends Suggestion row anatomy, below):
+label is the full `/verb/key` string; alias is the verb's own `/long-form`
+(`/filter-value` for an `/fv/...` row), as for a plain verb candidate;
+description is the *type's* one-liner (`typeDescs`: "the Hyprland workspace"
+for `workspace`), not the verb's - the type is the newer, less-obvious half
+once the verb is visible in the label.
 
 **Ctrl+Space AND-narrows a Verb-stage popup instead of accepting it.** With
 the popup open on a `"verb"`-stage completion, `Ctrl+Space` inserts a
@@ -945,9 +920,8 @@ original opening `/` through the cursor in one go on accept, the same as
 accepting any other Verb-stage row already does.
 
 Same rollout as Verb-stage depth, same day: winswitch first
-(`WinSwitch.qml`'s `acVerbMulti`/`acVerbMultiStart`), then `picker.rs`
-(clipboard-picker/notification-picker) and each QML consumer
-(app-launcher, rss-reader, claude-usage) by hand.
+(`WinSwitch.qml`'s `acVerbMulti`/`acVerbMultiStart`), then each other QML
+consumer (the clipboard family, app-launcher, rss-reader, claude-usage).
 
 **The fzf-native completion popup (focus-picker, claude-history) picked
 this up 2026-09-13**, once it had a real popup at all (see Verb-stage
@@ -978,125 +952,70 @@ extend this into (see the maturity note at the top of Autocompletion).
 
 ## Auto-shown filter fields
 
-Added 2026-09-11-12, alongside Verb-stage depth: a field actively
-`//field value`-scoped (or, for a family key, matched across its types)
-is shown even without an explicit `/at` - and even past an `/ft`/`/rt`
-that would otherwise hide it - so the value that actually matched is
-visible the moment there's more than one candidate left to choose between,
-rather than a filter narrowing the result set for reasons that aren't on
-screen. This is additive to whatever `/ft`/`/at`/`/rt` already computed
-(or, in a picker with no column system at all, additive to that picker's
-fixed default display) - never a replacement, and it disappears again the
-moment the scoping term is deleted from the query.
+A type actively scoped by a filter (`//claude-title ovh`, `/fv/claude ovh`) is
+shown even without an explicit `/at` - and even past an `/ft`/`/rt` that would
+otherwise hide it - so the value that actually matched is visible whenever more
+than one candidate is left to choose between, rather than a filter narrowing the
+result set for reasons that aren't on screen. This is additive to whatever
+`/ft`/`/at`/`/rt` computed (or, in a picker with no column system, to its fixed
+default display) - never a replacement - and it disappears the moment the
+scoping term is deleted.
 
-**Triggers the moment the field is named, not just once a value narrows
-anything.** Added 2026-09-12: a via-form `/fv/path` with nothing typed
-after it *yet* (`/fv/claude-session`, about to add a value) already
-resolves `path` to a real field - see Via paths, above - even though
-that resolution stays a no-op for row filtering (the whole point of the
-2026-09-02 fix this doc already documents there). Auto-show reads that
-same resolution and shows the field immediately, rather than waiting for
-`/fv/claude-session 3` to actually be typed - the column that's about to
-be filtered on is exactly what a still-forming command benefits from
-showing early, same "don't make the user wait to see what they're doing"
-spirit as inline command-validity coloring or Tab-completion itself. An
-unresolvable or still-ambiguous via path (a typo, or a fragment on its
-way to becoming a real field name) resolves to nothing here exactly like
-it always does for a complete term, so nothing flickers into view for
-`/fv/zzz` or a `/fv/cl` still being typed - only a path that has actually
-landed on one real field (or a real group, for the existence form) counts.
-Every `/fv/keys` or `//keys` triggers it (there is one form now, so a keys part
-can never be mistaken for free text).
+**It triggers the moment the keys are named, not just once a value narrows
+anything.** `//claude-session` with no value yet (about to add one) already
+resolves its keys to real types; that stays a no-op for row filtering ("never
+flash to zero on a partial keystroke", Design principles) but Auto-show reads the
+same resolution and shows the column at once. A key list that resolves to
+nothing (a typo, a fragment on its way to a name) shows nothing, exactly as it
+does for a complete term. **An empty keys part is nothing typed yet**: `//` or
+`/fv/` must not resolve at all - an empty substring matches every type name, and
+the union rule a fuzzy key legitimately gets (`//cl` reaching every type
+containing `cl`) would auto-show every column at once (reported 2026-09-13).
+Each implementation guards the early trigger on a non-empty key list
+(`keys.replace(/,/g, "").length > 0`).
 
-**A genuinely empty via segment is nothing typed yet, not an ambiguous
-fragment.** `/fv/` with nothing typed after the second `/` yet has an
-empty-string path - and every resolver in this grammar treats an empty
-*needle* as matching everything (`substr`'s own contract - see
-Resolution, precisely), which is exactly right for a value ("no text
-required" is the whole point of a colonless filter) but disastrous for a
-*path*: resolved naively, an empty segment reads as "ambiguous across
-every type," and the union-everything rule an ambiguous
-fragment legitimately gets (`/fv/cl` reaching every group starting with
-`cl`) would auto-show every group's default subfield at once - reported
-2026-09-13, `/fv/` alone flashing Claude session info under every
-thumbnail before any type had even been chosen. Fixed by gating this
-whole early-trigger path on a non-empty via string specifically (each
-implementation's own `via.length > 0` check) - not a new resolution rule,
-just refusing to resolve at all when there is, literally, nothing there
-yet. This is scoped to the auto-show trigger alone: an empty via still
-means what it always did everywhere else in the grammar (the verb itself
-is still valid, still colored as such - see Inline command-validity
-coloring - and the *value* stage of a query like `/fv/ text` still
-resolves that empty path the normal ambiguous-union way, for whatever
-that construct is worth typed on purpose).
+What "shown" means is picker-specific:
 
-What "shown" means is necessarily picker-specific:
+- **winswitch**: the referenced types become active columns exactly like an `/at`
+  (`WinSwitchQueryDsl.qml`'s `filterReferencedFields`, folded into
+  `activeColumns`), rendered as one extra line each under the thumbnail
+  (`WinSwitch.qml`'s `labelLines`); the grid's cells grow (`labelAllowance`) to
+  fit.
+- **clipboard / notification / revit-remote / appmenu pickers**: a dim extra line
+  under the entry's preview (`ClipboardPicker.qml` and siblings, over
+  `ClipboardQueryDsl.referencedFields`) - these have no real column system.
+- **app-launcher / rss-reader**: a dim second (RSS: third) line under the app name
+  / article title, skipping fields the row already shows unconditionally.
+- **claude-usage**: a no-op - its table already renders every type as a column
+  (`/ft /at /rt` are inert there).
 
-- **winswitch**: the referenced field becomes an active column exactly
-  like an `/at` would (`WinSwitchQueryDsl.qml`'s `filterReferencedFields`,
-  folded into `activeColumns`) - rendered as its own extra line under the
-  thumbnail (`WinSwitch.qml`'s `labelLines`, one line per active column,
-  not space-joined), with the grid's cells growing (`labelAllowance`) to
-  fit however many lines are now showing rather than clipping them.
-- **clipboard-picker / notification-picker**: a dim extra line under the
-  entry's preview/thumbnail (`picker.rs`'s `update_extra_labels`) - this
-  picker has no real column system to fold into (see its own header), so
-  this is the one place these two pickers show a field's value at all.
-- **app-launcher / rss-reader**: a dim second (or third, for the RSS
-  reader) line under the app name / article title - skipped for whichever
-  fields that row already shows unconditionally (the RSS reader excludes
-  `title`/`feed`/`date`, always visible; the app launcher has nothing to
-  exclude, since it shows only the name by default).
-- **claude-usage**: a deliberate no-op - its table already renders every
-  field as a permanent column (see its own `/ft`/`/at`/`/rt`-are-inert
-  comment), so there is nothing hidden left to surface.
+Auto-show is implemented in the QML consumers only; window-search, focus-picker
+and claude-history have no extra-line rendering to feed.
 
-Scoped to consumers that support a Tab-triggered popup at all - window-search,
-focus-picker and claude-history stay out of scope for *this* feature (see
-the maturity note at the top of Autocompletion), even though focus-picker
-and claude-history did pick up both Verb-stage depth and Ctrl+Space
-themselves 2026-09-13 (see each feature's own Rollout note) - all three
-features landed separately, not as one package, and this one specifically
-hasn't been ported to the fzf-native completion popup yet.
+**A family type's auto-shown line is labelled with its own name, and gated per
+row when the key reached several types.** Types of a family share a hyphenated
+prefix (`claude-title`, `claude-path`, ...), and a fuzzy key (`//claude ovh`)
+reaches all of them, so which type actually matched differs row to row. In
+winswitch:
 
-**A group subfield's auto-shown line is labeled with the subfield's own
-name, and gated per row once the scoping term is a bare group.** Added
-2026-09-13, winswitch only (the one picker with groups today): since a bare
-group now searches every subfield rather than just `GROUP_DEFAULT_SUB` (see
-Type paths, above), which subfield actually matched can differ row to row -
-`/fv/claude ovh` might hit `claude-title` on one window and `claude-fts`
-on another. Two changes follow from that:
+- **Labelling.** A family type's line renders as `sub: value` (`title: ovh proposal
+  draft`) rather than a bare value; the reader cannot otherwise tell which type
+  they are looking at. This applies to every such line, including one added with
+  `/at/claude`.
+- **Per-row gating.** A type reached through a *multi-type* scoped filter is shown
+  only on rows where it is the one that matched; a type shown for any other
+  reason (`/at`, a key naming exactly one type) is always shown once it has a
+  non-empty value.
+- **Match-centred preview.** The shown value is capped (80 chars), and when the
+  line is tied to a matched filter value the window is centred on the match's
+  first occurrence instead of starting at character 0 - the first 80 characters
+  of a long field rarely contain the matched substring, so the preview read as
+  unrelated noise even on a correct match. Types not tied to a matched value keep
+  plain start-truncation.
 
-- **Labeling.** A group-subfield line now renders as `sub: value`
-  (`title: ovh proposal draft`, `contents: ...call it OVH-style...`) instead
-  of a bare, unlabeled value - the reader otherwise has no way to tell which
-  subfield they're looking at, especially once a query can surface more than
-  one. This applies to *every* group-subfield line, not just ones reached
-  through a bare-group filter - a column added via `/at claude.*` gets the
-  same `sub: value` treatment.
-- **Per-row gating.** A field reached through a bare-group scoped filter is
-  only shown on rows where it's actually the subfield that matched -
-  `claude-title` doesn't get a line on a row whose hit was only in
-  `claude-fts`, and vice versa. A field shown for any other reason
-  (`/at`, an explicit `claude-title` scope, the existence-filter default) is
-  unaffected and always shown once it has a non-empty value, same as before.
-- **Match-centered preview.** The shown value is still capped (80 chars in
-  winswitch), but when the line is tied to a matched filter value the window
-  is now centered on the match's first occurrence instead of always starting
-  at character 0 - a plain `value.slice(0, 80)` of a long field like
-  `claude-fts` (a whole transcript) essentially never contains the
-  matched substring within its first 80 characters, so the preview read as
-  unrelated noise even on a correct match (reported 2026-09-13 against
-  winswitch's alt-tab search: `/fv/claude ovh` matched real hits in
-  transcript contents, but every thumbnail showed the same unrelated leading
-  fragment instead of anything resembling `ovh`). Fields not tied to a
-  matched value (an `/at`-added column with nothing scoping it) keep the
-  plain start-truncation, since there's no match position to center on.
-
-`WinSwitchQueryDsl.qml`'s `scopedGroupFilters` (the bare-group `{group,
-value}` pairs currently in the query) and `excerpt` (the centering helper)
-are the reference implementation; `WinSwitch.qml`'s `labelLines` is where
-both are applied per row.
+`WinSwitchQueryDsl.qml`'s `scopedGroupFilters` (the `{group, value}` pairs for
+multi-type keys) and `excerpt` (the centring helper) are the reference;
+`WinSwitch.qml`'s `labelLines` applies both per row.
 
 ### Suggestion row anatomy
 
@@ -1151,7 +1070,7 @@ bound), `Shift+Tab` steps it back; none of those accept. Per family:
   winswitch, `Ctrl+j`/`Ctrl+k`) move it, clamped. winswitch's `Alt+Tab` while
   locked into search mode is the one place Tab still cycles the highlight
   (a chord, so it can't be mistaken for a plain accept).
-- **GTK pickers** (sharing `picker.rs`): `Tab` accepts outright;
+- **Clipboard-family pickers** (`ClipboardQueryDsl.qml`): `Tab` accepts outright;
   `Ctrl+j`/`Ctrl+k` move the highlight (clamped, not wrapped).
 
 `Space` accepts the highlighted suggestion everywhere the popup is open,
@@ -1200,8 +1119,8 @@ verb" is). This is presentation only and never changes matching or
 resolution - a "wrong" color is exactly what `is_verb_prefix`/
 `Verb::parse` (or a picker's own equivalent) already says is unresolved,
 nothing new to compute, just something new to render the answer with.
-`command_spans` (winswitch's `query.rs`, ported by hand into `picker.rs`
-and, as JS, into `QueryDsl.qml`'s two consumers) is the one function that
+`commandSpans` (in `WinSwitchQueryDsl.qml`, `ClipboardQueryDsl.qml` and each
+launcher-style consumer's `_commandSpans`) is the one function that
 answers it, from a token list identical to what `starts_command`/
 `tok_verb` already tokenize the query into.
 
@@ -1209,8 +1128,8 @@ Never hardcode either color - both come from whatever dynamic theme
 source the app already has, since this desktop regenerates its whole
 palette from the wallpaper (`gen-theme.py`); a color baked into a
 picker's source would just go stale the next regeneration, or clash
-outright. winswitch and `picker.rs` read `~/.local/state/quickshell/
-scheme.json` directly (`load_command_validity_colors`) - its `primary`/
+outright. the QML consumers read the generated `Theme` colours (from `~/.local/state/quickshell/
+scheme.json`) - its `primary`/
 `error` keys are the valid/invalid pair here (not `secondary`: this
 theme's `secondary` sits too close in hue to `primary` to read as a
 distinct "wrong" signal, where `error` is a deliberately different one -
@@ -1222,9 +1141,8 @@ app's own call in principle - the DSL only cares that the two stay
 visually distinct and both move when the theme does, never that they're
 any particular hex value.
 
-GTK's Pango-backed `Entry` supports real per-range text-color attributes
-(`EntryExt::set_attributes` with a `pango::AttrList` of `AttrColor`
-spans), so winswitch and `picker.rs` recolor the actual glyphs. QtQuick's
+(The GTK implementation could recolour glyph ranges with Pango attributes;
+that is gone with GTK.) QtQuick's
 plain `TextInput` has no equivalent (no per-range rich-text styling), and
 recoloring the *whole* input would falsely tint bare filter words
 alongside the command - so the QML consumers draw a thin colored
@@ -1595,19 +1513,21 @@ back), `launcher/AppLauncher.qml` (single-focus form). Not yet live-tested.
 
 ## Resolution, precisely
 
-- **Verb**: exact match against the 12 fixed forms (6 short, 6 long).
+- **Verb**: exact match against the fixed spellings (`fv ft at rt s` and their
+  long forms, plus an app's own such as `fts`/`sw`, plus the empty `//`).
   Nothing else.
-- **Type path segments, filter values, sort directions**: substring
-  containment, case-insensitive (`"dsl" in name`, `"rome" in value`).
-  Every match is unioned for a path segment; a value/direction just needs
-  the one containment to hold.
+- **Keys**: per key, the type named exactly wins alone, else every type whose
+  name contains it (case-insensitive substring); unioned across the comma list.
+  A sort key expands the same way, alphabetically. **Filter values**:
+  substring containment (`"rome" in value`). **Direction**: any non-empty
+  prefix of `ascending` / `descending`.
 - **Quoted values stand alone**: a value in `"double"` or `'single'`
   quotes (bare, or a scoped value `//path "5"`) must not touch a letter,
   digit or underscore on either side, so `"5"` matches `5` but not `15`
   or `599`, and `"rome"` matches "Rome wasn't" but not "Romeo". Unquoted
   `5` is the ordinary substring and matches 599 too. A `'` only opens a
-  quote at the start of a token or right after the `:` of a scoped value,
-  so apostrophes inside words (`don't`) stay plain text.
+  quote at the start of a token, so apostrophes inside words (`don't`) stay
+  plain text.
   The quote must be closed: while only the opening quote is typed (`"5`) the
   term is still an ordinary substring, and becomes exact when the closing quote lands.
 - **BM25 pickers' bare words**: prefix-expansion against the corpus
@@ -1633,7 +1553,7 @@ predictable, and at these corpus sizes the looseness bought nothing.
   fall through as literal text instead of staying inert. Reported
   2026-09-13 against winswitch (typing `/` alone cleared the whole grid)
   and found identically broken in every hand-written port that had this
-  guard (`QueryDsl.qml`, `ClipboardQueryDsl.qml`, `picker.rs`,
+  guard (`QueryDsl.qml`, `ClipboardQueryDsl.qml`, the old `picker.rs`,
   `focus-picker.py`) - window-search.py and claude-history are naturally
   immune, since their regex-based bare-word fallback tokenizes `/` down
   to zero alphanumeric characters and contributes nothing on its own.
@@ -1646,14 +1566,14 @@ predictable, and at these corpus sizes the looseness bought nothing.
   token beyond what the *preceding* verb actually needed is never
   swallowed into that command just because no new `/verb` intervened -
   it resumes as an ordinary token and, if nothing else claims it, becomes
-  its own `/fv` term. `/s name blender` sorts by `name` and filters to
+  its own `/fv` term. `/s/name blender` sorts by `name` and filters to
   `blender`, rather than losing `blender` as a discarded sort-direction
   argument.
 - **Verbs are a closed, exact-matched vocabulary.** This is the point of
   the redesign - a command can never be confused for a type name.
 - **No real regex anywhere.** Every match is substring containment (or,
-  in the BM25 pickers, prefix-expansion). `*` is one hand-parsed reserved
-  segment, not a wildcard engine.
+  in the BM25 pickers, prefix-expansion); the only `*` is `/ft`'s value-pattern
+  glob (`/ft/64*`), a hand-parsed pattern, not a wildcard engine.
 - **The three axes are orthogonal.** Row filters (`/fv`, bare text) never
   change columns; column verbs (`/ft`, `/at`, `/rt`) never change which
   rows survive; order verbs (`/sort`) never change either.
