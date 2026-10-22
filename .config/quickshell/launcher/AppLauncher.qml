@@ -462,10 +462,8 @@ PanelWindow {
 
     // Turns one universe entry ("fv", or the deep "fv/comment") into an
     // autocomplete row, given the query prefix before the completion's
-    // opening "/". A deep `/fv` candidate lands the colon form
-    // ("/fv comment:"), matching how the plain type-path stage below
-    // already lands here (query-dsl.md: "the GTK pickers and app launcher
-    // still land the : form"); `/s` lands its ordinary space form.
+    // opening "/". A deep candidate lands the one syntax ("/fv/comment ",
+    // "/s/name"), see query-dsl.md "Grammar".
     function _verbStageItem(prefix, v) {
         const slash = v.indexOf("/");
         if (slash < 0 && root.actionVerbs["/" + v] !== undefined)
@@ -475,7 +473,7 @@ PanelWindow {
                      alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
         }
         const verb = v.slice(0, slash), name = v.slice(slash + 1);
-        const text = verb === "fv" ? `${prefix}/${verb} ${name}:` : `${prefix}/${verb} ${name} `;
+        const text = `${prefix}/${verb}/${name}` + (verb === "fv" ? " " : "");
         return { text, label: "/" + v, alias: QueryDsl.verbInfo["/" + verb].long, desc: root.typeDescs[name] || "" };
     }
 
@@ -517,21 +515,14 @@ PanelWindow {
             root.acVerbMulti = false; root.acArgMulti = false;
         }
 
+        const ks = QueryDsl.keyStageCandidates(t, root.typeNames, root.typeDescs);
+        if (ks !== null) return ks;
+
         const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
             const prefix = t.slice(0, t.length - vm[1].length);
             return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
-        }
-
-        const pm = t.match(/(?:\/fv|\/filter-value|\/s|\/sort)\s+([a-z.]*)$/);
-        if (pm && t.indexOf(":", t.length - pm[1].length) < 0) {
-            const frag = pm[1];
-            const isFv = /\/fv|\/filter-value/.test(t.slice(0, t.length - frag.length));
-            return root.typeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
-                text: t.slice(0, t.length - frag.length) + n + (isFv ? ":" : " "),
-                label: n, alias: "", desc: root.typeDescs[n] || ""
-            }));
         }
         return [];
     }

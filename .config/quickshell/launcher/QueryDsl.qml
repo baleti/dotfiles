@@ -8,12 +8,11 @@ import QtQuick
 // 7th time as that doc intends. Verbs are exact-matched; type-path
 // segments substring-match, case-insensitively, unioned.
 //
-// Via paths (query-dsl.md "Via paths"): every path-taking verb can carry
-// its type path glued straight onto the verb with a second `/` --
-// `/fv/feed dezeen` means exactly what `/fv feed:dezeen` did, no colon.
-// `tokVerb` returns { verb, via } for this; `parse` handles both spellings
-// through the same term shape. Mirrors winswitch's query.rs::tok_verb /
-// starts_command / parse.
+// Syntax (query-dsl.md "Grammar", reworked 2026-10-22): one form,
+// `/verb/keys[/dir] arg`, and `//keys arg` for /fv. keys is a comma-separated
+// list of fuzzy type names (exact name wins, else substring, unioned), dir is
+// the sort direction part. `tokVerb` returns { verb, via: keys, dir, bad };
+// the old colon / space-path / space-direction forms are gone.
 QtObject {
     id: root
 
@@ -29,7 +28,7 @@ QtObject {
         "/ft": { long: "/filter-type",  desc: "show only the matching columns" },
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
-        "/s":  { long: "/sort",         desc: "order rows by one field, optional asc / desc" }
+        "/s":  { long: "/sort",         desc: "order rows by the keys, /s/key,key/desc" }
     })
 
     // Every accepted verb spelling, WITHOUT the leading "/" (query.rs's
@@ -101,23 +100,20 @@ QtObject {
         return null;
     }
 
-    // query.rs::tok_verb -- { verb, via } or null. `verb` is a canonical
-    // short form ("/fv" ...); `via` is the glued-on type path (lowercased
-    // by the caller where it matters) or null. A "/xyz" that isn't a verb
-    // (or "/usr/bin") is not a verb token -> null.
+    // { verb, via, dir, bad } or null. `verb` is a canonical short form
+    // ("/fv" ...); `via` is the keys part (null when the token has none);
+    // `dir` the third part (/s only); `bad` marks a malformed token (too many
+    // parts, or a direction on a verb that has none): inert. A "/xyz" that
+    // isn't a verb (or "/usr/bin") is not a verb token -> null.
     function tokVerb(tok) {
         if (tok.q || tok.v[0] !== "/") return null;
-        const rest = tok.v.slice(1);
-        const slash = rest.indexOf("/");
-        if (slash >= 0) {
-            // "//path" -- empty verb slot before the via "/" defaults to /fv
-            // (query-dsl.md "Default verb"): "//claude" == "/fv/claude".
-            const name = rest.slice(0, slash);
-            const v = name === "" ? "/fv" : root._canonName(name);
-            return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
-        }
-        const v = root._canonName(rest);
-        return v === null ? null : { verb: v, via: null };
+        const parts = tok.v.slice(1).split("/");
+        // "//keys": empty verb slot defaults to /fv (query-dsl.md "Default verb").
+        const v = parts[0] === "" ? (parts.length >= 2 ? "/fv" : null) : root._canonName(parts[0]);
+        if (v === null) return null;
+        const bad = parts.length > 3 || (parts.length === 3 && v !== "/s");
+        return { verb: v, via: parts.length >= 2 ? parts[1] : null,
+                 dir: parts.length === 3 ? parts[2] : null, bad: bad };
     }
 
     // query.rs::is_verb_prefix -- `s` (no leading "/") is a prefix of some
@@ -166,9 +162,10 @@ QtObject {
         return "descending".indexOf(tok.toLowerCase()) === 0 ? "desc" : "asc";
     }
 
-    // Parse into { terms:[{field,value,quoted}|{text,quoted}], sort:{field,dir}|null,
+    // Parse into { terms:[{field,value,quoted}|{text,quoted}], sort:{fields,dir}|null,
     // cols:[{op,path}] }. Incomplete trailing tokens are dropped
-    // (never flash to zero on a valid partial keystroke). Mirrors query.rs::parse.
+    // (never flash to zero on a valid partial keystroke). `field` / `path` are
+    // the raw comma-separated key lists; resolve them with resolvePath().
     function parse(text) {
         const toks = root.tokenize(text);
         const res = { terms: [], sort: null, cols: [], openPaths: [] };
@@ -188,111 +185,61 @@ QtObject {
             const verbNeg = !!toks[k].neg;
             k++;
             const verb = tv.verb;
-            // "!" only means something on a row filter; "!/s", "!/ft" ... parse
-            // (so their arguments are still consumed) but change nothing.
+            // keyless or malformed: inert, takes no argument ("/fv foo" is just "foo")
+            if (tv.via === null || tv.bad) continue;
+            const via = tv.via.toLowerCase();
+            // "!" only means something on a row filter; "!/s", "!/ft" ... parse but change nothing.
             const R = (verbNeg && verb !== "/fv")
                 ? { terms: [], sort: null, cols: [], openPaths: [] } : res;
-
-            if (tv.via !== null) {
-                // Via form: path came glued onto the verb. Every verb still
-                // takes the same *remaining* args, minus the path.
-                const via = tv.via.toLowerCase();
-                if (verb === "/fv") {
-                    if (k < toks.length && !root.startsCommand(toks[k])) {
-                        R.terms.push({ field: via, value: toks[k].v.toLowerCase(),
-                                         quoted: toks[k].q && toks[k].closed,
-                                         neg: verbNeg || !!toks[k].neg });
-                        k++;
-                    } else {
-                        // Via path alone, no value yet -- still a no-op
-                        // for row filtering, not the space form's
-                        // free-text fallback (query-dsl.md "Via paths" --
-                        // a chosen-but-not-yet-valued via path is exactly
-                        // as incomplete as any other still-forming token;
-                        // treating it as free text broke "never flash to
-                        // zero on a valid partial keystroke", reported
-                        // 2026-09-02). But the path itself is named
-                        // already, so record it separately from `terms`
-                        // (never consulted for matching) for a caller's
-                        // own "Auto-shown filter fields" display, updated
-                        // 2026-09-12: the referenced column now appears
-                        // the moment the command names it, not just once
-                        // a value narrows anything. A caller resolves this
-                        // against its own type names the same way it
-                        // already resolves a complete term's `field` -
-                        // resolving to nothing (a typo'd path) shows
-                        // nothing, same as it always would have. Guarded
-                        // on a non-empty `via`: an empty via ("/fv/" with
-                        // nothing typed after the second "/" yet) would
-                        // otherwise resolve against `resolvePath` as if it
-                        // matched *every* type name - an empty substring
-                        // needle matches everything - so "/fv/" alone
-                        // auto-showed every field at once (reported
-                        // 2026-09-13). Nothing typed yet must stay exactly
-                        // as inert as it looked before this feature
-                        // existed, not get treated as an ambiguous
-                        // fragment to union across every candidate.
-                        if (via.length > 0)
-                            R.openPaths.push(via);
-                    }
-                } else if (verb === "/s") {
-                    let dir = "asc";
-                    if (k < toks.length && !root.startsCommand(toks[k])
-                            && root._isDirectionLike(toks[k].v)) {
-                        dir = root._dirOf(toks[k].v);
-                        k++;
-                    }
-                    // Multi-key chaining (added 2026-09-02): each
-                    // "/"-separated segment of the via path is its own
-                    // sort key, ties on the first broken by the next, and
-                    // so on. The space form stays single-key only.
-                    R.sort = { fields: via.split("/"), dir: dir };
-                } else {
-                    const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
-                    R.cols.push({ op: op, path: via });
+            if (verb === "/fv") {
+                if (k < toks.length && !root.startsCommand(toks[k])) {
+                    R.terms.push({ field: via, value: toks[k].v.toLowerCase(),
+                                   quoted: toks[k].q && toks[k].closed,
+                                   neg: verbNeg || !!toks[k].neg });
+                    k++;
+                } else if (via.replace(/,/g, "").length > 0) {
+                    // keys named, value still pending: a no-op for row
+                    // filtering, but recorded for the caller's "Auto-shown
+                    // filter fields" (query-dsl.md). Empty keys = nothing typed yet.
+                    R.openPaths.push(via);
                 }
-                continue;
+            } else if (verb === "/s") {
+                if (tv.dir !== null && !root._isDirectionLike(tv.dir)) continue;
+                const keys = via.split(",").filter(x => x.length > 0);
+                if (keys.length > 0)
+                    R.sort = { fields: keys, dir: tv.dir ? root._dirOf(tv.dir) : "asc" };
+            } else if (via.replace(/,/g, "").length > 0) {
+                const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
+                R.cols.push({ op: op, path: via });
             }
-
-            // Space form: collect argument tokens up to this verb's arity.
-            const args = [];
-            const maxArgs = verb === "/s" ? 2 : 1;
-            while (args.length < maxArgs && k < toks.length && !root.startsCommand(toks[k])) {
-                if (verb === "/s" && args.length === 1 && !root._isDirectionLike(toks[k].v)) break;
-                args.push(toks[k]);
-                k++;
-            }
-            root._applyVerb(R, verb, args, verbNeg);
         }
         return res;
     }
 
-    function _applyVerb(res, verb, args, verbNeg) {
-        if (args.length === 0) return; // partial -> inert
-        const a0 = args[0].v;
-        const neg = !!verbNeg || !!args[0].neg;
-        if (verb === "/fv") {
-            const colon = a0.indexOf(":");
-            if (colon >= 0) {
-                res.terms.push({
-                    field: a0.slice(0, colon).toLowerCase(),
-                    value: root.unquoteValue(a0.slice(colon + 1)).v.toLowerCase(),
-                    quoted: (args[0].q && args[0].closed) || root.unquoteValue(a0.slice(colon + 1)).quoted,
-                    neg: neg
-                });
-            } else {
-                res.terms.push({ text: a0.toLowerCase(), quoted: args[0].q && args[0].closed, neg: neg });
-            }
-        } else if (verb === "/s") {
-            // Space form: single-key only, no chaining (see the via form
-            // above for more than one key).
-            const dir = (args.length > 1 && root._isDirectionLike(args[1].v))
-                ? root._dirOf(args[1].v) : "asc";
-            res.sort = { fields: [a0.toLowerCase()], dir: dir };
-        } else {
-            const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
-            res.cols.push({ op: op, path: a0.toLowerCase() });
+    // Completion for the key and direction stages of `/verb/keys[/dir]`
+    // (shared by every consumer's _acCandidates). Returns the popup rows, or
+    // null when `t` doesn't end inside one of those parts. Accepting a key
+    // replaces just the fragment after the last comma and keeps the typed
+    // verb spelling (`//` or `/fv/`).
+    function keyStageCandidates(t, names, descs) {
+        const dm = t.match(/(?:^|\s|!)\/(?:s|sort)\/[^\s\/]+\/([a-z]*)$/);
+        if (dm) {
+            const frag = dm[1];
+            const head = t.slice(0, t.length - frag.length);
+            return [["asc", "ascending"], ["desc", "descending"]]
+                .filter(d => d[1].indexOf(frag) === 0)
+                .map(d => ({ text: head + d[0] + " ", label: d[0], alias: d[1], desc: "sort direction" }));
         }
+        const km = t.match(/(?:^|\s|!)\/(fv|filter-value|ft|filter-type|at|add-type|rt|remove-type|s|sort|)\/([^\s\/]*)$/);
+        if (!km) return null;
+        const keys = km[2];
+        const frag = keys.slice(keys.lastIndexOf(",") + 1).toLowerCase();
+        const head = t.slice(0, t.length - frag.length);
+        const takesValue = km[1] === "" || km[1] === "fv" || km[1] === "filter-value";
+        return names.filter(n => n.toLowerCase().indexOf(frag) >= 0).map(n => ({
+            text: head + n + (takesValue ? " " : ""),
+            label: n, alias: "", desc: (descs && descs[n]) || ""
+        }));
     }
 
     // Apply a term's negation to its match result (query-dsl.md "Negation").
@@ -302,10 +249,19 @@ QtObject {
         return term.neg ? !matched : matched;
     }
 
-    // Substring, case-insensitive; every match unioned. `known` is the list of
-    // type names for this picker.
+    // `path` is a comma-separated key list. Per key: a type whose name equals
+    // the key (case-insensitive) wins alone, else every type containing it;
+    // unioned across keys, in `known` order. Empty keys are skipped.
+    // `known` is the list of type names for this picker.
     function resolvePath(path, known) {
-        return known.filter(n => n.indexOf(path) >= 0);
+        const hit = {};
+        for (const key of String(path).toLowerCase().split(",")) {
+            if (key.length === 0) continue;
+            const exact = known.filter(n => n.toLowerCase() === key);
+            for (const n of (exact.length > 0 ? exact : known.filter(n => n.toLowerCase().indexOf(key) >= 0)))
+                hit[n] = true;
+        }
+        return known.filter(n => hit[n]);
     }
 
     function _tryInt(s) {
