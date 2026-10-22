@@ -1690,18 +1690,19 @@ the query.
 
 The index holds every conversation; which ones are *running* is decided at
 query time (sessions registry), not stored in it. `/fts` is an app verb whose
-**keys** name the scope: the scope names are `claude-live` and
-`claude-archive`, resolved like any other keys (exact name wins, else
-substring, comma list unioned):
+**keys** name the scope: the scope names are `claude-live`, `claude-archive`
+and `tmux` (scrollback, below), resolved like any other keys (exact name wins,
+else substring, comma list unioned):
 
 | Spelling | Searches | Rows |
 |---|---|---|
-| `/fts word` | running AND archived (no keys = every scope) | live rows first-class, archived ones appended (best match first) |
+| `/fts word` | running, archived AND tmux scrollback (no keys = every scope) | live rows first-class, archived and tmux ones appended (best match first) |
 | `/fts/claude word` | the same (`claude` reaches both scope names) | |
 | `/fts/live word` (= `/fts/claude-live`) | running only | live rows |
 | `/fts/archive [word]` (= `/fts/claude-archive`) | past only (running ones excluded); without a word, newest first | table: acct, title, msgs, tkns, age, path |
+| `/fts/tmux word` | tmux scrollback only | one row per matching pane (status `tmux`) |
 
-So `live`, `archive`, `claude-live`, `arch` all work (any key that reaches
+So `live`, `archive`, `claude-live`, `arch`, `tmux` all work (any key that reaches
 exactly one scope name); a key set that reaches both - or `/fts/live,archive`
 - is plain `/fts`. Writing both `/fts/live` and `/fts/archive` is plain `/fts`
 too. The same spellings are used everywhere (picker, panel, alt-tab). The
@@ -1730,3 +1731,28 @@ account the conversation last ran under.
 
 Not to be confused with the images picker's `/fts/<index>` (file contents,
 index name after the slash): different app, different corpus.
+
+#### tmux scrollback in `/fts` (2026-10-22)
+
+`claude-fts-index` (the same timer/daemon that keeps the conversation index) also
+indexes the scrollback of every tmux pane into a **second, separate Xapian
+database**, `~/.cache/indexes/tmux/recoll` (one `.txt` per pane in
+`~/.cache/indexes/tmux/panes/`, `meta.json` for session/window/title/cwd; a pane's
+document is rewritten only when its text changed, and dropped when the pane
+goes away). **Panes that host a live Claude session are skipped**: their text is
+already in the conversation index, so nothing is indexed twice. At most the last
+20000 lines of a pane are kept.
+
+- **claude-history (prefix+C-c)** and the **usage panel**: `/fts word` and
+  `/fts/tmux word` add one row per matching pane (title = pane title, status
+  `tmux`, the SESS/WIN/PANE columns filled); Enter goes to the pane
+  (`claude-history --focus-tmux %12`: select its window and pane, focus the
+  Hyprland window showing that session, else open a terminal attached to it).
+- **alt-tab**: the conversations table gains the same rows; its `//tmux-session`,
+  `//tmux-window`, `//tmux-title` (and so `//tmux`) keys filter them. Any scope
+  except live-only (`/fts/live`, which filters the window grid) shows the table.
+- **focus-picker (prefix+w)** lists panes, so `/fts word` / `/fts/tmux word`
+  simply keeps the panes whose scrollback contains the word (`!/fts word` the
+  others); other scope keys make it inert.
+- Composes with row filters: `//tmux emacs /fts journ` = panes whose tmux
+  session/window/title contain "emacs" **and** whose scrollback contains "journ".
