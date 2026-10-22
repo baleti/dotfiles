@@ -174,25 +174,21 @@ PanelWindow {
     // moves the window there, and a typed name with no exact match creates
     // a new workspace right after the window's current one.
     readonly property var actionVerbs: ({
-        "/move-to-workspace": "move the focused window to a workspace (typed name may be new)",
-        "/move-workspace": "move the current workspace to just after a chosen one",
-        "/add-workspace": "add an empty workspace after the current one (name optional, default next number)"
+        "/move-to-workspace": "move focused window to a workspace",
+        "/move-workspace": "move this workspace after another",
+        "/add-workspace": "add an empty workspace after this one"
     })
-    readonly property var _actionMatch: query.text.match(/^\s*(\/move-to-workspace|\/move-workspace|\/add-workspace)(?:\s+(.*))?$/)
+    readonly property var _actionMatch: query.text.match(/^\s*(\/move-to-workspace|\/move-workspace)(?:\s+(.*))?$/)
     // Typing the full verb swaps the results for the workspace list in
     // place; whatever follows the verb is the filter / the target name.
     readonly property bool wsPrompt: root._actionMatch !== null
     // which action the workspace list serves: "window" | "workspace"
-    readonly property string promptKind: !root._actionMatch ? "window" : root._actionMatch[1] === "/move-workspace" ? "workspace" : root._actionMatch[1] === "/add-workspace" ? "add" : "window"
+    readonly property string promptKind: !root._actionMatch ? "window" : root._actionMatch[1] === "/move-workspace" ? "workspace" : "window"
     readonly property bool actionMode: root.wsPrompt
     readonly property string actionArg: root._actionMatch && root._actionMatch[2] ? root._actionMatch[2].trim() : ""
 
     readonly property var workspaceRows: {
         const arg = root.actionArg.toLowerCase();
-        if (root.promptKind === "add")
-            return [{ ws: true, name: "+ add workspace " + (root.actionArg ? "\"" + root.actionArg + "\"" : "(next free number)"),
-                      target: root.actionArg, create: true, cnt: -1, mon: "",
-                      apps: "added empty after the current workspace and focused", entry: { icon: "" } }];
         const list = Hyprland.workspaces.values.filter(w => w.id >= 0 && String(w.name).indexOf("special:") !== 0
             && !(root.promptKind === "workspace" && w.id === LauncherState.workspaceId));
         list.sort((a, b) => a.id - b.id);
@@ -330,6 +326,13 @@ PanelWindow {
                 return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
             });
         }
+        // action verbs listed like apps while the query is a lone `/frag`
+        const frag = query.text.trim();
+        if (/^\/[a-z-]*$/.test(frag)) {
+            const cmds = Object.keys(root.actionVerbs).filter(v => v.startsWith(frag))
+                .map(v => ({ action: true, verb: v, name: v, detail: root.actionVerbs[v], entry: { icon: "" } }));
+            rows = cmds.concat(rows);
+        }
         return rows;
     }
 
@@ -342,10 +345,20 @@ PanelWindow {
     function launch(i) {
         const app = root.results[i];
         if (!app) return;
+        if (app.action) {
+            if (app.verb === "/add-workspace") {
+                LauncherQueryHistory.record(app.verb);
+                root.addWorkspace({ target: "" });
+                root.hide();
+                return;
+            }
+            query.text = app.verb + " ";
+            query.cursorPosition = query.text.length;
+            return;
+        }
         if (app.ws) {
             LauncherQueryHistory.record(query.text);
             if (root.promptKind === "workspace") root.moveWorkspaceAfter(app);
-            else if (root.promptKind === "add") root.addWorkspace(app);
             else root.moveToWorkspace(app);
             root.hide();
             return;
@@ -556,6 +569,12 @@ PanelWindow {
             root.acHistoryMode = false;
             root.acItems = [];
             root.acActive = false;
+        }
+        if (/\/add-workspace\s*$/.test(it.text)) {
+            LauncherQueryHistory.record("/add-workspace");
+            root.addWorkspace({ target: "" });
+            root.hide();
+            return;
         }
         query.text = it.text;
         query.cursorPosition = query.text.length;
@@ -819,7 +838,7 @@ PanelWindow {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.wsPrompt ? (root.promptKind === "workspace" ? qsTr("move this workspace after   ·   pick one") : root.promptKind === "add" ? qsTr("add workspace after this one   ·   optional name") : qsTr("move window to workspace   ·   pick or type a new name")) : ""
+                    text: root.wsPrompt ? (root.promptKind === "workspace" ? qsTr("move this workspace after   ·   pick one") : qsTr("move window to workspace   ·   pick or type a new name")) : ""
                     color: Theme.muted
                     font: query.font
                     visible: query.text.length === 0
