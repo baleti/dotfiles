@@ -331,7 +331,7 @@ PanelWindow {
         // "//path" is the default-verb spelling of "/fv/path" (query-dsl.md
         // "Default verb"); match the stage regexes against the expanded form,
         // but keep building replacement text from `t` (only the tail differs).
-        const tm = t.replace(/(^|\s)\/\/(?=[a-z.]*(?:\s|$))/g, "$1/fv/");
+        const tm = t.replace(/(^|\s)\/\/(?=[a-z,-]*(?:\s|$))/g, "$1/fv/");
 
         if (root.acVerbMulti) {
             if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
@@ -352,46 +352,18 @@ PanelWindow {
             return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
         }
 
-        // value stage, via form:  ".../fv/<field> <frag>"
-        // value stage, colon form: ".../fv <field>:<frag>"
-        const val = tm.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
+        // key + direction stages ("/verb/<keys>", "/s/<keys>/<dir>"), shared with the launcher
+        const ks = QueryDsl.keyStageCandidates(t, root.typeNames, root.typeDescs);
+        if (ks !== null) return ks;
+
+        // value stage:  ".../fv/<keys> <frag>"  (or "//<keys> <frag>")
+        const val = tm.match(/(?:^|\s)\/(?:fv|filter-value)\/([a-z,-]+)\s+([^\s]*)$/);
         if (val) {
-            const field = (val[1] || val[3]).toLowerCase();
-            const frag = (val[2] !== undefined ? val[2] : val[4]).toLowerCase();
+            const field = val[1].toLowerCase();
+            const frag = val[2].toLowerCase();
             const base = t.slice(0, t.length - frag.length);
             return root._fieldValueCandidates(field, frag).slice(0, 40)
                 .map(v => ({ text: base + v, label: v, alias: "", desc: "" }));
-        }
-
-        // sort-direction stage:  ".../s/<field> <frag>"  or  ".../s <field> <frag>"
-        const dir = t.match(/(?:^|\s)\/(?:s|sort)(?:\/[a-z.]+|\s+[a-z.]+)\s+([a-z]*)$/);
-        if (dir) {
-            const frag = dir[1].toLowerCase();
-            const base = t.slice(0, t.length - frag.length);
-            return ["ascending", "descending"].filter(d => d.indexOf(frag) === 0)
-                .map(d => ({ text: base + d, label: d, alias: "", desc: "" }));
-        }
-
-        // type-path stage, via form:  ".../fv/<frag>" / ".../s/<frag>"
-        const vp = tm.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
-        if (vp) {
-            const frag = vp[2];
-            const base = t.slice(0, t.length - frag.length); // includes ".../fv/"
-            return root.typeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
-                text: base + n + " ", label: n, alias: "", desc: root.typeDescs[n] || ""
-            }));
-        }
-
-        // type-path stage, space form:  ".../fv <frag>" / ".../s <frag>" (pre-colon)
-        // -> steer to the via spelling (query-dsl.md "Via paths"): rewrite the
-        // trailing space into the second "/".
-        const pm = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\s+([a-z.]*)$/);
-        if (pm && pm[2].indexOf(":") < 0) {
-            const frag = pm[2];
-            const head = t.slice(0, t.length - frag.length).replace(/\s+$/, "/");
-            return root.typeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
-                text: head + n + " ", label: n, alias: "", desc: root.typeDescs[n] || ""
-            }));
         }
 
         return [];
