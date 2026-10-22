@@ -184,41 +184,21 @@ usage grows enough to need it, but not fixed as part of this change.
 Every picker shows a **result set** (windows, panes, clipboard entries,
 scrollback-bearing windows, ...) with, potentially, several named
 **types** per entry - a "type" here is any one field that can be filtered
-on or shown as a column: a flat one (`title`, `workspace`, `pid`; `type`,
-`age`, `app`) or a subfield of a **group** (winswitch's `tmux.session`,
-`claude.title`, ...).
+on or shown as a column (`title`, `workspace`, `pid`, `age`, `app`;
+`tmux-session`, `claude-title`, ... - a related family shares a hyphenated
+name prefix, see Keys).
 
-**Group and flat-type names are each picker's own vocabulary, not
-required to be shared across the table above.** Only the DSL's grammar
-and semantics are meant to stay consistent picker to picker (see the
-intro above); concrete field names are each picker's own call, and one
-picker lacking a group or flat type another picker has is not
-automatically a gap to fix. winswitch's `tmux` group exists because
-winswitch's own entities - Hyprland windows - only optionally run
-inside tmux, so tmux metadata needs a group to sit apart from a
-window's own flat fields (and from its equally-optional `claude`
-group); the pickers whose rows already *are* tmux entities have
-nothing for a `tmux.` prefix to disambiguate the way it does for
-winswitch, since every row already is one. Whether to add it anyway
-purely for cross-picker naming consistency is a call each picker makes
-on its own: focus-picker and window-search both did (2026-09-13,
-`FILTER_FIELDS`/`SORT_KEYS` (focus-picker) and `FIELD_NAMES`
-(window-search) - plain flat strings that happen to contain a `.`, not
-real nested-group machinery; see each script's own module docstring),
-so `/fv/tmux.session`, `/fv tmux.session:foo`, and a bare-group
-`/fv tmux:foo` (unions `tmux.session`/`tmux.window`/`tmux.title`, same
-rule as any ambiguous path segment - Type paths, above) all work in
-both now - window-search only ever had the colon form to begin with
-(`QUERY_ELEM_RE`'s field-name character class widened from
-`[a-zA-Z]+` to `[a-zA-Z.]+` to let the dot through; it has no via-path
-support at all, colon or otherwise - see the maturity note above).
-window-search kept `body` flat rather than `tmux.body` - unlike
-session/window/title it has no winswitch counterpart to name-match, so
-there was nothing to gain grouping it. claude-history hasn't picked
-this up and specifically can't the same way even if asked: it already
-has a *flat* field literally named `tmux` (a `session:window.pane`
-display string), so a `tmux` *group* there would collide with
-existing, differently-shaped meaning rather than just be redundant.
+**Type names are each picker's own vocabulary, not required to be shared
+across the table above.** Only the DSL's grammar and semantics are meant to
+stay consistent picker to picker (see the intro above); concrete type names
+are each picker's own call, and one picker lacking a type another picker has
+is not automatically a gap to fix. winswitch has `tmux-*` and `claude-*`
+types because its entities - Hyprland windows - only optionally run inside
+tmux or Claude Code; the pickers whose rows already *are* tmux entities
+(focus-picker, window-search, claude-history) name theirs `tmux`, `session`,
+`window`, `pane` as they always did. claude-history in particular has a flat
+type literally named `tmux` (a `session:window.pane` display string), which is
+why it never grew `tmux-*` siblings.
 
 The DSL does three orthogonal things to that set, and nothing else:
 
@@ -237,307 +217,164 @@ explicit pipe character, whitespace between tokens is the pipe.
 
 ## Grammar
 
+*Reworked 2026-10-22: one syntax, built from slashes and commas only (no
+dots, no `path:value`, no space-separated paths or directions).*
+
 The search box text is split on whitespace into tokens (a `"..."`-quoted
 run stays one token, interior whitespace intact - see Quoting). Each
 token is either:
 
 ```
-/verb arg...       a command - verb is exact-matched against the table below
-/verb/path arg...  same command, with its type path glued on via a 2nd / (see Via paths)
-//path arg...      the verb left empty: shorthand for /fv/path arg... (see Default verb)
-"phrase"           quoted literal - never a command, always row-filter text
-bareword           anything else - an implicit /filter-value argument
-!<any of the above> negated: a leading ! inverts a row filter (see Negation)
+/verb/keys[/dir] arg   a command: verb exact-matched, keys = what it acts on (see Keys)
+//keys arg             the verb left empty: shorthand for /fv/keys arg (see Default verb)
+"phrase"               quoted literal - never a command, always row-filter text
+bareword               anything else - an implicit /filter-value argument
+!<any of the above>    negated: a leading ! inverts a row filter (see Negation)
 ```
 
-A command's arguments are the whitespace-separated tokens that follow it,
-up to the next `/verb`, end of input, or the verb's own fixed **arity**
-(max argument tokens it will ever take) - whichever comes first. Every
-verb has a small fixed arity (see the table below), and it never reaches
-past that many tokens even when nothing else stops it early. A token past
-a verb's arity is not absorbed by that command - it resumes as an
-ordinary token, exactly as if the command had ended right there. Since a
-plain token with no verb in front of it is a bare `/filter-value`, this
-means **`/fv` is the fallback**: any token left over once every other
-verb has taken only the arguments it actually needs becomes a row filter,
-never silently dropped.
+The command token has up to three `/`-separated parts, and **each part's role
+is fixed by its position**, which is what keeps the grammar free of
+guessing: part 1 the verb, part 2 the **keys**, part 3 (only `/sort`) the
+**direction**.
 
-`/sort age descending` is one command with both its args inside `/sort`'s
-arity of 2 (path, optional direction). `/filter-value foo /sort age` is
-two commands. `/sort name blender` is *two* things, not one: `/sort`
-takes `name` as its path, then looks at `blender` for a direction - but
-`blender` doesn't substring-match `ascending`/`descending`, so `/sort`
-doesn't consume it, and `blender` falls through to become its own
-`/fv blender` term. Typing `/s nam blen` therefore sorts by name (`nam`
-resolves to `name`) *and* filters down to rows matching `blen` - the two
-verbs never fight over the same token, and a filter word typed after a
-sort's path is never silently swallowed just because it happened to sit
-inside `/sort`'s argument span.
+| Token | Reads as |
+|---|---|
+| `/fv/title rvt` or `//title rvt` | rows whose `title` contains `rvt` |
+| `//p rvt` | rows where `pid` OR `path` (any key containing `p`) contains `rvt` |
+| `//title,path rvt` | rows where `title` OR `path` contains `rvt` |
+| `/s/title` | sort by `title`, ascending |
+| `/s/title,status/desc` | sort by `title`, ties by `status`, descending |
+| `/ft/tmux`, `/at/claude-title`, `/rt/pid` | column verbs, same key list |
+| `/fts/claude-live word` | an app verb (e.g. winswitch's full text) with its own key list |
+
+A command's argument is the single value token that follows it (`/fv`
+only; `/ft /at /rt /s` take none - their keys sit in the token itself), up
+to the next `/verb`, end of input, or a token that is itself a command. A
+token past a verb's arity is not absorbed: it resumes as an ordinary token,
+which, being a plain token with no verb, is a bare `/filter-value`. **`/fv`
+is the fallback** - every token left over becomes a row filter, never
+silently dropped. `/s/name blender` is therefore *two* things: sort by
+`name`, and filter to `blender`.
+
+A command **without keys** (`/fv`, `/s`, `/ft` alone) is inert: it takes no
+argument, so `/fv foo` is just the bare word `foo`. A malformed token (too
+many parts, a direction on a verb that has none, an unknown verb) is inert
+too and never an error - "half-typed stays a no-op" is the rule everywhere.
 
 ### Verbs
 
-| Short | Long | Axis | Arity | Effect |
+| Short | Long | Axis | Takes | Effect |
 |---|---|---|---|---|
-| `/fv` | `/filter-value` | rows | 1 | keep rows whose value matches the argument; drop the rest |
-| `/ft` | `/filter-type` | columns | 1 | keep only the columns whose *name* matches; hide the rest |
-| `/at` | `/add-type` | columns | 1 | add the columns whose name matches into view |
-| `/rt` | `/remove-type` | columns | 1 | drop the columns whose name matches from view |
-| `/s` | `/sort` | order | 1-2 | order rows by one type, optional direction |
+| `/fv` | `/filter-value` | rows | keys + 1 value | keep rows whose value matches; drop the rest |
+| `/ft` | `/filter-type` | columns | keys | keep only the columns whose *name* matches; hide the rest |
+| `/at` | `/add-type` | columns | keys | add the columns whose name matches into view |
+| `/rt` | `/remove-type` | columns | keys | drop the columns whose name matches from view |
+| `/s` | `/sort` | order | keys + optional `/dir` | order rows by the key fields |
 
-**Arity is a ceiling, not a requirement** - it's the most tokens a verb
-will ever reach for, not how many it must have. `/sort`'s second slot is
-additionally *conditional*: it only counts as consumed if the token
-there actually substring-matches `ascending`/`descending`; otherwise the
-verb stops at arity 1 (path only) and the next token is free again. A
-verb with 1 token of arity (`/fv`, `/ft`, `/at`, `/rt`) never looks past
-its single argument, no matter how many bare tokens follow before the
-next `/verb` or end of input - see Grammar, above, for what happens to
-the rest. `/sort`'s arity of "1" for its path slot counts the whole
-`path1/path2/path3` via-chain (see `/sort`'s own section, below) as that
-one slot, however many `/`-separated keys it holds - arity counts
-*space*-separated argument tokens, not the `/`-separated segments glued
-onto a single via-form argument.
+**Verb names are exact-matched** against exactly these five short and five
+long forms (plus the empty spelling `//`, see Default verb) - nothing else,
+no substring or fuzzy resolution on the verb itself, ever. A type name never
+sits in verb position, so adding a type can never collide with the verb
+vocabulary. It is a *key's* own resolution that is fuzzy (next section),
+precisely because key position and verb position are kept so strictly
+separate. An unrecognised `/xyz` token is inert. Both the short and long form
+of a verb mean exactly the same thing; autocomplete offers the short forms.
 
-**Verb names are exact-matched** against exactly the five short forms and
-five long forms above - nothing else, no substring or fuzzy resolution on
-the verb itself, ever. That's the one property this grammar was built
-around and never gives up, no matter how the rest of it grows: the old
-`/claude.title:value` form (and, briefly, a since-reverted design that
-registered `/claude`, `/claude.title` etc. as their own verbs) both made
-a type name sit in the same position a command would, so every new type
-risked colliding with the verb vocabulary. Exact-matching the verb token
-itself - always these ten spellings, plus the one empty spelling
-`//` (see Default verb, below) that only ever appears with a via `/`
-after it, never as a fuzzy match - keeps that
-ambiguity closed permanently; it's a *typed argument*'s (or, now, a *via
-path*'s - see below) own substring resolution that's allowed to be fuzzy,
-precisely because argument position and verb position are kept so
-strictly separate. An unrecognised `/xyz` token is inert (contributes
-nothing) rather than an error or a literal search - same "half-typed
-stays a no-op" rule the rest of the grammar follows.
+### Keys
 
-Both the short and long form of a verb are always accepted and mean
-exactly the same thing; the short forms are what the autocomplete offers
-first, since the box is typed into far more than it is read.
+Part 2 of a command is a **comma-separated list of keys**. A key names one or
+more types (a type = any one field that can be filtered on or shown as a
+column). Resolution, per key:
 
-### Via paths
+1. a type whose name **equals** the key (case-insensitive) wins, alone;
+2. otherwise **every type whose name contains** the key (substring) - the key
+   is fuzzy: `//p` reaches `pid` and `path`;
+3. the key list's matches are **unioned** across its commas
+   (`//title,path`).
 
-A verb's type-path argument (see Type paths, below) can be written two
-ways, meaning exactly the same thing either way - picked based on what
-reads more naturally for a given query:
+A key that resolves to nothing contributes nothing. A key list that resolves
+to nothing makes its command inert (for a filter: "narrows to nothing", an
+honest empty result; for a column verb: a silent no-op). Empty keys (`//a,,b`,
+a trailing comma) are skipped, and an entirely empty key list (`//`, `/fv/`)
+is "nothing typed yet": inert, never "matches everything".
 
-```
-/fv path:value        path as part of the argument (the original form)
-/fv/path value         path glued onto the verb with a second /, as its own token
-```
+**Type names are flat.** A family of related types shares a name prefix with
+a hyphen: `tmux-session`, `tmux-window`, `tmux-pane`, `claude-title`,
+`claude-live`, `claude-archive`, `hypr-workspace`. There are no groups, no
+dotted subfields and no `*`: because keys are substring-matched, `//tmux`
+already reaches every `tmux-*` type, `//tmux-win` just the window one, and
+`/at/claude` adds every `claude-*` column. Each picker owns its vocabulary
+(only the grammar is shared). Exact-name-wins keeps a short name from being
+swallowed by its own family: `//title` is the plain `title`, not also
+`tmux-title` and `claude-title` (type `//tit` or `//-title` to mean them all).
 
-The second `/` is a **via operator**: `/fv/claude.title` reads as "filter
-by value, *via* `claude.title`" - it names the scope the very next value
-is measured against, without needing a colon to glue path and value
-together in one token. This is what a whole new command per group and
-subfield (the reverted `/claude`, `/claude.title` design mentioned above)
-was really reaching for: `/claude.title foo` was trying to be its own
-verb when it was always just `/fv`, scoped - `/fv/claude.title foo` says
-that directly. `.` still does what it always did within the path itself
-(the **subset** operator - `claude.title` picks one subfield out of the
-`claude` group, `claude.*` every subfield); `/` is what now introduces
-that path to the verb in the first place - two different jobs, two
-different characters, not to be confused even though both sit between
-name-like segments.
-
-Every path-taking verb accepts a via path the same way: `/ft/claude`,
-`/at/claude.*`, `/rt/tmux.session`, `/s/claude.age` all mean exactly
-what `/ft claude`, `/at claude.*`, `/rt tmux.session`, `/s claude.age`
-already meant - the via form is purely an additional spelling, never a
-replacement, so nothing that already worked stops working (`/sort`'s via
-form is the one exception - see its own section, below, for the
-multi-key chaining only it supports).
-
-`/fv/path value` is the scoped substring filter (`/fv path:value`'s
-rules, unchanged) - no colon is involved in the via form at all. `/fv/path`
-with nothing following it *yet* is where the via and space forms finally
-diverge from each other:
-
-- If `path` resolves to a **group**, it's still the same existence filter
-  `/fv path` (colonless) already is - `/fv/claude` narrows to
-  claude-hosting rows before a value is ever typed, via or not. Once a
-  value does follow, a bare group's *via* default (what `/fv/claude ovh`
-  scopes against) is **every subfield of the group**, same as the colon
-  form (`/fv claude:ovh`) and same as `claude.*` already means for a
-  column verb - see Type paths.
-- If `path` resolves only to **flat types**, the via form is a **no-op**
-  while it waits for a value - not the space form's free-text fallback
-  (see `/filter-value`, below, for why the space form still needs that
-  fallback). `/fv/tokens` sitting alone contributes nothing to the query;
-  rows only start narrowing once a value token actually follows
-  (`/fv/tokens 3`). This was a real gap, not a deliberate choice: the
-  "never flash to zero on a valid partial keystroke" principle (Design
-  principles, below) already promises this for a still-forming verb - a
-  chosen-but-not-yet-valued via path is exactly as incomplete, and
-  treating it as free text broke that promise (reported 2026-09-02:
-  typing `/fv/tokens ` mid-query, about to add a value, emptied the
-  whole result set instead of leaving it untouched).
-
-**`/filter-type`'s via path can also be a value pattern.** If the via
-path after `/ft/` doesn't resolve to any known type or group at all (by
-the ordinary substring rule), `/ft` falls back to reading it as a
-**glob pattern** against every field's actual *values* across the
-current rows, rather than treating the unresolvable path as a no-op:
-`/ft/64*` means "show me whichever column(s) actually have a value
-starting with `64` right now" - useful when you remember a value but not
-which field it lives in. This is the one place in the whole grammar a
-literal `*` means "match anything here" rather than the reserved
-"all subfields" segment, and the one place matching isn't plain substring
-by default: no `*` anywhere in the pattern still substring-matches, same
-as everywhere else in the DSL (`/ft/64` behaves like `/ft/*64*`); a `*`
-anywhere in the pattern switches to real glob anchoring instead (`64*` =
-starts with, `*64` = ends with, `*64*` = contains, same as plain
-substring).
-Nothing else in this DSL uses a real pattern-matching engine (see Design
-principles) - this one narrow case does, because a value (unlike a type
-or group name) was never expected to have a small, enumerable vocabulary
-to fuzzy-match against, so "discover the column, not just narrow it"
-needs its own mechanism. Matching columns *replace* whatever was shown
-(a discovery reset, not an intersect against the current set) - winswitch
-is the reference implementation; autocomplete for this stage offers live
-values pooled across every field (not just one), narrowed by whatever's
-typed so far, the same corpus `/fv path:` completion already draws from.
-`/at`, `/rt`, and `/s` don't get this fallback - an unresolvable via path
-there stays the existing no-op / narrows-to-nothing behaviour.
+`/sort` needs every key to resolve to **exactly one** type, so
+`/s/tmux` (three types) is inert - name the one you mean, `/s/tmux-session`.
 
 ### Default verb (`//`)
 
-`/fv` is the **default verb of the via operator**: leave the verb slot
-empty and the second `/` still introduces a path, to `/fv`.
+`/fv` is the **default verb**: leave the verb slot empty and the second `/`
+still introduces the keys, to `/fv`.
 
 ```
 //claude ovh          =  /fv/claude ovh
-//claude.title ovh    =  /fv/claude.title ovh
-//                    =  /fv/     (nothing typed after the via yet)
+//                    =  /fv/     (nothing typed after yet)
 ```
 
-So the whole via family costs one character less to reach for the most
-common command: `//` reads as "filter, via ...". This is the *only*
-default the grammar has - `//` always means `/fv/`, never `/ft/` or
-`/s/`; the other path-taking verbs still have to be named
-(`/ft/claude`, `/s/tokens`). It also only exists in via position: a lone
-`/` followed by a path word is still an unrecognised verb, and a
-`/verb/path` token whose verb *is* named is unaffected.
+This is the *only* default the grammar has: `//` always means `/fv/`, never
+`/ft/` or `/s/`. A lone `/` followed by a word is an unrecognised verb, and a
+`/verb/keys` token whose verb *is* named is unaffected. Everything that holds
+for `/fv/keys` holds for `//keys` unchanged - it is a spelling resolved at
+tokenizing time: arity (one value token), no-op while the value is pending,
+Auto-show, inline colouring, quoting (`"//foo"` is literal; a pasted
+`//host/share` has too many parts and is inert, so quote it), completion
+(`//` + Tab is the key stage of `/fv/`).
 
-Everything that holds for `/fv/path` holds for `//path` unchanged - it is
-a spelling, resolved at tokenizing time, not a new command:
+### `/fv` without a path
 
-- **Arity, no-op and existence rules** are `/fv/path`'s (see Via paths):
-  `//tokens` alone is a no-op, `//claude` alone (a group) is the
-  existence filter, `//claude ovh` scopes to every subfield.
-- **Auto-show** triggers the same way (Auto-shown filter fields), and the
-  empty via (`//` alone) is "nothing typed yet" exactly like `/fv/`.
-- **Inline coloring** treats `//...` as a valid command token.
-- **Verb matching stays exact.** The empty spelling is not a prefix
-  match on anything; `/xyz/path` with an unknown `xyz` is still inert.
-- **Quoting still escapes it**: `"//foo"` is literal text. A pasted
-  `//host/share` or similar is now read as a filter via `host/share`
-  (which resolves to nothing and narrows to nothing) - quote it to
-  search for the literal text.
-- **Completion**: `//` + Tab is the type-path stage of `/fv/` (every
-  field, narrowed by whatever follows the second `/`), and a value
-  stage follows a resolved `//path ` the way it does for `/fv/path `.
-  Accepting a type path keeps the `//` spelling that was typed.
-
-**Where it's implemented.** Every consumer that parses via paths at all:
-the shared launcher `QueryDsl.qml` (app-launcher, rss-reader,
-claude-usage), `WinSwitchQueryDsl.qml`, `ClipboardQueryDsl.qml`,
-`focus-picker.py`, `claude-history` (`QUERY_ELEM_RE`, including the
-negated `!//field word` form - see Negation) and the Android app's `QueryDsl.kt`. It
-does **not** apply to `picker.rs` (notification-picker) or
-`window-search.py`, which have no via-path parser at all (see the
-maturity note above) - `//x` there is plain literal text, same as any
-other via spelling. The unused `query.rs` was left alone.
-
-### Type paths
-
-Every verb takes a **type path**: dot-separated
-segments naming a flat type or a group subfield - `.` is the **subset**
-operator, picking one piece out of the group to its left (see Via paths,
-above, for the *other* separator this grammar uses, `/`, and how the two
-differ).
-
-```
-title              a flat type
-claude             a group (resolves to all its subfields for filtering and
-                   column verbs; to its default subfield, GROUP_DEFAULT_SUB,
-                   for /sort, which needs exactly one field)
-claude.title       one explicit group subfield
-claude.*           every subfield of the group
-```
-
-**A bare group used as a `/fv` scope searches every subfield, not just its
-default one.** `/fv/claude ovh` (or `/fv claude:ovh`) keeps a row if *any*
-subfield - `claude.title`, `claude.path`, `claude.session`, `claude.age`,
-`claude.fts`, whichever the group has - contains `ovh`, the same union
-`claude.*` already means for a column verb (see `/add-type` etc., below).
-This changed 2026-09-13: it used to narrow to just `GROUP_DEFAULT_SUB`
-(`claude.fts` in winswitch), which silently missed a row whose only hit
-was in a different subfield, e.g. `claude.title`. `/sort` keeps the
-default-subfield behavior, since a sort key must resolve to exactly one
-field - see its own section, below.
-
-Each segment is **substring-matched**, case-insensitively, against the
-known names at its level, and **every match is unioned** - `/ft dsl`
-reaches every type whose name contains `dsl`; `/fv cla.ti:x` reaches
-`claude.title` (and anything else whose first segment contains `cla` and
-second contains `ti`). An ambiguous segment acts on every type it could
-mean. `*` is one hand-parsed reserved segment meaning "all subfields",
-**not** a regex - nothing in this DSL uses a real regex engine (see
-Design principles).
-
-A path segment that resolves to nothing makes its command inert (for a
-filter: "narrows to nothing", an honest empty result; for a column verb:
-a silent no-op).
+At the very start, a search box already behaves as if `/fv` were prepended:
+bare words are filters over the free-text haystack (below). That is the only
+"default" a user needs, so `/` alone is **not** a shorthand for `/fv`.
 
 ### `/filter-value` (`/fv`) - and bare text
 
-Filters which rows survive. Three forms:
+Filters which rows survive. Two forms:
 
-- **`/fv text`** (or just `text` typed bare, no verb) - substring-match
-  `text` (quote it, `"5"`, to match only the standalone `5`, not `599`),
-  case-insensitively, against the picker's always-present
-  free-text haystack (window title+class+workspace; clipboard preview; pane
-  scrollback; notification app+summary+body; app name + generic name;
-  article title+feed+tag+body). This is the one form every picker
-  guarantees and the one a casual user needs no syntax for. `/fv val` and
-  a bare `val` are identical. Keep this haystack to short, controlled
-  strings: the app launcher deliberately leaves `.desktop` `Comment=` and
-  `Keywords=` *out* of it (reachable only as scoped `/fv comment:` /
-  `/fv keywords:`), because substring-matching prose mid-word turned
-  `/fv ala` into a hit on "sc**ala**ble" and "b**ala**nce".
-- **`/fv path:value`** - scope: keep rows where a type matching `path`
-  has a value containing `value` (substring, case-insensitive). **`value`
-  prefixed with `>` `<` `>=` `<=` compares instead of substring-matching**
-  (clipboard-picker/notification-picker only, added 2026-09-28 -
-  `/fv lines:>4`, or via, `//lines >4`) - reuses `/sort`'s own comparator
+- **bare text** (`text`, no verb) - substring-match `text` (quote it,
+  `"5"`, to match only the standalone `5`, not `599`), case-insensitively,
+  against the picker's always-present free-text haystack (window
+  title+class+workspace; clipboard preview; pane scrollback; notification
+  app+summary+body; app name + generic name; article title+feed+tag+body).
+  This is the one form every picker guarantees and the one a casual user
+  needs no syntax for; `/fv` itself needs no spelling here (a lone `/fv`
+  with no keys is inert, see Grammar). Keep this haystack to short,
+  controlled strings: the app launcher deliberately leaves `.desktop`
+  `Comment=` and `Keywords=` *out* of it (reachable only as scoped
+  `//comment` / `//keywords`), because substring-matching prose mid-word
+  turned `ala` into a hit on "sc**ala**ble" and "b**ala**nce".
+- **`//keys value`** (= `/fv/keys value`) - scope: keep rows where a type
+  matching one of the `keys` has a value containing `value` (substring,
+  case-insensitive; see Keys for how fuzzy keys and commas resolve).
+  **`value` prefixed with `>` `<` `>=` `<=` compares instead of
+  substring-matching** (clipboard-picker/notification-picker only, added
+  2026-09-28 - `//lines >4`) - reuses `/sort`'s own comparator
   (`compareFieldValues`; see "Sort comparison, precisely" below) so a
   filter and a sort never disagree about what "greater" means for the
   same field. Only means anything when *both* the row's value and the
   operand are one of the two shapes that comparator recognises - plain
-  integers (`chars:>500`) or age buckets (`age:>3h`, meaning "older than
-  3h" - the operator compares the raw stored age, larger is further in
-  the past, no direction-trap inversion the way `/sort ascending` needs);
+  integers (`//chars >500`) or age buckets (`//age >3h`, meaning "older
+  than 3h" - the operator compares the raw stored age, larger is further
+  in the past, no direction-trap inversion the way `/s/age/asc` needs);
   anything else (a non-numeric field, or an operand that isn't) never
-  matches, rather than falling back to `>4` as literal substring text
-  (which would almost always also match nothing, but for the wrong
-  reason). No `=` operator - plain `field:value` substring already covers
-  loose equality, and exact numeric equality wasn't asked for. Not yet
-  ported to any other consumer.
-- **`/fv path`** (no colon), where `path` resolves to a **group** - an
-  *existence* filter: keep rows that have any non-empty value anywhere in
-  that group. `/fv claude` narrows to claude-hosting windows before a
-  value is ever typed. A colonless path that resolves only to flat types,
-  or to nothing, is treated as free text instead (there is no useful
-  "does this row have a title" filter) - **space form only**: the via
-  form's `/fv/path` alone is a no-op here instead, not free text, while a
-  value is still pending (see Via paths, above, for why the two forms
-  diverge on exactly this one case).
+  matches, rather than falling back to `>4` as literal substring text.
+  No `=` operator - plain substring already covers loose equality.
+  Not yet ported to any other consumer. **Keys alone, with no value yet,
+  are a no-op** (never "flash to zero" on a valid partial keystroke, see
+  Design principles) - but the named columns are Auto-shown at once.
+
+There is no "existence" filter (`/fv claude` used to keep rows that had any
+value in the claude group): groups are gone (see Keys). To keep only the
+rows that have a value in a field, match anything in it, e.g. `//claude-session .`.
 
 Multiple `/fv` terms (and multiple bare words) are **AND-ed**, order
 independent: every one must match a surviving row. Bare words are each
@@ -563,10 +400,9 @@ row filter (window-search and claude-history already had it, ad hoc).
 ```
 !alacritty                     rows whose free-text haystack does NOT contain it
 !"foo bar"                     ... does not contain the exact phrase
-!//path gdrive/office          rows where NO subfield matching "path" contains the value
-!/fv/claude.title ovh          via spelling, same thing
-!/fv claude:ovh                colon spelling
-!//claude                      existence filter inverted: rows with no claude data at all
+!//path gdrive/office          rows where NO type matching "path" contains the value
+!/fv/claude-title ovh          explicit-verb spelling, same thing
+!//claude-session .            rows with no claude session at all (see the existence note in /fv)
 //lines !>4                    comparisons invert too: rows where "lines > 4" is not true
 alacritty !//path gdrive/      terms still AND: contains "alacritty", NOT under gdrive/
 ```
@@ -633,19 +469,19 @@ and `window-search.py` keep their own earlier implementations.
 ### `/filter-type` (`/ft`), `/add-type` (`/at`), `/remove-type` (`/rt`)
 
 Change which columns are shown. **Never filter rows** - orthogonal by
-construction. All three take a type path and are processed **left to
-right** against one running ordered set that starts at the picker's
-default columns:
+construction. All three take a key list in their token (`/ft/title,pid`) and
+are processed **left to right** against one running ordered set that starts at
+the picker's default columns:
 
-- **`/ft path`** - intersect: keep only the currently-shown columns whose
-  name matches `path`, drop the others. "Filter down to these."
-- **`/at path`** - union: add every matching column that isn't already
+- **`/ft/keys`** - intersect: keep only the currently-shown columns whose
+  name matches the keys, drop the others. "Filter down to these."
+- **`/at/keys`** - union: add every matching column that isn't already
   shown, at the end.
-- **`/rt path`** - subtract: remove every matching column.
+- **`/rt/keys`** - subtract: remove every matching column.
 
-Order is significant: `/ft claude /at workspace` shows the claude
-subfields plus `workspace`; `/at workspace /ft claude` shows only claude
-subfields (the `/ft` drops the `workspace` the `/at` just added). Adding
+Order is significant: `/ft/claude /at/workspace` shows the claude
+types plus `workspace`; `/at/workspace /ft/claude` shows only claude
+types (the `/ft` drops the `workspace` the `/at` just added). Adding
 a column that is already shown, or removing/filtering one that is not, is
 a silent no-op.
 
@@ -694,56 +530,39 @@ Defaults per picker:
   verbs; window-search / claude-history render a single ranked line and
   ignore column verbs (inert, not an error).
 
-`claude` (bare group) as a column-verb path means *all* of the group's
-subfields, each its own column - unlike its filter/sort meaning
-(default subfield only). `/at claude.*` is the same as `/at claude`;
-`/at claude.title` is just the one.
+A family prefix as a column key (`/at/claude`) means every type under it, each
+its own column; `/at/claude-title` is just the one.
 
 ### `/sort` (`/s`)
 
 Reorder the survivors; never filter or hide.
 
-- **`/sort/path1[/path2/path3/...] [direction]`** (via form, preferred -
-  reads as "sort via these fields, in this order") - order rows by
-  `path1`; rows that tie on `path1` are broken by `path2`, then `path3`,
-  and so on for however many `/`-separated fields are chained. Each
-  segment is its own type path and must resolve to exactly one field
-  each (`claude.*` is not valid at any position - a sort key is one
-  field), same rule as a single-key sort, just applied per segment; a
-  segment that resolves to nothing or ambiguously makes the *whole*
-  `/sort` inert (Type paths, above), not just that one key. `/sort/tokens`
-  alone (one segment) is exactly the single-key sort this always was.
-  This is the one verb whose via form is *not* just an alternate spelling
-  of the space form (see Via paths, above) - chaining only exists here,
-  because it needs the second `/` to *separate* keys, not just to
-  introduce the first one to the verb.
-- **`/sort path [direction]`** (space form) - single-key only, no
-  chaining (use the via form above for more than one key). Order rows by
-  the single type `path` resolves to.
-- **`[direction]`**, on either form: the token right after the path
-  chain, if there is one (the images picker also accepts it right after
-  the verb, before the path: `/s desc name` == `/s name desc`; a word that
-  resolves to a field is always read as the field first), is only taken as `direction` when it
-  substring-matches `ascending` / `descending` (so `asc` / `desc` / `de`
-  all work); if it doesn't match either, `/sort` stops at the path chain
-  (direction defaults to `ascending`) and that token is never consumed -
-  it falls through and is parsed from scratch, typically landing as its
-  own `/fv` term (see Grammar). This is what makes `/s name blender` sort
-  by `name` *and* filter to `blender`, instead of `blender` silently
-  vanishing as a rejected direction argument. One direction applies to
-  every key in a chain uniformly - there is no per-key direction syntax;
-  to run a chain backwards, say `desc`; a key that needs to run the other
-  way gets its own second `/sort` and the last-wins replacement (see next). Only
-  the **last** `/sort` in a query takes effect (replace, not stack).
+- **`/s/key1[,key2,...][/dir]`** - order rows by `key1`; rows that tie on it
+  are broken by `key2`, and so on for however many comma-separated keys are
+  chained. Each key must resolve to **exactly one** type (Keys: exact name
+  wins, else a unique substring; `claude` standing for a family is not valid -
+  a sort key is one field); a key that resolves to nothing or ambiguously
+  makes the *whole* `/s` inert, not just that key. `/s/tokens` alone is the
+  plain single-key sort.
+- **`/dir`**, the optional third part: `asc` / `desc` (or any non-empty
+  prefix of `ascending` / `descending`: `a`, `de`, ...). It is taken by
+  **position**, so it can never be confused with a key or a following word:
+  `/s/title,status/desc blender` sorts and then filters on `blender`. No `/dir`
+  means ascending. One direction applies to every key in the chain - there is
+  no per-key direction; to run one key the other way, give it its own second
+  `/s` and rely on the last-wins replacement. Only the **last** `/s` in a
+  query takes effect (replace, not stack) - except in the images picker,
+  where repeated `/s` stack. A direction on any other verb makes it inert.
   Absent entirely, the picker's own default order stands (MRU, cliphist
   recency, winswitch focus-history, BM25 score). Honoured by winswitch,
   focus-picker, clipboard-picker and notification-picker (2026-09-28);
   inert in the BM25 pickers (score *is* the order).
+- The old space forms (`/s name desc`, `/sort name`) are gone: the verb takes
+  its keys and direction from its own token only.
 
-Multi-key chaining was added 2026-09-02, prompted by wanting
-`/sort/tokens/title` - sort by token count, and within an equal count,
-by title - on the claude-usage process table; single-key `/sort` existed
-long before that and is unchanged by it.
+Multi-key chaining dates from 2026-09-02 (then `/sort/tokens/title`, with `/`
+between keys; the comma replaced the slash 2026-10-22 so `/` can mean "next
+part").
 
 **Sort comparison, precisely.** Every type is stored and matched as a
 string, but plain lexicographic comparison is wrong for two shapes the
@@ -771,7 +590,7 @@ values being compared:
   `type`).
 
 **The direction trap.** `age`'s stored value is an *age* (seconds ago) -
-smaller means more recent. `/sort age descending` means "newest first"
+smaller means more recent. `/s/age/desc` means "newest first"
 in the ordinary calendar sense, which is *ascending by age in seconds*.
 So for age-shaped values the requested direction is inverted before it
 reaches the numeric comparison: `ascending` (oldest first,
@@ -877,6 +696,19 @@ Not yet done: the tmux TUIs (window-search, claude-history, focus-picker) and th
 Android app.
 
 ## Autocompletion
+
+> **2026-10-22 rework - current stages.** Completion follows the single
+> syntax of Grammar: (1) *verb stage*: `/` + Tab lists the five verbs, the
+> app verbs, and every `verb/key` combination (Verb-stage depth); `//` + Tab
+> is the key stage of `/fv/`. (2) *key stage*, after `/verb/` and again after
+> each `,`: the type names, narrowed by the fragment after the last comma
+> (accepting replaces just that fragment and keeps the typed verb spelling,
+> `//` or `/fv/`). (3) *direction stage*, `/s/keys/` + Tab: `asc` / `desc`.
+> (4) *value stage*, after a resolved `//keys `: live values of the resolved
+> types. There are no colon (`path:value`) or space-path (`/s name `) stages
+> any more; where older text below describes them, read the keys-in-the-token
+> equivalent.
+
 
 **The popup is Tab-triggered to open, never shown just from typing.**
 Nothing pops up on its own as you type `/frag` - typing alone only ever
@@ -998,8 +830,8 @@ therefore enough to reach a whole command: `/wo` + Tab reaches
 `/fv/workspace`, `/ft/workspace`, `/at/workspace`, `/rt/workspace`, and
 `/s/workspace` (every path-taking verb crossed with the one path
 containing `wo`); `/cla` + Tab reaches all five verbs crossed with
-`claude` and each of its five subfields (`claude.title`, `claude.path`,
-`claude.session`, `claude.age`, `claude.fts`) - thirty rows, further
+`claude` and each of its five subfields (`claude-title`, `claude-path`,
+`claude-session`, `claude-age`, `claude-fts`) - thirty rows, further
 narrowed by typing more (`/claude.t` cuts it to the two subfields
 containing `t`).
 
@@ -1073,7 +905,7 @@ narrower substring search - so fragment order never matters and a third
 `Ctrl+Space` narrows further the same way a second one does. Every other popup
 (type-path, value, bare value, sort direction) narrows the same way since
 2026-10-21: `//cla` + Tab + `Ctrl+Space` + `fts` keeps only candidates
-containing both `cla` and `fts` (`claude.fts`). The first word is still the
+containing both `cla` and `fts` (`claude-fts`). The first word is still the
 real completion fragment (so the candidate set is whatever `cla` completes
 to); each further word must also substring-match the candidate's text. Accept
 replaces from the frozen fragment start, same as the Verb stage. Implemented
@@ -1137,12 +969,12 @@ moment the scoping term is deleted from the query.
 
 **Triggers the moment the field is named, not just once a value narrows
 anything.** Added 2026-09-12: a via-form `/fv/path` with nothing typed
-after it *yet* (`/fv/claude.session`, about to add a value) already
+after it *yet* (`/fv/claude-session`, about to add a value) already
 resolves `path` to a real field - see Via paths, above - even though
 that resolution stays a no-op for row filtering (the whole point of the
 2026-09-02 fix this doc already documents there). Auto-show reads that
 same resolution and shows the field immediately, rather than waiting for
-`/fv/claude.session 3` to actually be typed - the column that's about to
+`/fv/claude-session 3` to actually be typed - the column that's about to
 be filtered on is exactly what a still-forming command benefits from
 showing early, same "don't make the user wait to see what they're doing"
 spirit as inline command-validity coloring or Tab-completion itself. An
@@ -1214,7 +1046,7 @@ name, and gated per row once the scoping term is a bare group.** Added
 2026-09-13, winswitch only (the one picker with groups today): since a bare
 group now searches every subfield rather than just `GROUP_DEFAULT_SUB` (see
 Type paths, above), which subfield actually matched can differ row to row -
-`/fv/claude ovh` might hit `claude.title` on one window and `claude.fts`
+`/fv/claude ovh` might hit `claude-title` on one window and `claude-fts`
 on another. Two changes follow from that:
 
 - **Labeling.** A group-subfield line now renders as `sub: value`
@@ -1226,15 +1058,15 @@ on another. Two changes follow from that:
   same `sub: value` treatment.
 - **Per-row gating.** A field reached through a bare-group scoped filter is
   only shown on rows where it's actually the subfield that matched -
-  `claude.title` doesn't get a line on a row whose hit was only in
-  `claude.fts`, and vice versa. A field shown for any other reason
-  (`/at`, an explicit `claude.title` scope, the existence-filter default) is
+  `claude-title` doesn't get a line on a row whose hit was only in
+  `claude-fts`, and vice versa. A field shown for any other reason
+  (`/at`, an explicit `claude-title` scope, the existence-filter default) is
   unaffected and always shown once it has a non-empty value, same as before.
 - **Match-centered preview.** The shown value is still capped (80 chars in
   winswitch), but when the line is tied to a matched filter value the window
   is now centered on the match's first occurrence instead of always starting
   at character 0 - a plain `value.slice(0, 80)` of a long field like
-  `claude.fts` (a whole transcript) essentially never contains the
+  `claude-fts` (a whole transcript) essentially never contains the
   matched substring within its first 80 characters, so the preview read as
   unrelated noise even on a correct match (reported 2026-09-13 against
   winswitch's alt-tab search: `/fv/claude ovh` matched real hits in
@@ -1545,7 +1377,7 @@ piling up three near-identical rows in the Ctrl+R popup.
 the doc already gives for field/group vocabularies not needing to match
 picker to picker (The shape of it, above): each picker's queries are
 shaped by, and only meaningful against, that picker's own corpus and type
-vocabulary - a `claude.title` scope typed in claude-usage means nothing
+vocabulary - a `claude-title` scope typed in claude-usage means nothing
 replayed into window-search. Stored per picker under its own cache
 directory (mirroring `~/.zsh_history` itself - one file per shell, not a
 merged global one), unbounded, like this user's own
