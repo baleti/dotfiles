@@ -71,6 +71,10 @@ PanelWindow {
         root._hoverOrigin = null;
         root._hoverArmed = false;
         if (root.open) {
+            // snap to the default width (no animation from the last
+            // session's width); re-armed once the first results settle
+            root._animWidth = false;
+            widthArm.restart();
             query.text = "";
             root.selected = 0;
             ac.visible = false;
@@ -82,6 +86,8 @@ PanelWindow {
             focusGrab.active = false;
         }
     }
+    property bool _animWidth: true
+    Timer { id: widthArm; interval: 150; onTriggered: root._animWidth = true }
     function hide() { LauncherState.close(); }
 
     // ---- app records -- recomputed when the desktop-entry set changes ---
@@ -753,7 +759,7 @@ PanelWindow {
         border.color: Theme.cyan
         border.width: 1
 
-        Behavior on width { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
+        Behavior on width { enabled: root._animWidth; NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
         // Swallow clicks so they don't reach the backdrop.
         MouseArea { anchors.fill: parent }
 
