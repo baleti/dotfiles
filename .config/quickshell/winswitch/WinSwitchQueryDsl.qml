@@ -78,7 +78,7 @@ QtObject {
         for (const v of ["fv", "ft", "at", "rt", "s"])
             for (const p of root.allPaths())
                 deep.push(v + "/" + p);
-        return bareVerbs.concat(["fts/claude-live", "fts/claude-archive"], deep);
+        return bareVerbs.concat(["fts/claude", "fts/claude-live", "fts/claude-archive"], deep);
     }
     // One-line description of a type path, for the type-path autocomplete
     // stage -- mirrors ui.rs's `type_desc`.
@@ -89,6 +89,7 @@ QtObject {
         "monitor": "the monitor a workspace is on (/sw view)",
         "windows": "how many windows a workspace holds (/sw view)",
         "tmux": "tmux session / window on this terminal",
+        "claude": "running and archived conversations",
         "claude-live": "running conversations only",
         "claude-archive": "past conversations only; Enter resumes one in a new window",
         "tmux-session": "tmux session name",
@@ -690,7 +691,7 @@ QtObject {
             return root.verbStageUniverse().filter(v => root.substr(completion.fragment, v));
         case "typePath":
             if (completion.verb === "/fts")
-                return ["claude-live", "claude-archive"].filter(n => root.substr(completion.fragment, n));
+                return ["claude", "claude-live", "claude-archive"].filter(n => root.substr(completion.fragment, n));
             return root.pathSuggestions(completion.fragment);
         case "value":
             return root.valueSuggestions(windows, metas, completion.field, completion.fragment);
