@@ -31,7 +31,6 @@ QtObject {
         tmux: ["session", "window", "title"],
         claude: ["title", "path", "session", "age", "fts"]
     })
-    readonly property var groupDefaultSub: ({ tmux: "title", claude: "fts" })
     readonly property var directions: ["ascending", "descending"]
     readonly property var defaultColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "workspace" }]
     // /sw (workspace view): what each workspace shows under its thumbnail.
@@ -56,35 +55,30 @@ QtObject {
         "fv", "ft", "at", "rt", "s", "sw", "fts",
         "filter-value", "filter-type", "add-type", "remove-type", "sort", "switch-workspace"
     ]
-    // All resolvable type paths (flat types, groups, and group.subfields),
-    // bare, no "*" -- the full depth the Verb stage's completion crosses
-    // with every path-taking verb (see query-dsl.md's "Verb-stage depth").
-    function allPaths() {
+    // Type names (query-dsl.md "Keys"): the flat columns plus the hyphenated
+    // family types ("tmux-session", "claude-title", ...). Keys fuzzy-resolve
+    // against these; claude-fts is reachable (it is what /fts/live filters on)
+    // but not offered in completion - spelled /fts.
+    readonly property var typeNames: {
         const out = root.columns.slice();
-        for (const g of root.groupOrder) {
-            out.push(g);
-            for (const s of root.groupSubsOf(g)) {
-                if (g === "claude" && s === "fts") continue; // spelled /fts now
-                out.push(g + "." + s);
-            }
-        }
+        for (const g of root.groupOrder)
+            for (const s of root.groups[g])
+                out.push(g + "-" + s);
         return out;
     }
-    // The full Verb-stage vocabulary: the six bare verb shorts plus every
-    // path-taking verb crossed with every resolvable path ("fv/workspace",
-    // "fv/claude.title", ...) -- see query-dsl.md's "Verb-stage depth".
-    // Exposed rather than inlined in completionCandidates so WinSwitch.qml's
-    // Ctrl+Space AND-narrowing mode can filter it with its own
-    // multiple-fragment rule instead of completionCandidates' single one.
+    function allPaths() { return root.typeNames.filter(n => n !== "claude-fts"); }
+    // The full Verb-stage vocabulary: the bare verbs plus every key-taking verb
+    // crossed with every type name ("fv/workspace", "s/claude-title", ...) --
+    // query-dsl.md's "Verb-stage depth". Exposed rather than inlined in
+    // completionCandidates so WinSwitch.qml's Ctrl+Space AND-narrowing mode can
+    // filter it with its own multiple-fragment rule.
     function verbStageUniverse() {
         const bareVerbs = root.shortVerbs.map(v => v.slice(1));
         const deep = [];
-        for (const v of bareVerbs) {
-            if (!root.takesPath("/" + v)) continue;
+        for (const v of ["fv", "ft", "at", "rt", "s"])
             for (const p of root.allPaths())
                 deep.push(v + "/" + p);
-        }
-        return bareVerbs.concat(["fts/live", "fts/archive"], deep);
+        return bareVerbs.concat(["fts/claude-live", "fts/claude-archive"], deep);
     }
     // One-line description of a type path, for the type-path autocomplete
     // stage -- mirrors ui.rs's `type_desc`.
@@ -95,20 +89,20 @@ QtObject {
         "monitor": "the monitor a workspace is on (/sw view)",
         "windows": "how many windows a workspace holds (/sw view)",
         "tmux": "tmux session / window on this terminal",
-        "live": "running conversations only",
-        "archive": "past conversations only; Enter resumes one in a new window",
-        "tmux.session": "tmux session name",
-        "tmux.window": "tmux window name",
-        "tmux.title": "tmux window title",
+        "claude-live": "running conversations only",
+        "claude-archive": "past conversations only; Enter resumes one in a new window",
+        "tmux-session": "tmux session name",
+        "tmux-window": "tmux window name",
+        "tmux-title": "tmux window title",
         "claude": "Claude Code session on this terminal",
-        "claude.title": "Claude Code session title",
-        "claude.path": "Claude Code working directory",
-        "claude.session": "Claude Code session id",
-        "claude.age": "how long ago the transcript last changed",
-        "claude.fts": "Claude Code conversation full-text (periodically indexed); /fts/live is the shortcut"
+        "claude-title": "Claude Code session title",
+        "claude-path": "Claude Code working directory",
+        "claude-session": "Claude Code session id",
+        "claude-age": "how long ago the transcript last changed",
+        "claude-fts": "Claude Code conversation full-text (periodically indexed); /fts/claude-live is the shortcut"
     })
 
-    function fieldKey(f) { return f.kind === "flat" ? f.name : f.group + "." + f.sub; }
+    function fieldKey(f) { return f.kind === "flat" ? f.name : f.group + "-" + f.sub; }
     function fieldsEqual(a, b) {
         if (!a || !b || a.kind !== b.kind) return false;
         return a.kind === "flat" ? a.name === b.name : a.group === b.group && a.sub === b.sub;
@@ -177,18 +171,18 @@ QtObject {
         return null;
     }
 
-    // query.rs::tok_verb -- { verb, via } or null.
+    // { verb, via, dir, bad } or null (query-dsl.md "Grammar"): `via` is the
+    // keys part (null when absent), `dir` the third part (/s only), `bad` a
+    // malformed token (too many parts; /sw takes none): inert.
     function tokVerb(tok) {
         if (tok.leadQuote || tok.text[0] !== "/") return null;
-        const rest = tok.text.slice(1);
-        const slash = rest.indexOf("/");
-        if (slash >= 0) {
-            const v = root._canonName(rest.slice(0, slash));
-            return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
-        }
-        if (rest === "") return null; // bare "/" - not the default verb
-        const v = root._canonName(rest);
-        return v === null ? null : { verb: v, via: null };
+        const parts = tok.text.slice(1).split("/");
+        // "//keys": empty verb slot defaults to /fv
+        const v = parts[0] === "" ? (parts.length >= 2 ? "/fv" : null) : root._canonName(parts[0]);
+        if (v === null) return null;
+        const maxParts = v === "/s" ? 3 : (v === "/sw" ? 1 : 2);
+        return { verb: v, via: parts.length >= 2 ? parts[1] : null,
+                 dir: parts.length === 3 ? parts[2] : null, bad: parts.length > maxParts };
     }
 
     // A non-empty verb form always "starts with" the empty string, so a
@@ -221,7 +215,7 @@ QtObject {
         return root._isDirectionLike(tok) ? root._dirOf(tok) : null;
     }
     function resolveDirections(frag) {
-        return root.directions.filter(d => root.substr(frag, d));
+        return [["asc", "ascending"], ["desc", "descending"]].filter(d => d[1].indexOf(frag.toLowerCase()) === 0).map(d => d[0]);
     }
 
     // --- substring matching, schema lookups -------------------------------
@@ -249,7 +243,7 @@ QtObject {
     // `needle` this is a plain start-truncation (unchanged behaviour for
     // fields not tied to a matched filter value). With a `needle`, centers
     // the window on its first occurrence instead - a naive chars[0:maxLen]
-    // truncation of a long field (claude.fts, a whole transcript) very
+    // truncation of a long field (claude-fts, a whole transcript) very
     // rarely contains the matched substring itself within its first 80
     // characters, so the preview read as unrelated noise even though the
     // match was correct (reported 2026-09-13 against winswitch's alt-tab
@@ -286,10 +280,7 @@ QtObject {
     function escapeHtml(s) {
         return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
-    function groupDefaultSubOf(g) { return root.groupDefaultSub[g] || ""; }
     function groupSubsOf(g) { return root.groups[g] || []; }
-    function resolveGroups(seg) { return root.groupOrder.filter(g => root.substr(seg, g)); }
-    function resolveGroupSubs(g, seg) { return root.groupSubsOf(g).filter(s => root.substr(seg, s)); }
 
     function columnValue(win, c) {
         switch (c) {
@@ -309,100 +300,35 @@ QtObject {
         // claude.age is the backend's `claude_time` (renamed in the DSL only)
         return meta[g + "_" + (g === "claude" && s === "age" ? "time" : s)] || "";
     }
-    function groupHasAnyValue(meta, g) {
-        return root.groupSubsOf(g).some(s => root.groupSubValue(meta, g, s) !== "");
-    }
-
-    // --- path resolution (query.rs's resolve_filter_fields / _column_fields / _one) --
-    function _pathSegs(path) {
-        const dot = path.indexOf(".");
-        return dot < 0 ? [path, null] : [path.slice(0, dot), path.slice(dot + 1)];
-    }
-
-    function resolveFilterFields(path) {
-        const [gSeg, sSeg] = root._pathSegs(path);
-        if (sSeg === "*") {
-            const out = [];
-            for (const g of root.resolveGroups(gSeg))
-                for (const s of root.groupSubsOf(g))
-                    out.push({ kind: "group", group: g, sub: s });
-            return out;
+    // --- key resolution (query-dsl.md "Keys") -----------------------------
+    // Per key: a name equal to it wins alone, else every name containing it;
+    // unioned across the comma list, in `known` order. Empty keys skipped.
+    function resolveNames(keys, known) {
+        const hit = {};
+        for (const key of String(keys).toLowerCase().split(",")) {
+            if (key.length === 0) continue;
+            const exact = known.filter(n => n === key);
+            for (const n of (exact.length > 0 ? exact : known.filter(n => n.indexOf(key) >= 0)))
+                hit[n] = true;
         }
-        if (sSeg !== null) {
-            const out = [];
-            for (const g of root.resolveGroups(gSeg))
-                for (const s of root.resolveGroupSubs(g, sSeg))
-                    out.push({ kind: "group", group: g, sub: s });
-            return out;
-        }
-        // A bare group (no explicit subfield) searches *every* subfield for
-        // a scoped value match, same shape as resolveColumnFields's bare-
-        // group case just below - `/fv/claude foo` is meant to reach
-        // `claude.title`, `claude.fts`, etc. all at once, not just
-        // GROUP_DEFAULT_SUB (query-dsl.md's "Type paths": a bare group used
-        // to narrow filtering/sorting to one default subfield the same way
-        // it does for /sort, but that made `/fv/claude ovh` silently miss a
-        // hit that only existed in `claude.title` while `claude.fts`
-        // had none - reported 2026-09-13 against winswitch's alt-tab
-        // search, screenshot showed unrelated `claude.fts` fragments
-        // under thumbnails that had actually matched on `claude.title`).
-        // `/sort`'s own bare-group resolution (`resolveOne`) is unchanged -
-        // a sort key must be exactly one field, so it still needs
-        // GROUP_DEFAULT_SUB.
-        const out = root.columns.filter(c => root.substr(gSeg, c)).map(c => ({ kind: "flat", name: c }));
-        for (const g of root.resolveGroups(gSeg))
-            for (const s of root.groupSubsOf(g))
-                out.push({ kind: "group", group: g, sub: s });
-        return out;
+        return known.filter(n => hit[n]);
     }
-
-    function resolveColumnFields(path) {
-        const [gSeg, sSeg] = root._pathSegs(path);
-        if (sSeg === "*") {
-            const out = [];
-            for (const g of root.resolveGroups(gSeg))
-                for (const s of root.groupSubsOf(g))
-                    out.push({ kind: "group", group: g, sub: s });
-            return out;
-        }
-        if (sSeg !== null) {
-            const out = [];
-            for (const g of root.resolveGroups(gSeg))
-                for (const s of root.resolveGroupSubs(g, sSeg))
-                    out.push({ kind: "group", group: g, sub: s });
-            return out;
-        }
-        const out = root.columns.filter(c => root.substr(gSeg, c)).map(c => ({ kind: "flat", name: c }));
-        for (const g of root.resolveGroups(gSeg))
-            for (const s of root.groupSubsOf(g))
-                out.push({ kind: "group", group: g, sub: s });
-        return out;
+    function fieldOfName(n) {
+        if (root.columns.indexOf(n) >= 0) return { kind: "flat", name: n };
+        const i = n.indexOf("-");
+        return { kind: "group", group: n.slice(0, i), sub: n.slice(i + 1) };
     }
-
-    // The single field a path names, or null if ambiguous/unknown/`*`.
+    function resolveKeys(keys) { return root.resolveNames(keys, root.typeNames).map(root.fieldOfName); }
+    function resolveFilterFields(path) { return root.resolveKeys(path); }
+    function resolveColumnFields(path) { return root.resolveKeys(path); }
+    // The single field a sort key names, or null if ambiguous/unknown.
     function resolveOne(path) {
-        const [gSeg, sSeg] = root._pathSegs(path);
-        if (sSeg === "*") return null;
-        if (sSeg !== null) {
-            const gs = root.resolveGroups(gSeg);
-            if (gs.length !== 1) return null;
-            const subs = root.resolveGroupSubs(gs[0], sSeg);
-            if (subs.length !== 1) return null;
-            return { kind: "group", group: gs[0], sub: subs[0] };
-        }
-        const c = root.columns.filter(x => root.substr(gSeg, x)).map(x => ({ kind: "flat", name: x }));
-        for (const g of root.resolveGroups(gSeg))
-            c.push({ kind: "group", group: g, sub: root.groupDefaultSubOf(g) });
-        return c.length === 1 ? c[0] : null;
+        const f = root.resolveKeys(path);
+        return f.length === 1 ? f[0] : null;
     }
 
     // --- command parsing (query.rs's filter_term / parse) -----------------
     function filterTerm(arg, quoted) {
-        const colon = arg.indexOf(":");
-        if (colon >= 0)
-            return { kind: "scoped", path: arg.slice(0, colon), value: arg.slice(colon + 1), exact: !!quoted };
-        if (!quoted && arg.indexOf(".") < 0 && root.resolveGroups(arg).length > 0)
-            return { kind: "exists", seg: arg };
         return { kind: "free", text: arg, exact: !!quoted };
     }
 
@@ -426,9 +352,10 @@ QtObject {
             i++;
             const verb = tv.verb;
             if (verb === "/fts") {
-                // /fts[/claude][/live|/archive] [term]: full text over the Claude conversations.
-                const parts = (tv.via || "").split("/").filter(x => x.length > 0);
-                const scope = parts.indexOf("live") >= 0 ? "live" : (parts.indexOf("archive") >= 0 ? "archive" : "all");
+                // /fts[/claude-live|/claude-archive|...] [term]: full text over the Claude conversations.
+                if (tv.bad) continue;
+                const names = root.resolveNames(tv.via || "", ["claude-live", "claude-archive"]);
+                const scope = names.length === 1 ? (names[0] === "claude-live" ? "live" : "archive") : "all";
                 let term = "";
                 if (i < toks.length && !root.startsCommand(toks[i])) {
                     term = toks[i].text.replace(/"/g, "");
@@ -437,113 +364,48 @@ QtObject {
                 (top.ftsTokens = top.ftsTokens || []).push({ scope, term, neg: !!tok.neg });
                 continue;
             }
-            // "!" only means something on a row filter: "!/s", "!/ft" ...
-            // still consume their arguments but change nothing.
-            const verbNeg = !!tok.neg;
-            if (verbNeg && verb !== "/fv")
-                out = { filters: [], colOps: [], sort: null, switchWorkspace: false };
-
-            if (tv.via !== null) {
-                const via = tv.via;
-                if (verb === "/sw")
-                    top.switchWorkspace = true;
-                // "/sw/windows 3" = "/sw" + "/fv/windows 3"
-                if (verb === "/fv" || verb === "/sw") {
-                    if (i < toks.length && !root.startsCommand(toks[i])) {
-                        out.filters.push(root.negated(root.filterTerm(via + ":" + toks[i].text, toks[i].quoted), verbNeg || toks[i].neg));
-                        i++;
-                    } else if (via.length > 0 && via.indexOf(".") < 0 && root.resolveGroups(via).length > 0) {
-                        out.filters.push(root.negated({ kind: "exists", seg: via }, verbNeg));
-                    } else if (via.length > 0 && root.resolveFilterFields(via).length > 0) {
-                        // Via path alone, no value yet, resolving to a
-                        // flat type or dotted group subfield (a bare
-                        // group is the "exists" branch above) - reuse the
-                        // "scoped" term shape with an empty value: an
-                        // empty needle always substring-matches (see
-                        // `substr`), so this stays a genuine no-op for row
-                        // filtering exactly like today, but
-                        // `filterReferencedFields` (below) already knows
-                        // how to read a "scoped" term's `path` and now
-                        // shows the field the moment the command names
-                        // it, not just once a value narrows anything
-                        // (query-dsl.md "Auto-shown filter fields",
-                        // updated 2026-09-12). An unresolvable path (typo,
-                        // still mid-typing) hits neither branch, so
-                        // nothing is pushed and nothing shows - unchanged.
-                        //
-                        // `via.length > 0` above matters on its own: an
-                        // empty via ("/fv/" with nothing typed after the
-                        // second "/" yet) would otherwise resolve through
-                        // `resolveGroups`/`resolveFilterFields` as if it
-                        // matched *every* group and type - an empty
-                        // substring needle matches everything (`substr`'s
-                        // own contract) - so without this guard "/fv/"
-                        // alone auto-showed every group's default
-                        // subfield at once (reported 2026-09-13: typing
-                        // "/fv/" showed Claude session info under every
-                        // thumbnail before any type was even chosen). A
-                        // still-empty via is "nothing typed yet," not an
-                        // ambiguous fragment to union across - it must
-                        // stay exactly as inert as it looked before this
-                        // whole feature existed.
-                        out.filters.push(root.negated({ kind: "scoped", path: via, value: "" }, verbNeg));
-                    }
-                } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {
-                    const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
-                    out.colOps.push({ op, path: via, isVia: true });
-                } else if (verb === "/s") {
-                    let dir = "asc";
-                    if (i < toks.length && !root.startsCommand(toks[i])) {
-                        const d = root.parseDirection(toks[i].text);
-                        if (d !== null) { dir = d; i++; }
-                    }
-                    const fields = via.split("/").map(p => root.resolveOne(p));
-                    if (fields.every(f => f !== null) && fields.length > 0)
-                        out.sort = { fields, dir };
-                } else if (verb === "/sw") {
-                    top.switchWorkspace = true;
-                }
+            if (verb === "/sw") {
+                if (!tv.bad && tv.via === null) top.switchWorkspace = true;
                 continue;
             }
-
-            const args = [];
-            const maxArgs = (verb === "/sw") ? 0 : (verb === "/s" ? 2 : 1);
-            while (args.length < maxArgs && i < toks.length && !root.startsCommand(toks[i])) {
-                if (verb === "/s" && args.length === 1 && root.parseDirection(toks[i].text) === null)
-                    break;
-                args.push(toks[i]);
-                i++;
-            }
-
+            // keyless or malformed: inert, takes no argument ("/fv foo" is just "foo")
+            if (tv.via === null || tv.bad) continue;
+            const via = tv.via.toLowerCase();
+            // "!" only means something on a row filter: "!/s", "!/ft" ... parse but change nothing.
+            const verbNeg = !!tok.neg;
+            const R = (verbNeg && verb !== "/fv")
+                ? { filters: [], colOps: [], sort: null, switchWorkspace: false } : top;
+            const keysTyped = via.replace(/,/g, "").length > 0;
             if (verb === "/fv") {
-                if (args.length > 0) out.filters.push(root.negated(root.filterTerm(args[0].text, args[0].quoted), verbNeg || args[0].neg));
+                if (i < toks.length && !root.startsCommand(toks[i])) {
+                    R.filters.push(root.negated({ kind: "scoped", path: via, value: toks[i].text, exact: !!toks[i].quoted }, verbNeg || toks[i].neg));
+                    i++;
+                } else if (keysTyped && root.resolveKeys(via).length > 0) {
+                    // keys named, value still pending: an empty value always
+                    // substring-matches, so this is a no-op for row filtering but
+                    // lets filterReferencedFields Auto-show the field at once.
+                    R.filters.push(root.negated({ kind: "scoped", path: via, value: "" }, verbNeg));
+                }
             } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {
-                if (args.length > 0) {
-                    const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
-                    out.colOps.push({ op, path: args[0].text, isVia: false });
-                }
+                if (keysTyped)
+                    R.colOps.push({ op: verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove"), path: via, isVia: true });
             } else if (verb === "/s") {
-                if (args.length > 0) {
-                    const field = root.resolveOne(args[0].text);
-                    if (field !== null) {
-                        const dir = args.length > 1 ? (root.parseDirection(args[1].text) || "asc") : "asc";
-                        out.sort = { fields: [field], dir };
-                    }
-                }
-            } else if (verb === "/sw") {
-                top.switchWorkspace = true;
+                if (tv.dir !== null && root.parseDirection(tv.dir) === null) continue;
+                const fields = via.split(",").filter(x => x.length > 0).map(k => root.resolveOne(k));
+                if (fields.length > 0 && fields.every(f => f !== null))
+                    R.sort = { fields, dir: tv.dir ? root.parseDirection(tv.dir) : "asc" };
             }
         }
         if (top.ftsTokens) {
             // Scope: one spelled scope wins, plain or mixed = both. live -> the window grid is
-            // filtered by claude.fts; archive / both -> the table view (WinSwitch.qml).
+            // filtered by claude-fts; archive / both -> the table view (WinSwitch.qml).
             const scopes = new Set(top.ftsTokens.map(t => t.scope));
             const scope = (scopes.size === 1 && !scopes.has("all")) ? [...scopes][0] : "all";
             top.fts = { scope, terms: top.ftsTokens.filter(t => !t.neg && t.term).map(t => t.term),
                         negTerms: top.ftsTokens.filter(t => t.neg && t.term).map(t => t.term) };
             if (scope === "live")
                 for (const t of top.ftsTokens)
-                    if (t.term) top.filters.push(root.negated({ kind: "scoped", path: "claude.fts", value: t.term, exact: false }, t.neg));
+                    if (t.term) top.filters.push(root.negated({ kind: "scoped", path: "claude-fts", value: t.term, exact: false }, t.neg));
         }
         return top;
     }
@@ -564,12 +426,12 @@ QtObject {
         return term.neg ? !m : m;
     }
 
-    // claude.fts is answered by `claude-history --fts` (BM25 over every
+    // claude-fts is answered by `claude-history --fts` (BM25 over every
     // transcript), not by text carried on the window: WinSwitch.qml fills
     // this { lowercase term: { sessionId: score } } for the query's terms.
     property var ftsHits: ({})
     function isFtsField(f) { return f.kind === "group" && f.group === "claude" && f.sub === "fts"; }
-    // Distinct lowercase values of every scoped term that reaches claude.fts.
+    // Distinct lowercase values of every scoped term that reaches claude-fts.
     function ftsTerms(filters) {
         const out = [];
         for (const t of filters) {
@@ -598,9 +460,7 @@ QtObject {
                 : root.isFtsField(f) ? (term.value === "" || root._ftsMatch(meta, term))
                 : root.substr(term.value, root.fieldValue(win, meta, f), term.exact));
         }
-        // "exists"
-        const gs = root.resolveGroups(term.seg);
-        return gs.length > 0 && gs.some(g => root.groupHasAnyValue(meta, g));
+        return false;
     }
 
     function matchesStr(win, meta, query) {
@@ -657,12 +517,7 @@ QtObject {
     function filterReferencedFields(filters) {
         const out = [];
         for (const term of filters) {
-            let fields = [];
-            if (term.kind === "scoped") {
-                fields = root.resolveFilterFields(term.path);
-            } else if (term.kind === "exists") {
-                fields = root.resolveGroups(term.seg).map(g => ({ kind: "group", group: g, sub: root.groupDefaultSubOf(g) }));
-            }
+            const fields = term.kind === "scoped" ? root.resolveFilterFields(term.path) : [];
             for (const f of fields)
                 if (!out.some(o => root.fieldsEqual(o, f)))
                     out.push(f);
@@ -670,21 +525,22 @@ QtObject {
         return out;
     }
 
-    // Bare-group scoped filters currently in effect ({group, value} pairs) -
-    // a `/fv/claude foo` / `/fv claude:foo` term, as opposed to one naming
-    // an explicit subfield (`/fv/claude.title foo`). Since such a term now
-    // matches across every subfield of the group (see resolveFilterFields
-    // above), the matched subfield differs row to row - WinSwitch.qml's
-    // labelLines uses this to show only the subfield(s) that actually
-    // matched *this* row instead of every subfield unconditionally, and to
-    // label each with its own name (query-dsl.md "Auto-shown filter
-    // fields": "title: ..." / "contents: ...", not a bare value that could
-    // be any subfield).
+    // Family-wide scoped filters currently in effect ({group, value} pairs): a
+    // `//claude foo` key that reaches several types of one family (as opposed to
+    // one naming a single type, `//claude-title foo`). The matched type differs
+    // row to row, so WinSwitch.qml's labelLines shows only the type(s) that
+    // actually matched *this* row, each labelled with its own name (query-dsl.md
+    // "Auto-shown filter fields").
     function scopedGroupFilters(query) {
         const out = [];
         for (const t of root.parse(query).filters) {
-            if (t.kind !== "scoped" || t.neg || t.path.indexOf(".") >= 0) continue;
-            for (const g of root.resolveGroups(t.path))
+            if (t.kind !== "scoped" || t.neg) continue;
+            const fields = root.resolveFilterFields(t.path);
+            if (fields.length < 2) continue;
+            const groups = [];
+            for (const f of fields)
+                if (f.kind === "group" && groups.indexOf(f.group) < 0) groups.push(f.group);
+            for (const g of groups)
                 out.push({ group: g, value: t.value });
         }
         return out;
@@ -761,69 +617,22 @@ QtObject {
     }
 
     function pathSuggestions(fragment) {
-        const dot = fragment.indexOf(".");
-        if (dot >= 0) {
-            const gSeg = fragment.slice(0, dot), sSeg = fragment.slice(dot + 1);
-            const gs = root.resolveGroups(gSeg);
-            if (gs.length !== 1) return [];
-            const group = gs[0];
-            const out = root.resolveGroupSubs(group, sSeg).map(s => group + "." + s);
-            if (root.substr(sSeg, "*"))
-                out.push(group + ".*");
-            return out;
-        }
-        const out = root.columns.filter(c => root.substr(fragment, c)).slice();
-        out.push(...root.resolveGroups(fragment));
-        // Dotted subfields too ("claude.title"), so the list is the same full
-        // set the Verb stage offers ("/<tab>" -> "sw/claude.title"); before,
-        // a subfield only appeared once you had typed the "." yourself.
-        for (const g of root.groupOrder)
-            for (const s of root.groupSubsOf(g))
-                if (root.substr(fragment, g + "." + s))
-                    out.push(g + "." + s);
-        return out;
+        return root.allPaths().filter(n => root.substr(fragment, n));
     }
 
     // Completion: { kind: "verb"|"typePath"|"value"|"bareValue"|"sortDirection",
     //   start, fragment, verb?, via?, field? }
     function _replay(context) {
-        // open: null | { verb, args: [string,...] }
+        // open: null | { verb, args: [string,...] } - only `/fv/keys` leaves a value pending
         let open = null;
         for (const tok of context) {
-            for (;;) {
-                if (open === null) {
-                    const tv = root.tokVerb(tok);
-                    if (tv === null) {
-                        // nothing to track
-                    } else if ((tv.verb === "/sw" && tv.via === null)) {
-                        // consumes nothing
-                    } else if ((tv.verb === "/ft" || tv.verb === "/at" || tv.verb === "/rt") && tv.via !== null) {
-                        // via already supplies the one path this verb takes
-                    } else if (tv.via !== null) {
-                        open = { verb: tv.verb, args: [tv.via] };
-                    } else {
-                        open = { verb: tv.verb, args: [] };
-                    }
-                    break;
-                }
-                if (root.startsCommand(tok)) {
-                    open = null;
-                    continue; // reprocess this token as a fresh command
-                }
-                if (open.verb === "/s") {
-                    if (open.args.length === 0) {
-                        open.args.push(tok.text); // path; still open for a direction
-                    } else if (root.parseDirection(tok.text) !== null) {
-                        open = null; // direction consumed
-                    } else {
-                        open = null; // not a direction - sort closes
-                        continue;
-                    }
-                } else {
-                    open = null; // single arg consumed
-                }
-                break;
+            if (open !== null) {
+                if (root.startsCommand(tok)) open = null; // reprocess this token as a fresh command
+                else { open = null; continue; }           // the value is consumed
             }
+            const tv = root.tokVerb(tok);
+            if (tv !== null && !tv.bad && tv.verb === "/fv" && tv.via !== null && tv.via.replace(/,/g, "").length > 0)
+                open = { verb: "/fv", args: [tv.via] };
         }
         return open;
     }
@@ -843,44 +652,29 @@ QtObject {
 
         if (frag[0] === "/") {
             const rest = frag.slice(1);
-            const slash = rest.indexOf("/");
-            if (slash >= 0) {
-                const name = rest.slice(0, slash), viaFrag = rest.slice(slash + 1);
-                const verb = root._canonName(name);
-                if (verb === null) return null;
-                const viaStart = start + 1 + name.length + 1;
-                if (verb === "/ft" && root.pathSuggestions(viaFrag).length === 0)
-                    return { kind: "bareValue", start: viaStart, field: null, fragment: viaFrag };
-                return { kind: "typePath", start: viaStart, verb, fragment: viaFrag, via: true };
+            const parts = rest.split("/");
+            if (parts.length === 1) return { kind: "verb", start, fragment: rest };
+            const verb = parts[0] === "" ? "/fv" : root._canonName(parts[0]);
+            if (verb === null) return null;
+            if (parts.length === 2) {
+                // key stage: complete the fragment after the last comma
+                const comma = parts[1].lastIndexOf(",");
+                const keyFrag = parts[1].slice(comma + 1);
+                const viaStart = start + 1 + parts[0].length + 1 + comma + 1;
+                if (verb === "/ft" && comma < 0 && root.pathSuggestions(keyFrag).length === 0)
+                    return { kind: "bareValue", start: viaStart, field: null, fragment: keyFrag };
+                return { kind: "typePath", start: viaStart, verb, fragment: keyFrag, via: true };
             }
-            return { kind: "verb", start, fragment: rest };
+            if (parts.length === 3 && verb === "/s")
+                return { kind: "sortDirection", start: start + frag.length - parts[2].length, field: null, fragment: parts[2] };
+            return null;
         }
 
         const open = root._replay(context);
-        if (open === null || !root.takesPath(open.verb))
-            return null;
-        const verb = open.verb, args = open.args;
-        if (verb === "/s" && args.length === 1) {
-            const field = root.resolveOne(args[0]);
-            return field !== null
-                ? { kind: "sortDirection", start, field, fragment: frag }
-                : { kind: "typePath", start, verb, fragment: frag, via: false };
-        }
-        if (verb === "/fv" || verb === "/sw") {
-            if (args.length === 1) {
-                const field = root.resolveOne(args[0]);
-                return field !== null
-                    ? { kind: "bareValue", start, field, fragment: frag }
-                    : { kind: "typePath", start, verb, fragment: frag, via: false };
-            }
-            const colon = frag.indexOf(":");
-            if (colon >= 0) {
-                const field = root.resolveOne(frag.slice(0, colon));
-                if (field === null) return null;
-                return { kind: "value", start, field, fragment: frag.slice(colon + 1) };
-            }
-        }
-        return { kind: "typePath", start, verb, fragment: frag, via: false };
+        if (open === null) return null;
+        // value stage after `/fv/keys `: live values of the resolved types
+        const fields = root.resolveKeys(open.args[0]);
+        return { kind: "bareValue", start, field: fields.length === 1 ? fields[0] : null, fields, fragment: frag };
     }
 
     function completionCandidates(completion, windows, metas) {
@@ -895,12 +689,21 @@ QtObject {
             // 2026-09-09).
             return root.verbStageUniverse().filter(v => root.substr(completion.fragment, v));
         case "typePath":
+            if (completion.verb === "/fts")
+                return ["claude-live", "claude-archive"].filter(n => root.substr(completion.fragment, n));
             return root.pathSuggestions(completion.fragment);
         case "value":
             return root.valueSuggestions(windows, metas, completion.field, completion.fragment);
         case "bareValue":
             if (completion.field !== null)
                 return root.valueSuggestions(windows, metas, completion.field, completion.fragment);
+            if (completion.fields) {
+                const seen = new Set();
+                for (const field of completion.fields)
+                    for (const v of root.valueSuggestions(windows, metas, field, completion.fragment))
+                        seen.add(v);
+                return Array.from(seen).sort();
+            }
             {
                 const seen = new Set();
                 for (const field of root.everyField())
@@ -914,9 +717,7 @@ QtObject {
         return [];
     }
 
-    function isGroup(candidate) {
-        return candidate.indexOf(".") < 0 && root.groupOrder.indexOf(candidate) >= 0;
-    }
+    function isGroup(candidate) { return false; }
 
     // --- inline command-validity spans --------------------------------------
     function commandSpans(query) {
@@ -925,10 +726,9 @@ QtObject {
             if (tok.leadQuote || tok.text[0] !== "/") continue;
             const rest = tok.text.slice(1);
             if (rest.length === 0) continue;
-            const slash = rest.indexOf("/");
-            const name = slash >= 0 ? rest.slice(0, slash) : rest;
-            const valid = root._canonName(name) !== null;
-            if (!valid && root.isVerbPrefix(rest)) continue;
+            const tv = root.tokVerb(tok);
+            const valid = tv !== null && !tv.bad;
+            if (!valid && tv === null && root.isVerbPrefix(rest.split("/")[0]) && rest.indexOf("/") < 0) continue;
             out.push({ start: tok.start, end: tok.start + tok.text.length, valid });
         }
         return out;

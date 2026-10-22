@@ -643,13 +643,9 @@ PanelWindow {
             newQuery = prefix + "/" + chosen + " ";
             break;
         case "typePath":
-            if (WinSwitchQueryDsl.isGroup(chosen)) {
-                newQuery = prefix + chosen; // ready for ".sub", or to stand on its own
-            } else if (kind.verb === "/fv" && !kind.via) {
-                newQuery = prefix + chosen + ":";
-            } else {
-                newQuery = prefix + chosen + " ";
-            }
+            // /fv and /fts take a value next; the other verbs end at their keys
+            // (so a "," or "/dir" can follow)
+            newQuery = prefix + chosen + (kind.verb === "/fv" || kind.verb === "/fts" ? " " : "");
             break;
         case "sortDirection":
             newQuery = prefix + chosen + " ";
