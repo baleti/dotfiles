@@ -17,6 +17,8 @@ view settings behave identically. Everything that is not an option is the query,
 Exit status: 0 results, 1 none (like grep), 2 the server could not be reached or refused the query.
 """
 import argparse, json, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+sys.path.insert(0, os.path.expanduser("~/.config/dsl"))
+import dsl  # shared DSL primitives (~/.config/dsl/dsl.py)
 
 PAGE = 1000
 SYNTAX = """QUERY LANGUAGE (identical to the mod+1 picker)
@@ -75,28 +77,20 @@ def tokenize(q):
     return out
 
 def resolve_sort_fields(seg):
-    """A /s key -> server keys: the exact name (or alias) alone, else EVERY field whose name contains it, in
-    alphabetical order of the names (/s/pa = /s/pages,path). [] when it names nothing."""
+    """A /s key -> server keys: the exact name (or alias dm/date) alone, else EVERY field whose name contains it,
+    alphabetically (/s/pa = /s/pages,path) - the shared rule (~/.config/dsl/dsl.py). [] when it names nothing."""
     seg = seg.lower()
-    if not seg:
-        return []
     if seg in ("dm", "date"):
         return ["date"]
-    for name, key in SORT_FIELDS:
-        if name == seg:
-            return [key]
-    return [key for name, key in sorted(SORT_FIELDS) if seg in name]
+    names = [n for n, _ in SORT_FIELDS]
+    return [dict(SORT_FIELDS)[n] for n in (dsl.resolve_sort_keys([seg], names) or []) if seg]
+
 
 def sort_direction(tok):
-    t = tok.lower()
-    if not t:
-        return None
-    asc, desc = t in "ascending", t in "descending"
-    if asc and not desc:
-        return False
-    if desc and not asc:
-        return True
-    return None
+    """A direction part -> descending? (True/False), None when it is neither word (shared: dsl.parse_direction)."""
+    d = dsl.parse_direction(tok)
+    return None if d is None else d == "desc"
+
 
 def parse_sort(q):
     """(query without /s, sort keys, descending?, explicit?). One token per

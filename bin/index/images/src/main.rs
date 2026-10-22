@@ -961,15 +961,13 @@ fn resolve_sort_fields(seg: &str) -> Vec<&'static str> {
     hits.into_iter().map(|f| f.1).collect()
 }
 
-/// Direction word: only taken when it matches exactly one of ascending / descending.
+/// Direction word (query-dsl.md): any non-empty prefix of ascending / descending -> Some(descending?).
 fn sort_direction(tok: &str) -> Option<bool> {
     let t = tok.to_lowercase();
-    if t.is_empty() { return None; }
-    match ("ascending".contains(t.as_str()), "descending".contains(t.as_str())) {
-        (true, false) => Some(false),
-        (false, true) => Some(true),
-        _ => None,
-    }
+    if t.is_empty() { None }
+    else if "ascending".starts_with(t.as_str()) { Some(false) }
+    else if "descending".starts_with(t.as_str()) { Some(true) }
+    else { None }
 }
 
 /// Splits `/s` and `/sort` commands out of the query. Returns the rest (what the server
@@ -3645,4 +3643,34 @@ fn fit_rect(cell: egui::Rect, tex: egui::Vec2) -> egui::Rect {
     if tex.x <= 0.0 || tex.y <= 0.0 { return cell; }
     let k = (cell.width() / tex.x).min(cell.height() / tex.y);
     egui::Rect::from_center_size(cell.center(), tex * k)
+}
+
+#[cfg(test)]
+mod dsl_conformance {
+    //! The shared DSL conformance vectors (~/.config/dsl/tests.json, query-dsl.md): the sort-key expansion of
+    //! `parse_sort` and the direction words must agree with every other implementation.
+    use super::*;
+
+    fn vectors() -> serde_json::Value {
+        let path = std::env::var("HOME").unwrap() + "/.config/dsl/tests.json";
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn sort_key_expansion() {
+        let t = vectors();
+        for c in t["impl"]["images-sort"]["cases"].as_array().unwrap() {
+            let want: Vec<&str> = c["expect"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+            assert_eq!(resolve_sort_fields(c["keys"].as_str().unwrap()), want, "keys {}", c["keys"]);
+        }
+    }
+
+    #[test]
+    fn direction_words() {
+        let t = vectors();
+        for c in t["direction"].as_array().unwrap() {
+            let got = sort_direction(c["word"].as_str().unwrap()).map(|d| if d { "desc" } else { "asc" });
+            assert_eq!(got, c["expect"].as_str(), "word {}", c["word"]);
+        }
+    }
 }

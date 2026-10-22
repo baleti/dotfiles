@@ -9,12 +9,23 @@ reimplemented in Rust for winswitch's `query.rs`, then ported by hand a
 second time into the shared `picker.rs` engine behind clipboard-picker
 and notification-picker, then a third time into JS for the quickshell
 launcher (`QueryDsl.qml`), then reused again (same `QueryDsl.qml` import,
-not a fourth port) for the RSS reader. Stays copy-pasted rather than a
-shared library on purpose - the implementations split across three
-languages and differ enough in what they're searching (ranked scrollback
-vs. an unranked couple-dozen windows) that a shared abstraction was judged
-not worth it - so this doc is what keeps the *semantics* consistent even
-though the code doesn't. This table is the complete inventory - if you
+not a fourth port) for the RSS reader. **Shared code (2026-10-22).** The grammar's pure primitives live once per
+language: `~/.config/quickshell/lib/dsl.js` (every QML consumer - launcher,
+rss-reader, claude-usage, winswitch, the clipboard family - imports it) and
+`~/.config/dsl/dsl.py` (claude-history, focus-picker, window-search, the
+`search` command). They hold key resolution (exact name wins, else substring,
+comma list, alphabetical sort-key expansion), the `/verb/keys[/dir]` splitter,
+direction words, quoted-term matching and the sort comparator. What stays per
+picker is what depends on its data: the type registry, row values, tokenizer
+quirks, completion presentation, and the images picker's Rust and the Android
+app's Kotlin ports (neither can import them). **Conformance suite:**
+`~/.config/dsl/tests.json` is run by every implementation that can load it
+(`~/.config/dsl/run-tests.sh`: Python, QML, and the images picker's `cargo
+test dsl_conformance`); when the grammar changes, change the vectors first and
+the failing implementations are the ones left to update. (It already caught
+one divergence: the images picker accepted `d` as no direction because both
+words contain a `d`; the rule is a *prefix* of ascending / descending.)
+This table is the complete inventory - if you
 add a new consumer, add its row here too.
 
 | Name | Keybind | File | Searches |

@@ -1,0 +1,27 @@
+import QtQuick
+import "../quickshell/lib/dsl.js" as Dsl
+
+// run: QML_XHR_ALLOW_FILE_READ=1 QT_FORCE_STDERR_LOGGING=1 QT_QPA_PLATFORM=offscreen qml6 test_qml.qml
+QtObject {
+    Component.onCompleted: {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", Qt.resolvedUrl("tests.json"), false);
+        xhr.send();
+        const T = JSON.parse(xhr.responseText);
+        let fails = 0;
+        const check = (name, got, want) => {
+            if (JSON.stringify(got) !== JSON.stringify(want)) { fails++; print("FAIL " + name + ": got " + JSON.stringify(got) + ", want " + JSON.stringify(want)); }
+        };
+        for (const c of T.resolve) check("resolve " + c.keys, Dsl.resolveNames(c.keys, c.names), c.expect);
+        for (const c of T.sortkeys) check("sortkeys " + c.keys, Dsl.resolveSortKeys(c.keys, c.names), c.expect);
+        for (const c of T.direction) check("direction " + c.word, Dsl.parseDirection(c.word), c.expect);
+        for (const c of T.splitcmd.cases) {
+            const g = Dsl.splitCmd(c.text, T.splitcmd.verbs, T.splitcmd.maxParts);
+            check("splitcmd " + c.text, g ? [g.verb, g.keys, g.dir, g.bad] : null, c.expect);
+        }
+        for (const c of T.substr) check("substr " + c.needle + "/" + c.hay, Dsl.substr(c.needle, c.hay, c.exact), c.expect);
+        for (const c of T.compare) check("compare " + c.a + "/" + c.b + "/" + c.dir, Math.sign(Dsl.compareFieldValues(c.a, c.b, c.dir)), c.sign);
+        print("qml dsl.js: " + (fails === 0 ? "ok" : fails + " failures"));
+        Qt.quit();
+    }
+}
