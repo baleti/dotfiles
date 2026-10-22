@@ -194,11 +194,10 @@ def tokenize(text):
 # instead of contributing nothing (reported 2026-09-02 for the sibling
 # QML/Rust implementations' free-text-fallback version of this same bug;
 # this tool's own failure mode was different but just as real). `!/fv/
-# ...` negates. The older `/fv field:word` (space, colon) spelling still
-# works too, unchanged - via is an additional spelling, not a replacement -
-# and an unresolvable field name in *either* spelling (`/fv/qqq foo`,
-# `/fv qqq:foo`, or either still being typed) degrades to a plain bare-word
-# search over the literal text instead of being dropped. The other
+# ...` negates. Keys are a comma list, fuzzy (exact name wins, else
+# substring); an unresolvable key list (`/fv/qqq foo`, or still being typed)
+# degrades to a plain bare-word search over the literal text instead of
+# being dropped. The colon form (`/fv field:word`) is gone. The other
 # shared-grammar verbs (/ft, /at, /rt, /s) are recognised but inert
 # here: fixed columns and no re-sort. Full text is `/fts word` (Recoll),
 # only live ones `/fts/live`, only past ones `/fts/archive`.
@@ -211,11 +210,10 @@ def tokenize(text):
 #   title    the AI-generated title
 #   time     the displayed relative age ("14d ago", "45m ago") - what's
 #            actually shown in the TIME column, not a raw timestamp
-#   body     the actual message content (title excluded - that's `title`);
-#            also spelled `fts`, matching alt-tab's `//claude.fts`
+#   body     the actual message content (title excluded - that's `title`)
 #
 # path/tmux/session/window/pane/time are short structured strings, not
-# prose - $path:conf is a plain case-insensitive substring test against the
+# prose - `//path conf` is a plain case-insensitive substring test against the
 # whole field, not tokenized/ranked. body is the conversation text, searched
 # through the Recoll index like /fts.
 FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "body"]
@@ -229,12 +227,12 @@ FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 # match just "/fv" (its optional trailing arg requires whitespace, not a
 # literal "/") and leave "/field word" to be re-scanned as its own,
 # unrelated tokens. See ~/.config/docs/query-dsl.md.
+_ARG = r'("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|fts|)(?:/|\s|$))\S+)'
 QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
-    r'/(?:filter-value|fv|)/([a-zA-Z]+)(?:\s+(\S+))?'
-    r'|/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
-    r'|/fts(?:/(live|archive))?(?=\s|$)(?:\s+("[^"]*"|(?!/)\S+))?'
-    r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
+    r'/(?:filter-value|fv|)/([a-zA-Z,-]+)(?:\s+' + _ARG + r')?'
+    r'|/fts(?:/([a-zA-Z,-]+))?(?=\s|$)(?:\s+' + _ARG + r')?'
+    r'|/(?:filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:/\S*)?'
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'
@@ -251,14 +249,31 @@ def fts_scope(q):
     return scopes.pop() if len(scopes) == 1 and scopes != {"all"} else "all"
 
 
-def resolve_fields(prefix):
-    """Every FIELD_NAMES entry containing prefix as a substring, in
+def resolve_fields(keys):
+    """query-dsl.md "Keys": a comma list; per key the FIELD_NAMES entry equal
+    to it wins alone, else every entry containing it; unioned, in
     FIELD_NAMES' own order (so highlight/display order stays predictable
     rather than depending on match position)."""
-    prefix = prefix.lower()
-    if prefix == "fts":  # same name as alt-tab's //claude.fts; stored as "body"
-        return ["body"]
-    return [f for f in FIELD_NAMES if prefix in f]
+    hit = set()
+    for key in keys.lower().split(","):
+        if not key:
+            continue
+        exact = [f for f in FIELD_NAMES if f == key]
+        hit.update(exact or [f for f in FIELD_NAMES if key in f])
+    return [f for f in FIELD_NAMES if f in hit]
+
+
+def fts_scope_of(keys):
+    """`/fts/<keys>` -> "live" / "archive" / "all": the keys fuzzy-resolve
+    against the scope names claude-live / claude-archive."""
+    if not keys:
+        return "all"
+    hit = set()
+    names = ["claude-live", "claude-archive"]
+    for key in keys.lower().split(","):
+        if key:
+            hit.update([n for n in names if n == key] or [n for n in names if key in n])
+    return {"claude-live": "live", "claude-archive": "archive"}[next(iter(hit))] if len(hit) == 1 else "all"
 
 
 def parse_query(query):
@@ -266,38 +281,29 @@ def parse_query(query):
     field_terms, neg_field_terms = [], []
     fts, neg_fts, fts_scopes = [], [], []
     for m in QUERY_ELEM_RE.finditer(query):
-        neg, via_field, via_word, fprefix, fterm, fts_scope, fts_arg, quoted, bare = (g or "" for g in m.groups())
+        neg, via_field, via_word, fts_keys, fts_arg, quoted, bare = (g or "" for g in m.groups())
         if m.group(0).lstrip("!").startswith("/fts"):
-            # `/fts[/live|/archive] [word]`: full text over the conversations. No scope = live AND archived.
-            fts_scopes.append(fts_scope or "all")
+            # `/fts[/keys] [word]`: full text over the conversations. No scope = live AND archived.
+            fts_scopes.append(fts_scope_of(fts_keys))
             if fts_arg:
                 (neg_fts if neg else fts).append(fts_arg.lower())
             continue
+        if m.group(0).lstrip("!")[:1] == "/" and not via_field:
+            continue  # /ft /at /rt /s: inert here (fixed columns, no re-sort)
         if via_field:
             fields = resolve_fields(via_field)
             if fields:
                 if via_word:
-                    (neg_field_terms if neg else field_terms).append((fields, via_word.lower()))
-                # else: via path alone, no value yet - no-op, deliberately
-                # not appended at all (see the comment above `FIELD_NAMES`
-                # for why an always-true term would be wrong specifically
-                # for the negated form).
+                    (neg_field_terms if neg else field_terms).append((fields, via_word.strip('"').lower()))
+                # else: keys alone, no value yet - no-op, deliberately
+                # not appended at all (an always-true term would be wrong
+                # specifically for the negated form).
                 continue
-            # unresolvable field name - fall through to plain bare-word
-            # handling on the whole "field word" text (both already
-            # consumed by this one regex match), same reasoning the colon
-            # form below uses for "field:term" - `tokenize()` splits it
-            # back into independent words either way.
+            # unresolvable keys - fall through to plain bare-word handling
+            # on the whole "keys word" text (both already consumed by this
+            # one regex match) - `tokenize()` splits it back into
+            # independent words either way.
             bare = f"{via_field} {via_word}" if via_word else via_field
-        elif fprefix:
-            fields = resolve_fields(fprefix)
-            if fields:
-                (neg_field_terms if neg else field_terms).append((fields, fterm.lower()))
-                continue
-            # unresolvable field name - fall through to plain bare-word
-            # handling on the whole "$prefix:term" text rather than
-            # dropping it, same reasoning as an unterminated quote
-            bare = f"{fprefix}:{fterm}"
         if bare:
             toks = tokenize(bare)
             for tok in toks:
@@ -1018,45 +1024,39 @@ def complete_query(query, snap):
     it runs, same as `execute(less {})` in fzf's own docs, so a real
     interactive picker works even though it's launched *from inside* the
     outer fzf; the client is what's running on that terminal, this server
-    thread isn't). Only ever steers towards the `/fv/field value` via
-    spelling (see query-dsl.md's "Via paths") regardless of which stage is
-    reached - that's the one this exists to make discoverable; the older
-    `/fv field:value` spelling still works when typed by hand, it just
-    isn't Tab-assisted."""
+    thread isn't). Stages (query-dsl.md "Autocompletion"): verb (`/` ->
+    fts, fts/claude-live, fts/claude-archive and every fv/field), key
+    (`/fv/<frag>` / `//<frag>`, after the last comma) and `/fts/<scope>`,
+    and the value after `/fv/keys `."""
     frag, prev, _ = _completion_context(query)
     none = {"query": query, "prefix": "", "suffix": "", "candidates": []}
 
     if frag.startswith("/"):
         rest = frag[1:]
         if "/" in rest:
-            # `/fv/via_frag` - completing the field name.
-            name, via_frag = rest.split("/", 1)
-            if name == "fts":   # /fts/<scope>
-                scopes = [x for x in ("live", "archive") if via_frag.lower() in x]
-                if scopes:
-                    return {"query": query, "prefix": query[: len(query) - len(via_frag)],
-                            "suffix": " ", "candidates": scopes}
+            name, keys = rest.split("/", 1)
+            if "/" in keys:
                 return none
-            if name in ("fv", "filter-value", "") and ":" not in via_frag:
-                candidates = [f for f in resolve_fields(via_frag) if f != "body"]  # full text is /fts
+            comma = keys.rfind(",")
+            key_frag = keys[comma + 1:]
+            prefix = query[: len(query) - len(key_frag)]
+            if name == "fts":   # /fts/<scope names>
+                scopes = [x for x in ("claude-live", "claude-archive") if key_frag.lower() in x]
+                if scopes:
+                    return {"query": query, "prefix": prefix, "suffix": " ", "candidates": scopes}
+                return none
+            if name in ("fv", "filter-value", ""):
+                # a complete name wins over its fuzzy siblings in the *typed* key, but for
+                # completion every name containing the fragment is offered
+                candidates = [f for f in FIELD_NAMES if f != "body" and key_frag.lower() in f]
                 if candidates:
-                    return {"query": query, "prefix": query[: len(query) - len(via_frag)],
-                            "suffix": " ", "candidates": candidates}
+                    return {"query": query, "prefix": prefix, "suffix": " ", "candidates": candidates}
             return none
         # `/frag` - completing the verb itself, crossed with every field
-        # it can scope to ("Verb-stage depth", query-dsl.md) so one Tab
-        # from bare "/" already reaches the full flat "/fv/field" list
-        # instead of needing a second Tab press to get past the bare verb
-        # first (reported 2026-09-13 against focus-picker and here alike -
-        # winswitch's verbStageUniverse() is the reference implementation).
-        # Only "fv" is crossed - it's the only verb that ever does
-        # anything here (see the module docstring), so unlike winswitch's
-        # multi-verb crossing this is one verb against its own field list;
-        # the bare "fv"/"filter-value"-with-no-field candidates this used
-        # to offer are gone since a field-less `/fv/` is a no-op anyway -
-        # every candidate here is immediately useful once accepted.
+        # it can scope to ("Verb-stage depth", query-dsl.md): one Tab from
+        # bare "/" already reaches the full flat "/fv/field" list.
         rest_lower = rest.lower()
-        candidates = [v for v in ("fts", "fts/live", "fts/archive") if rest_lower in v]
+        candidates = [v for v in ("fts", "fts/claude-live", "fts/claude-archive") if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
@@ -1064,19 +1064,16 @@ def complete_query(query, snap):
         return none
 
     if prev and prev.startswith("/"):
-        prest = prev[1:]
-        if "/" in prest:
-            pname, pfield = prest.split("/", 1)
-            if pname in ("fv", "filter-value") and pfield and ":" not in pfield:
-                fields = resolve_fields(pfield)
-                if fields and snap:
-                    live_map = get_live_sessions()
-                    targets = pane_targets() if in_tmux() else {}
-                    candidates = _value_candidates(fields, frag, snap, live_map, targets)
-                    if candidates:
-                        prefix = query[: len(query) - len(frag)] if frag else query
-                        return {"query": query, "prefix": prefix,
-                                "suffix": " ", "candidates": candidates}
+        parts = prev[1:].split("/")
+        if len(parts) == 2 and parts[0] in ("fv", "filter-value", "") and parts[1]:
+            fields = [f for f in resolve_fields(parts[1]) if f in FILTER_FIELDS]
+            if fields and snap:
+                live_map = get_live_sessions()
+                targets = pane_targets() if in_tmux() else {}
+                candidates = _value_candidates(fields, frag, snap, live_map, targets)
+                if candidates:
+                    prefix = query[: len(query) - len(frag)] if frag else query
+                    return {"query": query, "prefix": prefix, "suffix": " ", "candidates": candidates}
     return none
 
 
@@ -1905,7 +1902,7 @@ def drive():
         # FZF_LINES, so the preview never drops below half regardless of
         # match count, and grows past half on its own the fewer results
         # there are to list
-        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts/archive"*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
+        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts/"*arch*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
         'case "$FZF_QUERY" in *"/fts"*) ;; *) echo "change-header($hdr)+hide-preview"; exit;; esac; '
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
