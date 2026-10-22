@@ -318,7 +318,7 @@ QtObject {
             } else if (tv.verb === "ft" || tv.verb === "at" || tv.verb === "rt") {
                 if (keysTyped) columnOps.push({ verb: tv.verb, path: via });
             } else if (tv.verb === "s" && keysTyped) {
-                let direction = "ascending";
+                let direction = "descending";
                 if (tv.dir !== null) {
                     const d = root._sortDirection(tv.dir.toLowerCase());
                     if (d === null) continue; // bad direction: the whole /s is inert
