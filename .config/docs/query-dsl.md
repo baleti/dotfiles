@@ -142,9 +142,10 @@ commands stack instead of replacing**, in order: `/s/date-modified /s/size`
 the same date, by size; ties on every key fall back to path order. One
 direction applies to every key (the last one given). Timestamps and sizes
 are real numbers, so `ascending` is oldest/smallest first (no age-style
-inversion); with no `/s` the order is newest first. **Clicking a column
-header edits the query**: it replaces any `/s` with `/s <column>` (a second
-click on the same column appends `desc`), so the box always shows what the
+inversion); the default direction is descending (newest/largest first), as is
+the order with no `/s`. **Clicking a column
+header edits the query**: it replaces any `/s` with `/s/<column>` (a second
+click on the same column appends `/asc`, a third goes back), so the box always shows what the
 list is sorted by and the arrow follows the first key. Photo (`//clip`,
 `//face`) results keep their score order. Sorting is done server-side
 (`filesearch.NameTable.query`, `sort=date,size`).
@@ -244,8 +245,8 @@ guessing: part 1 the verb, part 2 the **keys**, part 3 (only `/sort`) the
 | `/fv/title rvt` or `//title rvt` | rows whose `title` contains `rvt` |
 | `//p rvt` | rows where `pid` OR `path` (any key containing `p`) contains `rvt` |
 | `//title,path rvt` | rows where `title` OR `path` contains `rvt` |
-| `/s/title` | sort by `title`, ascending |
-| `/s/title,status/desc` | sort by `title`, ties by `status`, descending |
+| `/s/title` | sort by `title`, **descending** (the default direction) |
+| `/s/title,status/asc` | sort by `title`, ties by `status`, ascending |
 | `/ft/tmux`, `/at/claude-title`, `/rt/pid` | column verbs, same key list |
 | `/fts/claude-live word` | an app verb (e.g. winswitch's full text) with its own key list |
 
@@ -554,7 +555,8 @@ Reorder the survivors; never filter or hide.
   prefix of `ascending` / `descending`: `a`, `de`, ...). It is taken by
   **position**, so it can never be confused with a key or a following word:
   `/s/title,status/desc blender` sorts and then filters on `blender`. No `/dir`
-  means ascending. One direction applies to every key in the chain - there is
+  means **descending** (2026-10-22; was ascending): biggest / newest / last first,
+  and `/asc` asks for the other way. One direction applies to every key in the chain - there is
   no per-key direction; to run one key the other way, give it its own second
   `/s` and rely on the last-wins replacement. Only the **last** `/s` in a
   query takes effect (replace, not stack) - except in the images picker,

@@ -1059,7 +1059,7 @@ Rectangle {
     function toggleSort(col) {
         root.sort = (root.sort && root.sort.col === col)
             ? { col: col, asc: !root.sort.asc }
-            : { col: col, asc: true };
+            : { col: col, asc: false };   // descending first, like the typed /s default
     }
     // The typed `/s/key1,key2/dir` (when it resolves to one type per key) overrides the
     // header-click sort; its keys mark their column headers: the first with the arrow,

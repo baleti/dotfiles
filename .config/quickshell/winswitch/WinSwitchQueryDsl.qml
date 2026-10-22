@@ -396,7 +396,7 @@ QtObject {
             } else if (verb === "/s") {
                 if (tv.dir !== null && root.parseDirection(tv.dir) === null) continue;
                 const keys = via.split(",").filter(x => x.length > 0);
-                const dir = tv.dir ? root.parseDirection(tv.dir) : "asc";
+                const dir = tv.dir ? root.parseDirection(tv.dir) : "desc";
                 // raw keys kept even when they name no window type: the conversations table
                 // (/fts view) sorts by its own types (WinSwitch.qml tableView)
                 if (keys.length > 0) R.sortRaw = { keys, dir };

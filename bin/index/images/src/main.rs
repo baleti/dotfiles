@@ -1010,7 +1010,7 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
             }
         }
     }
-    let desc_v = if keys.is_empty() { true } else { desc.unwrap_or(false) };
+    let desc_v = desc.unwrap_or(true);   // descending is the default direction; /asc asks for the other way
     if keys.is_empty() { keys.push("date".into()); }
     (rest.join(" "), SortSpec { keys, desc: desc_v, explicit })
 }
@@ -1930,11 +1930,12 @@ impl App {
     /// the same primary column flips the direction, another column sorts ascending.
     fn set_sort(&mut self, key: &str) {
         let (rest, cur) = parse_sort(&self.query);
-        let desc = cur.explicit && cur.keys.first().map(String::as_str) == Some(key) && !cur.desc;
+        // descending is the default direction: a click on the primary column flips it to /asc and back
+        let desc = !(cur.explicit && cur.keys.first().map(String::as_str) == Some(key) && cur.desc);
         let field = SORT_FIELDS.iter().find(|f| f.1 == key).map(|f| f.0).unwrap_or(key);
         let mut q = rest;
         if !q.is_empty() { q.push(' '); }
-        q.push_str(&format!("/s/{field}{}", if desc { "/desc" } else { "" }));
+        q.push_str(&format!("/s/{field}{}", if desc { "" } else { "/asc" }));
         self.query = q;
         self.send_query();
         self.save_sort();
