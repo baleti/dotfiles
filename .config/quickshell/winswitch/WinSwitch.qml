@@ -153,14 +153,18 @@ PanelWindow {
     // `claude-history --sessions`. Enter on a live row focuses its window, on an
     // archived one resumes it in a new tmux session in an alacritty window.
     readonly property var ftsSpec: root.parsedQuery.fts
-    readonly property bool tableMode: !!root.ftsSpec && (root.ftsSpec.scope === "archive"
-        || (root.ftsSpec.scope === "all" && root.ftsSpec.terms.length > 0))
+    // The table shows every scope but live-only (which filters the window grid): archived conversations
+    // and/or tmux scrollback hits, plus the live conversations when that scope is in.
+    readonly property bool tableMode: !!root.ftsSpec && !root.ftsSpec.liveOnly
+        && ((root.ftsSpec.scopes.archive && !root.ftsSpec.scopes.live && !root.ftsSpec.scopes.tmux)   // archive-only lists without a term
+            || root.ftsSpec.terms.length > 0)
     readonly property string tableQuery: !root.tableMode ? "" : root.ftsSpec.terms
         .concat(root.ftsSpec.negTerms.map(t => "!" + t))
         .map(t => /\s/.test(t.replace(/^!/, "")) ? t.replace(/^(!?)(.*)$/, '$1"$2"') : t).join(" ")
-    readonly property string tableScope: root.tableMode ? (root.ftsSpec.scope === "archive" ? "archive" : "all") : ""
+    readonly property string tableScope: !root.tableMode ? "" : ["live", "archive", "tmux"].filter(k => root.ftsSpec.scopes[k]).join(",")
+    readonly property bool tableArchiveOnly: root.tableScope === "archive"
     property var tableRows: []
-    readonly property int tableStatusW: root.tableScope === "archive" ? 0 : 52   // no status column in the archive-only view
+    readonly property int tableStatusW: root.tableArchiveOnly ? 0 : 52   // no status column in the archive-only view
     // live rows carry the window that shows them (matched by claude session id)
     readonly property var tableBase: root.tableRows.map(r => {
         if (!r.live) return r;
@@ -168,7 +172,8 @@ PanelWindow {
         return Object.assign({}, r, { winIndex: w ? w.index : -1 });
     })
     // The table's own types (what //keys and /s/keys resolve against in this view)
-    readonly property var tableTypeNames: ["status", "account", "title", "msgs", "tokens", "age", "path"]
+    readonly property var tableTypeNames: ["status", "account", "title", "msgs", "tokens", "age", "path",
+                                           "tmux-session", "tmux-window", "tmux-title"]
     function _tableValue(r, name) {
         switch (name) {
         case "status": return root._statusLabel(r);
@@ -178,6 +183,10 @@ PanelWindow {
         case "tokens": return r.tokens ? String(r.tokens) : "";
         case "age": return root._ago(r.mtime);
         case "path": return r.cwd || "";
+        // tmux scrollback rows only
+        case "tmux-session": return r.session_name || "";
+        case "tmux-window": return r.window_name || "";
+        case "tmux-title": return r.kind === "tmux" ? (r.title || "") : "";
         }
         return "";
     }
@@ -248,6 +257,11 @@ PanelWindow {
             return;
         }
         WinSwitchQueryHistory.record(root.queryText);
+        if (row.kind === "tmux") {      // a scrollback hit: go to that tmux pane (focus the terminal showing it)
+            resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--focus-tmux", row.pane_id]);
+            WinSwitchState.close("focus");
+            return;
+        }
         resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--resume-window", row.session_id]);
         WinSwitchState.close("resume");
     }
@@ -262,11 +276,12 @@ PanelWindow {
     Process { id: resumeProc }
     // status column of the conversations table, same words/colours as the usage panel
     function _statusLabel(r) {
+        if (r.kind === "tmux") return qsTr("tmux");
         if (!r.live) return qsTr("archive");
         return ({ busy: qsTr("busy"), waiting: qsTr("wait"), idle: qsTr("idle"), frozen: qsTr("frozen"), stopped: qsTr("stopped") })[r.status] || r.status || "?";
     }
     function _statusColor(r) {
-        if (!r.live) return Theme.textDim;
+        if (!r.live || r.kind === "tmux") return Theme.textDim;
         return ({ busy: Theme.red, waiting: Theme.orange, idle: Theme.muted, frozen: Theme.cyan, stopped: Theme.textDim })[r.status] || Theme.textDim;
     }
     // the bare account number: claude -> 1, claude6 -> 6 (as in the usage panel)
@@ -1247,10 +1262,10 @@ PanelWindow {
                         height: root.resumeRowH
                         spacing: 8
                         Repeater {
-                            model: root.tableScope === "archive" ? [["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]] : [["status", 52], ["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]]
+                            model: root.tableArchiveOnly ? [["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]] : [["status", 52], ["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]]
                             Text {
                                 required property var modelData
-                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - root.tableStatusW - 32 - 56 - 48 - 64 - 220 - 8 * (root.tableScope === "archive" ? 6 : 7)) : modelData[1]
+                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - root.tableStatusW - 32 - 56 - 48 - 64 - 220 - 8 * (root.tableArchiveOnly ? 6 : 7)) : modelData[1]
                                 text: modelData[0]
                                 color: Theme.muted
                                 font.family: Theme.fontFamily
@@ -1277,11 +1292,11 @@ PanelWindow {
                             Row {
                                 anchors.fill: parent
                                 spacing: 8
-                                Text { width: 52; visible: root.tableScope !== "archive"; text: root._statusLabel(resumeRow.modelData); color: root._statusColor(resumeRow.modelData)
+                                Text { width: 52; visible: !root.tableArchiveOnly; text: root._statusLabel(resumeRow.modelData); color: root._statusColor(resumeRow.modelData)
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 32; text: root._acctNo(resumeRow.modelData.account); color: Theme.muted; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
-                                Text { width: Math.max(100, gridScroll.width - root.tableStatusW - 32 - 56 - 48 - 64 - 220 - 8 * (root.tableScope === "archive" ? 6 : 7)); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
+                                Text { width: Math.max(100, gridScroll.width - root.tableStatusW - 32 - 56 - 48 - 64 - 220 - 8 * (root.tableArchiveOnly ? 6 : 7)); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 2; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 48; text: String(resumeRow.modelData.msgs); color: Theme.muted; horizontalAlignment: Text.AlignRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }

@@ -370,7 +370,7 @@ SORT_KEYS = {
 #   /s  /sort          order the (MRU) list by a type [+ direction]
 # The base AGE/SESSION/NAME/TITLE columns are always shown; only the
 # tracked group columns (COLUMN_GROUPS) are toggled by /at//rt//ft.
-VERB_SHORTS = ["fv", "ft", "at", "rt", "s"]
+VERB_SHORTS = ["fv", "ft", "at", "rt", "s", "fts"]
 VERB_FORMS = VERB_SHORTS + ["filter-value", "filter-type", "add-type", "remove-type", "sort"]
 FV_FORMS = {"fv", "filter-value"}
 FT_FORMS = {"ft", "filter-type"}
@@ -493,7 +493,7 @@ def parse_direction(tok):
 
 
 _SHORT = {"fv": "fv", "filter-value": "fv", "ft": "ft", "filter-type": "ft", "at": "at", "add-type": "at",
-          "rt": "rt", "remove-type": "rt", "s": "s", "sort": "s"}
+          "rt": "rt", "remove-type": "rt", "s": "s", "sort": "s", "fts": "fts"}
 
 
 def split_cmd(text):
@@ -508,6 +508,27 @@ def split_cmd(text):
         return None
     return (verb, parts[1] if len(parts) >= 2 else None, parts[2] if len(parts) == 3 else None,
             len(parts) > (3 if verb == "s" else 2))
+
+
+FTS_SCOPES = ["tmux"]    # this picker lists tmux panes: the only /fts scope that applies is tmux scrollback
+
+
+def fts_panes(word):
+    """Pane ids ('%12') whose scrollback (the Recoll index claude-fts-index keeps) contains `word`."""
+    import base64
+    conf = os.path.expanduser("~/.cache/indexes/tmux/recoll")
+    terms = word if any(c.isspace() or c in '"-' for c in word) else word + "*"
+    r = subprocess.run(["recollq", "-c", conf, "-n", "0-5000", "-F", "url", "--", terms], capture_output=True, text=True)
+    out = set()
+    for line in r.stdout.splitlines():
+        try:
+            url = base64.b64decode(line.strip()).decode("utf-8", "replace")
+        except ValueError:
+            continue
+        base = os.path.basename(url)
+        if base.startswith("p") and base.endswith(".txt"):
+            out.add("%" + base[1:-4])
+    return out
 
 
 def _apply_col(verb, keys, active_cols, seen_cols):
@@ -530,7 +551,7 @@ def _apply_col(verb, keys, active_cols, seen_cols):
 
 
 def parse_query(query):
-    """-> (bare_terms, field_terms, active_cols, sort).
+    """-> (bare_terms, field_terms, active_cols, sort, fts) - fts: [(word, negated)] of `/fts[/tmux] word`.
 
     sort is ([SORT_KEYS names], "ascending"/"descending") or None (last /s
     wins). A bare word is an implicit /fv term. A "-led token is literal
@@ -541,6 +562,7 @@ def parse_query(query):
     bare_terms, field_terms, active_cols = [], [], []
     seen_cols = set()
     sort = None
+    fts = []
     i, n = 0, len(toks)
 
     while i < n:
@@ -551,6 +573,15 @@ def parse_query(query):
             cmd = split_cmd(text)
             if cmd is not None:
                 verb, keys, dirp, bad = cmd
+                if verb == "fts" and not bad:
+                    # full text over tmux scrollback (keyless = every scope, i.e. tmux here); /fts/<keys>:
+                    # keys that reach no tmux scope make it inert
+                    if i < n and not starts_cmd(toks[i][1], toks[i][2]):
+                        word, w_neg = toks[i][1], toks[i][0] in negs
+                        i += 1
+                        if not keys or not keys.replace(",", "") or resolve_keys(keys, FTS_SCOPES):
+                            fts.append((word, verb_neg or w_neg))
+                    continue
                 if keys is None or bad:
                     continue  # keyless / malformed: inert, takes no argument
                 typed = bool(keys.replace(",", ""))
@@ -584,7 +615,7 @@ def parse_query(query):
             continue
         # bare word or "-quoted literal
         bare_terms.append((_term(text), verb_neg))
-    return bare_terms, field_terms, active_cols, sort
+    return bare_terms, field_terms, active_cols, sort, fts
 
 
 def verb_stage_universe():
@@ -594,6 +625,7 @@ def verb_stage_universe():
     paths = {
         "fv": FILTER_FIELDS, "s": list(SORT_KEYS),
         "at": list(COLUMN_FLAT), "rt": list(COLUMN_FLAT), "ft": list(COLUMN_FLAT),
+        "fts": FTS_SCOPES,
     }
     out = list(VERB_SHORTS)
     for v in VERB_SHORTS:
@@ -629,13 +661,13 @@ def completion_stage(query):
     if verb is None:
         return "", "", []
     if len(parts) == 2:
-        names = {"fv": FILTER_FIELDS, "s": list(SORT_KEYS)}.get(verb, list(COLUMN_FLAT))
+        names = {"fv": FILTER_FIELDS, "s": list(SORT_KEYS), "fts": FTS_SCOPES}.get(verb, list(COLUMN_FLAT))
         comma = parts[1].rfind(",")
         frag = parts[1][comma + 1:]
         base = f"{prefix}/{parts[0]}/{parts[1][:comma + 1]}"
         cands = [nm for nm in names if frag.lower() in nm and nm != frag]
         # /fv takes a value next; the others end at their keys (a "," or "/dir" can follow)
-        return (base, " " if verb == "fv" else "", cands) if cands else ("", "", [])
+        return (base, " " if verb in ("fv", "fts") else "", cands) if cands else ("", "", [])
     if len(parts) == 3 and verb == "s":
         cands = [d for d, full in (("asc", "ascending"), ("desc", "descending")) if full.startswith(parts[2].lower()) and d != parts[2]]
         return (f"{prefix}/{parts[0]}/{parts[1]}/", " ", cands) if cands else ("", "", [])
@@ -685,7 +717,7 @@ def header_line(active_cols, sort=None):
 
 
 def header(query):
-    _, _, active_cols, sort = parse_query(query)
+    _, _, active_cols, sort, _ = parse_query(query)
     sys.stdout.write(header_line(active_cols, sort))
 
 
@@ -999,7 +1031,8 @@ def search(snapshot_path, query):
     directly, the header area just stayed permanently blank."""
     with open(snapshot_path) as f:
         panes = json.load(f)
-    bare_terms, field_terms, active_cols, sort = parse_query(query)
+    bare_terms, field_terms, active_cols, sort, fts = parse_query(query)
+    fts_hits = [(fts_panes(w), neg) for w, neg in fts]
 
     matched = []
     for p in panes:
@@ -1011,6 +1044,8 @@ def search(snapshot_path, query):
             continue
         if not all(any(_has(term, p[FIELD_KEY[f]].lower()) for f in fields) != neg
                    for fields, term, neg in field_terms):
+            continue
+        if not all((p["pane_id"] in hits) != neg for hits, neg in fts_hits):
             continue
         matched.append(p)
 
