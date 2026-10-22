@@ -2121,7 +2121,7 @@ impl App {
                         }
                         let thumb_path = self.hq_map.get(&h.remote).cloned().unwrap_or_else(|| h.thumb.clone());
                         match self.texture(ctx, &thumb_path) {
-                            Some(tex) => { egui::Image::new(&tex).fit_to_exact_size(img.size()).paint_at(ui, img); }
+                            Some(tex) => { egui::Image::new(&tex).paint_at(ui, fit_rect(img, tex.size_vec2())); }
                             None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
                         }
                         if selected {
@@ -3386,8 +3386,7 @@ impl eframe::App for App {
                             );
                             match self.texture(&ctx, &h.thumb) {
                                 Some(t) => {
-                                    egui::Image::new(&t).fit_to_exact_size(thumb_rect.size())
-                                        .paint_at(ui, thumb_rect);
+                                    egui::Image::new(&t).paint_at(ui, fit_rect(thumb_rect, t.size_vec2()));
                                 }
                                 None => {
                                     ui.painter().rect_filled(thumb_rect, 4.0, pal.border.gamma_multiply(0.5));
@@ -3596,4 +3595,11 @@ mod cols_tests {
             }
         }
     }
+}
+
+/// The largest rect with the image's own proportions that fits `cell`, centred in it.
+fn fit_rect(cell: egui::Rect, tex: egui::Vec2) -> egui::Rect {
+    if tex.x <= 0.0 || tex.y <= 0.0 { return cell; }
+    let k = (cell.width() / tex.x).min(cell.height() / tex.y);
+    egui::Rect::from_center_size(cell.center(), tex * k)
 }
