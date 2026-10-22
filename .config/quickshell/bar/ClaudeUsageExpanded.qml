@@ -335,21 +335,39 @@ Rectangle {
     // `/fts term` is rewritten to /fv/fts, so "fts" must resolve as a filter
     // path - but it is a verb, not a type: kept out of completion and /s.
     readonly property var _filterTypeNames: root.searchTypeNames.concat(["fts"])
-    // "/fts term" is full-text search of the Claude conversations (Recoll via
-    // `claude-history --fts`, the same engine as alt-tab's /fts.claude and
-    // the tmux picker): sugar for
-    // "/fv/fts term", rewritten before the shared parser sees it.
-    // "/fts.resume [term]" switches the panel to past (not running)
-    // conversations: archive rows from `claude-history --archive`, the
-    // columns that only make sense for a live session dropped, Enter/click
-    // resumes the conversation in a new terminal window.
-    readonly property var _resumeRe: /(^|\s)!?\/fts\.resume(?:\s+("[^"]*"|(?!\/)\S+))?/
-    readonly property var _resumeMatch: root._resumeRe.exec(root.searchText)
-    readonly property bool resumeMode: root._resumeMatch !== null
-    readonly property string resumeTerm: root._resumeMatch && root._resumeMatch[2] ? root._resumeMatch[2] : ""
+    // "/fts[/live|/archive] [term]": full-text search of the Claude conversations
+    // (Recoll via `claude-history`, the same engine as alt-tab and the tmux
+    // picker). Plain /fts covers running AND archived conversations, /fts/live
+    // only the running ones, /fts/archive only past ones. For the live rows it
+    // is sugar for "/fv/fts term", rewritten before the shared parser sees it.
+    // /fts/archive switches the panel to archive rows from
+    // `claude-history --sessions`, drops the columns that only make sense for a
+    // running session, and Enter/click resumes in a new terminal window.
+    // An archived row is also what plain /fts appends after the live matches.
+    readonly property var _ftsTokenRe: /(^|\s)(!?)\/fts(?:\/(live|archive))?(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
+    function _ftsTokens(text) {
+        const out = [];
+        root._ftsTokenRe.lastIndex = 0;
+        let m;
+        while ((m = root._ftsTokenRe.exec(text)) !== null)
+            out.push({ neg: m[2] === "!", scope: m[3] || "all", arg: m[4] ? m[4].replace(/"/g, "") : "" });
+        return out;
+    }
+    // null | "live" | "archive" | "all"
+    readonly property var ftsScope: {
+        const scopes = new Set(root._ftsTokens(root.searchText).map(t => t.scope));
+        if (scopes.size === 0) return null;
+        return (scopes.size === 1 && !scopes.has("all")) ? [...scopes][0] : "all";
+    }
+    readonly property bool archiveMode: root.ftsScope === "archive"
+    // the term the archive rows are fetched for ("" = newest, archive scope only)
+    readonly property string archiveTerm: {
+        const t = root._ftsTokens(root.searchText).find(x => !x.neg && x.arg);
+        return t ? t.arg : "";
+    }
     function _rewriteFts(text) {
-        return text.replace(/(^|\s)!?\/fts\.resume(?:\s+("[^"]*"|(?!\/)\S+))?/g, "$1")
-                   .replace(/(^|\s)(!?)\/fts(?=\s|$)/g, "$1$2/fv/fts");
+        return text.replace(root._ftsTokenRe, (all, lead, neg, scope, arg) =>
+            scope === "archive" ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
     }
     property var archiveRows: []
     // sid -> { title, cwd, msgs, tokens, mtime }, kept by claude-fts-index (what supplies the msgs column of live rows)
@@ -360,11 +378,15 @@ Rectangle {
         onFileChanged: reload()
         onLoaded: { try { root.convMeta = JSON.parse(text()); } catch (e) {} }
     }
-    onResumeTermChanged: root._archiveRefresh()
-    onResumeModeChanged: root._archiveRefresh()
+    onArchiveTermChanged: root._archiveRefresh()
+    onFtsScopeChanged: root._archiveRefresh()
     function _archiveRefresh() {
-        if (!root.resumeMode) { root.archiveRows = []; return; }
-        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--archive", root.resumeTerm];
+        // archive scope lists even without a term; plain /fts only appends archived hits of a real term
+        const want = root.ftsScope === "archive" || (root.ftsScope === "all" && root.archiveTerm !== "");
+        if (!want) { root.archiveRows = []; return; }
+        const q = root._ftsTokens(root.searchText).filter(t => t.arg)
+            .map(t => (t.neg ? "!" : "") + (/\s/.test(t.arg) ? '"' + t.arg + '"' : t.arg)).join(" ");
+        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--sessions", q, "--scope", "archive"];
         archiveProc.running = false;
         archiveProc.running = true;
     }
@@ -376,7 +398,7 @@ Rectangle {
                     root.archiveRows = JSON.parse(text).map(r => ({
                         account: r.account, title: r.title, cwd: r.cwd, session_id: r.session_id,
                         context_tokens: r.tokens, msgs: r.msgs, updated_at_ms: (r.mtime || 0) * 1000,
-                        status: "", pid: 0
+                        status: "", pid: 0, archived: true, score: r.score
                     }));
                 } catch (e) {
                     root.archiveRows = [];
@@ -428,8 +450,8 @@ Rectangle {
     // Match preview (only while /fts is in the query): excerpts of the
     // highlighted row's conversation around the searched words.
     function _snipTerms() {
-        if (root.resumeMode)
-            return root.resumeTerm ? [root.resumeTerm.replace(/"/g, "")] : [];
+        if (root.archiveMode)
+            return root.archiveTerm ? [root.archiveTerm] : [];
         return root._ftsTerms();
     }
     readonly property bool ftsActive: root._snipTerms().length > 0
@@ -512,6 +534,8 @@ Rectangle {
         if (fields.length === 0)
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
+            if (f === "fts" && row.archived)
+                return true; // already a hit: claude-history only returned matching archived rows
             if (f === "fts") {
                 // BM25 hit set from claude-history, not QueryDsl.substr.
                 const hits = root.ftsHits[String(term.value).toLowerCase()];
@@ -540,13 +564,14 @@ Rectangle {
     // it's from -- what the one flat table is built from now, replacing
     // the old per-account Repeater-of-Repeaters shape.
     readonly property var allProcs: {
-        if (root.resumeMode)
+        if (root.archiveMode)
             return root.archiveRows;
         const out = [];
         for (const a of ClaudeUsageSvc.accounts)
             for (const row of (ClaudeUsageSvc.sessions[a.account] || []))
                 out.push(Object.assign({ account: a.account, msgs: (root.convMeta[row.session_id] || {}).msgs }, row));
-        return out;
+        // plain /fts: archived hits follow the live ones
+        return root.ftsScope === "all" ? out.concat(root.archiveRows) : out;
     }
     readonly property var searchFilteredProcs: {
         root.searchParsed; // dependency
@@ -589,11 +614,11 @@ Rectangle {
                 }
                 return 0;
             });
-        } else if (root.resumeMode && !root.sort) {
+        } else if (root.archiveMode && !root.sort) {
             arr = base.slice(); // archive rows arrive best match (or newest) first
         } else if (root._ftsTerms().length > 0 && !root.sort) {
             // /fts active and nothing explicitly sorted: best BM25 match first
-            const score = r => root._ftsTerms().reduce((acc, t) =>
+            const score = r => r.archived ? (r.score || 0) : root._ftsTerms().reduce((acc, t) =>
                 acc + ((root.ftsHits[t] || {})[r.session_id] || 0), 0);
             arr = base.slice().sort((a, b) => score(b) - score(a));
         } else if (root.sort) {
@@ -688,7 +713,7 @@ Rectangle {
             const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (tok === "/fts" || tok === "/fts.resume" || QueryDsl.canonVerb({ q: false, v: tok })) {
+                if (/^\/fts(\/(live|archive))?$/.test(tok) || QueryDsl.canonVerb({ q: false, v: tok })) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
@@ -728,7 +753,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts.resume"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/live", "fts/archive"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -739,13 +764,15 @@ Rectangle {
     // A deep candidate lands the via form ("/fv/tokens "), matching this
     // panel's own steering everywhere else in _acCandidates.
     function _verbStageItem(prefix, v) {
+        if (v.startsWith("fts"))
+            return { text: prefix + "/" + v + " ", label: "/" + v, alias: "",
+                     desc: v === "fts" ? "full text of the running and archived Claude conversations"
+                         : v === "fts/live" ? "full text, running conversations only"
+                         : "full text, past conversations only; Enter resumes one in a new window" };
         const slash = v.indexOf("/");
         if (slash < 0) {
             return { text: prefix + "/" + v + " ", label: "/" + v,
-                     alias: v.startsWith("fts") ? "" : QueryDsl.verbInfo["/" + v].long,
-                     desc: v === "fts" ? root.searchTypeDescs["fts"]
-                         : v === "fts.resume" ? "search past conversations and resume one in a new window"
-                         : QueryDsl.verbInfo["/" + v].desc };
+                     alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
         }
         const verb = v.slice(0, slash), name = v.slice(slash + 1);
         return { text: `${prefix}/${verb}/${name} `, label: "/" + v,
@@ -794,7 +821,14 @@ Rectangle {
             root.acVerbMulti = false; root.acArgMulti = false;
         }
 
-        const vm = t.match(/(?:^|\s|!)(\/[a-z.-]*)$/);
+        const fm = t.match(/(?:^|\s|!)\/fts\/([a-z]*)$/);
+        if (fm) {
+            const head = t.slice(0, t.length - fm[1].length);
+            return [["live", "running conversations only"], ["archive", "past conversations only; Enter resumes one in a new window"]]
+                .filter(x => x[0].indexOf(fm[1]) >= 0)
+                .map(x => ({ text: head + x[0] + " ", label: "/fts/" + x[0], alias: "", desc: x[1] }));
+        }
+        const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
             const prefix = t.slice(0, t.length - vm[1].length);
@@ -1397,7 +1431,7 @@ Rectangle {
     property string _pendingAddress: ""
 
     function focusHyprWindow(row) {
-        if (root.resumeMode) {
+        if (row.archived) {
             root.resumeRow(row);
             return;
         }
@@ -1975,7 +2009,7 @@ Rectangle {
                         // AND-narrows instead of accepting (query-dsl.md) -
                         // see AppLauncher.qml's identical handler for the
                         // full rationale.
-                        const vm = searchInput.text.match(/(?:^|\s|!)(\/[a-z.-]*)$/);
+                        const vm = searchInput.text.match(/(?:^|\s|!)(\/[a-z-]*)$/);
                         if (vm || root.acVerbMulti) {
                             if (!root.acVerbMulti) {
                                 root.acVerbMulti = true;
@@ -2221,8 +2255,8 @@ Rectangle {
 
                 Item { Layout.preferredWidth: root.colAcctW }
                 Item { Layout.preferredWidth: root.handleW }
-                Item { visible: !root.resumeMode; Layout.preferredWidth: root.colStatusW }
-                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colStatusW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colTitleW }
                 Item { Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colMsgsW }
@@ -2238,7 +2272,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     horizontalAlignment: Text.AlignHCenter
                     Layout.preferredWidth: root.colTmuxGroupW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     Rectangle {
                         anchors.left: parent.left
                         anchors.right: parent.right
@@ -2247,11 +2281,11 @@ Rectangle {
                         color: Theme.border
                     }
                 }
-                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
-                Item { visible: !root.resumeMode; Layout.preferredWidth: root.colHyprWorkspaceW }
-                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
-                Item { visible: !root.resumeMode; Layout.preferredWidth: root.colPidW }
-                Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colHyprWorkspaceW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colPidW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colPathW }
                 Item { Layout.fillWidth: true }
             }
@@ -2291,7 +2325,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colStatusW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2300,7 +2334,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     Layout.fillHeight: true
                     targetWidth: root.colStatusW
                     onWidthChangeRequested: w => root.colStatusW = w
@@ -2397,7 +2431,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxSessionW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2413,7 +2447,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxSessionW
                     onWidthChangeRequested: w => root.colTmuxSessionW = w
@@ -2426,7 +2460,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxWindowW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2442,7 +2476,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxWindowW
                     onWidthChangeRequested: w => root.colTmuxWindowW = w
@@ -2454,7 +2488,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxPaneW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2463,7 +2497,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxPaneW
                     onWidthChangeRequested: w => root.colTmuxPaneW = w
@@ -2475,7 +2509,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colHyprWorkspaceW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2491,7 +2525,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     Layout.fillHeight: true
                     targetWidth: root.colHyprWorkspaceW
                     onWidthChangeRequested: w => root.colHyprWorkspaceW = w
@@ -2502,7 +2536,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colPidW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2511,7 +2545,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.resumeMode
+                    visible: !root.archiveMode
                     Layout.fillHeight: true
                     targetWidth: root.colPidW
                     onWidthChangeRequested: w => root.colPidW = w
@@ -2692,9 +2726,9 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colStatusW
-                            visible: !root.resumeMode
+                            visible: !root.archiveMode
                         }
-                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.title || "--"
                             color: Theme.text
@@ -2736,27 +2770,27 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxSessionW
-                            visible: !root.resumeMode
+                            visible: !root.archiveMode
                         }
-                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_window || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxWindowW
-                            visible: !root.resumeMode
+                            visible: !root.archiveMode
                         }
-                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_pane || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxPaneW
-                            visible: !root.resumeMode
+                            visible: !root.archiveMode
                         }
-                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                         // hyprland cell: which real window is showing this
                         // session, if any (see root.startThumbCapture's own
                         // comment for why it's address-keyed rather than
@@ -2770,7 +2804,7 @@ Rectangle {
                         Item {
                             id: hyprCell
                             Layout.preferredWidth: root.colHyprWorkspaceW
-                            visible: !root.resumeMode
+                            visible: !root.archiveMode
                             Layout.fillHeight: true
 
                             Text {
@@ -2788,16 +2822,16 @@ Rectangle {
                                 font.pixelSize: Theme.fontSize - 3
                             }
                         }
-                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: String(modelData.pid)
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colPidW
-                            visible: !root.resumeMode
+                            visible: !root.archiveMode
                         }
-                        Item { visible: !root.resumeMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.shortCwd(modelData.cwd)
                             color: Theme.muted

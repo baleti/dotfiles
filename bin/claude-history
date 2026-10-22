@@ -3,10 +3,12 @@
 to the conversation full-text index.
 
 Default view: the running sessions in the ctrl+alt+c usage panel's columns
-(Enter jumps to the pane). `/fts word` searches the running ones' text;
-`/fts.resume [word]` lists past conversations (Enter resumes one in a new tmux
-window under its own account). Full text is the Recoll index kept by
-claude-fts-index (see fts_search); `--fts`, `--archive`, `--snippets` and
+(Enter jumps to the pane). `/fts word` searches the text of live AND archived
+conversations together (live rows keep their columns, archived ones leave the
+live-only cells blank; Enter resumes an archived one in a new tmux window under
+its own account); `/fts/live` and `/fts/archive` restrict it to one side
+(`/fts/archive` also switches to the shorter past-session columns). Full text is the Recoll index kept by
+claude-fts-index (see fts_search); `--fts`, `--sessions`, `--snippets` and
 `--resume-window` are the entry points alt-tab and the usage panel call.
 
 Same query language idea as this dotfiles repo's tmux
@@ -199,7 +201,7 @@ def tokenize(text):
 # search over the literal text instead of being dropped. The other
 # shared-grammar verbs (/ft, /at, /rt, /s) are recognised but inert
 # here: fixed columns and no re-sort. Full text is `/fts word` (Recoll),
-# past conversations `/fts.resume`.
+# only live ones `/fts/live`, only past ones `/fts/archive`.
 #
 #   path     session's working directory
 #   tmux     session:window.pane, if currently live and reachable here
@@ -231,15 +233,22 @@ QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
     r'/(?:filter-value|fv|)/([a-zA-Z]+)(?:\s+(\S+))?'
     r'|/(?:filter-value|fv)\s+([a-zA-Z]+):(\S+)'
-    r'|/fts\.resume(?:\s+("[^"]*"|\S+))?'
-    r'|/fts(?:\s+("[^"]*"|\S+))?'
+    r'|/fts(?:/(live|archive))?(?=\s|$)(?:\s+("[^"]*"|(?!/)\S+))?'
     r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:\s+\S+)?'
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'
 )
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts resume")
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts fts_scopes")
+
+
+def fts_scope(q):
+    """None (no /fts), "live", "archive", or "all" (plain /fts, or both spelled out)."""
+    scopes = set(q.fts_scopes)
+    if not scopes:
+        return None
+    return scopes.pop() if len(scopes) == 1 and scopes != {"all"} else "all"
 
 
 def resolve_fields(prefix):
@@ -255,14 +264,14 @@ def resolve_fields(prefix):
 def parse_query(query):
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     field_terms, neg_field_terms = [], []
-    fts, neg_fts, resume = [], [], []
+    fts, neg_fts, fts_scopes = [], [], []
     for m in QUERY_ELEM_RE.finditer(query):
-        neg, via_field, via_word, fprefix, fterm, resume_arg, fts_arg, quoted, bare = (g or "" for g in m.groups())
-        if m.group(0).lstrip("!").startswith("/fts.resume"):  # past conversations view, optional search term
-            resume.append(resume_arg.strip('"').lower())
-            continue
-        if fts_arg:  # `/fts words` - full text over the conversations (Recoll)
-            (neg_fts if neg else fts).append(fts_arg.lower())
+        neg, via_field, via_word, fprefix, fterm, fts_scope, fts_arg, quoted, bare = (g or "" for g in m.groups())
+        if m.group(0).lstrip("!").startswith("/fts"):
+            # `/fts[/live|/archive] [word]`: full text over the conversations. No scope = live AND archived.
+            fts_scopes.append(fts_scope or "all")
+            if fts_arg:
+                (neg_fts if neg else fts).append(fts_arg.lower())
             continue
         if via_field:
             fields = resolve_fields(via_field)
@@ -297,7 +306,7 @@ def parse_query(query):
                 soft.append(bare.lower())
         elif quoted.strip():
             (neg_phrases if neg else phrases).append(quoted.strip().lower())
-    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts, resume)
+    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts, fts_scopes)
 
 
 def phrase_hint(raw):
@@ -819,7 +828,7 @@ def session_filter_text(sid, s, live_map, targets):
 
 # Columns shared with the ctrl+alt+c usage panel (one layout for both):
 #   live view    ACCT STATUS TITLE MSGS TKNS AGE SESS WIN PANE WKS PID PATH
-#   /fts.resume  ACCT TITLE MSGS TKNS AGE PATH   (what only a running session has is dropped)
+#   /fts/archive ACCT TITLE MSGS TKNS AGE PATH   (what only a running session has is dropped)
 STATUS_LABELS = {"busy": "busy", "waiting": "wait", "idle": "idle"}
 W_ACCT, W_STATUS, W_TITLE, W_TKNS, W_MSGS, W_AGE, W_TMUX, W_WKS, W_PID = 4, 6, 38, 5, 5, 8, 4, 4, 7
 
@@ -881,10 +890,10 @@ def _row_text(r):
 
 def _fmt_live(r):
     return "  ".join([
-        f'{_acct_no(r["account"]):<{W_ACCT}}', f'{STATUS_LABELS.get(r["status"], r["status"]):<{W_STATUS}}',
+        f'{_acct_no(r["account"]):<{W_ACCT}}', f'{STATUS_LABELS.get(r.get("status", ""), r.get("status", "")):<{W_STATUS}}',
         f'{_clip(r["title"], W_TITLE):<{W_TITLE}}', f'{r["msgs"]!s:>{W_MSGS}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
-        f'{_age(r["mtime"]):>{W_AGE}}', f'{r["sess"]:<{W_TMUX}}', f'{r["win"]:<{W_TMUX}}',
-        f'{r["pane"]:<{W_TMUX}}', f'{r["wks"]:<{W_WKS}}', f'{r["pid"]!s:<{W_PID}}', shorten(r["cwd"])])
+        f'{_age(r["mtime"]):>{W_AGE}}', f'{r.get("sess", ""):<{W_TMUX}}', f'{r.get("win", ""):<{W_TMUX}}',
+        f'{r.get("pane", ""):<{W_TMUX}}', f'{r.get("wks", ""):<{W_WKS}}', f'{r.get("pid", "")!s:<{W_PID}}', shorten(r["cwd"])])
 
 
 def _fmt_archive(r):
@@ -902,12 +911,13 @@ HEADER_ARCHIVE = (f'{"ACCT":<{W_ACCT}}  {"TITLE":<{W_TITLE}}  {"MSGS":>{W_MSGS}}
 def search(snap, query):
     """The fzf result lines ("session_id<TAB>label") for `query`. Default
     view: the running sessions, in the usage panel's columns. `/fts word`
-    keeps those whose conversation contains the word (best match first);
-    `/fts.resume [word]` switches to past conversations (resumable).
-    Bare words, "phrases" and !neg are substring filters over the row's
-    own values. Called on every keystroke by the picker's socket server."""
+    searches the conversations' text, live AND archived (best match first);
+    `/fts/live word` only the running ones, `/fts/archive [word]` only past
+    ones (own, shorter columns). Bare words, "phrases" and !neg are substring
+    filters over the row's own values. Called on every keystroke by the
+    picker's socket server."""
     q = parse_query(query)
-    resume = bool(q.resume)
+    scope = fts_scope(q)
 
     words = list(q.terms)
     for x in q.soft:           # a punctuated word was split by parse_query; use it whole
@@ -920,23 +930,26 @@ def search(snap, query):
     neg_body_terms = [t for f, t in q.neg_field_terms if f == ["body"]]
     pos = list(q.fts) + body_terms
     neg = list(q.neg_fts) + neg_body_terms
+    ftsq = " ".join(pos + ["!" + n for n in neg])
 
-    if resume:
-        term = " ".join([t for t in q.resume if t] + pos)
-        base = archive_rows(" ".join([term] + ["!" + n for n in neg]) if term else "")
-        for r in base:
-            r["sid"] = r["session_id"]
-        fmt = _fmt_archive
-    else:
+    fmt = _fmt_live
+    base = []
+    if scope != "archive":
         base = live_rows()
-        fmt = _fmt_live
         if pos or neg:
-            hits = dict(fts_search(" ".join(pos + ["!" + n for n in neg]))) if pos else None
+            hits = dict(fts_search(ftsq)) if pos else None
             if hits is None:
                 excluded = {sid for sid, _ in fts_search(" ".join(neg))}
                 base = [r for r in base if r["sid"] not in excluded]
             else:
-                base = sorted((r for r in base if r["sid"] in hits), key=lambda r: -hits[r["sid"]])
+                base = [dict(r, score=hits[r["sid"]]) for r in base if r["sid"] in hits]
+    if scope == "archive" or (scope == "all" and (pos or neg)):
+        arch = session_rows(ftsq, "archive")
+        for r in arch:
+            r["sid"] = r["session_id"]
+        if scope == "archive":
+            fmt = _fmt_archive
+        base = sorted(base + arch, key=lambda r: -r.get("score", 0)) if scope == "all" else arch
 
     other = [(f, t) for f, t in q.field_terms if f != ["body"]]
     out = []
@@ -1018,6 +1031,12 @@ def complete_query(query, snap):
         if "/" in rest:
             # `/fv/via_frag` - completing the field name.
             name, via_frag = rest.split("/", 1)
+            if name == "fts":   # /fts/<scope>
+                scopes = [x for x in ("live", "archive") if via_frag.lower() in x]
+                if scopes:
+                    return {"query": query, "prefix": query[: len(query) - len(via_frag)],
+                            "suffix": " ", "candidates": scopes}
+                return none
             if name in ("fv", "filter-value", "") and ":" not in via_frag:
                 candidates = [f for f in resolve_fields(via_frag) if f != "body"]  # full text is /fts
                 if candidates:
@@ -1037,7 +1056,7 @@ def complete_query(query, snap):
         # to offer are gone since a field-less `/fv/` is a no-op anyway -
         # every candidate here is immediately useful once accepted.
         rest_lower = rest.lower()
-        candidates = [v for v in ("fts", "fts.resume") if rest_lower in v]
+        candidates = [v for v in ("fts", "fts/live", "fts/archive") if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
@@ -1886,7 +1905,7 @@ def drive():
         # FZF_LINES, so the preview never drops below half regardless of
         # match count, and grows past half on its own the fewer results
         # there are to list
-        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts.resume"*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
+        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts/archive"*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
         'case "$FZF_QUERY" in *"/fts"*) ;; *) echo "change-header($hdr)+hide-preview"; exit;; esac; '
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
@@ -2001,7 +2020,7 @@ def fts_terms(text):
 def fts_search(text):
     """[(session_id, relevance %)] best first, from the Recoll index of Claude
     conversations (~/.cache/indexes/claude, kept by claude-fts-index). The one
-    full-text engine behind alt-tab's /fts.claude, the usage panel's /fts and
+    full-text engine behind alt-tab's and the usage panel's /fts and
     this tool's own --fts."""
     terms = fts_terms(text)
     if not terms.strip():
@@ -2049,21 +2068,23 @@ def fts_snippets(sid, text, limit=6, ctx=90):
     return out
 
 
-def archive_rows(text, limit=300):
-    """Past (not currently running) conversations for the resume views, from
-    the indexer's meta.json: the ones matching `text` best first, or the
-    newest when `text` is empty. Live is decided here, at query time, from
-    the sessions registry - the index itself doesn't know."""
+def session_rows(text, scope="archive", limit=300):
+    """Conversations for the table views, from the indexer's meta.json: the
+    ones matching `text` best first, or the newest when `text` is empty.
+    scope: "archive" (not running), "live" (running) or "all". Whether one is
+    running is decided here, at query time, from the sessions registry - the
+    index itself doesn't know. Each row carries `live`."""
     try:
         meta = json.load(open(os.path.expanduser("~/.cache/indexes/claude/meta.json")))
     except (OSError, ValueError):
         return []
     live = set(get_live_sessions())
+    want = {"archive": lambda sid: sid not in live, "live": lambda sid: sid in live, "all": lambda sid: True}[scope]
     if text.strip():
-        order = [(sid, score) for sid, score in fts_search(text) if sid in meta and sid not in live]
+        order = [(sid, score) for sid, score in fts_search(text) if sid in meta and want(sid)]
     else:
         order = [(sid, 0.0) for sid, m in sorted(meta.items(), key=lambda kv: -kv[1].get("mtime", 0))
-                 if sid not in live]
+                 if want(sid)]
     profiles = profile_map()
     rows = []
     for sid, score in order[:limit]:
@@ -2071,7 +2092,8 @@ def archive_rows(text, limit=300):
         prof = profiles.get(sid)
         rows.append({"session_id": sid, "title": m.get("title") or "", "cwd": m.get("cwd") or "",
                      "msgs": m.get("msgs") or 0, "tokens": m.get("tokens"), "mtime": m.get("mtime"),
-                     "account": account_name(prof), "profile": prof or "", "score": score})
+                     "account": account_name(prof), "profile": prof or "", "score": score,
+                     "live": sid in live})
     return rows
 
 
@@ -2131,8 +2153,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--snippets", nargs=2, metavar=("SESSION", "QUERY"),
                         help="print match excerpts of QUERY in SESSION (hits wrapped in \\x01 \\x02)")
-    parser.add_argument("--archive", metavar="QUERY", nargs="?", const="",
-                        help="JSON list of past (not running) conversations matching QUERY, for the resume views")
+    parser.add_argument("--sessions", metavar="QUERY", nargs="?", const="",
+                        help="JSON list of conversations matching QUERY (best first, or newest), for the table views")
+    parser.add_argument("--scope", choices=("archive", "live", "all"), default="archive",
+                        help="with --sessions: past (default), running, or both")
     parser.add_argument("--resume-window", metavar="SESSION", help="resume SESSION in a new alacritty window")
     parser.add_argument("--resume-tmux", metavar="SESSION", help="resume SESSION in a new tmux window")
     parser.add_argument("--fts", metavar="QUERY",
@@ -2141,8 +2165,8 @@ def main():
                         help="internal: reparse changed transcripts, stream them to the picker at SOCKET")
     args = parser.parse_args()
 
-    if args.archive is not None:
-        print(json.dumps(archive_rows(args.archive)))
+    if args.sessions is not None:
+        print(json.dumps(session_rows(args.sessions, args.scope)))
     elif args.resume_window:
         resume_window(args.resume_window)
     elif args.resume_tmux:

@@ -49,12 +49,11 @@ QtObject {
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
         "/s":  { long: "/sort",         desc: "order windows by one field, optional asc / desc" },
-        "/fts.claude": { long: "", desc: "full-text search of the running Claude conversations" },
-        "/fts.claude.resume": { long: "", desc: "search past Claude conversations; Enter resumes one in a new window" },
+        "/fts": { long: "", desc: "full text of the running and archived Claude conversations" },
         "/sw": { long: "/switch-workspace", desc: "show workspaces instead of windows; pick one to switch to it" }
     })
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "sw", "fts.claude", "fts.claude.resume",
+        "fv", "ft", "at", "rt", "s", "sw", "fts",
         "filter-value", "filter-type", "add-type", "remove-type", "sort", "switch-workspace"
     ]
     // All resolvable type paths (flat types, groups, and group.subfields),
@@ -65,7 +64,7 @@ QtObject {
         for (const g of root.groupOrder) {
             out.push(g);
             for (const s of root.groupSubsOf(g)) {
-                if (g === "claude" && s === "fts") continue; // spelled /fts.claude now
+                if (g === "claude" && s === "fts") continue; // spelled /fts now
                 out.push(g + "." + s);
             }
         }
@@ -85,7 +84,7 @@ QtObject {
             for (const p of root.allPaths())
                 deep.push(v + "/" + p);
         }
-        return bareVerbs.concat(["fts.claude", "fts.claude.resume"], deep);
+        return bareVerbs.concat(["fts/live", "fts/archive"], deep);
     }
     // One-line description of a type path, for the type-path autocomplete
     // stage -- mirrors ui.rs's `type_desc`.
@@ -96,6 +95,8 @@ QtObject {
         "monitor": "the monitor a workspace is on (/sw view)",
         "windows": "how many windows a workspace holds (/sw view)",
         "tmux": "tmux session / window on this terminal",
+        "live": "running conversations only",
+        "archive": "past conversations only; Enter resumes one in a new window",
         "tmux.session": "tmux session name",
         "tmux.window": "tmux window name",
         "tmux.title": "tmux window title",
@@ -104,7 +105,7 @@ QtObject {
         "claude.path": "Claude Code working directory",
         "claude.session": "Claude Code session id",
         "claude.age": "how long ago the transcript last changed",
-        "claude.fts": "Claude Code conversation full-text (periodically indexed); /fts.claude is the shortcut"
+        "claude.fts": "Claude Code conversation full-text (periodically indexed); /fts/live is the shortcut"
     })
 
     function fieldKey(f) { return f.kind === "flat" ? f.name : f.group + "." + f.sub; }
@@ -169,10 +170,8 @@ QtObject {
     // after it; tokVerb guards the bare-"/" case itself.
     function _canonName(name) {
         if (name === "") return "/fv";
-        // /fts.claude = full-text search over Claude conversations; tokVerb
-        // maps it to /fv with via claude.fts.
-        if (name === "fts.claude" || name === "fts") return "/fv";
-        if (name === "fts.claude.resume") return "/fts.resume";
+        // /fts[/claude][/live|/archive]: full text over Claude conversations, see parse()
+        if (name === "fts") return "/fts";
         if (root.shortVerbs.indexOf("/" + name) >= 0) return "/" + name;
         if (root.verbAliases["/" + name]) return root.verbAliases["/" + name];
         return null;
@@ -188,8 +187,6 @@ QtObject {
             return v === null ? null : { verb: v, via: rest.slice(slash + 1) };
         }
         if (rest === "") return null; // bare "/" - not the default verb
-        if (rest === "fts.claude" || rest === "fts") return { verb: "/fv", via: "claude.fts" };
-        if (rest === "fts.claude.resume") return { verb: "/fts.resume", via: null };
         const v = root._canonName(rest);
         return v === null ? null : { verb: v, via: null };
     }
@@ -412,7 +409,7 @@ QtObject {
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
     function parse(query) {
         const toks = root.tokenize(query);
-        let out = { filters: [], colOps: [], sort: null, switchWorkspace: false, resume: null };
+        let out = { filters: [], colOps: [], sort: null, switchWorkspace: false, fts: null };
         const top = out;
         let i = 0;
         while (i < toks.length) {
@@ -428,13 +425,16 @@ QtObject {
             }
             i++;
             const verb = tv.verb;
-            if (verb === "/fts.resume") {
-                // /fts.claude.resume [term]: the grid becomes the past-conversations table
-                top.resume = { term: "" };
+            if (verb === "/fts") {
+                // /fts[/claude][/live|/archive] [term]: full text over the Claude conversations.
+                const parts = (tv.via || "").split("/").filter(x => x.length > 0);
+                const scope = parts.indexOf("live") >= 0 ? "live" : (parts.indexOf("archive") >= 0 ? "archive" : "all");
+                let term = "";
                 if (i < toks.length && !root.startsCommand(toks[i])) {
-                    top.resume.term = toks[i].text.replace(/"/g, "");
+                    term = toks[i].text.replace(/"/g, "");
                     i++;
                 }
+                (top.ftsTokens = top.ftsTokens || []).push({ scope, term, neg: !!tok.neg });
                 continue;
             }
             // "!" only means something on a row filter: "!/s", "!/ft" ...
@@ -533,6 +533,17 @@ QtObject {
             } else if (verb === "/sw") {
                 top.switchWorkspace = true;
             }
+        }
+        if (top.ftsTokens) {
+            // Scope: one spelled scope wins, plain or mixed = both. live -> the window grid is
+            // filtered by claude.fts; archive / both -> the table view (WinSwitch.qml).
+            const scopes = new Set(top.ftsTokens.map(t => t.scope));
+            const scope = (scopes.size === 1 && !scopes.has("all")) ? [...scopes][0] : "all";
+            top.fts = { scope, terms: top.ftsTokens.filter(t => !t.neg && t.term).map(t => t.term),
+                        negTerms: top.ftsTokens.filter(t => t.neg && t.term).map(t => t.term) };
+            if (scope === "live")
+                for (const t of top.ftsTokens)
+                    if (t.term) top.filters.push(root.negated({ kind: "scoped", path: "claude.fts", value: t.term, exact: false }, t.neg));
         }
         return top;
     }

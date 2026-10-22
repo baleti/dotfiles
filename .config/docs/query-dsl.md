@@ -1724,7 +1724,7 @@ look like (thumbnail grid, article list, schedule, plain rows):
   first row the next Up starts history as usual. Any edit of the query ends the
   walk. Where the results have their own focus (alt+tab, rss-reader,
   claude-usage, images) Up/Ctrl+K already navigate rows there, and the table
-  views (`/fts.resume`) take the same focus hand-over as the grid.
+  views (`/fts/archive`) take the same focus hand-over as the grid.
   fzf TUIs: `~/bin/fzf-histnav` remembers the query at the Down that walked the
   list (`$state.walked`) and uses `$FZF_POS` to know when the first row is reached.
 
@@ -1837,8 +1837,7 @@ as is, the last bare word matches as a prefix (live typing).
   title); full text only through `/fts word` (one word or one `"quoted
   phrase"` per `/fts`; repeat it to AND more) or `/fv/body`. The preview pane
   is hidden until `/fts` is in the query.
-- alt-tab: `/fts.claude term` (or plain `/fts term`; sugar for `/fv/claude.fts term`) keeps windows
-  whose session is a hit. Windows carry no transcript text.
+- alt-tab: `/fts[/claude] term`, see the scopes below.
 - Claude usage panel (ctrl+alt+c): `/fts term`; with no explicit sort, rows
   order by relevance.
 
@@ -1847,29 +1846,43 @@ highlighted entry's conversation around the searched words, from
 `claude-history --snippets SESSION QUERY`) only while a full-text term is in
 the query.
 
-#### /fts.resume - past conversations (2026-10-21)
+#### /fts, /fts/live, /fts/archive - live and archived conversations (2026-10-22)
 
 The index holds every conversation; which ones are *running* is decided at
-query time (sessions registry), not stored in it. So there are two views over
-the one Recoll collection:
+query time (sessions registry), not stored in it. So one collection serves
+three scopes, chosen by a slash path on the verb (not a dot):
 
 | Spelling | Searches | Rows |
 |---|---|---|
-| `/fts word` (alt-tab: `/fts.claude`) | running sessions | the picker's live columns / alt-tab windows |
-| `/fts.resume [word]` (alt-tab: `/fts.claude.resume`) | past sessions only (running ones excluded) | table: acct, title, tkns, msgs, age, path |
+| `/fts word` | running AND archived (the default: a parent path covers all its children) | live rows first-class, archived ones appended (best match first) |
+| `/fts/live word` | running only | live rows |
+| `/fts/archive [word]` | past only (running ones excluded); without a word, newest first | table: acct, title, msgs, tkns, age, path |
 
-**Exception to "a parent path searches all its children"**: `//tmux` covers
-`tmux.title`, `tmux.session`, ..., but `/fts` (running) deliberately does NOT
-include `/fts.resume` (past). Running and past are different result sets with
-different actions (jump to the window vs resume), so the child is opt-in.
+alt-tab spells the same three `/fts[/claude]`, `/fts/claude/live`,
+`/fts/claude/archive` (the optional `claude` segment names the corpus, the
+only one for now; `/fts/live` and `/fts/archive` mean the same). Writing both
+`/fts/live` and `/fts/archive` is plain `/fts`.
 
-With `/fts.resume` the view switches to the past-conversation table: the
-columns that only exist for a running session (status, tmux sess/win/pane,
-workspace, pid) are dropped and `msgs` is added. The usage panel hides them,
-alt-tab replaces its window grid with the table, and prefix+C-c swaps its
-header. Enter/click resumes the conversation under the account it last ran as
-(`claude-history --resume-window` for the panel and alt-tab: new alacritty
-window in the session's cwd; prefix+C-c: new tmux window named after the
-account). prefix+C-c's default (no `/fts`) lists the running sessions in the
-panel's columns (`ACCT STATUS TITLE TKNS AGE SESS WIN PANE WKS PID PATH`);
-Enter jumps to the pane.
+Per implementation:
+
+- **prefix+C-c**: default (no `/fts`) lists the running sessions in the panel's
+  columns (`ACCT STATUS TITLE MSGS TKNS AGE SESS WIN PANE WKS PID PATH`), Enter
+  jumps to the pane. `/fts word` adds archived hits to the same table (their
+  live-only cells blank; Enter resumes them in a new tmux window under their
+  own account). `/fts/archive` swaps to the shorter archive columns.
+- **ctrl+alt+c panel**: same: `/fts word` appends archived rows after the live
+  matches; `/fts/archive` drops the columns that only exist for a running
+  session (status, tmux sess/win/pane, workspace, pid). Enter/click on an
+  archived row resumes it.
+- **alt-tab**: `/fts/live word` keeps the window grid, filtered; `/fts/archive`
+  and plain `/fts word` replace the grid by a table (live rows marked `●`; Enter
+  focuses the window, on an archived row resumes it). The table keeps the grid's
+  height.
+
+Resuming (`claude-history --resume-window` for the panel and alt-tab: a new tmux
+session in the session's cwd, labelled with the account, attached in a new
+alacritty window; prefix+C-c: `--resume-tmux`, a new tmux window) always uses the
+account the conversation last ran under.
+
+Not to be confused with the images picker's `/fts/<index>` (file contents,
+index name after the slash): different app, different corpus.
