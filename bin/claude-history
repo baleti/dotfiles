@@ -216,7 +216,7 @@ def tokenize(text):
 # prose - `//path conf` is a plain case-insensitive substring test against the
 # whole field, not tokenized/ranked. body is the conversation text, searched
 # through the Recoll index like /fts.
-FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "body"]
+FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "status", "acct", "body"]
 FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 
 # Long verb forms before their short forms so ordered alternation doesn't
@@ -957,22 +957,24 @@ def search(snap, query):
             fmt = _fmt_archive
         base = sorted(base + arch, key=lambda r: -r.get("score", 0)) if scope == "all" else arch
 
-    other = [(f, t) for f, t in q.field_terms if f != ["body"]]
+    other = [(f, t, False) for f, t in q.field_terms if f != ["body"]] + \
+            [(f, t, True) for f, t in q.neg_field_terms if f != ["body"]]
     out = []
     for r in base:
         text = _row_text(r)
         if not all(t in text for t in table_pos) or any(t in text for t in table_neg):
             continue
-        ok = True
-        for fields, term in other:   # /fv/path x, /fv/title x, ...
-            vals = {"path": r["cwd"], "title": r["title"], "time": relative_age(r["mtime"]),
-                    "tmux": f'{r.get("sess", "")}:{r.get("win", "")}.{r.get("pane", "")}',
-                    "session": r.get("sess", ""), "window": r.get("win", ""), "pane": r.get("pane", "")}
-            if not any(term in str(vals.get(f, "")).lower() for f in fields if f in vals):
-                ok = False
-                break
-        if ok:
-            out.append(f'{r["sid"]}\t{fmt(r)}')
+        status = r.get("status") or ""
+        vals = {"path": r["cwd"], "title": r["title"], "time": relative_age(r["mtime"]),
+                "status": STATUS_LABELS.get(status, status) if status else "archive",
+                "acct": _acct_no(r["account"]),
+                "tmux": f'{r.get("sess", "")}:{r.get("win", "")}.{r.get("pane", "")}',
+                "session": r.get("sess", ""), "window": r.get("win", ""), "pane": r.get("pane", "")}
+        # //keys value, !//keys value: the term must (not) appear in one of the resolved types
+        if not all(any(term in str(vals.get(f, "")).lower() for f in fields if f in vals) != neg
+                   for fields, term, neg in other):
+            continue
+        out.append(f'{r["sid"]}\t{fmt(r)}')
     return out
 
 
