@@ -91,3 +91,39 @@ function compareFieldValues(a, b, dir) {
     var c = al < bl ? -1 : (al > bl ? 1 : 0);
     return dir === "desc" ? -c : c;
 }
+
+// Tokenizer: whitespace-split, a quoted run ("..." or '...') kept whole with the quote characters
+// dropped, a leading "!" carried as `neg` (not part of the token). `'` opens a quote only at the
+// start of a token, so apostrophes inside words stay text. Token: { start (index of its first
+// character, the opening quote included, never the "!"), text, leadQuote (it began with a quote - a
+// literal, never a command, even unterminated), quoted (a quote was closed: the exact-match flag),
+// neg }. An unterminated quote runs to the end of the input (still being typed).
+function tokenize(query) {
+    var tokens = [];
+    var cur = "", start = -1, leadQuote = false, inQuotes = false, qc = "", quoted = false, neg = false;
+    for (var i = 0; i < query.length; i++) {
+        var c = query.charAt(i);
+        if (c === "!" && start < 0 && !neg) { neg = true; continue; }
+        var opens = c === '"' || (c === "'" && start < 0);
+        if (inQuotes ? c === qc : opens) {
+            if (start < 0) leadQuote = true;
+            if (!inQuotes) qc = c;
+            else quoted = true;
+            inQuotes = !inQuotes;
+            if (start < 0) start = i;
+            continue;
+        }
+        if (/\s/.test(c) && !inQuotes) {
+            if (start >= 0) {
+                tokens.push({ start: start, text: cur, leadQuote: leadQuote, quoted: quoted, neg: neg });
+                cur = ""; start = -1; leadQuote = false; quoted = false;
+            }
+            neg = false;
+            continue;
+        }
+        if (start < 0) start = i;
+        cur += c;
+    }
+    if (start >= 0) tokens.push({ start: start, text: cur, leadQuote: leadQuote, quoted: quoted, neg: neg });
+    return tokens;
+}

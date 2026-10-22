@@ -54,32 +54,10 @@ QtObject {
         return { v: v.slice(1, -1), quoted: true };
     }
 
+    // Tokens { q (began with a quote: a literal), closed (the quote was closed: exact match), neg, v } from
+    // the shared tokenizer (~/.config/quickshell/lib/dsl.js)
     function tokenize(text) {
-        const out = [];
-        let i = 0;
-        while (i < text.length) {
-            while (i < text.length && text[i] === " ") i++;
-            if (i >= text.length) break;
-            // A leading "!" negates the term (query-dsl.md "Negation"): it
-            // is stripped here and carried as `neg`, so every later stage
-            // (verb detection, arity, args) sees the plain token. `!"a b"`
-            // is a negated quoted phrase; a lone "!" becomes an empty
-            // token, which parse() drops as still-forming.
-            let neg = false;
-            if (text[i] === "!") { neg = true; i++; }
-            if (text[i] === '"' || text[i] === "'") {
-                const end = text.indexOf(text[i], i + 1);
-                if (end < 0) { out.push({ q: true, closed: false, neg: neg, v: text.slice(i + 1) }); break; }
-                out.push({ q: true, closed: true, neg: neg, v: text.slice(i + 1, end) });
-                i = end + 1;
-            } else {
-                let j = i;
-                while (j < text.length && text[j] !== " ") j++;
-                out.push({ q: false, neg: neg, v: text.slice(i, j) });
-                i = j;
-            }
-        }
-        return out;
+        return D.tokenize(text).map(t => ({ q: t.leadQuote, closed: t.quoted, neg: t.neg, v: t.text }));
     }
 
     // "fv" / "filter-value" -> "/fv"; anything else -> null. (query.rs's
