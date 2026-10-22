@@ -269,6 +269,9 @@ Rectangle {
     function statusLabel(status) {
         return root.statusLabels[status] || status || "?";
     }
+    // an archived (past) conversation has no process status: it says "archive"
+    function rowStatusLabel(r) { return r.archived ? qsTr("archive") : root.statusLabel(r.status); }
+    function rowStatusColor(r) { return r.archived ? Theme.textDim : root.statusColor(r.status); }
 
     // Re-render the relative-time strings once a second while open -- they
     // read off Date.now()/live deltas, which QML has no binding source for
@@ -761,7 +764,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude-live", "fts/claude-archive"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude", "fts/claude-live", "fts/claude-archive"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -775,6 +778,7 @@ Rectangle {
         if (v.startsWith("fts"))
             return { text: prefix + "/" + v + " ", label: "/" + v, alias: "",
                      desc: v === "fts" ? "full text of the running and archived Claude conversations"
+                         : v === "fts/claude" ? "full text, running and archived conversations"
                          : v === "fts/claude-live" ? "full text, running conversations only"
                          : "full text, past conversations only; Enter resumes one in a new window" };
         const slash = v.indexOf("/");
@@ -833,7 +837,7 @@ Rectangle {
         if (fm) {
             const frag = fm[1].slice(fm[1].lastIndexOf(",") + 1);
             const head = t.slice(0, t.length - frag.length);
-            return [["claude-live", "running conversations only"], ["claude-archive", "past conversations only; Enter resumes one in a new window"]]
+            return [["claude", "running and archived conversations"], ["claude-live", "running conversations only"], ["claude-archive", "past conversations only; Enter resumes one in a new window"]]
                 .filter(x => x[0].indexOf(frag) >= 0)
                 .map(x => ({ text: head + x[0] + " ", label: x[0], alias: "", desc: x[1] }));
         }
@@ -1292,7 +1296,7 @@ Rectangle {
     // pathNaturalW's own "+ 6" above uses.
     readonly property real statusNaturalW: Math.max(
         pathFontMetrics.advanceWidth(qsTr("status") + " ▲"),
-        root._maxTextWidth(valueFontMetrics, root.allProcs.map(r => root.statusLabel(r.status)))
+        root._maxTextWidth(valueFontMetrics, root.allProcs.map(r => root.rowStatusLabel(r)))
     ) + 6
     readonly property real tokensNaturalW: Math.max(
         pathFontMetrics.advanceWidth(qsTr("tkns") + " ▲"),
@@ -2703,8 +2707,8 @@ Rectangle {
                         }
                         Item { Layout.preferredWidth: root.handleW }
                         Text {
-                            text: root.statusLabel(modelData.status)
-                            color: root.statusColor(modelData.status)
+                            text: root.rowStatusLabel(modelData)
+                            color: root.rowStatusColor(modelData)
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colStatusW

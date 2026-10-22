@@ -160,6 +160,7 @@ PanelWindow {
         .map(t => /\s/.test(t.replace(/^!/, "")) ? t.replace(/^(!?)(.*)$/, '$1"$2"') : t).join(" ")
     readonly property string tableScope: root.tableMode ? (root.ftsSpec.scope === "archive" ? "archive" : "all") : ""
     property var tableRows: []
+    readonly property int tableStatusW: root.tableScope === "archive" ? 0 : 52   // no status column in the archive-only view
     // live rows carry the window that shows them (matched by claude session id)
     readonly property var tableView: root.tableRows.map(r => {
         if (!r.live) return r;
@@ -203,6 +204,15 @@ PanelWindow {
         }
     }
     Process { id: resumeProc }
+    // status column of the conversations table, same words/colours as the usage panel
+    function _statusLabel(r) {
+        if (!r.live) return qsTr("archive");
+        return ({ busy: qsTr("busy"), waiting: qsTr("wait"), idle: qsTr("idle"), frozen: qsTr("frozen"), stopped: qsTr("stopped") })[r.status] || r.status || "?";
+    }
+    function _statusColor(r) {
+        if (!r.live) return Theme.textDim;
+        return ({ busy: Theme.red, waiting: Theme.orange, idle: Theme.muted, frozen: Theme.cyan, stopped: Theme.textDim })[r.status] || Theme.textDim;
+    }
     // the bare account number: claude -> 1, claude6 -> 6 (as in the usage panel)
     function _acctNo(account) {
         const d = String(account || "").replace(/\D/g, "");
@@ -1155,10 +1165,10 @@ PanelWindow {
                         height: root.resumeRowH
                         spacing: 8
                         Repeater {
-                            model: [["", 14], ["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]]
+                            model: root.tableScope === "archive" ? [["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]] : [["status", 52], ["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]]
                             Text {
                                 required property var modelData
-                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - 14 - 32 - 56 - 48 - 64 - 220 - 8 * 7) : modelData[1]
+                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - root.tableStatusW - 32 - 56 - 48 - 64 - 220 - 8 * (root.tableScope === "archive" ? 6 : 7)) : modelData[1]
                                 text: modelData[0]
                                 color: Theme.muted
                                 font.family: Theme.fontFamily
@@ -1185,11 +1195,11 @@ PanelWindow {
                             Row {
                                 anchors.fill: parent
                                 spacing: 8
-                                Text { width: 14; text: resumeRow.modelData.live ? "●" : ""; color: Theme.cyan
+                                Text { width: 52; visible: root.tableScope !== "archive"; text: root._statusLabel(resumeRow.modelData); color: root._statusColor(resumeRow.modelData)
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 32; text: root._acctNo(resumeRow.modelData.account); color: Theme.muted; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
-                                Text { width: Math.max(100, gridScroll.width - 14 - 32 - 56 - 48 - 64 - 220 - 8 * 7); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
+                                Text { width: Math.max(100, gridScroll.width - root.tableStatusW - 32 - 56 - 48 - 64 - 220 - 8 * (root.tableScope === "archive" ? 6 : 7)); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 2; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 48; text: String(resumeRow.modelData.msgs); color: Theme.muted; horizontalAlignment: Text.AlignRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
