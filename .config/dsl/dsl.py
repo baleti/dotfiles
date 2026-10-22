@@ -61,3 +61,61 @@ def split_cmd(text, verbs, max_parts=None):
     limit = (max_parts or {}).get(verb, 2)
     return (verb, parts[1] if len(parts) >= 2 else None, parts[2] if len(parts) == 3 else None,
             len(parts) > limit)
+
+
+def tokenize(query):
+    """Whitespace-split, a quoted run ("..." or '...') kept whole with the quote characters dropped, a
+    leading "!" carried as `neg`. `'` opens a quote only at the start of a token. Returns
+    [(text, lead_quote, quoted, neg, start)]: start = index of the first character (the opening quote
+    included, never the "!"), lead_quote = began with a quote (a literal, never a command), quoted = a
+    quote was closed (the exact-match flag). An unterminated quote runs to the end of the input."""
+    out = []
+    cur, start, lead, in_q, qc, quoted, neg = [], -1, False, False, "", False, False
+    for i, c in enumerate(query):
+        if c == "!" and start < 0 and not neg:
+            neg = True
+            continue
+        opens = c == '"' or (c == "'" and start < 0)
+        if (c == qc) if in_q else opens:
+            if start < 0:
+                lead = True
+            if not in_q:
+                qc = c
+            else:
+                quoted = True
+            in_q = not in_q
+            if start < 0:
+                start = i
+            continue
+        if c.isspace() and not in_q:
+            if start >= 0:
+                out.append(("".join(cur), lead, quoted, neg, start))
+                cur, start, lead, quoted = [], -1, False, False
+            neg = False
+            continue
+        if start < 0:
+            start = i
+        cur.append(c)
+    if start >= 0:
+        out.append(("".join(cur), lead, quoted, neg, start))
+    return out
+
+
+def split_raw(query):
+    """Whitespace split that keeps quotes in the tokens (`name:"a b"` stays one token, quotes included;
+    an unterminated quote runs to the end) - what the images picker's and the search command's own
+    parsers work on."""
+    out, cur, in_q = [], [], False
+    for ch in query:
+        if ch == '"':
+            in_q = not in_q
+            cur.append(ch)
+        elif ch.isspace() and not in_q:
+            if cur:
+                out.append("".join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        out.append("".join(cur))
+    return out

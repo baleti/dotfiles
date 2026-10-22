@@ -3666,6 +3666,29 @@ mod dsl_conformance {
     }
 
     #[test]
+    fn raw_tokens() {
+        let t = vectors();
+        for c in t["splitraw"].as_array().unwrap() {
+            let want: Vec<&str> = c["expect"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+            assert_eq!(tokenize(c["query"].as_str().unwrap()), want, "query {}", c["query"]);
+        }
+    }
+
+    #[test]
+    fn parse_sort_vectors() {
+        let t = vectors();
+        for c in t["impl"]["images-parse-sort"]["cases"].as_array().unwrap() {
+            let (rest, spec) = parse_sort(c["query"].as_str().unwrap());
+            let e = c["expect"].as_array().unwrap();
+            let keys: Vec<&str> = e[1].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+            assert_eq!(rest, e[0].as_str().unwrap(), "rest of {}", c["query"]);
+            assert_eq!(spec.keys, keys, "keys of {}", c["query"]);
+            assert_eq!(spec.desc, e[2].as_bool().unwrap(), "desc of {}", c["query"]);
+            assert_eq!(spec.explicit, e[3].as_bool().unwrap(), "explicit of {}", c["query"]);
+        }
+    }
+
+    #[test]
     fn direction_words() {
         let t = vectors();
         for c in t["direction"].as_array().unwrap() {

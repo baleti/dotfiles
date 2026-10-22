@@ -21,6 +21,7 @@ QtObject {
         }
         for (const c of T.substr) check("substr " + c.needle + "/" + c.hay, Dsl.substr(c.needle, c.hay, c.exact), c.expect);
         for (const c of T.compare) check("compare " + c.a + "/" + c.b + "/" + c.dir, Math.sign(Dsl.compareFieldValues(c.a, c.b, c.dir)), c.sign);
+        for (const c of T.tokenize) check("tokenize " + c.query, Dsl.tokenize(c.query).map(t => [t.text, t.leadQuote, t.quoted, t.neg, t.start]), c.expect);
         print("qml dsl.js: " + (fails === 0 ? "ok" : fails + " failures"));
         Qt.quit();
     }
