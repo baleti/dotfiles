@@ -217,6 +217,7 @@ local alt_timer -- kept referenced: a collected timer never fires
 alt_timer = hl.timer(function()
     if not alt_down() then
         alt_timer:set_enabled(false)
+        hl.dispatch(hl.dsp.submap("reset"))   -- always, from here: never leaves the keymap stuck
         emit("altup")
     end
 end, { timeout = ALT_POLL_MS, type = "repeat" })
@@ -245,9 +246,23 @@ function winswitch.tab(direction)
     write_window_list()
     emit("tab " .. direction)
     if not alt_timer:is_enabled() then
+        -- Alt is held for the whole session, so every Ctrl+<key> the user types into the
+        -- grid/search box arrives as CTRL+ALT+<key> and would hit the global binds in
+        -- keybinds.lua (Ctrl+Alt+R = Revit panel, ...). Swap to a keymap holding only the
+        -- switcher's own keys; everything else falls through to Quickshell.
+        hl.dispatch(hl.dsp.submap("alt-switch"))
         alt_timer:set_enabled(true)
     end
 end
+
+hl.define_submap("alt-switch", function()
+    hl.bind("ALT + Tab", function() winswitch.tab("next") end, { description = "Window switcher (next)" })
+    hl.bind("ALT + SHIFT + Tab", function() winswitch.tab("prev") end, { description = "Window switcher (previous)" })
+    hl.bind("CTRL + ALT + h", function() emit("nav left") end, { repeating = true, description = "Window switcher: selection left" })
+    hl.bind("CTRL + ALT + j", function() emit("nav down") end, { repeating = true, description = "Window switcher: selection down" })
+    hl.bind("CTRL + ALT + k", function() emit("nav up") end, { repeating = true, description = "Window switcher: selection up" })
+    hl.bind("CTRL + ALT + l", function() emit("nav right") end, { repeating = true, description = "Window switcher: selection right" })
+end)
 
 -- Focus by address, for Quickshell's `Hyprland.dispatch(...)`: a dispatch
 -- request is evaluated as `hl.dispatch(<request>)`, so
