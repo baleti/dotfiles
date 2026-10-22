@@ -146,7 +146,7 @@ thumbnails, bound to `ALT+Tab`/`ALT+SHIFT+Tab`.
   socket **is** the "already running" check.
 - **`src/hyprctl.rs`** — thin `hyprctl` wrappers: the window list the grid
   is built from, and the one dispatch call that changes focus.
-- **`src/query.rs`** — the `/field:value` filter DSL (v2 — see
+- **`src/query.rs`** (removed 2026-10-22; it had not been compiled since the Quickshell rewrite) — the `/field:value` filter DSL (v2 — see
   [query-dsl.md](query-dsl.md), which covers this and every other
   implementation's syntax in full). Quote-aware whitespace-split tokens
   (a `"..."` run stays one token, letting a field/group name or value
