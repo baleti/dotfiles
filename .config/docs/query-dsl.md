@@ -1289,6 +1289,14 @@ with no new mechanism to learn.
   moves the fzf list down and records the query as before). Pickers with no
   search-box history (clipboard, notification, app-menu, revit-remote,
   window-search) are unchanged: Ctrl+J/K stay plain row navigation.
+- **The Ctrl+R popup closes once an entry is chosen** (all pickers), and is never
+  carried across a close/reopen of the window. Choosing an entry (Enter/Tab/click)
+  replaces the whole query and ends the popup - unlike a Tab-completion popup, which
+  stays open and re-narrows after accepting a stage, there is nothing further to
+  complete in a finished query. Implementations close the popup *before* writing the
+  text, or the text-change recompute reopens it (app-launcher, rss-reader,
+  claude-usage); winswitch and images already did; the fzf pickers' nested popup exits
+  on accept by construction.
 - **Ctrl+R** opens a popup - the same shared popup machinery
   Tab-completion already uses (nested fzf for the fzf-native pickers,
   in-layout `GtkListBox`/QML overlay elsewhere - see Autocompletion,
