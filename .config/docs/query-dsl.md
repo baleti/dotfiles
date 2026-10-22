@@ -132,7 +132,9 @@ the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 grammar: `/s/<field>[,<field>...][/asc|/desc]`, one token, behaves as in
 `/sort` below, with these differences. Fields: `name`, `path`,
 `size`, `date-modified` (alias `dm`, `date`) - the four columns - plus
-`extension` and `depth` (number of path components), which have no column.
+`extension`, `depth` (number of path components), which have no column, and
+`pages` (page count of local PDFs: the `#P` column; the first 5000 matches are
+counted and ordered, non-PDFs come last in both directions).
 Names resolve like keys (exact, else unique substring; an ambiguous
 or unknown one such as `/s/d` makes that `/s` inert). **Repeated `/s`
 commands stack instead of replacing**, in order: `/s/date-modified /s/size`
@@ -308,8 +310,12 @@ already reaches every `tmux-*` type, `//tmux-win` just the window one, and
 swallowed by its own family: `//title` is the plain `title`, not also
 `tmux-title` and `claude-title` (type `//tit` or `//-title` to mean them all).
 
-`/sort` needs every key to resolve to **exactly one** type, so
-`/s/tmux` (three types) is inert - name the one you mean, `/s/tmux-session`.
+**`/sort` expands a fuzzy key into every type it reaches, alphabetically**
+(2026-10-22; before, an ambiguous key made the sort inert): `/s/pa` is
+`/s/pages,path`, `/s/tmux` is `/s/tmux-session,tmux-title,tmux-window`. The exact
+name still wins alone (`/s/path` is just `path`), a type already in the chain
+is not repeated, and a key that names nothing makes the whole `/s` inert. To
+sort by one type only, name it.
 
 ### Default verb (`//`)
 
@@ -539,11 +545,11 @@ Reorder the survivors; never filter or hide.
 
 - **`/s/key1[,key2,...][/dir]`** - order rows by `key1`; rows that tie on it
   are broken by `key2`, and so on for however many comma-separated keys are
-  chained. Each key must resolve to **exactly one** type (Keys: exact name
-  wins, else a unique substring; `claude` standing for a family is not valid -
-  a sort key is one field); a key that resolves to nothing or ambiguously
-  makes the *whole* `/s` inert, not just that key. `/s/tokens` alone is the
-  plain single-key sort.
+  chained. Each key resolves like any key (exact name wins, else every type
+  containing it) and a fuzzy key **expands into all its types in alphabetical
+  order** (`/s/pa` = `/s/pages,path`); a key that resolves to nothing makes the
+  *whole* `/s` inert, not just that key. `/s/tokens` alone is the plain
+  single-key sort.
 - **`/dir`**, the optional third part: `asc` / `desc` (or any non-empty
   prefix of `ascending` / `descending`: `a`, `de`, ...). It is taken by
   **position**, so it can never be confused with a key or a following word:

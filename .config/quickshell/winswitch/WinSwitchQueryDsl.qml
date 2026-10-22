@@ -400,8 +400,11 @@ QtObject {
                 // raw keys kept even when they name no window type: the conversations table
                 // (/fts view) sorts by its own types (WinSwitch.qml tableView)
                 if (keys.length > 0) R.sortRaw = { keys, dir };
-                const fields = keys.map(k => root.resolveOne(k));
-                if (fields.length > 0 && fields.every(f => f !== null))
+                // fuzzy keys expand to every matching type, alphabetical (`/s/pa` = pages,path)
+                const groups = keys.map(k => root.resolveKeys(k).slice().sort((a, b) => root.fieldKey(a) < root.fieldKey(b) ? -1 : 1));
+                const fields = [];
+                for (const g of groups) for (const f of g) if (!fields.some(x => root.fieldsEqual(x, f))) fields.push(f);
+                if (keys.length > 0 && groups.every(g => g.length > 0))
                     R.sort = { fields, dir };
             }
         }

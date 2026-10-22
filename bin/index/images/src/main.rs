@@ -937,9 +937,9 @@ fn request_path_page(p: &mut PathPane, page: usize) {
 }
 
 /// Sortable fields: (name typed in `/s`, server key). The first four are the visible columns.
-const SORT_FIELDS: [(&str, &str); 6] = [
+const SORT_FIELDS: [(&str, &str); 7] = [
     ("name", "name"), ("path", "path"), ("size", "size"), ("date-modified", "date"),
-    ("extension", "ext"), ("depth", "depth"),
+    ("extension", "ext"), ("depth", "depth"), ("pages", "pages"),
 ];
 
 struct SortSpec {
@@ -949,14 +949,16 @@ struct SortSpec {
     explicit: bool,
 }
 
-/// A `/s` path segment -> server key: exact name or alias first, else a unique substring.
-fn resolve_sort_field(seg: &str) -> Option<&'static str> {
+/// A `/s` key -> server keys: the exact name or alias alone, else EVERY field whose name contains it,
+/// in alphabetical order of the field names (`/s/pa` = `/s/pages,path`). Empty when it names nothing.
+fn resolve_sort_fields(seg: &str) -> Vec<&'static str> {
     let seg = seg.to_lowercase();
-    if seg.is_empty() { return None; }
-    if seg == "dm" || seg == "date" { return Some("date"); }
-    if let Some(f) = SORT_FIELDS.iter().find(|f| f.0 == seg) { return Some(f.1); }
-    let hits: Vec<_> = SORT_FIELDS.iter().filter(|f| f.0.contains(seg.as_str())).collect();
-    if hits.len() == 1 { Some(hits[0].1) } else { None }
+    if seg.is_empty() { return Vec::new(); }
+    if seg == "dm" || seg == "date" { return vec!["date"]; }
+    if let Some(f) = SORT_FIELDS.iter().find(|f| f.0 == seg) { return vec![f.1]; }
+    let mut hits: Vec<_> = SORT_FIELDS.iter().filter(|f| f.0.contains(seg.as_str())).collect();
+    hits.sort_by_key(|f| f.0);
+    hits.into_iter().map(|f| f.1).collect()
 }
 
 /// Direction word: only taken when it matches exactly one of ascending / descending.
@@ -995,12 +997,12 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
         let chain = if let Some(c) = t.strip_prefix("/sort") { c } else if let Some(c) = t.strip_prefix("/s") { c } else { rest.push(t); continue };
         let parts: Vec<&str> = if chain.is_empty() { Vec::new() } else if let Some(c) = chain.strip_prefix('/') { c.split('/').collect() } else { rest.push(t); continue };
         if parts.is_empty() || parts.len() > 2 { continue; } // keyless or malformed: inert, takes no argument
-        let segs: Vec<Option<&str>> = parts[0].split(',').filter(|k| !k.is_empty()).map(resolve_sort_field).collect();
+        let segs: Vec<Vec<&str>> = parts[0].split(',').filter(|k| !k.is_empty()).map(resolve_sort_fields).collect();
         let dir = match parts.get(1) {
             Some(d) => match sort_direction(d) { Some(x) => Some(x), None => continue },
             None => None,
         };
-        if !segs.is_empty() && segs.iter().all(Option::is_some) {
+        if !segs.is_empty() && segs.iter().all(|g| !g.is_empty()) {
             if dir.is_some() { desc = dir; }
             explicit = true;
             for k in segs.into_iter().flatten() {
@@ -3285,6 +3287,7 @@ impl eframe::App for App {
                         ("date", c.date_x, "MODIFIED"),
                     ];
                     if show_score { columns.push(("score", c.score_r, "SCORE")); }
+                    let mut header_hint: Option<&str> = None;
                     for (key, x, label) in &columns {
                         let rect = egui::Rect::from_min_max(egui::pos2(*x, hr.top()), egui::pos2(*x + 40.0, hr.bottom()));
                         let resp = ui.interact(rect, egui::Id::new(("hdr", *key)), egui::Sense::click());
@@ -3295,8 +3298,18 @@ impl eframe::App for App {
                         ui.painter().text(egui::pos2(*x, hr.top() + 2.0), egui::Align2::LEFT_TOP,
                             format!("{label}{arrow}"), hf.clone(),
                             if primary { pal.accent } else if secondary { pal.text } else { pal.dim });
-                        if *key == "pages" { resp.on_hover_text("number of pages"); }
-                        else if resp.clicked() && *key != "score" { self.set_sort(key); }
+                        if resp.hovered() && *key == "pages" { header_hint = Some("number of pages (PDFs)"); }
+                        if resp.clicked() && *key != "score" { self.set_sort(key); }
+                    }
+                    // header hint, drawn like the usage panel's: at once (no tooltip delay), a small box beside the cursor
+                    if let (Some(text), Some(p)) = (header_hint, ui.ctx().pointer_hover_pos()) {
+                        egui::Area::new(egui::Id::new("header_hint")).order(egui::Order::Tooltip)
+                            .fixed_pos(p + egui::vec2(12.0, 16.0)).interactable(false)
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::new().fill(pal.bg).stroke(egui::Stroke::new(1.0, pal.border))
+                                    .corner_radius(3.0).inner_margin(egui::Margin::symmetric(4, 2))
+                                    .show(ui, |ui| { ui.label(RichText::new(text).monospace().size(10.0).color(pal.text)); });
+                            });
                     }
                     // drag handles on the boundaries between columns: move width from one column to its neighbour
                     let total = (hr.right() - left).max(1.0);
