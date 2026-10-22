@@ -30,8 +30,8 @@ add a new consumer, add its row here too.
 | appmenu picker | mod+a | `~/.config/quickshell/appmenu/` (`AppMenuPicker.qml` + `AppMenuModel.qml`, imports `ClipboardQueryDsl.qml` like revit-remote picker; backend `~/.config/hypr/scripts/appmenu-atspi.py pick`/`activate`, replaced the rofi list) | the focused window's menu items, flattened (AT-SPI, or the app's own `appmenu/<pid>.sock`); one row per item, preview = `File › Open`; fields `item`, `menu`, `path`, `app`, `shortcut`, `state` (`checked`/`unchecked`); Enter activates it. Items are collected before the picker opens (Gecko menus are opened lazily and closed again with Escape while the app still has the keyboard), mod+a again closes it |
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
-| claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux.*`/`hypr.*` fields |
-| claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone) and always completes to whichever form (colon or via) is already being typed, never steers to via the way rss-reader/claude-history do |
+| claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux-*`/`hypr-*` fields |
+| claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone): it completes the keys, direction and value stages of the one syntax as they are typed |
 | images (photo search) | mod+Super_l → "Search files" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/bin/index/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
 
 **app-launcher action commands.** Besides the five verbs, the launcher has
@@ -89,8 +89,8 @@ over the Chroma indexes (`/chroma/<index>` for one; it does not cover the corpus
 name filter in front and the same `//` tags. `/fts` lists every matching file (no cap per index; a file reachable from two roots is listed once). Its words are Recoll
 query language, so `masonry -support` excludes and a leading `-term` works; the DSL's own `!word` is accepted as the same
 thing (`masonry !support`). All the `//` tags work on `/fts` and `/chroma` results, `//dm` included (the date comes from
-the index). Order is relevance (best first) unless a sort is explicit: `/s size`, `/s date`, `/s name`, `/s path`,
-`/s extension`, `/s depth` (stackable) all apply to `/fts`/`/chroma`; with no `/s` the column sort is not applied.
+the index). Order is relevance (best first) unless a sort is explicit: `/s/size`, `/s/date`, `/s/name`, `/s/path`,
+`/s/extension`, `/s/depth` (stackable) all apply to `/fts`/`/chroma`; with no `/s` the column sort is not applied.
 One content verb per query: `/fts` with `/chroma`, or either with `/clip` or `/face`, is reported as an error, as are
 an unknown index and a verb with no words. For `/chroma` with any filter (before the verb or a `//` tag) the nearest 2,000
 chunks per index are searched instead of 400, and when fewer than 20 files survive the filters it looks up to 16,000 deep
@@ -129,14 +129,14 @@ the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 `Home`/`End` jump, `Enter` opens, `Esc` closes.
 
 **Ordering (`/s`, `/sort`).** The one place this picker uses the verb
-grammar: `/s <field> [asc|desc]`, `/sort/f1/f2 [dir]` (via chain)
-behave as in `/sort` below, with these differences. Fields: `name`, `path`,
+grammar: `/s/<field>[,<field>...][/asc|/desc]`, one token, behaves as in
+`/sort` below, with these differences. Fields: `name`, `path`,
 `size`, `date-modified` (alias `dm`, `date`) - the four columns - plus
 `extension` and `depth` (number of path components), which have no column.
-Names resolve like type paths (exact, else unique substring; an ambiguous
-or unknown one such as `/s d` makes that `/s` inert). **Repeated `/s`
-commands stack instead of replacing**, in order: `/s date-modified /s size`
-(or `/s/date-modified/size`) sorts by date modified and, among rows with
+Names resolve like keys (exact, else unique substring; an ambiguous
+or unknown one such as `/s/d` makes that `/s` inert). **Repeated `/s`
+commands stack instead of replacing**, in order: `/s/date-modified /s/size`
+(or `/s/date-modified,size`) sorts by date modified and, among rows with
 the same date, by size; ties on every key fall back to path order. One
 direction applies to every key (the last one given). Timestamps and sizes
 are real numbers, so `ascending` is oldest/smallest first (no age-style
@@ -605,12 +605,12 @@ escape hatch: a token that starts with `"` is **never** parsed as a
 command, and a literal `/` (or any other reserved character) inside
 quotes is just text. Beyond escaping, quoting lets a value or path
 segment span whitespace without splitting into separate tokens:
-`/fv title:"imperial rome"`, `/fv app:"discord canary"`.
+`//title "imperial rome"`, `//app "discord canary"`.
 
 A quoted value is matched as a **literal contiguous substring**,
 whitespace included, that must also **stand alone** (no letter/digit
 directly before or after it - see "Resolution, precisely") -
-`/fv title:"imp rom"` matches only a title that
+`//title "imp rom"` matches only a title that
 actually contains the run `imp rom`, not "Imperial Rome". (This is a
 change from the older behaviour, where quoting meant subsequence-across-
 whitespace. Substring is now the single matching rule everywhere;
@@ -787,32 +787,24 @@ RSS reader grow the equivalent in QML. Stages:
 
 1. **Verb** (`/frag`, nothing after it yet): candidates are every short
    verb form whose name contains `frag` as a substring (`/f` -> `/fv`,
-   `/ft`; `/` alone -> all six). Accepting a verb inserts it plus a
-   trailing space and re-triggers completion at the argument stage.
-2. **Type path** (`/ft frag`, `/at frag`, `/rt frag`, `/s frag`, or
-   `/fv frag` before any `:`; the via form `/verb/frag` is the same stage):
-   candidates are flat type names and group names containing `frag`; after
-   a `.`, that group's subfields plus `*`. Accepting a column-verb path or
-   a group completes the token; accepting a `/fv` or `/s` path inserts a
-   trailing space ready for the value/direction, in the **via spelling** -
-   `/fv frag` + accept lands `/fv/<type> `, not `/fv <type>:` (rss-reader
-   and claude-history both steer completion toward the via form this way;
-   the colon form still parses when typed by hand). The GTK pickers and
-   app launcher still land the `:` form here.
-3. **Filter value** (`/fv path:frag` or `/fv/path frag`, `path`
-   unambiguous): candidates are
-   every distinct non-empty value that type actually has across the
-   current entries right now, substring-narrowed by `frag`, deduplicated
-   and sorted. This is the one stage genuinely scoped to a small corpus.
-4. **Sort direction** (`/s path frag`, `path` unambiguous): candidates
-   are `ascending` / `descending`, narrowed by `frag`.
+   `/ft`; `/` alone -> all of them), plus every `verb/key` combination
+   (see Verb-stage depth). Accepting a bare verb inserts `/verb/` (the keys
+   part follows); accepting a deep candidate lands the whole command.
+2. **Keys** (`/verb/frag`, `//frag`, and again after each `,`): candidates are
+   the type names containing `frag`. Accepting one replaces just that
+   fragment and keeps the typed spelling (`//` or `/fv/`); after `/fv` /
+   `//` a trailing space is added (the value follows), after the other
+   verbs nothing is (a `,` or `/dir` can follow).
+3. **Direction** (`/s/keys/frag`): candidates are `asc` / `desc`.
+4. **Filter value** (`//keys frag`, keys resolving to one type): every
+   distinct non-empty value that type has across the current entries right
+   now, substring-narrowed by `frag`, deduplicated and sorted. This is the
+   one stage genuinely scoped to a small corpus.
 
 **An empty fragment lists everything for that stage, once Tab asks.** `/`
-+ Tab is the five verbs plus every verb/path combination the grammar can
-build (see Verb-stage depth, below); `/ft ` / `/at ` / `/rt ` / `/s ` /
-`/fv ` + Tab
-(verb, one space, nothing typed yet) is every type name; `/fv path: ` +
-Tab is every value that type has. Discovery doesn't need a first
++ Tab is every verb plus every verb/key combination the grammar can build
+(see Verb-stage depth, below); `//` / `/fv/` + Tab is every type name;
+`//keys ` + Tab is every value that type has. Discovery doesn't need a first
 character typed - just Tab, at any point - which is what makes "hidden
 until Tab" (above) fine for discoverability rather than a tradeoff
 against it.
@@ -957,7 +949,7 @@ extend this into (see the maturity note at the top of Autocompletion).
 ## Auto-shown filter fields
 
 Added 2026-09-11-12, alongside Verb-stage depth: a field actively
-`/fv field:value`-scoped (or, for a group, `/fv group` existence-filtered)
+`//field value`-scoped (or, for a family key, matched across its types)
 is shown even without an explicit `/at` - and even past an `/ft`/`/rt`
 that would otherwise hide it - so the value that actually matched is
 visible the moment there's more than one candidate left to choose between,
@@ -983,12 +975,8 @@ way to becoming a real field name) resolves to nothing here exactly like
 it always does for a complete term, so nothing flickers into view for
 `/fv/zzz` or a `/fv/cl` still being typed - only a path that has actually
 landed on one real field (or a real group, for the existence form) counts.
-Scoped to the via form specifically (and the pre-existing `/fv path:`
-colon-with-empty-value case, which already triggered this before today):
-the *space* form's colonless `/fv path` stays exactly as ambiguous as it
-always was between "a field name about to get a colon" and "a bare
-free-text word" (see `/filter-value`'s own section) - via's leading `/`
-is what removes that ambiguity, so only via gets the early trigger.
+Every `/fv/keys` or `//keys` triggers it (there is one form now, so a keys part
+can never be mistaken for free text).
 
 **A genuinely empty via segment is nothing typed yet, not an ambiguous
 fragment.** `/fv/` with nothing typed after the second `/` yet has an
@@ -997,7 +985,7 @@ empty-string path - and every resolver in this grammar treats an empty
 Resolution, precisely), which is exactly right for a value ("no text
 required" is the whole point of a colonless filter) but disastrous for a
 *path*: resolved naively, an empty segment reads as "ambiguous across
-every group and type," and the union-everything rule an ambiguous
+every type," and the union-everything rule an ambiguous
 fragment legitimately gets (`/fv/cl` reaching every group starting with
 `cl`) would auto-show every group's default subfield at once - reported
 2026-09-13, `/fv/` alone flashing Claude session info under every
@@ -1230,7 +1218,7 @@ then ignored. claude-history only acts on `/fv` at all (see its own
 header), so its Tab-completion only ever offers that - the verb stage
 lists `fv`/`filter-value` and nothing else, and only via paths get
 completed (`/fv/field value`, steering towards that spelling specifically
-even though the older `/fv field:value` still works when typed by hand).
+even though the older colon spelling is gone).
 Its completion UI can't be an in-layout popup the GTK pickers' way (fzf
 has one list, not a widget tree) - a unique candidate completes directly,
 the same way shell tab-completion does with no ambiguity to show; an
@@ -1576,7 +1564,7 @@ back), `launcher/AppLauncher.qml` (single-focus form). Not yet live-tested.
   Every match is unioned for a path segment; a value/direction just needs
   the one containment to hold.
 - **Quoted values stand alone**: a value in `"double"` or `'single'`
-  quotes (bare, `/fv`, or scoped `path:"5"`) must not touch a letter,
+  quotes (bare, or a scoped value `//path "5"`) must not touch a letter,
   digit or underscore on either side, so `"5"` matches `5` but not `15`
   or `599`, and `"rome"` matches "Rome wasn't" but not "Romeo". Unquoted
   `5` is the ordinary substring and matches 599 too. A `'` only opens a
@@ -1678,22 +1666,26 @@ highlighted entry's conversation around the searched words, from
 `claude-history --snippets SESSION QUERY`) only while a full-text term is in
 the query.
 
-#### /fts, /fts/live, /fts/archive - live and archived conversations (2026-10-22)
+#### /fts - live and archived conversations (2026-10-22)
 
 The index holds every conversation; which ones are *running* is decided at
-query time (sessions registry), not stored in it. So one collection serves
-three scopes, chosen by a slash path on the verb (not a dot):
+query time (sessions registry), not stored in it. `/fts` is an app verb whose
+**keys** name the scope: the scope names are `claude-live` and
+`claude-archive`, resolved like any other keys (exact name wins, else
+substring, comma list unioned):
 
 | Spelling | Searches | Rows |
 |---|---|---|
-| `/fts word` | running AND archived (the default: a parent path covers all its children) | live rows first-class, archived ones appended (best match first) |
-| `/fts/live word` | running only | live rows |
-| `/fts/archive [word]` | past only (running ones excluded); without a word, newest first | table: acct, title, msgs, tkns, age, path |
+| `/fts word` | running AND archived (no keys = every scope) | live rows first-class, archived ones appended (best match first) |
+| `/fts/claude word` | the same (`claude` reaches both scope names) | |
+| `/fts/live word` (= `/fts/claude-live`) | running only | live rows |
+| `/fts/archive [word]` (= `/fts/claude-archive`) | past only (running ones excluded); without a word, newest first | table: acct, title, msgs, tkns, age, path |
 
-alt-tab spells the same three `/fts[/claude]`, `/fts/claude/live`,
-`/fts/claude/archive` (the optional `claude` segment names the corpus, the
-only one for now; `/fts/live` and `/fts/archive` mean the same). Writing both
-`/fts/live` and `/fts/archive` is plain `/fts`.
+So `live`, `archive`, `claude-live`, `arch` all work (any key that reaches
+exactly one scope name); a key set that reaches both - or `/fts/live,archive`
+- is plain `/fts`. Writing both `/fts/live` and `/fts/archive` is plain `/fts`
+too. The same spellings are used everywhere (picker, panel, alt-tab). The
+verb is still exact (`/fts`); only its keys are fuzzy.
 
 Per implementation:
 
