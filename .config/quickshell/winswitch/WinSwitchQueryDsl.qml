@@ -1,5 +1,6 @@
 pragma Singleton
 import QtQuick
+import "../lib/dsl.js" as D
 
 // The shared picker query DSL (~/.config/docs/query-dsl.md), ported to JS
 // for the alt-tab grid -- the "8th" hand-written copy of this grammar
@@ -176,16 +177,21 @@ QtObject {
     // { verb, via, dir, bad } or null (query-dsl.md "Grammar"): `via` is the
     // keys part (null when absent), `dir` the third part (/s only), `bad` a
     // malformed token (too many parts; /sw takes none): inert.
-    function tokVerb(tok) {
-        if (tok.leadQuote || tok.text[0] !== "/") return null;
-        const parts = tok.text.slice(1).split("/");
-        // "//keys": empty verb slot defaults to /fv
-        const v = parts[0] === "" ? (parts.length >= 2 ? "/fv" : null) : root._canonName(parts[0]);
-        if (v === null) return null;
-        const maxParts = v === "/s" ? 3 : (v === "/sw" ? 1 : 2);
-        return { verb: v, via: parts.length >= 2 ? parts[1] : null,
-                 dir: parts.length === 3 ? parts[2] : null, bad: parts.length > maxParts };
+    // verb spellings -> canonical short form for D.splitCmd ("" = the default verb of `//keys`)
+    readonly property var _verbMap: {
+        const m = { "": "/fv", "fts": "/fts" };
+        for (const v of root.shortVerbs) m[v.slice(1)] = v;
+        for (const a in root.verbAliases) m[a.slice(1)] = root.verbAliases[a];
+        return m;
     }
+    readonly property var _maxParts: ({ "/s": 3, "/sw": 1 })
+    // { verb, via (the keys part), dir, bad } or null (query-dsl.md "Grammar")
+    function tokVerb(tok) {
+        if (tok.leadQuote) return null;
+        const c = D.splitCmd(tok.text, root._verbMap, root._maxParts);
+        return c === null ? null : { verb: c.verb, via: c.keys, dir: c.dir, bad: c.bad };
+    }
+
 
     // A non-empty verb form always "starts with" the empty string, so a
     // bare "/" (s === "") is correctly a prefix of every verb here too -
@@ -205,17 +211,9 @@ QtObject {
         return root._canonName(name) !== null || root.isVerbPrefix(rest);
     }
 
-    function _isDirectionLike(tok) {
-        const d = tok.toLowerCase();
-        if (d.length === 0) return false;
-        return "ascending".indexOf(d) === 0 || "descending".indexOf(d) === 0;
-    }
-    function _dirOf(tok) {
-        return "descending".indexOf(tok.toLowerCase()) === 0 ? "desc" : "asc";
-    }
-    function parseDirection(tok) {
-        return root._isDirectionLike(tok) ? root._dirOf(tok) : null;
-    }
+    function _isDirectionLike(tok) { return D.parseDirection(tok) !== null; }
+    function _dirOf(tok) { return D.parseDirection(tok) || "asc"; }
+    function parseDirection(tok) { return D.parseDirection(tok); }
     function resolveDirections(frag) {
         return [["asc", "ascending"], ["desc", "descending"]].filter(d => d[1].indexOf(frag.toLowerCase()) === 0).map(d => d[0]);
     }
@@ -225,19 +223,8 @@ QtObject {
     // With `exact` (the term was quoted: "5" or '5') the needle must stand
     // alone: no letter/digit/underscore directly before or after it, so "5"
     // matches 5 but not 15 or 599. See query-dsl.md "Quoted terms".
-    function substrIdx(needle, hay, exact) {
-        const n = String(needle).toLowerCase(), h = String(hay).toLowerCase();
-        let i = h.indexOf(n);
-        if (!exact || n.length === 0) return i;
-        const w = /[a-z0-9_]/;
-        const lead = w.test(n.charAt(0)), trail = w.test(n.charAt(n.length - 1));
-        while (i >= 0) {
-            if (!(lead && w.test(h.charAt(i - 1))) && !(trail && w.test(h.charAt(i + n.length)))) return i;
-            i = h.indexOf(n, i + 1);
-        }
-        return -1;
-    }
-    function substr(needle, hay, exact) { return root.substrIdx(needle, hay, exact) >= 0; }
+    function substrIdx(needle, hay, exact) { return D.substrIdx(needle, hay, exact); }
+    function substr(needle, hay, exact) { return D.substr(needle, hay, exact); }
     // A label-line preview of `value`, capped at `maxLen` chars, as
     // `{ text, matchStart, matchLen }` - `matchStart` is -1 when there's no
     // needle or it wasn't found, so a caller can tell "no highlight" apart
@@ -305,16 +292,7 @@ QtObject {
     // --- key resolution (query-dsl.md "Keys") -----------------------------
     // Per key: a name equal to it wins alone, else every name containing it;
     // unioned across the comma list, in `known` order. Empty keys skipped.
-    function resolveNames(keys, known) {
-        const hit = {};
-        for (const key of String(keys).toLowerCase().split(",")) {
-            if (key.length === 0) continue;
-            const exact = known.filter(n => n === key);
-            for (const n of (exact.length > 0 ? exact : known.filter(n => n.indexOf(key) >= 0)))
-                hit[n] = true;
-        }
-        return known.filter(n => hit[n]);
-    }
+    function resolveNames(keys, known) { return D.resolveNames(keys, known); }
     function fieldOfName(n) {
         if (root.columns.indexOf(n) >= 0) return { kind: "flat", name: n };
         const i = n.indexOf("-");
@@ -595,27 +573,10 @@ QtObject {
         return { sort: p.sort };
     }
 
-    function _tryInt(s) { return /^\d+$/.test(s) ? parseInt(s, 10) : null; }
-    function _tryAgeSeconds(s) {
-        const m = /^(\d+)([smhd])$/.exec(s);
-        if (!m) return null;
-        return parseInt(m[1], 10) * ({ s: 1, m: 60, h: 3600, d: 86400 }[m[2]]);
-    }
     // query.rs's compare_field_values + compare_with_direction combined,
     // `dir` applied here (matches QueryDsl.qml's own compareFieldValues
     // shape) -- see that file's doc for the age-bucket "direction trap".
-    function compareFieldValues(a, b, dir) {
-        const as = String(a), bs = String(b);
-        const ai = root._tryInt(as), bi = root._tryInt(bs);
-        if (ai !== null && bi !== null)
-            return dir === "desc" ? bi - ai : ai - bi;
-        const aa = root._tryAgeSeconds(as), ba = root._tryAgeSeconds(bs);
-        if (aa !== null && ba !== null)
-            return dir === "desc" ? aa - ba : ba - aa;
-        const al = as.toLowerCase(), bl = bs.toLowerCase();
-        const c = al < bl ? -1 : (al > bl ? 1 : 0);
-        return dir === "desc" ? -c : c;
-    }
+    function compareFieldValues(a, b, dir) { return D.compareFieldValues(a, b, dir); }
     function sortFieldValue(win, meta, field) { return root.fieldValue(win, meta, field); }
 
     // --- autocompletion ------------------------------------------------------

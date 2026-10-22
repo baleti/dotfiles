@@ -71,6 +71,9 @@ dozen panes and a few thousand lines each, captured once per invocation, so
 a script comfortably keeps up with live typing.
 """
 import argparse
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.expanduser("~/.config/dsl"))
+import dsl  # shared DSL primitives (~/.config/dsl/dsl.py)
 import atexit
 import json
 import math
@@ -201,16 +204,8 @@ Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_term
 
 
 def resolve_fields(keys):
-    """query-dsl.md "Keys": a comma list; per key the FIELD_NAMES entry equal
-    to it wins alone, else every entry containing it; unioned, in
-    FIELD_NAMES' own order."""
-    hit = set()
-    for key in keys.lower().split(","):
-        if not key:
-            continue
-        exact = [f for f in FIELD_NAMES if f == key]
-        hit.update(exact or [f for f in FIELD_NAMES if key in f])
-    return [f for f in FIELD_NAMES if f in hit]
+    """query-dsl.md "Keys" over FIELD_NAMES (shared primitive: ~/.config/dsl/dsl.py)."""
+    return dsl.resolve_names(keys, FIELD_NAMES)
 
 
 def parse_query(query):

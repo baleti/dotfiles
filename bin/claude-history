@@ -101,6 +101,9 @@ un-niced against it.
 Deps: fzf, python3. tmux is optional - only needed for the live/switch path.
 """
 import argparse
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.expanduser("~/.config/dsl"))
+import dsl  # shared DSL primitives (~/.config/dsl/dsl.py)
 import atexit
 import glob
 import http.client
@@ -250,10 +253,7 @@ def fts_scope_of(keys):
     else substring, comma list unioned) against claude-live / claude-archive / tmux; no keys = all three."""
     if not keys:
         return {"live", "archive", "tmux"}
-    hit = set()
-    for key in keys.lower().split(","):
-        if key:
-            hit.update([n for n in FTS_SCOPE_NAMES if n == key] or [n for n in FTS_SCOPE_NAMES if key in n])
+    hit = dsl.resolve_names(keys, FTS_SCOPE_NAMES)
     return {_SCOPE_KEY[n] for n in hit}
 
 
@@ -265,17 +265,8 @@ def fts_scope(q):
 
 
 def resolve_fields(keys):
-    """query-dsl.md "Keys": a comma list; per key the FIELD_NAMES entry equal
-    to it wins alone, else every entry containing it; unioned, in
-    FIELD_NAMES' own order (so highlight/display order stays predictable
-    rather than depending on match position)."""
-    hit = set()
-    for key in keys.lower().split(","):
-        if not key:
-            continue
-        exact = [f for f in FIELD_NAMES if f == key]
-        hit.update(exact or [f for f in FIELD_NAMES if key in f])
-    return [f for f in FIELD_NAMES if f in hit]
+    """query-dsl.md "Keys" over FIELD_NAMES (shared primitive: ~/.config/dsl/dsl.py)."""
+    return dsl.resolve_names(keys, FIELD_NAMES)
 
 
 def parse_query(query):
