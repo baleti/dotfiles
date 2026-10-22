@@ -270,8 +270,8 @@ Rectangle {
         return root.statusLabels[status] || status || "?";
     }
     // an archived (past) conversation has no process status: it says "archive"
-    function rowStatusLabel(r) { return r.archived ? qsTr("archive") : root.statusLabel(r.status); }
-    function rowStatusColor(r) { return r.archived ? Theme.textDim : root.statusColor(r.status); }
+    function rowStatusLabel(r) { return r.archived ? qsTr("archive") : (r.tmuxRow ? qsTr("tmux") : root.statusLabel(r.status)); }
+    function rowStatusColor(r) { return (r.archived || r.tmuxRow) ? Theme.textDim : root.statusColor(r.status); }
 
     // Re-render the relative-time strings once a second while open -- they
     // read off Date.now()/live deltas, which QML has no binding source for
@@ -349,12 +349,12 @@ Rectangle {
     // An archived row is also what plain /fts appends after the live matches.
     readonly property var _ftsTokenRe: /(^|\s)(!?)\/fts(?:\/([a-z,-]+))?(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
     // /fts/<keys>: keys fuzzy-resolve against the scope names (query-dsl.md Keys), so
-    // live, claude-live, archive and claude all work; no keys = both scopes
-    readonly property var ftsScopeNames: ["claude-live", "claude-archive"]
+    // live, claude-live, archive, claude and tmux all work; no keys = every scope
+    readonly property var ftsScopeNames: ["claude-live", "claude-archive", "tmux"]
     function _ftsScopeOf(keys) {
-        if (!keys) return "all";
+        if (!keys) return { live: true, archive: true, tmux: true };
         const r = QueryDsl.resolvePath(keys, root.ftsScopeNames);
-        return r.length === 1 ? (r[0] === "claude-live" ? "live" : "archive") : "all";
+        return { live: r.indexOf("claude-live") >= 0, archive: r.indexOf("claude-archive") >= 0, tmux: r.indexOf("tmux") >= 0 };
     }
     function _ftsTokens(text) {
         const out = [];
@@ -364,21 +364,27 @@ Rectangle {
             out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3]), arg: m[4] ? m[4].replace(/"/g, "") : "" });
         return out;
     }
-    // null | "live" | "archive" | "all"
-    readonly property var ftsScope: {
-        const scopes = new Set(root._ftsTokens(root.searchText).map(t => t.scope));
-        if (scopes.size === 0) return null;
-        return (scopes.size === 1 && !scopes.has("all")) ? [...scopes][0] : "all";
+    // null (no /fts) | { live, archive, tmux }: the union of every /fts token's scopes
+    readonly property var ftsScopes: {
+        const toks = root._ftsTokens(root.searchText);
+        if (toks.length === 0) return null;
+        const u = { live: false, archive: false, tmux: false };
+        for (const t of toks) for (const k of ["live", "archive", "tmux"]) u[k] = u[k] || t.scope[k];
+        return u;
     }
-    readonly property bool archiveMode: root.ftsScope === "archive"
-    // the term the archive rows are fetched for ("" = newest, archive scope only)
+    // archive-only: the short columns (no status / tmux / workspace / pid)
+    readonly property bool archiveMode: !!root.ftsScopes && root.ftsScopes.archive && !root.ftsScopes.live && !root.ftsScopes.tmux
+    readonly property bool liveRowsIn: !root.ftsScopes || root.ftsScopes.live
+    // the term the archive / tmux rows are fetched for ("" = newest, archive-only scope only)
     readonly property string archiveTerm: {
         const t = root._ftsTokens(root.searchText).find(x => !x.neg && x.arg);
         return t ? t.arg : "";
     }
     function _rewriteFts(text) {
+        // the live rows are filtered by `/fv/fts term` (hit set from claude-history); a token whose scopes
+        // exclude the live rows is dropped (archive / tmux rows come from the --sessions fetch below)
         return text.replace(root._ftsTokenRe, (all, lead, neg, scope, arg) =>
-            root._ftsScopeOf(scope) === "archive" ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
+            !root._ftsScopeOf(scope).live ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
     }
     property var archiveRows: []
     // sid -> { title, cwd, msgs, tokens, mtime }, kept by claude-fts-index (what supplies the msgs column of live rows)
@@ -390,14 +396,16 @@ Rectangle {
         onLoaded: { try { root.convMeta = JSON.parse(text()); } catch (e) {} }
     }
     onArchiveTermChanged: root._archiveRefresh()
-    onFtsScopeChanged: root._archiveRefresh()
+    onFtsScopesChanged: root._archiveRefresh()
     function _archiveRefresh() {
-        // archive scope lists even without a term; plain /fts only appends archived hits of a real term
-        const want = root.ftsScope === "archive" || (root.ftsScope === "all" && root.archiveTerm !== "");
+        // archive-only lists even without a term; otherwise archived / tmux hits need a real term
+        const sc = root.ftsScopes;
+        const want = !!sc && (sc.archive || sc.tmux) && (root.archiveMode || root.archiveTerm !== "");
         if (!want) { root.archiveRows = []; return; }
+        const csv = [sc.archive ? "archive" : "", sc.tmux ? "tmux" : ""].filter(x => x).join(",");
         const q = root._ftsTokens(root.searchText).filter(t => t.arg)
             .map(t => (t.neg ? "!" : "") + (/\s/.test(t.arg) ? '"' + t.arg + '"' : t.arg)).join(" ");
-        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--sessions", q, "--scope", "archive"];
+        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--sessions", q, "--scope", csv];
         archiveProc.running = false;
         archiveProc.running = true;
     }
@@ -406,7 +414,13 @@ Rectangle {
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
-                    root.archiveRows = JSON.parse(text).map(r => ({
+                    root.archiveRows = JSON.parse(text).map(r => r.kind === "tmux" ? ({
+                        // a tmux scrollback hit: shown with its tmux ids, status "tmux"
+                        account: "", title: r.title, cwd: r.cwd, session_id: r.session_id, pane_id: r.pane_id,
+                        context_tokens: null, msgs: "", updated_at_ms: (r.mtime || 0) * 1000,
+                        status: "tmux", pid: 0, tmuxRow: true, score: r.score,
+                        tmux_session: r.sess, tmux_window: r.win, tmux_pane: r.pane
+                    }) : ({
                         account: r.account, title: r.title, cwd: r.cwd, session_id: r.session_id,
                         context_tokens: r.tokens, msgs: r.msgs, updated_at_ms: (r.mtime || 0) * 1000,
                         status: "", pid: 0, archived: true, score: r.score
@@ -519,7 +533,7 @@ Rectangle {
         switch (field) {
         case "title": return [row.title || ""];
         case "pid": return [String(row.pid)];
-        case "status": return [row.archived ? "archive" : (row.status || "")];
+        case "status": return [row.archived ? "archive" : (row.tmuxRow ? "tmux" : (row.status || ""))];
         case "tokens": return [row.context_tokens !== null && row.context_tokens !== undefined ? String(row.context_tokens) : ""];
         case "path": return [root.shortCwd(row.cwd)];
         case "account": return [account];
@@ -545,7 +559,7 @@ Rectangle {
         if (fields.length === 0)
             return false; // unresolvable complete path -> narrows to nothing
         for (const f of fields) {
-            if (f === "fts" && row.archived)
+            if (f === "fts" && (row.archived || row.tmuxRow))
                 return true; // already a hit: claude-history only returned matching archived rows
             if (f === "fts") {
                 // BM25 hit set from claude-history, not QueryDsl.substr.
@@ -575,14 +589,13 @@ Rectangle {
     // it's from -- what the one flat table is built from now, replacing
     // the old per-account Repeater-of-Repeaters shape.
     readonly property var allProcs: {
-        if (root.archiveMode)
-            return root.archiveRows;
         const out = [];
-        for (const a of ClaudeUsageSvc.accounts)
-            for (const row of (ClaudeUsageSvc.sessions[a.account] || []))
-                out.push(Object.assign({ account: a.account, msgs: (root.convMeta[row.session_id] || {}).msgs }, row));
-        // plain /fts: archived hits follow the live ones
-        return root.ftsScope === "all" ? out.concat(root.archiveRows) : out;
+        if (root.liveRowsIn)
+            for (const a of ClaudeUsageSvc.accounts)
+                for (const row of (ClaudeUsageSvc.sessions[a.account] || []))
+                    out.push(Object.assign({ account: a.account, msgs: (root.convMeta[row.session_id] || {}).msgs }, row));
+        // archived / tmux hits follow the live ones (or are all there is, in archive-only / tmux-only views)
+        return root.ftsScopes ? out.concat(root.archiveRows) : out;
     }
     readonly property var searchFilteredProcs: {
         root.searchParsed; // dependency
@@ -629,7 +642,7 @@ Rectangle {
             arr = base.slice(); // archive rows arrive best match (or newest) first
         } else if (root._ftsTerms().length > 0 && !root.sort) {
             // /fts active and nothing explicitly sorted: best BM25 match first
-            const score = r => r.archived ? (r.score || 0) : root._ftsTerms().reduce((acc, t) =>
+            const score = r => (r.archived || r.tmuxRow) ? (r.score || 0) : root._ftsTerms().reduce((acc, t) =>
                 acc + ((root.ftsHits[t] || {})[r.session_id] || 0), 0);
             arr = base.slice().sort((a, b) => score(b) - score(a));
         } else if (root.sort) {
@@ -764,7 +777,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude", "fts/claude-live", "fts/claude-archive"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -778,6 +791,7 @@ Rectangle {
         if (v.startsWith("fts"))
             return { text: prefix + "/" + v + " ", label: "/" + v, alias: "",
                      desc: v === "fts" ? "full text of the running and archived Claude conversations"
+                         : v === "fts/tmux" ? "full text of tmux scrollback (panes without a Claude session)"
                          : v === "fts/claude" ? "full text, running and archived conversations"
                          : v === "fts/claude-live" ? "full text, running conversations only"
                          : "full text, past conversations only; Enter resumes one in a new window" };
@@ -837,7 +851,7 @@ Rectangle {
         if (fm) {
             const frag = fm[1].slice(fm[1].lastIndexOf(",") + 1);
             const head = t.slice(0, t.length - frag.length);
-            return [["claude", "running and archived conversations"], ["claude-live", "running conversations only"], ["claude-archive", "past conversations only; Enter resumes one in a new window"]]
+            return [["tmux", "tmux scrollback (all panes without a Claude session)"], ["claude", "running and archived conversations"], ["claude-live", "running conversations only"], ["claude-archive", "past conversations only; Enter resumes one in a new window"]]
                 .filter(x => x[0].indexOf(frag) >= 0)
                 .map(x => ({ text: head + x[0] + " ", label: x[0], alias: "", desc: x[1] }));
         }
@@ -1461,6 +1475,12 @@ Rectangle {
     function focusHyprWindow(row) {
         if (row.archived) {
             root.resumeRow(row);
+            return;
+        }
+        if (row.tmuxRow) {   // a scrollback hit: go to that tmux pane (focus its terminal)
+            ClaudeUsageQueryHistory.record(root.searchText);
+            resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--focus-tmux", row.pane_id]);
+            root.picked();
             return;
         }
         if (!row.hypr_address && !row.tmux_session)

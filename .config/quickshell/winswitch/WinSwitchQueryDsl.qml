@@ -78,7 +78,7 @@ QtObject {
         for (const v of ["fv", "ft", "at", "rt", "s"])
             for (const p of root.allPaths())
                 deep.push(v + "/" + p);
-        return bareVerbs.concat(["fts/claude", "fts/claude-live", "fts/claude-archive"], deep);
+        return bareVerbs.concat(["fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux"], deep);
     }
     // One-line description of a type path, for the type-path autocomplete
     // stage -- mirrors ui.rs's `type_desc`.
@@ -92,6 +92,7 @@ QtObject {
         "claude": "running and archived conversations",
         "claude-live": "running conversations only",
         "claude-archive": "past conversations only; Enter resumes one in a new window",
+        "tmux": "tmux scrollback (panes without a Claude session)",
         "tmux-session": "tmux session name",
         "tmux-window": "tmux window name",
         "tmux-title": "tmux window title",
@@ -355,8 +356,10 @@ QtObject {
             if (verb === "/fts") {
                 // /fts[/claude-live|/claude-archive|...] [term]: full text over the Claude conversations.
                 if (tv.bad) continue;
-                const names = root.resolveNames(tv.via || "", ["claude-live", "claude-archive"]);
-                const scope = names.length === 1 ? (names[0] === "claude-live" ? "live" : "archive") : "all";
+                // scope names: claude-live, claude-archive, tmux (no keys = all three)
+                const names = tv.via ? root.resolveNames(tv.via, ["claude-live", "claude-archive", "tmux"])
+                                     : ["claude-live", "claude-archive", "tmux"];
+                const scope = { live: names.indexOf("claude-live") >= 0, archive: names.indexOf("claude-archive") >= 0, tmux: names.indexOf("tmux") >= 0 };
                 let term = "";
                 if (i < toks.length && !root.startsCommand(toks[i])) {
                     term = toks[i].text.replace(/"/g, "");
@@ -405,11 +408,12 @@ QtObject {
         if (top.ftsTokens) {
             // Scope: one spelled scope wins, plain or mixed = both. live -> the window grid is
             // filtered by claude-fts; archive / both -> the table view (WinSwitch.qml).
-            const scopes = new Set(top.ftsTokens.map(t => t.scope));
-            const scope = (scopes.size === 1 && !scopes.has("all")) ? [...scopes][0] : "all";
-            top.fts = { scope, terms: top.ftsTokens.filter(t => !t.neg && t.term).map(t => t.term),
+            const scopes = { live: false, archive: false, tmux: false };
+            for (const t of top.ftsTokens) for (const k of ["live", "archive", "tmux"]) scopes[k] = scopes[k] || t.scope[k];
+            top.fts = { scopes, liveOnly: scopes.live && !scopes.archive && !scopes.tmux,
+                        terms: top.ftsTokens.filter(t => !t.neg && t.term).map(t => t.term),
                         negTerms: top.ftsTokens.filter(t => t.neg && t.term).map(t => t.term) };
-            if (scope === "live")
+            if (top.fts.liveOnly)
                 for (const t of top.ftsTokens)
                     if (t.term) top.filters.push(root.negated({ kind: "scoped", path: "claude-fts", value: t.term, exact: false }, t.neg));
         }
@@ -696,7 +700,7 @@ QtObject {
             return root.verbStageUniverse().filter(v => root.substr(completion.fragment, v));
         case "typePath":
             if (completion.verb === "/fts")
-                return ["claude", "claude-live", "claude-archive"].filter(n => root.substr(completion.fragment, n));
+                return ["claude", "claude-live", "claude-archive", "tmux"].filter(n => root.substr(completion.fragment, n));
             return root.pathSuggestions(completion.fragment);
         case "value":
             return root.valueSuggestions(windows, metas, completion.field, completion.fragment);
