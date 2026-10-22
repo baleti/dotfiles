@@ -49,7 +49,7 @@ PanelWindow {
         searchInput.focus = false;
         card.forceActiveFocus();
         // the table has no "first Down only moves focus" step: land on the row below
-        if (root.resumeMode) root._resumeMove(1);
+        if (root.tableMode) root._resumeMove(1);
     }
     function _focusSearch() {
         root.listFocused = false;
@@ -102,7 +102,7 @@ PanelWindow {
         WinSwitchState.close(reason || "hide");
     }
     function confirm(i) {
-        if (root.resumeMode) { root._resumeConfirm(); return; }
+        if (root.tableMode) { root._resumeConfirm(); return; }
         // query-dsl.md's "Search-box history": a real accept records the
         // query, same as fzf's own --history flag does for the tmux
         // pickers.
@@ -147,32 +147,49 @@ PanelWindow {
 
     // ---- filtering / sorting (query DSL) -----------------------------
     readonly property var parsedQuery: WinSwitchQueryDsl.parse(root.queryText)
-    // /fts.claude.resume [term]: the grid is replaced by a table of past
-    // (not running) conversations from `claude-history --archive`; Enter
-    // resumes the highlighted one in a new alacritty window.
-    readonly property bool resumeMode: root.parsedQuery.resume !== null && root.parsedQuery.resume !== undefined
-    readonly property string resumeTerm: root.resumeMode ? root.parsedQuery.resume.term : ""
-    property var archiveRows: []
+    // /fts[/claude][/live|/archive] [term]: full text over the Claude conversations.
+    // /fts/live filters the window grid; /fts/archive (past conversations) and plain
+    // /fts with a term (live + archived) replace the grid by a table from
+    // `claude-history --sessions`. Enter on a live row focuses its window, on an
+    // archived one resumes it in a new tmux session in an alacritty window.
+    readonly property var ftsSpec: root.parsedQuery.fts
+    readonly property bool tableMode: !!root.ftsSpec && (root.ftsSpec.scope === "archive"
+        || (root.ftsSpec.scope === "all" && root.ftsSpec.terms.length > 0))
+    readonly property string tableQuery: !root.tableMode ? "" : root.ftsSpec.terms
+        .concat(root.ftsSpec.negTerms.map(t => "!" + t))
+        .map(t => /\s/.test(t.replace(/^!/, "")) ? t.replace(/^(!?)(.*)$/, '$1"$2"') : t).join(" ")
+    readonly property string tableScope: root.tableMode ? (root.ftsSpec.scope === "archive" ? "archive" : "all") : ""
+    property var tableRows: []
+    // live rows carry the window that shows them (matched by claude session id)
+    readonly property var tableView: root.tableRows.map(r => {
+        if (!r.live) return r;
+        const w = root.windows.find(x => (root.metas[x.index] || {}).claude_session === r.session_id);
+        return Object.assign({}, r, { winIndex: w ? w.index : -1 });
+    })
     property int resumeSel: 0
     readonly property int resumeRowH: 24
-    onResumeTermChanged: root._archiveRefresh()
-    onResumeModeChanged: root._archiveRefresh()
-    function _archiveRefresh() {
+    onTableQueryChanged: root._tableRefresh()
+    onTableScopeChanged: root._tableRefresh()
+    function _tableRefresh() {
         root.resumeSel = 0;
-        if (!root.resumeMode) { root.archiveRows = []; return; }
-        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--archive", root.resumeTerm];
+        if (!root.tableMode) { root.tableRows = []; return; }
+        archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--sessions", root.tableQuery, "--scope", root.tableScope];
         archiveProc.running = false;
         archiveProc.running = true;
     }
     function _resumeMove(delta) {
-        const n = root.archiveRows.length;
+        const n = root.tableView.length;
         if (n === 0) return;
         root.resumeSel = Math.max(0, Math.min(n - 1, root.resumeSel + delta));
         resumeList.positionViewAtIndex(root.resumeSel, ListView.Contain);
     }
     function _resumeConfirm() {
-        const row = root.archiveRows[root.resumeSel];
+        const row = root.tableView[root.resumeSel];
         if (!row) return;
+        if (row.live) {
+            if (row.winIndex >= 0) { WinSwitchQueryHistory.record(root.queryText); WinSwitchState.confirm(row.winIndex); }
+            return;
+        }
         WinSwitchQueryHistory.record(root.queryText);
         resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--resume-window", row.session_id]);
         WinSwitchState.close("resume");
@@ -181,7 +198,7 @@ PanelWindow {
         id: archiveProc
         stdout: StdioCollector {
             onStreamFinished: {
-                try { root.archiveRows = JSON.parse(text); } catch (e) { root.archiveRows = []; }
+                try { root.tableRows = JSON.parse(text); } catch (e) { root.tableRows = []; }
             }
         }
     }
@@ -202,7 +219,7 @@ PanelWindow {
         return p && p.indexOf(h) === 0 ? "~" + p.slice(h.length) : (p || "");
     }
 
-    // /fts.claude: one `claude-history --fts` query per distinct term, queued
+    // /fts/live: one `claude-history --fts` query per distinct term, queued
     // through ftsProc; results land in WinSwitchQueryDsl.ftsHits.
     property var _ftsQueue: []
     property string _ftsCurrent: ""
@@ -215,8 +232,8 @@ PanelWindow {
     }
     // Match preview strip (only while a full-text term is in the query):
     // excerpts of the highlighted window's Claude conversation.
-    readonly property var _ftsActiveTerms: root.resumeMode
-        ? (root.resumeTerm ? [root.resumeTerm] : [])
+    readonly property var _ftsActiveTerms: root.tableMode
+        ? root.ftsSpec.terms
         : WinSwitchQueryDsl.ftsTerms(root.parsedQuery.filters)
     readonly property bool ftsActive: root._ftsActiveTerms.length > 0
     // Sized to the excerpts (at least 120), at most half the card's maximum height.
@@ -224,8 +241,8 @@ PanelWindow {
     property string snippetHtml: ""
     property string _snipKey: ""
     function _snipRefresh() {
-        const meta = root.resumeMode
-            ? { claude_session: (root.archiveRows[root.resumeSel] || {}).session_id }
+        const meta = root.tableMode
+            ? { claude_session: (root.tableView[root.resumeSel] || {}).session_id }
             : (root.metas[root.selected] || {});
         if (!root.ftsActive || !meta.claude_session) {
             root._snipKey = ""; root.snippetHtml = "";
@@ -241,7 +258,7 @@ PanelWindow {
     on_FtsActiveTermsChanged: root._snipRefresh()
     onSelectedChanged: root._snipRefresh()
     onResumeSelChanged: root._snipRefresh()
-    onArchiveRowsChanged: root._snipRefresh()
+    onTableViewChanged: root._snipRefresh()
     Process {
         id: snipProc
         stdout: StdioCollector {
@@ -338,7 +355,7 @@ PanelWindow {
     }
 
     function _advance(direction) {
-        if (root.resumeMode) { root._resumeMove(direction === "prev" ? -1 : 1); return; }
+        if (root.tableMode) { root._resumeMove(direction === "prev" ? -1 : 1); return; }
         const n = root.results.length;
         if (n === 0) return;
         const cur = root.visualSelected;
@@ -368,7 +385,7 @@ PanelWindow {
         }
     }
     function _advanceRow(delta) {
-        if (root.resumeMode) { root._resumeMove(delta < 0 ? -1 : 1); return; }
+        if (root.tableMode) { root._resumeMove(delta < 0 ? -1 : 1); return; }
         const n = root.results.length;
         if (n === 0) return;
         const k = Math.max(0, Math.min(n - 1, Math.max(0, root.visualSelected) + delta));
@@ -787,7 +804,7 @@ PanelWindow {
         // Grows to fit the search box + autocomplete popup once locked,
         // capped so the GridView's own scrolling takes over beyond that.
         readonly property int maxCardH: root.screen ? Math.round(root.screen.height * 0.92) : 1000
-        height: Math.min(card.maxCardH, (root.locked ? searchHeader.height : 0) + acPopup.height + gridScroll.contentHeightHint + (root.ftsActive && !root.resumeMode ? root.snippetH + 4 : 0) + 32)
+        height: Math.min(card.maxCardH, (root.locked ? searchHeader.height : 0) + acPopup.height + gridScroll.contentHeightHint + (root.ftsActive && !root.tableMode ? root.snippetH + 4 : 0) + 32)
         radius: Theme.rounding
         color: Theme.bgAlpha
         border.color: Theme.cyan
@@ -1133,19 +1150,19 @@ PanelWindow {
                 height: parent.height - searchHeader.height - acPopup.height - (root.ftsActive ? root.snippetH + 4 : 0) - contentColumn.spacing * 2
                 readonly property int contentHeightHint: root.rows * root.cellHeight   // the resume table keeps the grid's height
 
-                // Past-conversations table (/fts.claude.resume)
+                // Conversations table (/fts/archive, plain /fts with a term)
                 Column {
                     anchors.fill: parent
-                    visible: root.resumeMode
+                    visible: root.tableMode
                     spacing: 0
                     Row {
                         height: root.resumeRowH
                         spacing: 8
                         Repeater {
-                            model: [["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]]
+                            model: [["", 14], ["acct", 32], ["title", -1], ["msgs", 48], ["tkns", 56], ["age", 64], ["path", 220]]
                             Text {
                                 required property var modelData
-                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - 32 - 56 - 48 - 64 - 220 - 8 * 6) : modelData[1]
+                                width: modelData[1] < 0 ? Math.max(100, gridScroll.width - 14 - 32 - 56 - 48 - 64 - 220 - 8 * 7) : modelData[1]
                                 text: modelData[0]
                                 color: Theme.muted
                                 font.family: Theme.fontFamily
@@ -1160,7 +1177,7 @@ PanelWindow {
                         height: parent.height - root.resumeRowH
                         clip: true
                         boundsBehavior: Flickable.StopAtBounds
-                        model: root.archiveRows
+                        model: root.tableView
                         delegate: Rectangle {
                             id: resumeRow
                             required property var modelData
@@ -1172,9 +1189,11 @@ PanelWindow {
                             Row {
                                 anchors.fill: parent
                                 spacing: 8
+                                Text { width: 14; text: resumeRow.modelData.live ? "●" : ""; color: Theme.cyan
+                                       font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 32; text: root._acctNo(resumeRow.modelData.account); color: Theme.muted; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
-                                Text { width: Math.max(100, gridScroll.width - 32 - 56 - 48 - 64 - 220 - 8 * 6); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
+                                Text { width: Math.max(100, gridScroll.width - 14 - 32 - 56 - 48 - 64 - 220 - 8 * 7); text: resumeRow.modelData.title; color: Theme.text; elide: Text.ElideRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 2; anchors.verticalCenter: parent.verticalCenter }
                                 Text { width: 48; text: String(resumeRow.modelData.msgs); color: Theme.muted; horizontalAlignment: Text.AlignRight
                                        font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3; anchors.verticalCenter: parent.verticalCenter }
@@ -1195,7 +1214,7 @@ PanelWindow {
 
                 GridView {
                     id: grid
-                    visible: !root.resumeMode
+                    visible: !root.tableMode
                     anchors.fill: parent
                     cellWidth: root.cellW + root.cellHOverhead
                     cellHeight: root.cellHeight
