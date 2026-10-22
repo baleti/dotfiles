@@ -185,6 +185,14 @@ Rectangle {
         return deltaS <= 0 ? qsTr("resetting") : qsTr("resets in %1").arg(root.fmtDuration(deltaS));
     }
 
+    // Absolute local reset time for the hover hint, "Thu 22 Oct 18:30".
+    function fmtResetAt(iso) {
+        const d = iso ? new Date(iso) : null;
+        if (!d || isNaN(d.getTime()))
+            return "--";
+        return Qt.formatDateTime(d, "ddd d MMM HH:mm");
+    }
+
     // Raw "12s" / "4m" / "2d 3h" -- no "ago" baked in, so this doubles as
     // both the mode-line staleness readout (which adds its own " ago") and
     // the process list's "last active" column (which doesn't).
@@ -1877,6 +1885,28 @@ Rectangle {
                                 }
                             }
                         }
+                    }
+
+                    // Hover: exact date/time both limits reset, via the
+                    // shared cursor-following hint.
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        function hintFor() {
+                            const m = acctSummaryPill.modelData;
+                            const lines = [];
+                            if (typeof m.session_pct === "number")
+                                lines.push(qsTr("session resets %1").arg(root.fmtResetAt(m.session_resets_at)));
+                            if (typeof m.weekly_pct === "number")
+                                lines.push(qsTr("weekly resets %1").arg(root.fmtResetAt(m.weekly_resets_at)));
+                            return lines.join("\n");
+                        }
+                        onEntered: {
+                            root.showHint(hintFor());
+                            root.moveHint(acctSummaryPill.mapToItem(root, mouseX, mouseY));
+                        }
+                        onPositionChanged: mouse => root.moveHint(acctSummaryPill.mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
                     }
                 }
             }
