@@ -396,6 +396,13 @@ PanelWindow {
 
     function _applyAcItem(it) {
         if (!it) return;
+        // choosing an entry of the Ctrl+R history popup ends it (query-dsl.md "Search-box
+        // history"); close before the text changes, or the text-change recompute reopens it
+        if (root.acHistoryMode) {
+            root.acHistoryMode = false;
+            root.acItems = [];
+            
+        }
         search.text = it.text;
         search.cursorPosition = search.text.length;
     }
