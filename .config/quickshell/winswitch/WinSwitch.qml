@@ -386,13 +386,37 @@ PanelWindow {
         function onNavKey(direction: string): void {
             if (!root.open)
                 return;
-            if (direction === "up")
+            if (direction === "history") {
+                // Ctrl+Alt+R: with Alt held the compositor sees the chord first
+                // (the Revit panel bind), so it arrives as a nav event.
+                if (WinSwitchState.locked && searchInput.activeFocus)
+                    root._triggerHistorySearch();
+                else
+                    root._openHistoryCold();
+            } else if (direction === "up")
                 root._advanceRow(-root.cols);
             else if (direction === "down")
                 root._advanceRow(root.cols);
             else
                 root._advance(direction === "left" ? "prev" : "next");
         }
+    }
+    function _openHistoryCold() {
+        WinSwitchState.locked = true;
+        Qt.callLater(() => {
+            searchInput.forceActiveFocus();
+            // A second callLater, not one: acPopup's height/maxH
+            // depend on searchHeader.height, which only settles
+            // to its locked (32px) value once this first tick's
+            // layout pass has actually run - triggering the
+            // history search in the SAME tick as the focus grab
+            // computed the popup against the still-unlocked (0px)
+            // geometry, so it never visibly appeared until a
+            // second Ctrl+R press (reported 2026-09-14: "only
+            // focuses the search box, need to press Ctrl+R again
+            // to see the popup").
+            Qt.callLater(() => root._triggerHistorySearch());
+        });
     }
     function _advanceRow(delta) {
         if (root.tableMode) { root._resumeMove(delta < 0 ? -1 : 1); return; }
@@ -1517,21 +1541,7 @@ PanelWindow {
                 // printable-key branch below which seeds it) and opens
                 // the history popup right away, same "works from a blank
                 // prompt" expectation zsh's own ctrl-r widget gives.
-                WinSwitchState.locked = true;
-                Qt.callLater(() => {
-                    searchInput.forceActiveFocus();
-                    // A second callLater, not one: acPopup's height/maxH
-                    // depend on searchHeader.height, which only settles
-                    // to its locked (32px) value once this first tick's
-                    // layout pass has actually run - triggering the
-                    // history search in the SAME tick as the focus grab
-                    // computed the popup against the still-unlocked (0px)
-                    // geometry, so it never visibly appeared until a
-                    // second Ctrl+R press (reported 2026-09-14: "only
-                    // focuses the search box, need to press Ctrl+R again
-                    // to see the popup").
-                    Qt.callLater(() => root._triggerHistorySearch());
-                });
+                root._openHistoryCold();
                 event.accepted = true;
             } else if (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
                 // Any printable key (Alt may still be held) locks into search;
