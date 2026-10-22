@@ -1013,6 +1013,8 @@ Rectangle {
         root.mouseMovedSinceOpen = false;
         root._hoverSettled = false;
         if (root.expanded) {
+            // the search box has focus from the start; one Escape closes the panel
+            Qt.callLater(root.focusSearch);
             hoverSettleTimer.restart();
             // Preselect the row for whatever Hyprland window currently has
             // focus, if any of the visible rows map to it -- async, so it
@@ -1974,16 +1976,10 @@ Rectangle {
                             root.acDismissed = true;
                             root.acVerbMulti = false; root.acArgMulti = false;
                         } else {
+                            // No popup: Escape closes the panel (the query is
+                            // reset by onExpandedChanged on the next open).
                             searchInput.text = "";
-                            // Clear the field's own focus *before* handing
-                            // it to the panel -- the enclosing FocusScope
-                            // remembers its last-focused child, so a bare
-                            // root.forceActiveFocus() while searchInput
-                            // still holds focus just gets redirected right
-                            // back into it (same trap RssReader.qml calls
-                            // out; was why this took two Escapes).
-                            searchInput.focus = false;
-                            root.forceActiveFocus();
+                            root.picked();
                         }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {

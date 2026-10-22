@@ -43,7 +43,8 @@ PanelWindow {
             root.acVerbMulti = false; root.acArgMulti = false;
             search.focus = false; // don't let a stale focus-scope memory re-trap into search on reopen
             focusGrab.active = true;
-            Qt.callLater(() => { search.focus = false; keyScope.forceActiveFocus(); });
+            // the search box has focus from the start; one Escape closes the reader
+            Qt.callLater(() => search.forceActiveFocus());
             if (RssSvc.items.length === 0)
                 RssSvc.refresh();
         } else {
@@ -834,8 +835,7 @@ PanelWindow {
                                     }
                                     if (e.key === Qt.Key_Escape) {
                                         if (root.acOpen) { root.acDismissed = true; root.acVerbMulti = false; root.acArgMulti = false; }
-                                        else if (search.text.length) search.text = "";
-                                        else root._returnFocusToList();
+                                        else root.hide();
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Tab) {
                                         if (root.acOpen) {
