@@ -57,6 +57,9 @@ struct Hit {
     size: Option<u64>,
     #[serde(default)]
     mtime: Option<String>,
+    /// page count (local PDFs)
+    #[serde(default)]
+    pages: Option<u32>,
 }
 
 /// 1997930 -> "1,997,930"
@@ -422,7 +425,7 @@ fn clipboard_files(paths: &[PathBuf], cut: bool) {
 /// Column x-positions for a row/header spanning [left, right]: name | path | size | modified | score.
 /// Column x-positions for a row/header spanning [left, right]: name | path | size | modified | score.
 /// `f` holds each column's share of the width (sums to 1), so the columns scale with the window.
-struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, date_x: f32, score_r: f32, right: f32 }
+struct Cols { name_x: f32, path_x: f32, path_r: f32, size_r: f32, pages_x: f32, date_x: f32, score_r: f32, right: f32 }
 const MIN_FRAC: f32 = 0.04;
 const DEFAULT_COLS: [f32; 5] = [0.30, 0.40, 0.10, 0.14, 0.06];
 fn cols(left: f32, right: f32, f: &[f32; 5], show_score: bool) -> Cols {
@@ -432,7 +435,8 @@ fn cols(left: f32, right: f32, f: &[f32; 5], show_score: bool) -> Cols {
     let mins = [0.0, 0.0, SIZE_MIN_W, DATE_MIN_W, if show_score { SCORE_MIN_W } else { 0.0 }];
     let mut wd: Vec<f32> = f.iter().map(|x| x * w).collect();
     if !show_score { wd[4] = 0.0; }        // no score column: its share goes to name and path, the list ends at MODIFIED
-    for i in 2..5 { wd[i] = mins[i]; }       // fixed-width text: exactly as wide as it needs, the rest of the width is for name and path
+    for i in 2..5 { wd[i] = mins[i]; }
+    wd[2] += PAGES_W;                        // the #P column sits at the end of the size column's share       // fixed-width text: exactly as wide as it needs, the rest of the width is for name and path
     let fixed: f32 = wd[2] + wd[3] + wd[4];
     let flex = (w - fixed).max(NAME_MIN_W + PATH_MIN_W);
     let share = (wd[0] + wd[1]).max(1.0);
@@ -442,9 +446,10 @@ fn cols(left: f32, right: f32, f: &[f32; 5], show_score: bool) -> Cols {
     let x2 = x1 + wd[1];
     let x3 = x2 + wd[2];
     let x4 = x3 + wd[3];
-    Cols { name_x: left, path_x: x1, path_r: x2, size_r: x2, date_x: x3, score_r: x4, right }
+    Cols { name_x: left, path_x: x1, path_r: x2, size_r: x2, pages_x: x2 + SIZE_MIN_W, date_x: x3, score_r: x4, right }
 }
 const SIZE_MIN_W: f32 = 76.0;
+const PAGES_W: f32 = 44.0;
 const DATE_MIN_W: f32 = 116.0;
 const SCORE_MIN_W: f32 = 44.0;
 const NAME_MIN_W: f32 = 60.0;
@@ -1451,7 +1456,8 @@ fn take_act(ui: &mut egui::Ui, keys: &Keymap, act: &str) -> usize {
 }
 
 /// Keys that cannot be rebound (shown in the settings window).
-const FIXED_KEYS: [(&str, &str); 10] = [
+const FIXED_KEYS: [(&str, &str); 11] = [
+    ("Alt+D", "focus the search box"),
     ("Tab", "query box: complete; results: back to the query box"),
     ("Up / Down, Ctrl+K / Ctrl+J", "query box: walk the search history (Ctrl+J only once a walk started, else it enters the results); Down also enters the results"),
     ("Arrows", "move through the results; Left / Right also across the grid"),
@@ -2073,7 +2079,7 @@ impl App {
     fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context,
                  clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
         let pal = self.pal;
-        let text_h = 58.0;
+        let text_h = 72.0;
         // columns are as many as fit the thumbnail size, and the cells are stretched so they fill the whole width
         let gap = 10.0;
         let avail = ui.available_width();
@@ -2132,22 +2138,32 @@ impl App {
                         let name_font = egui::FontId::monospace(12.0);
                         let small = egui::FontId::monospace(10.0);
                         let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
-                        let size_txt = h.size.map(human_size).unwrap_or_default();
-                        let date_txt = h.mtime.as_deref().map(short_time).unwrap_or_default();
-                        let name_text = fit_text(ui, &base, &name_font, t);
+                        let measure = |t: &str, f: &egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f.clone(), egui::Color32::WHITE).size().x;
+                        let title_lbl = "title: ";
+                        let title_w = measure(title_lbl, &name_font);
+                        let name_text = fit_text(ui, &base, &name_font, (t - title_w).max(0.0));
                         let terms = query_terms(&self.last_sent);
-                        let lines = [
-                            (fit_text(ui, &dir, &small, t), small.clone(), pal.dim),
-                            (fit_text(ui, &size_txt, &small, t), small.clone(), pal.dim),
-                            (fit_text(ui, &date_txt, &small, t), small.clone(), pal.dim),
-                        ];
+                        // metadata fields are packed onto as few lines as fit the cell width
+                        let mut fields: Vec<String> = Vec::new();
+                        if let Some(sz) = h.size { fields.push(format!("size: {}", human_size(sz))); }
+                        if let Some(m) = h.mtime.as_deref() { fields.push(format!("date modified: {}", short_time(m))); }
+                        if let Some(n) = h.pages { fields.push(format!("pages: {n}")); }
+                        let mut lines: Vec<String> = vec![fit_text(ui, &format!("path: {dir}"), &small, t)];
+                        let mut cur = String::new();
+                        for f in fields {
+                            let joined = if cur.is_empty() { f.clone() } else { format!("{cur} · {f}") };
+                            if cur.is_empty() || measure(&joined, &small) <= t { cur = joined; }
+                            else { lines.push(std::mem::replace(&mut cur, f)); }
+                        }
+                        if !cur.is_empty() { lines.push(cur); }
                         let painter = ui.painter();
                         let name_galley = painter.layout_job(name_job(&name_text, &terms, &name_font, txt));
-                        painter.galley(egui::pos2(rect.left(), img.bottom() + 4.0), name_galley, txt);
+                        painter.text(egui::pos2(rect.left(), img.bottom() + 4.0), egui::Align2::LEFT_TOP, title_lbl, name_font.clone(), pal.dim);
+                        painter.galley(egui::pos2(rect.left() + title_w, img.bottom() + 4.0), name_galley, txt);
                         let mut y = img.bottom() + 18.0;
-                        for (text, font, color) in lines {
-                            painter.text(egui::pos2(rect.left(), y), egui::Align2::LEFT_TOP, text, font, color);
-                            y += 14.0;
+                        for text in lines {
+                            painter.text(egui::pos2(rect.left(), y), egui::Align2::LEFT_TOP, fit_text(ui, &text, &small, t), small.clone(), pal.dim);
+                            y += 13.0;
                         }
                         if let Some(sc) = h.score {
                             painter.text(egui::pos2(rect.right() - 2.0, img.top() + 2.0), egui::Align2::RIGHT_TOP,
@@ -2316,6 +2332,12 @@ impl eframe::App for App {
         }
         if self.first_frame {
             self.first_frame = false;
+            ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+        }
+        // Alt+D: back to the search box from anywhere (results list, snippets)
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::ALT, Key::D)) {
+            self.list_focus = false;
+            self.snip_focus = false;
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
         }
 
@@ -3257,6 +3279,7 @@ impl eframe::App for App {
                         ("name", c.name_x, "NAME"),
                         ("path", c.path_x, "PATH"),
                         ("size", c.size_r, "SIZE"),
+                        ("pages", c.pages_x, "#P"),
                         ("date", c.date_x, "MODIFIED"),
                     ];
                     if show_score { columns.push(("score", c.score_r, "SCORE")); }
@@ -3270,7 +3293,8 @@ impl eframe::App for App {
                         ui.painter().text(egui::pos2(*x, hr.top() + 2.0), egui::Align2::LEFT_TOP,
                             format!("{label}{arrow}"), hf.clone(),
                             if primary { pal.accent } else if secondary { pal.text } else { pal.dim });
-                        if resp.clicked() && *key != "score" { self.set_sort(key); }
+                        if *key == "pages" { resp.on_hover_text("number of pages"); }
+                        else if resp.clicked() && *key != "score" { self.set_sort(key); }
                     }
                     // drag handles on the boundaries between columns: move width from one column to its neighbour
                     let total = (hr.right() - left).max(1.0);
@@ -3410,6 +3434,9 @@ impl eframe::App for App {
                             painter.with_clip_rect(path_clip).text(egui::pos2(c.path_x, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::monospace(11.0), dim);
                             if let Some(sz) = h.size {
                                 painter.text(egui::pos2(c.size_r, y), egui::Align2::LEFT_CENTER, human_size(sz), egui::FontId::monospace(11.0), dim);
+                            }
+                            if let Some(n) = h.pages {
+                                painter.text(egui::pos2(c.pages_x, y), egui::Align2::LEFT_CENTER, n.to_string(), egui::FontId::monospace(11.0), dim);
                             }
                             if let Some(t) = &h.mtime {
                                 painter.text(egui::pos2(c.date_x, y), egui::Align2::LEFT_CENTER, short_time(t), egui::FontId::monospace(11.0), dim);

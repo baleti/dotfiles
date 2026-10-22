@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import base64, collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
+import base64, concurrent.futures, collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -526,6 +526,39 @@ _pending = queue.LifoQueue()   # newest request first: what is on screen now bea
 _queued = set()
 _queued_lock = threading.Lock()
 
+_pages_cache = {}                    # (path, size, mtime) -> page count, or 0 when pdfinfo could not tell
+_pages_pool = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+
+def _count_pages(path):
+    try:
+        out = subprocess.run(["pdfinfo", path], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        print("pdfinfo failed:", path, e, flush=True)
+        return 0
+    m = re.search(r"^Pages:\s+(\d+)", out, re.M)
+    return int(m.group(1)) if m else 0
+
+def add_pages(results, wait=1.5):
+    """Sets r["pages"] (page count of local PDFs). Counts not ready within `wait` seconds keep counting in the background
+    and show up on the next query."""
+    pending = []
+    for r in results:
+        path = r["remote"]
+        if not (path.startswith("/") and path.lower().endswith(".pdf")):
+            continue
+        key = (path, r.get("size"), r.get("mtime"))
+        if key in _pages_cache:
+            r["pages"] = _pages_cache[key] or None
+            continue
+        def job(path=path, key=key):
+            _pages_cache[key] = _count_pages(path)
+            return key
+        pending.append((r, key, _pages_pool.submit(job)))
+    if pending:
+        concurrent.futures.wait([f for _, _, f in pending], timeout=wait)
+        for r, key, _ in pending:
+            r["pages"] = _pages_cache.get(key) or None
+
 def thumb_path(remote):
     return os.path.join(THUMBS, hashlib.sha1(remote.encode()).hexdigest()[:16] + ".jpg")
 
@@ -890,6 +923,7 @@ class H(BaseHTTPRequestHandler):
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
                         r["mtime"] = None if r["mtime"] < 172800 or r["mtime"] in (filesearch.UNKNOWN_MTIME, 123456789) else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
+                add_pages(results)
                 return self._json(200, {"count": count, "results": results, "errors": errors, "stats": stats})
             try:
                 with _q_lock:
