@@ -329,8 +329,8 @@ Rectangle {
     property string searchText: ""
     readonly property var searchTypeNames: [
         "title", "pid", "status", "tokens", "path", "account",
-        "tmux.session", "tmux.window", "tmux.pane",
-        "hypr.workspace", "hypr.monitor", "hypr.window",
+        "tmux-session", "tmux-window", "tmux-pane",
+        "hypr-workspace", "hypr-monitor", "hypr-window",
     ]
     // `/fts term` is rewritten to /fv/fts, so "fts" must resolve as a filter
     // path - but it is a verb, not a type: kept out of completion and /s.
@@ -344,13 +344,21 @@ Rectangle {
     // `claude-history --sessions`, drops the columns that only make sense for a
     // running session, and Enter/click resumes in a new terminal window.
     // An archived row is also what plain /fts appends after the live matches.
-    readonly property var _ftsTokenRe: /(^|\s)(!?)\/fts(?:\/(live|archive))?(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
+    readonly property var _ftsTokenRe: /(^|\s)(!?)\/fts(?:\/([a-z,-]+))?(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
+    // /fts/<keys>: keys fuzzy-resolve against the scope names (query-dsl.md Keys), so
+    // live, claude-live, archive and claude all work; no keys = both scopes
+    readonly property var ftsScopeNames: ["claude-live", "claude-archive"]
+    function _ftsScopeOf(keys) {
+        if (!keys) return "all";
+        const r = QueryDsl.resolvePath(keys, root.ftsScopeNames);
+        return r.length === 1 ? (r[0] === "claude-live" ? "live" : "archive") : "all";
+    }
     function _ftsTokens(text) {
         const out = [];
         root._ftsTokenRe.lastIndex = 0;
         let m;
         while ((m = root._ftsTokenRe.exec(text)) !== null)
-            out.push({ neg: m[2] === "!", scope: m[3] || "all", arg: m[4] ? m[4].replace(/"/g, "") : "" });
+            out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3]), arg: m[4] ? m[4].replace(/"/g, "") : "" });
         return out;
     }
     // null | "live" | "archive" | "all"
@@ -367,7 +375,7 @@ Rectangle {
     }
     function _rewriteFts(text) {
         return text.replace(root._ftsTokenRe, (all, lead, neg, scope, arg) =>
-            scope === "archive" ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
+            root._ftsScopeOf(scope) === "archive" ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
     }
     property var archiveRows: []
     // sid -> { title, cwd, msgs, tokens, mtime }, kept by claude-fts-index (what supplies the msgs column of live rows)
@@ -512,12 +520,12 @@ Rectangle {
         case "tokens": return [row.context_tokens !== null && row.context_tokens !== undefined ? String(row.context_tokens) : ""];
         case "path": return [root.shortCwd(row.cwd)];
         case "account": return [account];
-        case "tmux.session": return [row.tmux_session || ""];
-        case "tmux.window": return [row.tmux_window || ""];
-        case "tmux.pane": return [row.tmux_pane || ""];
-        case "hypr.workspace": return [row.hypr_workspace || ""];
-        case "hypr.monitor": return [row.hypr_monitor || ""];
-        case "hypr.window": return [row.hypr_address || ""];
+        case "tmux-session": return [row.tmux_session || ""];
+        case "tmux-window": return [row.tmux_window || ""];
+        case "tmux-pane": return [row.tmux_pane || ""];
+        case "hypr-workspace": return [row.hypr_workspace || ""];
+        case "hypr-monitor": return [row.hypr_monitor || ""];
+        case "hypr-window": return [row.hypr_address || ""];
         }
         return [];
     }
@@ -674,12 +682,12 @@ Rectangle {
         "tokens": "context tokens used",
         "path": "working directory",
         "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7 / claude8",
-        "tmux.session": "tmux session id",
-        "tmux.window": "tmux window id",
-        "tmux.pane": "tmux pane id",
-        "hypr.workspace": "hyprland workspace",
-        "hypr.monitor": "hyprland monitor",
-        "hypr.window": "hyprland window address",
+        "tmux-session": "tmux session id",
+        "tmux-window": "tmux window id",
+        "tmux-pane": "tmux pane id",
+        "hypr-workspace": "hyprland workspace",
+        "hypr-monitor": "hyprland monitor",
+        "hypr-window": "hyprland window address",
         "fts": "full text of the Claude conversation (periodically indexed); /fts term",
     })
     readonly property var _acVerbs: ["/fv", "/s"]
@@ -713,7 +721,7 @@ Rectangle {
             const tok = text.slice(i + bang, j);
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (/^\/fts(\/(live|archive))?$/.test(tok) || QueryDsl.canonVerb({ q: false, v: tok })) {
+                if (/^\/fts(\/[a-z,-]+)?$/.test(tok) || QueryDsl.canonVerb({ q: false, v: tok })) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
@@ -748,12 +756,12 @@ Rectangle {
 
     // The full Verb-stage vocabulary: the three verbs that do anything here
     // (`_acVerbs`) plus `/fv` and `/s` - the two that take a real path -
-    // crossed with every type name ("fv/tokens", "s/tmux.session", ...), so
+    // crossed with every type name ("fv/tokens", "s/tmux-session", ...), so
     // a fragment of the *type*, not just the verb, reaches a whole working
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/live", "fts/archive"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude-live", "fts/claude-archive"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -767,7 +775,7 @@ Rectangle {
         if (v.startsWith("fts"))
             return { text: prefix + "/" + v + " ", label: "/" + v, alias: "",
                      desc: v === "fts" ? "full text of the running and archived Claude conversations"
-                         : v === "fts/live" ? "full text, running conversations only"
+                         : v === "fts/claude-live" ? "full text, running conversations only"
                          : "full text, past conversations only; Enter resumes one in a new window" };
         const slash = v.indexOf("/");
         if (slash < 0) {
@@ -775,7 +783,7 @@ Rectangle {
                      alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
         }
         const verb = v.slice(0, slash), name = v.slice(slash + 1);
-        return { text: `${prefix}/${verb}/${name} `, label: "/" + v,
+        return { text: `${prefix}/${verb}/${name}` + (verb === "fv" ? " " : ""), label: "/" + v,
                  alias: QueryDsl.verbInfo["/" + verb].long, desc: root.searchTypeDescs[name] || "" };
     }
 
@@ -808,7 +816,7 @@ Rectangle {
         // "//path" is the default-verb spelling of "/fv/path" (query-dsl.md
         // "Default verb"); match the stage regexes against the expanded form,
         // but keep building replacement text from `t` (only the tail differs).
-        const tm = t.replace(/(^|\s)\/\/(?=[a-z.]*(?:\s|$))/g, "$1/fv/");
+        const tm = t.replace(/(^|\s)\/\/(?=[a-z,-]*(?:\s|$))/g, "$1/fv/");
 
         if (root.acVerbMulti) {
             if (root.acVerbMultiStart < t.length && t[root.acVerbMultiStart] === "/") {
@@ -821,13 +829,16 @@ Rectangle {
             root.acVerbMulti = false; root.acArgMulti = false;
         }
 
-        const fm = t.match(/(?:^|\s|!)\/fts\/([a-z]*)$/);
+        const fm = t.match(/(?:^|\s|!)\/fts\/([a-z,-]*)$/);
         if (fm) {
-            const head = t.slice(0, t.length - fm[1].length);
-            return [["live", "running conversations only"], ["archive", "past conversations only; Enter resumes one in a new window"]]
-                .filter(x => x[0].indexOf(fm[1]) >= 0)
-                .map(x => ({ text: head + x[0] + " ", label: "/fts/" + x[0], alias: "", desc: x[1] }));
+            const frag = fm[1].slice(fm[1].lastIndexOf(",") + 1);
+            const head = t.slice(0, t.length - frag.length);
+            return [["claude-live", "running conversations only"], ["claude-archive", "past conversations only; Enter resumes one in a new window"]]
+                .filter(x => x[0].indexOf(frag) >= 0)
+                .map(x => ({ text: head + x[0] + " ", label: x[0], alias: "", desc: x[1] }));
         }
+        const ks = QueryDsl.keyStageCandidates(t, root.searchTypeNames, root.searchTypeDescs);
+        if (ks !== null) return ks;
         const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
@@ -835,39 +846,14 @@ Rectangle {
             return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
         }
 
-        const val = tm.match(/(?:^|\s)\/(?:fv|filter-value)(?:\/([a-z.]+)\s+([^\s:]*)|\s+([a-z.]+):([^\s:]*))$/);
+        // value stage:  "//<keys> <frag>"  /  "/fv/<keys> <frag>"
+        const val = tm.match(/(?:^|\s)\/(?:fv|filter-value)\/([a-z,-]+)\s+([^\s]*)$/);
         if (val) {
-            const field = (val[1] || val[3]).toLowerCase();
-            const frag = (val[2] !== undefined ? val[2] : val[4]).toLowerCase();
+            const field = val[1].toLowerCase();
+            const frag = val[2].toLowerCase();
             const base = t.slice(0, t.length - frag.length);
             return root._fieldValueCandidates(field, frag).slice(0, 40)
                 .map(v => ({ text: base + v, label: v, alias: "", desc: "" }));
-        }
-
-        const dir = t.match(/(?:^|\s)\/(?:s|sort)(?:\/[a-z.]+|\s+[a-z.]+)\s+([a-z]*)$/);
-        if (dir) {
-            const frag = dir[1].toLowerCase();
-            const base = t.slice(0, t.length - frag.length);
-            return ["ascending", "descending"].filter(d => d.indexOf(frag) === 0)
-                .map(d => ({ text: base + d, label: d, alias: "", desc: "" }));
-        }
-
-        const vp = tm.match(/(?:^|\s)\/(fv|filter-value|s|sort)\/([a-z.]*)$/);
-        if (vp) {
-            const frag = vp[2];
-            const base = t.slice(0, t.length - frag.length);
-            return root.searchTypeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
-                text: base + n + " ", label: n, alias: "", desc: root.searchTypeDescs[n] || ""
-            }));
-        }
-
-        const pm = t.match(/(?:^|\s)\/(fv|filter-value|s|sort)\s+([a-z.]*)$/);
-        if (pm && pm[2].indexOf(":") < 0) {
-            const frag = pm[2];
-            const head = t.slice(0, t.length - frag.length).replace(/\s+$/, "/");
-            return root.searchTypeNames.filter(n => n.indexOf(frag) >= 0).map(n => ({
-                text: head + n + " ", label: n, alias: "", desc: root.searchTypeDescs[n] || ""
-            }));
         }
 
         return [];
