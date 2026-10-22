@@ -611,7 +611,7 @@ def parse_query(query):
                         break
                     names.extend(n for n in r if n not in names)
                 if names and ok:
-                    sort = (names, parse_direction(dirp) if dirp else "ascending")
+                    sort = (names, parse_direction(dirp) if dirp else "descending")
                 continue
             if "/" not in text[1:] and is_verb_prefix(text[1:]):
                 continue  # mid-typing a verb - inert

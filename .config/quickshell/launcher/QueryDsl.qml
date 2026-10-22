@@ -207,7 +207,7 @@ QtObject {
                 if (tv.dir !== null && !root._isDirectionLike(tv.dir)) continue;
                 const keys = via.split(",").filter(x => x.length > 0);
                 if (keys.length > 0)
-                    R.sort = { fields: keys, dir: tv.dir ? root._dirOf(tv.dir) : "asc" };
+                    R.sort = { fields: keys, dir: tv.dir ? root._dirOf(tv.dir) : "desc" };
             } else if (via.replace(/,/g, "").length > 0) {
                 const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
                 R.cols.push({ op: op, path: via });

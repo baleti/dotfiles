@@ -37,7 +37,7 @@ VERBS (anywhere in the query)
                      The first use starts the worker (about 30 s); the total is what the nearest chunks cover, not every file.
   /clip words        photos matching what they show      /face name   photos showing a registered person
                      (--score shows the match score; --snippets prints the matching passages for /fts and /chroma)
-  /s/FIELD[,FIELD][/asc|/desc]   sort by name, path, size, date-modified, extension, depth (chain with commas, e.g. /s/size,name/desc)
+  /s/FIELD[,FIELD][/asc|/desc]   sort by name, path, size, date-modified, extension, depth, pages (chain with commas, e.g. /s/size,name; descending unless /asc)
   /show-dotfiles  /hide-dotfiles                         names starting with a dot
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
   /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
@@ -138,7 +138,7 @@ def parse_sort(q):
             for k in (k for group in segs for k in group):
                 if k not in keys:
                     keys.append(k)
-    desc_v = True if not keys else (desc if desc is not None else False)
+    desc_v = desc if desc is not None else True      # descending is the default direction
     if not keys:
         keys.append("date")
     return " ".join(rest), keys, desc_v, explicit
@@ -256,7 +256,7 @@ def main():
     sel = ap.add_argument_group("what to return")
     sel.add_argument("-n", "--limit", type=int, default=50, help="rows to print (default 50, 0 = all)")
     sel.add_argument("-s", "--sort", default=None, help="date (default), name, size, path, extension, depth; a/b chains keys")
-    sel.add_argument("--asc", action="store_true", help="oldest / smallest / first first (default: newest first)")
+    sel.add_argument("--asc", action="store_true", help="ascending: oldest / smallest / first first (default: descending, newest first)")
     sel.add_argument("--dotfiles", dest="dotfiles", action="store_true", default=None, help="include names starting with a dot")
     sel.add_argument("--no-dotfiles", dest="dotfiles", action="store_false", help="leave them out")
     sel.add_argument("--backup", choices=["restic", "btrfs", "all", "none"], help="include / exclude backup copies")
@@ -290,8 +290,8 @@ def main():
     if not explicit:
         explicit = bool(a.sort or a.asc)
         if a.sort:
-            keys = [k for k in (resolve_sort_field(p) for p in a.sort.split("/")) if k] or ["date"]
-            desc = not a.asc and keys == ["date"]
+            keys = [k for p in a.sort.split(",") for k in resolve_sort_fields(p)] or ["date"]
+            desc = not a.asc
         elif a.asc:
             desc = False
     verbs = []
