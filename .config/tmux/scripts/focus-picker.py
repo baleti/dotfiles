@@ -39,42 +39,32 @@ scrollback (see preview()) and the same dynamic list/preview resize
 window-search.py and claude-history already use - the list only takes as
 many rows as it has matches, the preview gets the rest.
 
-Query DSL (parse_query) - the /verb command grammar shared with winswitch
-and the GTK pickers (see ~/.config/docs/query-dsl.md). The base list is
-MRU-ordered; /sort is opt-in on top of that.
+Query DSL (parse_query) - the one command grammar shared with winswitch and
+the other pickers (see ~/.config/docs/query-dsl.md, "Grammar"). The base list
+is MRU-ordered; /s is opt-in on top of that. A command is one token,
+`/verb/keys[/dir]`; keys are a comma list of fuzzy type names (the name that
+equals a key wins, else every name containing it, unioned).
 
   foo bar              every bare word must appear (case-insensitive
                        substring) somewhere in the pane's searchable text -
                        session, window name, title, and any tracked-but-
                        not-shown extra data (ssh host/ip - see COLUMN_GROUPS
-                       below). A bare word is identical to /fv <word>.
-  /fv tmux.session:word  scope: word must appear in one field
-  /filter-value ...      (tmux.session / tmux.window / tmux.title). The
-                       field name is substring-resolved (/fv se:foo
-                       reaches tmux.session; a bare "tmux" reaches all
-                       three - see FILTER_FIELDS). /fv/tmux.session word
-                       (a second "/" gluing the field onto the verb
-                       instead of a colon - query-dsl.md's "Via paths")
-                       means exactly the same thing; Tab steers toward
-                       this spelling (see completion_stage), the colon
-                       form still works typed by hand. /fv/tmux word
-                       (a bare group, no subfield) searches all three
-                       together, same union rule as any ambiguous path
-                       segment elsewhere in this grammar.
-  /at ssh.host         add a tracked column to the display; /at ssh adds
-  /add-type ...        every ssh.* column. Group/sub substring-resolved.
-                       /at/ssh.host is the same via spelling as above.
-  /rt ssh              remove matching columns (mirror of /at).
-  /ft host             narrow the displayed extra columns to matches.
-  /s tmux.title [desc]  order the list by tmux.session / tmux.window /
-  /sort ...             tmux.title / age, optional ascending/descending
-                       (substring-matched). /s/tmux.title is the via
-                       spelling; single-key only - this picker's /sort
-                       never grew the doc's multi-key via chaining
-                       (/sort/a/b/c).
+                       below).
+  //tmux-session word  scope: word must appear in one type (tmux-session /
+  /fv/tmux-session word  tmux-window / tmux-title; see FILTER_FIELDS).
+                       //se word reaches tmux-session; //tmux word all three;
+                       //tmux-title,tmux-window word two of them (OR).
+  /at/ssh-host         add a tracked column to the display; /at/ssh adds
+  /add-type/ssh-host   every ssh-* column.
+  /rt/ssh              remove matching columns (mirror of /at).
+  /ft/ssh-host         narrow the displayed extra columns to matches.
+  /s/tmux-title/desc   order the list by tmux-session / tmux-window /
+  /sort/...            tmux-title / age; several keys are comma-separated
+                       (/s/tmux-session,age), the optional last part is the
+                       direction (asc|desc, any prefix of ascending/descending).
 
 Verb names are exact-matched (short or long form); everything else -
-field names, group/sub, directions - is substring containment. "..."
+type names and directions are substring containment. "..."
 quotes span whitespace and are the literal escape hatch. This exists
 because tracking more per-pane data (ssh connection info today) shouldn't
 mean permanent columns everyone sees - the data rides along in every
@@ -202,7 +192,9 @@ def humanize_ago(ts):
 # an entry here.
 COLUMN_GROUPS = {"ssh": ["name", "host", "ip"]}
 COLUMN_WIDTHS = {("ssh", "name"): 14, ("ssh", "host"): 20, ("ssh", "ip"): 15}
-COLUMN_LABELS = {("ssh", "name"): "SSH.NAME", ("ssh", "host"): "SSH.HOST", ("ssh", "ip"): "SSH.IP"}
+COLUMN_LABELS = {("ssh", "name"): "SSH-NAME", ("ssh", "host"): "SSH-HOST", ("ssh", "ip"): "SSH-IP"}
+# flat type names for /at /rt /ft keys ("ssh-host" -> the ("ssh", "host") column)
+COLUMN_FLAT = {f"{g}-{s}": (g, s) for g, subs in COLUMN_GROUPS.items() for s in subs}
 
 # ssh(1)'s own short options that consume a separate argv token as their
 # value (from `man ssh`'s usage line) - needed to walk past them without
@@ -356,17 +348,16 @@ def ssh_info(pane_pid):
 # is also what makes a bare "/fv/tmux query" search session+window+title
 # together, the same union a real bare-group filter gives in winswitch,
 # without this picker needing separate existence-filter code for it.
-FILTER_FIELDS = ["tmux.session", "tmux.window", "tmux.title"]
-FIELD_KEY = {"tmux.session": "session", "tmux.window": "window_name", "tmux.title": "pane_title"}
+FILTER_FIELDS = ["tmux-session", "tmux-window", "tmux-title"]
+FIELD_KEY = {"tmux-session": "session", "tmux-window": "window_name", "tmux-title": "pane_title"}
 
-# Sortable types for /sort: the three tmux.* text fields plus focus age.
-# `age` sorts by the raw ts (absolute, so "descending" = newest first,
-# applied literally - no age-bucket direction trap here) and stays flat -
-# it has no winswitch counterpart to mirror the naming of.
+# Sortable types for /s: the three tmux-* text fields plus focus age.
+# `age` sorts by the raw ts (absolute, so "desc" = newest first, applied
+# literally - no age-bucket direction trap here).
 SORT_KEYS = {
-    "tmux.session": lambda p: p["session"].lower(),
-    "tmux.window": lambda p: p["window_name"].lower(),
-    "tmux.title": lambda p: p["pane_title"].lower(),
+    "tmux-session": lambda p: p["session"].lower(),
+    "tmux-window": lambda p: p["window_name"].lower(),
+    "tmux-title": lambda p: p["pane_title"].lower(),
     "age": lambda p: p["ts"],
 }
 
@@ -472,48 +463,62 @@ def starts_cmd(text, lead_quote):
     if lead_quote or not text.startswith("/"):
         return False
     rest = text[1:]
-    if rest.startswith("/"):
-        return True  # "//path" - empty verb slot, default /fv (query-dsl.md "Default verb")
+    name, slash, _ = rest.partition("/")
+    if slash:
+        return name == "" or name in VERB_FORMS  # "//keys" or "/verb/keys"
     return rest in VERB_FORMS or is_verb_prefix(rest)
 
 
-def resolve_by_substring(prefix, names):
-    """Every entry in names containing prefix as a substring - "ho" reaches
-    "host", "ti" reaches "title". The one resolution rule everywhere."""
-    prefix = prefix.lower()
-    return [n for n in names if prefix in n]
+def resolve_keys(keys, names):
+    """query-dsl.md "Keys": a comma list; per key the name equal to it wins
+    alone, else every name containing it; unioned, in `names` order."""
+    hit = set()
+    for key in keys.lower().split(","):
+        if not key:
+            continue
+        exact = [n for n in names if n == key]
+        hit.update(exact or [n for n in names if key in n])
+    return [n for n in names if n in hit]
 
 
 def parse_direction(tok):
-    """A direction token -> "ascending"/"descending"/None. Any substring
-    match counts; ambiguous or empty -> ascending."""
-    m = [d for d in DIRECTIONS if tok.lower() in d]
-    if not m:
-        return None
-    return "descending" if m == ["descending"] else "ascending"
+    """A direction part -> "ascending"/"descending"/None: any non-empty
+    prefix of either word."""
+    t = tok.lower()
+    if t and "ascending".startswith(t):
+        return "ascending"
+    if t and "descending".startswith(t):
+        return "descending"
+    return None
 
 
-def _apply_col(verb, arg, active_cols, seen_cols):
-    """/at //rt //ft over the tracked group columns. arg is `group.sub`,
-    or a single segment matching a group name (-> all its subs) or a sub
-    name (-> that sub in any group)."""
-    group_pfx, dot, sub_pfx = arg.partition(".")
-    cols = []
-    if dot:
-        for g in resolve_by_substring(group_pfx, COLUMN_GROUPS):
-            cols.extend((g, s) for s in resolve_by_substring(sub_pfx, COLUMN_GROUPS[g]))
+_SHORT = {"fv": "fv", "filter-value": "fv", "ft": "ft", "filter-type": "ft", "at": "at", "add-type": "at",
+          "rt": "rt", "remove-type": "rt", "s": "s", "sort": "s"}
+
+
+def split_cmd(text):
+    """`/verb/keys[/dir]` or `//keys` -> (short_verb, keys|None, dir|None, bad),
+    or None if the token names no verb (query-dsl.md "Grammar")."""
+    parts = text[1:].split("/")
+    if parts[0] == "":
+        verb = "fv" if len(parts) >= 2 else None
     else:
-        seg = group_pfx.lower()
-        for g, subs in COLUMN_GROUPS.items():
-            for s in subs:
-                if (seg in g or seg in s) and (g, s) not in cols:
-                    cols.append((g, s))
-    if verb in AT_FORMS:
+        verb = _SHORT.get(parts[0])
+    if verb is None:
+        return None
+    return (verb, parts[1] if len(parts) >= 2 else None, parts[2] if len(parts) == 3 else None,
+            len(parts) > (3 if verb == "s" else 2))
+
+
+def _apply_col(verb, keys, active_cols, seen_cols):
+    """/at /rt /ft over the tracked columns; keys fuzzy-resolve against COLUMN_FLAT."""
+    cols = [COLUMN_FLAT[n] for n in resolve_keys(keys, list(COLUMN_FLAT))]
+    if verb == "at":
         for col in cols:
             if col not in seen_cols:
                 seen_cols.add(col)
                 active_cols.append(col)
-    elif verb in RT_FORMS:
+    elif verb == "rt":
         for col in cols:
             if col in seen_cols:
                 seen_cols.discard(col)
@@ -524,25 +529,11 @@ def _apply_col(verb, arg, active_cols, seen_cols):
         seen_cols.intersection_update(keep)
 
 
-def _add_filter(arg, bare_terms, field_terms, neg=False):
-    """One /fv argument (or a bare word): scoped when it has a colon and
-    the field resolves, else a plain bare term."""
-    field_pfx, sep, term = arg.partition(":")
-    term = _quoted(term, isinstance(arg, Exact))
-    if sep:
-        fields = resolve_by_substring(field_pfx, FILTER_FIELDS)
-        if fields:
-            field_terms.append((fields, _term(term), neg))
-            return
-    bare_terms.append((_term(arg), neg))
-
-
 def parse_query(query):
     """-> (bare_terms, field_terms, active_cols, sort).
 
-    sort is (SORT_KEYS name, "ascending"/"descending") or None (last /sort
-    wins). A bare word is an
-    implicit /fv term - identical to /fv <word>. A "-led token is literal
+    sort is ([SORT_KEYS names], "ascending"/"descending") or None (last /s
+    wins). A bare word is an implicit /fv term. A "-led token is literal
     text; a /xyz that is neither a verb nor a verb-prefix (e.g. /usr/bin)
     is literal text too; a /prefix still on its way to a verb is inert."""
     negs = set()
@@ -552,136 +543,57 @@ def parse_query(query):
     sort = None
     i, n = 0, len(toks)
 
-    arg_neg = False  # whether the arg take_arg() just returned carried a "!"
-
-    def take_arg():
-        nonlocal i, arg_neg
-        if i < n and not starts_cmd(toks[i][1], toks[i][2]):
-            a = toks[i][1]
-            arg_neg = toks[i][0] in negs
-            i += 1
-            return a
-        return None
-
     while i < n:
         tok_start, text, lead_quote = toks[i]
         verb_neg = tok_start in negs
         i += 1
         if not lead_quote and text.startswith("/"):
-            rest = text[1:]
-
-            # via-path form: /verb/path ... - a second "/" glues the path
-            # onto the verb instead of it arriving as a separate space
-            # token (query-dsl.md "Via paths"; every path-taking verb
-            # accepts this the same way). /s's via form is single-key
-            # only here, same as its space form - this picker's sort
-            # never supported the doc's multi-key chaining
-            # (`/sort/a/b/c`), so an embedded further "/" in the path just
-            # fails to resolve to any one SORT_KEYS name and the whole
-            # command stays inert, same as any other unresolvable path.
-            verb_part, via_slash, via_path = rest.partition("/")
-            if via_slash:
-                # verb_part == "" is "//path": the empty verb slot before the
-                # via "/" defaults to /fv (query-dsl.md "Default verb")
-                if verb_part in FV_FORMS or verb_part == "":
-                    arg = take_arg()
-                    if arg is not None:
-                        _add_filter(_quoted(f"{via_path}:{arg}", isinstance(arg, Exact)),
-                                    bare_terms, field_terms, verb_neg or arg_neg)
-                    continue
-                if verb_neg and not is_verb_prefix(verb_part):
-                    # "!" means nothing on a non-filter verb: inert (its
-                    # sort direction, if any, is still consumed below)
-                    if verb_part in SORT_FORMS and i < n \
-                            and not starts_cmd(toks[i][1], toks[i][2]) \
-                            and parse_direction(toks[i][1]) is not None:
+            cmd = split_cmd(text)
+            if cmd is not None:
+                verb, keys, dirp, bad = cmd
+                if keys is None or bad:
+                    continue  # keyless / malformed: inert, takes no argument
+                typed = bool(keys.replace(",", ""))
+                if verb == "fv":
+                    if i < n and not starts_cmd(toks[i][1], toks[i][2]):
+                        arg, arg_neg = toks[i][1], toks[i][0] in negs
                         i += 1
+                        if typed:
+                            # unresolvable keys: an empty field list matches nothing (narrows to nothing)
+                            field_terms.append((resolve_keys(keys, FILTER_FIELDS), _term(arg), verb_neg or arg_neg))
                     continue
-                if verb_part in AT_FORMS or verb_part in RT_FORMS or verb_part in FT_FORMS:
-                    _apply_col(verb_part, via_path, active_cols, seen_cols)
+                if verb_neg:
+                    continue  # "!" means nothing on a non-filter verb
+                if verb in ("at", "rt", "ft"):
+                    if typed:
+                        _apply_col(verb, keys, active_cols, seen_cols)
                     continue
-                if verb_part in SORT_FORMS:
-                    fields = resolve_by_substring(via_path, list(SORT_KEYS))
-                    if len(fields) == 1:
-                        direction = "ascending"
-                        if i < n and not starts_cmd(toks[i][1], toks[i][2]):
-                            d = parse_direction(toks[i][1])
-                            if d is not None:
-                                direction = d
-                                i += 1
-                        sort = (fields[0], direction)
+                # /s: every key must resolve to exactly one SORT_KEYS name
+                if dirp is not None and parse_direction(dirp) is None:
                     continue
-                if is_verb_prefix(verb_part):
-                    continue  # a still-forming verb/path is inert
-                # not a real verb - falls through to the plain checks below,
-                # which will also miss and land it as literal text (e.g.
-                # /usr/bin)
-
-            if rest in FV_FORMS:
-                arg = take_arg()
-                if arg is not None:
-                    _add_filter(arg, bare_terms, field_terms, verb_neg or arg_neg)
+                names = []
+                for k in (k for k in keys.lower().split(",") if k):
+                    r = resolve_keys(k, list(SORT_KEYS))
+                    names.append(r[0] if len(r) == 1 else None)
+                if names and None not in names:
+                    sort = (names, parse_direction(dirp) if dirp else "ascending")
                 continue
-            if verb_neg and (rest in AT_FORMS or rest in RT_FORMS or rest in FT_FORMS
-                             or rest in SORT_FORMS):
-                # "!" means nothing on a non-filter verb: inert, args consumed
-                if take_arg() is not None and rest in SORT_FORMS and i < n \
-                        and not starts_cmd(toks[i][1], toks[i][2]) \
-                        and parse_direction(toks[i][1]) is not None:
-                    i += 1
-                continue
-            if rest in AT_FORMS or rest in RT_FORMS or rest in FT_FORMS:
-                arg = take_arg()
-                if arg is not None:
-                    _apply_col(rest, arg, active_cols, seen_cols)
-                continue
-            if rest in SORT_FORMS:
-                path = take_arg()
-                if path is not None:
-                    fields = resolve_by_substring(path, list(SORT_KEYS))
-                    if len(fields) == 1:
-                        direction = "ascending"
-                        if i < n and not starts_cmd(toks[i][1], toks[i][2]):
-                            d = parse_direction(toks[i][1])
-                            if d is not None:
-                                direction = d
-                                i += 1
-                        sort = (fields[0], direction)
-                continue
-            if is_verb_prefix(rest):
+            if "/" not in text[1:] and is_verb_prefix(text[1:]):
                 continue  # mid-typing a verb - inert
-            # a literal /usr/bin etc
-            bare_terms.append((_term(text), verb_neg))
+            bare_terms.append((_term(text), verb_neg))  # a literal /usr/bin etc
             continue
         # bare word or "-quoted literal
         bare_terms.append((_term(text), verb_neg))
     return bare_terms, field_terms, active_cols, sort
 
 
-def _column_paths():
-    """Every /at//rt//ft path: each column group's name plus each of its
-    dotted subfields - "ssh", "ssh.name", "ssh.host", "ssh.ip"."""
-    out = []
-    for g, subs in COLUMN_GROUPS.items():
-        out.append(g)
-        out.extend(f"{g}.{s}" for s in subs)
-    return out
-
-
 def verb_stage_universe():
     """Every Verb-stage candidate (query-dsl.md's "Verb-stage depth"): the
-    five bare short verbs, plus every path-taking verb
-    crossed with every path it can actually take - "fv/tmux.session",
-    "at/ssh.host", ... so a fragment of the *path*, not just the verb, is
-    enough to reach a whole command in one Tab. Two disjoint path
-    registries feed this (unlike winswitch's one shared type registry,
-    the reference implementation this mirrors): /fv and /s draw from this
-    picker's flat filter/sort fields, /at//rt//ft from its column
-    groups."""
+    five bare short verbs, plus every key-taking verb crossed with every
+    type name it can take - "fv/tmux-session", "at/ssh-host", ..."""
     paths = {
-        "fv": FILTER_FIELDS,
-        "s": list(SORT_KEYS),
-        "at": _column_paths(), "rt": _column_paths(), "ft": _column_paths(),
+        "fv": FILTER_FIELDS, "s": list(SORT_KEYS),
+        "at": list(COLUMN_FLAT), "rt": list(COLUMN_FLAT), "ft": list(COLUMN_FLAT),
     }
     out = list(VERB_SHORTS)
     for v in VERB_SHORTS:
@@ -691,101 +603,42 @@ def verb_stage_universe():
 
 def completion_stage(query):
     """The candidates for the query's trailing token - a partial verb (or
-    verb/path), or a partial argument to /fv//at//rt//ft/s - as (prefix,
-    suffix, candidates). The finished query for a chosen candidate is
-    prefix + candidate + suffix; empty candidates means nothing to
-    complete here. Each candidate is the *full* replacement for the
-    trailing token (leading "/" included for a verb, dotted path for a
-    column group, trailing ":" for an /fv field), so the caller never
-    needs to know which stage produced it. Trailing token only - editing
-    happens at the end. complete()'s own only caller."""
+    verb/key), a key fragment after a `/verb/` or a comma, or a direction
+    after `/s/keys/` - as (prefix, suffix, candidates). The finished query for
+    a chosen candidate is prefix + candidate + suffix; empty candidates means
+    nothing to complete here. Trailing token only - editing happens at the
+    end. complete()'s own only caller."""
     if not query or query[-1].isspace():
         return "", "", []
     toks = tokenize(query)
     if not toks:
         return "", "", []
     start, text, lead_quote = toks[-1]
-    if lead_quote:
+    if lead_quote or not text.startswith("/"):
         return "", "", []
     prefix = query[:start]
-
-    if text.startswith("/"):
-        rest = text[1:]
-        verb_part, via_slash, via_frag = rest.partition("/")
-        if via_slash:
-            # already committed to one verb via a glued "/path" - narrow
-            # within THAT verb's own path universe only (query-dsl.md's
-            # Type-path stage, via spelling), not the full verb x path
-            # crossing below (that's for choosing the verb in the first
-            # place). Mirrors winswitch's completionContext: a second "/"
-            # in the fragment is a "typePath, via: true" completion, not
-            # a "verb" one.
-            base = f"{prefix}/{verb_part}/"
-            if verb_part in FV_FORMS or verb_part == "":
-                cands = [f for f in resolve_by_substring(via_frag, FILTER_FIELDS) if f != via_frag]
-                return (base, " ", cands) if cands else ("", "", [])
-            if verb_part in SORT_FORMS:
-                cands = [f for f in resolve_by_substring(via_frag, list(SORT_KEYS)) if f != via_frag]
-                return (base, " ", cands) if cands else ("", "", [])
-            if verb_part in AT_FORMS or verb_part in RT_FORMS or verb_part in FT_FORMS:
-                group_pfx, dot, sub_pfx = via_frag.partition(".")
-                groups = resolve_by_substring(group_pfx, COLUMN_GROUPS)
-                if dot:
-                    cands = []
-                    for g in groups:
-                        subs = resolve_by_substring(sub_pfx, COLUMN_GROUPS[g])
-                        cands.extend(f"{g}.{s}" for s in subs)
-                    suffix = " "  # a resolved subfield - ready for the next command
-                else:
-                    cands = list(groups)
-                    suffix = ""  # a bare group - ready for ".sub"
-                cands = [c for c in cands if c != via_frag]
-                return (base, suffix, cands) if cands else ("", "", [])
-            return "", "", []  # an unrecognized verb_part isn't a command
-        # no second "/" yet - still choosing the verb, or a whole deep
-        # verb/path combo in one step ("Verb-stage depth"): cross every
-        # path-taking verb with every path it can take, rendered as the
-        # complete "verb/path" string - same universe verb_stage_universe()
-        # builds, matched the same substring-anywhere way as everything
-        # else in this grammar.
-        rest_l = rest.lower()
+    parts = text[1:].split("/")
+    if len(parts) == 1:
+        # still choosing the verb, or a whole deep verb/key combo in one step
+        rest_l = parts[0].lower()
         cands = [f"/{v}" for v in verb_stage_universe() if rest_l in v]
         if not cands or (len(cands) == 1 and cands[0] == text):
             return "", "", []
         return prefix, " ", cands
-
-    # argument to the governing verb (the last /verb before this token)
-    gv = None
-    for _, t, lq in reversed(toks[:-1]):
-        if not lq and t.startswith("/") and t[1:] in VERB_FORMS:
-            gv = t[1:]
-            break
-        if not lq and t.startswith("/") and is_verb_prefix(t[1:]):
-            return "", "", []
-    if gv in AT_FORMS or gv in RT_FORMS or gv in FT_FORMS:
-        group_pfx, dot, sub_pfx = text.partition(".")
-        groups = resolve_by_substring(group_pfx, COLUMN_GROUPS) if group_pfx else []
-        if not groups:
-            return "", "", []
-        if dot:
-            cands = []
-            for g in groups:
-                subs = resolve_by_substring(sub_pfx, COLUMN_GROUPS[g]) if sub_pfx else COLUMN_GROUPS[g]
-                cands.extend(f"{g}.{s}" for s in subs)
-            suffix = " "  # a resolved subfield - ready for the next command
-        else:
-            cands = list(groups)
-            suffix = ""  # a bare group - ready for ".sub"
-        cands = [c for c in cands if c != text]
-        if not cands:
-            return "", "", []
-        return prefix, suffix, cands
-    if gv in FV_FORMS and ":" not in text and text:
-        fields = resolve_by_substring(text, FILTER_FIELDS)
-        cands = [c for c in (f"{f}:" for f in fields) if c != text]
-        if not cands:
-            return "", "", []
-        return prefix, "", cands
+    verb = "fv" if parts[0] == "" else _SHORT.get(parts[0])
+    if verb is None:
+        return "", "", []
+    if len(parts) == 2:
+        names = {"fv": FILTER_FIELDS, "s": list(SORT_KEYS)}.get(verb, list(COLUMN_FLAT))
+        comma = parts[1].rfind(",")
+        frag = parts[1][comma + 1:]
+        base = f"{prefix}/{parts[0]}/{parts[1][:comma + 1]}"
+        cands = [nm for nm in names if frag.lower() in nm and nm != frag]
+        # /fv takes a value next; the others end at their keys (a "," or "/dir" can follow)
+        return (base, " " if verb == "fv" else "", cands) if cands else ("", "", [])
+    if len(parts) == 3 and verb == "s":
+        cands = [d for d, full in (("asc", "ascending"), ("desc", "descending")) if full.startswith(parts[2].lower()) and d != parts[2]]
+        return (f"{prefix}/{parts[0]}/{parts[1]}/", " ", cands) if cands else ("", "", [])
     return "", "", []
 
 
@@ -1145,8 +998,8 @@ def search(snapshot_path, query):
     # Default order is MRU (snapshot file order); /sort is
     # opt-in on top of it.
     if sort is not None:
-        key_name, direction = sort
-        matched.sort(key=SORT_KEYS[key_name], reverse=(direction == "descending"))
+        key_names, direction = sort
+        matched.sort(key=lambda p: tuple(SORT_KEYS[k](p) for k in key_names), reverse=(direction == "descending"))
 
     sys.stdout.write("\n".join(row(p, active_cols) for p in matched))
 
