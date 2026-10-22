@@ -1029,9 +1029,33 @@ Rectangle {
             ? { col: col, asc: !root.sort.asc }
             : { col: col, asc: true };
     }
-    function sortArrow(col) {
-        return (root.sort && root.sort.col === col) ? (root.sort.asc ? " ▲" : " ▼") : "";
+    // The typed `/s/key1,key2/dir` (when it resolves to one type per key) overrides the
+    // header-click sort; its keys mark their column headers: the first with the arrow,
+    // every further key with the arrow in the accent colour (secondary sort key,
+    // query-dsl.md "Sort").
+    readonly property var dslSort: {
+        const s = root.searchParsed.sort;
+        if (!s) return null;
+        const names = s.fields.map(p => QueryDsl.resolvePath(p, root.searchTypeNames));
+        return names.every(n => n.length === 1) ? { keys: names.map(n => n[0]), asc: s.dir !== "desc" } : null;
     }
+    readonly property var _colField: ({ acct: "account", status: "status", title: "title", tokens: "tokens", path: "path", pid: "pid",
+        tmuxSession: "tmux-session", tmuxWindow: "tmux-window", tmuxPane: "tmux-pane", hyprWorkspace: "hypr-workspace" })
+    // 0 = not a sort key, 1 = primary, 2 = secondary
+    function sortRole(col) {
+        if (root.dslSort) {
+            const i = root.dslSort.keys.indexOf(root._colField[col]);
+            return i < 0 ? 0 : (i === 0 ? 1 : 2);
+        }
+        return (root.sort && root.sort.col === col) ? 1 : 0;
+    }
+    function sortArrow(col) {
+        const role = root.sortRole(col);
+        if (role === 0) return "";
+        const asc = root.dslSort ? root.dslSort.asc : root.sort.asc;
+        return asc ? " ▲" : " ▼";
+    }
+    function sortColor(col) { return root.sortRole(col) === 2 ? Theme.cyan : Theme.muted; }
     // undefined/null (context_tokens can be either for a session with no
     // recorded usage yet) sorts as lower than any real number, in both
     // directions -- "no data" reads more sensibly grouped at one end than
@@ -2289,7 +2313,7 @@ Rectangle {
 
                 Text {
                     text: qsTr("acct") + root.sortArrow("acct")
-                    color: Theme.muted
+                    color: root.sortColor("acct")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colAcctW
@@ -2307,7 +2331,7 @@ Rectangle {
                 }
                 Text {
                     text: qsTr("status") + root.sortArrow("status")
-                    color: Theme.muted
+                    color: root.sortColor("status")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colStatusW
@@ -2327,7 +2351,7 @@ Rectangle {
                 }
                 Text {
                     text: qsTr("title") + root.sortArrow("title")
-                    color: Theme.muted
+                    color: root.sortColor("title")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
@@ -2367,7 +2391,7 @@ Rectangle {
                 Text {
                     id: tokensHeader
                     text: qsTr("tkns") + root.sortArrow("tokens")
-                    color: Theme.muted
+                    color: root.sortColor("tokens")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colTokensW
@@ -2392,7 +2416,7 @@ Rectangle {
                 }
                 Text {
                     text: qsTr("age") + root.sortArrow("active")
-                    color: Theme.muted
+                    color: root.sortColor("active")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     horizontalAlignment: Text.AlignRight
@@ -2412,7 +2436,7 @@ Rectangle {
                 Text {
                     id: sessHeader
                     text: qsTr("sess") + root.sortArrow("tmuxSession")
-                    color: Theme.muted
+                    color: root.sortColor("tmuxSession")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
@@ -2441,7 +2465,7 @@ Rectangle {
                 Text {
                     id: winHeader
                     text: qsTr("win") + root.sortArrow("tmuxWindow")
-                    color: Theme.muted
+                    color: root.sortColor("tmuxWindow")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
@@ -2469,7 +2493,7 @@ Rectangle {
                 }
                 Text {
                     text: qsTr("pane") + root.sortArrow("tmuxPane")
-                    color: Theme.muted
+                    color: root.sortColor("tmuxPane")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
@@ -2491,7 +2515,7 @@ Rectangle {
                 Text {
                     id: wksHeader
                     text: qsTr("wks") + root.sortArrow("hyprWorkspace")
-                    color: Theme.muted
+                    color: root.sortColor("hyprWorkspace")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colHyprWorkspaceW
@@ -2518,7 +2542,7 @@ Rectangle {
                 }
                 Text {
                     text: qsTr("pid") + root.sortArrow("pid")
-                    color: Theme.muted
+                    color: root.sortColor("pid")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colPidW
@@ -2538,7 +2562,7 @@ Rectangle {
                 }
                 Text {
                     text: qsTr("path") + root.sortArrow("path")
-                    color: Theme.muted
+                    color: root.sortColor("path")
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight

@@ -3264,10 +3264,12 @@ impl eframe::App for App {
                         let rect = egui::Rect::from_min_max(egui::pos2(*x, hr.top()), egui::pos2(*x + 40.0, hr.bottom()));
                         let resp = ui.interact(rect, egui::Id::new(("hdr", *key)), egui::Sense::click());
                         let primary = cur_sort.explicit && cur_sort.keys.first().map(String::as_str) == Some(*key);
-                        let arrow = if primary { if cur_sort.desc { " ▼" } else { " ▲" } } else { "" };
+                        // a further key of /s/a,b,... (tie-breaker) gets the arrow in the text colour, not the accent
+                        let secondary = !primary && cur_sort.explicit && cur_sort.keys.iter().skip(1).any(|k| k == *key);
+                        let arrow = if primary || secondary { if cur_sort.desc { " ▼" } else { " ▲" } } else { "" };
                         ui.painter().text(egui::pos2(*x, hr.top() + 2.0), egui::Align2::LEFT_TOP,
                             format!("{label}{arrow}"), hf.clone(),
-                            if primary { pal.accent } else { pal.dim });
+                            if primary { pal.accent } else if secondary { pal.text } else { pal.dim });
                         if resp.clicked() && *key != "score" { self.set_sort(key); }
                     }
                     // drag handles on the boundaries between columns: move width from one column to its neighbour

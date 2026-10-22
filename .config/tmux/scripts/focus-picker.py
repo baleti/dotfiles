@@ -657,17 +657,36 @@ def row(p, active_cols):
     return f'{p["pane_id"]}\t' + "  ".join(parts)
 
 
-def header_line(active_cols):
-    parts = [f'{"AGE":>{AGE_WIDTH}}', f'{"SESSION:WIN":<{LOC_WIDTH}}', f'{"NAME":<{NAME_WIDTH}}']
-    for col in active_cols:
-        parts.append(f'{COLUMN_LABELS[col]:<{COLUMN_WIDTHS[col]}}')
-    parts.append("TITLE")
+# /s keys -> the header label they sort (the marked column)
+SORT_LABEL = {"age": "AGE", "tmux-session": "SESSION:WIN", "tmux-window": "NAME", "tmux-title": "TITLE"}
+
+
+def header_line(active_cols, sort=None):
+    """Column header. A /s key is marked with its direction arrow: the first key bold, every
+    further (tie-breaker) key in cyan - query-dsl.md "Sort"."""
+    marks = {}
+    if sort:
+        names, direction = sort
+        arrow = " ▼" if direction == "descending" else " ▲"
+        for i, k in enumerate(names):
+            marks[SORT_LABEL.get(k)] = ("\x1b[1m" if i == 0 else "\x1b[36m", arrow)
+
+    def col(label, width, right=False):
+        style, arrow = marks.get(label, ("", ""))
+        text = f"{label}{arrow}"
+        pad = f"{text:>{width}}" if right else f"{text:<{width}}"
+        return f"{style}{pad}\x1b[0m" if style else pad
+
+    parts = [col("AGE", AGE_WIDTH, True), col("SESSION:WIN", LOC_WIDTH), col("NAME", NAME_WIDTH)]
+    for c in active_cols:
+        parts.append(f'{COLUMN_LABELS[c]:<{COLUMN_WIDTHS[c]}}')
+    parts.append(col("TITLE", 0))
     return "  ".join(parts)
 
 
 def header(query):
-    _, _, active_cols, _ = parse_query(query)
-    sys.stdout.write(header_line(active_cols))
+    _, _, active_cols, sort = parse_query(query)
+    sys.stdout.write(header_line(active_cols, sort))
 
 
 def complete(query):

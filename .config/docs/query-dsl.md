@@ -560,6 +560,18 @@ Reorder the survivors; never filter or hide.
 - The old space forms (`/s name desc`, `/sort name`) are gone: the verb takes
   its keys and direction from its own token only.
 
+**Sort indicators.** Wherever a picker marks the sort in its column headers, the
+header of every column named by the typed `/s/key1,key2,.../dir` is marked: the
+first key (the primary) with the direction arrow `▲`/`▼` as before, every further
+key (a tie-breaker, **secondary**) with the same arrow in a different colour -
+so `/s/dm,size/desc` shows `MODIFIED ▼` as the primary and `SIZE ▼` in the
+second colour. A click-sorted header (no typed `/s`) is always primary.
+Implemented in the images picker (accent colour primary, text colour secondary),
+the claude-usage panel (muted primary, accent secondary; its header click and the
+typed `/s` share the arrows) and focus-picker (bold primary, cyan secondary, in
+its fzf header). Pickers with no sortable column headers (alt-tab, clipboard,
+notification, app-launcher, rss-reader, claude-history) have nothing to mark.
+
 Multi-key chaining dates from 2026-09-02 (then `/sort/tokens/title`, with `/`
 between keys; the comma replaced the slash 2026-10-22 so `/` can mean "next
 part").
