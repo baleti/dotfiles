@@ -1002,6 +1002,11 @@ Rectangle {
         root.thumbReady = false;
         root.mouseMovedSinceOpen = false;
         root._hoverSettled = false;
+        // no completion / Ctrl+R history popup survives a close: each open starts clean
+        root.acHistoryMode = false;
+        root.acItems = [];
+        root.acVerbMulti = false;
+        root.acArgMulti = false;
         if (root.expanded) {
             // the search box has focus from the start; one Escape closes the panel
             Qt.callLater(root.focusSearch);
