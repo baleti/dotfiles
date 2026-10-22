@@ -77,9 +77,8 @@ PanelWindow {
             widthArm.restart();
             query.text = "";
             root.selected = 0;
-            ac.visible = false;
             root.acVerbMulti = false; root.acArgMulti = false;
-            root.acActive = false;
+            root.acHistoryMode = false;
             focusGrab.active = true;
             Qt.callLater(() => query.forceActiveFocus());
         } else {
@@ -298,6 +297,10 @@ PanelWindow {
     readonly property var results: {
         if (root.actionMode)
             return root.workspaceRows;
+        // completions (verbs, /fv paths, history) are rows of this list too
+        const comps = root.acItems.map(it => ({ comp: true, action: true, item: it, name: it.label,
+            detail: (it.alias ? "(" + it.alias + ") " : "") + it.desc, entry: { icon: "" } }));
+        if (root.acHistoryMode) return comps;
         let rows = root.apps.filter(app => root.parsed.terms.every(t => root._matches(app, t)));
 
         const s = root.parsed.sort;
@@ -326,14 +329,7 @@ PanelWindow {
                 return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
             });
         }
-        // action verbs listed like apps while the query is a lone `/frag`
-        const frag = query.text.trim();
-        if (/^\/[a-z-]*$/.test(frag)) {
-            const cmds = Object.keys(root.actionVerbs).filter(v => v.startsWith(frag))
-                .map(v => ({ action: true, verb: v, name: v, detail: root.actionVerbs[v], entry: { icon: "" } }));
-            rows = cmds.concat(rows);
-        }
-        return rows;
+        return comps.concat(rows);
     }
 
     onResultsChanged: {
@@ -345,15 +341,8 @@ PanelWindow {
     function launch(i) {
         const app = root.results[i];
         if (!app) return;
-        if (app.action) {
-            if (app.verb === "/add-workspace") {
-                LauncherQueryHistory.record(app.verb);
-                root.addWorkspace({ target: "" });
-                root.hide();
-                return;
-            }
-            query.text = app.verb + " ";
-            query.cursorPosition = query.text.length;
+        if (app.comp) {
+            root._applyAcItem(app.item);
             return;
         }
         if (app.ws) {
@@ -544,21 +533,9 @@ PanelWindow {
     // to stay whatever it last was (open or closed) across keystrokes,
     // not recompute unconditionally on every one.
     property var acItems: []
-    property int acSel: 0
-    // Whether a completion session is open, independent of whether it
-    // currently has any candidates to show -- see query's onTextChanged.
-    property bool acActive: false
     onAcItemsChanged: {
-        // A history popup (Ctrl+R, query-dsl.md's "Search-box history")
-        // stays visible even at zero current candidates - unlike every
-        // other kind, where zero means "nothing to complete, don't show
-        // a popup at all" - same as zsh's own ctrl-r widget always
-        // showing its popup (bug found 2026-09-14 testing winswitch's
-        // identical gap: a fresh-install empty history made Ctrl+R look
-        // completely unbound instead of showing an empty popup).
-        ac.visible = acItems.length > 0 || root.acHistoryMode;
-        acSel = 0;
-        if (!ac.visible) { root.acVerbMulti = false; root.acArgMulti = false; }
+        root.selected = 0;
+        if (acItems.length === 0) { root.acVerbMulti = false; root.acArgMulti = false; }
     }
 
     function _applyAcItem(it) {
@@ -568,7 +545,6 @@ PanelWindow {
         if (root.acHistoryMode) {
             root.acHistoryMode = false;
             root.acItems = [];
-            root.acActive = false;
         }
         if (/\/add-workspace\s*$/.test(it.text)) {
             LauncherQueryHistory.record("/add-workspace");
@@ -580,37 +556,9 @@ PanelWindow {
         query.cursorPosition = query.text.length;
     }
 
-    function acAccept() {
-        root._applyAcItem(root.acItems[root.acSel]);
-    }
-
-    // Tab's entire job when the popup isn't already open: a single
-    // candidate completes immediately with no popup ever shown, same as
-    // ordinary shell tab-completion; 2+ reveals the popup (via
-    // onAcItemsChanged) so Up/Down can choose one. Returns whether it
-    // found anything to do.
-    function _triggerCompletion() {
-        // Marks the session open the moment Tab is pressed, even if this
-        // exact keystroke turns up zero candidates -- onTextChanged below
-        // keeps recomputing from here on, so a later edit that makes the
-        // fragment valid again reopens the popup on its own instead of
-        // requiring another Tab press.
-        root.acHistoryMode = false;
-        root.acActive = true;
-        const items = root._acCandidates();
-        if (items.length === 0) return false;
-        if (items.length === 1) {
-            root._applyAcItem(items[0]);
-            return true;
-        }
-        root.acSel = 0;
-        root.acItems = items;
-        return true;
-    }
-
     // ---- search-box history (query-dsl.md's "Search-box history") --
     // Ctrl+R reuses the completion popup's own rendering/highlight/accept
-    // machinery (acItems/acSel/acAccept/_applyAcItem all already just
+    // machinery (acItems/_applyAcItem all already just
     // read-and-replace `it.text` generically) rather than a second popup
     // component - acHistoryMode only changes what *computes* acItems
     // (this vs. _acCandidates) and what typing recomputes against.
@@ -641,10 +589,7 @@ PanelWindow {
     // never indistinguishable from unbound.
     function _triggerHistorySearch() {
         root.acHistoryMode = true;
-        root.acActive = true;
-        root.acSel = 0;
         root.acItems = root._acHistoryCandidates();
-        ac.visible = true;
     }
 
     // Up/Down cycling (query-dsl.md): most-recent-first with draft-restore,
@@ -767,7 +712,7 @@ PanelWindow {
         // popup when it's up).
         height: root.wsPrompt
             ? Math.min(Math.round((root.screen ? root.screen.height : 1080) * 0.6),
-                       header.height + (ac.visible ? ac.height : 0) + wsHead.height + list.topMargin
+                       header.height + wsHead.height + list.topMargin
                        + root.results.length * 30 + list.bottomMargin + 12)
             : Math.round((root.screen ? root.screen.height : 1080) * 0.6)
         radius: Theme.rounding
@@ -806,24 +751,8 @@ PanelWindow {
                 selectionColor: Theme.cyan
                 selectByMouse: true
                 clip: true
-                // Once a session is open (`acActive`, set by Tab -- see
-                // _triggerCompletion), keep recomputing candidates from the
-                // new text instead of clearing -- narrows the list as you
-                // type (e.g. `/` + Tab shows every verb, typing `f` narrows
-                // to /fv) rather than closing and forcing another Tab press.
-                // Gated on `acActive`, not `ac.visible`: the popup itself
-                // hides the instant candidates drop to zero (e.g. a typo),
-                // but the session stays open, so fixing the typo recomputes
-                // and reopens it rather than dead-ending until another Tab
-                // (the same bug reported 2026-09-13 against winswitch's
-                // identical pattern: "/cla tt" -> zero candidates hid the
-                // popup, and correcting it never brought the list back).
-                // Typing while no session is open still doesn't
-                // spontaneously show anything, matching "Tab-triggered,
-                // never live". Also fires (harmlessly) when accepting a
-                // completion sets this text itself, on an already-open
-                // (fine, recomputes to the same thing) or already-closed
-                // (no-op) session.
+                // Completions are live: every edit recomputes them, and they
+                // show as the first rows of the main results list.
                 onTextChanged: {
                     // A real edit cancels an in-progress Up/Down history
                     // cycle (query-dsl.md: editing invalidates the cycle
@@ -831,9 +760,7 @@ PanelWindow {
                     // WE just set the text ourselves while cycling.
                     if (!root._histCycling) root.acHistIndex = -1;
                     root.resultsWalked = false;
-                    root.acItems = root.acActive
-                        ? (root.acHistoryMode ? root._acHistoryCandidates() : root._acCandidates())
-                        : [];
+                    root.acItems = root.acHistoryMode ? root._acHistoryCandidates() : root._acCandidates();
                 }
 
                 Text {
@@ -898,7 +825,7 @@ PanelWindow {
                 // rest of the newest history entry starting with the text; Right, End
                 // or Ctrl+F at the end of the text takes it.
                 readonly property string ghost:
-                    (cursorPosition === text.length && !(ac.visible)) ? LauncherQueryHistory.suggest(text) : ""
+                    (cursorPosition === text.length && root.acItems.length === 0) ? LauncherQueryHistory.suggest(text) : ""
                 // Measured from the text itself, not positionToRectangle():
                 // that reads TextInput's layout, which updates after this
                 // binding re-evaluates, leaving the ghost one keystroke behind.
@@ -925,37 +852,21 @@ PanelWindow {
                         return;
                     }
                     if (event.key === Qt.Key_Escape) {
-                        if (ac.visible) { ac.visible = false; root.acVerbMulti = false; root.acArgMulti = false; root.acActive = false; root.acHistoryMode = false; }
+                        if (root.acHistoryMode) { root.acHistoryMode = false; root.acItems = root._acCandidates(); }
                         else root.hide();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                        if (ac.visible) root.acAccept();
-                        else root.launch(root.selected);
+                        root.launch(root.selected);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
-                        // Tab accepts the highlighted suggestion (same as
-                        // Space); Shift+Tab still steps the highlight back.
-                        if (ac.visible && (event.modifiers & Qt.ShiftModifier))
-                            root.acSel = (root.acSel - 1 + root.acItems.length) % root.acItems.length;
-                        else if (ac.visible)
-                            root.acAccept();
-                        else
-                            root._triggerCompletion();
+                        // Tab accepts the highlighted completion row, else the first one
+                        const cur = root.results[root.selected];
+                        if (cur && cur.comp) root._applyAcItem(cur.item);
+                        else if (root.acItems.length > 0) root._applyAcItem(root.acItems[0]);
                         event.accepted = true;
-                    } else if (event.key === Qt.Key_Space && !ac.visible && (event.modifiers & Qt.ControlModifier)) {
-                        // Ctrl+Space also opens completion, same as Tab
-                        // (query-dsl.md Autocompletion section) -
-                        // ClipboardPicker.qml/NotificationPicker.qml's
-                        // reference implementation, ported here.
-                        root._triggerCompletion();
-                        event.accepted = true;
-                    } else if (event.key === Qt.Key_Space && ac.visible && (event.modifiers & Qt.ControlModifier)) {
-                        // AND-narrows instead of accepting (query-dsl.md):
-                        // only meaningful once the popup's on a Verb-stage
-                        // fragment - `_acCandidates`'s multi branch is a
-                        // no-op otherwise (empty universe cross), so this
-                        // just always tries it rather than re-deriving the
-                        // current stage here too.
+                    } else if (event.key === Qt.Key_Space && (event.modifiers & Qt.ControlModifier)) {
+                        // AND-narrows (query-dsl.md): only meaningful on a
+                        // Verb-stage / path fragment with candidates showing
                         const vm = query.text.match(/(?:^|\s|!)(\/[a-z-]*)$/);
                         if (vm || root.acVerbMulti) {
                             if (!root.acVerbMulti) {
@@ -963,16 +874,13 @@ PanelWindow {
                                 root.acVerbMultiStart = query.text.length - vm[1].length;
                             }
                             query.insert(query.cursorPosition, " ");
-                        } else if (root.acArgMulti || ac.visible) {
+                        } else if (root.acArgMulti || root.acItems.length > 0) {
                             if (!root.acArgMulti) {
                                 root.acArgMulti = true;
                                 root.acArgMultiStart = query.text.search(/[^\s:\/]*$/);
                             }
                             query.insert(query.cursorPosition, " ");
                         }
-                        event.accepted = true;
-                    } else if (event.key === Qt.Key_Space && ac.visible) {
-                        root.acAccept();
                         event.accepted = true;
                     } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
                         // query-dsl.md's "Search-box history": always
@@ -985,15 +893,13 @@ PanelWindow {
                         // acHistIndex's own comment for why this picker
                         // can't just reuse Ctrl+J/Ctrl+K's dual-purpose
                         // trick the way it does for Tab-completion.
-                        if (ac.visible) root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                        else if (root.acHistIndex >= 0) root._historyNext();
+                        if (root.acHistIndex >= 0) root._historyNext();
                         else { root.selected = Math.min(root.results.length - 1, root.selected + 1); root.resultsWalked = true; } // single-focus: Down walks the results
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Up) {
-                        if (ac.visible) root.acSel = Math.max(0, root.acSel - 1);
-                        else root._upKey();
+                        root._upKey();
                         event.accepted = true;
-                    } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier) && !ac.visible) {
+                    } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier) ) {
                         // query-dsl.md "Search-box history": Ctrl+J == Down
                         // (forward through history only once Up/Ctrl+K has
                         // started cycling, else walk the results).
@@ -1004,14 +910,12 @@ PanelWindow {
                             LauncherQueryHistory.record(query.text);
                         }
                         event.accepted = true;
-                    } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier) && !ac.visible) {
+                    } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier) ) {
                         root._upKey(); // Ctrl+K == Up
                         event.accepted = true;
                     } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
                         if (!event.isAutoRepeat) _startNavRepeat(() => {
-                            if (ac.visible) {
-                                root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1);
-                            } else {
+                            {
                                 root.selected = Math.min(root.results.length - 1, root.selected + 1);
                                 LauncherQueryHistory.record(query.text);
                             }
@@ -1019,9 +923,7 @@ PanelWindow {
                         event.accepted = true;
                     } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
                         if (!event.isAutoRepeat) _startNavRepeat(() => {
-                            if (ac.visible) {
-                                root.acSel = Math.max(0, root.acSel - 1);
-                            } else {
+                            {
                                 root.selected = Math.max(0, root.selected - 1);
                                 LauncherQueryHistory.record(query.text);
                             }
@@ -1029,9 +931,7 @@ PanelWindow {
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageDown) {
                         if (!event.isAutoRepeat) _startNavRepeat(() => {
-                            if (ac.visible) {
-                                root.acSel = Math.min(root.acItems.length - 1, root.acSel + 7);
-                            } else {
+                            {
                                 root.selected = Math.min(root.results.length - 1,
                                                           root.selected + Math.max(1, Math.floor(list.height / 30)));
                                 list.positionViewAtIndex(root.selected, ListView.Contain);
@@ -1041,9 +941,7 @@ PanelWindow {
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageUp) {
                         if (!event.isAutoRepeat) _startNavRepeat(() => {
-                            if (ac.visible) {
-                                root.acSel = Math.max(0, root.acSel - 7);
-                            } else {
+                            {
                                 root.selected = Math.max(0, root.selected - Math.max(1, Math.floor(list.height / 30)));
                                 list.positionViewAtIndex(root.selected, ListView.Contain);
                                 LauncherQueryHistory.record(query.text);
@@ -1062,74 +960,12 @@ PanelWindow {
             }
         }
 
-        // Autocomplete popup, in-layout under the header (like the GTK
-        // pickers). Each row: label, then the long-form alias and a
-        // one-line description, both dim (marginalia).
-        Column {
-            id: ac
-            visible: false
-            anchors.top: header.bottom
-            width: parent.width
-            height: visible ? Math.min(root.acItems.length, 7) * 24 + 8 : 0
-            clip: true
-            padding: 4
-
-            Repeater {
-                model: root.acItems
-                Rectangle {
-                    id: acRow
-                    required property var modelData
-                    required property int index
-                    readonly property bool cur: index === root.acSel
-                    width: ac.width - 8
-                    height: 24
-                    radius: Theme.rounding - 5
-                    color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
-
-                    Row {
-                        id: acFields
-                        anchors.verticalCenter: parent.verticalCenter
-                        x: 10
-                        spacing: 8
-
-                        Text {
-                            id: acLabel
-                            text: acRow.modelData.label
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 1
-                            color: acRow.cur ? Theme.cyan : Theme.text
-                        }
-                        Text {
-                            visible: !!acRow.modelData.alias
-                            anchors.baseline: acLabel.baseline
-                            text: "(" + acRow.modelData.alias + ")"
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            color: Theme.muted
-                        }
-                        Text {
-                            anchors.baseline: acLabel.baseline
-                            text: acRow.modelData.desc
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSize - 2
-                            color: Theme.textDim
-                        }
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: { root.acSel = acRow.index; root.acAccept(); }
-                    }
-                }
-            }
-        }
-
         // Column header of the workspace table (second-stage lists only),
         // same dim small-caps-less style as mod+v's column headers.
         Row {
             id: wsHead
             visible: root.wsPrompt
-            anchors.top: ac.visible ? ac.bottom : header.bottom
+            anchors.top: header.bottom
             x: 12
             width: parent.width - 24
             height: visible ? 18 : 0
@@ -1158,7 +994,7 @@ PanelWindow {
 
         ListView {
             id: list
-            anchors.top: root.wsPrompt ? wsHead.bottom : (ac.visible ? ac.bottom : header.bottom)
+            anchors.top: root.wsPrompt ? wsHead.bottom : header.bottom
             anchors.bottom: parent.bottom
             width: parent.width
             clip: true
