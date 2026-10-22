@@ -269,7 +269,7 @@ def apply_sort(rows, sort, desc):
     order = lambda rs, ks: sorted(rs, key=lambda r: (tuple(k(r) for k in ks), r["remote"].lower()), reverse=desc)
     if "pages" not in names:
         return order(rows, keys)
-    add_pages(rows, wait=20)
+    add_pages(rows, wait=90)
     has = [r for r in rows if r.get("pages")]
     none = [r for r in rows if not r.get("pages")]
     return order(has, keys) + order(none, [keyfn[k] for k in names if k != "pages"])
@@ -539,6 +539,32 @@ _queued_lock = threading.Lock()
 
 _pages_cache = {}                    # (path, size, mtime) -> page count, or 0 when pdfinfo could not tell
 _pages_pool = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+_PAGES_FILE = os.path.join(config.DATA_DIR, "pages-cache.json")
+_pages_dirty = threading.Event()
+
+def _pages_load():
+    """Page counts survive restarts: a cold count of a big folder (pdfinfo over a FUSE mount) takes minutes."""
+    try:
+        for k, v in json.load(open(_PAGES_FILE)).items():
+            path, size, mt = k.split("\t")
+            _pages_cache[(path, int(size) if size != "None" else None, int(mt) if mt.lstrip("-").isdigit() else mt)] = v
+    except (OSError, ValueError):
+        pass
+
+def _pages_saver():
+    while True:
+        _pages_dirty.wait()
+        time.sleep(15)                   # batch bursts of new counts into one write
+        _pages_dirty.clear()
+        try:
+            tmp = _PAGES_FILE + ".tmp"
+            json.dump({f"{p}\t{s}\t{m}": v for (p, s, m), v in list(_pages_cache.items())}, open(tmp, "w"))
+            os.replace(tmp, _PAGES_FILE)
+        except OSError as e:
+            print("pages cache save failed:", e, flush=True)
+
+_pages_load()
+threading.Thread(target=_pages_saver, daemon=True).start()
 
 def _count_pages(path):
     try:
@@ -567,6 +593,7 @@ def add_pages(results, wait=1.5):
             continue
         def job(path=path, key=key):
             _pages_cache[key] = _count_pages(path)
+            _pages_dirty.set()
             return key
         pending.append((r, key, _pages_pool.submit(job)))
     if pending:
