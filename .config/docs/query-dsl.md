@@ -33,7 +33,7 @@ add a new consumer, add its row here too.
 | window-search | tmux prefix+C-w | `~/.config/tmux/scripts/window-search.py` | live tmux pane scrollback, BM25-ranked |
 | claude-history | tmux prefix+C-c | `~/bin/claude-history` | saved Claude Code conversation transcripts, BM25-ranked |
 | focus-picker | tmux prefix+w | `~/.config/tmux/scripts/focus-picker.py` | tmux panes, MRU-ordered (no ranking) |
-| winswitch | Alt+Tab (hold) | `~/.config/quickshell/winswitch/WinSwitchQueryDsl.qml` + `WinSwitch.qml` (grammar ported off `~/.config/hypr/winswitch/src/query.rs`, unused since the 2026-09-09 GTK->Quickshell UI rewrite) | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
+| winswitch | Alt+Tab (hold) | `~/.config/quickshell/winswitch/WinSwitchQueryDsl.qml` + `WinSwitch.qml` (the Rust `query.rs` it was ported from was removed 2026-10-22) | open windows (Hyprland), grid layout - plus tmux/Claude Code metadata cross-referenced onto them |
 | group picker | mod+Tab | `~/.config/quickshell/services/GroupPickerState.qml` + `~/bin/group-windows` (no UI of its own: it feeds the active window's Hyprland group tabs into `WinSwitchState.startGroup()`, so the grid, thumbnails and search box are winswitch's, the grammar is winswitch's `WinSwitchQueryDsl.qml`) | the tabs of the active window's Hyprland group, same fields as winswitch (title is the file name for apps like nsxiv that title themselves with their own name) |
 | clipboard-picker | mod+v | `~/.config/quickshell/clipboard/ClipboardPicker.qml` (headless backend: `~/.config/hypr/clipboard-picker/src/bin/clipboard-picker.rs`) | cliphist clipboard history, list layout |
 | notification-picker | mod+CTRL+n | `~/.config/quickshell/notifications/NotificationPicker.qml` (headless backend: `~/.config/hypr/clipboard-picker/src/bin/notification-picker.rs`; imports `ClipboardQueryDsl.qml` directly rather than an 8th hand-port) | notifyd's retained notification history |
@@ -891,8 +891,7 @@ visible in the label itself.
 Landed in winswitch first (`WinSwitchQueryDsl.qml`'s `completionCandidates`'s
 `"verb"` case, alongside the existing `shortVerbs` filter - not
 `query.rs`, which stopped being winswitch's live implementation once its
-UI was rewritten onto Quickshell/QML on 2026-09-09; `query.rs`'s own grammar
-code is unused today), confirmed correct there, then ported by hand to
+UI was rewritten onto Quickshell/QML on 2026-09-09 and has since been deleted), confirmed correct there, then ported by hand to
 every other consumer that has a Tab-triggered popup at all: `picker.rs`'s
 `verb_stage_universe` (clipboard-picker/notification-picker - crosses only
 `/fv`, the one verb that's actually acting there, against its flat
