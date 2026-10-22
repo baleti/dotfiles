@@ -37,7 +37,7 @@ VERBS (anywhere in the query)
                      The first use starts the worker (about 30 s); the total is what the nearest chunks cover, not every file.
   /clip words        photos matching what they show      /face name   photos showing a registered person
                      (--score shows the match score; --snippets prints the matching passages for /fts and /chroma)
-  /s FIELD [asc|desc]   sort by name, path, size, date-modified, extension, depth (chain with /, e.g. /s size/name)
+  /s/FIELD[,FIELD][/asc|/desc]   sort by name, path, size, date-modified, extension, depth (chain with commas, e.g. /s/size,name/desc)
   /show-dotfiles  /hide-dotfiles                         names starting with a dot
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
   /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
@@ -98,7 +98,9 @@ def sort_direction(tok):
     return None
 
 def parse_sort(q):
-    """(query without /s, sort keys, descending?, explicit?)"""
+    """(query without /s, sort keys, descending?, explicit?). One token per
+    command, `/s/key[,key...][/dir]` (query-dsl.md "Grammar"); each /s adds
+    keys, a key that resolves to nothing makes that /s inert, a keyless /s too."""
     toks, rest, keys, desc, explicit, i = tokenize(q), [], [], None, False, 0
     while i < len(toks):
         t = toks[i]; i += 1
@@ -115,26 +117,19 @@ def parse_sort(q):
             rest.append(t)
             continue
         if chain == "":
-            path = None
-        elif chain.startswith("/"):
-            path = chain[1:]
-        else:
+            continue                                       # keyless: inert
+        if not chain.startswith("/"):
             rest.append(t)
             continue
-        dir_first = None
-        if path is None and i < len(toks) and not toks[i].startswith("/"):
-            if resolve_sort_field(toks[i]) is None:
-                d = sort_direction(toks[i])
-                if d is not None:
-                    dir_first = d; i += 1
-            if i < len(toks) and not toks[i].startswith("/"):
-                path = toks[i]; i += 1
-        segs = [resolve_sort_field(p) for p in path.split("/")] if path is not None else []
-        direction = dir_first
-        if i < len(toks):
-            d = sort_direction(toks[i])
-            if d is not None:
-                i += 1; direction = d
+        parts = chain[1:].split("/")
+        if len(parts) > 2:
+            continue                                       # malformed: inert
+        segs = [resolve_sort_field(p) for p in parts[0].split(",") if p]
+        direction = None
+        if len(parts) == 2:
+            direction = sort_direction(parts[1])
+            if direction is None:
+                continue                                   # bad direction: the whole /s is inert
         if segs and all(x is not None for x in segs):
             if direction is not None:
                 desc = direction
