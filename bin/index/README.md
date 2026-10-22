@@ -22,6 +22,7 @@ Everything here is generic code. The private parts are kept outside the repo:
 | Driver | `photos/index_all.py` | Runs every flagged index for every collection in `collections.json`. |
 | Catalog refresh | `~/.config/systemd/user/catalog-*.{service,timer}` | Safety-net walks: local nightly at 03:00 and once after each boot (`catalog-local`, incremental, about 30 s; what it finds is mostly files still held open and being written), newest restic snapshot every 6 h (`catalog-remote`), Google Drive weekly on Sunday 04:20 (`catalog-drive-full`), the NFS roots monthly (`catalog-extra`). A full walk drops deleted files and old versions. Full builds touch `catalog.db.gen`, which makes the server reload; live changes do not (see below). |
 | Nightly | `~/.config/systemd/user/nightly-index.{service,timer}` | 02:30 run of the driver, nice 19, idle I/O, 2 CPUs, memory capped at 8 GB. |
+| Nightly supplier-details | `~/.config/systemd/user/index-supplier-details.{service,timer}` | 01:15 plain `recollindex` of the supplier-details collection (nice 19, idle I/O, 3 GB cap, 3 h timeout). Separate because the 02:30 driver walks collections in config order and hit its 12 h timeout (orms extractions that fail with `internfile failure` take ~20 min each) before reaching supplier-details; the driver still lists it, but finds nothing left to do. |
 | Tools | `tools/pdf_list.py` (lists PDFs per collection), `tools/coverage.py` (indexed vs on disk) | Maintenance. |
 
 ## Behaviour
