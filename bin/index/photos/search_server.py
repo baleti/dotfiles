@@ -73,6 +73,7 @@ def icon_for(path):
     _icon_state["cache"][name] = out if os.path.exists(out) else ""
     return _icon_state["cache"][name]
 NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
+NAMES.pin = True        # the main name table stays resident; the backup and live-overlay tables do not
 
 # Recoll/Xapian content indexes (each one is a Recoll config directory) searched by /fts
 FTS_CONFIGURED = [os.path.expanduser(p) for p in config.CFG.get("fts", {}).get("indexes", [])]

@@ -282,7 +282,22 @@ def _size_mask(size_arr, cond):
     known = size_arr >= 0
     return known & ((size_arr > v) if m.group(1) == ">" else (size_arr < v))
 
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.mlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+
+def pin_in_ram(arrays):
+    """mlock the data of numpy arrays so memory pressure can never swap them out (a name search scans all of
+    them on every keystroke; paged back in one fault at a time it takes seconds). Returns the bytes locked;
+    quietly locks nothing when RLIMIT_MEMLOCK is too low."""
+    done = 0
+    for a in arrays:
+        if isinstance(a, np.ndarray) and a.dtype != object and a.nbytes:
+            if _libc.mlock(a.ctypes.data, a.nbytes) == 0:
+                done += a.nbytes
+    return done
+
 class NameTable:
+    pin = False     # the live search server sets this: keep the scan data resident
     def __init__(self, db_path):
         self.db_path = db_path
         self.paths = []        # original-case paths, index-aligned with blob lines
@@ -348,10 +363,14 @@ class NameTable:
         order = np.argsort(-mt) if len(mt) else np.zeros(0, np.int64)
         ext_codes, ext_names, size_arr, mt_arr, orders, keys = _extras(paths, sizes, mtimes)
         dirs = sorted({p.rsplit("/", 1)[0] for p in paths if "/" in p})
+        arr = np.frombuffer(blob, np.uint8)
+        if self.pin:     # before the swap-in, so queries on the old snapshot go on while the new data is faulted in
+            n = pin_in_ram([arr, starts, order, ext_codes, size_arr, mt_arr, *orders.values(), *keys.values()])
+            print(f"name table: {n/1e6:.0f} MB pinned in RAM", flush=True)
         with self.lock:
             self.paths, self.sizes, self.mtimes = paths, sizes, mtimes
             self.blob, self.starts = blob, starts
-            self.arr = np.frombuffer(blob, np.uint8)
+            self.arr = arr
             self.order = order
             self.ext_codes, self.ext_names = ext_codes, ext_names
             self.size_arr, self.mt_arr, self.orders = size_arr, mt_arr, orders
