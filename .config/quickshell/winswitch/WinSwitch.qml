@@ -162,11 +162,67 @@ PanelWindow {
     property var tableRows: []
     readonly property int tableStatusW: root.tableScope === "archive" ? 0 : 52   // no status column in the archive-only view
     // live rows carry the window that shows them (matched by claude session id)
-    readonly property var tableView: root.tableRows.map(r => {
+    readonly property var tableBase: root.tableRows.map(r => {
         if (!r.live) return r;
         const w = root.windows.find(x => (root.metas[x.index] || {}).claude_session === r.session_id);
         return Object.assign({}, r, { winIndex: w ? w.index : -1 });
     })
+    // The table's own types (what //keys and /s/keys resolve against in this view)
+    readonly property var tableTypeNames: ["status", "account", "title", "msgs", "tokens", "age", "path"]
+    function _tableValue(r, name) {
+        switch (name) {
+        case "status": return root._statusLabel(r);
+        case "account": return String(r.account || "");
+        case "title": return r.title || "";
+        case "msgs": return String(r.msgs || "");
+        case "tokens": return r.tokens ? String(r.tokens) : "";
+        case "age": return root._ago(r.mtime);
+        case "path": return r.cwd || "";
+        }
+        return "";
+    }
+    function _tableMatches(r, term) {
+        let m;
+        if (term.kind === "free") {
+            const hay = [r.title, r.cwd, root._statusLabel(r), r.account].join(" ");
+            m = WinSwitchQueryDsl.substr(term.text, hay, term.exact);
+        } else if (term.kind === "scoped") {
+            const names = WinSwitchQueryDsl.resolveNames(term.path, root.tableTypeNames);
+            m = names.length > 0 && names.some(n => term.value === "" || WinSwitchQueryDsl.substr(term.value, root._tableValue(r, n), term.exact));
+        } else {
+            m = true;
+        }
+        return term.neg ? !m : m;
+    }
+    // Filters (bare words, //keys value) and /s/keys/dir compose with the table like with the grid.
+    // /ft /at /rt are inert here (fixed columns); each sort key must name exactly one table type.
+    readonly property var tableView: {
+        let rows = root.tableBase;
+        const q = root.parsedQuery;
+        if (!root.tableMode) return rows;
+        const filters = q.filters.filter(t => !(t.kind === "scoped" && t.path === "claude-fts"));
+        if (filters.length > 0)
+            rows = rows.filter(r => filters.every(t => root._tableMatches(r, t)));
+        if (q.sortRaw) {
+            const keys = q.sortRaw.keys.map(k => WinSwitchQueryDsl.resolveNames(k, root.tableTypeNames));
+            if (keys.every(k => k.length === 1)) {
+                const names = keys.map(k => k[0]);
+                const sign = q.sortRaw.dir === "desc" ? -1 : 1;
+                const num = { msgs: true, tokens: true };
+                rows = rows.slice().sort((a, b) => {
+                    for (const n of names) {
+                        let c;
+                        if (n === "age") c = (a.mtime || 0) - (b.mtime || 0);
+                        else if (num[n]) c = (Number(a[n] || 0)) - (Number(b[n] || 0));
+                        else c = root._tableValue(a, n).toLowerCase().localeCompare(root._tableValue(b, n).toLowerCase());
+                        if (c !== 0) return c * sign;
+                    }
+                    return 0;
+                });
+            }
+        }
+        return rows;
+    }
     property int resumeSel: 0
     readonly property int resumeRowH: 24
     onTableQueryChanged: root._tableRefresh()

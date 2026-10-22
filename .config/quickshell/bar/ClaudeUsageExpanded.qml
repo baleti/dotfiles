@@ -519,7 +519,7 @@ Rectangle {
         switch (field) {
         case "title": return [row.title || ""];
         case "pid": return [String(row.pid)];
-        case "status": return [row.status || ""];
+        case "status": return [row.archived ? "archive" : (row.status || "")];
         case "tokens": return [row.context_tokens !== null && row.context_tokens !== undefined ? String(row.context_tokens) : ""];
         case "path": return [root.shortCwd(row.cwd)];
         case "account": return [account];
