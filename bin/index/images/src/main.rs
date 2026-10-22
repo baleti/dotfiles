@@ -1493,6 +1493,8 @@ fn fetch_people() -> Vec<String> {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // tooltips (the "#P" header's "number of pages", ...) appear at once instead of after egui's default delay
+        cc.egui_ctx.all_styles_mut(|st| st.interaction.tooltip_delay = 0.0);
         let mut fonts = FontDefinitions::default();
         if let Ok(bytes) = std::fs::read(FONT) {
             fonts.font_data.insert("jbmono".into(), std::sync::Arc::new(FontData::from_owned(bytes)));
