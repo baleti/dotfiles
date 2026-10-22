@@ -133,7 +133,7 @@ def tokenize(text):
 QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
     r'/(?:filter-value|fv|)/([a-zA-Z,-]+)(?:\s+("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|)(?:/|\s|$))\S+))?'
-    r'|/(?:filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:/\S*)?'
+    r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:/\S*)?'
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'
