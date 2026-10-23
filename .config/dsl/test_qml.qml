@@ -29,6 +29,12 @@ QtObject {
         const lay = Dsl.groupLayout(G.rows, Dsl.parseGroup(G.visible.text, G.known, G.aliases), get, G.today);
         G.visible.collapsed.forEach((col, i) => { const m = {}; col.forEach(id => { m[id] = true; }); check("group visible " + JSON.stringify(col), Dsl.groupVisible(lay, m), G.visible.expect[i]); });
         for (const c of G.extract) { const r = Dsl.extractGroup(c.tokens, G.known, G.aliases); check("group extract " + c.tokens.join(" "), [r.rest, r.parsed], c.expect); }
+        const gd = Dsl.groupDisplay(G.rows, Dsl.parseGroup("/g/pf,dm/month", G.known, G.aliases), get, {}, G.today);
+        check("groupDisplay items", gd.items.length, 13);
+        check("groupDisplay rows", gd.rows.length, 5);
+        const gd2 = Dsl.groupDisplay(G.rows, Dsl.parseGroup("/g/pf,dm/month", G.known, G.aliases), get, { "/p/x": true }, G.today);
+        check("groupDisplay folded", gd2.rows.map(r => r.name), ["d","b","c"]);
+        check("groupOfRow", Dsl.groupOfRow(gd, 0).length > 0, true);
         print("qml dsl.js: " + (fails === 0 ? "ok" : fails + " failures"));
         Qt.quit();
     }

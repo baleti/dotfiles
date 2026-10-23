@@ -294,13 +294,33 @@ PanelWindow {
     Process { id: moveProc; onExited: { Hyprland.refreshWorkspaces(); refreshTimer.restart(); } }
     Timer { id: refreshTimer; interval: 400; onTriggered: Hyprland.refreshWorkspaces() }
 
+    // completions (verbs, /fv paths, history) are rows of the list too
+    readonly property var _comps: root.acItems.map(it => ({ comp: true, action: true, item: it, name: it.label,
+        detail: (it.alias ? "(" + it.alias + ") " : "") + it.desc, entry: { icon: "" } }))
+    // /group: sections folded by clicking a header (or Ctrl+G on the selected row); reset when the query changes
+    property var groupCollapsed: ({})
+    readonly property var groupParsed: root.actionMode ? null : QueryDsl.parseGroup(root.parsed.groupRaw, root.typeNames)
+    readonly property var groupView: {
+        if (!root.groupParsed || root.acHistoryMode) return null;
+        const d = QueryDsl.groupDisplay(root._rowsSorted, root.groupParsed, (a, f) => String(root._fieldVals(a, f)[0] || ""), root.groupCollapsed);
+        return { display: d, mm: QueryDsl.groupModel(root._comps, d) };
+    }
+    onGroupParsedChanged: root.groupCollapsed = ({})
+    function toggleGroup(id) {
+        const c = Object.assign({}, root.groupCollapsed);
+        if (c[id]) delete c[id]; else c[id] = true;
+        root.groupCollapsed = c;
+    }
+
     readonly property var results: {
         if (root.actionMode)
             return root.workspaceRows;
-        // completions (verbs, /fv paths, history) are rows of this list too
-        const comps = root.acItems.map(it => ({ comp: true, action: true, item: it, name: it.label,
-            detail: (it.alias ? "(" + it.alias + ") " : "") + it.desc, entry: { icon: "" } }));
-        if (root.acHistoryMode) return comps;
+        if (root.acHistoryMode) return root._comps;
+        return root._comps.concat(root.groupView ? root.groupView.display.rows : root._rowsSorted);
+    }
+
+    readonly property var _rowsSorted: {
+        if (root.actionMode || root.acHistoryMode) return [];
         let rows = root.apps.filter(app => root.parsed.terms.every(t => root._matches(app, t)));
 
         const s = root.parsed.sort;
@@ -329,7 +349,7 @@ PanelWindow {
                 return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
             });
         }
-        return comps.concat(rows);
+        return rows;
     }
 
     onResultsChanged: {
@@ -858,6 +878,11 @@ PanelWindow {
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                         root.launch(root.selected);
                         event.accepted = true;
+                    } else if (event.key === Qt.Key_G && (event.modifiers & Qt.ControlModifier) && root.groupView) {
+                        // fold / unfold the /group section of the selected row
+                        const gid = QueryDsl.groupOfRow(root.groupView.display, root.selected - root._comps.length);
+                        if (gid) root.toggleGroup(gid);
+                        event.accepted = true;
                     } else if (event.key === Qt.Key_Tab) {
                         // Tab accepts the highlighted completion row, else the first one
                         const cur = root.results[root.selected];
@@ -934,7 +959,7 @@ PanelWindow {
                             {
                                 root.selected = Math.min(root.results.length - 1,
                                                           root.selected + Math.max(1, Math.floor(list.height / 30)));
-                                list.positionViewAtIndex(root.selected, ListView.Contain);
+                                list.positionViewAtIndex(root.groupView ? root.groupView.mm.vOf.indexOf(root.selected) : root.selected, ListView.Contain);
                                 LauncherQueryHistory.record(query.text);
                             }
                         });
@@ -943,7 +968,7 @@ PanelWindow {
                         if (!event.isAutoRepeat) _startNavRepeat(() => {
                             {
                                 root.selected = Math.max(0, root.selected - Math.max(1, Math.floor(list.height / 30)));
-                                list.positionViewAtIndex(root.selected, ListView.Contain);
+                                list.positionViewAtIndex(root.groupView ? root.groupView.mm.vOf.indexOf(root.selected) : root.selected, ListView.Contain);
                                 LauncherQueryHistory.record(query.text);
                             }
                         });
@@ -998,8 +1023,8 @@ PanelWindow {
             anchors.bottom: parent.bottom
             width: parent.width
             clip: true
-            model: root.results
-            currentIndex: root.selected
+            model: root.groupView ? root.groupView.mm.model : root.results
+            currentIndex: root.groupView ? root.groupView.mm.vOf.indexOf(root.selected) : root.selected
             // The built-in follow-current-item scroll animates over
             // highlightMoveDuration, so a page jump's selection showed up
             // offscreen and the view crept after it. Snap it instead; the
@@ -1020,8 +1045,11 @@ PanelWindow {
                 id: row
                 required property var modelData
                 required property int index
+                // position in root.results (a /group header has none, and is never selected)
+                readonly property int logical: root.groupView ? root.groupView.mm.vOf[index] : index
+                readonly property bool isGroup: !!modelData.grp
                 readonly property string extraText: {
-                    if (modelData.ws) return "";
+                    if (modelData.ws || modelData.grp) return "";
                     if (modelData.action) return modelData.detail;
                     if (root.referencedFields.length === 0) return "";
                     const parts = [];
@@ -1033,9 +1061,27 @@ PanelWindow {
                     return parts.join("  ·  ");
                 }
                 width: list.width
-                height: row.extraText ? 44 : 30
-                color: index === root.selected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
+                height: row.isGroup ? 26 : row.extraText ? 44 : 30
+                color: row.isGroup ? "transparent" : row.logical === root.selected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
                                                : "transparent"
+
+                Item {
+                    visible: row.isGroup
+                    anchors.fill: parent
+                    Rectangle { x: 8 + (row.modelData.depth || 0) * 14; width: parent.width - x - 8; height: 1; anchors.bottom: parent.bottom; color: Theme.textDim; opacity: 0.35 }
+                    Text {
+                        x: 10 + (row.modelData.depth || 0) * 14
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 3
+                        text: (row.modelData.folded ? "▸ " : "▾ ") + (row.modelData.label || "") + "   " + (row.modelData.count || 0) + (row.modelData.folded ? " (folded)" : "")
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        font.bold: true
+                        color: Theme.text
+                        opacity: 0.85
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: root.toggleGroup(row.modelData.id) }
+                }
 
                 Row {
                     visible: !!row.modelData.ws
@@ -1067,7 +1113,7 @@ PanelWindow {
 
                 Image {
                     id: appIcon
-                    visible: !row.modelData.ws
+                    visible: !row.modelData.ws && !row.isGroup
                     x: 10
                     anchors.verticalCenter: parent.verticalCenter
                     width: 20
@@ -1078,14 +1124,14 @@ PanelWindow {
                     asynchronous: true
                     // Our own XDG resolution first, quickshell's provider as
                     // a fallback for anything it misses.
-                    source: (modelData.ws || modelData.action) ? ""
+                    source: (modelData.ws || modelData.action || modelData.grp) ? ""
                             : (LauncherIcons.pathFor(modelData.entry.icon)
                                || Quickshell.iconPath(modelData.entry.icon, "application-x-executable"))
                 }
                 // Generic glyph when no icon resolves at all.
                 Text {
                     anchors.centerIn: appIcon
-                    visible: !row.modelData.ws && appIcon.status !== Image.Ready
+                    visible: !row.modelData.ws && !row.isGroup && appIcon.status !== Image.Ready
                     text: ""
                     font.family: Theme.iconFontFamily
                     font.pixelSize: 14
@@ -1093,7 +1139,7 @@ PanelWindow {
                 }
 
                 Column {
-                    visible: !row.modelData.ws
+                    visible: !row.modelData.ws && !row.isGroup
                     x: 40
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - 52
@@ -1121,10 +1167,11 @@ PanelWindow {
 
                 MouseArea {
                     anchors.fill: parent
+                    enabled: !row.isGroup
                     hoverEnabled: true
                     id: rowHover
-                    onPositionChanged: mouse => { if (root._pointerMoved(rowHover, mouse)) root.selected = index; }
-                    onClicked: root.launch(index)
+                    onPositionChanged: mouse => { if (root._pointerMoved(rowHover, mouse)) root.selected = row.logical; }
+                    onClicked: root.launch(row.logical)
                 }
             }
         }

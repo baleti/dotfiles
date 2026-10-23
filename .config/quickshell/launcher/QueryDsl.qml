@@ -17,10 +17,10 @@ import "../lib/dsl.js" as D
 QtObject {
     id: root
 
-    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s"]
+    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/g"]
     readonly property var verbAliases: ({
         "/filter-value": "/fv", "/filter-type": "/ft", "/add-type": "/at",
-        "/remove-type": "/rt", "/sort": "/s"
+        "/remove-type": "/rt", "/sort": "/s", "/group": "/g"
     })
     // { short: { long, desc } } -- the long-form alias + a one-line
     // description, for marginalia-style autocomplete hints (query-dsl.md).
@@ -29,14 +29,15 @@ QtObject {
         "/ft": { long: "/filter-type",  desc: "show only the matching columns" },
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
-        "/s":  { long: "/sort",         desc: "order rows by the keys, /s/key,key/desc" }
+        "/s":  { long: "/sort",         desc: "order rows by the keys, /s/key,key/desc" },
+        "/g":  { long: "/group",        desc: "fold rows into sections, /g/key[/bucket][/dir]" }
     })
 
     // Every accepted verb spelling, WITHOUT the leading "/" (query.rs's
     // VERB_FORMS) -- for prefix detection on the verb-name portion only.
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s",
-        "filter-value", "filter-type", "add-type", "remove-type", "sort"
+        "fv", "ft", "at", "rt", "s", "g",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort", "group"
     ]
 
     // Split on whitespace, keeping "quoted runs" as one token (quotes stripped).
@@ -74,9 +75,9 @@ QtObject {
     // parts, or a direction on a verb that has none): inert. A "/xyz" that
     // isn't a verb (or "/usr/bin") is not a verb token -> null.
     // verb spellings -> canonical short form, for D.splitCmd ("" = the default verb of `//keys`)
-    readonly property var _verbMap: ({ "": "/fv", "fv": "/fv", "ft": "/ft", "at": "/at", "rt": "/rt", "s": "/s",
-        "filter-value": "/fv", "filter-type": "/ft", "add-type": "/at", "remove-type": "/rt", "sort": "/s" })
-    readonly property var _maxParts: ({ "/s": 3 })
+    readonly property var _verbMap: ({ "": "/fv", "fv": "/fv", "ft": "/ft", "at": "/at", "rt": "/rt", "s": "/s", "g": "/g",
+        "filter-value": "/fv", "filter-type": "/ft", "add-type": "/at", "remove-type": "/rt", "sort": "/s", "group": "/g" })
+    readonly property var _maxParts: ({ "/s": 3, "/g": 4 })
     // { verb, via (the keys part), dir, bad } or null (query-dsl.md "Grammar"); a quoted token is never a command
     function tokVerb(tok) {
         if (tok.q) return null;
@@ -130,7 +131,7 @@ QtObject {
     // the raw comma-separated key lists; resolve them with resolvePath().
     function parse(text) {
         const toks = root.tokenize(text);
-        const res = { terms: [], sort: null, cols: [], openPaths: [] };
+        const res = { terms: [], sort: null, cols: [], openPaths: [], groupRaw: "" };
         let k = 0;
         while (k < toks.length) {
             const tv = root.tokVerb(toks[k]);
@@ -152,7 +153,7 @@ QtObject {
             const via = tv.via.toLowerCase();
             // "!" only means something on a row filter; "!/s", "!/ft" ... parse but change nothing.
             const R = (verbNeg && verb !== "/fv")
-                ? { terms: [], sort: null, cols: [], openPaths: [] } : res;
+                ? { terms: [], sort: null, cols: [], openPaths: [], groupRaw: "" } : res;
             if (verb === "/fv") {
                 if (k < toks.length && !root.startsCommand(toks[k])) {
                     R.terms.push({ field: via, value: toks[k].v.toLowerCase(),
@@ -170,6 +171,9 @@ QtObject {
                 const keys = via.split(",").filter(x => x.length > 0);
                 if (keys.length > 0)
                     R.sort = { fields: keys, dir: tv.dir ? root._dirOf(tv.dir) : "desc" };
+            } else if (verb === "/g") {
+                // the whole token goes to D.parseGroup (the picker resolves it against its own types); last wins
+                R.groupRaw = toks[k - 1].v;
             } else if (via.replace(/,/g, "").length > 0) {
                 const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
                 R.cols.push({ op: op, path: via });
@@ -197,7 +201,17 @@ QtObject {
                 .filter(d => d[1].indexOf(frag) === 0)
                 .map(d => ({ text: head + d[0] + " ", label: d[0], alias: d[1], desc: "sort direction" }));
         }
-        const km = t.match(/(?:^|\s|!)\/(fv|filter-value|ft|filter-type|at|add-type|rt|remove-type|s|sort|)\/([^\s\/]*)$/);
+        const gm = t.match(/(?:^|\s|!)\/(?:g|group)\/[^\s\/]+((?:\/[^\s\/]+)*)\/([a-z0-9-]*)$/);
+        if (gm) {
+            const frag = gm[2].toLowerCase();
+            const used = gm[1].split("/");
+            const head = t.slice(0, t.length - frag.length);
+            return [["pf", "parent folder, then /2 /3 for higher ones"], ["day", "by day"], ["week", "by week"],
+                    ["month", "by month"], ["year", "by year"], ["asc", "ascending"], ["desc", "descending"]]
+                .filter(d => d[0].indexOf(frag) === 0 && used.indexOf(d[0]) < 0)
+                .map(d => ({ text: head + d[0] + " ", label: d[0], alias: "", desc: d[1] }));
+        }
+        const km = t.match(/(?:^|\s|!)\/(fv|filter-value|ft|filter-type|at|add-type|rt|remove-type|s|sort|g|group|)\/([^\s\/]*)$/);
         if (!km) return null;
         const keys = km[2];
         const frag = keys.slice(keys.lastIndexOf(",") + 1).toLowerCase();
@@ -237,4 +251,10 @@ QtObject {
     // `dir` ("asc"/"desc") is applied here too, so callers never need
     // their own `dir === "desc" ? -c : c` on the result.
     function compareFieldValues(a, b, dir) { return D.compareFieldValues(a, b, dir); }
+
+    // ---- /group (query-dsl.md "/group"): thin wrappers over lib/dsl.js ----
+    function parseGroup(raw, known, aliases) { return raw ? D.parseGroup(raw, known, aliases || null) : null; }
+    function groupDisplay(rows, parsed, get, collapsed) { return D.groupDisplay(rows, parsed, get, collapsed); }
+    function groupModel(prefix, display) { return D.groupModel(prefix, display); }
+    function groupOfRow(display, v) { return D.groupOfRow(display, v); }
 }
