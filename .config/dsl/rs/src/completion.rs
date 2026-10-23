@@ -109,10 +109,11 @@ pub fn path_suggestions(schema: &Schema, fragment: &str) -> Vec<String> {
 
 /// Every verb-stage candidate: bare verbs, the app extras, then each key-taking verb crossed with every type.
 pub fn verb_stage_universe(schema: &Schema) -> Vec<String> {
-    let mut out: Vec<String> = schema.verbs.iter().map(|v| v.short.to_string()).collect();
+    let offered = |v: &&VerbDef| !schema.hidden_verbs.iter().any(|h| h == v.short);
+    let mut out: Vec<String> = schema.verbs.iter().filter(offered).map(|v| v.short.to_string()).collect();
     out.extend(schema.extra_universe.iter().cloned());
     let paths = all_paths(schema);
-    for v in &schema.verbs {
+    for v in schema.verbs.iter().filter(offered) {
         if matches!(v.kind, VerbKind::FilterValue | VerbKind::FilterType | VerbKind::AddType | VerbKind::RemoveType | VerbKind::Sort | VerbKind::Group) {
             for p in &paths {
                 out.push(format!("{}/{}", v.short, p));
@@ -125,9 +126,10 @@ pub fn verb_stage_universe(schema: &Schema) -> Vec<String> {
 fn value_suggestions(src: &dyn Source, rows: usize, ty: &str, fragment: &str) -> Vec<String> {
     let mut seen: Vec<String> = vec![];
     for r in 0..rows {
-        let v = src.value(r, ty);
-        if !v.is_empty() && substr(fragment, &v, false) && !seen.contains(&v) {
-            seen.push(v);
+        for v in src.values(r, ty) {
+            if !v.is_empty() && substr(fragment, &v, false) && !seen.contains(&v) {
+                seen.push(v);
+            }
         }
     }
     seen.sort();
