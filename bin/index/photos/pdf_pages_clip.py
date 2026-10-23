@@ -7,11 +7,12 @@ batches to the ai1 CLIP worker, and append {"remote", "page", "emb"} lines to
 clip/pdf-pages.jsonl. A PDF is marked done only after its batch has been
 embedded, so an interrupted run resumes where it stopped.
 
-usage: pdf_pages_clip.py --list pdf-list.tsv [--collections a,b,c] [--threads 6]
+usage: pdf_pages_clip.py --list pdf-list.tsv [--threads 6]
 """
 import argparse, concurrent.futures as cf, hashlib, json, os, re, subprocess, sys, tarfile, tempfile, time
 
 import config
+import index_config
 
 AI1 = config.AI1["ssh"]
 JUMP = config.AI1["jump_host"]
@@ -91,18 +92,14 @@ def embed(names_dir, names):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", required=True)
-    ap.add_argument("--collections", default="")
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--limit", type=int, default=0)
     a = ap.parse_args()
-    wanted = {c for c in a.collections.split(",") if c}
-    if not wanted:
-        cfg = json.load(open(os.path.expanduser("~/.config/indexes/collections.json")))["collections"]
-        wanted = {n for n, f in cfg.items() if f.get("clip_pages")}
+    cfg = index_config.load()
     pdfs, seen = [], set()
     for line in open(a.list, encoding="utf-8"):
         coll, _, path = line.rstrip("\n").partition("\t")
-        if not path or (wanted and coll not in wanted) or path in seen:
+        if not path or not index_config.flag(path, "clip_pages", cfg) or path in seen:
             continue
         seen.add(path)
         pdfs.append(path)

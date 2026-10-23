@@ -21,6 +21,7 @@ from pathlib import Path
 import json
 import socket
 import subprocess
+import urllib.parse
 
 import chromadb
 from recoll import recoll
@@ -87,12 +88,22 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--recoll-conf", required=True)
     ap.add_argument("--db", required=True)
+    ap.add_argument("--also-done", action="append", default=[], metavar="CHROMA_DIR",
+                    help="another Chroma store whose documents count as already embedded (read-only; repeatable)")
+    ap.add_argument("--skip-prefix", action="append", default=[], metavar="PATH",
+                    help="leave out documents under this folder (repeatable)")
     args = ap.parse_args()
 
     client = chromadb.PersistentClient(path=args.db)
     col = client.get_or_create_collection(name=COLLECTION, metadata={"hnsw:space": "cosine"})
     done = existing_docs(col)
+    for other in args.also_done:
+        try:
+            done |= existing_docs(chromadb.PersistentClient(path=other).get_collection(name=COLLECTION))
+        except Exception as e:
+            print(f"  {other}: not readable ({e}), its documents will be embedded again", file=sys.stderr, flush=True)
     print(f"already embedded: {len(done)} documents", flush=True)
+    skip = tuple(p.rstrip("/") + "/" for p in args.skip_prefix)
 
     db = recoll.connect(confdir=args.recoll_conf, writable=False)
     q = db.query()
@@ -116,6 +127,9 @@ def main():
         seen += 1
         did = doc_id(d.url, d.ipath)
         if did in done:
+            skipped += 1
+            continue
+        if skip and urllib.parse.unquote(d.url[len("file://"):]).startswith(skip):
             skipped += 1
             continue
         try:

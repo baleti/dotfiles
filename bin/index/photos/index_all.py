@@ -1,48 +1,54 @@
 #!/usr/bin/env python3
-"""Run every index the collections config asks for.
+"""Run the content indexes for the paths in ~/.config/indexes/collections.json (see index_config.py).
 
-Reads ~/.config/indexes/collections.json. Without arguments: all collections,
-all flagged index types. Overrides: --collections a,b  and  --only fulltext,chroma,clip_pages
+All paths feed one Recoll index, ~/.cache/indexes/documents. Without arguments every index type runs;
+--only fulltext,chroma,clip_pages picks some. A path switched off for a type ("chroma": false) is left out of that type.
 
-  fulltext    recollindex on the collection's Recoll config
-  chroma      full-text chunk embeddings (ai1 GPU), recoll_fulltext_to_chroma.py
+  fulltext    recollindex on the merged config (recoll.conf is rewritten from the path list first)
+  chroma      full-text chunk embeddings (ai1 GPU), recoll_fulltext_to_chroma.py; documents already embedded in
+              the old per-folder stores (~/.cache/indexes/<old name>/chroma) count as done
   clip_pages  CLIP on large images inside PDFs, pdf_pages_clip.py (appends to clip/pdf-pages.jsonl)
 """
-import argparse, json, os, subprocess, sys
+import argparse, os, subprocess
 
-HOME = os.path.expanduser("~")
-CFG = json.load(open(os.path.join(HOME, ".config/indexes/collections.json")))["collections"]
-IDX = os.path.join(HOME, ".cache/indexes")
+import index_config as ic
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-PY = os.path.join(IDX, "venv/bin/python")
-PDF_LIST = os.path.join(IDX, "photos/pdf-list.tsv")
+PY = os.path.join(ic.IDX, "venv/bin/python")
+PDF_LIST = os.path.join(ic.IDX, "photos/pdf-list.tsv")
+
+
+def write_conf():
+    text = ic.recoll_conf()
+    p = os.path.join(ic.CONF, "recoll.conf")
+    if not os.path.exists(p) or open(p).read() != text:
+        os.makedirs(ic.CONF, exist_ok=True)
+        open(p, "w").write(text)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--collections", default="")
     ap.add_argument("--only", default="")
     a = ap.parse_args()
-    names = [c for c in a.collections.split(",") if c] or list(CFG)
     only = [t for t in a.only.split(",") if t]
-    mounted = os.path.ismount("/mnt/backups")
-    for name in names:
-        flags = CFG[name]
-        if any(r.startswith("/mnt/backups") for r in flags["roots"]) and not mounted:
-            print(f"== {name}: skipped, /mnt/backups is not mounted", flush=True)
+    cfg = ic.load()
+    write_conf()
+    for t in ic.TYPES:
+        if (only and t not in only) or not cfg.get(t, True):
             continue
-        types = [t for t in ("fulltext", "chroma", "clip_pages") if flags.get(t) and (not only or t in only)]
-        for t in types:
-            print(f"== {name}: {t}", flush=True)
-            if t == "fulltext":
-                subprocess.run(["recollindex", "-c", os.path.join(IDX, name, "recoll")], check=False)
-            elif t == "chroma":
-                subprocess.run([PY, os.path.join(HERE, "..", "chroma", "recoll_fulltext_to_chroma.py"),
-                                "--recoll-conf", os.path.join(IDX, name, "recoll"),
-                                "--db", os.path.join(IDX, name, "chroma")], check=False)
-            elif t == "clip_pages":
-                subprocess.run([PY, os.path.join(HERE, "pdf_pages_clip.py"), "--list", PDF_LIST,
-                                "--collections", name, "--threads", "2"], check=False)
+        print(f"== {t}", flush=True)
+        if t == "fulltext":
+            subprocess.run(["recollindex", "-c", ic.CONF], check=False)
+        elif t == "chroma":
+            cmd = [PY, os.path.join(HERE, "..", "chroma", "recoll_fulltext_to_chroma.py"),
+                   "--recoll-conf", ic.CONF, "--db", ic.CHROMA]
+            for d in ic.chroma_shards():
+                cmd += ["--also-done", d]
+            for p in ic.opted_out("chroma", cfg):
+                cmd += ["--skip-prefix", p]
+            subprocess.run(cmd, check=False)
+        elif t == "clip_pages":
+            subprocess.run([PY, os.path.join(HERE, "pdf_pages_clip.py"), "--list", PDF_LIST, "--threads", "2"], check=False)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import json, os, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "catalog"))
 import index_dirs
+import index_config
 
 HOME = os.path.expanduser("~")
 IDX = os.path.join(HOME, ".cache/indexes")
@@ -105,10 +106,15 @@ def xapian_docs(conf):
     return 0
 
 def collections():
+    """The merged index "documents" described like a collection: its paths and whether each type is on for any of them."""
     try:
-        return json.load(open(os.path.join(HOME, ".config/indexes/collections.json")))["collections"]
+        ents = index_config.entries()
     except (OSError, ValueError, KeyError):
         return {}
+    if not ents:
+        return {}
+    return {index_config.NAME: {"roots": [p.replace(HOME, "~", 1) for p, _ in ents],
+                                "clip_pages": any(f["clip_pages"] for _, f in ents)}}
 
 CAD_ROOTS = {"revit": "rvt rfa rte rft files under the office folders", "dwg": "dwg dxf files under the office folders"}
 
@@ -125,7 +131,7 @@ def indexes(fts_confs):
             "name": name,
             "roots": roots if roots else ([CAD_ROOTS[name]] if name in CAD_ROOTS else (index_dirs.fts_dirs() if name == "user-dirs" else [])),
             "bm25": True,
-            "chroma": du(os.path.join(base, "chroma")) > 5 * 2**20,         # a few-KB folder is an empty stub, not an index
+            "chroma": du(os.path.join(base, "chroma")) > 5 * 2**20 or (name == index_config.NAME and any(du(d) > 5 * 2**20 for d in index_config.chroma_shards())),   # a few-KB folder is an empty stub, not an index
             "clip_pages": bool(c.get("clip_pages")),
             "faces": bool(c.get("faces")),
             "docs": xapian_docs(conf),

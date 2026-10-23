@@ -20,7 +20,7 @@ from recoll import recoll
 ROOT = Path(os.path.expanduser("~/.cache/indexes"))
 CATALOG = os.path.expanduser("~/.cache/indexes/catalog/catalog.db")
 OUT = ROOT / "coverage"
-COLLECTIONS = sys.argv[1:] or list(json.load(open(os.path.expanduser("~/.config/indexes/collections.json")))["collections"])
+COLLECTIONS = sys.argv[1:] or ["documents"]          # the merged index of the paths in collections.json
 
 
 def topdirs(conf):
