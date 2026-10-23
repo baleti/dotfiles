@@ -679,6 +679,7 @@ struct App {
     ac_scroll: usize,
     hist_idx: i32, // Up/Down history cycling; -1 = on the draft
     hist_draft: String,
+    select_all: bool, // Ctrl+A: the whole query is highlighted; typing replaces it
     recalling: bool, // set_query() called by history recall / accept: not a fresh edit
     columns: Vec<String>, // the active columns for the current query (title first)
     filtered: Vec<usize>, // window indices passing the query, in list order (sorted by /s)
@@ -1231,6 +1232,27 @@ impl App {
         let ks = ev.keysym;
         let printable = ev.utf8.as_deref().filter(|t| !t.is_empty() && !t.chars().any(char::is_control)).map(str::to_string);
 
+        // Ctrl+A highlights the whole query; the next edit replaces it, any other key just clears it
+        if self.ctrl && ks == Keysym::a {
+            if !self.locked {
+                self.locked = true;
+                self.note("locked (select all)");
+            }
+            self.list_focused = false;
+            self.select_all = !self.query.is_empty();
+            self.cursor = self.qlen();
+            self.dirty = true;
+            return;
+        }
+        if self.select_all {
+            self.select_all = false;
+            self.dirty = true;
+            let edit = (printable.is_some() && !self.ctrl) || matches!(ks, Keysym::BackSpace | Keysym::Delete) || (self.ctrl && matches!(ks, Keysym::u | Keysym::w));
+            if edit {
+                self.set_query(String::new(), 0);
+            }
+        }
+
         // keys that behave the same in every state
         match ks {
             Keysym::Escape => {
@@ -1552,6 +1574,12 @@ impl App {
             // recognised /commands in the accent colour, everything else normal
             let spans = pickerdsl::command_spans(&self.schema, &self.query);
             let qc: Vec<char> = self.query.chars().collect();
+            if self.select_all {
+                let w = text_width(&self.font, size, &self.query);
+                if let Some(r) = Rect::from_xywh(tx, top, w.max(2.0), lh) {
+                    pm.fill_rect(r, &paint(th.primary, 90), Transform::identity(), None);
+                }
+            }
             let mut at = 0usize;
             let mut x = tx;
             let mut seg = |pm: &mut Pixmap, from: usize, to: usize, col: Rgb, x: &mut f32| {
@@ -2126,6 +2154,7 @@ fn main() {
         shift: false,
         locked: false,
         list_focused: false,
+        select_all: false,
         recalling: false,
         group: None,
         group_raw: String::new(),
