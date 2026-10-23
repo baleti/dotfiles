@@ -324,6 +324,27 @@ fn resolve_icons(names: &[String]) -> HashMap<String, String> {
     cache
 }
 
+/// load_icon() through an on-disk raster cache: raw premultiplied RGBA per icon, reused while it is
+/// newer than the source file, so a launch reads ~9 KB per icon instead of decoding PNG/SVG again.
+fn cached_icon(name: &str, path: &str) -> Option<(u32, u32, Vec<u8>)> {
+    let key: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect();
+    let file = home().join(".cache/launcher-ui/raster").join(format!("{key}.{ICON_PX}.rgba"));
+    let src_m = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    if let Ok(m) = std::fs::metadata(&file).and_then(|m| m.modified()) {
+        if m >= src_m {
+            if let Ok(d) = std::fs::read(&file) {
+                if d.len() == (ICON_PX * ICON_PX * 4) as usize {
+                    return Some((ICON_PX, ICON_PX, d));
+                }
+            }
+        }
+    }
+    let (w, h, data) = load_icon(path)?;
+    let _ = std::fs::create_dir_all(file.parent()?);
+    let _ = std::fs::write(&file, &data);
+    Some((w, h, data))
+}
+
 /// An icon file as premultiplied RGBA at ICON_PX x ICON_PX (aspect kept, centered).
 fn load_icon(path: &str) -> Option<(u32, u32, Vec<u8>)> {
     let sz = ICON_PX;
@@ -1275,7 +1296,7 @@ fn main() {
         let _ = tx_scan.send(Msg::Apps { apps, hist, ms: s.elapsed().as_secs_f64() * 1000.0 });
         let paths = resolve_icons(&names);
         for n in names {
-            if let Some((w, h, data)) = paths.get(&n).and_then(|p| load_icon(p)) {
+            if let Some((w, h, data)) = paths.get(&n).and_then(|p| cached_icon(&n, p)) {
                 if tx_scan.send(Msg::Icon { name: n, w, h, data }).is_err() {
                     break;
                 }
