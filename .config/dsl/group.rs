@@ -14,7 +14,9 @@ const DATE_BUCKETS: [&str; 4] = ["day", "week", "month", "year"];
 pub struct Spec { pub name: String, pub bucket: String, pub level: usize }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed { pub specs: Vec<Spec>, /// None: no explicit direction, groups follow the order their rows already have
-    pub desc: Option<bool> }
+    pub desc: Option<bool>,
+    /// `/g/.../collapse`: every section starts folded
+    pub collapse: bool }
 /// A laid-out entry: a group header or the index of a row.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry { Header { depth: usize, id: String, label: String, count: usize }, Row(usize) }
@@ -51,9 +53,13 @@ pub fn parse_group(text: &str, known: &[&str], aliases: &[(&str, &str)]) -> Opti
     let parts: Vec<&str> = text.split('/').collect();
     if parts.len() < 3 || !parts[0].is_empty() || !(parts[1] == "g" || parts[1] == "group") || parts[2].replace(',', "").is_empty() { return None; }
     let (mut bucket, mut level, mut dir): (Option<String>, Option<usize>, Option<bool>) = (None, None, None);
+    let mut collapse = false;
     for p in &parts[3..] {
         let low = p.to_lowercase();
-        if BUCKETS.contains(&low.as_str()) {
+        if low == "collapse" {
+            if collapse { return None; }
+            collapse = true;
+        } else if BUCKETS.contains(&low.as_str()) {
             if bucket.is_some() { return None; }
             bucket = Some(if low == "parent-folder" { "pf".into() } else { low });
         } else if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
@@ -88,7 +94,7 @@ pub fn parse_group(text: &str, known: &[&str], aliases: &[(&str, &str)]) -> Opti
     }
     if let Some(b) = &bucket { if !specs.iter().any(|s| &s.bucket == b) { return None; } }
     if level.is_some() && !specs.iter().any(|s| s.bucket == "pf") { return None; }
-    Some(Parsed { specs, desc: dir })
+    Some(Parsed { specs, desc: dir, collapse })
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
