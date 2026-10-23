@@ -22,18 +22,20 @@ pub struct VerbDef {
     pub long: &'static str,
     pub kind: VerbKind,
     pub max_parts: usize,
+    /// one line for the completion popup
+    pub desc: &'static str,
 }
 
 pub fn core_verbs() -> Vec<VerbDef> {
     use VerbKind::*;
-    let v = |short, long, kind, max_parts| VerbDef { short, long, kind, max_parts };
+    let v = |short, long, kind, max_parts, desc| VerbDef { short, long, kind, max_parts, desc };
     vec![
-        v("fv", "filter-value", FilterValue, 2),
-        v("ft", "filter-type", FilterType, 2),
-        v("at", "add-type", AddType, 2),
-        v("rt", "remove-type", RemoveType, 2),
-        v("s", "sort", Sort, 3),
-        v("g", "group", Group, 4),
+        v("fv", "filter-value", FilterValue, 2, "keep rows whose value matches (substring)"),
+        v("ft", "filter-type", FilterType, 2, "show only the matching columns"),
+        v("at", "add-type", AddType, 2, "add the matching columns"),
+        v("rt", "remove-type", RemoveType, 2, "drop the matching columns"),
+        v("s", "sort", Sort, 3, "order rows by one field, optional asc / desc"),
+        v("g", "group", Group, 4, "fold rows into sections, /g/key[/bucket][/dir]"),
     ]
 }
 
@@ -44,13 +46,21 @@ pub struct Schema {
     pub verbs: Vec<VerbDef>,
     /// types compared exactly rather than by substring (a count: "3" means 3, not 13)
     pub exact_types: Vec<String>,
+    /// completion popup: one-line description per type name
+    pub type_descs: Vec<(String, String)>,
+    /// reachable by key but not offered in completion
+    pub hidden_types: Vec<String>,
+    /// extra verb-stage candidates (`fts/claude-live`)
+    pub extra_universe: Vec<String>,
+    /// key vocabulary of an app verb (`fts` -> claude-live, claude-archive, tmux)
+    pub app_keys: Vec<(String, Vec<String>)>,
 }
 
 impl Schema {
     pub fn new(types: &[&str], extra_verbs: Vec<VerbDef>) -> Schema {
         let mut verbs = core_verbs();
         verbs.extend(extra_verbs);
-        Schema { types: types.iter().map(|s| s.to_string()).collect(), verbs, exact_types: vec![] }
+        Schema { types: types.iter().map(|s| s.to_string()).collect(), verbs, exact_types: vec![], type_descs: vec![], hidden_types: vec![], extra_universe: vec![], app_keys: vec![] }
     }
 
     fn spellings(&self) -> Vec<(String, String)> {
@@ -92,6 +102,11 @@ impl Schema {
         let rest = &tok.text[1..];
         let name = rest.split('/').next().unwrap_or("");
         name.is_empty() && rest.contains('/') || self.spellings().iter().any(|(s, _)| s == name) || self.is_verb_prefix(rest)
+    }
+
+    /// canonical verb for a spelling (`""` is the default verb /fv)
+    pub fn canonical(&self, spelling: &str) -> Option<String> {
+        self.spellings().into_iter().find(|(s, _)| s == spelling).map(|(_, c)| c)
     }
 
     pub fn resolve_keys(&self, keys: &str) -> Vec<String> {
