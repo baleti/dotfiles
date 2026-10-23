@@ -187,7 +187,7 @@ function parseGroup(text, known, aliases) {
     });
     if (bucket !== null && !hasBucket) return null;
     if (level !== null && !hasPf) return null;
-    return { specs: specs, dir: direction || "desc" };
+    return { specs: specs, dir: direction };
 }
 
 function _daysFromCivil(y, m, d) {
@@ -287,6 +287,7 @@ function groupLayout(rows, parsed, get, today) {
     function order(list, spec) {
         var full = list.filter(function (g) { return g[0] !== ""; });
         var none = list.filter(function (g) { return g[0] === ""; });
+        if (direction === null) return full.concat(none);   // no explicit dir: groups follow the order their rows already have
         full.sort(function (a, b) {
             if (spec.bucket === "value") return compareFieldValues(a[0], b[0], direction);
             var c = a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;

@@ -4113,7 +4113,7 @@ mod dsl_conformance {
         match p {
             None => serde_json::Value::Null,
             Some(p) => serde_json::json!({ "specs": p.specs.iter().map(|s| serde_json::json!({ "name": s.name, "bucket": s.bucket, "level": s.level })).collect::<Vec<_>>(),
-                                           "dir": if p.desc { "desc" } else { "asc" } }),
+                                           "dir": match p.desc { None => serde_json::Value::Null, Some(true) => "desc".into(), Some(false) => "asc".into() } }),
         }
     }
 

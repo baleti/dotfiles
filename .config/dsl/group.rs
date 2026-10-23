@@ -13,7 +13,8 @@ const DATE_BUCKETS: [&str; 4] = ["day", "week", "month", "year"];
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spec { pub name: String, pub bucket: String, pub level: usize }
 #[derive(Clone, Debug, PartialEq)]
-pub struct Parsed { pub specs: Vec<Spec>, pub desc: bool }
+pub struct Parsed { pub specs: Vec<Spec>, /// None: no explicit direction, groups follow the order their rows already have
+    pub desc: Option<bool> }
 /// A laid-out entry: a group header or the index of a row.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry { Header { depth: usize, id: String, label: String, count: usize }, Row(usize) }
@@ -87,7 +88,7 @@ pub fn parse_group(text: &str, known: &[&str], aliases: &[(&str, &str)]) -> Opti
     }
     if let Some(b) = &bucket { if !specs.iter().any(|s| &s.bucket == b) { return None; } }
     if level.is_some() && !specs.iter().any(|s| s.bucket == "pf") { return None; }
-    Some(Parsed { specs, desc: dir.unwrap_or(true) })
+    Some(Parsed { specs, desc: dir })
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -219,11 +220,13 @@ pub fn group_layout(n_rows: usize, parsed: &Parsed, get: &dyn Fn(usize, &str) ->
             groups.entry(k).or_insert((l, vec![])).1.push(i);
         }
         let (mut full, none): (Vec<String>, Vec<String>) = order.into_iter().partition(|k| !k.is_empty());
-        full.sort_by(|a, b| {
-            if spec.bucket == "value" { return compare_field_values(a, b, p.desc); }
-            let c = a.cmp(b);
-            if p.desc != (spec.bucket == "age") { c.reverse() } else { c }
-        });
+        if let Some(desc) = p.desc {
+            full.sort_by(|a, b| {
+                if spec.bucket == "value" { return compare_field_values(a, b, desc); }
+                let c = a.cmp(b);
+                if desc != (spec.bucket == "age") { c.reverse() } else { c }
+            });
+        }
         for k in full.into_iter().chain(none) {
             let (label, members) = groups.remove(&k).unwrap();
             let id = if prefix.is_empty() { label.clone() } else { format!("{prefix}\u{1f}{label}") };
