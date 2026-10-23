@@ -1794,7 +1794,12 @@ impl App {
             }
         };
         self.gfull = group::group_layout(self.gmeta.len(), &p, &get, &today);
-        // column totals per header: walk the layout once, adding each row to every header that encloses it
+        self.compute_agg();
+        self.apply_fold();
+    }
+
+    /// Column totals per header: walks the layout once, adding each row to every header that encloses it.
+    fn compute_agg(&mut self) {
         let mut agg: HashMap<String, (u64, u64)> = HashMap::new();
         let mut open: Vec<String> = Vec::new();
         for e in &self.gfull {
@@ -1811,7 +1816,6 @@ impl App {
             }
         }
         self.gagg = agg;
-        self.apply_fold();
     }
 
     /// Recomputes the visible sequence from the layout and the collapsed set.
@@ -2017,7 +2021,17 @@ impl App {
                     self.server_total = r.count;
                     if !self.group_active() { self.total = r.count; }
                     if f.page == 0 { self.stats = r.stats.clone(); if !self.refreshing { self.pages.clear(); } }
+                    // page counts the metadata window did not have yet (PDFs counted since) join the group totals
+                    let mut counted = false;
+                    if self.group_active() {
+                        for (k, h) in r.results.iter().enumerate() {
+                            if let (Some(m), Some(n)) = (self.gmeta.get_mut(f.page * PAGE + k), h.pages) {
+                                if m.remote == h.remote && m.pages != Some(n) { m.pages = Some(n); counted = true; }
+                            }
+                        }
+                    }
                     self.pages.insert(f.page, r.results);
+                    if counted { self.compute_agg(); }
                     self.selected = self.selected.min(self.total.saturating_sub(1));
                     if f.page == 0 {
                         self.busy = false;
