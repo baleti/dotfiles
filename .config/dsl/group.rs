@@ -208,9 +208,15 @@ pub fn compare_field_values(a: &str, b: &str, desc: bool) -> std::cmp::Ordering 
 }
 
 /// Rows (already filtered and ordered) -> headers + rows. `get(row, name)` is the raw value.
-pub fn group_layout(n_rows: usize, parsed: &Parsed, get: &dyn Fn(usize, &str) -> String, today: &str) -> Vec<Entry> {
+///
+/// `key_override(depth, label)`: for a `pf` level, the folder's own sort key (its date modified, as a string that
+/// compares chronologically). Folder groups are then ordered by it - newest folder first unless a direction is
+/// typed - instead of following their rows. None for a label leaves that group last of its siblings.
+pub fn group_layout(n_rows: usize, parsed: &Parsed, get: &dyn Fn(usize, &str) -> String, today: &str,
+                    key_override: &dyn Fn(usize, &str) -> Option<String>) -> Vec<Entry> {
     use std::cmp::Ordering;
-    fn build(idxs: Vec<usize>, depth: usize, prefix: &str, p: &Parsed, get: &dyn Fn(usize, &str) -> String, today: &str, out: &mut Vec<Entry>) {
+    fn build(idxs: Vec<usize>, depth: usize, prefix: &str, p: &Parsed, get: &dyn Fn(usize, &str) -> String, today: &str,
+             ko: &dyn Fn(usize, &str) -> Option<String>, out: &mut Vec<Entry>) {
         let spec = &p.specs[depth];
         let mut order: Vec<String> = Vec::new();
         let mut groups: HashMap<String, (String, Vec<usize>)> = HashMap::new();
@@ -220,7 +226,21 @@ pub fn group_layout(n_rows: usize, parsed: &Parsed, get: &dyn Fn(usize, &str) ->
             groups.entry(k).or_insert((l, vec![])).1.push(i);
         }
         let (mut full, none): (Vec<String>, Vec<String>) = order.into_iter().partition(|k| !k.is_empty());
-        if let Some(desc) = p.desc {
+        let by_folder = spec.bucket == "pf" && full.iter().any(|k| ko(depth, k).is_some());
+        if by_folder {
+            // folders carry their own date modified: newest first by default, the typed direction otherwise
+            let desc = p.desc.unwrap_or(true);
+            let key = |k: &String| ko(depth, k).unwrap_or_default();
+            full.sort_by(|a, b| {
+                let (ka, kb) = (key(a), key(b));
+                match (ka.is_empty(), kb.is_empty()) {
+                    (true, true) => std::cmp::Ordering::Equal,
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    _ => if desc { kb.cmp(&ka) } else { ka.cmp(&kb) },
+                }
+            });
+        } else if let Some(desc) = p.desc {
             full.sort_by(|a, b| {
                 if spec.bucket == "value" { return compare_field_values(a, b, desc); }
                 let c = a.cmp(b);
@@ -231,13 +251,13 @@ pub fn group_layout(n_rows: usize, parsed: &Parsed, get: &dyn Fn(usize, &str) ->
             let (label, members) = groups.remove(&k).unwrap();
             let id = if prefix.is_empty() { label.clone() } else { format!("{prefix}\u{1f}{label}") };
             out.push(Entry::Header { depth, id: id.clone(), label, count: members.len() });
-            if depth + 1 < p.specs.len() { build(members, depth + 1, &id, p, get, today, out); }
+            if depth + 1 < p.specs.len() { build(members, depth + 1, &id, p, get, today, ko, out); }
             else { out.extend(members.into_iter().map(Entry::Row)); }
         }
     }
     let mut out = Vec::new();
     let _ = Ordering::Equal;
-    build((0..n_rows).collect(), 0, "", parsed, get, today, &mut out);
+    build((0..n_rows).collect(), 0, "", parsed, get, today, key_override, &mut out);
     out
 }
 

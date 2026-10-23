@@ -10,7 +10,7 @@ Listens on the host/port in the config (localhost only).
   GET /thumb?remote=...    -> queues a thumbnail (if missing); {"ready", "thumb"}
   GET /people              -> {"people": [registered names]} (for completion)
 """
-import base64, concurrent.futures, collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
+import base64, bisect, concurrent.futures, collections, hashlib, hmac, json, os, queue, random, re, secrets, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -882,6 +882,25 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
         u = urlparse(self.path)
+        if u.path == "/mtimes":
+            # the dates modified of folders (catalog entries of their own): {"paths": [...]} -> {path: ISO text | null}
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                paths = json.loads(self.rfile.read(min(n, 8 * 1024 * 1024)))["paths"]
+                assert isinstance(paths, list)
+            except Exception as e:
+                return self._json(400, {"error": f"bad request: {e}"})
+            out = {}
+            with NAMES.lock:
+                table, mts = NAMES.paths, NAMES.mtimes
+                for p in paths:
+                    if not isinstance(p, str):
+                        continue
+                    i = bisect.bisect_left(table, p)
+                    mt = mts[i] if i < len(table) and table[i] == p else None
+                    out[p] = (None if mt is None or mt < 172800 or mt in (filesearch.UNKNOWN_MTIME, 123456789)
+                              else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(mt)))
+            return self._json(200, out)
         if u.path != "/delta":
             return self._json(404, {"error": "not found"})
         if not hmac.compare_digest(self.headers.get("X-Delta-Token", ""), DELTA_TOKEN or ""):
