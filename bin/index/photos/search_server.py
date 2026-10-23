@@ -575,7 +575,7 @@ def _count_pages(path):
     m = re.search(r"^Pages:\s+(\d+)", out, re.M)
     return int(m.group(1)) if m else 0
 
-def add_pages(results, wait=1.5):
+def add_pages(results, wait=1.5, cache_only=False):
     """Sets r["pages"] (page count of local PDFs). Counts not ready within `wait` seconds keep counting in the background
     and show up on the next query."""
     pending = []
@@ -590,6 +590,8 @@ def add_pages(results, wait=1.5):
         key = (path, r.get("size"), mt)
         if key in _pages_cache:
             r["pages"] = _pages_cache[key] or None
+            continue
+        if cache_only:                          # a metadata window never starts counting; the visible pages do that
             continue
         def job(path=path, key=key):
             _pages_cache[key] = _count_pages(path)
@@ -975,8 +977,7 @@ class H(BaseHTTPRequestHandler):
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
                         r["mtime"] = None if r["mtime"] < 172800 or r["mtime"] in (filesearch.UNKNOWN_MTIME, 123456789) else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
-                if not nothumb:
-                    add_pages(results)
+                add_pages(results, cache_only=nothumb)
                 return self._json(200, {"count": count, "results": results, "errors": errors, "stats": stats})
             try:
                 with _q_lock:
