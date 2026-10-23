@@ -138,53 +138,6 @@ fn load_history() -> Vec<String> {
 }
 
 /// Collapse whitespace runs to single spaces (shell HIST_REDUCE_BLANKS).
-/// Quote auto-pairing (query-dsl.md "Quoted terms"): `t` is the box text right after one character was
-/// typed, `prev` the text before it. A typed `"` after a word wraps that word (`5"` -> `"5"`), on an
-/// empty spot inserts the pair, before a word wraps it, and over an existing closing quote just steps
-/// past it; `'` only pairs where it could open a quote. `caret` is the char index after the typed
-/// character. Returns (new text, caret as a char index).
-fn auto_pair(prev: &str, t: &str, caret: usize) -> Option<(String, usize)> {
-    let (p, c): (Vec<char>, Vec<char>) = (prev.chars().collect(), t.chars().collect());
-    if c.len() != p.len() + 1 { return None; }
-    // the caret sits right after the typed char (a diff alone is ambiguous when it equals its neighbour)
-    let i = caret.checked_sub(1).filter(|&k| k < c.len())?;
-    let q = c[i];
-    if q != '"' && q != '\'' { return None; }
-    if c[..i].iter().chain(c[i + 1..].iter()).ne(p.iter()) { return None; }
-    let before = if i > 0 { Some(c[i - 1]) } else { None };
-    let next = c.get(i + 1).copied();
-    let is_space = |x: Option<char>| x.map_or(true, |ch| ch.is_whitespace());
-    let word = |x: Option<char>| !is_space(x);
-    let boundary = |x: Option<char>| is_space(x) || matches!(x, Some(':') | Some('!'));
-    let odd = c[..i].iter().filter(|&&ch| ch == '"').count() % 2 == 1;
-    let s = |v: &[char]| v.iter().collect::<String>();
-    if next == Some(q) && (if q == '"' { odd } else { word(before) }) {
-        return Some((prev.to_string(), i + 1));
-    }
-    if q == '"' && odd { return None; }
-    if boundary(before) && is_space(next) {
-        let mut v = c.clone();
-        v.insert(i + 1, q);
-        return Some((s(&v), i + 1));
-    }
-    if boundary(before) && word(next) {
-        let mut e = i + 1;
-        while e < c.len() && !c[e].is_whitespace() { e += 1; }
-        let mut v = c.clone();
-        v.insert(e, q);
-        return Some((s(&v), e + 1));
-    }
-    if q == '"' && word(before) && before != Some('"') {
-        let mut b = i;
-        while b > 0 && !boundary(Some(c[b - 1])) { b -= 1; }
-        let mut v = c.clone();
-        v.remove(i);
-        v.insert(i, '"');
-        v.insert(b, '"');
-        return Some((s(&v), i + 2));
-    }
-    None
-}
 
 fn normalize_query(q: &str) -> String {
     tokenize(q).join(" ")
@@ -3571,7 +3524,6 @@ impl eframe::App for App {
                                 job.wrap.max_width = wrap;
                                 ui.fonts_mut(|f| f.layout_job(job))
                             };
-                            let before_edit = self.query.clone();
                             let out = egui::TextEdit::singleline(&mut self.query)
                                 .id(qid)
                                 .layouter(&mut layouter)
@@ -3588,19 +3540,6 @@ impl eframe::App for App {
                             }
                             if r.changed() {
                                 self.last_change = Instant::now();
-                                let typed_caret = egui::TextEdit::load_state(ui.ctx(), qid)
-                                    .and_then(|st| st.cursor.char_range())
-                                    .map(|c| c.primary.index.0);
-                                if let Some((text, caret)) = typed_caret
-                                    .and_then(|tc| auto_pair(&before_edit, &self.query, tc))
-                                {
-                                    self.query = text;
-                                    if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), qid) {
-                                        let c = egui::text::CCursor::new(caret);
-                                        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
-                                        st.store(ui.ctx(), qid);
-                                    }
-                                }
                             }
                             if r.clicked() { self.list_focus = false; }
                             // keep focus here unless the list was focused on purpose
@@ -4093,27 +4032,6 @@ mod keymap_tests {
             assert_eq!((c.ctrl, c.alt, c.shift), (ctrl, alt, shift), "{text}");
         }
         assert!(Chord::parse("Ctrl+").is_none());
-    }
-}
-
-#[cfg(test)]
-mod auto_pair_tests {
-    use super::auto_pair;
-    fn typed(prev: &str, at: usize, ch: char) -> Option<(String, usize)> {
-        let mut t: Vec<char> = prev.chars().collect();
-        t.insert(at, ch);
-        auto_pair(prev, &t.iter().collect::<String>(), at + 1)
-    }
-    #[test]
-    fn pairs() {
-        assert_eq!(typed("5", 1, '"'), Some(("\"5\"".into(), 3)));
-        assert_eq!(typed("foo word", 8, '"'), Some(("foo \"word\"".into(), 10)));
-        assert_eq!(typed("", 0, '"'), Some(("\"\"".into(), 1)));
-        assert_eq!(typed("title:abc", 9, '"'), Some(("title:\"abc\"".into(), 11)));
-        assert_eq!(typed("\"5\"", 2, '"'), Some(("\"5\"".into(), 3))); // step over
-        assert_eq!(typed("\"5", 2, '"'), None); // closing an open quote
-        assert_eq!(typed("don", 3, '\''), None); // apostrophe
-        assert_eq!(typed("ab", 1, 'x'), None);
     }
 }
 
