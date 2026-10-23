@@ -26,8 +26,8 @@ fixes, and `~/.config/dsl/tests.json` checks them.
 > now, not Quickshell components; the Quickshell launcher (`launcher/`,
 > `QueryDsl.qml`) is gone. Where the sections below say "the QML launcher" or
 > `WinSwitchQueryDsl.qml`, the behaviour is carried by those two programs over
-> the Rust crate described next (alt-tab still hands `/fts`, `/sw` and
-> `/fv/claude-fts` to the Quickshell grid, which also serves the mod+Tab group
+> the Rust crate described next (alt-tab still hands `/fts` and `/sw`
+> to the Quickshell grid, which also serves the mod+Tab group
 > picker).
 
 **Rust reference implementation (2026-10-23).** `~/.config/dsl/rs` (crate
@@ -954,8 +954,8 @@ a candidate's complete text - an AND over the fragments, not a second,
 narrower substring search - so fragment order never matters and a third
 `Ctrl+Space` narrows further the same way a second one does. Every other popup
 (type-path, value, bare value, sort direction) narrows the same way since
-2026-10-21: `//cla` + Tab + `Ctrl+Space` + `fts` keeps only candidates
-containing both `cla` and `fts` (`claude-fts`). The first word is still the
+2026-10-21: `//cla` + Tab + `Ctrl+Space` + `tit` keeps only candidates
+containing both `cla` and `tit` (`claude-title`). The first word is still the
 real completion fragment (so the candidate set is whatever `cla` completes
 to); each further word must also substring-match the candidate's text. Accept
 replaces from the frozen fragment start, same as the Verb stage. Implemented

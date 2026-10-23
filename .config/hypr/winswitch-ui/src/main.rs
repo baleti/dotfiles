@@ -215,7 +215,7 @@ fn load_tabs() -> Vec<(u32, i32)> {
 fn make_schema() -> pickerdsl::Schema {
     use pickerdsl::{VerbDef, VerbKind};
     let mut types = vec!["title", "workspace", "pid", "monitor", "windows"];
-    for (g, subs) in [("tmux", &["session", "window", "title"][..]), ("claude", &["title", "path", "session", "age", "fts"][..])] {
+    for (g, subs) in [("tmux", &["session", "window", "title"][..]), ("claude", &["title", "path", "session", "age"][..])] {
         for s in subs {
             types.push(Box::leak(format!("{g}-{s}").into_boxed_str()));
         }
@@ -225,7 +225,6 @@ fn make_schema() -> pickerdsl::Schema {
         VerbDef { short: "fts", long: "", kind: VerbKind::App { takes_arg: true }, max_parts: 2, desc: "full text of the running and archived Claude conversations" },
     ]);
     sc.exact_types = vec!["windows".into()];
-    sc.hidden_types = vec!["claude-fts".into()];
     sc.extra_universe = ["fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux"].map(String::from).to_vec();
     sc.app_keys = vec![("fts".into(), ["claude", "claude-live", "claude-archive", "tmux"].map(String::from).to_vec())];
     sc.type_descs = [
@@ -276,7 +275,6 @@ impl pickerdsl::Source for WinSrc<'_> {
 fn needs_qs(schema: &pickerdsl::Schema, q: &str) -> bool {
     let p = pickerdsl::parse(schema, q);
     !p.apps.is_empty()
-        || p.terms.iter().any(|t| matches!(t, pickerdsl::Term::Scoped { keys, .. } if schema.resolve_keys(keys).iter().any(|k| k == "claude-fts")))
 }
 
 // ---- layout: ported from WinSwitch.qml (_typicalAspect/_gridDims/_cellSize/frameSize) ----
@@ -2185,7 +2183,7 @@ mod dsl_engine {
         for q in ["/fv/title foo", "brave /s/title", "/rt/workspace", "/at/tmux", "/g/workspace", "!brave", "\"/etc\"", "/", "/f"] {
             assert!(!needs_qs(&sc, q), "{q}");
         }
-        for q in ["/fts/claude-live foo", "/sw", "/fv/claude-fts word"] {
+        for q in ["/fts/claude-live foo", "/sw"] {
             assert!(needs_qs(&sc, q), "{q}");
         }
     }

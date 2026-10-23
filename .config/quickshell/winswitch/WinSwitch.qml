@@ -218,7 +218,7 @@ PanelWindow {
         let rows = root.tableBase;
         const q = root.parsedQuery;
         if (!root.tableMode) return rows;
-        const filters = q.filters.filter(t => !(t.kind === "scoped" && t.path === "claude-fts"));
+        const filters = q.filters.filter(t => t.kind !== "fts");
         if (filters.length > 0)
             rows = rows.filter(r => filters.every(t => root._tableMatches(r, t)));
         if (q.sortRaw) {
