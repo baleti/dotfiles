@@ -1791,7 +1791,7 @@ impl App {
                 "path" => h.remote.clone(),
                 "size" => h.size.map(|s| s.to_string()).unwrap_or_default(),
                 "date-modified" => h.mtime.clone().unwrap_or_default(),
-                "extension" => base.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default(),
+                "extension" => base.rsplit_once('.').filter(|(stem, _)| !stem.is_empty()).map(|(_, e)| e.to_lowercase()).unwrap_or_default(),
                 "depth" => h.remote.matches('/').count().to_string(),
                 "pages" => h.pages.map(|n| n.to_string()).unwrap_or_default(),
                 _ => String::new(),
