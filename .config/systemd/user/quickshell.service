@@ -5,7 +5,6 @@ Wants=graphical-session.target
 
 [Service]
 Type=simple
-Environment=LD_PRELOAD=%h/.config/hypr/mlockself/mlockself.so
 ExecStart=/usr/bin/qs -n
 Restart=always
 RestartSec=5
