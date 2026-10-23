@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull image index records from host1 every 2 hours
+
+[Timer]
+OnCalendar=*-*-* 00/2:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

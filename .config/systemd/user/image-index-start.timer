@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily check; remote_images.py starts the host1 image job every 3 days (new and changed images of the collections.json paths)
+
+[Timer]
+OnCalendar=*-*-* 02:20:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
