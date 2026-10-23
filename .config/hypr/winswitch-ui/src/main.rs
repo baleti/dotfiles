@@ -83,6 +83,23 @@ struct Ac {
 }
 
 const AC_ROW_H: i32 = 24;
+const GROUP_HEAD_H: i32 = 30;
+
+/// One entry of the grouped display: a section header or a window.
+#[derive(Clone)]
+enum Disp {
+    Head { depth: usize, id: String, label: String, count: usize, folded: bool },
+    Row(usize),
+}
+
+/// A positioned entry of the grouped flow (content coordinates, before scrolling).
+struct FlowItem {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    disp: usize,
+}
 
 struct Win {
     addr: String,
@@ -255,12 +272,10 @@ impl pickerdsl::Source for WinSrc<'_> {
     }
 }
 
-/// Parts of the query the native UI cannot evaluate: app verbs (/fts, /sw), /g (needs the grouped
-/// grid) and the full-text type. Those go to the Quickshell grid.
+/// Parts of the query the native UI cannot evaluate: app verbs (/fts, /sw) and the full-text type. Those go to the Quickshell grid.
 fn needs_qs(schema: &pickerdsl::Schema, q: &str) -> bool {
     let p = pickerdsl::parse(schema, q);
     !p.apps.is_empty()
-        || p.group_raw.is_some()
         || p.terms.iter().any(|t| matches!(t, pickerdsl::Term::Scoped { keys, .. } if schema.resolve_keys(keys).iter().any(|k| k == "claude-fts")))
 }
 
@@ -648,6 +663,14 @@ struct App {
     cursor: usize, // in chars
     history: Vec<String>,
     schema: pickerdsl::Schema,
+    /// `/g`: sections folded by clicking a header (or Ctrl+G); reset when the /g token changes
+    group: Option<pickerdsl::group::Parsed>,
+    group_raw: String,
+    collapsed: std::collections::HashSet<String>,
+    disp: Vec<Disp>,
+    gscroll: i32, // grouped view scroll, px in content space, snapped to a line start
+    today: String,
+    head_hits: Vec<(i32, i32, i32, i32, String)>,
     /// the open completion / history popup
     ac: Option<Ac>,
     ac_active: bool, // a completion session is open: typing re-narrows it, even through zero candidates
@@ -723,7 +746,39 @@ impl App {
     fn refilter(&mut self) {
         let parsed = pickerdsl::parse(&self.schema, &self.query);
         let src = WinSrc(&self.windows);
-        self.filtered = pickerdsl::select_rows(&self.schema, &parsed, &src, self.windows.len());
+        let base = pickerdsl::select_rows(&self.schema, &parsed, &src, self.windows.len());
+        let raw = parsed.group_raw.clone().unwrap_or_default();
+        let known: Vec<&str> = self.schema.types.iter().map(|s| s.as_str()).collect();
+        let grouped = if raw.is_empty() || self.query.is_empty() { None } else { pickerdsl::group::parse_group(&raw, &known, &[]) };
+        if raw != self.group_raw {
+            self.collapsed.clear();
+            self.gscroll = 0;
+            self.group_raw = raw;
+        }
+        self.disp.clear();
+        if let Some(g) = &grouped {
+            if self.today.is_empty() {
+                self.today = Command::new("date").arg("+%F").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+            }
+            let layout = pickerdsl::group::group_layout(base.len(), g, &|i, name| pickerdsl::Source::value(&src, base[i], name), &self.today, &|_, _| None);
+            let mut order = vec![];
+            for e in pickerdsl::group::group_visible(&layout, &self.collapsed) {
+                match e {
+                    pickerdsl::group::Entry::Header { depth, id, label, count } => {
+                        let folded = self.collapsed.contains(&id);
+                        self.disp.push(Disp::Head { depth, id, label, count, folded });
+                    }
+                    pickerdsl::group::Entry::Row(i) => {
+                        order.push(base[i]);
+                        self.disp.push(Disp::Row(base[i]));
+                    }
+                }
+            }
+            self.filtered = order;
+        } else {
+            self.filtered = base;
+        }
+        self.group = grouped;
         let defaults: Vec<String> = DEFAULT_COLUMNS.iter().map(|s| s.to_string()).collect();
         self.columns = pickerdsl::active_columns(&self.schema, &parsed, &defaults, &src, self.windows.len());
         if !self.query.is_empty() && !self.filtered.is_empty() && self.visual() < 0 {
@@ -733,8 +788,127 @@ impl App {
         self.ensure_visible();
     }
 
+    /// The grouped flow: windows in rows of `cols` cells, a header taking a full line of its own.
+    fn flow(&self) -> (Vec<FlowItem>, i32) {
+        let Some(l) = self.layout.as_ref() else { return (vec![], 0) };
+        let (cw, ch) = (l.cell_w + CELL_H_OVERHEAD, self.cell_hgt());
+        let (mut col, mut y) = (0, 0);
+        let mut out = vec![];
+        for (i, d) in self.disp.iter().enumerate() {
+            match d {
+                Disp::Head { .. } => {
+                    if col > 0 {
+                        col = 0;
+                        y += ch;
+                    }
+                    out.push(FlowItem { x: 0, y, w: cw * l.cols, h: GROUP_HEAD_H, disp: i });
+                    y += GROUP_HEAD_H;
+                }
+                Disp::Row(_) => {
+                    out.push(FlowItem { x: col * cw, y, w: cw, h: ch, disp: i });
+                    col += 1;
+                    if col == l.cols {
+                        col = 0;
+                        y += ch;
+                    }
+                }
+            }
+        }
+        if col > 0 {
+            y += ch;
+        }
+        (out, y)
+    }
+
+    fn group_view_h(&self) -> i32 {
+        let (h, _) = self.card_dims();
+        h - 32 - self.header_h()
+    }
+
+    /// Line starts of the grouped flow (the scroll snaps to them so no cell is ever cut off).
+    fn bands(items: &[FlowItem]) -> Vec<i32> {
+        let mut b: Vec<i32> = items.iter().map(|i| i.y).collect();
+        b.dedup();
+        b
+    }
+
+    fn group_scroll_by(&mut self, step: i32) {
+        let (items, content_h) = self.flow();
+        let bands = Self::bands(&items);
+        let view = self.group_view_h();
+        let max = bands.iter().copied().filter(|&b| b + view <= content_h.max(view)).max().unwrap_or(0);
+        let cur = bands.iter().position(|&b| b >= self.gscroll).unwrap_or(0) as i32;
+        let next = (cur + step).clamp(0, bands.len() as i32 - 1);
+        self.gscroll = bands.get(next as usize).copied().unwrap_or(0).min(max.max(0));
+        self.dirty = true;
+    }
+
+    fn toggle_fold(&mut self, id: &str) {
+        if !self.collapsed.remove(id) {
+            self.collapsed.insert(id.to_string());
+        }
+        self.refilter();
+        self.dirty = true;
+    }
+
+    /// Ctrl+G: fold / unfold the section of the selected window (its innermost header).
+    fn toggle_selected_group(&mut self) {
+        let sel = self.selected;
+        let mut cur: Option<String> = None;
+        for d in &self.disp {
+            match d {
+                Disp::Head { id, .. } => cur = Some(id.clone()),
+                Disp::Row(i) if *i as i32 == sel => break,
+                _ => {}
+            }
+        }
+        if let Some(id) = cur {
+            self.toggle_fold(&id);
+        }
+    }
+
+    /// Grouped flow: the cell nearest in x on the next line below (rows > 0) or above, crossing sections.
+    fn advance_group_row(&mut self, rows: i32) {
+        let (items, _) = self.flow();
+        let pos = |wi: usize| items.iter().find(|it| matches!(self.disp[it.disp], Disp::Row(i) if i == wi));
+        let Some(cur) = (self.selected >= 0).then(|| pos(self.selected as usize)).flatten() else { return self.advance(rows.signum()) };
+        let mut best: Option<(i32, i32, usize)> = None;
+        for it in &items {
+            let Disp::Row(wi) = self.disp[it.disp] else { continue };
+            let (below, above) = (it.y > cur.y + 1, it.y + 1 < cur.y);
+            if if rows > 0 { !below } else { !above } {
+                continue;
+            }
+            let (dy, dx) = ((it.y - cur.y).abs(), (it.x - cur.x).abs());
+            if best.map_or(true, |(by, bx, _)| dy < by - 1 || ((dy - by).abs() <= 1 && dx < bx)) {
+                best = Some((dy, dx, wi));
+            }
+        }
+        if let Some((_, _, wi)) = best {
+            self.selected = wi as i32;
+            self.ensure_visible();
+            self.dirty = true;
+            self.record_query();
+        }
+    }
+
     fn ensure_visible(&mut self) {
         if self.layout.is_none() {
+            return;
+        }
+        if self.group.is_some() {
+            let (items, _) = self.flow();
+            let sel = self.selected;
+            let Some(it) = items.iter().find(|it| matches!(self.disp[it.disp], Disp::Row(i) if i as i32 == sel)) else { return };
+            let (bands, view) = (Self::bands(&items), self.group_view_h());
+            if it.y < self.gscroll {
+                // include the header right above this line, if there is one
+                let k = bands.iter().position(|&b| b == it.y).unwrap_or(0);
+                let head_above = k > 0 && items.iter().any(|x| x.y == bands[k - 1] && matches!(self.disp[x.disp], Disp::Head { .. }));
+                self.gscroll = bands[if head_above { k - 1 } else { k }];
+            } else if it.y + it.h > self.gscroll + view {
+                self.gscroll = bands.iter().copied().find(|&b| it.y + it.h <= b + view).unwrap_or(it.y);
+            }
             return;
         }
         let rows = self.card_dims().1;
@@ -769,6 +943,9 @@ impl App {
     }
 
     fn advance_row(&mut self, rows: i32) {
+        if self.group.is_some() {
+            return self.advance_group_row(rows);
+        }
         let n = self.filtered.len() as i32;
         if n == 0 {
             return;
@@ -1078,6 +1255,7 @@ impl App {
                 Keysym::j => return self.advance_row(1),
                 Keysym::k => return self.advance_row(-1),
                 Keysym::r if self.locked => return self.open_history(),
+                Keysym::g if self.group.is_some() => return self.toggle_selected_group(),
                 Keysym::space if self.locked && self.ac.is_none() => return self.trigger_completion(),
                 _ => {}
             }
@@ -1414,10 +1592,41 @@ impl App {
         let sel = self.selected;
         self.hits.clear();
         let mut hits = vec![];
-        for (slot, &wi) in self.filtered.iter().enumerate().skip(first).take(if self.ac.is_some() { 0 } else { (vis_rows * l.cols) as usize }) {
-            let local = (slot - first) as i32;
-            let (col, row) = (local % l.cols, local / l.cols);
-            let (x, y) = (gx + col * cell_full_w, gy + row * cell_hgt);
+        let mut head_hits: Vec<(i32, i32, i32, i32, String)> = vec![];
+        // (x, y, window) of every cell to draw; headers are drawn on the way
+        let mut cells: Vec<(i32, i32, usize)> = vec![];
+        if self.ac.is_none() {
+            if self.group.is_some() {
+                let (items, _) = self.flow();
+                let view = card_h - 32 - self.header_h();
+                for it in &items {
+                    if it.y < self.gscroll || it.y + it.h > self.gscroll + view {
+                        continue;
+                    }
+                    let (x, y) = (gx + it.x, gy + it.y - self.gscroll);
+                    match &self.disp[it.disp] {
+                        Disp::Row(wi) => cells.push((x, y, *wi)),
+                        Disp::Head { depth, id, label, count, folded } => {
+                            head_hits.push((x, y, it.w, it.h, id.clone()));
+                            let hs = (HEADER_FONT_PX - 1.0) * sc;
+                            let (hasc, hlh) = metrics(&self.font, hs);
+                            let dx = 8 + *depth as i32 * 14;
+                            let rule = rrect((x + dx) as f32, (y + it.h - 1) as f32, (it.w - dx - 8) as f32, 1.0, 0.0);
+                            fill(&mut pm, &rule, tf, th.text_dim, 90);
+                            let text = format!("{} {}   {}{}", if *folded { "\u{25b8}" } else { "\u{25be}" }, label, count, if *folded { " (folded)" } else { "" });
+                            let base = (y + it.h - 3) as f32 * sc - (hlh - hasc);
+                            draw_text(&mut pm, &self.font, hs, (x + dx + 2) as f32 * sc, base, th.text, &text, (it.w - dx - 12) as f32 * sc);
+                        }
+                    }
+                }
+            } else {
+                for (slot, &wi) in self.filtered.iter().enumerate().skip(first).take((vis_rows * l.cols) as usize) {
+                    let local = (slot - first) as i32;
+                    cells.push((gx + (local % l.cols) * cell_full_w, gy + (local / l.cols) * cell_hgt, wi));
+                }
+            }
+        }
+        for (x, y, wi) in cells {
             hits.push((x, y, cell_full_w, cell_hgt, wi));
             let win = &self.windows[wi];
             // rectangle inset 4
@@ -1473,6 +1682,7 @@ impl App {
             }
         }
         self.hits = if popup_hits.is_empty() { hits } else { popup_hits };
+        self.head_hits = head_hits;
 
         // blit to a shm buffer (tiny-skia RGBA premultiplied -> wl Argb8888 = B,G,R,A bytes)
         let stride = w * 4;
@@ -1655,7 +1865,10 @@ impl PointerHandler for App {
                     }
                 }
                 PointerEventKind::Press { button, .. } if button == 0x110 => {
-                    if let Some(wi) = self.cell_at(x, y) {
+                    let head = self.head_hits.iter().find(|(hx, hy, hw, hh, _)| x >= *hx as f64 && y >= *hy as f64 && x < (*hx + *hw) as f64 && y < (*hy + *hh) as f64).map(|h| h.4.clone());
+                    if let Some(id) = head {
+                        self.toggle_fold(&id);
+                    } else if let Some(wi) = self.cell_at(x, y) {
                         if let Some(ac) = self.ac.as_mut() {
                             ac.sel = wi;
                             self.ac_accept();
@@ -1676,6 +1889,8 @@ impl PointerHandler for App {
                         let max = self.ac.as_ref().map_or(0, |a| a.items.len()).saturating_sub(self.ac_rows());
                         self.ac_scroll = (self.ac_scroll as i32 + step).clamp(0, max as i32) as usize;
                         self.dirty = true;
+                    } else if step != 0 && self.group.is_some() {
+                        self.group_scroll_by(step);
                     } else if step != 0 && self.layout.is_some() {
                         let total = (self.filtered.len() as i32 + self.cols() as i32 - 1) / self.cols() as i32;
                         let max = (total - self.card_dims().1).max(0);
@@ -1869,6 +2084,13 @@ fn main() {
         locked: false,
         list_focused: false,
         recalling: false,
+        group: None,
+        group_raw: String::new(),
+        collapsed: Default::default(),
+        disp: vec![],
+        gscroll: 0,
+        today: String::new(),
+        head_hits: vec![],
         schema: make_schema(),
         ac: None,
         ac_active: false,
@@ -1924,10 +2146,10 @@ mod dsl_engine {
     #[test]
     fn only_unported_features_hand_off() {
         let sc = make_schema();
-        for q in ["/fv/title foo", "brave /s/title", "/rt/workspace", "/at/tmux", "!brave", "\"/etc\"", "/", "/f"] {
+        for q in ["/fv/title foo", "brave /s/title", "/rt/workspace", "/at/tmux", "/g/workspace", "!brave", "\"/etc\"", "/", "/f"] {
             assert!(!needs_qs(&sc, q), "{q}");
         }
-        for q in ["/g/workspace", "/fts/claude-live foo", "/sw", "/fv/claude-fts word"] {
+        for q in ["/fts/claude-live foo", "/sw", "/fv/claude-fts word"] {
             assert!(needs_qs(&sc, q), "{q}");
         }
     }
