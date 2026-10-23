@@ -213,11 +213,16 @@ local function alt_down()
     return hl.is_key_down("Alt_L") or hl.is_key_down("Alt_R")
 end
 
+-- Present while the Alt poll below is running; the standalone winswitch-ui prototype checks it
+-- to tell a held Alt from one already released (a quick tap) at startup.
+local UI_MARKER = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/winswitch-ui-alt"
+
 local alt_timer -- kept referenced: a collected timer never fires
 alt_timer = hl.timer(function()
     if not alt_down() then
         alt_timer:set_enabled(false)
         hl.dispatch(hl.dsp.submap("reset"))   -- always, from here: never leaves the keymap stuck
+        os.remove(UI_MARKER)
         emit("altup")
     end
 end, { timeout = ALT_POLL_MS, type = "repeat" })
@@ -242,7 +247,7 @@ local function write_window_list()
     os.rename(tmp, LIST_FILE)
 end
 
-function winswitch.tab(direction)
+function winswitch.tab_qs(direction)
     write_window_list()
     emit("tab " .. direction)
     if not alt_timer:is_enabled() then
@@ -337,3 +342,48 @@ hl.bind(mainMod .. " + SHIFT + Tab", function() winswitch.group_tab("prev") end,
 
 hl.bind("ALT + Tab", function() winswitch.tab("next") end, { description = "Window switcher (next)" })
 hl.bind("ALT + SHIFT + Tab", function() winswitch.tab("prev") end, { description = "Window switcher (previous)" })
+
+-- ALT+Tab runs the standalone grid (~/.config/hypr/winswitch-ui, a small native process), not
+-- Quickshell's. Same session mechanics as winswitch.tab_qs: window list file, alt-switch
+-- submap, an Alt poll that emits "altup". Presses are numbered and also written to a file: the
+-- process may not be listening on socket2 yet when the second Tab arrives, and applies the file
+-- first (events with a number it already applied are ignored).
+--
+-- The standalone grid hands a session to Quickshell's (qs ipc call winswitch handoff) when the
+-- query needs the DSL engine; Quickshell then calls winswitch.set_qs(true) so Tab / Alt+Tab keep
+-- reaching it, and set_qs(false) when it closes.
+local UI_BIN = (os.getenv("HOME") or "") .. "/.config/hypr/winswitch-ui/target/release/winswitch-ui"
+local UI_TABS = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/winswitch-ui-tabs"
+local qs_session = false
+local ui_seq = 0
+
+function winswitch.set_qs(on)
+    qs_session = on and true or false
+    return hl.dsp.no_op()
+end
+
+function winswitch.tab(direction)
+    if qs_session then
+        return winswitch.tab_qs(direction)
+    end
+    ui_seq = ui_seq + 1
+    local starting = not alt_timer:is_enabled()
+    if starting then
+        ui_seq = 1
+        write_window_list()
+    end
+    local f = io.open(UI_TABS, starting and "w" or "a")
+    if f then
+        f:write(ui_seq .. " " .. direction .. "\n")
+        f:close()
+    end
+    if starting then
+        local m = io.open(UI_MARKER, "w")
+        if m then m:close() end
+        hl.dispatch(hl.dsp.submap("alt-switch"))
+        alt_timer:set_enabled(true)
+        hl.dispatch(hl.dsp.exec_cmd(UI_BIN))
+    else
+        emit("uitab " .. direction .. " " .. ui_seq)
+    end
+end

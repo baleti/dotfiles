@@ -69,7 +69,18 @@ ShellRoot {
         target: "winswitch"
         function close(): void {
             WinSwitchState.close();
-        }    }
+        }
+        // The standalone alt-tab (~/.config/hypr/winswitch-ui) hands a session over when the
+        // query needs the DSL engine (verbs, completion, history): opens this grid locked,
+        // with `query` already in the search box and `address` selected.
+        function handoff(query: string, address: string, history: bool): void {
+            WinSwitchState.handoff(query, address, history);
+        }
+        // Query accepted in the standalone alt-tab: same history file, one writer.
+        function record(query: string): void {
+            WinSwitchQueryHistory.record(query);
+        }
+    }
 
     // Clipboard history picker (mod+v). Same single-top-level-target /
     // latched-monitor pattern as launcher/rssReader -- see

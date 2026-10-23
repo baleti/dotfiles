@@ -71,6 +71,15 @@ PanelWindow {
             root._grabSession = WinSwitchState.sessionId;
             focusGrab.active = true;
             root._claimFocus();
+            if (WinSwitchState.pendingQuery !== "") {
+                // handed over from the standalone alt-tab: keep what was typed there
+                root.queryText = WinSwitchState.pendingQuery;
+                WinSwitchState.pendingQuery = "";
+                Qt.callLater(() => {
+                    searchInput.forceActiveFocus();
+                    searchInput.cursorPosition = searchInput.text.length;
+                });
+            }
         } else {
             focusGrab.active = false;
         }

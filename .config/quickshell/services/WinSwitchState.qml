@@ -299,9 +299,45 @@ QtObject {
         }
     }
 
+    // Session handed over from the standalone alt-tab (see shell.qml's `winswitch` IPC target):
+    // the same state a typed first character produces -- locked, query in the search box --
+    // opened at once (the user is already looking at a grid) with the caller's selection.
+    property string pendingQuery: ""
+    function handoff(query, address, history) {
+        if (root.active)
+            return;
+        let list;
+        try {
+            listFile.reload();
+            list = JSON.parse(listFile.text());
+        } catch (e) {
+            console.warn(`winswitch: bad window list: ${e}`);
+            return;
+        }
+        if (!Array.isArray(list) || list.length === 0)
+            return;
+        root._startSession(list);
+        showTimer.stop();
+        const at = root.windows.findIndex(w => w.address === address);
+        if (at >= 0)
+            root.selected = at;
+        root.altHeld = true;
+        root.locked = true;
+        root.pendingQuery = query;
+        root._capturePending = true;
+        captureTimer.interval = root.captureSettleMs;
+        captureTimer.restart();
+        // winswitch.lua routes ALT+Tab here (instead of to the standalone grid) until close()
+        Hyprland.dispatch('winswitch.set_qs(true)');
+        root.shown = true;
+        if (history)
+            Qt.callLater(() => root.navKey("history"));
+    }
+
     function close(reason) {
         if (!root.active)
             return;
+        Hyprland.dispatch('winswitch.set_qs(false)');
         console.log(`winswitch: close (${reason || "confirm"}) session=${root.sessionId} shown=${root.shown} altHeld=${root.altHeld}`);
         showTimer.stop();
         captureTimer.stop();

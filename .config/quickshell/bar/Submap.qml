@@ -15,7 +15,11 @@ Rectangle {
 
     property string submap: ""
 
-    visible: submap.length > 0
+    // The window switchers swap to these submaps only to keep other binds from firing while
+    // Alt / Super is held (winswitch.lua); they last a fraction of a second and just flicker.
+    readonly property var transient: ["alt-switch", "group-switch"]
+
+    visible: submap.length > 0 && transient.indexOf(submap) < 0
     implicitWidth: visible ? label.implicitWidth + Theme.pillPadH * 2 : 0
     implicitHeight: Theme.barHeight - 10
     width: implicitWidth
