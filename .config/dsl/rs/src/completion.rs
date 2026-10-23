@@ -284,3 +284,68 @@ mod tests {
         assert_eq!(history_candidates(&h, ""), vec!["/fv/workspace 2", "brave", "/s/title"]);
     }
 }
+
+/// Ctrl+Space AND-narrowing: with a popup open, a space typed after Ctrl+Space starts a further
+/// substring that is ANDed against the candidates. `base` is the completion the popup was on when
+/// multi-mode began (its `start` stays frozen). Verb stage: every fragment must be contained in the
+/// verb/key candidate ("/wo fv" -> fv/workspace). Other stages: the first fragment is the real
+/// completion fragment, the rest filter its candidates. None when editing has erased back past the
+/// frozen start (multi-mode ends). The returned completion carries the whole typed text as its
+/// fragment; accepting it replaces everything from `start`.
+pub fn multi_candidates(schema: &Schema, query: &str, base: &Completion, src: &dyn Source, rows: usize) -> Option<(Completion, Vec<String>)> {
+    let chars: Vec<char> = query.chars().collect();
+    if base.start > chars.len() {
+        return None;
+    }
+    if base.kind == CompKind::Verb {
+        if chars.get(base.start) != Some(&'/') {
+            return None;
+        }
+        let buf: String = chars[base.start + 1..].iter().collect();
+        let frags: Vec<&str> = buf.split_whitespace().collect();
+        let mut comp = base.clone();
+        comp.fragment = frags.join(" ");
+        let items = verb_stage_universe(schema).into_iter().filter(|v| frags.iter().all(|f| substr(f, v, false))).collect();
+        return Some((comp, items));
+    }
+    let rest: String = chars[base.start..].iter().collect();
+    let frags: Vec<&str> = rest.split_whitespace().collect();
+    let mut first = Completion { fragment: frags.first().map(|s| s.to_string()).unwrap_or_default(), ..base.clone() };
+    let items = candidates(schema, &first, src, rows).into_iter().filter(|c| frags.iter().skip(1).all(|f| substr(f, c, false))).collect();
+    first.fragment = frags.join(" ");
+    Some((first, items))
+}
+
+#[cfg(test)]
+mod multi_tests {
+    use super::*;
+
+    struct None_;
+    impl Source for None_ {
+        fn value(&self, _: usize, _: &str) -> String {
+            String::new()
+        }
+        fn haystack(&self, _: usize) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn verb_stage_ands_fragments() {
+        let s = Schema::new(&["title", "workspace", "tmux-window"], vec![]);
+        let base = completion_context(&s, "/wo").unwrap();
+        let (c, items) = multi_candidates(&s, "/wo fv", &base, &None_, 0).unwrap();
+        assert_eq!(items, vec!["fv/workspace"]);
+        assert_eq!(c.fragment, "wo fv");
+        assert_eq!(accept("/wo fv", &c, &items[0]), "/fv/workspace ");
+        assert!(multi_candidates(&s, "x", &base, &None_, 0).is_none());
+    }
+
+    #[test]
+    fn key_stage_ands_against_candidates() {
+        let s = Schema::new(&["title", "tmux-window", "tmux-title", "workspace"], vec![]);
+        let base = completion_context(&s, "//tm").unwrap();
+        let (_, items) = multi_candidates(&s, "//tm win", &base, &None_, 0).unwrap();
+        assert_eq!(items, vec!["tmux-window"]);
+    }
+}
