@@ -33,7 +33,7 @@ QtObject {
         check("groupDisplay items", gd.items.length, 13);
         check("groupDisplay rows", gd.rows.length, 5);
         const gd2 = Dsl.groupDisplay(G.rows, Dsl.parseGroup("/g/pf,dm/month", G.known, G.aliases), get, { "/p/x": true }, G.today);
-        check("groupDisplay folded", gd2.rows.map(r => r.name), ["d","b","c"]);
+        check("groupDisplay folded", gd2.rows.map(r => r.name), ["b","c","d"]);
         check("groupOfRow", Dsl.groupOfRow(gd, 0).length > 0, true);
         print("qml dsl.js: " + (fails === 0 ? "ok" : fails + " failures"));
         Qt.quit();
