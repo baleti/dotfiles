@@ -149,7 +149,7 @@ _DATE_BUCKETS = ("day", "week", "month", "year")
 
 
 def group_kind(name):
-    """The default bucketing family of a type, by its name: size / age / date / path / value."""
+    """The default bucketing family of a type, by its name: size / age / date / path (a name containing "path": the entry's full path, own name included) / value."""
     n = name.lower()
     if "size" in n:
         return "size"
@@ -157,7 +157,7 @@ def group_kind(name):
         return "age"
     if n == "dm" or any(w in n for w in ("date", "modified", "created", "mtime", "time", "when", "deadline", "scheduled")):
         return "date"
-    if "path" in n or n in ("dir", "directory", "folder", "cwd", "remote"):
+    if "path" in n:
         return "path"
     return "value"
 
@@ -211,7 +211,7 @@ def parse_group(text, known, aliases=None):
         elif bucket in _DATE_BUCKETS and kind == "date":
             b = bucket
         else:
-            b = {"date": "day", "size": "size", "age": "age"}.get(kind, "value")
+            b = {"date": "day", "size": "size", "age": "age", "path": "pf"}.get(kind, "value")
         specs.append({"name": n, "bucket": b, "level": level or 1})
     if bucket is not None and not any(s["bucket"] == bucket for s in specs):
         return None

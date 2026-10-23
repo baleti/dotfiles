@@ -224,6 +224,8 @@ fn query_terms(q: &str) -> Vec<String> {
             if neg.starts_with("//") || neg == "/clip" || neg == "/face" { skip_value = true; }
             continue;
         }
+        // /s and /g chains are view commands, not words to look for
+        if ["/s/", "/sort/", "/g/", "/group/"].iter().any(|p| tok.starts_with(p)) { continue; }
         if tok == "/clip" || tok == "/face" || tok.starts_with("//") { skip_value = true; continue; }
         if skip_value { skip_value = false; continue; }
         let t = tok.replace('"', "").to_ascii_lowercase();
@@ -237,7 +239,7 @@ fn query_terms(q: &str) -> Vec<String> {
 /// the images picker's verbs, `/verb/via`, and `//tag`. Quoted runs, a `//tag`'s value and
 /// anything else that merely starts with `/` (a path such as /mnt/x) are not commands.
 fn command_spans(q: &str) -> Vec<(usize, usize)> {
-    const VERBS: [&str; 20] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort",
+    const VERBS: [&str; 22] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort", "g", "group",
         "show-dotfiles", "hide-dotfiles", "show-backup", "hide-backup", "show-backup-restic", "hide-backup-restic",
         "show-backup-btrfs", "hide-backup-btrfs", "show-fts-rvt", "hide-fts-rvt", "show-fts-dwg", "hide-fts-dwg"];
     const TAGS: [&str; 7] = ["name", "path", "size", "dm", "mime", "ext", "file"];
@@ -541,6 +543,30 @@ fn fetch_page(q: &str, sort: &str, desc: bool, page: usize, seq: u64) -> Result<
         .and_then(|body| serde_json::from_str::<Reply>(&body).map_err(|e| e.to_string()))
 }
 
+/// rows the /group metadata window holds; a bigger result set is grouped on its first GROUP_CAP rows
+const GROUP_CAP: usize = 20000;
+/// the page number a metadata reply is tagged with
+const META_PAGE: usize = usize::MAX;
+
+/// The first GROUP_CAP rows of a query, names and sizes and dates only (no thumbnails queued).
+fn fetch_meta(q: &str, sort: &str, desc: bool, seq: u64) -> Result<Reply, String> {
+    let url = format!("{}/query", cfg().server);
+    ureq::get(&url)
+        .query("q", q)
+        .query("sort", sort)
+        .query("desc", if desc { "1" } else { "0" })
+        .query("offset", "0")
+        .query("top", &GROUP_CAP.to_string())
+        .query("nothumb", "1")
+        .query("seq", &seq.to_string())
+        .query("cid", &std::process::id().to_string())
+        .timeout(Duration::from_secs(120))
+        .call()
+        .map_err(|e| format!("search server unreachable: {e}"))
+        .and_then(|resp| resp.into_string().map_err(|e| e.to_string()))
+        .and_then(|body| serde_json::from_str::<Reply>(&body).map_err(|e| e.to_string()))
+}
+
 /// background query results come back tagged with the request sequence number
 /// One Recoll snippet of a file: page (when the format has pages), text, and match byte ranges.
 #[derive(Deserialize, Clone)]
@@ -646,6 +672,23 @@ struct App {
     hq_asked: HashMap<String, Instant>,
     /// columns in the thumbnail grid as laid out last frame (arrow keys move by this many)
     grid_cols: usize,
+    /// /group: the parsed command of the current query, and (once the metadata window arrived) the layout
+    /// built from it. `total` is then the number of VISIBLE rows (collapsed groups left out), every row index
+    /// the list code uses is a position in that sequence, and `grows` maps it back to the server's index.
+    group: Option<group::Parsed>,
+    gmeta: Vec<Hit>,
+    gmeta_seq: u64,
+    gfull: Vec<group::Entry>,
+    gvis: Vec<group::Entry>,
+    grows: Vec<usize>,
+    gslot_v: Vec<Option<usize>>,
+    gslot_of_v: Vec<usize>,
+    gcollapsed: std::collections::HashSet<String>,
+    gnote: String,
+    server_total: usize,
+    /// a group header clicked this frame (folded after the frame's drawing)
+    pending_fold: Option<String>,
+    shot_frames: u32,
     hq_tx: Sender<String>,
     hq_rx: Receiver<(String, String)>,
     rx: Receiver<Fetch>,
@@ -775,12 +818,13 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 17] = [
+        const VERBS: [(&str, &str); 18] = [
             ("/fts ", "full-text search over every content index: /fts dgcl design //mime pdf"),
             ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
             ("/sort/", "order the results by a field, e.g. /s/size/desc"),
+            ("/group/", "fold the results into sections, e.g. /g/dm/week or /g/pf/2"),
             ("/show-dotfiles ", "include names starting with a dot (this search only)"),
             ("/hide-dotfiles ", "leave out names starting with a dot (this search only)"),
             ("/show-backup ", "include restic backups and btrfs snapshots (this search only)"),
@@ -795,10 +839,30 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/hide-fts-dwg ", "content searches leave out AutoCAD drawings"),
         ];
         for (v, label) in VERBS {
-            if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort/") {
+            if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort/") || (frag.len() >= 2 && "/g".starts_with(frag) && v == "/group/") {
                 out.push((v.to_string(), label.to_string()));
             }
         }
+    }
+    if let Some(chain) = frag.strip_prefix("/group/").or_else(|| frag.strip_prefix("/g/")) {
+        // `/g/<keys>[/<bucket|level|dir>...]`: a type after the last comma, or the next trailing part
+        let head = &frag[..frag.len() - chain.len()];
+        if let Some((keys, tail)) = chain.split_once('/') {
+            let last = tail.rsplit('/').next().unwrap_or("").to_lowercase();
+            let base = &frag[..frag.len() - last.len()];
+            let _ = keys;
+            for (word, label) in [("pf", "parent folder (1 = immediate, then /2 ...)"), ("parent-folder", "same as pf"), ("day", "by day"), ("week", "by week"),
+                                  ("month", "by month"), ("year", "by year"), ("asc", "oldest / smallest / A first"), ("desc", "newest / biggest first")] {
+                if word.starts_with(last.as_str()) && !tail.split('/').rev().skip(1).any(|t| t == word) { out.push((format!("{base}{word} "), label.to_string())); }
+            }
+        } else {
+            let comma = chain.rfind(',').map(|c| c + 1).unwrap_or(0);
+            let f = chain[comma..].to_lowercase();
+            for name in GROUP_TYPES.iter().copied().chain(["pf"]) {
+                if name.contains(f.as_str()) { out.push((format!("{head}{}{name}", &chain[..comma]), "group by".to_string())); }
+            }
+        }
+        return (start, out);
     }
     if let Some(chain) = frag.strip_prefix("/sort/").or_else(|| frag.strip_prefix("/s/")) {
         // `/s/<keys>[/<dir>]`: a sort field after the last comma, or the direction part
@@ -1014,6 +1078,18 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
     let desc_v = desc.unwrap_or(true);   // descending is the default direction; /asc asks for the other way
     if keys.is_empty() { keys.push("date".into()); }
     (rest.join(" "), SortSpec { keys, desc: desc_v, explicit })
+}
+
+/// The types a /g key can name in this picker, and the short spellings it accepts.
+const GROUP_TYPES: [&str; 7] = ["name", "path", "size", "date-modified", "extension", "depth", "pages"];
+const GROUP_ALIASES: [(&str, &str); 3] = [("dm", "date-modified"), ("date", "date-modified"), ("ext", "extension")];
+
+/// Pulls the /g command out of a query (position-independent, so it always acts on whatever the filters kept):
+/// -> (the query without it, the parsed command). A /clip or /face value is never read as a command.
+fn extract_group_q(q: &str) -> (String, Option<group::Parsed>) {
+    let toks = tokenize(q);
+    let (rest, parsed) = group::extract_group(&toks, &GROUP_TYPES, &GROUP_ALIASES, &|t| t == "/clip" || t == "/face");
+    (rest.join(" "), parsed)
 }
 
 fn fts_subsequence(frag: &str, name: &str) -> bool {
@@ -1360,7 +1436,7 @@ impl Chord {
 
 /// The shortcuts that can be rebound: (action id, what it does). Arrows, Enter, Tab, Esc, paging, Delete and
 /// Shift+arrows stay fixed.
-const ACTIONS: [(&str, &str); 13] = [
+const ACTIONS: [(&str, &str); 14] = [
     ("settings", "Open settings"),
     ("complete", "Complete (query box; same as Tab)"),
     ("caret_end", "Caret to the end of the query"),
@@ -1374,6 +1450,7 @@ const ACTIONS: [(&str, &str); 13] = [
     ("menu", "Context menu"),
     ("copy", "Copy the selection"),
     ("cut", "Cut the selection"),
+    ("fold", "Fold / unfold the /group section of the selected result"),
 ];
 
 #[derive(Clone)]
@@ -1397,6 +1474,7 @@ impl Keymap {
             ("menu", vec![c(false, false, Key::F10)]),
             ("copy", vec![c(true, false, Key::C)]),
             ("cut", vec![c(true, false, Key::X)]),
+            ("fold", vec![c(true, false, Key::G)]),
         ] {
             map.insert(act.to_string(), chords);
         }
@@ -1570,6 +1648,19 @@ impl App {
             hq_map: HashMap::new(),
             hq_asked: HashMap::new(),
             grid_cols: 1,
+            group: None,
+            gmeta: Vec::new(),
+            gmeta_seq: 0,
+            gfull: Vec::new(),
+            gvis: Vec::new(),
+            grows: Vec::new(),
+            gslot_v: Vec::new(),
+            gslot_of_v: Vec::new(),
+            gcollapsed: Default::default(),
+            gnote: String::new(),
+            server_total: 0,
+            pending_fold: None,
+            shot_frames: 0,
             hq_tx,
             hq_rx,
             rx,
@@ -1634,12 +1725,20 @@ impl App {
             std::thread::sleep(Duration::from_secs(1));
             if let Some(v) = fetch_ver() { ver.store(v, Ordering::Relaxed); }
         });
+        // dev hook: IMAGES_QUERY seeds the query, IMAGES_THUMB the zoom (>= GRID_ZOOM is the grid)
+        if let Ok(q) = std::env::var("IMAGES_QUERY") { app.query = q; }
+        if let Some(t) = std::env::var("IMAGES_THUMB").ok().and_then(|t| t.parse::<f32>().ok()) { app.thumb = t; }
         app
     }
 
     fn send_query(&mut self) {
         self.seq += 1;
         let (rest, sort) = parse_sort(&self.query);
+        let (rest, group) = extract_group_q(&rest);
+        self.group = group;
+        self.gmeta_seq = 0;                       // the old layout goes; the plain list shows until the new metadata arrives
+        self.gcollapsed.clear();
+        self.gnote.clear();
         self.req_q = rest;
         self.req_sort = sort.keys.join(",");
         self.req_desc = sort.desc;
@@ -1650,6 +1749,122 @@ impl App {
         if !self.busy { self.busy_since = Instant::now(); }
         self.busy = true;
         self.request_page(0);
+        if self.group.is_some() { self.request_meta(); }
+    }
+
+    fn request_meta(&mut self) {
+        let tx: Sender<Fetch> = self.tx.clone();
+        let (seq, q, sort, desc) = (self.seq, self.req_q.clone(), self.req_sort.clone(), self.req_desc);
+        let wake = self.wake.clone();
+        std::thread::spawn(move || {
+            let r = fetch_meta(&q, &sort, desc, seq);
+            let _ = tx.send(Fetch { seq, page: META_PAGE, query: q, result: r });
+            wake.request_repaint();
+        });
+    }
+
+    fn group_active(&self) -> bool { self.group.is_some() && self.gmeta_seq != 0 && self.gmeta_seq == self.seq }
+
+    /// The server's index of the row at position `v` of the shown sequence.
+    fn sidx(&self, v: usize) -> Option<usize> {
+        if self.group_active() { self.grows.get(v).copied() } else { Some(v) }
+    }
+
+    /// Builds the group layout from the metadata window and applies the fold state.
+    fn rebuild_group(&mut self) {
+        let Some(p) = self.group.clone() else { return };
+        let today = std::process::Command::new("date").arg("+%F").output().ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok()).map(|t| t.trim().to_string()).unwrap_or_default();
+        let metas = &self.gmeta;
+        let get = |i: usize, name: &str| -> String {
+            let h = &metas[i];
+            let (_, base) = split_dir(&short_name(&h.remote));
+            match name {
+                "name" => base,
+                "path" => h.remote.clone(),
+                "size" => h.size.map(|s| s.to_string()).unwrap_or_default(),
+                "date-modified" => h.mtime.clone().unwrap_or_default(),
+                "extension" => base.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default(),
+                "depth" => h.remote.matches('/').count().to_string(),
+                "pages" => h.pages.map(|n| n.to_string()).unwrap_or_default(),
+                _ => String::new(),
+            }
+        };
+        self.gfull = group::group_layout(self.gmeta.len(), &p, &get, &today);
+        self.apply_fold();
+    }
+
+    /// Recomputes the visible sequence from the layout and the collapsed set.
+    fn apply_fold(&mut self) {
+        self.gvis = group::group_visible(&self.gfull, &self.gcollapsed);
+        self.grows.clear();
+        self.gslot_v.clear();
+        self.gslot_of_v.clear();
+        for (slot, e) in self.gvis.iter().enumerate() {
+            match e {
+                group::Entry::Header { .. } => self.gslot_v.push(None),
+                group::Entry::Row(i) => { self.gslot_v.push(Some(self.grows.len())); self.gslot_of_v.push(slot); self.grows.push(*i); }
+            }
+        }
+        self.total = self.grows.len();
+        self.selected = self.selected.min(self.total.saturating_sub(1));
+    }
+
+    /// Fold or unfold the group header `id`. The cursor stays on its row, or moves to the nearest row when
+    /// the one it was on has just been folded away.
+    fn toggle_group(&mut self, id: &str) {
+        let cur_server = self.grows.get(self.selected).copied();
+        if !self.gcollapsed.remove(id) { self.gcollapsed.insert(id.to_string()); }
+        let slot_before = self.gslot_of_v.get(self.selected).copied().unwrap_or(0);
+        self.apply_fold();
+        self.anchor = None;
+        match cur_server.and_then(|i| self.grows.iter().position(|x| *x == i)) {
+            Some(v) => self.selected = v,
+            None => {
+                // the cursor's group folded: land on the first row after where it was
+                let after = self.gvis.iter().take(slot_before.min(self.gvis.len())).filter(|e| matches!(e, group::Entry::Row(_))).count();
+                self.selected = after.min(self.total.saturating_sub(1));
+            }
+        }
+        self.scroll_pending = true;
+    }
+
+    /// Moves `steps` grid lines (negative = up) from the row at `v` in a grouped grid: within a group the cell
+    /// directly above / below, crossing into the neighbouring group's last / first line at the same column.
+    fn vstep(&self, v: usize, steps: i64, cols: usize) -> usize {
+        // runs of consecutive rows (one per group that has rows directly under its header)
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for sv in self.gslot_v.iter().flatten() {
+            match runs.last_mut() {
+                Some((s, n)) if *s + *n == *sv && !self.run_break(*sv) => *n += 1,
+                _ => runs.push((*sv, 1)),
+            }
+        }
+        let Some(mut r) = runs.iter().position(|(s, n)| v >= *s && v < *s + *n) else { return v };
+        let col = (v - runs[r].0) % cols;
+        let mut row = ((v - runs[r].0) / cols) as i64;
+        for _ in 0..steps.abs() {
+            let rows_in = (runs[r].1 as i64 + cols as i64 - 1) / cols as i64;
+            if steps > 0 {
+                if row + 1 < rows_in { row += 1 } else if r + 1 < runs.len() { r += 1; row = 0 } else { break }
+            } else if row > 0 { row -= 1 } else if r > 0 { r -= 1; row = (runs[r].1 as i64 + cols as i64 - 1) / cols as i64 - 1 } else { break }
+        }
+        let (s, n) = runs[r];
+        (s + row as usize * cols + col).min(s + n - 1)
+    }
+
+    /// True when a header sits between row `v - 1` and row `v` in the shown sequence.
+    fn run_break(&self, v: usize) -> bool {
+        match (self.gslot_of_v.get(v), v.checked_sub(1).and_then(|p| self.gslot_of_v.get(p))) {
+            (Some(a), Some(b)) => *a != *b + 1,
+            _ => true,
+        }
+    }
+
+    /// The group header (id) the row at position `v` sits under, innermost.
+    fn group_of(&self, v: usize) -> Option<String> {
+        let slot = *self.gslot_of_v.get(v)?;
+        self.gvis[..slot].iter().rev().find_map(|e| match e { group::Entry::Header { id, .. } => Some(id.clone()), _ => None })
     }
 
     /// Re-run the current query without disturbing what is on screen: every loaded page is fetched again and
@@ -1658,6 +1873,8 @@ impl App {
         self.seq += 1;
         self.refreshing = true;
         self.last_refresh = Instant::now();
+        if self.group_active() { self.gmeta_seq = self.seq; }     // keep the layout up while the new window loads
+        if self.group.is_some() { self.request_meta(); }
         self.pending.clear();
         let mut pages: Vec<usize> = self.pages.keys().copied().collect();
         if !pages.contains(&0) { pages.push(0); }      // page 0 carries the totals, stats and status line
@@ -1719,6 +1936,14 @@ impl App {
         if self.total == 0 || self.busy { return; }
         let hi = hi.min(self.total - 1);
         if lo > hi { return; }
+        if self.group_active() {
+            for v in lo..=hi {
+                let Some(i) = self.sidx(v) else { continue };
+                let page = i / PAGE;
+                if !self.pages.contains_key(&page) && !self.pending.contains(&page) { self.request_page(page); }
+            }
+            return;
+        }
         for page in lo / PAGE..=hi / PAGE {
             if !self.pages.contains_key(&page) && !self.pending.contains(&page) {
                 self.request_page(page);
@@ -1726,19 +1951,22 @@ impl App {
         }
     }
 
-    fn hit(&self, i: usize) -> Option<&Hit> {
-        self.pages.get(&(i / PAGE)).and_then(|p| p.get(i % PAGE))
+    fn hit(&self, v: usize) -> Option<&Hit> {
+        let i = self.sidx(v)?;
+        // a grouped row whose page has not arrived yet is shown from the metadata window (no thumbnail)
+        self.pages.get(&(i / PAGE)).and_then(|p| p.get(i % PAGE)).or_else(|| if self.group_active() { self.gmeta.get(i) } else { None })
     }
 
     /// A row by index, fetching its page right away when it is not loaded yet.
     fn hit_now(&mut self, i: usize) -> Option<Hit> {
         if i >= self.total { return None; }
-        if self.hit(i).is_none() {
-            let page = i / PAGE;
+        let si = self.sidx(i)?;
+        if self.pages.get(&(si / PAGE)).and_then(|p| p.get(si % PAGE)).is_none() {
+            let page = si / PAGE;
             let rows = fetch_page(&self.req_q, &self.req_sort, self.req_desc, page, self.seq).ok()?.results;
             self.pages.insert(page, rows);
         }
-        self.hit(i).cloned()
+        self.pages.get(&(si / PAGE)).and_then(|p| p.get(si % PAGE)).cloned()
     }
 
     fn drain(&mut self) {
@@ -1750,10 +1978,23 @@ impl App {
         }
         while let Ok(f) = self.rx.try_recv() {
             if f.seq != self.seq { continue; } // stale: a newer query was already sent
+            if f.page == META_PAGE {
+                if let Ok(r) = f.result {
+                    self.gnote = if r.count > r.results.len() {
+                        format!("grouped the first {} of {} matches", group_digits(r.results.len()), group_digits(r.count))
+                    } else { String::new() };
+                    self.gmeta = r.results;
+                    self.gmeta_seq = self.seq;
+                    self.rebuild_group();
+                    self.scroll_pending = true;
+                }
+                continue;
+            }
             self.pending.remove(&f.page);
             match f.result {
                 Ok(r) => {
-                    self.total = r.count;
+                    self.server_total = r.count;
+                    if !self.group_active() { self.total = r.count; }
                     if f.page == 0 { self.stats = r.stats.clone(); if !self.refreshing { self.pages.clear(); } }
                     self.pages.insert(f.page, r.results);
                     self.selected = self.selected.min(self.total.saturating_sub(1));
@@ -1776,7 +2017,7 @@ impl App {
         }
         if self.refreshing && self.pending.is_empty() {
             self.refreshing = false;
-            let total = self.total;
+            let total = self.server_total;
             self.pages.retain(|p, _| p * PAGE < total.max(1));     // the list may have shrunk
         }
     }
@@ -2082,8 +2323,77 @@ impl App {
 
     /// Thumbnail grid for zoomed-in views: square cells with name, path, size and date under each.
     /// Only the rows on screen are laid out; the others are fetched as they come into view.
+    /// One thumbnail cell of the grid: image, name, and the path / size / date lines under it.
+    fn grid_cell(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, idx: usize, t: f32, text_h: f32,
+                 clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
+        let pal = self.pal;
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + text_h), egui::Sense::click());
+        let Some(h) = self.hit(idx).cloned() else {
+            ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(t, t)), 4.0, pal.border.gamma_multiply(0.5));
+            return;
+        };
+        let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
+        let selected = self.in_selection(idx);
+        // large PDF cells ask for a sharp first page in the background and switch to it when ready
+        let is_pdf = h.remote.to_lowercase().ends_with(".pdf") && h.remote.starts_with('/');
+        // ask again at most every 2 s while the cell stays on screen; the server drops requests that stop
+        let due = self.hq_asked.get(&h.remote).map_or(true, |t| t.elapsed() > Duration::from_secs(2));
+        if is_pdf && t >= 180.0 && !self.hq_map.contains_key(&h.remote) && due {
+            self.hq_asked.insert(h.remote.clone(), Instant::now());
+            let _ = self.hq_tx.send(h.remote.clone());
+        }
+        let thumb_path = self.hq_map.get(&h.remote).cloned().unwrap_or_else(|| h.thumb.clone());
+        match self.texture(ctx, &thumb_path) {
+            Some(tex) => { egui::Image::new(&tex).paint_at(ui, fit_rect(img, tex.size_vec2())); }
+            None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
+        }
+        if selected {
+            ui.painter().rect_stroke(img.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
+        }
+        let short = short_name(&h.remote);
+        let (dir, base) = split_dir(&short);
+        let name_font = egui::FontId::monospace(12.0);
+        let small = egui::FontId::monospace(10.0);
+        let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
+        let measure = |t: &str, f: &egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f.clone(), egui::Color32::WHITE).size().x;
+        let name_text = fit_text(ui, &base, &name_font, t);
+        let terms = query_terms(&self.last_sent);
+        // metadata fields are packed onto as few lines as fit the cell width
+        let mut fields: Vec<String> = Vec::new();
+        if let Some(sz) = h.size { fields.push(format!("size: {}", human_size(sz))); }
+        if let Some(m) = h.mtime.as_deref() { fields.push(format!("date modified: {}", short_time(m))); }
+        if let Some(n) = h.pages { fields.push(format!("pages: {n}")); }
+        let mut lines: Vec<String> = vec![fit_text(ui, &format!("path: {dir}"), &small, t)];
+        let mut cur = String::new();
+        for f in fields {
+            let joined = if cur.is_empty() { f.clone() } else { format!("{cur} · {f}") };
+            if cur.is_empty() || measure(&joined, &small) <= t { cur = joined; }
+            else { lines.push(std::mem::replace(&mut cur, f)); }
+        }
+        if !cur.is_empty() { lines.push(cur); }
+        let painter = ui.painter();
+        let name_galley = painter.layout_job(name_job(&name_text, &terms, &name_font, txt));
+        painter.galley(egui::pos2(rect.left(), img.bottom() + 4.0), name_galley, txt);
+        let mut y = img.bottom() + 18.0;
+        for text in lines {
+            painter.text(egui::pos2(rect.left(), y), egui::Align2::LEFT_TOP, fit_text(ui, &text, &small, t), small.clone(), pal.dim);
+            y += 13.0;
+        }
+        if let Some(sc) = h.score {
+            painter.text(egui::pos2(rect.right() - 2.0, img.top() + 2.0), egui::Align2::RIGHT_TOP,
+                format!("{sc:.2}"), egui::FontId::monospace(10.0), pal.accent);
+        }
+        let shift = ui.input(|i| i.modifiers.shift);
+        if resp.clicked() { *clicked = Some((idx, shift)); }
+        if resp.double_clicked() { *dbl = true; *clicked = Some((idx, false)); }
+        if resp.secondary_clicked() {
+            *right = Some((idx, ui.input(|i| i.pointer.interact_pos()).unwrap_or(resp.rect.left_bottom())));
+        }
+    }
+
     fn grid_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context,
                  clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
+        if self.group_active() { return self.grid_view_grouped(ui, ctx, clicked, dbl, right); }
         let pal = self.pal;
         let text_h = 72.0;
         // columns are as many as fit the thumbnail size, and the cells are stretched so they fill the whole width
@@ -2116,70 +2426,102 @@ impl App {
             for row in range {
                 ui.horizontal(|ui| {
                     for idx in row * cols..((row + 1) * cols).min(self.total) {
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(t, t + text_h), egui::Sense::click());
-                        let Some(h) = self.hit(idx).cloned() else {
-                            ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(t, t)), 4.0, pal.border.gamma_multiply(0.5));
-                            continue;
-                        };
-                        let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
-                        let selected = self.in_selection(idx);
-                        // large PDF cells ask for a sharp first page in the background and switch to it when ready
-                        let is_pdf = h.remote.to_lowercase().ends_with(".pdf") && h.remote.starts_with('/');
-                        // ask again at most every 2 s while the cell stays on screen; the server drops requests that stop
-                        let due = self.hq_asked.get(&h.remote).map_or(true, |t| t.elapsed() > Duration::from_secs(2));
-                        if is_pdf && t >= 180.0 && !self.hq_map.contains_key(&h.remote) && due {
-                            self.hq_asked.insert(h.remote.clone(), Instant::now());
-                            let _ = self.hq_tx.send(h.remote.clone());
-                        }
-                        let thumb_path = self.hq_map.get(&h.remote).cloned().unwrap_or_else(|| h.thumb.clone());
-                        match self.texture(ctx, &thumb_path) {
-                            Some(tex) => { egui::Image::new(&tex).paint_at(ui, fit_rect(img, tex.size_vec2())); }
-                            None => { ui.painter().rect_filled(img, 4.0, pal.border.gamma_multiply(0.5)); }
-                        }
-                        if selected {
-                            ui.painter().rect_stroke(img.expand(2.0), 4.0, Stroke::new(2.0, pal.accent), egui::StrokeKind::Outside);
-                        }
-                        let short = short_name(&h.remote);
-                        let (dir, base) = split_dir(&short);
-                        let name_font = egui::FontId::monospace(12.0);
-                        let small = egui::FontId::monospace(10.0);
-                        let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
-                        let measure = |t: &str, f: &egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f.clone(), egui::Color32::WHITE).size().x;
-                        let name_text = fit_text(ui, &base, &name_font, t);
-                        let terms = query_terms(&self.last_sent);
-                        // metadata fields are packed onto as few lines as fit the cell width
-                        let mut fields: Vec<String> = Vec::new();
-                        if let Some(sz) = h.size { fields.push(format!("size: {}", human_size(sz))); }
-                        if let Some(m) = h.mtime.as_deref() { fields.push(format!("date modified: {}", short_time(m))); }
-                        if let Some(n) = h.pages { fields.push(format!("pages: {n}")); }
-                        let mut lines: Vec<String> = vec![fit_text(ui, &format!("path: {dir}"), &small, t)];
-                        let mut cur = String::new();
-                        for f in fields {
-                            let joined = if cur.is_empty() { f.clone() } else { format!("{cur} · {f}") };
-                            if cur.is_empty() || measure(&joined, &small) <= t { cur = joined; }
-                            else { lines.push(std::mem::replace(&mut cur, f)); }
-                        }
-                        if !cur.is_empty() { lines.push(cur); }
-                        let painter = ui.painter();
-                        let name_galley = painter.layout_job(name_job(&name_text, &terms, &name_font, txt));
-                        painter.galley(egui::pos2(rect.left(), img.bottom() + 4.0), name_galley, txt);
-                        let mut y = img.bottom() + 18.0;
-                        for text in lines {
-                            painter.text(egui::pos2(rect.left(), y), egui::Align2::LEFT_TOP, fit_text(ui, &text, &small, t), small.clone(), pal.dim);
-                            y += 13.0;
-                        }
-                        if let Some(sc) = h.score {
-                            painter.text(egui::pos2(rect.right() - 2.0, img.top() + 2.0), egui::Align2::RIGHT_TOP,
-                                format!("{sc:.2}"), egui::FontId::monospace(10.0), pal.accent);
-                        }
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        if resp.clicked() { *clicked = Some((idx, shift)); }
-                        if resp.double_clicked() { *dbl = true; *clicked = Some((idx, false)); }
-                        if resp.secondary_clicked() {
-                            *right = Some((idx, ui.input(|i| i.pointer.interact_pos()).unwrap_or(resp.rect.left_bottom())));
-                        }
+                        self.grid_cell(ui, ctx, idx, t, text_h, clicked, dbl, right);
                     }
                 });
+            }
+        });
+        self.grid_off = out.state.offset.y;
+    }
+
+    /// Paints one group header across `rect` (a line above its members) and reports a click on it.
+    fn group_header(&mut self, ui: &mut egui::Ui, rect: egui::Rect, slot: usize) {
+        let pal = self.pal;
+        let group::Entry::Header { depth, id, label, count } = self.gvis[slot].clone() else { return };
+        let resp = ui.interact(rect, egui::Id::new(("ghdr", &id)), egui::Sense::click());
+        let folded = self.gcollapsed.contains(&id);
+        let x = rect.left() + 6.0 + depth as f32 * 18.0;
+        let y = rect.bottom() - 4.0;
+        let painter = ui.painter();
+        if resp.hovered() { painter.rect_filled(rect, 4.0, pal.accent.gamma_multiply(0.08)); }
+        painter.line_segment([egui::pos2(x, rect.bottom() - 1.0), egui::pos2(rect.right() - 6.0, rect.bottom() - 1.0)], Stroke::new(1.0, pal.border));
+        let chev = if folded { "▸" } else { "▾" };
+        let galley = painter.layout_no_wrap(format!("{chev} {label}"), egui::FontId::monospace(13.0), pal.text);
+        painter.galley(egui::pos2(x, y - galley.size().y), galley.clone(), pal.text);
+        painter.text(egui::pos2(x + galley.size().x + 12.0, y), egui::Align2::LEFT_BOTTOM,
+            format!("{}{}", group_digits(count), if folded { " (folded)" } else { "" }), egui::FontId::monospace(11.0), pal.dim);
+        if resp.clicked() { self.pending_fold = Some(id); }
+    }
+
+    /// The grid when /group is active: group headers across the full width, the members of each flowing in
+    /// cells beneath. Lines have different heights, so only those inside the viewport are placed.
+    fn grid_view_grouped(&mut self, ui: &mut egui::Ui, ctx: &egui::Context,
+                         clicked: &mut Option<(usize, bool)>, dbl: &mut bool, right: &mut Option<(usize, egui::Pos2)>) {
+        let text_h = 72.0;
+        let gap = 10.0;
+        let hdr_h = 34.0;
+        let avail = ui.available_width();
+        let cols = ((avail + gap) / (self.thumb + gap)).floor().max(1.0) as usize;
+        self.grid_cols = cols;
+        let t = ((avail - gap * (cols as f32 - 1.0)) / cols as f32).floor().max(16.0);
+        let cell_h = t + text_h + gap;
+        // lines: (slot of the header, or the first slot of up to `cols` cells, y, height)
+        let mut lines: Vec<(Option<usize>, usize, usize, f32, f32)> = Vec::new();   // (header slot, first slot, n cells, y, h)
+        let mut y = 0.0;
+        let mut slot = 0;
+        while slot < self.gvis.len() {
+            if matches!(self.gvis[slot], group::Entry::Header { .. }) {
+                lines.push((Some(slot), slot, 0, y, hdr_h));
+                y += hdr_h;
+                slot += 1;
+            } else {
+                let start = slot;
+                while slot < self.gvis.len() && slot - start < cols && matches!(self.gvis[slot], group::Entry::Row(_)) { slot += 1; }
+                lines.push((None, start, slot - start, y, cell_h));
+                y += cell_h;
+            }
+        }
+        let content_h = y;
+        let view_h = ui.available_height() - 2.0;
+        let mut area = egui::ScrollArea::vertical().max_height(view_h).auto_shrink([false, false]);
+        if self.scroll_pending {
+            if let Some(&sel_slot) = self.gslot_of_v.get(self.selected) {
+                if let Some(&(_, _, _, ly, lh)) = lines.iter().find(|l| l.0.is_none() && sel_slot >= l.1 && sel_slot < l.1 + l.2) {
+                    let off = self.grid_off;
+                    if ly < off || ly + lh > off + view_h {
+                        // the header above the row stays in view when the row is the first of its group
+                        let top = if ly < off { (ly - hdr_h).max(0.0) } else { ly + lh - view_h };
+                        area = area.vertical_scroll_offset(top.max(0.0));
+                    }
+                }
+            }
+        }
+        let out = area.show_viewport(ui, |ui, vp| {
+            ui.set_height(content_h.max(1.0));
+            let origin = ui.min_rect().min;
+            let first = lines.partition_point(|l| l.3 + l.4 < vp.min.y);
+            let mut want: Vec<(usize, usize)> = Vec::new();
+            for l in lines[first..].iter().take_while(|l| l.3 < vp.max.y) {
+                if l.0.is_none() { want.push((l.1, l.1 + l.2)); }
+            }
+            for (a, b) in want {
+                let (va, vb) = (self.gslot_v[a].unwrap_or(0), self.gslot_v[b - 1].unwrap_or(0));
+                self.ensure_rows(va, vb);
+            }
+            for l in lines[first..].iter().take_while(|l| l.3 < vp.max.y) {
+                let top = origin.y + l.3;
+                if let Some(hs) = l.0 {
+                    let rect = egui::Rect::from_min_size(egui::pos2(origin.x, top), egui::vec2(avail, hdr_h));
+                    self.group_header(ui, rect, hs);
+                    continue;
+                }
+                for k in 0..l.2 {
+                    let Some(v) = self.gslot_v[l.1 + k] else { continue };
+                    let rect = egui::Rect::from_min_size(egui::pos2(origin.x + k as f32 * (t + gap), top), egui::vec2(t, t + text_h));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                        self.grid_cell(ui, ctx, v, t, text_h, clicked, dbl, right);
+                    });
+                }
             }
         });
         self.grid_off = out.state.offset.y;
@@ -2246,6 +2588,19 @@ fn short_name(remote: &str) -> String {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // dev hook: IMAGES_SHOT=<png> saves the window once the results have settled, then quits
+        if let Ok(path) = std::env::var("IMAGES_SHOT") {
+            self.shot_frames += 1;
+            if self.shot_frames == 90 { ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default())); }
+            let shot = ui.input(|i| i.events.iter().find_map(|e| if let egui::Event::Screenshot { image, .. } = e { Some(image.clone()) } else { None }));
+            if let Some(img) = shot {
+                let (w, h) = (img.width() as u32, img.height() as u32);
+                let raw: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Some(buf) = image::RgbaImage::from_raw(w, h, raw) { let _ = buf.save(&path); }
+                std::process::exit(0);
+            }
+            ui.ctx().request_repaint();
+        }
         let keys = self.keys.clone();
         let ctx = ui.ctx().clone();
         let pal = self.pal;
@@ -2706,6 +3061,9 @@ impl eframe::App for App {
             let ev_cut = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Cut)); i.events.retain(|e| !matches!(e, egui::Event::Cut)); had });
             if key_c || ev_copy { self.copy_selection(false); }
             if key_x || ev_cut { self.copy_selection(true); }
+            if take_act(ui, &keys, "fold") > 0 && self.group_active() {
+                if let Some(id) = self.group_of(self.selected) { self.toggle_group(&id); }
+            }
         }
         if n > 0 && !self.popup {
             let cols = if grid { self.grid_cols.max(1) } else { 1 };
@@ -2728,9 +3086,12 @@ impl eframe::App for App {
             let down_steps = (down as i64) + j_n as i64;
             let up_steps = (up as i64) + k_n as i64;
             if down_steps + up_steps > 0 { any = true; }
-            delta += cols as i64 * (down_steps - up_steps);
+            let vertical = |this: &App, from: i64, steps: i64| -> i64 {
+                if grid && this.group_active() { this.vstep(from.max(0) as usize, steps, cols) as i64 - from } else { cols as i64 * steps }
+            };
+            delta += vertical(self, cur, down_steps - up_steps);
             if shift_down_n + shift_up_n + shift_left_n + shift_right_n > 0 {
-                delta += cols as i64 * (shift_down_n as i64 - shift_up_n as i64) + shift_right_n as i64 - shift_left_n as i64;
+                delta += vertical(self, cur, shift_down_n as i64 - shift_up_n as i64) + shift_right_n as i64 - shift_left_n as i64;
                 extend = true;
                 any = true;
             }
@@ -3345,7 +3706,11 @@ impl eframe::App for App {
                     } else {
                         ui.label(
                             RichText::new({
-                                let mut line = format!("{} shown", group_digits(self.total));
+                                let mut line = format!("{} shown", group_digits(if self.group_active() { self.server_total } else { self.total }));
+                                if self.group_active() {
+                                    line.push_str(&format!(" · {} groups", self.gfull.iter().filter(|e| matches!(e, group::Entry::Header { depth: 0, .. })).count()));
+                                    if !self.gnote.is_empty() { line.push_str(&format!(" · {}", self.gnote)); }
+                                }
                                 if let (Some(st), true) = (&self.stats, self.total > 0) {
                                     line.push_str(&format!(" · {}{}", if st.approx { "≈ " } else { "" }, human_size(st.size)));
                                     if let (Some(a), Some(b)) = (&st.dmin, &st.dmax) {
@@ -3386,8 +3751,10 @@ impl eframe::App for App {
                     // a jump (Home, End, PageUp/Down, a new query) re-centres. The offset is clamped to the real range: asking
                     // for more at the bottom made the whole list shake on every key press.
                     let view_h = ui.available_height() - 2.0;
-                    let max_off = (self.total as f32 * row_h - view_h).max(0.0);
-                    let (top, bottom, off) = (self.selected as f32 * row_h, (self.selected + 1) as f32 * row_h, self.list_off);
+                    let n_slots = if self.group_active() { self.gvis.len() } else { self.total };
+                    let sel_slot = if self.group_active() { self.gslot_of_v.get(self.selected).copied().unwrap_or(0) } else { self.selected };
+                    let max_off = (n_slots as f32 * row_h - view_h).max(0.0);
+                    let (top, bottom, off) = (sel_slot as f32 * row_h, (sel_slot + 1) as f32 * row_h, self.list_off);
                     let new = if top < off - row_h || bottom > off + view_h + row_h { Some(top - view_h * 0.4) }
                         else if top < off { Some(top) }
                         else if bottom > off + view_h { Some(bottom - view_h) }
@@ -3395,11 +3762,28 @@ impl eframe::App for App {
                     if let Some(n) = new { area = area.vertical_scroll_offset(n.clamp(0.0, max_off)); }
                 }
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let area_out = area.show_rows(ui, row_h, self.total, |ui, range| {
-                        self.ensure_rows(range.start, range.end.saturating_sub(1));
+                let grouped = self.group_active();
+                let n_slots = if grouped { self.gvis.len() } else { self.total };
+                let area_out = area.show_rows(ui, row_h, n_slots, |ui, range| {
+                        if grouped {
+                            let vs: Vec<usize> = range.clone().filter_map(|sl| self.gslot_v[sl]).collect();
+                            if let (Some(a), Some(b)) = (vs.first(), vs.last()) { self.ensure_rows(*a, *b); }
+                        } else {
+                            self.ensure_rows(range.start, range.end.saturating_sub(1));
+                        }
                         let thumb = self.thumb;
                         let terms = query_terms(&self.last_sent);
-                        for idx in range {
+                        for slot in range {
+                            let idx = if grouped {
+                                match self.gslot_v[slot] {
+                                    Some(v) => v,
+                                    None => {
+                                        let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+                                        self.group_header(ui, hr, slot);
+                                        continue;
+                                    }
+                                }
+                            } else { slot };
                             let Some(h) = self.hit(idx).cloned() else {
                                 ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
                                 continue;
@@ -3476,6 +3860,7 @@ impl eframe::App for App {
                     });
                 self.list_off = area_out.state.offset.y;
                 }
+                if let Some(id) = self.pending_fold.take() { self.toggle_group(&id); }
                 if let (Some(hit), Some(at)) = (right_hit, right_at) {
                     // right-click on a row outside the selection selects just that row first
                     if !self.in_selection(hit) { self.anchor = None; self.selected = hit; }
@@ -3733,7 +4118,7 @@ mod dsl_conformance {
         }
         for c in g["extract"].as_array().unwrap() {
             let toks: Vec<String> = c["tokens"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
-            let (rest, p) = group::extract_group(&toks, &known, &aliases);
+            let (rest, p) = group::extract_group(&toks, &known, &aliases, &|_| false);
             assert_eq!(serde_json::json!([rest, parsed_json(&p)]), c["expect"], "extract {}", c["tokens"]);
         }
     }

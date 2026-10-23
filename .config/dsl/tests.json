@@ -1089,7 +1089,7 @@
           "specs": [
             {
               "name": "path",
-              "bucket": "value",
+              "bucket": "pf",
               "level": 1
             }
           ],
@@ -1286,7 +1286,16 @@
       },
       {
         "text": "/g/path/2",
-        "expect": null
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 2
+            }
+          ],
+          "dir": "desc"
+        }
       },
       {
         "text": "/g/dm/pf",
@@ -1347,7 +1356,7 @@
             },
             {
               "name": "path",
-              "bucket": "value",
+              "bucket": "pf",
               "level": 1
             }
           ],
