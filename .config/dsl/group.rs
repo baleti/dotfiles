@@ -23,7 +23,7 @@ pub fn kind(name: &str) -> &'static str {
     if n.contains("size") { "size" }
     else if n == "age" || n.ends_with("-age") { "age" }
     else if n == "dm" || ["date", "modified", "created", "mtime", "time", "when", "deadline", "scheduled"].iter().any(|w| n.contains(w)) { "date" }
-    else if n.contains("path") || ["dir", "directory", "folder", "cwd", "remote"].contains(&n.as_str()) { "path" }
+    else if n.contains("path") { "path" }
     else { "value" }
 }
 
@@ -82,7 +82,7 @@ pub fn parse_group(text: &str, known: &[&str], aliases: &[(&str, &str)]) -> Opti
         let k = kind(&n);
         let b = if (alias_pf.contains(&n) || bucket.as_deref() == Some("pf")) && k == "path" { "pf".to_string() }
             else if k == "date" && bucket.as_deref().map_or(false, |b| DATE_BUCKETS.contains(&b)) { bucket.clone().unwrap() }
-            else { match k { "date" => "day", "size" => "size", "age" => "age", _ => "value" }.to_string() };
+            else { match k { "date" => "day", "size" => "size", "age" => "age", "path" => "pf", _ => "value" }.to_string() };
         specs.push(Spec { name: n, bucket: b, level: level.unwrap_or(1) });
     }
     if let Some(b) = &bucket { if !specs.iter().any(|s| &s.bucket == b) { return None; } }
@@ -262,13 +262,14 @@ fn owns_next(tok: &str) -> bool {
 }
 
 /// Pipeline hook: pull the /g command out of a token list (position-independent, last valid wins, a token
-/// owned as another command's value is never read as /g, an inert /g is dropped).
-pub fn extract_group(tokens: &[String], known: &[&str], aliases: &[(&str, &str)]) -> (Vec<String>, Option<Parsed>) {
+/// owned as another command's value is never read as /g, an inert /g is dropped). `owns_extra`: the
+/// picker's own value-taking verbs (like /clip, /face), on top of `//key` and `/fv/key`.
+pub fn extract_group(tokens: &[String], known: &[&str], aliases: &[(&str, &str)], owns_extra: &dyn Fn(&str) -> bool) -> (Vec<String>, Option<Parsed>) {
     let (mut rest, mut parsed, mut i) = (Vec::new(), None, 0);
     while i < tokens.len() {
         let t = &tokens[i];
         i += 1;
-        if owns_next(t) {
+        if owns_next(t) || owns_extra(t) {
             rest.push(t.clone());
             if i < tokens.len() { rest.push(tokens[i].clone()); i += 1; }
             continue;

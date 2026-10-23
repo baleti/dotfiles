@@ -961,9 +961,12 @@ class H(BaseHTTPRequestHandler):
                         results = apply_sort(allrows, sort, desc)[offset:offset + top]
                     else:
                         results, count, stats = NAMES.query(rest, sort, desc, offset, top, extras=extras, cancel=stale)
+                nothumb = qs.get("nothumb", ["0"])[0] == "1"      # metadata-only window (the picker's /group): no thumbnails queued
                 for r in results:
                     r.setdefault("score", None)
-                    if r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
+                    if nothumb:
+                        r["thumb"], r["ready"] = "", True
+                    elif r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
                         r["thumb"] = thumb_path(r["remote"])
                         r["ready"] = enqueue(r["remote"], tag)
                     else:
@@ -972,7 +975,8 @@ class H(BaseHTTPRequestHandler):
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
                         r["mtime"] = None if r["mtime"] < 172800 or r["mtime"] in (filesearch.UNKNOWN_MTIME, 123456789) else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
-                add_pages(results)
+                if not nothumb:
+                    add_pages(results)
                 return self._json(200, {"count": count, "results": results, "errors": errors, "stats": stats})
             try:
                 with _q_lock:
