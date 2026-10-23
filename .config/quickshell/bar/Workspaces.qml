@@ -256,43 +256,55 @@ Row {
         const ws = root._pendingWs;
         if (!ws)
             return;
-        const wins = ws.toplevels ? ws.toplevels.values : [];
         root.thumbWsName = ws.name;
         root.thumbMonitorW = ws.monitor ? ws.monitor.width : 0;
         root.thumbMonitorH = ws.monitor ? ws.monitor.height : 0;
-        const monX = ws.monitor ? ws.monitor.x : 0;
-        const monY = ws.monitor ? ws.monitor.y : 0;
-        if (wins.length === 0) {
-            root.thumbWindows = [];
-            return;
+        root._pendingMonX = ws.monitor ? ws.monitor.x : 0;
+        root._pendingMonY = ws.monitor ? ws.monitor.y : 0;
+        root._pendingWsId = ws.id;
+        // Window list and geometry come from a fresh `hyprctl clients -j`
+        // rather than ws.toplevels / lastIpcObject, which are only
+        // refreshed on some events and can lag (missing windows, stale
+        // splits) -- the preview then showed a wrong layout.
+        clientsProc.exec(["hyprctl", "clients", "-j"]);
+    }
+
+    property real _pendingMonX: 0
+    property real _pendingMonY: 0
+    property int _pendingWsId: 0
+
+    readonly property Process _clientsProc: Process {
+        id: clientsProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let clients = [];
+                try { clients = JSON.parse(text); } catch (e) { clients = []; }
+                if (!root.thumbHovering || !root._pendingWs)
+                    return;
+                const wins = clients.filter(c => c.mapped !== false && !c.hidden
+                    && c.workspace && c.workspace.id === root._pendingWsId);
+                if (wins.length === 0) {
+                    root.thumbWindows = [];
+                    return;
+                }
+                root.thumbSeq += 1;
+                const seq = root.thumbSeq;
+                root._pendingSeq = seq;
+                const entries = wins.map((c, i) => ({
+                    address: c.address.replace(/^0x/, ""),
+                    title: c.title,
+                    path: root.thumbDir + "/" + seq + "-" + i + ".png",
+                    seq: seq,
+                    relX: c.at[0] - root._pendingMonX,
+                    relY: c.at[1] - root._pendingMonY,
+                    relW: c.size[0],
+                    relH: c.size[1]
+                }));
+                root.thumbWindows = entries;
+                const cmds = entries.map(e => "'" + root.thumbBin + "' '" + e.address + "' '" + e.path + "' &").join("\n");
+                captureProc.exec(["bash", "-c", cmds + "\nwait\n"]);
+            }
         }
-        root.thumbSeq += 1;
-        const seq = root.thumbSeq;
-        root._pendingSeq = seq;
-        // `at`/`size` come from hyprctl's own client JSON (lastIpcObject --
-        // Quickshell's typed HyprlandToplevel doesn't expose geometry any
-        // other way), in the same absolute-desktop coordinate space as
-        // monitor.x/y, hence subtracting the monitor's own origin to get a
-        // position relative to it, which is what the popup's canvas scales
-        // against (see wsThumbPopup in Bar.qml).
-        const entries = wins.map((w, i) => {
-            const ipc = w.lastIpcObject || {};
-            const at = ipc.at || [0, 0];
-            const size = ipc.size || [0, 0];
-            return {
-                address: w.address,
-                title: w.title,
-                path: root.thumbDir + "/" + seq + "-" + i + ".png",
-                seq: seq,
-                relX: at[0] - monX,
-                relY: at[1] - monY,
-                relW: size[0],
-                relH: size[1]
-            };
-        });
-        root.thumbWindows = entries;
-        const cmds = entries.map(e => "'" + root.thumbBin + "' '" + e.address + "' '" + e.path + "' &").join("\n");
-        captureProc.exec(["bash", "-c", cmds + "\nwait\n"]);
     }
 
     readonly property Process _captureProc: Process {
