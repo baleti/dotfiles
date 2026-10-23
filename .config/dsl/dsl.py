@@ -168,7 +168,7 @@ def parse_group(text, known, aliases=None):
     level without pf, or a bucket that fits none of the keys). Trailing parts are recognised by shape,
     in any order: a bucket (pf | parent-folder | day | week | month | year, exact), a level (digits,
     pf only), a direction (a prefix of ascending / descending). Key aliases `pf` / `parent-folder` mean
-    the path type with the pf bucket. Default bucket per key from group_kind; default dir desc. aliases: {short key: type name} (e.g. dm).
+    the path type with the pf bucket. Default bucket per key from group_kind; dir None unless given (groups then follow the row order). aliases: {short key: type name} (e.g. dm).
     A bucket (or pf level) that fits none of the keys makes the command inert."""
     parts = text.split("/")
     if len(parts) < 3 or parts[0] != "" or parts[1] not in GROUP_VERBS or not parts[2].strip(","):
@@ -219,7 +219,7 @@ def parse_group(text, known, aliases=None):
         return None
     if level is not None and not any(s["bucket"] == "pf" for s in specs):
         return None
-    return {"specs": specs, "dir": direction or "desc"}
+    return {"specs": specs, "dir": direction}
 
 
 def _days_from_civil(y, m, d):
@@ -337,6 +337,8 @@ def group_layout(rows, parsed, get, today):
     def order(keyed, spec):
         full = [k for k in keyed if k[0] != ""]
         none = [k for k in keyed if k[0] == ""]
+        if direction is None:       # no explicit /dir: groups follow the order their rows already have (the active /s)
+            return full + none
         num = spec["bucket"] == "value"
         import functools
         def cmp(a, b):

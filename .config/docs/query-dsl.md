@@ -666,10 +666,12 @@ hides or reorders rows, it only puts break lines (section headers) between them.
     `created`, `time`, `dm`...) group by `day`; `size` by order of magnitude (`< 1 KB`, `1 - 10 KB` ... `10 GB or
     more`); `age` (`5m`, `3h`) into `Last hour` / `Last day` / `Last week` / `Last month` / `Older`; path types
     by `pf` (level 1) - so `/g/path` is `/g/path/pf/1`; anything else by the exact value. A type whose name contains `path` holds the entry's full path, its own name included.
-- **Order.** Groups are ordered by their key, **descending by default** like `/s` (newest day, biggest size,
-  newest age bucket first; text values Z-A - say `/asc` for A-Z); the `(none)` group (empty / unparseable value)
-  is always last. Rows inside a group keep the order the rest of the query gives them (`/s`, the picker's
-  default), so `/g/dm/week /s/size` is "per week, biggest first".
+- **Order.** With no direction typed, groups appear in the order their rows already have: the active `/s`,
+  or the picker's default (newest first in mod+1, i.e. `/s/dm/desc`), so a group sits where its first row
+  is. `/g/key/asc` or `/g/key/desc` instead sorts the groups by their key (newest day / biggest size /
+  newest age bucket first for `desc`; text values Z-A for `desc`). The `(none)` group (empty or
+  unparseable value) is always last. Rows inside a group keep the order the rest of the query gives them,
+  so `/g/dm/week /s/size` is "per week, biggest first".
 - **Pipeline.** Like `/s`, a `/g` token is position-independent, and it always acts on the **result of the
   filters**: `/fv/name .rvt /g/dm/week` and `/g/dm/week /fv/name .rvt` both group only the `.rvt` rows,
   counts are of surviving rows, and a group with no surviving rows does not exist. Order of the stages is
