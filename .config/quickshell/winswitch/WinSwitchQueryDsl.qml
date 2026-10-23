@@ -30,7 +30,7 @@ QtObject {
     readonly property var groupOrder: ["tmux", "claude"]
     readonly property var groups: ({
         tmux: ["session", "window", "title"],
-        claude: ["title", "path", "session", "age", "fts"]
+        claude: ["title", "path", "session", "age"]
     })
     readonly property var directions: ["ascending", "descending"]
     readonly property var defaultColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "workspace" }]
@@ -59,8 +59,7 @@ QtObject {
     ]
     // Type names (query-dsl.md "Keys"): the flat columns plus the hyphenated
     // family types ("tmux-session", "claude-title", ...). Keys fuzzy-resolve
-    // against these; claude-fts is reachable (it is what /fts/live filters on)
-    // but not offered in completion - spelled /fts.
+    // against these. Full text is not a type: it is spelled /fts/claude-live.
     readonly property var typeNames: {
         const out = root.columns.slice();
         for (const g of root.groupOrder)
@@ -68,7 +67,7 @@ QtObject {
                 out.push(g + "-" + s);
         return out;
     }
-    function allPaths() { return root.typeNames.filter(n => n !== "claude-fts"); }
+    function allPaths() { return root.typeNames; }
     // The full Verb-stage vocabulary: the bare verbs plus every key-taking verb
     // crossed with every type name ("fv/workspace", "s/claude-title", ...) --
     // query-dsl.md's "Verb-stage depth". Exposed rather than inlined in
@@ -103,7 +102,6 @@ QtObject {
         "claude-path": "Claude Code working directory",
         "claude-session": "Claude Code session id",
         "claude-age": "how long ago the transcript last changed",
-        "claude-fts": "Claude Code conversation full-text (periodically indexed); /fts/claude-live is the shortcut"
     })
 
     function fieldKey(f) { return f.kind === "flat" ? f.name : f.group + "-" + f.sub; }
@@ -190,7 +188,7 @@ QtObject {
     // `needle` this is a plain start-truncation (unchanged behaviour for
     // fields not tied to a matched filter value). With a `needle`, centers
     // the window on its first occurrence instead - a naive chars[0:maxLen]
-    // truncation of a long field (claude-fts, a whole transcript) very
+    // truncation of a long field (a whole transcript) very
     // rarely contains the matched substring itself within its first 80
     // characters, so the preview read as unrelated noise even though the
     // match was correct (reported 2026-09-13 against winswitch's alt-tab
@@ -349,7 +347,7 @@ QtObject {
         }
         if (top.ftsTokens) {
             // Scope: one spelled scope wins, plain or mixed = both. live -> the window grid is
-            // filtered by claude-fts; archive / both -> the table view (WinSwitch.qml).
+            // filtered by the fts term; archive / both -> the table view (WinSwitch.qml).
             const scopes = { live: false, archive: false, tmux: false };
             for (const t of top.ftsTokens) for (const k of ["live", "archive", "tmux"]) scopes[k] = scopes[k] || t.scope[k];
             top.fts = { scopes, liveOnly: scopes.live && !scopes.archive && !scopes.tmux,
@@ -357,7 +355,7 @@ QtObject {
                         negTerms: top.ftsTokens.filter(t => t.neg && t.term).map(t => t.term) };
             if (top.fts.liveOnly)
                 for (const t of top.ftsTokens)
-                    if (t.term) top.filters.push(root.negated({ kind: "scoped", path: "claude-fts", value: t.term, exact: false }, t.neg));
+                    if (t.term) top.filters.push(root.negated({ kind: "fts", value: t.term }, t.neg));
         }
         return top;
     }
@@ -378,17 +376,15 @@ QtObject {
         return term.neg ? !m : m;
     }
 
-    // claude-fts is answered by `claude-history --fts` (BM25 over every
+    // /fts/claude-live is answered by `claude-history --fts` (BM25 over every
     // transcript), not by text carried on the window: WinSwitch.qml fills
     // this { lowercase term: { sessionId: score } } for the query's terms.
     property var ftsHits: ({})
-    function isFtsField(f) { return f.kind === "group" && f.group === "claude" && f.sub === "fts"; }
-    // Distinct lowercase values of every scoped term that reaches claude-fts.
+    // Distinct lowercase values of every /fts/claude-live term.
     function ftsTerms(filters) {
         const out = [];
         for (const t of filters) {
-            if (t.kind !== "scoped" || !t.value || t.neg) continue;
-            if (!root.resolveFilterFields(t.path).some(root.isFtsField)) continue;
+            if (t.kind !== "fts" || !t.value) continue;
             const v = String(t.value).toLowerCase();
             if (out.indexOf(v) < 0) out.push(v);
         }
@@ -404,12 +400,12 @@ QtObject {
             const haystack = (win.title || "") + " " + (win.class || "") + " " + (win.workspace || "");
             return root.substr(term.text, haystack, term.exact);
         }
+        if (term.kind === "fts") return root._ftsMatch(meta, term);
         if (term.kind === "scoped") {
             const fields = root.resolveFilterFields(term.path);
             // a window count is a number: "3" means exactly 3, not 13 or 30
             return fields.length > 0 && fields.some(f => f.kind === "flat" && f.name === "windows"
                 ? (term.value === "" || root.fieldValue(win, meta, f) === term.value)
-                : root.isFtsField(f) ? (term.value === "" || root._ftsMatch(meta, term))
                 : root.substr(term.value, root.fieldValue(win, meta, f), term.exact));
         }
         return false;
