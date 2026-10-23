@@ -483,6 +483,9 @@ struct Reply {
     results: Vec<Hit>,
     #[serde(default)]
     errors: Vec<String>,
+    /// /group by parent folder: the folders' own dates modified (filled in by fetch_meta, not by the server's /query)
+    #[serde(skip)]
+    dirs: HashMap<String, String>,
 }
 
 /// Colours from the live Material You scheme (same file the quickshell pickers read).
@@ -549,7 +552,7 @@ const GROUP_CAP: usize = 20000;
 const META_PAGE: usize = usize::MAX;
 
 /// The first GROUP_CAP rows of a query, names and sizes and dates only (no thumbnails queued).
-fn fetch_meta(q: &str, sort: &str, desc: bool, seq: u64) -> Result<Reply, String> {
+fn fetch_meta(q: &str, sort: &str, desc: bool, seq: u64, pf: &[group::Spec]) -> Result<Reply, String> {
     let url = format!("{}/query", cfg().server);
     ureq::get(&url)
         .query("q", q)
@@ -565,6 +568,21 @@ fn fetch_meta(q: &str, sort: &str, desc: bool, seq: u64) -> Result<Reply, String
         .map_err(|e| format!("search server unreachable: {e}"))
         .and_then(|resp| resp.into_string().map_err(|e| e.to_string()))
         .and_then(|body| serde_json::from_str::<Reply>(&body).map_err(|e| e.to_string()))
+        .map(|mut r| {
+            // folders are catalog entries with a date modified of their own: ask for those of the groups' folders
+            let mut labels: std::collections::BTreeSet<String> = Default::default();
+            for spec in pf { for h in &r.results { labels.insert(group::group_value(spec, &h.remote, "").1); } }
+            labels.retain(|l| l.starts_with('/'));
+            if !labels.is_empty() {
+                let body = serde_json::json!({ "paths": labels });
+                if let Ok(resp) = ureq::post(&format!("{}/mtimes", cfg().server)).timeout(Duration::from_secs(60)).set("Content-Type", "application/json").send_string(&body.to_string()) {
+                    if let Some(m) = resp.into_string().ok().and_then(|t| serde_json::from_str::<HashMap<String, Option<String>>>(&t).ok()) {
+                        r.dirs = m.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect();
+                    }
+                }
+            }
+            r
+        })
 }
 
 /// background query results come back tagged with the request sequence number
@@ -687,6 +705,8 @@ struct App {
     gnote: String,
     /// per group id: (bytes, pages) summed over every row under the header, nested groups included
     gagg: HashMap<String, (u64, u64)>,
+    /// folder path -> its own date modified (the server's, else the newest file inside)
+    gdirs: HashMap<String, String>,
     server_total: usize,
     /// a group header clicked this frame (folded after the frame's drawing)
     pending_fold: Option<String>,
@@ -1661,6 +1681,7 @@ impl App {
             gcollapsed: Default::default(),
             gnote: String::new(),
             gagg: HashMap::new(),
+            gdirs: HashMap::new(),
             server_total: 0,
             pending_fold: None,
             shot_frames: 0,
@@ -1758,9 +1779,10 @@ impl App {
     fn request_meta(&mut self) {
         let tx: Sender<Fetch> = self.tx.clone();
         let (seq, q, sort, desc) = (self.seq, self.req_q.clone(), self.req_sort.clone(), self.req_desc);
+        let pf: Vec<group::Spec> = self.group.as_ref().map(|g| g.specs.iter().filter(|s| s.bucket == "pf").cloned().collect()).unwrap_or_default();
         let wake = self.wake.clone();
         std::thread::spawn(move || {
-            let r = fetch_meta(&q, &sort, desc, seq);
+            let r = fetch_meta(&q, &sort, desc, seq, &pf);
             let _ = tx.send(Fetch { seq, page: META_PAGE, query: q, result: r });
             wake.request_repaint();
         });
@@ -1793,7 +1815,20 @@ impl App {
                 _ => String::new(),
             }
         };
-        self.gfull = group::group_layout(self.gmeta.len(), &p, &get, &today);
+        // a folder without a date of its own in the catalog falls back to its newest file
+        let mut dirs = self.gdirs.clone();
+        for spec in p.specs.iter().filter(|s| s.bucket == "pf") {
+            for h in &self.gmeta {
+                let (_, label) = group::group_value(spec, &h.remote, &today);
+                if let Some(m) = &h.mtime {
+                    let e = dirs.entry(label).or_default();
+                    if e.is_empty() || m > e { *e = m.clone(); }
+                }
+            }
+        }
+        // the server's own date wins over the fallback only where it exists: re-apply it on top
+        for (k, v) in &self.gdirs { dirs.insert(k.clone(), v.clone()); }
+        self.gfull = group::group_layout(self.gmeta.len(), &p, &get, &today, &|_, label| dirs.get(label).cloned());
         self.compute_agg();
         self.apply_fold();
     }
@@ -2009,6 +2044,7 @@ impl App {
                         format!("grouped the first {} of {} matches", group_digits(r.results.len()), group_digits(r.count))
                     } else { String::new() };
                     self.gmeta = r.results;
+                    self.gdirs = r.dirs;
                     self.gmeta_seq = self.seq;
                     self.rebuild_group();
                     self.scroll_pending = true;
@@ -4158,10 +4194,10 @@ mod dsl_conformance {
         let get = |i: usize, n: &str| rows[i][n].as_str().unwrap_or("").to_string();
         for c in g["layout"].as_array().unwrap() {
             let p = group::parse_group(c["text"].as_str().unwrap(), &known, &aliases).unwrap();
-            assert_eq!(entries_json(&group::group_layout(rows.len(), &p, &get, today)), c["expect"], "layout {}", c["text"]);
+            assert_eq!(entries_json(&group::group_layout(rows.len(), &p, &get, today, &|_, _| None)), c["expect"], "layout {}", c["text"]);
         }
         let v = &g["visible"];
-        let lay = group::group_layout(rows.len(), &group::parse_group(v["text"].as_str().unwrap(), &known, &aliases).unwrap(), &get, today);
+        let lay = group::group_layout(rows.len(), &group::parse_group(v["text"].as_str().unwrap(), &known, &aliases).unwrap(), &get, today, &|_, _| None);
         for (col, want) in v["collapsed"].as_array().unwrap().iter().zip(v["expect"].as_array().unwrap()) {
             let set: std::collections::HashSet<String> = col.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
             assert_eq!(&entries_json(&group::group_visible(&lay, &set)), want, "visible {col}");
