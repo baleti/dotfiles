@@ -194,7 +194,8 @@ pub fn row_info(schema: &Schema, kind: CompKind, item: &str) -> (String, String,
                 None => (item, None),
             };
             let def = schema.verbs.iter().find(|v| v.short == verb);
-            let (long, desc) = def.map_or((String::new(), String::new()), |d| (d.long.to_string(), d.desc.to_string()));
+            // an app action offered as a verb (extra_universe) has no VerbDef: its text is in type_descs
+            let (long, desc) = def.map_or((String::new(), desc_of(item).unwrap_or_default()), |d| (d.long.to_string(), d.desc.to_string()));
             let long = if long.is_empty() { String::new() } else { format!("/{long}") };
             let desc = path.and_then(desc_of).unwrap_or(desc);
             (format!("/{item}"), long, desc)
