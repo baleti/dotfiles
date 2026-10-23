@@ -2517,14 +2517,14 @@ impl App {
         if resp.hovered() { painter.rect_filled(rect, 4.0, pal.accent.gamma_multiply(0.08)); }
         painter.line_segment([egui::pos2(x, rect.bottom() - 1.0), egui::pos2(rect.right() - 6.0, rect.bottom() - 1.0)], Stroke::new(1.0, pal.border));
         let chev = if folded { "▸" } else { "▾" };
-        let galley = painter.layout_no_wrap(format!("{chev} {label}"), egui::FontId::monospace(13.0), pal.text);
-        painter.galley(egui::pos2(x, y - galley.size().y), galley.clone(), pal.text);
         let (bytes, pages) = self.gagg.get(&id).copied().unwrap_or((0, 0));
         let small = egui::FontId::monospace(11.0);
         let mut tail = format!("{}{}", group_digits(count), if folded { " (folded)" } else { "" });
+        let mut limit = rect.right() - 8.0;
         match list_cols {
-            // list: the totals sit under their own columns (size, #P)
+            // list: the totals sit under their own columns (size, #P); the label stops before the first of them
             Some((size_x, pages_x)) => {
+                limit = size_x.min(pages_x) - 8.0;
                 if bytes > 0 { painter.text(egui::pos2(size_x, y), egui::Align2::LEFT_BOTTOM, human_size(bytes), small.clone(), pal.dim); }
                 if pages > 0 { painter.text(egui::pos2(pages_x, y), egui::Align2::LEFT_BOTTOM, group_digits(pages as usize), small.clone(), pal.dim); }
             }
@@ -2534,7 +2534,26 @@ impl App {
                 if pages > 0 { tail.push_str(&format!(" · {} pages", group_digits(pages as usize))); }
             }
         }
-        painter.text(egui::pos2(x + galley.size().x + 12.0, y), egui::Align2::LEFT_BOTTOM, tail, small, pal.dim);
+        let mono = egui::FontId::monospace(13.0);
+        let tail_w = painter.layout_no_wrap(tail.clone(), small.clone(), pal.dim).size().x;
+        let room = (limit - x - tail_w - 12.0).max(40.0);
+        let full = format!("{chev} {label}");
+        let mut shown = full.clone();
+        if painter.layout_no_wrap(full.clone(), mono.clone(), pal.text).size().x > room {
+            let chars: Vec<char> = full.chars().collect();
+            let mut n = chars.len();
+            while n > 1 {
+                n -= 1;
+                shown = format!("{}…", chars[..n].iter().collect::<String>());
+                if painter.layout_no_wrap(shown.clone(), mono.clone(), pal.text).size().x <= room { break; }
+            }
+        }
+        let galley = painter.layout_no_wrap(shown, mono, pal.text);
+        painter.galley(egui::pos2(x, y - galley.size().y), galley.clone(), pal.text);
+        // too narrow for the count as well: drop it rather than overlap the totals
+        if x + galley.size().x + 12.0 + tail_w <= limit {
+            painter.text(egui::pos2(x + galley.size().x + 12.0, y), egui::Align2::LEFT_BOTTOM, tail, small, pal.dim);
+        }
         if resp.clicked() { self.pending_fold = Some(id); }
     }
 
