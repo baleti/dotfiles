@@ -695,6 +695,8 @@ struct App {
     hist_draft: String,
     hist_applied: String,
     hist_sel: usize,
+    /// false until the user arrows/Ctrl+J down into the popup: nothing is highlighted before that
+    hist_picked: bool,
     last_recorded: String,
     /// mime type of the hit the menu / properties were opened for (computed once, on open)
     menu_mime: Option<String>,
@@ -1666,6 +1668,7 @@ impl App {
             hist_draft: String::new(),
             hist_applied: String::new(),
             hist_sel: 0,
+            hist_picked: false,
             last_recorded: String::new(),
             props_mime: String::new(),
             list_focus: false,
@@ -3013,8 +3016,17 @@ impl eframe::App for App {
         if hist_key && !self.hist_popup && !self.popup && self.trash_pending.is_none() && self.props.is_none() {
             self.hist_popup = true;
             self.hist_sel = 0;
+            self.hist_picked = false;
         }
         if self.hist_popup {
+            let picked = self.hist_picked;
+            // Tab / Space accept a highlighted entry like Enter (Space's text event is dropped too)
+            let (tab, space) = ui.input_mut(|i| {
+                if !picked { return (false, false); }
+                let sp = i.consume_key(egui::Modifiers::NONE, Key::Space);
+                if sp { i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == " ")); }
+                (i.consume_key(egui::Modifiers::NONE, Key::Tab), sp)
+            });
             let (down, up, enter, esc) = ui.input_mut(|i| (
                 i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | keys.consume_in(i, "next"),
                 i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | keys.consume_in(i, "prev"),
@@ -3024,16 +3036,19 @@ impl eframe::App for App {
             let matches = self.hist_matches();
             let m = matches.len();
             if esc { self.hist_popup = false; }
-            else if enter {
-                if let Some(q) = matches.get(self.hist_sel).cloned() {
+            else if enter || tab || space {
+                if let Some(q) = matches.get(self.hist_sel).filter(|_| self.hist_picked).cloned() {
                     self.query = q;
                     self.last_change = Instant::now() - Duration::from_millis(200);
                     self.cursor_end = true;
                 }
                 self.hist_popup = false;
             } else if m > 0 {
-                if down { self.hist_sel = (self.hist_sel + 1).min(m - 1); }
-                if up { self.hist_sel = self.hist_sel.saturating_sub(1); }
+                if down {
+                    if self.hist_picked { self.hist_sel = (self.hist_sel + 1).min(m - 1); }
+                    else { self.hist_picked = true; self.hist_sel = 0; }
+                }
+                if up && self.hist_picked { self.hist_sel = self.hist_sel.saturating_sub(1); }
             }
             self.hist_sel = self.hist_sel.min(m.saturating_sub(1));
         }
@@ -3563,7 +3578,7 @@ impl eframe::App for App {
                                 ui.label(RichText::new("no matching searches").color(pal.dim).size(11.0));
                             }
                             for (i, q) in items.iter().enumerate() {
-                                let sel = i == self.hist_sel;
+                                let sel = self.hist_picked && i == self.hist_sel;
                                 ui.label(RichText::new(q).monospace().size(12.0)
                                     .color(if sel { pal.accent } else { pal.text }));
                             }
