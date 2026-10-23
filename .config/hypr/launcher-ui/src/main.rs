@@ -1,27 +1,23 @@
-//! Proof of concept: the app launcher (bound to the Super key) as its own small native process
-//! instead of a Quickshell component, built on the same pieces as ../winswitch-ui (sctk layer
-//! shell, tiny-skia, fractional scaling, the shared DSL's tokenizer and substring rules).
-//!
-//! Scope of the PoC: text-only rows (no icons yet), bare-text search over name + generic name,
-//! launch-frecency ranking from the Quickshell launcher's history file, launching, mouse.
-//! Anything that needs the DSL engine (`/verbs`, Tab completion, history) is handed to the
-//! Quickshell launcher (`qs ipc call launcher openWith <query>`), which opens with the query typed.
-//! A launch is counted through Quickshell's IPC (`launcher bump`) so there is one writer for the file.
+//! The app launcher (bound to the Super key) as its own small native process: sctk layer shell,
+//! tiny-skia, fractional scaling, desktop entries with icons, launch-frecency ranking from the
+//! Quickshell launcher's history file, and the shared picker DSL (../../dsl/rs): `/fv /s /g`
+//! filters, sort and sections, completion, search-box history, plus the workspace actions
+//! (`/move-to-workspace`, `/move-workspace`, `/add-workspace`).
+//! Launches and accepted queries are written straight to ~/.cache/quickshell/launcher-history.json
+//! and launcher-query-history.json (this process is their only writer now).
 //!
 //! The desktop entries are scanned on a worker thread, so the card and search box appear (and
 //! accept typing) before the list is filled. Timings go to ~/.cache/launcher-ui.log.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
-use std::os::unix::net::UnixStream;
+use std::io::BufReader;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ab_glyph::{point, Font, FontRef, PxScale, ScaleFont};
 use smithay_client_toolkit::reexports::calloop::channel::{self, Event as ChanEvent, Sender};
-use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
@@ -62,17 +58,18 @@ const ICON_PX: u32 = 48; // icons are rasterized once at this size and scaled do
 const QUERY_PX: f32 = 14.0; // Theme.fontSize + 1
 const HEADER_H: i32 = 44;
 const ROW_H: i32 = 30;
-const HANDOFF_TIMEOUT: Duration = Duration::from_millis(2500);
 
 struct DApp {
     id: String,
     name: String,
     generic: String,
+    comment: String,
+    categories: Vec<String>,
+    keywords: Vec<String>,
     icon: String,
     exec: String,
     terminal: bool,
     path: Option<String>,
-    hay: String, // lowercase "name generic": what bare text is matched against
 }
 
 type Hist = HashMap<String, (u32, i64)>; // id -> (count, last unix seconds)
@@ -81,8 +78,184 @@ enum Msg {
     Apps { apps: Vec<DApp>, hist: Hist, ms: f64 },
     Icon { name: String, w: u32, h: u32, data: Vec<u8> },
     QHistory(Vec<String>),
-    QsMapped,
-    HandoffFailed,
+    Hypr(HyprInfo),
+}
+
+/// What the workspace actions need from Hyprland, fetched off the main thread at start.
+#[derive(Default, Clone)]
+struct HyprInfo {
+    workspaces: Vec<HWorkspace>,
+    active_addr: String,
+    active_ws: i64,
+}
+
+#[derive(Clone)]
+struct HWorkspace {
+    id: i64,
+    name: String,
+    monitor: String,
+    windows: usize,
+    classes: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ActionKind {
+    /// move the window that was focused when the launcher opened
+    Window,
+    /// move the current workspace after another
+    Workspace,
+}
+
+/// A row of the workspace list.
+#[derive(Clone)]
+struct WsRow {
+    name: String,
+    target: String,
+    id: Option<i64>,
+    cnt: i64, // -1 = no count (the "new workspace" row)
+    mon: String,
+    apps: String,
+    create: bool,
+}
+
+/// Typing the full verb swaps the results for the workspace list; whatever follows it filters / names.
+fn action_match(q: &str) -> Option<(ActionKind, String)> {
+    let t = q.trim_start();
+    for (verb, kind) in [("/move-to-workspace", ActionKind::Window), ("/move-workspace", ActionKind::Workspace)] {
+        if let Some(rest) = t.strip_prefix(verb) {
+            if rest.is_empty() {
+                return Some((kind, String::new()));
+            }
+            if rest.starts_with(char::is_whitespace) {
+                return Some((kind, rest.trim().to_string()));
+            }
+        }
+    }
+    None
+}
+
+const ACTION_VERBS: [&str; 3] = ["/move-to-workspace", "/move-workspace", "/add-workspace"];
+
+/// What to run once the surface is gone.
+enum Pending {
+    Launch(usize),
+    MoveToWorkspace(WsRow, String),
+    MoveWorkspaceAfter(WsRow, i64),
+    AddWorkspace(String, i64),
+}
+
+fn hypr_json(args: &[&str]) -> serde_json::Value {
+    Command::new("hyprctl")
+        .arg("-j")
+        .args(args)
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn fetch_hypr() -> HyprInfo {
+    let clients = hypr_json(&["clients"]);
+    let mut by_ws: HashMap<i64, Vec<String>> = HashMap::new();
+    for c in clients.as_array().into_iter().flatten() {
+        let (id, class) = (c["workspace"]["id"].as_i64().unwrap_or(-1), c["class"].as_str().unwrap_or(""));
+        let v = by_ws.entry(id).or_default();
+        if !class.is_empty() && !v.iter().any(|x| x == class) {
+            v.push(class.to_string());
+        }
+    }
+    let workspaces = hypr_json(&["workspaces"])
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|w| {
+            let id = w["id"].as_i64().unwrap_or(-1);
+            HWorkspace {
+                id,
+                name: w["name"].as_str().unwrap_or("").to_string(),
+                monitor: w["monitor"].as_str().unwrap_or("").to_string(),
+                windows: w["windows"].as_u64().unwrap_or(0) as usize,
+                classes: by_ws.get(&id).cloned().unwrap_or_default(),
+            }
+        })
+        .collect();
+    let aw = hypr_json(&["activewindow"]);
+    HyprInfo { workspaces, active_addr: aw["address"].as_str().unwrap_or("").to_string(), active_ws: aw["workspace"]["id"].as_i64().unwrap_or(-1) }
+}
+
+fn lua_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn run_repl(lua: &str) {
+    let _ = Command::new("hyprctl").args(["repl", lua]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    // workspaces created/renamed through repl can leave Quickshell's workspace model stale
+    let _ = Command::new("hyprctl").args(["dispatch", "exec", "true"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+
+fn move_to_workspace_lua(addr: &str, row: &WsRow) -> String {
+    let addr = addr.trim_start_matches("0x");
+    let find = format!(
+        "for _, w in ipairs(hl.get_windows()) do if tostring(w.address):gsub('^0x', '') == {} then ",
+        lua_str(addr)
+    );
+    let t = &row.target;
+    if row.create {
+        // Hyprland orders workspaces by integer id and can't renumber: the smallest unused id above the
+        // window's workspace, then named via rename
+        format!(
+            "{find}local used = {{}} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true end \
+             local id = w.workspace.id + 1 while used[id] do id = id + 1 end \
+             hl.dispatch(hl.dsp.window.move({{ workspace = id, window = w }})) \
+             hl.dispatch(hl.dsp.workspace.rename({{ workspace = id, name = {} }})) break end end",
+            lua_str(t)
+        )
+    } else {
+        let ws = match row.id {
+            Some(id) => id.to_string(),
+            None if t.chars().all(|c| c.is_ascii_digit()) && !t.is_empty() => t.clone(),
+            None => lua_str(&format!("name:{t}")),
+        };
+        format!("{find}hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = w }})) break end end")
+    }
+}
+
+fn move_workspace_after_lua(row: &WsRow, cur: i64) -> String {
+    let id = row.id.unwrap_or(0);
+    format!(
+        "local cur = hl.get_workspace({cur}) local name = cur and cur.name or '' \
+         local used = {{}} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true end \
+         local id = {id} + 1 while used[id] and id ~= {cur} do id = id + 1 end \
+         if id == {cur} then return end \
+         for _, w in ipairs(hl.get_windows()) do if w.workspace.id == {cur} then hl.dispatch(hl.dsp.window.move({{ workspace = id, window = w, follow = false }})) end end \
+         hl.dispatch(hl.dsp.workspace.rename({{ workspace = id, name = name }})) \
+         hl.dispatch(hl.dsp.focus({{ workspace = id }}))"
+    )
+}
+
+fn add_workspace_lua(target: &str, cur: i64) -> String {
+    format!(
+        "local cur = hl.get_workspace({cur}) \
+         local used, names = {{}}, {{}} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end \
+         local name = {} \
+         if name == '' then local base = cur and tonumber(cur.name) or 0 \
+         local n = math.floor(base) + 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) end \
+         if names[name] then return end \
+         local anchor = cur and cur.id or 0 \
+         local id = anchor + 1 \
+         if used[id] then local k = id while used[k + 1] do k = k + 1 end local ok = true \
+         local by = {{}} for _, w in ipairs(hl.get_windows()) do local wid = w.workspace.id \
+         if wid >= id and wid <= k then if w.group then ok = false end by[wid] = by[wid] or {{}} table.insert(by[wid], w) end end \
+         for _, m in ipairs(hl.get_monitors()) do local a = m.active_workspace if a and a.id >= id and a.id <= k and not m.focused then ok = false end end \
+         if ok then local nm = {{}} for _, x in ipairs(hl.get_workspaces()) do nm[x.id] = x.name end \
+         for i = k, id, -1 do if by[i] then for _, w in ipairs(by[i]) do hl.dispatch(hl.dsp.window.move({{ workspace = i + 1, window = w, follow = false }})) end \
+         hl.dispatch(hl.dsp.workspace.rename({{ workspace = i + 1, name = nm[i] }})) end end \
+         else while used[id] do id = id + 1 end end end \
+         hl.dispatch(hl.dsp.focus({{ workspace = id }})) \
+         hl.dispatch(hl.dsp.workspace.rename({{ workspace = id, name = name }}))",
+        lua_str(target)
+    )
 }
 
 type Rgb = [u8; 3];
@@ -126,79 +299,51 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-// ---- the shared DSL's bare-text rules (quickshell/lib/dsl.js: tokenize, substrIdx) ----
-
-struct Tok {
-    text: String,
-    lead_quote: bool,
-    quoted: bool,
-    neg: bool,
+/// The picker query DSL (~/.config/dsl/rs): this launcher's type vocabulary. The column verbs stay
+/// parseable (inert here, as in the Quickshell launcher) but are not offered in completion.
+fn make_schema() -> pickerdsl::Schema {
+    let mut sc = pickerdsl::Schema::new(&["name", "generic", "comment", "exec", "categories", "keywords"], vec![]);
+    sc.hidden_verbs = ["ft", "at", "rt"].map(String::from).to_vec();
+    sc.extra_universe = ACTION_VERBS.iter().map(|v| v[1..].to_string()).collect();
+    sc.type_descs = [
+        ("name", "the application name"),
+        ("generic", "the generic name (\"Web Browser\")"),
+        ("comment", "the freedesktop Comment= description"),
+        ("exec", "the launch command"),
+        ("categories", "freedesktop Categories= entries"),
+        ("keywords", "freedesktop Keywords= entries"),
+        ("move-to-workspace", "move focused window to a workspace"),
+        ("move-workspace", "move this workspace after another"),
+        ("add-workspace", "add an empty workspace after this one"),
+    ]
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .to_vec();
+    sc
 }
 
-fn tokenize(q: &str) -> Vec<Tok> {
-    let mut out = vec![];
-    let (mut cur, mut started) = (String::new(), false);
-    let (mut lead_quote, mut in_quotes, mut qc, mut quoted, mut neg) = (false, false, '\0', false, false);
-    for c in q.chars() {
-        if c == '!' && !started && !neg {
-            neg = true;
-            continue;
+/// Desktop entries as rows for the DSL engine. `name` and `generic` are also the free-text
+/// haystack; the other types are scoped-only (prose Comment= made `ala` hit "scalable").
+struct AppSrc<'a>(&'a [DApp]);
+
+impl pickerdsl::Source for AppSrc<'_> {
+    fn value(&self, row: usize, ty: &str) -> String {
+        self.values(row, ty).into_iter().next().unwrap_or_default()
+    }
+    fn values(&self, row: usize, ty: &str) -> Vec<String> {
+        let a = &self.0[row];
+        match ty {
+            "name" => vec![a.name.clone()],
+            "generic" => vec![a.generic.clone()],
+            "comment" => vec![a.comment.clone()],
+            "exec" => vec![a.exec.clone()],
+            "categories" => a.categories.clone(),
+            "keywords" => a.keywords.clone(),
+            _ => vec![],
         }
-        let opens = c == '"' || (c == '\'' && !started);
-        if if in_quotes { c == qc } else { opens } {
-            if !started {
-                lead_quote = true;
-            }
-            if !in_quotes {
-                qc = c;
-            } else {
-                quoted = true;
-            }
-            in_quotes = !in_quotes;
-            started = true;
-            continue;
-        }
-        if c.is_whitespace() && !in_quotes {
-            if started {
-                out.push(Tok { text: std::mem::take(&mut cur), lead_quote, quoted, neg });
-                started = false;
-                lead_quote = false;
-                quoted = false;
-            }
-            neg = false;
-            continue;
-        }
-        started = true;
-        cur.push(c);
     }
-    if started {
-        out.push(Tok { text: cur, lead_quote, quoted, neg });
+    fn haystack(&self, row: usize) -> String {
+        format!("{} {}", self.0[row].name, self.0[row].generic)
     }
-    out
-}
-
-fn is_word(c: Option<&char>) -> bool {
-    c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
-}
-
-fn substr(needle: &str, hay: &str, exact: bool) -> bool {
-    let n: Vec<char> = needle.to_lowercase().chars().collect();
-    let h: Vec<char> = hay.to_lowercase().chars().collect();
-    if n.is_empty() {
-        return true;
-    }
-    if n.len() > h.len() {
-        return false;
-    }
-    let (lead, trail) = (is_word(n.first()), is_word(n.last()));
-    (0..=h.len() - n.len()).any(|i| {
-        h[i..i + n.len()] == n[..]
-            && (!exact || (!(lead && i > 0 && is_word(h.get(i - 1))) && !(trail && is_word(h.get(i + n.len())))))
-    })
-}
-
-fn needs_dsl(q: &str) -> bool {
-    tokenize(q).iter().any(|t| !t.lead_quote && t.text.starts_with('/'))
 }
 
 // ---- desktop entries ----
@@ -207,6 +352,8 @@ fn parse_desktop(id: &str, text: &str) -> Option<DApp> {
     let mut in_entry = false;
     let (mut name, mut generic, mut exec, mut typ) = (String::new(), String::new(), String::new(), String::new());
     let mut icon = String::new();
+    let (mut comment, mut categories, mut keywords) = (String::new(), vec![], vec![]);
+    let split = |v: &str| v.split(';').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect::<Vec<_>>();
     let (mut hidden, mut terminal, mut path) = (false, false, None);
     for line in text.lines() {
         let line = line.trim();
@@ -223,6 +370,9 @@ fn parse_desktop(id: &str, text: &str) -> Option<DApp> {
             "GenericName" => generic = v.trim().to_string(),
             "Exec" => exec = v.trim().to_string(),
             "Icon" => icon = v.trim().to_string(),
+            "Comment" => comment = v.trim().to_string(),
+            "Categories" => categories = split(v),
+            "Keywords" => keywords = split(v),
             "Type" => typ = v.trim().to_string(),
             "NoDisplay" | "Hidden" => hidden |= v.trim() == "true",
             "Terminal" => terminal = v.trim() == "true",
@@ -233,8 +383,7 @@ fn parse_desktop(id: &str, text: &str) -> Option<DApp> {
     if hidden || name.is_empty() || exec.is_empty() || (!typ.is_empty() && typ != "Application") {
         return None;
     }
-    let hay = format!("{name} {generic}").to_lowercase();
-    Some(DApp { id: id.to_string(), name, generic, icon, exec, terminal, path, hay })
+    Some(DApp { id: id.to_string(), name, generic, comment, categories, keywords, icon, exec, terminal, path })
 }
 
 fn walk(dir: &Path, prefix: &str, seen: &mut HashSet<String>, out: &mut Vec<DApp>) {
@@ -282,6 +431,44 @@ fn load_history() -> Hist {
 }
 
 /// LauncherHistory.score: launch count weighted heavily, a small recency bump.
+/// Atomic JSON write (tmp + rename), as the Quickshell singletons' FileView did.
+fn write_json_atomic(path: &Path, v: &serde_json::Value) {
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string(v).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// A launch counts toward the frecency file: { id: {count, last} }.
+fn bump_launch(id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    let path = home().join(".cache/quickshell/launcher-history.json");
+    let mut v: serde_json::Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let Some(map) = v.as_object_mut() else { return };
+    let count = map.get(id).and_then(|e| e["count"].as_u64()).unwrap_or(0) + 1;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    map.insert(id.to_string(), serde_json::json!({ "count": count, "last": now }));
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    write_json_atomic(&path, &v);
+}
+
+/// An accepted query joins the search-box history (whitespace reduced, earlier duplicate dropped,
+/// re-appended as the most recent).
+fn record_query(q: &str) {
+    let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
+    if q.is_empty() {
+        return;
+    }
+    let path = home().join(".cache/quickshell/launcher-query-history.json");
+    let mut h: Vec<String> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    h.retain(|e| *e != q);
+    h.push(q);
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    write_json_atomic(&path, &serde_json::json!(h));
+}
+
 fn score(hist: &Hist, id: &str) -> i64 {
     let Some(&(count, last)) = hist.get(id) else { return 0 };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -527,6 +714,40 @@ fn stroke(pm: &mut Pixmap, path: &tiny_skia::Path, tf: Transform, rgb: Rgb, a: u
     pm.stroke_path(path, &paint(rgb, a), &st, tf, None);
 }
 
+struct Ac {
+    comp: pickerdsl::Completion,
+    items: Vec<String>,
+    sel: usize,
+}
+
+const AC_ROW_H: i32 = 24;
+const WS_HEAD_H: i32 = 18;
+const WS_CARD_W: i32 = 780;
+const WS_COL_ID: f32 = 56.0;
+const WS_COL_WIN: f32 = 64.0;
+const WS_COL_MON: f32 = 96.0;
+const WS_COL_APPS: f32 = 260.0;
+
+/// One entry of the grouped display.
+#[derive(Clone)]
+enum Disp {
+    Head { depth: usize, id: String, label: String, count: usize, folded: bool },
+    Row(usize), // position in `results`
+}
+
+/// What a list row shows.
+enum Entry {
+    App(usize), // position in `results`
+    Head(usize), // index in `disp`
+    Ws(usize),
+}
+
+enum Hit {
+    Item(usize),
+    Head(String),
+    Pop(usize),
+}
+
 struct App {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -561,16 +782,28 @@ struct App {
     hist_idx: i32,      // -1 = on the draft, not cycling
     hist_draft: String,
     walked: bool,       // Down walked the results: Up walks them back before it recalls history
+    schema: pickerdsl::Schema,
+    ac: Option<Ac>,
+    ac_active: bool,
+    ac_scroll: usize,
+    recalling: bool,
+    group: Option<pickerdsl::group::Parsed>,
+    group_raw: String,
+    collapsed: HashSet<String>,
+    disp: Vec<Disp>,
+    today: String,
+    action: Option<(ActionKind, String)>,
+    ws_rows: Vec<WsRow>,
+    hypr: HyprInfo,
     query: String,
     cursor: usize, // in chars
     results: Vec<usize>,
     selected: usize,
     scroll: usize,
-    handing_off: bool,
-    pending_launch: Option<usize>,
+    pending: Option<Pending>,
     hover_origin: Option<(f64, f64)>,
     hover_armed: bool,
-    hits: Vec<(i32, i32, i32, i32, usize)>, // logical row rects -> result position
+    hits: Vec<(i32, i32, i32, i32, Hit)>, // logical row rects
     card_rect: (i32, i32, i32, i32),
 }
 
@@ -585,8 +818,11 @@ impl App {
     }
 
     /// AppLauncher.qml: icon gutter (40) + the widest of the first 13 names + right padding (28),
-    /// floored at 360 and capped at 560.
+    /// floored at 360 and capped at 560; the workspace list is a fixed 780.
     fn card_w(&self) -> i32 {
+        if self.action.is_some() {
+            return WS_CARD_W;
+        }
         let widest = self.results.iter().take(13).map(|&i| text_width(&self.font, FONT_PX, &self.apps[i].name)).fold(0.0f32, f32::max);
         ((widest + 68.0).round() as i32).clamp(360, 560)
     }
@@ -595,36 +831,135 @@ impl App {
         (self.height as f32 * 0.6).round() as i32
     }
 
-    fn vis_rows(&self) -> usize {
-        (((self.card_h() - HEADER_H - 14) / ROW_H).max(1)) as usize
+    fn list_top(&self) -> i32 {
+        HEADER_H + 7 + if self.action.is_some() { WS_HEAD_H } else { 0 }
     }
 
-    /// Filter by the query, rank (exact / prefix / substring of the first bare word), then
-    /// launch frecency, then alphabetical -- AppLauncher.qml's order.
+    fn vis_rows(&self) -> usize {
+        (((self.card_h() - self.list_top() - 7) / ROW_H).max(1)) as usize
+    }
+
+    /// How many selectable things there are (apps, or workspace rows).
+    fn sel_count(&self) -> usize {
+        if self.action.is_some() { self.ws_rows.len() } else { self.results.len() }
+    }
+
+    fn entries(&self) -> Vec<Entry> {
+        if self.action.is_some() {
+            return (0..self.ws_rows.len()).map(Entry::Ws).collect();
+        }
+        if self.group.is_some() {
+            return self.disp.iter().enumerate().map(|(i, d)| match d {
+                Disp::Head { .. } => Entry::Head(i),
+                Disp::Row(p) => Entry::App(*p),
+            }).collect();
+        }
+        (0..self.results.len()).map(Entry::App).collect()
+    }
+
+    /// Filter by the query (the DSL engine), order by /s or else AppLauncher.qml's rank (exact / prefix /
+    /// substring of the first bare word), launch frecency, alphabetical; fold into /g sections.
     fn refilter(&mut self) {
-        let toks = tokenize(&self.query);
-        let first = toks.iter().find(|t| !t.neg && !t.text.is_empty()).map(|t| t.text.to_lowercase()).unwrap_or_default();
-        let rank = |a: &DApp| -> u8 {
-            if first.is_empty() {
-                return 3;
+        let parsed = pickerdsl::parse(&self.schema, &self.query);
+        self.action = action_match(&self.query);
+        self.disp.clear();
+        self.group = None;
+        if let Some((kind, arg)) = self.action.clone() {
+            self.results.clear();
+            self.build_ws_rows(kind, &arg);
+            self.selected = self.selected.min(self.ws_rows.len().saturating_sub(1));
+            self.ensure_visible();
+            self.dirty = true;
+            return;
+        }
+        self.ws_rows.clear();
+        let src = AppSrc(&self.apps);
+        let mut rows: Vec<usize> = (0..self.apps.len()).filter(|&i| pickerdsl::row_matches(&self.schema, &parsed, &src, i)).collect();
+        if let Some(sort) = &parsed.sort {
+            pickerdsl::sort_rows(&mut rows, sort, &src);
+        } else {
+            let first = parsed
+                .terms
+                .iter()
+                .find_map(|t| match t {
+                    pickerdsl::Term::Free { text, neg: false, .. } => Some(text.to_lowercase()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let rank = |a: &DApp| -> u8 {
+                if first.is_empty() {
+                    return 3;
+                }
+                let n = a.name.to_lowercase();
+                if n == first { 0 } else if n.starts_with(&first) { 1 } else if n.contains(&first) { 2 } else { 3 }
+            };
+            rows.sort_by(|&a, &b| {
+                let (x, y) = (&self.apps[a], &self.apps[b]);
+                rank(x)
+                    .cmp(&rank(y))
+                    .then(score(&self.hist, &y.id).cmp(&score(&self.hist, &x.id)))
+                    .then(x.name.to_lowercase().cmp(&y.name.to_lowercase()))
+            });
+        }
+        let raw = parsed.group_raw.clone().unwrap_or_default();
+        let known: Vec<&str> = self.schema.types.iter().map(|s| s.as_str()).collect();
+        let grouped = if raw.is_empty() { None } else { pickerdsl::group::parse_group(&raw, &known, &[]) };
+        if raw != self.group_raw {
+            self.collapsed.clear();
+            self.group_raw = raw;
+        }
+        if let Some(g) = &grouped {
+            if self.today.is_empty() {
+                self.today = Command::new("date").arg("+%F").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
             }
-            let n = a.name.to_lowercase();
-            if n == first { 0 } else if n.starts_with(&first) { 1 } else if n.contains(&first) { 2 } else { 3 }
-        };
-        let mut rows: Vec<usize> = (0..self.apps.len())
-            .filter(|&i| toks.iter().all(|t| substr(&t.text, &self.apps[i].hay, t.quoted) != t.neg))
-            .collect();
-        rows.sort_by(|&a, &b| {
-            let (x, y) = (&self.apps[a], &self.apps[b]);
-            rank(x)
-                .cmp(&rank(y))
-                .then(score(&self.hist, &y.id).cmp(&score(&self.hist, &x.id)))
-                .then(x.name.to_lowercase().cmp(&y.name.to_lowercase()))
-        });
+            let layout = pickerdsl::group::group_layout(rows.len(), g, &|i, name| pickerdsl::Source::value(&src, rows[i], name), &self.today, &|_, _| None);
+            let mut order = vec![];
+            for e in pickerdsl::group::group_visible(&layout, &self.collapsed) {
+                match e {
+                    pickerdsl::group::Entry::Header { depth, id, label, count } => {
+                        let folded = self.collapsed.contains(&id);
+                        self.disp.push(Disp::Head { depth, id, label, count, folded });
+                    }
+                    pickerdsl::group::Entry::Row(i) => {
+                        self.disp.push(Disp::Row(order.len()));
+                        order.push(rows[i]);
+                    }
+                }
+            }
+            rows = order;
+        }
+        self.group = grouped;
         self.results = rows;
         self.selected = self.selected.min(self.results.len().saturating_sub(1));
         self.ensure_visible();
         self.dirty = true;
+    }
+
+    fn build_ws_rows(&mut self, kind: ActionKind, arg: &str) {
+        let arg_l = arg.to_lowercase();
+        let mut list: Vec<&HWorkspace> = self
+            .hypr
+            .workspaces
+            .iter()
+            .filter(|w| w.id >= 0 && !w.name.starts_with("special:") && !(kind == ActionKind::Workspace && w.id == self.hypr.active_ws))
+            .collect();
+        list.sort_by_key(|w| w.id);
+        let (mut out, mut exact) = (vec![], false);
+        for w in list {
+            let n = w.name.to_lowercase();
+            if !arg_l.is_empty() && !n.contains(&arg_l) {
+                continue;
+            }
+            if n == arg_l {
+                exact = true;
+            }
+            let row = WsRow { name: w.name.clone(), target: w.name.clone(), id: Some(w.id), cnt: w.windows as i64, mon: w.monitor.clone(), apps: w.classes.join(", "), create: false };
+            if n == arg_l { out.insert(0, row) } else { out.push(row) }
+        }
+        if !arg.is_empty() && !exact && kind == ActionKind::Window {
+            out.push(WsRow { name: format!("+ new workspace \"{arg}\""), target: arg.to_string(), id: None, cnt: -1, mon: String::new(), apps: "created after the current workspace".into(), create: true });
+        }
+        self.ws_rows = out;
     }
 
     fn ensure_visible(&mut self) {
@@ -632,54 +967,170 @@ impl App {
             return;
         }
         let rows = self.vis_rows();
-        if self.selected < self.scroll {
-            self.scroll = self.selected;
-        } else if self.selected >= self.scroll + rows {
-            self.scroll = self.selected + 1 - rows;
+        let entries = self.entries();
+        let Some(mut at) = entries.iter().position(|e| match e {
+            Entry::App(p) => self.action.is_none() && *p == self.selected,
+            Entry::Ws(i) => *i == self.selected,
+            Entry::Head(_) => false,
+        }) else {
+            self.scroll = 0;
+            return;
+        };
+        if at > 0 && matches!(entries[at - 1], Entry::Head(_)) {
+            at -= 1; // keep the section header above the first row visible
+        }
+        let sel_at = at;
+        if sel_at < self.scroll {
+            self.scroll = sel_at;
+        } else if sel_at >= self.scroll + rows {
+            self.scroll = sel_at + 1 - rows;
         }
     }
 
     fn nav(&mut self, d: i32) {
-        if self.results.is_empty() {
+        let n = self.sel_count();
+        if n == 0 {
             return;
         }
-        self.selected = (self.selected as i32 + d).clamp(0, self.results.len() as i32 - 1) as usize;
+        self.selected = (self.selected as i32 + d).clamp(0, n as i32 - 1) as usize;
         self.ensure_visible();
         self.dirty = true;
     }
 
     fn launch(&mut self, pos: usize) {
-        if self.results.get(pos).is_some() {
+        if self.ac.is_some() {
+            return;
+        }
+        if let Some((kind, _)) = &self.action {
+            if let Some(row) = self.ws_rows.get(pos).cloned() {
+                self.pending = Some(match kind {
+                    ActionKind::Window => Pending::MoveToWorkspace(row, self.hypr.active_addr.clone()),
+                    ActionKind::Workspace => Pending::MoveWorkspaceAfter(row, self.hypr.active_ws),
+                });
+            }
+        } else if self.results.get(pos).is_some() {
             // started only after the surface is gone (see main): while this layer holds the
             // exclusive keyboard grab the new window would not get focus
-            self.pending_launch = Some(self.results[pos]);
+            self.pending = Some(Pending::Launch(self.results[pos]));
+        } else {
+            return;
         }
         self.exit = true;
     }
 
-    fn handoff(&mut self) {
-        if self.handing_off {
+    // ---- completion / history popup (same behaviour as winswitch-ui) ----
+
+    fn hide_ac(&mut self) {
+        self.ac = None;
+        self.ac_active = false;
+        self.ac_scroll = 0;
+        self.dirty = true;
+    }
+
+    fn ac_candidates(&self, comp: &pickerdsl::Completion) -> Vec<String> {
+        pickerdsl::candidates(&self.schema, comp, &AppSrc(&self.apps), self.apps.len())
+    }
+
+    fn ac_recompute(&mut self) {
+        let Some(ac) = &self.ac else { return };
+        if ac.comp.kind == pickerdsl::CompKind::History {
+            let items = pickerdsl::history_candidates(&self.qhist, &self.query);
+            self.ac = Some(Ac { comp: ac.comp.clone(), items, sel: 0 });
+        } else if let Some(comp) = pickerdsl::completion_context(&self.schema, &self.query) {
+            let items = self.ac_candidates(&comp);
+            self.ac = if items.is_empty() { None } else { Some(Ac { comp, items, sel: 0 }) };
+        } else {
+            self.ac = None;
+        }
+        self.ac_scroll = 0;
+        self.dirty = true;
+    }
+
+    fn trigger_completion(&mut self) {
+        let Some(comp) = pickerdsl::completion_context(&self.schema, &self.query) else { return };
+        self.ac_active = true;
+        let items = self.ac_candidates(&comp);
+        if items.is_empty() {
             return;
         }
-        self.handing_off = true;
-        self.note(&format!("handoff to quickshell (query {:?})", self.query));
-        let query = self.query.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let ok = Command::new("qs")
-                .args(["ipc", "call", "launcher", "openWith", &query])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-            if !ok {
-                let _ = tx.send(Msg::HandoffFailed);
+        let single = items.len() == 1;
+        self.ac = Some(Ac { comp, items, sel: 0 });
+        self.ac_scroll = 0;
+        self.dirty = true;
+        if single {
+            self.ac_accept();
+        }
+    }
+
+    fn ac_rows(&self) -> usize {
+        let cap = if self.ac.as_ref().is_some_and(|a| a.comp.kind == pickerdsl::CompKind::History) { self.card_h() / 2 } else { self.card_h() - HEADER_H };
+        (((cap - 8) / AC_ROW_H).max(1) as usize).min(self.ac.as_ref().map_or(1, |a| a.items.len()).max(1))
+    }
+
+    fn ac_move(&mut self, d: i32, wrap: bool) {
+        let Some(ac) = self.ac.as_mut() else { return };
+        let n = ac.items.len() as i32;
+        if n == 0 {
+            return;
+        }
+        let t = ac.sel as i32 + d;
+        ac.sel = if wrap { t.rem_euclid(n) } else { t.clamp(0, n - 1) } as usize;
+        let (rows, sel) = (self.ac_rows(), self.ac.as_ref().unwrap().sel);
+        if sel < self.ac_scroll {
+            self.ac_scroll = sel;
+        } else if sel >= self.ac_scroll + rows {
+            self.ac_scroll = sel + 1 - rows;
+        }
+        self.dirty = true;
+    }
+
+    fn ac_accept(&mut self) {
+        let Some(ac) = self.ac.take() else { return };
+        let Some(chosen) = ac.items.get(ac.sel) else { return };
+        let q = pickerdsl::accept(&self.query, &ac.comp, chosen);
+        self.ac_active = false;
+        self.ac_scroll = 0;
+        let c = q.chars().count();
+        self.recalling = true;
+        self.set_query(q, c);
+        self.recalling = false;
+        // /add-workspace has no prompt: accepting it runs it
+        if self.query.trim_end().ends_with("/add-workspace") {
+            self.pending = Some(Pending::AddWorkspace(String::new(), self.hypr.active_ws));
+            self.exit = true;
+        }
+    }
+
+    fn open_history(&mut self) {
+        let comp = pickerdsl::Completion { kind: pickerdsl::CompKind::History, start: 0, fragment: String::new(), verb: None, fields: None };
+        let items = pickerdsl::history_candidates(&self.qhist, &self.query);
+        self.ac = Some(Ac { comp, items, sel: 0 });
+        self.ac_active = true;
+        self.ac_scroll = 0;
+        self.dirty = true;
+    }
+
+    fn toggle_fold(&mut self, id: &str) {
+        if !self.collapsed.remove(id) {
+            self.collapsed.insert(id.to_string());
+        }
+        self.refilter();
+        self.dirty = true;
+    }
+
+    /// Ctrl+G: fold / unfold the section of the selected row.
+    fn toggle_selected_group(&mut self) {
+        let mut cur: Option<String> = None;
+        for d in &self.disp {
+            match d {
+                Disp::Head { id, .. } => cur = Some(id.clone()),
+                Disp::Row(p) if *p == self.selected => break,
+                _ => {}
             }
-        });
-        let _ = self.loop_handle.insert_source(Timer::from_duration(HANDOFF_TIMEOUT), |_, _, app: &mut App| {
-            app.exit = true;
-            TimeoutAction::Drop
-        });
+        }
+        if let Some(id) = cur {
+            self.toggle_fold(&id);
+        }
     }
 
     // ---- query editing ----
@@ -697,11 +1148,15 @@ impl App {
         self.cursor = cursor.min(self.qlen());
         self.selected = 0;
         self.scroll = 0;
-        self.hist_idx = -1;
+        if !self.recalling {
+            self.hist_idx = -1;
+        }
         self.walked = false;
         self.refilter();
-        if needs_dsl(&self.query) {
-            self.handoff();
+        if self.ac_active {
+            self.ac_recompute();
+        } else {
+            self.ac = None;
         }
     }
 
@@ -725,7 +1180,7 @@ impl App {
 
     /// zsh-autosuggestions style: the rest of the newest history entry starting with the query.
     fn ghost(&self) -> String {
-        if self.cursor != self.qlen() || self.query.trim().is_empty() {
+        if self.ac.is_some() || self.cursor != self.qlen() || self.query.trim().is_empty() {
             return String::new();
         }
         for e in self.qhist.iter().rev() {
@@ -738,14 +1193,11 @@ impl App {
 
     /// Recall text without it counting as an edit (it must not end the history cycle).
     fn recall(&mut self, text: String) {
-        self.query = text;
-        self.cursor = self.qlen();
-        self.selected = 0;
-        self.scroll = 0;
-        self.refilter();
-        if needs_dsl(&self.query) {
-            self.handoff();
-        }
+        self.hide_ac();
+        let c = text.chars().count();
+        self.recalling = true;
+        self.set_query(text, c);
+        self.recalling = false;
     }
 
     fn history_prev(&mut self) {
@@ -799,19 +1251,44 @@ impl App {
     }
 
     fn handle_key(&mut self, ev: KeyEvent) {
-        if self.handing_off {
-            return; // typed while Quickshell takes over: dropped, not leaked to a window
-        }
         if !self.first_key {
             self.first_key = true;
             self.note("first key");
         }
         let ks = ev.keysym;
         let n = self.qlen();
+        let popup = self.ac.is_some();
         match ks {
-            Keysym::Escape => self.exit = true,
-            Keysym::Return | Keysym::KP_Enter => self.launch(self.selected),
-            Keysym::Tab | Keysym::ISO_Left_Tab => self.handoff(), // completion
+            Keysym::Escape => {
+                if popup {
+                    self.hide_ac();
+                } else {
+                    self.exit = true;
+                }
+            }
+            Keysym::Return | Keysym::KP_Enter => {
+                if popup {
+                    self.ac_accept();
+                } else {
+                    self.launch(self.selected);
+                }
+            }
+            Keysym::Tab | Keysym::ISO_Left_Tab => {
+                let back = ks == Keysym::ISO_Left_Tab || self.shift;
+                if popup && !back {
+                    self.ac_accept();
+                } else if popup {
+                    self.ac_move(-1, true);
+                } else {
+                    self.trigger_completion();
+                }
+            }
+            Keysym::space if popup && !self.ctrl => self.ac_accept(),
+            Keysym::space if self.ctrl && !popup => self.trigger_completion(),
+            Keysym::Page_Down if popup => self.ac_move(self.ac_rows() as i32, false),
+            Keysym::Page_Up if popup => self.ac_move(-(self.ac_rows() as i32), false),
+            Keysym::Down if popup => self.ac_move(1, false),
+            Keysym::Up if popup => self.ac_move(-1, false),
             Keysym::Down => self.down_key(),
             Keysym::Up => self.up_key(),
             Keysym::Right | Keysym::End if self.cursor == n && !self.ghost().is_empty() && !self.shift => {
@@ -838,14 +1315,17 @@ impl App {
             Keysym::BackSpace => self.delete_range(self.cursor.saturating_sub(1), self.cursor),
             Keysym::Delete => self.delete_range(self.cursor, (self.cursor + 1).min(n)),
             _ if self.ctrl => match ks {
+                Keysym::j | Keysym::n if popup => self.ac_move(1, false),
+                Keysym::k | Keysym::p if popup => self.ac_move(-1, false),
                 Keysym::j | Keysym::n => self.down_key(),
                 Keysym::k | Keysym::p => self.up_key(),
+                Keysym::g if self.group.is_some() => self.toggle_selected_group(),
                 Keysym::f if self.cursor == n && !self.ghost().is_empty() => {
                     let q = format!("{}{}", self.query, self.ghost());
                     let c = q.chars().count();
                     self.set_query(q, c);
                 }
-                Keysym::r => self.handoff(), // history popup
+                Keysym::r => self.open_history(),
                 Keysym::a => {
                     self.cursor = 0;
                     self.dirty = true;
@@ -896,15 +1376,12 @@ impl App {
                 self.qhist = h;
                 self.dirty = true;
             }
-            Msg::QsMapped => {
-                if self.handing_off {
-                    self.note("quickshell launcher mapped");
-                    self.exit = true;
+            Msg::Hypr(h) => {
+                self.hypr = h;
+                if self.action.is_some() {
+                    self.refilter();
                 }
-            }
-            Msg::HandoffFailed => {
-                self.note("handoff failed, staying native");
-                self.handing_off = false;
+                self.dirty = true;
             }
         }
     }
@@ -943,7 +1420,30 @@ impl App {
         let top = (hy + (HEADER_H as f32 - lh / sc) / 2.0) * sc;
         let tx = (cx + 40) as f32 * sc;
         let max_w = (card_w - 56) as f32 * sc;
-        draw_text(&mut pm, &self.font, size, tx, top + asc, th.text, &self.query, max_w);
+        // recognised /commands (and the workspace actions) in the accent colour, the rest normal
+        let mut spans: Vec<(usize, usize)> = pickerdsl::command_spans(&self.schema, &self.query).into_iter().filter(|s| s.2).map(|s| (s.0, s.1)).collect();
+        for t in pickerdsl::tokenize(&self.query) {
+            if !t.lead_quote && ACTION_VERBS.contains(&t.text.as_str()) {
+                spans.push((t.start, t.start + t.text.chars().count()));
+            }
+        }
+        spans.sort();
+        let qc: Vec<char> = self.query.chars().collect();
+        let (mut at, mut x) = (0usize, tx);
+        let seg = |pm: &mut Pixmap, from: usize, to: usize, col: Rgb, x: &mut f32| {
+            if to > from {
+                let t: String = qc[from..to].iter().collect();
+                draw_text(pm, &self.font, size, *x, top + asc, col, &t, max_w - (*x - tx));
+                *x += text_width(&self.font, size, &t);
+            }
+        };
+        for (a, b) in spans {
+            let (a, b) = (a.max(at).min(qc.len()), b.min(qc.len()));
+            seg(&mut pm, at, a, th.text, &mut x);
+            seg(&mut pm, a, b, th.primary, &mut x);
+            at = b.max(at);
+        }
+        seg(&mut pm, at, qc.len(), th.text, &mut x);
         let before: String = self.query.chars().take(self.cursor).collect();
         let cxp = tx + text_width(&self.font, size, &before);
         let ghost = self.ghost();
@@ -959,35 +1459,112 @@ impl App {
             pm.fill_rect(r, &paint(th.text_dim, 40), Transform::identity(), None);
         }
 
-        // results
+        // results / workspace list / completion popup
         let size = FONT_PX * sc;
         let (asc, lh) = metrics(&self.font, size);
         let rows = self.vis_rows();
-        let list_y = cy + HEADER_H + 7;
+        let list_y = cy + self.list_top();
         self.hits.clear();
-        let mut hits = vec![];
-        for (i, &ai) in self.results.iter().enumerate().skip(self.scroll).take(rows) {
-            let y = list_y + (i - self.scroll) as i32 * ROW_H;
-            hits.push((cx + 8, y, card_w - 16, ROW_H, i));
-            if i == self.selected {
-                fill(&mut pm, &rrect((cx + 8) as f32, y as f32 + 1.0, (card_w - 16) as f32, (ROW_H - 2) as f32, 6.0), tf, th.primary, 64);
+        let mut hits: Vec<(i32, i32, i32, i32, Hit)> = vec![];
+        let dim = [th.text_dim[0] / 2 + 13, th.text_dim[1] / 2 + 13, th.text_dim[2] / 2 + 13];
+        if let Some(ac) = &self.ac {
+            let history = ac.comp.kind == pickerdsl::CompKind::History;
+            let py0 = cy + HEADER_H + 4;
+            let prow = self.ac_rows();
+            let (pasc, plh) = metrics(&self.font, 12.0 * sc);
+            if ac.items.is_empty() && history {
+                draw_text(&mut pm, &self.font, 11.0 * sc, (cx + 24) as f32 * sc, py0 as f32 * sc + pasc + 4.0 * sc, th.text_dim, "no matching history", (card_w - 52) as f32 * sc);
             }
-            let app = &self.apps[ai];
-            let base = (y as f32 + (ROW_H as f32 - lh / sc) / 2.0) * sc + asc;
-            if let Some(ic) = self.icons.get(&app.icon) {
-                // rasterized at ICON_PX, drawn 20 logical px wide
-                let k = (20.0 * sc) / ICON_PX as f32;
-                let tf_i = Transform::from_row(k, 0.0, 0.0, k, (cx + 12) as f32 * sc, (y as f32 + 5.0) * sc);
-                let pp = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
-                pm.draw_pixmap(0, 0, ic.as_ref(), &pp, tf_i, None);
-            } else {
-                // not loaded (yet): a rounded chip with the initial
-                fill(&mut pm, &rrect((cx + 12) as f32, y as f32 + 5.0, 20.0, 20.0, 5.0), tf, th.text_dim, 40);
-                let initial: String = app.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-                let iw = text_width(&self.font, size, &initial);
-                draw_text(&mut pm, &self.font, size, (cx + 22) as f32 * sc - iw / 2.0, base, th.text_dim, &initial, 30.0 * sc);
+            for (i, item) in ac.items.iter().enumerate().skip(self.ac_scroll).take(prow) {
+                let y = py0 + (i - self.ac_scroll) as i32 * AC_ROW_H;
+                hits.push((cx + 8, y, card_w - 16, AC_ROW_H, Hit::Pop(i)));
+                let cur = i == ac.sel;
+                if cur {
+                    fill(&mut pm, &rrect((cx + 12) as f32, y as f32, (card_w - 24) as f32, AC_ROW_H as f32, 5.0), tf, th.primary, 46);
+                }
+                let (label, alias, desc) = if history { (item.clone(), String::new(), String::new()) } else { pickerdsl::row_info(&self.schema, ac.comp.kind, item) };
+                let base = (y as f32 + (AC_ROW_H as f32 - plh / sc) / 2.0) * sc + pasc;
+                let mut x = (cx + 22) as f32 * sc;
+                let room = (cx + card_w - 12) as f32 * sc;
+                draw_text(&mut pm, &self.font, 12.0 * sc, x, base, if cur { th.primary } else { th.text }, &label, room - x);
+                x += text_width(&self.font, 12.0 * sc, &label) + 8.0 * sc;
+                for t in [if alias.is_empty() { String::new() } else { format!("({alias})") }, desc] {
+                    if !t.is_empty() && x < room {
+                        draw_text(&mut pm, &self.font, 11.0 * sc, x, base, dim, &t, room - x);
+                        x += text_width(&self.font, 11.0 * sc, &t) + 8.0 * sc;
+                    }
+                }
             }
-            draw_text(&mut pm, &self.font, size, (cx + 40) as f32 * sc, base, th.text, &app.name, (card_w - 56) as f32 * sc);
+        } else {
+            if self.action.is_some() {
+                // column titles of the workspace table
+                let name_w = (card_w - 24) as f32 - WS_COL_ID - WS_COL_WIN - WS_COL_MON - WS_COL_APPS - 40.0;
+                let (hasc, hlh) = metrics(&self.font, 10.0 * sc);
+                let hb = ((cy + HEADER_H + 4) as f32 + (WS_HEAD_H as f32 - hlh / sc) / 2.0) * sc + hasc;
+                let mut x = (cx + 12) as f32;
+                for (t, w, right) in [("workspace", name_w, false), ("id", WS_COL_ID, true), ("windows", WS_COL_WIN, true), ("monitor", WS_COL_MON, false), ("apps", WS_COL_APPS, false)] {
+                    let tw = text_width(&self.font, 10.0 * sc, t) / sc;
+                    draw_text(&mut pm, &self.font, 10.0 * sc, (x + if right { (w - tw).max(0.0) } else { 0.0 }) * sc, hb, dim, t, w * sc);
+                    x += w + 10.0;
+                }
+            }
+            let entries = self.entries();
+            for (n, e) in entries.iter().enumerate().skip(self.scroll).take(rows) {
+                let y = list_y + (n - self.scroll) as i32 * ROW_H;
+                let base = (y as f32 + (ROW_H as f32 - lh / sc) / 2.0) * sc + asc;
+                match e {
+                    Entry::Head(di) => {
+                        let Disp::Head { depth, id, label, count, folded } = &self.disp[*di] else { continue };
+                        hits.push((cx + 8, y, card_w - 16, ROW_H, Hit::Head(id.clone())));
+                        let dx = 8 + *depth as i32 * 14;
+                        fill(&mut pm, &rrect((cx + dx) as f32, (y + ROW_H - 1) as f32, (card_w - dx - 8) as f32, 1.0, 0.0), tf, th.text_dim, 90);
+                        let text = format!("{} {}   {}{}", if *folded { "\u{25b8}" } else { "\u{25be}" }, label, count, if *folded { " (folded)" } else { "" });
+                        draw_text(&mut pm, &self.font, size, (cx + dx + 2) as f32 * sc, base + 3.0 * sc, th.text, &text, (card_w - dx - 12) as f32 * sc);
+                    }
+                    Entry::Ws(i) => {
+                        hits.push((cx + 8, y, card_w - 16, ROW_H, Hit::Item(*i)));
+                        if *i == self.selected {
+                            fill(&mut pm, &rrect((cx + 8) as f32, y as f32 + 1.0, (card_w - 16) as f32, (ROW_H - 2) as f32, 6.0), tf, th.primary, 64);
+                        }
+                        let r = &self.ws_rows[*i];
+                        let name_w = (card_w - 24) as f32 - WS_COL_ID - WS_COL_WIN - WS_COL_MON - WS_COL_APPS - 40.0;
+                        let mut x = (cx + 12) as f32;
+                        let cols = [
+                            (r.name.clone(), name_w, false, true),
+                            (if r.create { String::new() } else { r.id.map(|v| v.to_string()).unwrap_or_default() }, WS_COL_ID, true, false),
+                            (if r.cnt < 0 { String::new() } else { r.cnt.to_string() }, WS_COL_WIN, true, false),
+                            (r.mon.clone(), WS_COL_MON, false, false),
+                            (r.apps.clone(), WS_COL_APPS, false, false),
+                        ];
+                        for (t, w, right, hi) in cols {
+                            let tw = text_width(&self.font, size, &t) / sc;
+                            draw_text(&mut pm, &self.font, size, (x + if right { (w - tw).max(0.0) } else { 0.0 }) * sc, base, if hi { th.text } else { th.text_dim }, &t, w * sc);
+                            x += w + 10.0;
+                        }
+                    }
+                    Entry::App(pos) => {
+                        hits.push((cx + 8, y, card_w - 16, ROW_H, Hit::Item(*pos)));
+                        if *pos == self.selected {
+                            fill(&mut pm, &rrect((cx + 8) as f32, y as f32 + 1.0, (card_w - 16) as f32, (ROW_H - 2) as f32, 6.0), tf, th.primary, 64);
+                        }
+                        let app = &self.apps[self.results[*pos]];
+                        if let Some(ic) = self.icons.get(&app.icon) {
+                            // rasterized at ICON_PX, drawn 20 logical px wide
+                            let k = (20.0 * sc) / ICON_PX as f32;
+                            let tf_i = Transform::from_row(k, 0.0, 0.0, k, (cx + 12) as f32 * sc, (y as f32 + 5.0) * sc);
+                            let pp = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+                            pm.draw_pixmap(0, 0, ic.as_ref(), &pp, tf_i, None);
+                        } else {
+                            // not loaded (yet): a rounded chip with the initial
+                            fill(&mut pm, &rrect((cx + 12) as f32, y as f32 + 5.0, 20.0, 20.0, 5.0), tf, th.text_dim, 40);
+                            let initial: String = app.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                            let iw = text_width(&self.font, size, &initial);
+                            draw_text(&mut pm, &self.font, size, (cx + 22) as f32 * sc - iw / 2.0, base, th.text_dim, &initial, 30.0 * sc);
+                        }
+                        draw_text(&mut pm, &self.font, size, (cx + 40) as f32 * sc, base, th.text, &app.name, (card_w - 56) as f32 * sc);
+                    }
+                }
+            }
         }
         self.hits = hits;
 
@@ -1011,8 +1588,8 @@ impl App {
         }
     }
 
-    fn row_at(&self, x: f64, y: f64) -> Option<usize> {
-        self.hits.iter().find(|(rx, ry, rw, rh, _)| x >= *rx as f64 && y >= *ry as f64 && x < (*rx + *rw) as f64 && y < (*ry + *rh) as f64).map(|h| h.4)
+    fn hit_at(&self, x: f64, y: f64) -> Option<&Hit> {
+        self.hits.iter().find(|(rx, ry, rw, rh, _)| x >= *rx as f64 && y >= *ry as f64 && x < (*rx + *rw) as f64 && y < (*ry + *rh) as f64).map(|h| &h.4)
     }
 
     fn pointer_moved(&mut self, x: f64, y: f64) -> bool {
@@ -1112,37 +1689,65 @@ impl KeyboardHandler for App {
 
 impl PointerHandler for App {
     fn pointer_frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
-        if self.handing_off {
-            return;
-        }
         for ev in events {
             let (x, y) = ev.position;
             match ev.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     if self.pointer_moved(x, y) {
-                        if let Some(pos) = self.row_at(x, y) {
-                            if self.selected != pos {
-                                self.selected = pos;
-                                self.dirty = true;
+                        match self.hit_at(x, y) {
+                            Some(Hit::Item(pos)) => {
+                                let pos = *pos;
+                                if self.selected != pos {
+                                    self.selected = pos;
+                                    self.dirty = true;
+                                }
                             }
+                            Some(Hit::Pop(i)) => {
+                                let i = *i;
+                                if let Some(ac) = self.ac.as_mut() {
+                                    if ac.sel != i {
+                                        ac.sel = i;
+                                        self.dirty = true;
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
-                PointerEventKind::Press { button, .. } if button == 0x110 => {
-                    if let Some(pos) = self.row_at(x, y) {
+                PointerEventKind::Press { button, .. } if button == 0x110 => match self.hit_at(x, y) {
+                    Some(Hit::Item(pos)) => {
+                        let pos = *pos;
                         self.launch(pos);
-                    } else {
+                    }
+                    Some(Hit::Head(id)) => {
+                        let id = id.clone();
+                        self.toggle_fold(&id);
+                    }
+                    Some(Hit::Pop(i)) => {
+                        let i = *i;
+                        if let Some(ac) = self.ac.as_mut() {
+                            ac.sel = i;
+                        }
+                        self.ac_accept();
+                    }
+                    None => {
                         let (cx, cy, cw, ch) = self.card_rect;
                         if !(x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64) {
                             self.exit = true; // click outside the card closes
                         }
                     }
-                }
+                },
                 PointerEventKind::Axis { vertical, .. } => {
                     let step = if vertical.discrete != 0 { vertical.discrete.signum() } else { vertical.absolute.signum() as i32 };
                     if step != 0 {
-                        let max = self.results.len().saturating_sub(self.vis_rows());
-                        self.scroll = (self.scroll as i32 + step).clamp(0, max as i32) as usize;
+                        if self.ac.is_some() {
+                            let max = self.ac.as_ref().map_or(0, |a| a.items.len()).saturating_sub(self.ac_rows());
+                            self.ac_scroll = (self.ac_scroll as i32 + step).clamp(0, max as i32) as usize;
+                        } else {
+                            let max = self.entries().len().saturating_sub(self.vis_rows());
+                            self.scroll = (self.scroll as i32 + step).clamp(0, max as i32) as usize;
+                        }
                         self.dirty = true;
                     }
                 }
@@ -1230,11 +1835,6 @@ fn main() {
     let _ = std::fs::write(pid_path(), std::process::id().to_string());
     let mut pre: Vec<String> = vec![];
 
-    // Hyprland socket2: know when the Quickshell launcher has mapped after a handoff
-    let events = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
-        .ok()
-        .and_then(|sig| UnixStream::connect(runtime_dir().join("hypr").join(sig).join(".socket2.sock")).ok());
-
     let conn = Connection::connect_to_env().expect("wayland");
     let (globals, event_queue) = registry_queue_init(&conn).expect("registry");
     pre.push(format!("+{:7.1}ms wayland connected, globals listed", t0.elapsed().as_secs_f64() * 1000.0));
@@ -1270,16 +1870,11 @@ fn main() {
             }
         })
         .expect("channel");
-    if let Some(stream) = events {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                if line == "openlayer>>quickshell-launcher" && tx.send(Msg::QsMapped).is_err() {
-                    break;
-                }
-            }
-        });
-    }
+    // Hyprland state for the workspace actions, off the main thread
+    let tx_h = tx.clone();
+    std::thread::spawn(move || {
+        let _ = tx_h.send(Msg::Hypr(fetch_hypr()));
+    });
     // desktop entries + launch history, off the main thread: the card is usable before the list fills
     let tx_scan = tx.clone();
     std::thread::spawn(move || {
@@ -1349,8 +1944,20 @@ fn main() {
         results: vec![],
         selected: 0,
         scroll: 0,
-        handing_off: false,
-        pending_launch: None,
+        schema: make_schema(),
+        ac: None,
+        ac_active: false,
+        ac_scroll: 0,
+        recalling: false,
+        group: None,
+        group_raw: String::new(),
+        collapsed: HashSet::new(),
+        disp: vec![],
+        today: String::new(),
+        action: None,
+        ws_rows: vec![],
+        hypr: HyprInfo::default(),
+        pending: None,
         hover_origin: None,
         hover_armed: false,
         hits: vec![],
@@ -1366,29 +1973,39 @@ fn main() {
     }
     app.note("exit");
     let query = app.query.clone();
-    let launch = app.pending_launch.take().map(|i| {
-        let a = &app.apps[i];
-        (a.id.clone(), a.name.clone(), clean_exec(&a.exec), a.terminal, a.path.clone())
+    let pending = app.pending.take().map(|p| match p {
+        Pending::Launch(i) => {
+            let a = &app.apps[i];
+            (Some((a.id.clone(), a.name.clone(), clean_exec(&a.exec), a.terminal, a.path.clone())), None)
+        }
+        other => (None, Some(other)),
     });
     let mut log = std::mem::take(&mut app.log);
     // destroy the layer surface and let the compositor process it before the new window maps
     drop(app);
     let _ = conn.roundtrip();
     let _ = std::fs::remove_file(pid_path());
-    if let Some((id, name, exec, terminal, path)) = launch {
-        let cmd = if terminal { format!("alacritty -e sh -c '{}'", exec.replace('\'', "'\\''")) } else { exec };
+    if let Some((Some((id, name, exec, terminal, path)), _)) = &pending {
+        let cmd = if *terminal { format!("alacritty -e sh -c '{}'", exec.replace('\'', "'\\''")) } else { exec.clone() };
         let mut c = Command::new("sh");
         c.arg("-c").arg(&cmd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
-        if let Some(p) = path.filter(|p| Path::new(p).is_dir()) {
+        if let Some(p) = path.as_ref().filter(|p| Path::new(p.as_str()).is_dir()) {
             c.current_dir(p);
         }
         let ok = c.spawn().is_ok();
-        // counted in Quickshell's frecency file through its IPC (one writer)
-        let _ = Command::new("qs").args(["ipc", "call", "launcher", "bump", &id]).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-        if !query.trim().is_empty() {
-            let _ = Command::new("qs").args(["ipc", "call", "launcher", "recordQuery", query.trim()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-        }
+        bump_launch(id);
+        record_query(&query);
         log.push(format!("+{:7.1}ms launched {name} ({id}) ok={ok}", t0.elapsed().as_secs_f64() * 1000.0));
+    }
+    if let Some((_, Some(action))) = pending {
+        record_query(&query);
+        match action {
+            Pending::MoveToWorkspace(row, addr) if !addr.is_empty() => run_repl(&move_to_workspace_lua(&addr, &row)),
+            Pending::MoveWorkspaceAfter(row, cur) if cur >= 0 => run_repl(&move_workspace_after_lua(&row, cur)),
+            Pending::AddWorkspace(target, cur) => run_repl(&add_workspace_lua(&target, cur)),
+            _ => {}
+        }
+        log.push(format!("+{:7.1}ms workspace action done", t0.elapsed().as_secs_f64() * 1000.0));
     }
     write_log(&log);
 }
@@ -1431,5 +2048,48 @@ mod tests {
     fn history_file_loads() {
         let h = load_history();
         eprintln!("{} history entries", h.len());
+    }
+
+    #[test]
+    fn workspace_actions_parse() {
+        assert!(matches!(action_match("/move-to-workspace"), Some((ActionKind::Window, a)) if a.is_empty()));
+        assert!(matches!(action_match("  /move-workspace  3"), Some((ActionKind::Workspace, a)) if a == "3"));
+        assert!(action_match("/move-to-workspaces").is_none());
+        assert!(action_match("firefox /move-workspace").is_none());
+    }
+
+    #[test]
+    fn lua_builders_embed_user_text_safely() {
+        let row = WsRow { name: "x".into(), target: "a\"b".into(), id: None, cnt: -1, mon: String::new(), apps: String::new(), create: true };
+        let lua = move_to_workspace_lua("0xabc", &row);
+        assert!(lua.contains("name = \"a\\\"b\"") && lua.contains("== \"abc\""), "{lua}");
+        assert!(!lua.contains('\n'));
+        assert!(add_workspace_lua("", 5).contains("hl.get_workspace(5)"));
+        assert!(move_workspace_after_lua(&WsRow { id: Some(7), ..row }, 5).contains("local id = 7 + 1"));
+    }
+
+    #[test]
+    fn dsl_filters_desktop_entries() {
+        let sc = make_schema();
+        let mk = |name: &str, cats: &[&str]| DApp {
+            id: name.into(), name: name.into(), generic: String::new(), comment: String::new(),
+            categories: cats.iter().map(|s| s.to_string()).collect(), keywords: vec![], icon: String::new(),
+            exec: name.to_lowercase(), terminal: false, path: None,
+        };
+        let apps = vec![mk("Blender", &["Graphics", "3DGraphics"]), mk("Firefox", &["Network"]), mk("Gimp", &["Graphics"])];
+        let src = AppSrc(&apps);
+        let rows = |q: &str| pickerdsl::select_rows(&sc, &pickerdsl::parse(&sc, q), &src, apps.len());
+        assert_eq!(rows("//cat graphics"), vec![0, 2]);
+        assert_eq!(rows("//cat 3dgraphics"), vec![0]);
+        assert_eq!(rows("!//cat graphics"), vec![1]);
+        assert_eq!(rows("/s/name/asc //cat graphics"), vec![0, 2]);
+        assert_eq!(rows("/ft/name blender"), vec![0]); // column verbs are inert here
+    }
+
+    #[test]
+    fn query_history_record_semantics() {
+        // same normalisation as LauncherQueryHistory.record: whitespace reduced, duplicate floats to the end
+        let norm = |q: &str| q.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(norm("  /s/name   asc "), "/s/name asc");
     }
 }
