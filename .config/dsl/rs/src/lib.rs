@@ -5,7 +5,9 @@
 #[path = "../../group.rs"]
 pub mod group;
 
+pub mod completion;
 pub mod engine;
+pub use completion::*;
 pub use engine::*;
 
 #[derive(Clone, Debug, PartialEq)]
