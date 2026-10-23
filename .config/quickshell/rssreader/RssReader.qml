@@ -145,7 +145,24 @@ PanelWindow {
         return false;
     }
 
-    readonly property var view: {
+    // /group: sections folded by clicking a header (or Ctrl+G on the selected article); reset when the query changes
+    property var groupCollapsed: ({})
+    readonly property var groupParsed: QueryDsl.parseGroup(root.parsed.groupRaw, root.typeNames)
+    readonly property var groupView: root.groupParsed
+        ? { display: QueryDsl.groupDisplay(root._viewRows, root.groupParsed, (it, f) => String(root._fieldVals(it, f)[0] || ""), root.groupCollapsed) }
+        : null
+    onGroupParsedChanged: root.groupCollapsed = ({})
+    function toggleGroup(id) {
+        const c = Object.assign({}, root.groupCollapsed);
+        if (c[id]) delete c[id]; else c[id] = true;
+        root.groupCollapsed = c;
+    }
+    // what the list model shows (headers included) and each entry's position in `view`
+    readonly property var groupModel: root.groupView ? QueryDsl.groupModel([], root.groupView.display) : null
+
+    readonly property var view: root.groupView ? root.groupView.display.rows : root._viewRows
+
+    readonly property var _viewRows: {
         RssSvc.readRevision; // dependency
         root.parsed; // dependency
         root.keptKeys; // dependency
@@ -522,7 +539,7 @@ PanelWindow {
     }
     function move(d) {
         root.selected = Math.max(0, Math.min(root.view.length - 1, root.selected + d));
-        listView.positionViewAtIndex(root.selected, ListView.Contain);
+        listView.positionViewAtIndex(root.groupModel ? root.groupModel.vOf.indexOf(root.selected) : root.selected, ListView.Contain);
         dwell.restart();
         // Moving the selection after typing counts as "acted on" too, not
         // just a full accept - record() itself no-ops on an empty query,
@@ -601,10 +618,16 @@ PanelWindow {
                 if (!event.isAutoRepeat) keyScope._startNavRepeat(() => root.move(1));
             } else if (k === Qt.Key_K || k === Qt.Key_Up) {
                 if (!event.isAutoRepeat) keyScope._startNavRepeat(() => root.move(-1));
+            } else if (k === Qt.Key_G && (event.modifiers & Qt.ControlModifier)) {
+                // fold / unfold the /group section of the selected article
+                if (root.groupView) {
+                    const gid = QueryDsl.groupOfRow(root.groupView.display, root.selected);
+                    if (gid) root.toggleGroup(gid);
+                }
             } else if (k === Qt.Key_G) {
                 root.selected = (event.modifiers & Qt.ShiftModifier)
                     ? root.view.length - 1 : 0;
-                listView.positionViewAtIndex(root.selected, ListView.Contain);
+                listView.positionViewAtIndex(root.groupModel ? root.groupModel.vOf.indexOf(root.selected) : root.selected, ListView.Contain);
                 dwell.restart();
             } else if (k === Qt.Key_PageDown) {
                 if (!event.isAutoRepeat) keyScope._startNavRepeat(() => root.move(10));
@@ -1049,8 +1072,8 @@ PanelWindow {
                     width: Math.round(parent.width * 0.38)
                     height: parent.height
                     clip: true
-                    model: root.view
-                    currentIndex: root.selected
+                    model: root.groupModel ? root.groupModel.model : root.view
+                    currentIndex: root.groupModel ? root.groupModel.vOf.indexOf(root.selected) : root.selected
                     boundsBehavior: Flickable.StopAtBounds
                     // Faster wheel scrolling than Qt's default step.
                     WheelHandler {
@@ -1065,9 +1088,12 @@ PanelWindow {
                         id: articleRow
                         required property var modelData
                         required property int index
+                        // position in root.view (a /group header has none, and is never selected)
+                        readonly property int logical: root.groupModel ? root.groupModel.vOf[index] : index
+                        readonly property bool isGroup: !!modelData.grp
                         readonly property bool isRead: {
                             RssSvc.readRevision;
-                            RssSvc.isRead(modelData.key);
+                            return articleRow.isGroup ? true : RssSvc.isRead(modelData.key);
                         }
                         // A field actively `/fv field:value`-scoped is shown
                         // as a third line even though this reader has no
@@ -1076,7 +1102,7 @@ PanelWindow {
                         // already on the row unconditionally above.
                         readonly property string extraText: {
                             const fields = root.referencedFields.filter(f => root._alwaysVisibleFields.indexOf(f) < 0);
-                            if (fields.length === 0) return "";
+                            if (articleRow.isGroup || fields.length === 0) return "";
                             const parts = [];
                             for (const f of fields)
                                 for (const v of root._fieldVals(modelData, f)) {
@@ -1086,17 +1112,35 @@ PanelWindow {
                             return parts.join("  ·  ");
                         }
                         width: listView.width
-                        height: articleRow.extraText ? 72 : 58
-                        color: index === root.selected
+                        height: articleRow.isGroup ? 28 : articleRow.extraText ? 72 : 58
+                        color: articleRow.isGroup ? "transparent" : articleRow.logical === root.selected
                             ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
                             : "transparent"
+
+                        Item { // /group section header
+                            visible: articleRow.isGroup
+                            anchors.fill: parent
+                            Rectangle { x: 8 + (articleRow.modelData.depth || 0) * 14; width: parent.width - x - 8; height: 1; anchors.bottom: parent.bottom; color: Theme.textDim; opacity: 0.35 }
+                            Text {
+                                x: 10 + (articleRow.modelData.depth || 0) * 14
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: 3
+                                text: (articleRow.modelData.folded ? "▸ " : "▾ ") + (articleRow.modelData.label || "") + "   " + (articleRow.modelData.count || 0) + (articleRow.modelData.folded ? " (folded)" : "")
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 2
+                                font.bold: true
+                                color: Theme.text
+                                opacity: 0.85
+                            }
+                            MouseArea { anchors.fill: parent; onClicked: root.toggleGroup(articleRow.modelData.id) }
+                        }
 
                         Rectangle { // unread dot
                             x: 8
                             anchors.verticalCenter: parent.verticalCenter
                             width: 6; height: 6; radius: 3
                             color: Theme.orange
-                            visible: !parent.isRead
+                            visible: !articleRow.isGroup && !parent.isRead
                         }
 
                         Image {
@@ -1107,11 +1151,12 @@ PanelWindow {
                             sourceSize.width: 36
                             fillMode: Image.PreserveAspectFit
                             asynchronous: true
-                            source: modelData.iconUrl
-                            visible: status === Image.Ready
+                            source: articleRow.isGroup ? "" : modelData.iconUrl
+                            visible: !articleRow.isGroup && status === Image.Ready
                         }
 
                         Column {
+                            visible: !articleRow.isGroup
                             x: 46
                             width: parent.width - 56
                             anchors.verticalCenter: parent.verticalCenter
@@ -1150,8 +1195,9 @@ PanelWindow {
 
                         MouseArea {
                             anchors.fill: parent
+                            enabled: !articleRow.isGroup
                             onClicked: {
-                                root.selected = index;
+                                root.selected = articleRow.logical;
                                 root.keep(modelData.key);
                                 RssSvc.markRead(modelData.key);
                             }

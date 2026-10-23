@@ -405,10 +405,26 @@ PanelWindow {
     // ---- query -> results (ClipboardQueryDsl.parse's bare-words-join-into-
     // one-phrase semantics, picker.rs's own pre-DSL behaviour) -----------
     property var parsed: ClipboardQueryDsl.parse(query.text, root.fieldNames)
-    readonly property var results: {
+    readonly property var _resultsRaw: {
         const filtered = root._entries.filter(e => ClipboardQueryDsl.matches(e, root.parsed));
         return ClipboardQueryDsl.applySort(filtered, root.parsed, root.fieldNames);
     }
+    // /group: sections folded by clicking a header (or Ctrl+G on the selected row); reset when the query changes
+    property var groupCollapsed: ({})
+    readonly property var groupParsed: ClipboardQueryDsl.parseGroup(root.parsed.groupRaw, root.fieldNames)
+    readonly property var groupView: root.groupParsed
+        ? { display: ClipboardQueryDsl.groupDisplay(root._resultsRaw, root.groupParsed, (e, f) => String((e.fields || {})[f] === undefined ? "" : e.fields[f]), root.groupCollapsed) }
+        : null
+    readonly property var groupModel: root.groupView ? ClipboardQueryDsl.groupModel([], root.groupView.display) : null
+    onGroupParsedChanged: root.groupCollapsed = ({})
+    function toggleGroup(id) {
+        const c = Object.assign({}, root.groupCollapsed);
+        if (c[id]) delete c[id]; else c[id] = true;
+        root.groupCollapsed = c;
+    }
+    // the ListView index of the row at position v of `results`
+    function _modelIdx(v) { return root.groupModel ? root.groupModel.vOf.indexOf(v) : v; }
+    readonly property var results: root.groupView ? root.groupView.display.rows : root._resultsRaw
 
     // Selection tracked by entry id, not index -- a row filtered out of view
     // clears the selection instead of silently re-pointing at whatever now
@@ -434,6 +450,7 @@ PanelWindow {
     // below the window (reported 2026-09-19). So position roughly first, then,
     // once the delegate exists, nudge contentY by its real geometry.
     function _reveal(idx) {
+        idx = root._modelIdx(idx);
         list.positionViewAtIndex(idx, ListView.Contain);
         Qt.callLater(() => {
             const it = list.itemAtIndex(idx);
@@ -712,6 +729,12 @@ PanelWindow {
                 Keys.onPressed: event => {
                     const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
 
+                    if (ctrl && event.key === Qt.Key_G && root.groupView) {
+                        // fold / unfold the /group section of the selected row
+                        const gid = ClipboardQueryDsl.groupOfRow(root.groupView.display, root.selectedIndex);
+                        if (gid) root.toggleGroup(gid);
+                        event.accepted = true; return;
+                    }
                     if (root.acItems.length > 0) {
                         if (ctrl && event.key === Qt.Key_J) {
                             if (!event.isAutoRepeat) _startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
@@ -975,7 +998,7 @@ PanelWindow {
             width: parent.width
             height: Math.max(0, Math.min(contentHeight, box._maxTotal - header.height - (ac.visible ? ac.height : 0) - (colHeader.visible ? colHeader.height : 0) - box.bottomPad))
             clip: true
-            model: root.results
+            model: root.groupModel ? root.groupModel.model : root.results
             boundsBehavior: Flickable.StopAtBounds
             topMargin: 4
             bottomMargin: 4
@@ -984,13 +1007,35 @@ PanelWindow {
                 id: row
                 required property var modelData
                 required property int index
+                // position in root.results (a /group header has none, and is never selected)
+                readonly property int logical: root.groupModel ? root.groupModel.vOf[row.index] : row.index
+                readonly property bool isGroup: !!modelData.grp
                 width: list.width
-                height: col.implicitHeight + 4
-                color: row.index === root.selectedIndex
+                height: row.isGroup ? 28 : col.implicitHeight + 4
+                color: row.isGroup ? "transparent" : row.logical === root.selectedIndex
                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16) : "transparent"
+
+                Item {
+                    visible: row.isGroup
+                    anchors.fill: parent
+                    Rectangle { x: 8 + (row.modelData.depth || 0) * 14; width: parent.width - x - 8; height: 1; anchors.bottom: parent.bottom; color: Theme.textDim; opacity: 0.35 }
+                    Text {
+                        x: 10 + (row.modelData.depth || 0) * 14
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 3
+                        text: (row.modelData.folded ? "▸ " : "▾ ") + (row.modelData.label || "") + "   " + (row.modelData.count || 0) + (row.modelData.folded ? " (folded)" : "")
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 2
+                        font.bold: true
+                        color: Theme.text
+                        opacity: 0.85
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: root.toggleGroup(row.modelData.id) }
+                }
 
                 Column {
                     id: col
+                    visible: !row.isGroup
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.leftMargin: 8
@@ -1035,7 +1080,7 @@ PanelWindow {
                         AnimatedImage {
                             anchors.fill: parent
                             readonly property string _path: root._animPaths[row.modelData.id] || ""
-                            source: (row.index === root.selectedIndex && _path) ? ("file://" + _path) : ""
+                            source: (row.logical === root.selectedIndex && _path) ? ("file://" + _path) : ""
                             visible: source != "" && status === Image.Ready
                             playing: visible
                             fillMode: Image.PreserveAspectFit
@@ -1109,10 +1154,11 @@ PanelWindow {
 
                 MouseArea {
                     anchors.fill: parent
+                    enabled: !row.isGroup
                     hoverEnabled: true
                     id: rowHover
                     onPositionChanged: mouse => { if (root._pointerMoved(rowHover, mouse)) root.selectedId = row.modelData.id; }
-                    onClicked: root.activate(row.index)
+                    onClicked: root.activate(row.logical)
                 }
             }
         }
