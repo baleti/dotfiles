@@ -153,9 +153,9 @@ hl.on("hyprland.start", function()
     -- hl.exec_cmd("waybar")
     -- quickshell itself moved to a systemd --user unit (2026-10-04, same
     -- move notifyd/sysmond made 2026-09-13) -- see ~/.config/systemd/user/
-    -- quickshell.service for the LD_PRELOAD=mlockself env (still no `-d`:
-    -- daemonizing forks, and mlock doesn't survive a fork; Type=simple
-    -- doesn't fork either, so this is safe) and Restart=always. Root cause
+    -- quickshell.service (Restart=always; no `-d`, Type=simple does not
+    -- fork). The mlockself LD_PRELOAD pin it once had was removed 2026-10-23:
+    -- alt-tab no longer runs inside Quickshell. Root cause
     -- this closes: restarting `qs -n` by hand from any shell that isn't a
     -- child of Hyprland (ssh, tmux, a Claude Code session, ...) never had
     -- HYPRLAND_INSTANCE_SIGNATURE, so the bar's workspace pill came up
