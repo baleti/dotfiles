@@ -1,11 +1,11 @@
 # quickshell bar
 
 `~/.config/quickshell/` — a from-scratch QML status bar, run as `qs -n`
-(no `-d`: daemonizing forks, and the LD_PRELOAD mlock below doesn't
-survive a fork) via the `quickshell.service` systemd `--user` unit
-(`~/.config/systemd/user/quickshell.service`, `Restart=always`,
-`Environment=LD_PRELOAD=%h/.config/hypr/mlockself/mlockself.so` to pin
-its pages in RAM — see `mlockself/mlockself.c`). Moved off a bare
+(no `-d`: `Type=simple` does not fork) via the `quickshell.service`
+systemd `--user` unit (`~/.config/systemd/user/quickshell.service`,
+`Restart=always`). It once pinned its pages in RAM with an `LD_PRELOAD`
+shim (`mlockself`) for alt-tab's cold start; removed 2026-10-23 when
+alt-tab became its own native process (~2 GB locked for no benefit). Moved off a bare
 `hl.exec_cmd` autostart line in `hyprland.lua` on 2026-10-04, same move
 notifyd/sysmond made 2026-09-13: a *manual* restart from any shell that
 isn't a child of Hyprland (ssh, tmux, a Claude Code session, ...) never
