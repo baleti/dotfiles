@@ -657,6 +657,8 @@ struct App {
     gcollapsed: std::collections::HashSet<String>,
     /// /g/.../collapse has already folded the sections of this query's layout
     gseeded: bool,
+    /// a new query's metadata has not arrived yet: its layout starts with fresh fold state
+    gfresh: bool,
     gnote: String,
     /// per group id: (bytes, pages) summed over every row under the header, nested groups included
     gagg: HashMap<String, (u64, u64)>,
@@ -1662,6 +1664,7 @@ impl App {
             gslot_of_v: Vec::new(),
             gcollapsed: Default::default(),
             gseeded: false,
+            gfresh: false,
             gnote: String::new(),
             gagg: HashMap::new(),
             gdirs: HashMap::new(),
@@ -1741,13 +1744,18 @@ impl App {
     }
 
     fn send_query(&mut self) {
+        let was_grouped = self.group_active();     // asked before the seq moves on
         self.seq += 1;
         let (rest, sort) = parse_sort(&self.query);
         let (rest, group) = extract_group_q(&rest);
         self.group = group;
-        self.gmeta_seq = 0;                       // the old layout goes; the plain list shows until the new metadata arrives
-        self.gcollapsed.clear();
-        self.gseeded = false;
+        // grouping carries on from one query to the next (typing more): the old layout, folds included, stays up
+        // until the new metadata replaces it, so the view does not flash the plain list. Otherwise the plain list
+        // shows until the metadata arrives.
+        let keep = was_grouped && self.group.is_some();
+        self.gmeta_seq = if keep { self.seq } else { 0 };
+        self.gfresh = true;
+        if !keep { self.gcollapsed.clear(); self.gseeded = false; }
         self.gnote.clear();
         self.req_q = rest;
         self.req_sort = sort.keys.join(",");
@@ -2039,6 +2047,7 @@ impl App {
                     self.gmeta = r.results;
                     self.gdirs = r.dirs;
                     self.gmeta_seq = self.seq;
+                    if self.gfresh { self.gfresh = false; self.gcollapsed.clear(); self.gseeded = false; }
                     self.rebuild_group();
                     self.scroll_pending = true;
                 }
