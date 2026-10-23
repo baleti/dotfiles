@@ -77,6 +77,7 @@ type Hist = HashMap<String, (u32, i64)>; // id -> (count, last unix seconds)
 enum Msg {
     Apps { apps: Vec<DApp>, hist: Hist, ms: f64 },
     Icon { name: String, w: u32, h: u32, data: Vec<u8> },
+    Icons(Vec<(String, Vec<u8>)>),
     QHistory(Vec<String>),
     Hypr(HyprInfo),
 }
@@ -491,12 +492,16 @@ fn resolve_icons(names: &[String]) -> HashMap<String, String> {
         std::fs::read_to_string(icon_cache_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let missing: Vec<&String> = names
         .iter()
-        .filter(|n| !n.starts_with('/') && !cache.get(*n).is_some_and(|p| Path::new(p).exists()))
+        .filter(|n| !n.starts_with('/') && !cache.get(*n).is_some_and(|p| p.is_empty() || Path::new(p).exists()))
         .collect();
     if !missing.is_empty() {
         let out = Command::new("python3").arg(home().join(".config/quickshell/scripts/resolve-icons.py")).args(&missing).stderr(Stdio::null()).output();
         if let Ok(o) = out {
             if let Ok(found) = serde_json::from_slice::<HashMap<String, String>>(&o.stdout) {
+                // names that resolve to nothing are remembered too (""), so they never respawn the script
+                for n in &missing {
+                    cache.entry((*n).clone()).or_default();
+                }
                 cache.extend(found);
                 let _ = std::fs::create_dir_all(home().join(".cache/launcher-ui"));
                 let _ = std::fs::write(icon_cache_path(), serde_json::to_string(&cache).unwrap_or_default());
@@ -513,18 +518,37 @@ fn resolve_icons(names: &[String]) -> HashMap<String, String> {
 
 /// load_icon() through an on-disk raster cache: raw premultiplied RGBA per icon, reused while it is
 /// newer than the source file, so a launch reads ~9 KB per icon instead of decoding PNG/SVG again.
+fn icon_key(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
+}
+
+fn raster_dir() -> PathBuf {
+    home().join(".cache/launcher-ui/raster")
+}
+
+/// Every cached raster, read in one go at start (before the desktop entries are even scanned), so
+/// the first frame that shows rows already has their icons.
+fn preload_rasters() -> Vec<(String, Vec<u8>)> {
+    let suffix = format!(".{ICON_PX}.rgba");
+    let Ok(rd) = std::fs::read_dir(raster_dir()) else { return vec![] };
+    rd.filter_map(|e| {
+        let e = e.ok()?;
+        let name = e.file_name().to_string_lossy().to_string();
+        let key = name.strip_suffix(&suffix)?.to_string();
+        let d = std::fs::read(e.path()).ok().filter(|d| d.len() == (ICON_PX * ICON_PX * 4) as usize)?;
+        Some((key, d))
+    })
+    .collect()
+}
+
+/// load_icon() through an on-disk raster cache: raw premultiplied RGBA per icon, reused while it is
+/// newer than the source file. Returns the pixels only when they were (re)decoded just now; an
+/// up-to-date raster was already delivered by preload_rasters().
 fn cached_icon(name: &str, path: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let key: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect();
-    let file = home().join(".cache/launcher-ui/raster").join(format!("{key}.{ICON_PX}.rgba"));
+    let file = raster_dir().join(format!("{}.{ICON_PX}.rgba", icon_key(name)));
     let src_m = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
-    if let Ok(m) = std::fs::metadata(&file).and_then(|m| m.modified()) {
-        if m >= src_m {
-            if let Ok(d) = std::fs::read(&file) {
-                if d.len() == (ICON_PX * ICON_PX * 4) as usize {
-                    return Some((ICON_PX, ICON_PX, d));
-                }
-            }
-        }
+    if std::fs::metadata(&file).and_then(|m| m.modified()).is_ok_and(|m| m >= src_m) {
+        return None;
     }
     let (w, h, data) = load_icon(path)?;
     let _ = std::fs::create_dir_all(file.parent()?);
@@ -784,6 +808,7 @@ struct App {
     walked: bool,       // Down walked the results: Up walks them back before it recalls history
     schema: pickerdsl::Schema,
     ac: Option<Ac>,
+    ac_multi: Option<pickerdsl::Completion>, // Ctrl+Space AND-narrowing: the completion it began on
     ac_active: bool,
     ac_scroll: usize,
     recalling: bool,
@@ -1021,6 +1046,7 @@ impl App {
     // ---- completion / history popup (same behaviour as winswitch-ui) ----
 
     fn hide_ac(&mut self) {
+        self.ac_multi = None;
         self.ac = None;
         self.ac_active = false;
         self.ac_scroll = 0;
@@ -1036,6 +1062,14 @@ impl App {
         if ac.comp.kind == pickerdsl::CompKind::History {
             let items = pickerdsl::history_candidates(&self.qhist, &self.query);
             self.ac = Some(Ac { comp: ac.comp.clone(), items, sel: 0 });
+        } else if let Some(base) = self.ac_multi.clone() {
+            match pickerdsl::multi_candidates(&self.schema, &self.query, &base, &AppSrc(&self.apps), self.apps.len()) {
+                Some((comp, items)) => self.ac = if items.is_empty() { None } else { Some(Ac { comp, items, sel: 0 }) },
+                None => {
+                    self.ac_multi = None; // edited back past the frozen start: ordinary completion again
+                    return self.ac_recompute();
+                }
+            }
         } else if let Some(comp) = pickerdsl::completion_context(&self.schema, &self.query) {
             let items = self.ac_candidates(&comp);
             self.ac = if items.is_empty() { None } else { Some(Ac { comp, items, sel: 0 }) };
@@ -1088,6 +1122,7 @@ impl App {
         let Some(ac) = self.ac.take() else { return };
         let Some(chosen) = ac.items.get(ac.sel) else { return };
         let q = pickerdsl::accept(&self.query, &ac.comp, chosen);
+        self.ac_multi = None;
         self.ac_active = false;
         self.ac_scroll = 0;
         let c = q.chars().count();
@@ -1283,6 +1318,16 @@ impl App {
                     self.trigger_completion();
                 }
             }
+            Keysym::space if popup && self.ctrl => {
+                // AND-narrow instead of accept: the space starts a further substring
+                let comp = self.ac.as_ref().map(|a| a.comp.clone());
+                if let Some(c) = comp.filter(|c| c.kind != pickerdsl::CompKind::History) {
+                    if self.ac_multi.is_none() {
+                        self.ac_multi = Some(c);
+                    }
+                    self.insert(" ");
+                }
+            }
             Keysym::space if popup && !self.ctrl => self.ac_accept(),
             Keysym::space if self.ctrl && !popup => self.trigger_completion(),
             Keysym::Page_Down if popup => self.ac_move(self.ac_rows() as i32, false),
@@ -1364,10 +1409,20 @@ impl App {
                 self.hist = hist;
                 self.refilter();
             }
+            Msg::Icons(list) => {
+                if let Some(size) = tiny_skia::IntSize::from_wh(ICON_PX, ICON_PX) {
+                    for (key, data) in list {
+                        if let Some(pm) = Pixmap::from_vec(data, size) {
+                            self.icons.insert(key, pm);
+                        }
+                    }
+                }
+                self.dirty = true;
+            }
             Msg::Icon { name, w, h, data } => {
                 if let Some(size) = tiny_skia::IntSize::from_wh(w, h) {
                     if let Some(pm) = Pixmap::from_vec(data, size) {
-                        self.icons.insert(name, pm);
+                        self.icons.insert(icon_key(&name), pm);
                         self.dirty = true;
                     }
                 }
@@ -1548,7 +1603,7 @@ impl App {
                             fill(&mut pm, &rrect((cx + 8) as f32, y as f32 + 1.0, (card_w - 16) as f32, (ROW_H - 2) as f32, 6.0), tf, th.primary, 64);
                         }
                         let app = &self.apps[self.results[*pos]];
-                        if let Some(ic) = self.icons.get(&app.icon) {
+                        if let Some(ic) = self.icons.get(&icon_key(&app.icon)) {
                             // rasterized at ICON_PX, drawn 20 logical px wide
                             let k = (20.0 * sc) / ICON_PX as f32;
                             let tf_i = Transform::from_row(k, 0.0, 0.0, k, (cx + 12) as f32 * sc, (y as f32 + 5.0) * sc);
@@ -1879,6 +1934,7 @@ fn main() {
     let tx_scan = tx.clone();
     std::thread::spawn(move || {
         let s = Instant::now();
+        let _ = tx_scan.send(Msg::Icons(preload_rasters()));
         let apps = scan();
         let hist = load_history();
         // most-used apps first, so the icons you see first arrive first
@@ -1946,6 +2002,7 @@ fn main() {
         scroll: 0,
         schema: make_schema(),
         ac: None,
+        ac_multi: None,
         ac_active: false,
         ac_scroll: 0,
         recalling: false,
