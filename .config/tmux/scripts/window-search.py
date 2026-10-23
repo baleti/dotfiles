@@ -135,8 +135,8 @@ def tokenize(text):
 # in a scoped term fuzzy-resolve (see resolve_fields).
 QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
-    r'/(?:filter-value|fv|)/([a-zA-Z,-]+)(?:\s+("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|)(?:/|\s|$))\S+))?'
-    r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:/\S*)?'
+    r'/(?:filter-value|fv|)/([a-zA-Z,-]+)(?:\s+("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g|)(?:/|\s|$))\S+))?'
+    r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g)(?:/\S*)?'
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'

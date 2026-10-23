@@ -685,6 +685,16 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   a header line between rows in list pickers. mod+1 asks the server for the first 20,000 matches
   (names, sizes, dates only), groups them locally and says `grouped the first N of M` when the result set
   is bigger; the thumbnails of the visible rows load lazily as before. A picker that does not group treats `/g` as inert.
+- **Who honours it** (2026-10-23): mod+1 (grid and list), alt-tab (winswitch), the clipboard and
+  notification pickers, the app launcher, the RSS reader and the Claude usage panel fold into sections
+  (header click or the fold key, Ctrl+G, on the selected row); the `search` CLI prints `## label  [n]` lines
+  between the groups (`--json`: a `"group"` array per row; `-0` and `-c` ignore it). The fzf pickers
+  (focus-picker, window-search, claude-history) cannot fold a list into sections: `/g` is recognised there
+  and ignored, never searched as text.
+- **Tests**: the `group` vectors in `tests.json` (parse / value / layout / visible / extract) run in
+  Python, QML and Rust; `test_dsl.py` also runs the pipeline checks - every typing order of filter, sort and
+  group gives the same rows and layout, counts only ever cover the rows the filters kept, an empty filter
+  leaves no groups, and 300 random token mixes always cover each surviving row exactly once.
 - **Shared code**: `parse_group`, `group_value`, `group_layout`, `group_visible`, `extract_group` in
   `~/.config/dsl/dsl.py`, `~/.config/quickshell/lib/dsl.js` and `~/.config/dsl/group.rs`, all proven by the
   `group` vectors in `tests.json`.

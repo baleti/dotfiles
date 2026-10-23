@@ -528,6 +528,8 @@ def parse_query(query):
         verb_neg = tok_start in negs
         i += 1
         if not lead_quote and text.startswith("/"):
+            if text[1:].split("/")[0] in ("g", "group") and not text[1:].startswith("/"):
+                continue  # /g (/group): inert here - an fzf list cannot fold into sections (query-dsl.md "/group")
             cmd = split_cmd(text)
             if cmd is not None:
                 verb, keys, dirp, bad = cmd
