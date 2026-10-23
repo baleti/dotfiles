@@ -80,7 +80,13 @@ PanelWindow {
             root.acVerbMulti = false; root.acArgMulti = false;
             root.acHistoryMode = false;
             focusGrab.active = true;
-            Qt.callLater(() => query.forceActiveFocus());
+            if (LauncherState.pendingQuery !== "") {
+                // handed over from the native launcher: keep what was typed there
+                query.text = LauncherState.pendingQuery;
+                LauncherState.pendingQuery = "";
+                Qt.callLater(() => { query.forceActiveFocus(); query.cursorPosition = query.text.length; });
+            } else
+                Qt.callLater(() => query.forceActiveFocus());
         } else {
             focusGrab.active = false;
         }
