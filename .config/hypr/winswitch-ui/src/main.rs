@@ -671,8 +671,10 @@ struct App {
     gscroll: i32, // grouped view scroll, px in content space, snapped to a line start
     today: String,
     head_hits: Vec<(i32, i32, i32, i32, String)>,
+    pop_hits: Vec<(i32, i32, i32, i32, usize)>,
     /// the open completion / history popup
     ac: Option<Ac>,
+    ac_multi: Option<pickerdsl::Completion>, // Ctrl+Space AND-narrowing: the completion it began on
     ac_active: bool, // a completion session is open: typing re-narrows it, even through zero candidates
     ac_scroll: usize,
     hist_idx: i32, // Up/Down history cycling; -1 = on the draft
@@ -721,13 +723,17 @@ impl App {
     /// (card height, rows of cells that fit)
     fn card_dims(&self) -> (i32, i32) {
         let l = self.layout.as_ref().unwrap();
-        if self.ac.is_some() {
-            let h = (self.header_h() + self.ac_rows() as i32 * AC_ROW_H + 8 + 32).min(l.card_max_h);
-            return (h, 1);
-        }
-        let ch = self.cell_hgt();
-        let h = (self.header_h() + l.rows * ch + 32).min(l.card_max_h);
-        (h, ((h - 32 - self.header_h()) / ch).max(1))
+        let (ch, popup) = (self.cell_hgt(), self.popup_h());
+        let h = (self.header_h() + popup + l.rows * ch + 32).min(l.card_max_h);
+        (h, ((h - 32 - self.header_h() - popup) / ch).max(1))
+    }
+
+    /// Height of the completion / history sub-panel under the search box (0 when closed). The grid
+    /// below it yields the space.
+    fn popup_h(&self) -> i32 {
+        let (Some(l), Some(ac)) = (self.layout.as_ref(), self.ac.as_ref()) else { return 0 };
+        let cap = if ac.comp.kind == pickerdsl::CompKind::History { l.card_max_h / 2 } else { l.card_max_h - self.header_h() - 32 };
+        (ac.items.len() as i32 * AC_ROW_H + 8).min(cap).max(AC_ROW_H + 8)
     }
 
     fn visual(&self) -> i32 {
@@ -822,7 +828,7 @@ impl App {
 
     fn group_view_h(&self) -> i32 {
         let (h, _) = self.card_dims();
-        h - 32 - self.header_h()
+        h - 32 - self.header_h() - self.popup_h()
     }
 
     /// Line starts of the grouped flow (the scroll snaps to them so no cell is ever cut off).
@@ -1071,6 +1077,7 @@ impl App {
     // ---- completion / history popup ----
 
     fn hide_ac(&mut self) {
+        self.ac_multi = None;
         self.ac = None;
         self.ac_active = false;
         self.ac_scroll = 0;
@@ -1087,6 +1094,14 @@ impl App {
         if ac.comp.kind == pickerdsl::CompKind::History {
             let items = pickerdsl::history_candidates(&self.history, &self.query);
             self.ac = Some(Ac { comp: ac.comp.clone(), items, sel: 0 });
+        } else if let Some(base) = self.ac_multi.clone() {
+            match pickerdsl::multi_candidates(&self.schema, &self.query, &base, &WinSrc(&self.windows), self.windows.len()) {
+                Some((comp, items)) => self.ac = if items.is_empty() { None } else { Some(Ac { comp, items, sel: 0 }) },
+                None => {
+                    self.ac_multi = None; // edited back past the frozen start: ordinary completion again
+                    return self.ac_recompute();
+                }
+            }
         } else if let Some(comp) = pickerdsl::completion_context(&self.schema, &self.query) {
             let items = self.ac_candidates(&comp);
             self.ac = if items.is_empty() { None } else { Some(Ac { comp, items, sel: 0 }) };
@@ -1142,15 +1157,14 @@ impl App {
 
     /// How many popup rows fit in the card.
     fn ac_rows(&self) -> usize {
-        let Some(l) = self.layout.as_ref() else { return 1 };
-        let cap = if self.ac.as_ref().is_some_and(|a| a.comp.kind == pickerdsl::CompKind::History) { l.card_max_h / 2 } else { l.card_max_h - self.header_h() - 32 };
-        (((cap - 8) / AC_ROW_H).max(1) as usize).min(self.ac.as_ref().map_or(1, |a| a.items.len()).max(1))
+        (((self.popup_h() - 8) / AC_ROW_H).max(1)) as usize
     }
 
     fn ac_accept(&mut self) {
         let Some(ac) = self.ac.take() else { return };
         let Some(chosen) = ac.items.get(ac.sel) else { return };
         let q = pickerdsl::accept(&self.query, &ac.comp, chosen);
+        self.ac_multi = None;
         self.ac_active = false;
         self.ac_scroll = 0;
         let c = q.chars().count();
@@ -1257,6 +1271,17 @@ impl App {
                 Keysym::r if self.locked => return self.open_history(),
                 Keysym::g if self.group.is_some() => return self.toggle_selected_group(),
                 Keysym::space if self.locked && self.ac.is_none() => return self.trigger_completion(),
+                Keysym::space if self.locked => {
+                    // AND-narrow instead of accept: the space starts a further substring
+                    let comp = self.ac.as_ref().map(|a| a.comp.clone());
+                    if let Some(c) = comp.filter(|c| c.kind != pickerdsl::CompKind::History) {
+                        if self.ac_multi.is_none() {
+                            self.ac_multi = Some(c);
+                        }
+                        self.insert(" ");
+                    }
+                    return;
+                }
                 _ => {}
             }
         }
@@ -1549,7 +1574,7 @@ impl App {
             }
         }
 
-        // completion / history popup (replaces the grid while open)
+        // completion / history sub-panel under the search box (the grid below yields the space)
         let mut popup_hits: Vec<(i32, i32, i32, i32, usize)> = vec![];
         if let Some(ac) = &self.ac {
             let (px0, py0) = (cx + 16, cy + 16 + self.header_h());
@@ -1584,7 +1609,7 @@ impl App {
 
         // grid
         let cell_hgt = self.cell_hgt();
-        let (gx, gy) = (cx + 16, cy + 16 + self.header_h());
+        let (gx, gy) = (cx + 16, cy + 16 + self.header_h() + self.popup_h());
         let cell_full_w = l.cell_w + CELL_H_OVERHEAD;
         let size = FONT_PX * sc;
         let (asc, lh) = metrics(&self.font, size);
@@ -1595,10 +1620,12 @@ impl App {
         let mut head_hits: Vec<(i32, i32, i32, i32, String)> = vec![];
         // (x, y, window) of every cell to draw; headers are drawn on the way
         let mut cells: Vec<(i32, i32, usize)> = vec![];
-        if self.ac.is_none() {
+        let popup_h = self.popup_h();
+        let grid_rows = ((card_h - 32 - self.header_h() - popup_h) / cell_hgt).max(0);
+        {
             if self.group.is_some() {
                 let (items, _) = self.flow();
-                let view = card_h - 32 - self.header_h();
+                let view = card_h - 32 - self.header_h() - popup_h;
                 for it in &items {
                     if it.y < self.gscroll || it.y + it.h > self.gscroll + view {
                         continue;
@@ -1620,7 +1647,7 @@ impl App {
                     }
                 }
             } else {
-                for (slot, &wi) in self.filtered.iter().enumerate().skip(first).take((vis_rows * l.cols) as usize) {
+                for (slot, &wi) in self.filtered.iter().enumerate().skip(first).take((grid_rows * l.cols) as usize) {
                     let local = (slot - first) as i32;
                     cells.push((gx + (local % l.cols) * cell_full_w, gy + (local / l.cols) * cell_hgt, wi));
                 }
@@ -1681,7 +1708,8 @@ impl App {
                 }
             }
         }
-        self.hits = if popup_hits.is_empty() { hits } else { popup_hits };
+        self.pop_hits = popup_hits;
+        self.hits = hits;
         self.head_hits = head_hits;
 
         // blit to a shm buffer (tiny-skia RGBA premultiplied -> wl Argb8888 = B,G,R,A bytes)
@@ -1731,6 +1759,10 @@ impl App {
     }
 
     // ---- pointer ----
+
+    fn pop_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.pop_hits.iter().find(|(cx, cy, cw, ch, _)| x >= *cx as f64 && y >= *cy as f64 && x < (*cx + *cw) as f64 && y < (*cy + *ch) as f64).map(|h| h.4)
+    }
 
     fn cell_at(&self, x: f64, y: f64) -> Option<usize> {
         self.hits.iter().find(|(cx, cy, cw, ch, _)| x >= *cx as f64 && y >= *cy as f64 && x < (*cx + *cw) as f64 && y < (*cy + *ch) as f64).map(|h| h.4)
@@ -1851,13 +1883,15 @@ impl PointerHandler for App {
             match ev.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     if self.pointer_moved(x, y) {
-                        if let Some(wi) = self.cell_at(x, y) {
+                        if let Some(i) = self.pop_at(x, y) {
                             if let Some(ac) = self.ac.as_mut() {
-                                if ac.sel != wi {
-                                    ac.sel = wi;
+                                if ac.sel != i {
+                                    ac.sel = i;
                                     self.dirty = true;
                                 }
-                            } else if self.selected != wi as i32 {
+                            }
+                        } else if let Some(wi) = self.cell_at(x, y) {
+                            if self.selected != wi as i32 {
                                 self.selected = wi as i32;
                                 self.dirty = true;
                             }
@@ -1866,15 +1900,15 @@ impl PointerHandler for App {
                 }
                 PointerEventKind::Press { button, .. } if button == 0x110 => {
                     let head = self.head_hits.iter().find(|(hx, hy, hw, hh, _)| x >= *hx as f64 && y >= *hy as f64 && x < (*hx + *hw) as f64 && y < (*hy + *hh) as f64).map(|h| h.4.clone());
-                    if let Some(id) = head {
+                    if let Some(i) = self.pop_at(x, y) {
+                        if let Some(ac) = self.ac.as_mut() {
+                            ac.sel = i;
+                        }
+                        self.ac_accept();
+                    } else if let Some(id) = head {
                         self.toggle_fold(&id);
                     } else if let Some(wi) = self.cell_at(x, y) {
-                        if let Some(ac) = self.ac.as_mut() {
-                            ac.sel = wi;
-                            self.ac_accept();
-                        } else {
-                            self.confirm_window(Some(wi));
-                        }
+                        self.confirm_window(Some(wi));
                     } else {
                         let (cx, cy, cw, ch) = self.card_rect;
                         let inside = x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64;
@@ -1885,7 +1919,7 @@ impl PointerHandler for App {
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     let step = if vertical.discrete != 0 { vertical.discrete.signum() } else { vertical.absolute.signum() as i32 };
-                    if step != 0 && self.ac.is_some() {
+                    if step != 0 && self.ac.is_some() && self.pop_at(x, y).is_some() {
                         let max = self.ac.as_ref().map_or(0, |a| a.items.len()).saturating_sub(self.ac_rows());
                         self.ac_scroll = (self.ac_scroll as i32 + step).clamp(0, max as i32) as usize;
                         self.dirty = true;
@@ -2091,8 +2125,10 @@ fn main() {
         gscroll: 0,
         today: String::new(),
         head_hits: vec![],
+        pop_hits: vec![],
         schema: make_schema(),
         ac: None,
+        ac_multi: None,
         ac_active: false,
         ac_scroll: 0,
         hist_idx: -1,
