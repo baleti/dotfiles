@@ -296,6 +296,7 @@ too and never an error - "half-typed stays a no-op" is the rule everywhere.
 | `/at` | `/add-type` | columns | keys | add the columns whose name matches into view |
 | `/rt` | `/remove-type` | columns | keys | drop the columns whose name matches from view |
 | `/s` | `/sort` | order | keys + optional `/dir` | order rows by the key fields |
+| `/g` | `/group` | view | keys + optional bucket / level / `/dir` | fold the rows into collapsible sections |
 
 **Verb names are exact-matched** against exactly these five short and five
 long forms (plus the empty spelling `//`, see Default verb) - nothing else,
@@ -640,6 +641,49 @@ reaches the numeric comparison: `ascending` (oldest first,
 chronological) compares age descending internally; `descending` (newest
 first) compares age ascending. Plain ints and text apply the direction
 literally. The trap is specific to "time since" values.
+
+### `/group` (`/g`)
+
+*Added 2026-10-23.* Folds the rows into collapsible sections. A **view transform**: it never filters,
+hides or reorders rows, it only puts break lines (section headers) between them.
+
+- **`/g/key1[,key2,...][/part...]`** - one section per distinct value of `key1`; a second key nests a
+  sub-section inside each, and so on, outer first. Keys resolve like `/sort` keys (exact name wins, a fuzzy
+  key expands to every type it reaches, alphabetically); a key that names nothing makes the whole `/g`
+  inert. Only the **last** valid `/g` in a query takes effect.
+- **Trailing parts**, recognised by *shape*, in any order, each at most once: a **bucket**, a **level**
+  (digits) and a **direction** (a prefix of `ascending` / `descending`; `d` is `desc`). Anything else makes
+  the command inert.
+- **Buckets** (exact words). A bucket applies to the keys it fits; one that fits no key makes `/g` inert.
+  - `pf` / `parent-folder` (path types): the folder holding the entry; **level** picks the ancestor:
+    `/g/path/pf/1` (the default) is the immediate parent, `/g/path/pf/2` the one above it. `pf` and
+    `parent-folder` also work as a *key* standing for the path type: `/g/pf`, `/g/pf/2`, `/g/pf,dm/month`.
+    The level means nothing without `pf` (inert).
+  - `day` | `week` | `month` | `year` (date types): `/g/dm/week`. Labels read `Today`, `Yesterday`,
+    `This week`, `Last week`, `This month`, `This year`, else a date (`2026-10-14`, `Week of 2026-10-12`,
+    `September 2026`). Weeks start on Monday.
+  - No bucket: the default of the key's family, picked from its *name* - date types (`date`, `modified`,
+    `created`, `time`, `dm`...) group by `day`; `size` by order of magnitude (`< 1 KB`, `1 - 10 KB` ... `10 GB or
+    more`); `age` (`5m`, `3h`) into `Last hour` / `Last day` / `Last week` / `Last month` / `Older`; path types
+    by the exact value; anything else by the exact value.
+- **Order.** Groups are ordered by their key, **descending by default** like `/s` (newest day, biggest size,
+  newest age bucket first; text values Z-A - say `/asc` for A-Z); the `(none)` group (empty / unparseable value)
+  is always last. Rows inside a group keep the order the rest of the query gives them (`/s`, the picker's
+  default), so `/g/dm/week /s/size` is "per week, biggest first".
+- **Pipeline.** Like `/s`, a `/g` token is position-independent, and it always acts on the **result of the
+  filters**: `/fv/name .rvt /g/dm/week` and `/g/dm/week /fv/name .rvt` both group only the `.rvt` rows,
+  counts are of surviving rows, and a group with no surviving rows does not exist. Order of the stages is
+  fixed - rows -> filter -> sort -> group - whatever order they are typed in. A value token owned by `//key`
+  or `/fv/key` is never read as a `/g`. A column verb (`/ft /at /rt`) cannot hide the grouped key's *section*:
+  the headers come from the underlying value.
+- **Collapse.** Each section header can be folded (click, or Left / Right / Space on the focused header).
+  State is held in memory per group id and reset when the query changes. A collapsed header keeps its
+  count; keyboard row navigation skips the folded rows.
+- **Rendering** is each picker's own: a full-width header row with a break above it in the images grid,
+  a header line between rows in list pickers. A picker that does not group treats `/g` as inert.
+- **Shared code**: `parse_group`, `group_value`, `group_layout`, `group_visible`, `extract_group` in
+  `~/.config/dsl/dsl.py`, `~/.config/quickshell/lib/dsl.js` and `~/.config/dsl/group.rs`, all proven by the
+  `group` vectors in `tests.json`.
 
 ### Quoting
 

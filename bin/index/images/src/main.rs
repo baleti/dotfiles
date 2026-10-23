@@ -17,6 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Read from ~/.config/indexes/photos.json (IMAGES_CONFIG overrides), so no paths are compiled in.
+#[path = "../../../../.config/dsl/group.rs"]
+mod group;
+
 struct Cfg { server: String, python: String, scheme: String, mount_root: String, data_dir: String }
 fn cfg() -> &'static Cfg {
     static C: std::sync::OnceLock<Cfg> = std::sync::OnceLock::new();
@@ -2142,9 +2145,7 @@ impl App {
                         let small = egui::FontId::monospace(10.0);
                         let txt = if selected { pal.text } else { pal.text.gamma_multiply(0.85) };
                         let measure = |t: &str, f: &egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f.clone(), egui::Color32::WHITE).size().x;
-                        let title_lbl = "title: ";
-                        let title_w = measure(title_lbl, &name_font);
-                        let name_text = fit_text(ui, &base, &name_font, (t - title_w).max(0.0));
+                        let name_text = fit_text(ui, &base, &name_font, t);
                         let terms = query_terms(&self.last_sent);
                         // metadata fields are packed onto as few lines as fit the cell width
                         let mut fields: Vec<String> = Vec::new();
@@ -2161,8 +2162,7 @@ impl App {
                         if !cur.is_empty() { lines.push(cur); }
                         let painter = ui.painter();
                         let name_galley = painter.layout_job(name_job(&name_text, &terms, &name_font, txt));
-                        painter.text(egui::pos2(rect.left(), img.bottom() + 4.0), egui::Align2::LEFT_TOP, title_lbl, name_font.clone(), pal.dim);
-                        painter.galley(egui::pos2(rect.left() + title_w, img.bottom() + 4.0), name_galley, txt);
+                        painter.galley(egui::pos2(rect.left(), img.bottom() + 4.0), name_galley, txt);
                         let mut y = img.bottom() + 18.0;
                         for text in lines {
                             painter.text(egui::pos2(rect.left(), y), egui::Align2::LEFT_TOP, fit_text(ui, &text, &small, t), small.clone(), pal.dim);
@@ -3685,6 +3685,56 @@ mod dsl_conformance {
             assert_eq!(spec.keys, keys, "keys of {}", c["query"]);
             assert_eq!(spec.desc, e[2].as_bool().unwrap(), "desc of {}", c["query"]);
             assert_eq!(spec.explicit, e[3].as_bool().unwrap(), "explicit of {}", c["query"]);
+        }
+    }
+
+    fn parsed_json(p: &Option<group::Parsed>) -> serde_json::Value {
+        match p {
+            None => serde_json::Value::Null,
+            Some(p) => serde_json::json!({ "specs": p.specs.iter().map(|s| serde_json::json!({ "name": s.name, "bucket": s.bucket, "level": s.level })).collect::<Vec<_>>(),
+                                           "dir": if p.desc { "desc" } else { "asc" } }),
+        }
+    }
+
+    fn entries_json(l: &[group::Entry]) -> serde_json::Value {
+        serde_json::Value::Array(l.iter().map(|e| match e {
+            group::Entry::Header { depth, id, label, count } => serde_json::json!(["h", depth, id, label, count]),
+            group::Entry::Row(i) => serde_json::json!(["r", i]),
+        }).collect())
+    }
+
+    #[test]
+    fn group_vectors() {
+        let t = vectors();
+        let g = &t["group"];
+        let known_s: Vec<String> = g["known"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        let known: Vec<&str> = known_s.iter().map(String::as_str).collect();
+        let aliases: Vec<(&str, &str)> = g["aliases"].as_object().unwrap().iter().map(|(k, v)| (k.as_str(), v.as_str().unwrap())).collect();
+        let today = g["today"].as_str().unwrap();
+        for c in g["parse"].as_array().unwrap() {
+            assert_eq!(parsed_json(&group::parse_group(c["text"].as_str().unwrap(), &known, &aliases)), c["expect"], "parse {}", c["text"]);
+        }
+        for c in g["value"].as_array().unwrap() {
+            let spec = group::Spec { name: String::new(), bucket: c["bucket"].as_str().unwrap().into(), level: c["level"].as_u64().unwrap() as usize };
+            let (k, l) = group::group_value(&spec, c["raw"].as_str().unwrap(), today);
+            assert_eq!(serde_json::json!([k, l]), c["expect"], "value {} {}", c["bucket"], c["raw"]);
+        }
+        let rows = g["rows"].as_array().unwrap();
+        let get = |i: usize, n: &str| rows[i][n].as_str().unwrap_or("").to_string();
+        for c in g["layout"].as_array().unwrap() {
+            let p = group::parse_group(c["text"].as_str().unwrap(), &known, &aliases).unwrap();
+            assert_eq!(entries_json(&group::group_layout(rows.len(), &p, &get, today)), c["expect"], "layout {}", c["text"]);
+        }
+        let v = &g["visible"];
+        let lay = group::group_layout(rows.len(), &group::parse_group(v["text"].as_str().unwrap(), &known, &aliases).unwrap(), &get, today);
+        for (col, want) in v["collapsed"].as_array().unwrap().iter().zip(v["expect"].as_array().unwrap()) {
+            let set: std::collections::HashSet<String> = col.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            assert_eq!(&entries_json(&group::group_visible(&lay, &set)), want, "visible {col}");
+        }
+        for c in g["extract"].as_array().unwrap() {
+            let toks: Vec<String> = c["tokens"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            let (rest, p) = group::extract_group(&toks, &known, &aliases);
+            assert_eq!(serde_json::json!([rest, parsed_json(&p)]), c["expect"], "extract {}", c["tokens"]);
         }
     }
 

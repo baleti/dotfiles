@@ -1001,5 +1001,1977 @@
       "query": "",
       "expect": []
     }
-  ]
+  ],
+  "group": {
+    "_doc": "/group primitives (query-dsl.md '/group'): parse (known types + alias dm), value (bucketing, today=2026-10-22, a Thursday), layout, visible, extract (pipeline hook).",
+    "known": [
+      "name",
+      "path",
+      "size",
+      "date-modified",
+      "pages",
+      "age",
+      "title"
+    ],
+    "aliases": {
+      "dm": "date-modified"
+    },
+    "today": "2026-10-22",
+    "parse": [
+      {
+        "text": "/g/date-modified",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "day",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/dm/week",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "week",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/group/dm/month",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "month",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/dm/year/asc",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "year",
+              "level": 1
+            }
+          ],
+          "dir": "asc"
+        }
+      },
+      {
+        "text": "/g/dm/d",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "day",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/path",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "value",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/path/pf",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/path/pf/2",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 2
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/pf",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/pf/1",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/pf/3",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 3
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/parent-folder/2",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 2
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/path/parent-folder/2/asc",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 2
+            }
+          ],
+          "dir": "asc"
+        }
+      },
+      {
+        "text": "/g/size",
+        "expect": {
+          "specs": [
+            {
+              "name": "size",
+              "bucket": "size",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/age",
+        "expect": {
+          "specs": [
+            {
+              "name": "age",
+              "bucket": "age",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/title",
+        "expect": {
+          "specs": [
+            {
+              "name": "title",
+              "bucket": "value",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/pf,dm/month",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 1
+            },
+            {
+              "name": "date-modified",
+              "bucket": "month",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/dm,pf/month/2",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "month",
+              "level": 2
+            },
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 2
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/dm,title",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "day",
+              "level": 1
+            },
+            {
+              "name": "title",
+              "bucket": "value",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/name/week",
+        "expect": null
+      },
+      {
+        "text": "/g/path/2",
+        "expect": null
+      },
+      {
+        "text": "/g/dm/pf",
+        "expect": null
+      },
+      {
+        "text": "/g/dm/week/month",
+        "expect": null
+      },
+      {
+        "text": "/g/pf/0",
+        "expect": null
+      },
+      {
+        "text": "/g/pf/1/2",
+        "expect": null
+      },
+      {
+        "text": "/g/zzz",
+        "expect": null
+      },
+      {
+        "text": "/g/",
+        "expect": null
+      },
+      {
+        "text": "/g",
+        "expect": null
+      },
+      {
+        "text": "/g//",
+        "expect": null
+      },
+      {
+        "text": "/g/dm/foo",
+        "expect": null
+      },
+      {
+        "text": "/g/dm/asc/desc",
+        "expect": null
+      },
+      {
+        "text": "/s/dm",
+        "expect": null
+      },
+      {
+        "text": "//dm x",
+        "expect": null
+      },
+      {
+        "text": "/g/p",
+        "expect": {
+          "specs": [
+            {
+              "name": "pages",
+              "bucket": "value",
+              "level": 1
+            },
+            {
+              "name": "path",
+              "bucket": "value",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      },
+      {
+        "text": "/g/da",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "day",
+              "level": 1
+            }
+          ],
+          "dir": "desc"
+        }
+      }
+    ],
+    "value": [
+      {
+        "bucket": "pf",
+        "level": 1,
+        "raw": "/a/b/c/file.txt",
+        "expect": [
+          "/a/b/c",
+          "/a/b/c"
+        ]
+      },
+      {
+        "bucket": "pf",
+        "level": 2,
+        "raw": "/a/b/c/file.txt",
+        "expect": [
+          "/a/b",
+          "/a/b"
+        ]
+      },
+      {
+        "bucket": "pf",
+        "level": 3,
+        "raw": "/a/b/c/file.txt",
+        "expect": [
+          "/a",
+          "/a"
+        ]
+      },
+      {
+        "bucket": "pf",
+        "level": 9,
+        "raw": "/a/b/c/file.txt",
+        "expect": [
+          "/",
+          "/"
+        ]
+      },
+      {
+        "bucket": "pf",
+        "level": 1,
+        "raw": "/file.txt",
+        "expect": [
+          "/",
+          "/"
+        ]
+      },
+      {
+        "bucket": "pf",
+        "level": 1,
+        "raw": "file.txt",
+        "expect": [
+          "",
+          "(none)"
+        ]
+      },
+      {
+        "bucket": "pf",
+        "level": 1,
+        "raw": "",
+        "expect": [
+          "",
+          "(none)"
+        ]
+      },
+      {
+        "bucket": "pf",
+        "level": 1,
+        "raw": "/a/b/",
+        "expect": [
+          "/a",
+          "/a"
+        ]
+      },
+      {
+        "bucket": "day",
+        "level": 1,
+        "raw": "2026-10-22 09:00",
+        "expect": [
+          "2026-10-22",
+          "Today"
+        ]
+      },
+      {
+        "bucket": "day",
+        "level": 1,
+        "raw": "2026-10-21",
+        "expect": [
+          "2026-10-21",
+          "Yesterday"
+        ]
+      },
+      {
+        "bucket": "day",
+        "level": 1,
+        "raw": "2026-10-20T12:00:00Z",
+        "expect": [
+          "2026-10-20",
+          "2026-10-20"
+        ]
+      },
+      {
+        "bucket": "day",
+        "level": 1,
+        "raw": "junk",
+        "expect": [
+          "",
+          "(none)"
+        ]
+      },
+      {
+        "bucket": "day",
+        "level": 1,
+        "raw": "",
+        "expect": [
+          "",
+          "(none)"
+        ]
+      },
+      {
+        "bucket": "week",
+        "level": 1,
+        "raw": "2026-10-22",
+        "expect": [
+          "2026-10-19",
+          "This week"
+        ]
+      },
+      {
+        "bucket": "week",
+        "level": 1,
+        "raw": "2026-10-19",
+        "expect": [
+          "2026-10-19",
+          "This week"
+        ]
+      },
+      {
+        "bucket": "week",
+        "level": 1,
+        "raw": "2026-10-18",
+        "expect": [
+          "2026-10-12",
+          "Last week"
+        ]
+      },
+      {
+        "bucket": "week",
+        "level": 1,
+        "raw": "2026-10-12",
+        "expect": [
+          "2026-10-12",
+          "Last week"
+        ]
+      },
+      {
+        "bucket": "week",
+        "level": 1,
+        "raw": "2026-01-01",
+        "expect": [
+          "2025-12-29",
+          "Week of 2025-12-29"
+        ]
+      },
+      {
+        "bucket": "week",
+        "level": 1,
+        "raw": "2026-10-25",
+        "expect": [
+          "2026-10-19",
+          "This week"
+        ]
+      },
+      {
+        "bucket": "month",
+        "level": 1,
+        "raw": "2026-10-01",
+        "expect": [
+          "2026-10",
+          "This month"
+        ]
+      },
+      {
+        "bucket": "month",
+        "level": 1,
+        "raw": "2026-09-30",
+        "expect": [
+          "2026-09",
+          "September 2026"
+        ]
+      },
+      {
+        "bucket": "month",
+        "level": 1,
+        "raw": "2025-02-10",
+        "expect": [
+          "2025-02",
+          "February 2025"
+        ]
+      },
+      {
+        "bucket": "year",
+        "level": 1,
+        "raw": "2026-03-03",
+        "expect": [
+          "2026",
+          "This year"
+        ]
+      },
+      {
+        "bucket": "year",
+        "level": 1,
+        "raw": "2019-03-03",
+        "expect": [
+          "2019",
+          "2019"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "0",
+        "expect": [
+          "0",
+          "< 1 KB"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "1023",
+        "expect": [
+          "0",
+          "< 1 KB"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "1024",
+        "expect": [
+          "1",
+          "1 - 10 KB"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "20000",
+        "expect": [
+          "2",
+          "10 - 100 KB"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "5000000",
+        "expect": [
+          "4",
+          "1 - 10 MB"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "12 MB",
+        "expect": [
+          "5",
+          "10 - 100 MB"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "3.5k",
+        "expect": [
+          "1",
+          "1 - 10 KB"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "99999999999",
+        "expect": [
+          "8",
+          "10 GB or more"
+        ]
+      },
+      {
+        "bucket": "size",
+        "level": 1,
+        "raw": "x",
+        "expect": [
+          "",
+          "(none)"
+        ]
+      },
+      {
+        "bucket": "age",
+        "level": 1,
+        "raw": "30s",
+        "expect": [
+          "0",
+          "Last hour"
+        ]
+      },
+      {
+        "bucket": "age",
+        "level": 1,
+        "raw": "5m",
+        "expect": [
+          "0",
+          "Last hour"
+        ]
+      },
+      {
+        "bucket": "age",
+        "level": 1,
+        "raw": "3h",
+        "expect": [
+          "1",
+          "Last day"
+        ]
+      },
+      {
+        "bucket": "age",
+        "level": 1,
+        "raw": "2d",
+        "expect": [
+          "2",
+          "Last week"
+        ]
+      },
+      {
+        "bucket": "age",
+        "level": 1,
+        "raw": "10d",
+        "expect": [
+          "3",
+          "Last month"
+        ]
+      },
+      {
+        "bucket": "age",
+        "level": 1,
+        "raw": "90d",
+        "expect": [
+          "4",
+          "Older"
+        ]
+      },
+      {
+        "bucket": "age",
+        "level": 1,
+        "raw": "soon",
+        "expect": [
+          "",
+          "(none)"
+        ]
+      },
+      {
+        "bucket": "value",
+        "level": 1,
+        "raw": "blender",
+        "expect": [
+          "blender",
+          "blender"
+        ]
+      },
+      {
+        "bucket": "value",
+        "level": 1,
+        "raw": "",
+        "expect": [
+          "",
+          "(none)"
+        ]
+      }
+    ],
+    "rows": [
+      {
+        "name": "a",
+        "path": "/p/x/a.rvt",
+        "size": "2000",
+        "date-modified": "2026-10-22 10:00",
+        "age": "5m"
+      },
+      {
+        "name": "b",
+        "path": "/p/y/b.rvt",
+        "size": "20",
+        "date-modified": "2026-10-21",
+        "age": "1d"
+      },
+      {
+        "name": "c",
+        "path": "/p/x/z/c.dwg",
+        "size": "5000000",
+        "date-modified": "2026-09-01",
+        "age": "40d"
+      },
+      {
+        "name": "d",
+        "path": "/q/d.pdf",
+        "size": "",
+        "date-modified": "",
+        "age": "3h"
+      },
+      {
+        "name": "e",
+        "path": "/p/x/e.rvt",
+        "size": "2100",
+        "date-modified": "2026-10-22 08:00",
+        "age": "2h"
+      }
+    ],
+    "layout": [
+      {
+        "text": "/g/dm",
+        "expect": [
+          [
+            "h",
+            0,
+            "Today",
+            "Today",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "Yesterday",
+            "Yesterday",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "2026-09-01",
+            "2026-09-01",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/dm/asc",
+        "expect": [
+          [
+            "h",
+            0,
+            "2026-09-01",
+            "2026-09-01",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "Yesterday",
+            "Yesterday",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "Today",
+            "Today",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/dm/week",
+        "expect": [
+          [
+            "h",
+            0,
+            "This week",
+            "This week",
+            3
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "Week of 2026-08-31",
+            "Week of 2026-08-31",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/dm/month",
+        "expect": [
+          [
+            "h",
+            0,
+            "This month",
+            "This month",
+            3
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "September 2026",
+            "September 2026",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/pf",
+        "expect": [
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ]
+        ]
+      },
+      {
+        "text": "/g/pf/2",
+        "expect": [
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p",
+            "/p",
+            3
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "/",
+            "/",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/path/pf/asc",
+        "expect": [
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/size",
+        "expect": [
+          [
+            "h",
+            0,
+            "1 - 10 MB",
+            "1 - 10 MB",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "1 - 10 KB",
+            "1 - 10 KB",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "< 1 KB",
+            "< 1 KB",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/size/asc",
+        "expect": [
+          [
+            "h",
+            0,
+            "< 1 KB",
+            "< 1 KB",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "1 - 10 KB",
+            "1 - 10 KB",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "1 - 10 MB",
+            "1 - 10 MB",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/age",
+        "expect": [
+          [
+            "h",
+            0,
+            "Last hour",
+            "Last hour",
+            1
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "h",
+            0,
+            "Last day",
+            "Last day",
+            2
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "Last week",
+            "Last week",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "Older",
+            "Older",
+            1
+          ],
+          [
+            "r",
+            2
+          ]
+        ]
+      },
+      {
+        "text": "/g/age/asc",
+        "expect": [
+          [
+            "h",
+            0,
+            "Older",
+            "Older",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "Last week",
+            "Last week",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "Last day",
+            "Last day",
+            2
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "Last hour",
+            "Last hour",
+            1
+          ],
+          [
+            "r",
+            0
+          ]
+        ]
+      },
+      {
+        "text": "/g/name",
+        "expect": [
+          [
+            "h",
+            0,
+            "e",
+            "e",
+            1
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "d",
+            "d",
+            1
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "h",
+            0,
+            "c",
+            "c",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "b",
+            "b",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "a",
+            "a",
+            1
+          ],
+          [
+            "r",
+            0
+          ]
+        ]
+      },
+      {
+        "text": "/g/pf,dm/month",
+        "expect": [
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/q\u001f(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/y\u001fThis month",
+            "This month",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/x/z\u001fSeptember 2026",
+            "September 2026",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "h",
+            1,
+            "/p/x\u001fThis month",
+            "This month",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ]
+        ]
+      },
+      {
+        "text": "/g/dm,pf/year/2",
+        "expect": [
+          [
+            "h",
+            0,
+            "This year",
+            "This year",
+            4
+          ],
+          [
+            "h",
+            1,
+            "This year\u001f/p/x",
+            "/p/x",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            1,
+            "This year\u001f/p",
+            "/p",
+            3
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
+            1
+          ],
+          [
+            "h",
+            1,
+            "(none)\u001f/",
+            "/",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      }
+    ],
+    "visible": {
+      "text": "/g/pf,dm/month",
+      "collapsed": [
+        [],
+        [
+          "/q"
+        ],
+        [
+          "/q",
+          "/q\u001f(none)"
+        ]
+      ],
+      "expect": [
+        [
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/q\u001f(none)",
+            "(none)",
+            1
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/y\u001fThis month",
+            "This month",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/x/z\u001fSeptember 2026",
+            "September 2026",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "h",
+            1,
+            "/p/x\u001fThis month",
+            "This month",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ]
+        ],
+        [
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/y\u001fThis month",
+            "This month",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/x/z\u001fSeptember 2026",
+            "September 2026",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "h",
+            1,
+            "/p/x\u001fThis month",
+            "This month",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ]
+        ],
+        [
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/y\u001fThis month",
+            "This month",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "h",
+            1,
+            "/p/x/z\u001fSeptember 2026",
+            "September 2026",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "h",
+            1,
+            "/p/x\u001fThis month",
+            "This month",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ]
+        ]
+      ]
+    },
+    "extract": [
+      {
+        "tokens": [
+          "/fv/name",
+          "rvt",
+          "/g/dm/week"
+        ],
+        "expect": [
+          [
+            "/fv/name",
+            "rvt"
+          ],
+          {
+            "specs": [
+              {
+                "name": "date-modified",
+                "bucket": "week",
+                "level": 1
+              }
+            ],
+            "dir": "desc"
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "/g/dm/week",
+          "/fv/name",
+          "rvt"
+        ],
+        "expect": [
+          [
+            "/fv/name",
+            "rvt"
+          ],
+          {
+            "specs": [
+              {
+                "name": "date-modified",
+                "bucket": "week",
+                "level": 1
+              }
+            ],
+            "dir": "desc"
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "rvt",
+          "/g/dm/week",
+          "/s/size"
+        ],
+        "expect": [
+          [
+            "rvt",
+            "/s/size"
+          ],
+          {
+            "specs": [
+              {
+                "name": "date-modified",
+                "bucket": "week",
+                "level": 1
+              }
+            ],
+            "dir": "desc"
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "/g/zzz",
+          "rvt"
+        ],
+        "expect": [
+          [
+            "rvt"
+          ],
+          null
+        ]
+      },
+      {
+        "tokens": [
+          "/g/pf",
+          "/g/dm/week"
+        ],
+        "expect": [
+          [],
+          {
+            "specs": [
+              {
+                "name": "date-modified",
+                "bucket": "week",
+                "level": 1
+              }
+            ],
+            "dir": "desc"
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "//path",
+          "/g/dm",
+          "/g/pf"
+        ],
+        "expect": [
+          [
+            "//path",
+            "/g/dm"
+          ],
+          {
+            "specs": [
+              {
+                "name": "path",
+                "bucket": "pf",
+                "level": 1
+              }
+            ],
+            "dir": "desc"
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "/fv/path",
+          "/g/dm"
+        ],
+        "expect": [
+          [
+            "/fv/path",
+            "/g/dm"
+          ],
+          null
+        ]
+      },
+      {
+        "tokens": [
+          "!/g/dm",
+          "x"
+        ],
+        "expect": [
+          [
+            "!/g/dm",
+            "x"
+          ],
+          null
+        ]
+      },
+      {
+        "tokens": [
+          "/g/pf/2",
+          "/g/dm",
+          "/g/size"
+        ],
+        "expect": [
+          [],
+          {
+            "specs": [
+              {
+                "name": "size",
+                "bucket": "size",
+                "level": 1
+              }
+            ],
+            "dir": "desc"
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "/s/dm",
+          "/g/pf/1",
+          "/fv/title",
+          "note"
+        ],
+        "expect": [
+          [
+            "/s/dm",
+            "/fv/title",
+            "note"
+          ],
+          {
+            "specs": [
+              {
+                "name": "path",
+                "bucket": "pf",
+                "level": 1
+              }
+            ],
+            "dir": "desc"
+          }
+        ]
+      }
+    ]
+  }
 }
