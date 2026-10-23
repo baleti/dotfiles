@@ -114,7 +114,8 @@ def collections():
     if not ents:
         return {}
     return {index_config.NAME: {"roots": [p.replace(HOME, "~", 1) for p, _ in ents],
-                                "clip_pages": any(f["clip_pages"] for _, f in ents)}}
+                                "clip_pages": any(f["clip_pages"] for _, f in ents),
+                                "faces": any(f["faces"] for _, f in ents)}}
 
 CAD_ROOTS = {"revit": "rvt rfa rte rft files under the office folders", "dwg": "dwg dxf files under the office folders"}
 

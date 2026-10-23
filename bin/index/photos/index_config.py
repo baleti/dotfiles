@@ -13,6 +13,10 @@ and its documents stay in the index.
   chroma      semantic text chunks embedded on ai1 (/chroma); the stores of the old per-folder indexes stay in
               ~/.cache/indexes/<old name>/chroma as read-only shards, so documents already embedded there are not embedded again
   clip_pages  CLIP on large images inside PDFs
+  clip        CLIP on the image files themselves (/clip)
+  faces       InsightFace on the image files (/face)
+All types are on for every path unless a path object switches one off. "max_images_per_run" (default 20000, 0 = no
+limit) bounds how many new images one clip or faces run sends to the ai1 GPU; runs are resumable, so the rest follows the next night.
 """
 import glob
 import json
@@ -24,7 +28,7 @@ IDX = os.path.join(HOME, ".cache/indexes")
 NAME = "documents"                                   # the one merged index: ~/.cache/indexes/documents/{recoll,chroma}
 CONF = os.path.join(IDX, NAME, "recoll")
 CHROMA = os.path.join(IDX, NAME, "chroma")
-TYPES = ("fulltext", "chroma", "clip_pages")
+TYPES = ("fulltext", "chroma", "clip_pages", "clip", "faces")
 
 
 def load():
