@@ -1049,12 +1049,6 @@ def drive():
     # for a column that actually does, and its header for the same caveat)
     header = f'{"SESSION:WIN":<{LOC_WIDTH}}  {"NAME":<{NAME_WIDTH}}  TITLE'
 
-    # quote auto-pairing (query-dsl.md "Quoted terms"): fzf's `change` event runs
-    # ~/bin/dsl-autopair, which compares against this state file and rewrites the query
-    state_path = snap_path + ".ap"
-    atexit.register(lambda: _rm(state_path))
-    atexit.register(lambda: _rm(state_path + ".q"))
-    autopair_cmd = f"{shlex.quote(os.path.expanduser('~/bin/dsl-autopair'))} --state {shlex.quote(state_path)} --query={{q}}"
     _dbg("launching fzf")
     try:
         result = subprocess.run(
@@ -1069,7 +1063,7 @@ def drive():
                 # without this the match highlight scrolls off to the right
                 "--preview-window", "down,50%,border-top,wrap",
                 "--bind", f"start:reload:{self_cmd}",
-                "--bind", f"change:transform({autopair_cmd})+reload({self_cmd})",
+                "--bind", f"change:reload({self_cmd})",
                 "--bind", f"result:transform:{resize_on_result}",
                 # `result` alone only re-runs this on a filtering change - a
                 # terminal resize while sitting on an unchanged query never
