@@ -2510,6 +2510,12 @@ impl App {
         let pal = self.pal;
         let group::Entry::Header { depth, id, label, count } = self.gvis[slot].clone() else { return };
         let resp = ui.interact(rect, egui::Id::new(("ghdr", &id)), egui::Sense::click());
+        // a parent-folder group is named by its folder, not the whole path
+        let label = match self.group.as_ref().and_then(|g| g.specs.get(depth)) {
+            Some(sp) if sp.bucket == "pf" && label.starts_with('/') =>
+                label.trim_end_matches('/').rsplit('/').next().filter(|b| !b.is_empty()).unwrap_or(&label).to_string(),
+            _ => label,
+        };
         let folded = self.gcollapsed.contains(&id);
         let x = rect.left() + 6.0 + depth as f32 * 18.0;
         let y = rect.bottom() - 4.0;
