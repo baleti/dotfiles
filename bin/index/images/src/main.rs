@@ -1870,10 +1870,11 @@ impl App {
     /// Re-run the current query without disturbing what is on screen: every loaded page is fetched again and
     /// replaced when its reply arrives (a plain send_query clears all pages, leaving blank rows below the top).
     fn refresh_in_place(&mut self) {
+        let grouped = self.group_active();      // asked before the seq moves on, or the layout would look stale
         self.seq += 1;
         self.refreshing = true;
         self.last_refresh = Instant::now();
-        if self.group_active() { self.gmeta_seq = self.seq; }     // keep the layout up while the new window loads
+        if grouped { self.gmeta_seq = self.seq; }     // keep the layout up while the new window loads
         if self.group.is_some() { self.request_meta(); }
         self.pending.clear();
         let mut pages: Vec<usize> = self.pages.keys().copied().collect();
