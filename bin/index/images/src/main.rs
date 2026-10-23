@@ -795,13 +795,15 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 18] = [
+        const VERBS: [(&str, &str); 20] = [
             ("/fts ", "full-text search over every content index: /fts beta design //mime pdf"),
             ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
-            ("/sort/", "order the results by a field, e.g. /s/size/desc"),
-            ("/group/", "fold the results into sections, e.g. /g/dm/week or /g/pf/2"),
+            ("/s/", "(/sort) order the results by a field, e.g. /s/size/desc"),
+            ("/sort/", "(/s) order the results by a field, e.g. /sort/size/desc"),
+            ("/g/", "(/group) fold the results into sections, e.g. /g/dm/week or /g/pf/2"),
+            ("/group/", "(/g) fold the results into sections, e.g. /group/dm/week"),
             ("/show-dotfiles ", "include names starting with a dot (this search only)"),
             ("/hide-dotfiles ", "leave out names starting with a dot (this search only)"),
             ("/show-backup ", "include restic backups and btrfs snapshots (this search only)"),
@@ -816,9 +818,16 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/hide-fts-dwg ", "content searches leave out AutoCAD drawings"),
         ];
         for (v, label) in VERBS {
-            if v.starts_with(frag) || (frag.len() >= 2 && "/s".starts_with(frag) && v == "/sort/") || (frag.len() >= 2 && "/g".starts_with(frag) && v == "/group/") {
-                out.push((v.to_string(), label.to_string()));
-            }
+            if v.starts_with(frag) { out.push((v.to_string(), label.to_string())); }
+        }
+        // the shorthands' own arguments, listed up front like the launcher does
+        for (name, _) in SORT_FIELDS.iter() {
+            let v = format!("/s/{name}");
+            if v.starts_with(frag) { out.push((v, "(/sort) sort field".to_string())); }
+        }
+        for name in GROUP_TYPES.iter().copied().chain(["pf"]) {
+            let v = format!("/g/{name}");
+            if v.starts_with(frag) { out.push((v, "(/group) group by".to_string())); }
         }
     }
     if let Some(chain) = frag.strip_prefix("/group/").or_else(|| frag.strip_prefix("/g/")) {
@@ -3597,7 +3606,9 @@ impl eframe::App for App {
                         .corner_radius(6.0)
                         .inner_margin(Margin::symmetric(6, 4))
                         .show(ui, |ui| {
-                            for (i, (rep, label)) in self.cands.iter().enumerate().take(8) {
+                            // a window of rows that follows the selection, so a long list scrolls instead of being cut off
+                            let first = (self.cand_sel + 1).saturating_sub(14);
+                            for (i, (rep, label)) in self.cands.iter().enumerate().skip(first).take(14) {
                                 let sel = i == self.cand_sel;
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(rep.trim_end()).monospace().color(if sel { pal.accent } else { pal.text }));
