@@ -52,6 +52,8 @@ pub struct Schema {
     pub hidden_types: Vec<String>,
     /// extra verb-stage candidates (`fts/claude-live`)
     pub extra_universe: Vec<String>,
+    /// verbs that parse (so they stay inert) but are not offered in completion
+    pub hidden_verbs: Vec<String>,
     /// key vocabulary of an app verb (`fts` -> claude-live, claude-archive, tmux)
     pub app_keys: Vec<(String, Vec<String>)>,
 }
@@ -60,7 +62,7 @@ impl Schema {
     pub fn new(types: &[&str], extra_verbs: Vec<VerbDef>) -> Schema {
         let mut verbs = core_verbs();
         verbs.extend(extra_verbs);
-        Schema { types: types.iter().map(|s| s.to_string()).collect(), verbs, exact_types: vec![], type_descs: vec![], hidden_types: vec![], extra_universe: vec![], app_keys: vec![] }
+        Schema { types: types.iter().map(|s| s.to_string()).collect(), verbs, exact_types: vec![], type_descs: vec![], hidden_types: vec![], extra_universe: vec![], hidden_verbs: vec![], app_keys: vec![] }
     }
 
     fn spellings(&self) -> Vec<(String, String)> {
@@ -253,6 +255,11 @@ pub fn parse(schema: &Schema, query: &str) -> Parsed {
 pub trait Source {
     /// the value of type `ty` for `row`
     fn value(&self, row: usize, ty: &str) -> String;
+    /// every value of a multi-valued type (categories, keywords); a row matches when any one does.
+    /// Sorting and grouping use `value` (the first).
+    fn values(&self, row: usize, ty: &str) -> Vec<String> {
+        vec![self.value(row, ty)]
+    }
     /// the free-text haystack a bare word is searched in
     fn haystack(&self, row: usize) -> String;
     /// a type answered outside the row text (e.g. a full-text index): Some(hit) overrides the substring test
@@ -271,7 +278,7 @@ pub fn term_matches(schema: &Schema, src: &dyn Source, row: usize, term: &Term) 
             if schema.exact_types.contains(ty) {
                 return value.is_empty() || src.value(row, ty) == *value;
             }
-            substr(value, &src.value(row, ty), *exact)
+            src.values(row, ty).iter().any(|v| substr(value, v, *exact))
         }),
     };
     m != term.neg()
