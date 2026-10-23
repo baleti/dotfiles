@@ -2506,7 +2506,7 @@ impl App {
     }
 
     /// Paints one group header across `rect` (a line above its members) and reports a click on it.
-    fn group_header(&mut self, ui: &mut egui::Ui, rect: egui::Rect, slot: usize, list_cols: Option<(f32, f32)>) {
+    fn group_header(&mut self, ui: &mut egui::Ui, rect: egui::Rect, slot: usize, list_cols: Option<(f32, f32, f32)>) {
         let pal = self.pal;
         let group::Entry::Header { depth, id, label, count } = self.gvis[slot].clone() else { return };
         let resp = ui.interact(rect, egui::Id::new(("ghdr", &id)), egui::Sense::click());
@@ -2521,10 +2521,13 @@ impl App {
         let small = egui::FontId::monospace(11.0);
         let mut tail = format!("{}{}", group_digits(count), if folded { " (folded)" } else { "" });
         let mut limit = rect.right() - 8.0;
+        let mut count_x: Option<f32> = None;
         match list_cols {
             // list: the totals sit under their own columns (size, #P); the label stops before the first of them
-            Some((size_x, pages_x)) => {
-                limit = size_x.min(pages_x) - 8.0;
+            Some((path_x, size_x, pages_x)) => {
+                // the name stops where the NAME column does; the count sits under PATH
+                limit = path_x - 8.0;
+                count_x = Some(path_x);
                 if bytes > 0 { painter.text(egui::pos2(size_x, y), egui::Align2::LEFT_BOTTOM, human_size(bytes), small.clone(), pal.dim); }
                 if pages > 0 { painter.text(egui::pos2(pages_x, y), egui::Align2::LEFT_BOTTOM, group_digits(pages as usize), small.clone(), pal.dim); }
             }
@@ -2536,7 +2539,7 @@ impl App {
         }
         let mono = egui::FontId::monospace(13.0);
         let tail_w = painter.layout_no_wrap(tail.clone(), small.clone(), pal.dim).size().x;
-        let room = (limit - x - tail_w - 12.0).max(40.0);
+        let room = if count_x.is_some() { (limit - x).max(40.0) } else { (limit - x - tail_w - 12.0).max(40.0) };
         let full = format!("{chev} {label}");
         let mut shown = full.clone();
         if painter.layout_no_wrap(full.clone(), mono.clone(), pal.text).size().x > room {
@@ -2550,9 +2553,12 @@ impl App {
         }
         let galley = painter.layout_no_wrap(shown, mono, pal.text);
         painter.galley(egui::pos2(x, y - galley.size().y), galley.clone(), pal.text);
-        // too narrow for the count as well: drop it rather than overlap the totals
-        if x + galley.size().x + 12.0 + tail_w <= limit {
-            painter.text(egui::pos2(x + galley.size().x + 12.0, y), egui::Align2::LEFT_BOTTOM, tail, small, pal.dim);
+        match count_x {
+            Some(cx) => { painter.text(egui::pos2(cx, y), egui::Align2::LEFT_BOTTOM, tail, small, pal.dim); }
+            // too narrow for the count as well: drop it rather than overlap the totals
+            None => if x + galley.size().x + 12.0 + tail_w <= limit {
+                painter.text(egui::pos2(x + galley.size().x + 12.0, y), egui::Align2::LEFT_BOTTOM, tail, small, pal.dim);
+            },
         }
         if resp.clicked() { self.pending_fold = Some(id); }
     }
@@ -3884,7 +3890,7 @@ impl eframe::App for App {
                                     None => {
                                         let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
                                         let c = cols(hr.left() + 6.0 + thumb + 12.0, hr.right(), &frac, show_score);
-                                        self.group_header(ui, hr, slot, Some((c.size_r, c.pages_x)));
+                                        self.group_header(ui, hr, slot, Some((c.path_x, c.size_r, c.pages_x)));
                                         continue;
                                     }
                                 }
