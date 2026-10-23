@@ -34,6 +34,7 @@ def main():
     ap.add_argument("--idle", type=int, default=config.AI1["idle_secs"])
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only", choices=list(WORKERS), action="append")
+    ap.add_argument("--force", action="store_true", help="process every listed path again, even if it already has a record (changed files)")
     a = ap.parse_args()
     which = a.only or list(WORKERS)
     paths = []
@@ -60,7 +61,7 @@ def main():
     [t.start() for t in threads]
     tars = {w: tarfile.open(fileobj=procs[w].stdin, mode="w|") for w in which}
     # dones hold full remote names (remote prefix + path), so compare with the base prefixed
-    todo = [p for p in paths if any(a.base + p not in dones[w] for w in which)]
+    todo = paths if a.force else [p for p in paths if any(a.base + p not in dones[w] for w in which)]
     print(f"{len(paths)} listed, {len(todo)} to do", file=sys.stderr, flush=True)
     for i in range(0, len(todo), a.chunk):
         chunk = todo[i:i + a.chunk]
@@ -73,7 +74,7 @@ def main():
                 p = os.path.join(tmp, "img", rel)
                 if not os.path.exists(p): continue
                 for w in which:
-                    if a.base + rel not in dones[w]:
+                    if a.force or a.base + rel not in dones[w]:
                         tars[w].add(p, arcname=rel)
         print(f"staged {min(i + a.chunk, len(todo))}/{len(todo)}", file=sys.stderr, flush=True)
     for w in which:

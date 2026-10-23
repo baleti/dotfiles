@@ -1,0 +1,8 @@
+[Unit]
+Description=Start the host1 image job (CLIP + InsightFace on ai1) when 3 days have passed since the last start
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/bin/index/photos/remote_images.py start
+Nice=15
