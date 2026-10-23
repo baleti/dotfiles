@@ -140,7 +140,7 @@ function groupKind(name) {
     if (n.indexOf("size") >= 0) return "size";
     if (n === "age" || /-age$/.test(n)) return "age";
     if (n === "dm" || ["date", "modified", "created", "mtime", "time", "when", "deadline", "scheduled"].some(function (w) { return n.indexOf(w) >= 0; })) return "date";
-    if (n.indexOf("path") >= 0 || ["dir", "directory", "folder", "cwd", "remote"].indexOf(n) >= 0) return "path";
+    if (n.indexOf("path") >= 0) return "path";
     return "value";
 }
 
@@ -180,7 +180,7 @@ function parseGroup(text, known, aliases) {
         var kind = groupKind(n), b;
         if ((aliasPf[n] || bucket === "pf") && kind === "path") b = "pf";
         else if (_DATE_BUCKETS.indexOf(bucket) >= 0 && kind === "date") b = bucket;
-        else b = ({ date: "day", size: "size", age: "age" })[kind] || "value";
+        else b = ({ date: "day", size: "size", age: "age", path: "pf" })[kind] || "value";
         if (b === bucket) hasBucket = true;
         if (b === "pf") hasPf = true;
         specs.push({ name: n, bucket: b, level: level || 1 });

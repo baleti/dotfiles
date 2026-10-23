@@ -665,7 +665,7 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   - No bucket: the default of the key's family, picked from its *name* - date types (`date`, `modified`,
     `created`, `time`, `dm`...) group by `day`; `size` by order of magnitude (`< 1 KB`, `1 - 10 KB` ... `10 GB or
     more`); `age` (`5m`, `3h`) into `Last hour` / `Last day` / `Last week` / `Last month` / `Older`; path types
-    by the exact value; anything else by the exact value.
+    by `pf` (level 1) - so `/g/path` is `/g/path/pf/1`; anything else by the exact value. A type whose name contains `path` holds the entry's full path, its own name included.
 - **Order.** Groups are ordered by their key, **descending by default** like `/s` (newest day, biggest size,
   newest age bucket first; text values Z-A - say `/asc` for A-Z); the `(none)` group (empty / unparseable value)
   is always last. Rows inside a group keep the order the rest of the query gives them (`/s`, the picker's
@@ -676,11 +676,15 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   fixed - rows -> filter -> sort -> group - whatever order they are typed in. A value token owned by `//key`
   or `/fv/key` is never read as a `/g`. A column verb (`/ft /at /rt`) cannot hide the grouped key's *section*:
   the headers come from the underlying value.
-- **Collapse.** Each section header can be folded (click, or Left / Right / Space on the focused header).
-  State is held in memory per group id and reset when the query changes. A collapsed header keeps its
-  count; keyboard row navigation skips the folded rows.
+- **Collapse.** Each section header can be folded by clicking it, or from the keyboard with the picker's
+  fold key (mod+1: `Ctrl+G`, rebindable) on the selected row's section. State is held in memory per group
+  id and reset when the query changes. A collapsed header keeps its count; the folded rows leave the
+  sequence, so keyboard navigation skips them. Up / Down in a grouped grid keep the column and cross into
+  the neighbouring section.
 - **Rendering** is each picker's own: a full-width header row with a break above it in the images grid,
-  a header line between rows in list pickers. A picker that does not group treats `/g` as inert.
+  a header line between rows in list pickers. mod+1 asks the server for the first 20,000 matches
+  (names, sizes, dates only), groups them locally and says `grouped the first N of M` when the result set
+  is bigger; the thumbnails of the visible rows load lazily as before. A picker that does not group treats `/g` as inert.
 - **Shared code**: `parse_group`, `group_value`, `group_layout`, `group_visible`, `extract_group` in
   `~/.config/dsl/dsl.py`, `~/.config/quickshell/lib/dsl.js` and `~/.config/dsl/group.rs`, all proven by the
   `group` vectors in `tests.json`.
