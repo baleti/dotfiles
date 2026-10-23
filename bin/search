@@ -40,6 +40,8 @@ VERBS (anywhere in the query)
   /clip words        photos matching what they show      /face name   photos showing a registered person
                      (--score shows the match score; --snippets prints the matching passages for /fts and /chroma)
   /s/FIELD[,FIELD][/asc|/desc]   sort by name, path, size, date-modified, extension, depth, pages (chain with commas, e.g. /s/size,name; descending unless /asc)
+  /g/KEY[,KEY][/BUCKET][/asc|/desc]   fold the results into sections (printed as '## label  [n]' lines; --json adds a "group" array): KEY is a /s field or pf (parent folder);
+                                 BUCKET is pf (+ /N for the Nth parent folder), day, week, month or year; e.g. /g/dm/week, /g/pf/2, /g/pf,dm/month
   /show-dotfiles  /hide-dotfiles                         names starting with a dot
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
   /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
@@ -61,6 +63,19 @@ SORT_FIELDS = [("name", "name"), ("path", "path"), ("size", "size"), ("date-modi
                ("extension", "ext"), ("depth", "depth"), ("pages", "pages")]
 
 # ---- a faithful port of the picker's /s handling (images/src/main.rs parse_sort) --------------------------
+GROUP_TYPES = ["name", "path", "size", "date-modified", "extension", "depth", "pages"]
+GROUP_ALIASES = {"dm": "date-modified", "date": "date-modified", "ext": "extension"}
+
+
+def group_value(r, name):
+    """The raw value of a /group type for one result row (the same fields the picker groups on)."""
+    remote = r.get("remote") or ""
+    base = remote.rsplit("/", 1)[-1]
+    return {"name": base, "path": remote, "size": "" if r.get("size") is None else str(r["size"]),
+            "date-modified": r.get("mtime") or "", "extension": base.rsplit(".", 1)[-1].lower() if "." in base else "",
+            "depth": str(remote.count("/")), "pages": "" if r.get("pages") is None else str(r["pages"])}.get(name, "")
+
+
 def tokenize(q):
     """Whitespace split that keeps quotes in the tokens (shared: dsl.split_raw)."""
     return dsl.split_raw(q)
@@ -270,6 +285,10 @@ def main():
 
     # query + sort: the /s verb wins over the options, as in the picker
     query, keys, desc, explicit = parse_sort(" ".join(a.query))
+    # /g is a view over the rows the filters kept (the picker does the same): take it out of the query
+    rest_tokens, grp = dsl.extract_group(tokenize(query), GROUP_TYPES, GROUP_ALIASES,
+                                         lambda t: t in ("/clip", "/face") or dsl._owns_next(t))
+    query = " ".join(rest_tokens)
     if not explicit:
         explicit = bool(a.sort or a.asc)
         if a.sort:
@@ -365,8 +384,25 @@ def main():
                         sys.stdout.write("\t".join([cell(r, f) for f in fields] + [pth]) + "\n")
                 sys.stdout.flush()
                 rows = []
+    items = [("r", r, []) for r in rows]
+    if grp:
+        today = time.strftime("%Y-%m-%d")
+        lay = dsl.group_layout(rows, grp, group_value, today)
+        stack, items = [], []
+        for e in lay:
+            if e[0] == "h":
+                del stack[e[1]:]
+                stack.append(e[3])
+                items.append(("h", e[1], e[3], e[4]))
+            else:
+                items.append(("r", rows[e[1]], list(stack)))
     try:
-        for r in rows:
+        for it in items:
+            if it[0] == "h":
+                if not a.json and not a.nul:
+                    sys.stdout.write("  " * it[1] + f"## {it[2]}  [{it[3]}]\n")
+                continue
+            r, gpath = it[1], it[2]
             if fields and not a.json:
                 pth = r["remote"] if a.raw else local_path(r["remote"])
                 sys.stdout.write("\t".join([cell(r, f) for f in fields] + [pth]) + end)
@@ -378,6 +414,8 @@ def main():
                     o["score"] = r["score"]
                 for f in fields:
                     o[f] = info[r["remote"]].get(f)
+                if grp:
+                    o["group"] = gpath
                 if a.group_by:
                     o["thread"] = thread_key(info[r["remote"]].get("subject") or "")
                 if a.snippets:

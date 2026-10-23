@@ -230,12 +230,12 @@ FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 # match just "/fv" (its optional trailing arg requires whitespace, not a
 # literal "/") and leave "/field word" to be re-scanned as its own,
 # unrelated tokens. See ~/.config/docs/query-dsl.md.
-_ARG = r'("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|fts|)(?:/|\s|$))\S+)'
+_ARG = r'("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g|fts|)(?:/|\s|$))\S+)'
 QUERY_ELEM_RE = re.compile(
     r'(!?)(?:'
     r'/(?:filter-value|fv|)/([a-zA-Z,-]+)(?:\s+' + _ARG + r')?'
     r'|/fts(?:/([a-zA-Z,-]+))?(?=\s|$)(?:\s+' + _ARG + r')?'
-    r'|/(?:filter-type|ft|add-type|at|remove-type|rt|sort|s)(?:/\S*)?'
+    r'|/(?:filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g)(?:/\S*)?'  # /g: inert here (fzf cannot fold sections)
     r'|"([^"]*)"'
     r'|(\S+)'
     r')'

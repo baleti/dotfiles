@@ -4123,6 +4123,50 @@ mod dsl_conformance {
         }
     }
 
+    /// /g is position-independent and leaves every other token (filters, /s, a /clip or /face value, a //tag value)
+    /// exactly as it was, so the server filters first and the grouping only ever sees the survivors.
+    #[test]
+    fn group_composes_with_the_pipeline() {
+        let base = ["//name", "rvt", "/s/size/asc", "/g/dm/week", "plain"];
+        let (want_rest, want_group) = extract_group_q(&base.join(" "));
+        assert!(want_group.is_some());
+        // every typing order of the four stages gives the same remaining query and the same grouping
+        let idx: Vec<usize> = (0..base.len()).collect();
+        fn perms(v: &[usize]) -> Vec<Vec<usize>> {
+            if v.len() <= 1 { return vec![v.to_vec()]; }
+            let mut out = Vec::new();
+            for i in 0..v.len() {
+                let mut rest = v.to_vec();
+                let x = rest.remove(i);
+                for mut p in perms(&rest) { p.insert(0, x); out.push(p); }
+            }
+            out
+        }
+        for p in perms(&idx) {
+            let toks: Vec<&str> = p.iter().map(|i| base[*i]).collect();
+            // `//name` owns the token after it, so only orders that keep the pair together are the same query
+            let a = toks.iter().position(|t| *t == "//name").unwrap();
+            if toks.get(a + 1) != Some(&"rvt") { continue; }
+            let (rest, g) = extract_group_q(&toks.join(" "));
+            assert_eq!(g, want_group, "grouping for {toks:?}");
+            let mut r: Vec<&str> = rest.split(' ').collect();
+            let mut w: Vec<&str> = want_rest.split(' ').collect();
+            r.retain(|t| *t != "/s/size/asc"); w.retain(|t| *t != "/s/size/asc");
+            let pair = |v: &[&str]| v.iter().position(|t| *t == "//name").map(|i| v.get(i + 1) == Some(&"rvt"));
+            assert_eq!(pair(&r), Some(true), "//name still owns rvt in {toks:?}");
+            r.sort(); w.sort();
+            assert_eq!(r, w, "remaining query for {toks:?}");
+        }
+        // values owned by another command are never read as /g
+        let (rest, g) = extract_group_q("/clip /g/dm brick");
+        assert!(g.is_none() && rest == "/clip /g/dm brick", "/clip owns its value: {rest}");
+        let (rest, g) = extract_group_q("//path /g/dm /g/pf");
+        assert!(g.is_some() && rest == "//path /g/dm", "//path owns its value, the next /g stands: {rest}");
+        // an inert /g is dropped and the query keeps working
+        let (rest, g) = extract_group_q("rvt /g/nosuchtype");
+        assert!(g.is_none() && rest == "rvt");
+    }
+
     #[test]
     fn direction_words() {
         let t = vectors();
