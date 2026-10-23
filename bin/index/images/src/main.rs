@@ -3004,9 +3004,16 @@ impl eframe::App for App {
                 )
             });
             let (cj_n, ck_n) = (take_act(ui, &keys, "next"), take_act(ui, &keys, "prev"));
+            // Space accepts like Tab and Enter (its text event is dropped so no space is typed); Ctrl+Space is left alone
+            let space = ui.input_mut(|i| {
+                if i.modifiers.ctrl || i.modifiers.alt || i.modifiers.command { return false; }
+                let sp = i.consume_key(egui::Modifiers::NONE, Key::Space);
+                if sp { i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == " ")); }
+                sp
+            });
             let n = self.cands.len();
             if esc { self.popup = false; }
-            else if enter { self.accept_candidate(); }
+            else if enter || space { self.accept_candidate(); }
             else if n > 0 {
                 let _ = (cj, ck);
                 if down { self.cand_sel = (self.cand_sel + 1) % n; }
