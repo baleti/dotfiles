@@ -439,11 +439,9 @@ hl.bind(mainMod .. " + j", hl.dsp.focus({ direction = "down" }),  { repeating = 
 hl.bind(mainMod .. " + k", hl.dsp.focus({ direction = "up" }),    { repeating = true, description = "Focus the window above" })
 hl.bind(mainMod .. " + l", hl.dsp.focus({ direction = "right" }), { repeating = true, description = "Focus the window to the right" })
 
--- app launcher (quickshell, ~/.config/quickshell/launcher/ -- replaced
--- `rofi -show drun`). A second tap toggles it closed; Escape also closes.
--- PoC (2026-10-23): the launcher is a small native process, ~/.config/hypr/launcher-ui (text-only rows;
--- /verbs, Tab completion and history are handed to the Quickshell launcher). A second tap closes it.
--- Revert: exec_cmd("qs ipc call launcher toggle") here.
+-- app launcher: a small native process, ~/.config/hypr/launcher-ui (icons, the shared picker DSL from
+-- ~/.config/dsl/rs, completion, history, /g sections, workspace actions). It replaced the Quickshell
+-- launcher (and, before that, `rofi -show drun`). A second tap toggles it closed; Escape also closes.
 hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd(os.getenv("HOME") .. "/.config/hypr/launcher-ui/target/release/launcher-ui"), { release = true, description = "Open the app launcher" })
 
 -- master/stack layout cycling
