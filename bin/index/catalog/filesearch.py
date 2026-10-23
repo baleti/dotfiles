@@ -21,7 +21,9 @@ KINDS = {
     "video": "mp4 mkv avi mov webm wmv m4v",
     "archive": "zip tar gz tgz xz 7z rar bz2 zst",
     "ebook": "epub mobi azw3 djvu",
+    "directory": "",    # no extension: folders are the catalog entries without a size (see DIRECTORY)
 }
+DIRECTORY = "directory"
 EXT_KIND = {}
 for kind, exts in KINDS.items():
     for e in exts.split():
@@ -98,8 +100,11 @@ def wants(ext, w):
         return w[1:] == ext
     return w == ext or EXT_KIND.get(ext) == w
 
-def matches_mime(path, wanted):
-    """wanted: list of kind names, extensions or ".ext" entries; a file matches if any applies."""
+def matches_mime(path, wanted, is_dir=False):
+    """wanted: list of kind names, extensions or ".ext" entries; a file matches if any applies.
+    A directory matches only "directory"; its name's dots are not an extension."""
+    if is_dir:
+        return DIRECTORY in wanted
     ext = kind_of(path)
     return any(wants(ext, w) for w in wanted)
 
@@ -196,7 +201,7 @@ def _date_ok(mtime, cond):
 def tag_ok(i, paths, sizes, mtimes, wanted, tags):
     p = paths[i]
     base = p.rsplit("/", 1)[-1].lower()
-    if wanted and not matches_mime(p, wanted):
+    if wanted and not matches_mime(p, wanted, sizes[i] is None):
         return False
     if any(t.lower() not in base for t in tags["name"]):
         return False
@@ -625,12 +630,18 @@ class NameTable:
             mask &= ~self._cached_term_mask(expand_path_value(v).encode("utf-8"))
         if not_wanted:
             banned = [k for k, e in enumerate(ext_names) if any(wants(e, w) for w in not_wanted)]
-            mask &= ~np.isin(ext_codes, np.array(banned, np.int32))
+            hit = np.isin(ext_codes, np.array(banned, np.int32)) & (size_arr >= 0)
+            if DIRECTORY in not_wanted:
+                hit |= size_arr < 0
+            mask &= ~hit
         for c in tags["!size"]:
             mask &= ~_size_mask(size_arr, c)
         if wanted:
             allowed = [k for k, e in enumerate(ext_names) if any(wants(e, w) for w in wanted)]
-            mask &= np.isin(ext_codes, np.array(allowed, np.int32))
+            hit = np.isin(ext_codes, np.array(allowed, np.int32)) & (size_arr >= 0)
+            if DIRECTORY in wanted:
+                hit |= size_arr < 0
+            mask &= hit
         for c in tags["size"]:
             mask &= _size_mask(size_arr, c)
         if order is not None:
