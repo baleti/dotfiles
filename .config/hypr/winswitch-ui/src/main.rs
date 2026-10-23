@@ -76,6 +76,14 @@ const SHOW_DELAY: Duration = Duration::from_millis(70);
 /// Give up waiting for the Quickshell grid to map after a handoff.
 const HANDOFF_TIMEOUT: Duration = Duration::from_millis(2500);
 
+struct Ac {
+    comp: pickerdsl::Completion,
+    items: Vec<String>,
+    sel: usize,
+}
+
+const AC_ROW_H: i32 = 24;
+
 struct Win {
     addr: String,
     class: String,
@@ -196,10 +204,33 @@ fn make_schema() -> pickerdsl::Schema {
         }
     }
     let mut sc = pickerdsl::Schema::new(&types, vec![
-        VerbDef { short: "fts", long: "", kind: VerbKind::App { takes_arg: true }, max_parts: 2 },
-        VerbDef { short: "sw", long: "switch-workspace", kind: VerbKind::App { takes_arg: false }, max_parts: 1 },
+        VerbDef { short: "sw", long: "switch-workspace", kind: VerbKind::App { takes_arg: false }, max_parts: 1, desc: "show workspaces instead of windows; pick one to switch to it" },
+        VerbDef { short: "fts", long: "", kind: VerbKind::App { takes_arg: true }, max_parts: 2, desc: "full text of the running and archived Claude conversations" },
     ]);
     sc.exact_types = vec!["windows".into()];
+    sc.hidden_types = vec!["claude-fts".into()];
+    sc.extra_universe = ["fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux"].map(String::from).to_vec();
+    sc.app_keys = vec![("fts".into(), ["claude", "claude-live", "claude-archive", "tmux"].map(String::from).to_vec())];
+    sc.type_descs = [
+        ("title", "the window title"),
+        ("workspace", "the Hyprland workspace"),
+        ("pid", "the process id"),
+        ("monitor", "the monitor a workspace is on (/sw view)"),
+        ("windows", "how many windows a workspace holds (/sw view)"),
+        ("tmux", "tmux scrollback (panes without a Claude session)"),
+        ("tmux-session", "tmux session name"),
+        ("tmux-window", "tmux window name"),
+        ("tmux-title", "tmux window title"),
+        ("claude", "Claude Code session on this terminal"),
+        ("claude-live", "running conversations only"),
+        ("claude-archive", "past conversations only; Enter resumes one in a new window"),
+        ("claude-title", "Claude Code session title"),
+        ("claude-path", "Claude Code working directory"),
+        ("claude-session", "Claude Code session id"),
+        ("claude-age", "how long ago the transcript last changed"),
+    ]
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .to_vec();
     sc
 }
 
@@ -617,6 +648,13 @@ struct App {
     cursor: usize, // in chars
     history: Vec<String>,
     schema: pickerdsl::Schema,
+    /// the open completion / history popup
+    ac: Option<Ac>,
+    ac_active: bool, // a completion session is open: typing re-narrows it, even through zero candidates
+    ac_scroll: usize,
+    hist_idx: i32, // Up/Down history cycling; -1 = on the draft
+    hist_draft: String,
+    recalling: bool, // set_query() called by history recall / accept: not a fresh edit
     columns: Vec<String>, // the active columns for the current query (title first)
     filtered: Vec<usize>, // window indices passing the query, in list order (sorted by /s)
     selected: i32,        // window index, -1 = none
@@ -660,6 +698,10 @@ impl App {
     /// (card height, rows of cells that fit)
     fn card_dims(&self) -> (i32, i32) {
         let l = self.layout.as_ref().unwrap();
+        if self.ac.is_some() {
+            let h = (self.header_h() + self.ac_rows() as i32 * AC_ROW_H + 8 + 32).min(l.card_max_h);
+            return (h, 1);
+        }
         let ch = self.cell_hgt();
         let h = (self.header_h() + l.rows * ch + 32).min(l.card_max_h);
         (h, ((h - 32 - self.header_h()) / ch).max(1))
@@ -805,6 +847,14 @@ impl App {
         self.cursor = cursor.min(self.qlen());
         self.refilter();
         self.dirty = true;
+        if !self.recalling {
+            self.hist_idx = -1;
+        }
+        if self.ac_active {
+            self.ac_recompute();
+        } else {
+            self.ac = None;
+        }
         if needs_qs(&self.schema, &self.query) {
             self.handoff(false);
         }
@@ -830,7 +880,7 @@ impl App {
 
     /// zsh-autosuggestions style: the rest of the newest history entry starting with the query.
     fn ghost(&self) -> String {
-        if !self.locked || self.cursor != self.qlen() || self.query.trim().is_empty() {
+        if !self.locked || self.ac.is_some() || self.cursor != self.qlen() || self.query.trim().is_empty() {
             return String::new();
         }
         for e in self.history.iter().rev() {
@@ -839,6 +889,144 @@ impl App {
             }
         }
         String::new()
+    }
+
+    // ---- completion / history popup ----
+
+    fn hide_ac(&mut self) {
+        self.ac = None;
+        self.ac_active = false;
+        self.ac_scroll = 0;
+        self.dirty = true;
+    }
+
+    fn ac_candidates(&self, comp: &pickerdsl::Completion) -> Vec<String> {
+        pickerdsl::candidates(&self.schema, comp, &WinSrc(&self.windows), self.windows.len())
+    }
+
+    /// Re-derive the open popup's items for the current query (a history popup narrows by subsequence).
+    fn ac_recompute(&mut self) {
+        let Some(ac) = &self.ac else { return };
+        if ac.comp.kind == pickerdsl::CompKind::History {
+            let items = pickerdsl::history_candidates(&self.history, &self.query);
+            self.ac = Some(Ac { comp: ac.comp.clone(), items, sel: 0 });
+        } else if let Some(comp) = pickerdsl::completion_context(&self.schema, &self.query) {
+            let items = self.ac_candidates(&comp);
+            self.ac = if items.is_empty() { None } else { Some(Ac { comp, items, sel: 0 }) };
+        } else {
+            self.ac = None;
+        }
+        self.ac_scroll = 0;
+        self.dirty = true;
+    }
+
+    /// Tab / Ctrl+Space: open the popup on what the cursor is on; one candidate is taken at once.
+    fn trigger_completion(&mut self) {
+        let Some(comp) = pickerdsl::completion_context(&self.schema, &self.query) else { return };
+        self.ac_active = true;
+        let items = self.ac_candidates(&comp);
+        if items.is_empty() {
+            return;
+        }
+        let single = items.len() == 1;
+        self.ac = Some(Ac { comp, items, sel: 0 });
+        self.ac_scroll = 0;
+        self.dirty = true;
+        if single {
+            self.ac_accept();
+        }
+    }
+
+    fn completion_tab(&mut self, back: bool) {
+        if self.ac.is_some() {
+            self.ac_move(if back { -1 } else { 1 }, true);
+        } else {
+            self.trigger_completion();
+        }
+    }
+
+    fn ac_move(&mut self, d: i32, wrap: bool) {
+        let Some(ac) = self.ac.as_mut() else { return };
+        let n = ac.items.len() as i32;
+        if n == 0 {
+            return;
+        }
+        let t = ac.sel as i32 + d;
+        ac.sel = if wrap { t.rem_euclid(n) } else { t.clamp(0, n - 1) } as usize;
+        let rows = self.ac_rows();
+        let sel = self.ac.as_ref().unwrap().sel;
+        if sel < self.ac_scroll {
+            self.ac_scroll = sel;
+        } else if sel >= self.ac_scroll + rows {
+            self.ac_scroll = sel + 1 - rows;
+        }
+        self.dirty = true;
+    }
+
+    /// How many popup rows fit in the card.
+    fn ac_rows(&self) -> usize {
+        let Some(l) = self.layout.as_ref() else { return 1 };
+        let cap = if self.ac.as_ref().is_some_and(|a| a.comp.kind == pickerdsl::CompKind::History) { l.card_max_h / 2 } else { l.card_max_h - self.header_h() - 32 };
+        (((cap - 8) / AC_ROW_H).max(1) as usize).min(self.ac.as_ref().map_or(1, |a| a.items.len()).max(1))
+    }
+
+    fn ac_accept(&mut self) {
+        let Some(ac) = self.ac.take() else { return };
+        let Some(chosen) = ac.items.get(ac.sel) else { return };
+        let q = pickerdsl::accept(&self.query, &ac.comp, chosen);
+        self.ac_active = false;
+        self.ac_scroll = 0;
+        let c = q.chars().count();
+        self.recalling = true; // an accepted candidate is not a fresh edit for history cycling
+        self.set_query(q, c);
+        self.recalling = false;
+    }
+
+    fn open_history(&mut self) {
+        let comp = pickerdsl::Completion { kind: pickerdsl::CompKind::History, start: 0, fragment: String::new(), verb: None, fields: None };
+        let items = pickerdsl::history_candidates(&self.history, &self.query);
+        self.ac = Some(Ac { comp, items, sel: 0 });
+        self.ac_active = true;
+        self.ac_scroll = 0;
+        self.dirty = true;
+    }
+
+    fn history_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        if self.hist_idx < 0 {
+            self.hist_draft = self.query.clone();
+            self.hist_idx = self.history.len() as i32;
+        }
+        if self.hist_idx > 0 {
+            self.hist_idx -= 1;
+            let t = self.history[self.hist_idx as usize].clone();
+            self.recall(t);
+        }
+    }
+
+    fn history_next(&mut self) {
+        if self.hist_idx < 0 {
+            return;
+        }
+        self.hist_idx += 1;
+        if self.hist_idx as usize >= self.history.len() {
+            self.hist_idx = -1;
+            let t = std::mem::take(&mut self.hist_draft);
+            self.recall(t);
+        } else {
+            let t = self.history[self.hist_idx as usize].clone();
+            self.recall(t);
+        }
+    }
+
+    fn recall(&mut self, t: String) {
+        self.hide_ac();
+        let c = t.chars().count();
+        self.recalling = true;
+        self.set_query(t, c);
+        self.recalling = false;
     }
 
     fn handle_key(&mut self, ev: KeyEvent) {
@@ -855,22 +1043,42 @@ impl App {
         // keys that behave the same in every state
         match ks {
             Keysym::Escape => {
-                self.exit = true;
+                if self.ac.is_some() {
+                    self.hide_ac();
+                } else {
+                    self.exit = true;
+                }
                 return;
             }
             Keysym::Return | Keysym::KP_Enter => {
-                self.confirm();
+                if self.ac.is_some() {
+                    self.ac_accept();
+                } else {
+                    self.confirm();
+                }
                 return;
             }
             _ => {}
         }
         if self.ctrl {
+            let in_search = self.locked && !self.list_focused;
             match ks {
-                Keysym::h => return self.advance(-1),
-                Keysym::l => return self.advance(1),
+                Keysym::h if self.ac.is_none() => return self.advance(-1),
+                Keysym::l if self.ac.is_none() => return self.advance(1),
+                Keysym::j | Keysym::k if self.ac.is_some() => return self.ac_move(if ks == Keysym::j { 1 } else { -1 }, false),
+                Keysym::j if in_search => {
+                    if self.hist_idx >= 0 {
+                        return self.history_next();
+                    }
+                    self.list_focused = true;
+                    self.dirty = true;
+                    return;
+                }
+                Keysym::k if in_search => return self.history_prev(),
                 Keysym::j => return self.advance_row(1),
                 Keysym::k => return self.advance_row(-1),
-                Keysym::r => return self.handoff(true), // history popup
+                Keysym::r if self.locked => return self.open_history(),
+                Keysym::space if self.locked && self.ac.is_none() => return self.trigger_completion(),
                 _ => {}
             }
         }
@@ -910,8 +1118,21 @@ impl App {
         // locked, search box focused
         let n = self.qlen();
         match ks {
-            Keysym::Tab | Keysym::ISO_Left_Tab => self.handoff(false), // completion
-            Keysym::Up => self.handoff(true),                           // history
+            Keysym::Tab | Keysym::ISO_Left_Tab => {
+                let back = ks == Keysym::ISO_Left_Tab || self.shift;
+                if self.ac.is_some() && !back {
+                    self.ac_accept();
+                } else {
+                    self.completion_tab(back);
+                }
+            }
+            Keysym::space if self.ac.is_some() && !self.ctrl => self.ac_accept(),
+            Keysym::Page_Down if self.ac.is_some() => self.ac_move(self.ac_rows() as i32, false),
+            Keysym::Page_Up if self.ac.is_some() => self.ac_move(-(self.ac_rows() as i32), false),
+            Keysym::Up if self.ac.is_some() => self.ac_move(-1, false),
+            Keysym::Down if self.ac.is_some() => self.ac_move(1, false),
+            Keysym::Up => self.history_prev(),
+            Keysym::Down if self.hist_idx >= 0 => self.history_next(),
             Keysym::Down => {
                 self.list_focused = true;
                 self.dirty = true;
@@ -992,7 +1213,7 @@ impl App {
                     return;
                 }
                 if self.locked {
-                    self.handoff(false); // Alt+Tab while locked cycles completion (DSL engine)
+                    self.completion_tab(dir < 0); // Alt+Tab while locked cycles completion
                 } else {
                     self.advance(dir);
                 }
@@ -1007,8 +1228,8 @@ impl App {
                 }
             }
             Msg::NavHistory => {
-                if !self.handing_off {
-                    self.handoff(true);
+                if !self.handing_off && self.locked {
+                    self.open_history();
                 }
             }
             Msg::QsMapped => {
@@ -1116,7 +1337,28 @@ impl App {
             let top = (hy + (SEARCH_H as f32 - lh / sc) / 2.0) * sc;
             let tx = (hx + 22.0) * sc;
             let max_w = (card_w - 32 - 22) as f32 * sc;
-            draw_text(&mut pm, &self.font, size, tx, top + asc, th.text, &self.query, max_w);
+            // recognised /commands in the accent colour, everything else normal
+            let spans = pickerdsl::command_spans(&self.schema, &self.query);
+            let qc: Vec<char> = self.query.chars().collect();
+            let mut at = 0usize;
+            let mut x = tx;
+            let mut seg = |pm: &mut Pixmap, from: usize, to: usize, col: Rgb, x: &mut f32| {
+                if to > from {
+                    let t: String = qc[from..to].iter().collect();
+                    draw_text(pm, &self.font, size, *x, top + asc, col, &t, max_w - (*x - tx));
+                    *x += text_width(&self.font, size, &t);
+                }
+            };
+            for (a, b, valid) in spans {
+                if !valid {
+                    continue;
+                }
+                let (a, b) = (a.min(qc.len()), b.min(qc.len()));
+                seg(&mut pm, at, a, th.text, &mut x);
+                seg(&mut pm, a, b, th.primary, &mut x);
+                at = b;
+            }
+            seg(&mut pm, at, qc.len(), th.text, &mut x);
             let before: String = self.query.chars().take(self.cursor).collect();
             let cxp = tx + text_width(&self.font, size, &before);
             let ghost = self.ghost();
@@ -1126,6 +1368,39 @@ impl App {
             }
             if let Some(r) = Rect::from_xywh(cxp, top, (1.5 * sc).max(1.0), lh) {
                 pm.fill_rect(r, &paint(th.primary, 255), Transform::identity(), None);
+            }
+        }
+
+        // completion / history popup (replaces the grid while open)
+        let mut popup_hits: Vec<(i32, i32, i32, i32, usize)> = vec![];
+        if let Some(ac) = &self.ac {
+            let (px0, py0) = (cx + 16, cy + 16 + self.header_h());
+            let rows = self.ac_rows();
+            let (asc, lh) = metrics(&self.font, 12.0 * sc);
+            let history = ac.comp.kind == pickerdsl::CompKind::History;
+            if ac.items.is_empty() && history {
+                draw_text(&mut pm, &self.font, 11.0 * sc, (px0 + 10) as f32 * sc, py0 as f32 * sc + asc + 4.0 * sc, th.text_dim, "no matching history", (card_w - 52) as f32 * sc);
+            }
+            for (i, item) in ac.items.iter().enumerate().skip(self.ac_scroll).take(rows) {
+                let y = py0 + 4 + (i - self.ac_scroll) as i32 * AC_ROW_H;
+                popup_hits.push((px0, y, card_w - 32, AC_ROW_H, i));
+                let cur = i == ac.sel;
+                if cur {
+                    fill(&mut pm, &rrect(px0 as f32 + 4.0, y as f32, (card_w - 40) as f32, AC_ROW_H as f32, 5.0), tf, th.primary, 46);
+                }
+                let (label, alias, desc) = if history { (item.clone(), String::new(), String::new()) } else { pickerdsl::row_info(&self.schema, ac.comp.kind, item) };
+                let base = (y as f32 + (AC_ROW_H as f32 - lh / sc) / 2.0) * sc + asc;
+                let mut x = (px0 + 14) as f32 * sc;
+                let room = (card_w - 52) as f32 * sc;
+                draw_text(&mut pm, &self.font, 12.0 * sc, x, base, if cur { th.primary } else { th.text }, &label, room);
+                x += text_width(&self.font, 12.0 * sc, &label) + 8.0 * sc;
+                let dim = [th.text_dim[0] / 2 + 13, th.text_dim[1] / 2 + 13, th.text_dim[2] / 2 + 13];
+                for t in [if alias.is_empty() { String::new() } else { format!("({alias})") }, desc] {
+                    if !t.is_empty() && x < room {
+                        draw_text(&mut pm, &self.font, 11.0 * sc, x, base, dim, &t, room - x + (px0 as f32) * sc);
+                        x += text_width(&self.font, 11.0 * sc, &t) + 8.0 * sc;
+                    }
+                }
             }
         }
 
@@ -1139,7 +1414,7 @@ impl App {
         let sel = self.selected;
         self.hits.clear();
         let mut hits = vec![];
-        for (slot, &wi) in self.filtered.iter().enumerate().skip(first).take((vis_rows * l.cols) as usize) {
+        for (slot, &wi) in self.filtered.iter().enumerate().skip(first).take(if self.ac.is_some() { 0 } else { (vis_rows * l.cols) as usize }) {
             let local = (slot - first) as i32;
             let (col, row) = (local % l.cols, local / l.cols);
             let (x, y) = (gx + col * cell_full_w, gy + row * cell_hgt);
@@ -1197,7 +1472,7 @@ impl App {
                 }
             }
         }
-        self.hits = hits;
+        self.hits = if popup_hits.is_empty() { hits } else { popup_hits };
 
         // blit to a shm buffer (tiny-skia RGBA premultiplied -> wl Argb8888 = B,G,R,A bytes)
         let stride = w * 4;
@@ -1367,7 +1642,12 @@ impl PointerHandler for App {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     if self.pointer_moved(x, y) {
                         if let Some(wi) = self.cell_at(x, y) {
-                            if self.selected != wi as i32 {
+                            if let Some(ac) = self.ac.as_mut() {
+                                if ac.sel != wi {
+                                    ac.sel = wi;
+                                    self.dirty = true;
+                                }
+                            } else if self.selected != wi as i32 {
                                 self.selected = wi as i32;
                                 self.dirty = true;
                             }
@@ -1376,7 +1656,12 @@ impl PointerHandler for App {
                 }
                 PointerEventKind::Press { button, .. } if button == 0x110 => {
                     if let Some(wi) = self.cell_at(x, y) {
-                        self.confirm_window(Some(wi));
+                        if let Some(ac) = self.ac.as_mut() {
+                            ac.sel = wi;
+                            self.ac_accept();
+                        } else {
+                            self.confirm_window(Some(wi));
+                        }
                     } else {
                         let (cx, cy, cw, ch) = self.card_rect;
                         let inside = x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64;
@@ -1387,7 +1672,11 @@ impl PointerHandler for App {
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     let step = if vertical.discrete != 0 { vertical.discrete.signum() } else { vertical.absolute.signum() as i32 };
-                    if step != 0 && self.layout.is_some() {
+                    if step != 0 && self.ac.is_some() {
+                        let max = self.ac.as_ref().map_or(0, |a| a.items.len()).saturating_sub(self.ac_rows());
+                        self.ac_scroll = (self.ac_scroll as i32 + step).clamp(0, max as i32) as usize;
+                        self.dirty = true;
+                    } else if step != 0 && self.layout.is_some() {
                         let total = (self.filtered.len() as i32 + self.cols() as i32 - 1) / self.cols() as i32;
                         let max = (total - self.card_dims().1).max(0);
                         self.scroll = (self.scroll + step).clamp(0, max);
@@ -1579,7 +1868,13 @@ fn main() {
         shift: false,
         locked: false,
         list_focused: false,
+        recalling: false,
         schema: make_schema(),
+        ac: None,
+        ac_active: false,
+        ac_scroll: 0,
+        hist_idx: -1,
+        hist_draft: String::new(),
         columns: vec![],
         filtered: vec![],
         windows,
