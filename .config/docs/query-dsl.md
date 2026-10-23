@@ -668,7 +668,9 @@ hides or reorders rows, it only puts break lines (section headers) between them.
     by `pf` (level 1) - so `/g/path` is `/g/path/pf/1`; anything else by the exact value. A type whose name contains `path` holds the entry's full path, its own name included.
 - **Order.** With no direction typed, groups appear in the order their rows already have: the active `/s`,
   or the picker's default (newest first in mod+1, i.e. `/s/dm/desc`), so a group sits where its first row
-  is. `/g/key/asc` or `/g/key/desc` instead sorts the groups by their key (newest day / biggest size /
+  is. Exception, mod+1 only: `pf` (parent-folder) groups are folders, so they are ordered by the folder's own
+  date modified (newest first; `asc` reverses), asked of the server's `POST /mtimes`; a folder the catalog
+  has no date for falls back to its newest file. `/g/key/asc` or `/g/key/desc` instead sorts the groups by their key (newest day / biggest size /
   newest age bucket first for `desc`; text values Z-A for `desc`). The `(none)` group (empty or
   unparseable value) is always last. Rows inside a group keep the order the rest of the query gives them,
   so `/g/dm/week /s/size` is "per week, biggest first".
