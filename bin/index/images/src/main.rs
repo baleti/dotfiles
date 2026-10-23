@@ -740,6 +740,8 @@ struct App {
     path_pane: Option<PathPane>,
     cands: Vec<(String, String)>, // (replacement text, label)
     cand_sel: usize,
+    /// Ctrl+Space AND-narrowing: where the first phrase of the completion began
+    cand_multi: Option<usize>,
     /// query text as of the last frame, so the popup only re-narrows when it really changed
     popup_q: String,
 }
@@ -753,6 +755,17 @@ struct PeopleReply {
 
 /// Completion candidates for the fragment at the end of `q`.
 /// Returns (byte index where the fragment starts, candidates).
+/// `completions` with Ctrl+Space AND-narrowing: from `multi` (where the first phrase began) on, every
+/// space-separated word must appear in a candidate, e.g. `/g/d` Ctrl+Space `th` keeps `/g/depth` only.
+fn completions_multi(q: &str, facets: &FacetsReply, history: &[String], multi: Option<usize>) -> (usize, Vec<(String, String)>) {
+    let Some(ms) = multi.filter(|&m| m <= q.len() && q.is_char_boundary(m)) else { return completions(q, facets, history) };
+    let mut words = q[ms..].split_whitespace();
+    let first = words.next().unwrap_or("");
+    let rest: Vec<String> = words.map(|w| w.to_lowercase()).collect();
+    let (start, cands) = completions(&format!("{}{}", &q[..ms], first), facets, history);
+    (start, cands.into_iter().filter(|(rep, _)| { let r = rep.to_lowercase(); rest.iter().all(|w| r.contains(w.as_str())) }).collect())
+}
+
 fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec<(String, String)>) {
     let start = q.rfind(char::is_whitespace).map(|i| i + q[i..].chars().next().unwrap().len_utf8()).unwrap_or(0);
     // a leading "!" negates the term being typed (query-dsl.md "Negation"): complete what follows it
@@ -818,9 +831,11 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/hide-fts-dwg ", "content searches leave out AutoCAD drawings"),
         ];
         for (v, label) in VERBS {
-            if v.starts_with(frag) { out.push((v.to_string(), label.to_string())); }
+            if v.starts_with(frag) && !frag[1..].contains('/') { out.push((v.to_string(), label.to_string())); }
         }
         // the shorthands' own arguments, listed up front like the launcher does
+        // (once the fragment holds a second slash the /s/ and /g/ branches below own the list)
+        if !frag[1..].contains('/') {
         for (name, _) in SORT_FIELDS.iter() {
             let v = format!("/s/{name}");
             if v.starts_with(frag) { out.push((v, "(/sort) sort field".to_string())); }
@@ -828,6 +843,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
         for name in GROUP_TYPES.iter().copied().chain(["pf"]) {
             let v = format!("/g/{name}");
             if v.starts_with(frag) { out.push((v, "(/group) group by".to_string())); }
+        }
         }
     }
     if let Some(chain) = frag.strip_prefix("/group/").or_else(|| frag.strip_prefix("/g/")) {
@@ -1704,6 +1720,7 @@ impl App {
             path_pane: None,
             cands: Vec::new(),
             cand_sel: 0,
+            cand_multi: None,
             popup_q: String::new(),
         };
         app.people = fetch_people();
@@ -2633,12 +2650,13 @@ impl App {
 
     fn accept_candidate(&mut self) {
         if let Some((rep, _)) = self.cands.get(self.cand_sel).cloned() {
-            let (start, _) = completions(&self.query, &self.facets, &self.history);
+            let (start, _) = completions_multi(&self.query, &self.facets, &self.history, self.cand_multi);
             self.query = apply(&self.query, start, &rep);
             self.last_change = Instant::now() - Duration::from_millis(200);
             self.cursor_end = true;
         }
         self.popup = false;
+        self.cand_multi = None;
     }
 
     fn texture(&mut self, ctx: &egui::Context, path: &str) -> Option<TextureHandle> {
@@ -2909,6 +2927,14 @@ impl eframe::App for App {
             }
         } else if tab && self.popup {
             self.accept_candidate();
+        } else if ctrl_space && self.popup {
+            // AND-narrow: a literal space keeps the popup open and the next word must match too
+            if self.cand_multi.is_none() {
+                let (start, _) = completions(&self.query, &self.facets, &self.history);
+                self.cand_multi = Some(start);
+            }
+            if !self.query.ends_with(' ') { self.query.push(' '); }
+            self.cursor_end = true;
         }
         if let Some(p) = self.face_pane.as_mut() {
             if let Ok(items) = p.rx.try_recv() { p.items = items; p.loading = false; }
@@ -3012,7 +3038,7 @@ impl eframe::App for App {
                 sp
             });
             let n = self.cands.len();
-            if esc { self.popup = false; }
+            if esc { self.popup = false; self.cand_multi = None; }
             else if enter || space { self.accept_candidate(); }
             else if n > 0 {
                 let _ = (cj, ck);
@@ -3023,8 +3049,8 @@ impl eframe::App for App {
         }
         // typing while the popup is open narrows it in place
         if self.popup && self.query != self.popup_q {
-            let (_, cands) = completions(&self.query, &self.facets, &self.history);
-            if cands.is_empty() { self.popup = false; } else { self.cands = cands; self.cand_sel = 0; }
+            let (_, cands) = completions_multi(&self.query, &self.facets, &self.history, self.cand_multi);
+            if cands.is_empty() { self.popup = false; self.cand_multi = None; } else { self.cands = cands; self.cand_sel = 0; }
         }
         self.popup_q = self.query.clone();
 
