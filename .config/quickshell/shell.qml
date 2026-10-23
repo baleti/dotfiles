@@ -50,6 +50,9 @@ ShellRoot {
         function bump(id: string): void {
             LauncherHistory.bump(id);
         }
+        function recordQuery(query: string): void {
+            LauncherQueryHistory.record(query);
+        }
     }
 
     // RSS reader (mod + R). Same single-top-level-target / latched-monitor
