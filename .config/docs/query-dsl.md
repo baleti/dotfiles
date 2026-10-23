@@ -866,8 +866,8 @@ it, say), and closes itself once nothing matches at all - the same
 already follows (see Design principles), not a special case. Unlike
 Tab's own trigger, narrowing down to exactly one candidate by typing
 never auto-accepts it - the popup still shows that one row and still
-waits for an explicit accept (Enter / Space / Tab, per picker - see
-below), since silently applying a completion just because typing
+waits for an explicit accept (Enter / Space / Tab - every picker accepts
+all three; Ctrl+Space is the AND-narrowing key, not accept), since silently applying a completion just because typing
 happened to narrow to a single match would be a surprise, not a
 convenience. Typing while nothing is open still never opens anything
 from scratch - that half of the original rule is unchanged, only the
