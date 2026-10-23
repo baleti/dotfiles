@@ -1053,12 +1053,6 @@ def drive():
     with os.fdopen(fd, "w") as f:
         json.dump(panes, f)
 
-    # quote auto-pairing (query-dsl.md "Quoted terms"): fzf's `change` event runs
-    # ~/bin/dsl-autopair, which compares against this state file and rewrites the query
-    state_path = complete_path + ".ap"
-    atexit.register(lambda: _rm(state_path))
-    atexit.register(lambda: _rm(state_path + ".q"))
-    autopair_cmd = f"{shlex.quote(os.path.expanduser('~/bin/dsl-autopair'))} --state {shlex.quote(state_path)} --query={{q}}"
     py = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}"
     # --query={q}, not --query {q}: fzf shell-quotes {q} correctly, but argparse
     # is a second parsing layer that refuses an option value which itself looks
@@ -1133,7 +1127,7 @@ def drive():
                 # template text, so a paren typed into the live query can't
                 # break the chain).
                 "--bind", f"start:reload({self_cmd})+transform-header({header_cmd})",
-                "--bind", f"change:transform({autopair_cmd})+reload({self_cmd})+transform-header({header_cmd})",
+                "--bind", f"change:reload({self_cmd})+transform-header({header_cmd})",
                 # tab completes the query's trailing "+$group[.sub]"/"$field"
                 # token to what it's about to resolve to (see
                 # completion_stage): a unique candidate completes directly,
