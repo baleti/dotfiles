@@ -356,3 +356,53 @@ function extractGroup(tokens, known, aliases, ownsNext) {
     }
     return { rest: rest, parsed: parsed };
 }
+
+function todayIso() {
+    var d = new Date();
+    return _pad(d.getFullYear(), 4) + "-" + _pad(d.getMonth() + 1, 2) + "-" + _pad(d.getDate(), 2);
+}
+
+// What the QML pickers show for a /g: rows (already filtered and sorted) + the parsed command -> 
+// { items, rows }. items: the display sequence - { kind: "group", depth, id, label, count, folded } headers and
+// { kind: "row", row, v } rows (v = the row's position in `rows`); rows: the rows outside folded groups, in
+// display order - the sequence selection and navigation walk. collapsed: { id: true }.
+function groupDisplay(rows, parsed, get, collapsed, today) {
+    var layout = groupLayout(rows, parsed, get, today || todayIso());
+    var vis = groupVisible(layout, collapsed || {});
+    var items = [], out = [];
+    vis.forEach(function (e) {
+        if (e[0] === "h") items.push({ kind: "group", depth: e[1], id: e[2], label: e[3], count: e[4], folded: !!(collapsed && collapsed[e[2]]) });
+        else { items.push({ kind: "row", row: rows[e[1]], v: out.length }); out.push(rows[e[1]]); }
+    });
+    return { items: items, rows: out };
+}
+
+// The group id the row at position v of display.rows sits under (innermost), or "".
+function groupOfRow(display, v) {
+    var id = "";
+    for (var i = 0; i < display.items.length; i++) {
+        var it = display.items[i];
+        if (it.kind === "group") id = it.id;
+        else if (it.v === v) return id;
+    }
+    return "";
+}
+
+// The ListView model for a grouped picker: `prefix` rows (completion rows etc., ungrouped) followed by the
+// display of groupDisplay(). Row entries are the row objects themselves; headers are { grp: true, depth, id,
+// label, count, folded }. vOf[i] is the logical position (in prefix.concat(display.rows)) of model entry i,
+// -1 for a header.
+function groupModel(prefix, display) {
+    var model = prefix.slice(), vOf = [], i;
+    for (i = 0; i < prefix.length; i++) vOf.push(i);
+    display.items.forEach(function (it) {
+        if (it.kind === "group") {
+            model.push({ grp: true, depth: it.depth, id: it.id, label: it.label, count: it.count, folded: it.folded });
+            vOf.push(-1);
+        } else {
+            model.push(it.row);
+            vOf.push(prefix.length + it.v);
+        }
+    });
+    return { model: model, vOf: vOf };
+}
