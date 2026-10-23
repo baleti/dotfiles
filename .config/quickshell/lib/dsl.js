@@ -149,10 +149,13 @@ function groupKind(name) {
 function parseGroup(text, known, aliases) {
     var parts = text.split("/");
     if (parts.length < 3 || parts[0] !== "" || GROUP_VERBS.indexOf(parts[1]) < 0 || parts[2].replace(/,/g, "") === "") return null;
-    var bucket = null, level = null, direction = null, i;
+    var bucket = null, level = null, direction = null, collapse = false, i;
     for (i = 3; i < parts.length; i++) {
         var p = parts[i], low = p.toLowerCase();
-        if (GROUP_BUCKETS.indexOf(low) >= 0) {
+        if (low === "collapse") {
+            if (collapse) return null;
+            collapse = true;
+        } else if (GROUP_BUCKETS.indexOf(low) >= 0) {
             if (bucket !== null) return null;
             bucket = low === "parent-folder" ? "pf" : low;
         } else if (/^\d+$/.test(p)) {
@@ -187,7 +190,9 @@ function parseGroup(text, known, aliases) {
     });
     if (bucket !== null && !hasBucket) return null;
     if (level !== null && !hasPf) return null;
-    return { specs: specs, dir: direction };
+    var res = { specs: specs, dir: direction };
+    if (collapse) res.collapse = true;   // every section starts folded (only present when typed)
+    return res;
 }
 
 function _daysFromCivil(y, m, d) {
@@ -316,12 +321,27 @@ function groupLayout(rows, parsed, get, today) {
 }
 
 // The layout minus everything inside a collapsed header (the header stays). collapsed: { id: true }.
+// Fold state is a map id -> bool; the "*" entry is the default for ids not in it (set by /g/.../collapse).
+function groupIsFolded(collapsed, id) {
+    return Object.prototype.hasOwnProperty.call(collapsed, id) ? !!collapsed[id] : !!collapsed["*"];
+}
+// The fold state a freshly parsed /g starts with.
+function groupInitial(parsed) { return parsed && parsed.collapse ? { "*": true } : {}; }
+// A copy of `collapsed` with section `id` flipped.
+function groupToggle(collapsed, id) {
+    var c = Object.assign({}, collapsed), now = groupIsFolded(collapsed, id);
+    if (collapsed["*"]) c[id] = !now;
+    else if (now) delete c[id];
+    else c[id] = true;
+    return c;
+}
+
 function groupVisible(layout, collapsed) {
     var out = [], hideDepth = -1;
     layout.forEach(function (e) {
         if (e[0] === "h") {
             if (hideDepth >= 0 && e[1] > hideDepth) return;
-            hideDepth = collapsed[e[2]] ? e[1] : -1;
+            hideDepth = groupIsFolded(collapsed, e[2]) ? e[1] : -1;
             out.push(e);
         } else if (hideDepth < 0) out.push(e);
     });
@@ -372,7 +392,7 @@ function groupDisplay(rows, parsed, get, collapsed, today) {
     var vis = groupVisible(layout, collapsed || {});
     var items = [], out = [];
     vis.forEach(function (e) {
-        if (e[0] === "h") items.push({ kind: "group", depth: e[1], id: e[2], label: e[3], count: e[4], folded: !!(collapsed && collapsed[e[2]]) });
+        if (e[0] === "h") items.push({ kind: "group", depth: e[1], id: e[2], label: e[3], count: e[4], folded: groupIsFolded(collapsed || {}, e[2]) });
         else { items.push({ kind: "row", row: rows[e[1]], v: out.length }); out.push(rows[e[1]]); }
     });
     return { items: items, rows: out };
