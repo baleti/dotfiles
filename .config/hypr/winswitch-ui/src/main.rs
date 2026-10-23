@@ -1266,7 +1266,15 @@ impl App {
                 Keysym::k if in_search => return self.history_prev(),
                 Keysym::j => return self.advance_row(1),
                 Keysym::k => return self.advance_row(-1),
-                Keysym::r if self.locked => return self.open_history(),
+                Keysym::r => {
+                    // from the unlocked grid (alt still held) Ctrl+R locks into search first
+                    if !self.locked {
+                        self.locked = true;
+                        self.note("locked (history)");
+                    }
+                    self.list_focused = false;
+                    return self.open_history();
+                }
                 Keysym::g if self.group.is_some() => return self.toggle_selected_group(),
                 Keysym::space if self.locked && self.ac.is_none() => return self.trigger_completion(),
                 Keysym::space if self.locked => {
