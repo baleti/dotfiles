@@ -37,10 +37,10 @@ QtObject {
     // /sw (workspace view): what each workspace shows under its thumbnail.
     readonly property var workspaceColumns: [{ kind: "flat", name: "title" }, { kind: "flat", name: "monitor" }, { kind: "flat", name: "windows" }]
 
-    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/sw"]
+    readonly property var shortVerbs: ["/fv", "/ft", "/at", "/rt", "/s", "/g", "/sw"]
     readonly property var verbAliases: ({
         "/filter-value": "/fv", "/filter-type": "/ft", "/add-type": "/at",
-        "/remove-type": "/rt", "/sort": "/s",
+        "/remove-type": "/rt", "/sort": "/s", "/group": "/g",
         "/switch-workspace": "/sw"
     })
     readonly property var verbInfo: ({
@@ -49,12 +49,13 @@ QtObject {
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
         "/s":  { long: "/sort",         desc: "order windows by one field, optional asc / desc" },
+        "/g":  { long: "/group",        desc: "fold windows into sections, /g/key[/bucket][/dir]" },
         "/fts": { long: "", desc: "full text of the running and archived Claude conversations" },
         "/sw": { long: "/switch-workspace", desc: "show workspaces instead of windows; pick one to switch to it" }
     })
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s", "sw", "fts",
-        "filter-value", "filter-type", "add-type", "remove-type", "sort", "switch-workspace"
+        "fv", "ft", "at", "rt", "s", "g", "sw", "fts",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort", "group", "switch-workspace"
     ]
     // Type names (query-dsl.md "Keys"): the flat columns plus the hyphenated
     // family types ("tmux-session", "claude-title", ...). Keys fuzzy-resolve
@@ -76,7 +77,7 @@ QtObject {
     function verbStageUniverse() {
         const bareVerbs = root.shortVerbs.map(v => v.slice(1));
         const deep = [];
-        for (const v of ["fv", "ft", "at", "rt", "s"])
+        for (const v of ["fv", "ft", "at", "rt", "s", "g"])
             for (const p of root.allPaths())
                 deep.push(v + "/" + p);
         return bareVerbs.concat(["fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux"], deep);
@@ -141,7 +142,7 @@ QtObject {
         for (const a in root.verbAliases) m[a.slice(1)] = root.verbAliases[a];
         return m;
     }
-    readonly property var _maxParts: ({ "/s": 3, "/sw": 1 })
+    readonly property var _maxParts: ({ "/s": 3, "/g": 4, "/sw": 1 })
     // { verb, via (the keys part), dir, bad } or null (query-dsl.md "Grammar")
     function tokVerb(tok) {
         if (tok.leadQuote) return null;
@@ -272,7 +273,7 @@ QtObject {
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
     function parse(query) {
         const toks = root.tokenize(query);
-        let out = { filters: [], colOps: [], sort: null, switchWorkspace: false, fts: null };
+        let out = { filters: [], colOps: [], sort: null, switchWorkspace: false, fts: null, groupRaw: "" };
         const top = out;
         let i = 0;
         while (i < toks.length) {
@@ -313,7 +314,7 @@ QtObject {
             // "!" only means something on a row filter: "!/s", "!/ft" ... parse but change nothing.
             const verbNeg = !!tok.neg;
             const R = (verbNeg && verb !== "/fv")
-                ? { filters: [], colOps: [], sort: null, switchWorkspace: false } : top;
+                ? { filters: [], colOps: [], sort: null, switchWorkspace: false, groupRaw: "" } : top;
             const keysTyped = via.replace(/,/g, "").length > 0;
             if (verb === "/fv") {
                 if (i < toks.length && !root.startsCommand(toks[i])) {
@@ -328,6 +329,9 @@ QtObject {
             } else if (verb === "/ft" || verb === "/at" || verb === "/rt") {
                 if (keysTyped)
                     R.colOps.push({ op: verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove"), path: via, isVia: true });
+            } else if (verb === "/g") {
+                // the whole token goes to D.parseGroup (resolved against the window types); the last one wins
+                R.groupRaw = tok.text;
             } else if (verb === "/s") {
                 if (tv.dir !== null && root.parseDirection(tv.dir) === null) continue;
                 const keys = via.split(",").filter(x => x.length > 0);
@@ -664,4 +668,10 @@ QtObject {
         }
         return out;
     }
+
+    // ---- /group (query-dsl.md "/group"): thin wrappers over lib/dsl.js ----
+    function parseGroup(raw, known) { return raw ? D.parseGroup(raw, known, null) : null; }
+    function groupDisplay(rows, parsed, get, collapsed) { return D.groupDisplay(rows, parsed, get, collapsed); }
+    function groupModel(prefix, display) { return D.groupModel(prefix, display); }
+    function groupOfRow(display, v) { return D.groupOfRow(display, v); }
 }

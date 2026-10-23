@@ -402,7 +402,35 @@ PanelWindow {
     }
     readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.queryText, root.wantWorkspaces ? WinSwitchQueryDsl.workspaceColumns : WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
 
-    readonly property var results: {
+    // /group: sections folded by clicking a header (or Ctrl+G on the selected window); reset when the query changes
+    property var groupCollapsed: ({})
+    readonly property var groupParsed: root.tableMode || root.queryText.length === 0 ? null
+        : WinSwitchQueryDsl.parseGroup(root.parsedQuery.groupRaw, root.wantWorkspaces ? [] : WinSwitchQueryDsl.typeNames)
+    readonly property var groupView: root.groupParsed
+        ? { display: WinSwitchQueryDsl.groupDisplay(root._resultsRaw, root.groupParsed,
+                (w, name) => String(WinSwitchQueryDsl.sortFieldValue(w, root.metas[w.index] || {}, WinSwitchQueryDsl.fieldOfName(name)) || ""), root.groupCollapsed) }
+        : null
+    readonly property var groupModel: root.groupView ? WinSwitchQueryDsl.groupModel([], root.groupView.display) : null
+    onGroupParsedChanged: root.groupCollapsed = ({})
+    function toggleGroup(id) {
+        const c = Object.assign({}, root.groupCollapsed);
+        if (c[id]) delete c[id]; else c[id] = true;
+        root.groupCollapsed = c;
+    }
+    // keep the selected cell inside the grouped flow's viewport
+    function _revealInGroups() {
+        if (!root.groupModel) return;
+        const mi = root.groupModel.model.findIndex(m => !m.grp && m.index === root.selected);
+        const it = mi >= 0 ? groupRepeater.itemAt(mi) : null;
+        if (!it) return;
+        if (it.y < groupScroll.contentY) groupScroll.contentY = Math.max(0, it.y - 34);
+        else if (it.y + it.height > groupScroll.contentY + groupScroll.height)
+            groupScroll.contentY = Math.min(Math.max(0, groupScroll.contentHeight - groupScroll.height), it.y + it.height - groupScroll.height);
+    }
+
+    readonly property var results: root.groupView ? root.groupView.display.rows : root._resultsRaw
+
+    readonly property var _resultsRaw: {
         // Reference-stable fast path: with no query, hand back `windows`
         // itself so enrichment updates don't rebuild every grid delegate.
         if (root.queryText.length === 0)
@@ -430,6 +458,7 @@ PanelWindow {
     }
     // Visual position of the selection in `results`, -1 if not visible.
     readonly property int visualSelected: root.results.findIndex(w => w.index === root.selected)
+    onVisualSelectedChanged: root._revealInGroups()
     onResultsChanged: {
         // A search that filters out the selection moves it to the first match.
         if (root.queryText.length > 0 && root.results.length > 0 && root.visualSelected < 0)
@@ -490,8 +519,30 @@ PanelWindow {
             Qt.callLater(() => root._triggerHistorySearch());
         });
     }
+    // Grouped flow: the cell nearest in x on the next line below (delta > 0) or above (delta < 0), crossing sections.
+    function _advanceGroupRow(delta) {
+        const m = root.groupModel.model;
+        const curMi = m.findIndex(e => !e.grp && e.index === root.selected);
+        const cur = curMi >= 0 ? groupRepeater.itemAt(curMi) : null;
+        if (!cur) { root._advance(delta < 0 ? "prev" : "next"); return; }
+        let best = null, bestMi = -1;
+        for (let i = 0; i < m.length; i++) {
+            if (m[i].grp) continue;
+            const it = groupRepeater.itemAt(i);
+            if (!it) continue;
+            const below = it.y > cur.y + 1, above = it.y + 1 < cur.y;
+            if (delta > 0 ? !below : !above) continue;
+            // nearest line first, then nearest column
+            const dy = Math.abs(it.y - cur.y), dx = Math.abs(it.x - cur.x);
+            if (!best || dy < best.dy - 1 || (Math.abs(dy - best.dy) <= 1 && dx < best.dx)) { best = { dy, dx }; bestMi = i; }
+        }
+        if (bestMi < 0) return;
+        WinSwitchState.selected = m[bestMi].index;
+        WinSwitchQueryHistory.record(root.queryText);
+    }
     function _advanceRow(delta) {
         if (root.tableMode) { root._resumeMove(delta < 0 ? -1 : 1); return; }
+        if (root.groupModel) { root._advanceGroupRow(delta); return; }
         const n = root.results.length;
         if (n === 0) return;
         const k = Math.max(0, Math.min(n - 1, Math.max(0, root.visualSelected) + delta));
@@ -1067,6 +1118,11 @@ PanelWindow {
                                 if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 1); });
                             } else root._historyPrev();
                             event.accepted = true;
+                        } else if (event.key === Qt.Key_G && (event.modifiers & Qt.ControlModifier) && root.groupView) {
+                            // fold / unfold the /group section of the selected window
+                            const gid = WinSwitchQueryDsl.groupOfRow(root.groupView.display, root.visualSelected);
+                            if (gid) root.toggleGroup(gid);
+                            event.accepted = true;
                         } else if (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier)) {
                             if (acPopup.visible) {
                                 if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
@@ -1316,23 +1372,16 @@ PanelWindow {
                     }
                 }
 
-                GridView {
-                    id: grid
-                    visible: !root.tableMode
-                    anchors.fill: parent
-                    cellWidth: root.cellW + root.cellHOverhead
-                    cellHeight: root.cellHeight
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-                    currentIndex: root.visualSelected
-                    model: root.results
-
-                    delegate: Item {
+                    Component {
+                        id: cellComp
+                        Item {
                         id: cellItem
                         required property var modelData
                         required property int index
-                        width: grid.cellWidth
-                        height: grid.cellHeight
+                        // a /group section header (the grouped flow below only; never in the plain grid)
+                        readonly property bool isGrp: !!modelData.grp
+                        width: cellItem.isGrp ? groupFlow.width : grid.cellWidth
+                        height: cellItem.isGrp ? 30 : grid.cellHeight
 
                         readonly property var thumb: WinSwitchState.thumbnails[modelData.address]
                         readonly property string thumbPath: cellItem.thumb ? cellItem.thumb.path : ""
@@ -1422,7 +1471,26 @@ PanelWindow {
                             return lines.join("<br>");
                         }
 
+                        Item {
+                            visible: cellItem.isGrp
+                            anchors.fill: parent
+                            Rectangle { x: 8 + (cellItem.modelData.depth || 0) * 14; width: parent.width - x - 8; height: 1; anchors.bottom: parent.bottom; color: Theme.textDim; opacity: 0.35 }
+                            Text {
+                                x: 10 + (cellItem.modelData.depth || 0) * 14
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: 3
+                                text: (cellItem.modelData.folded ? "▸ " : "▾ ") + (cellItem.modelData.label || "") + "   " + (cellItem.modelData.count || 0) + (cellItem.modelData.folded ? " (folded)" : "")
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSize - 1
+                                font.bold: true
+                                color: Theme.text
+                                opacity: 0.85
+                            }
+                            MouseArea { anchors.fill: parent; onClicked: root.toggleGroup(cellItem.modelData.id) }
+                        }
+
                         Rectangle {
+                            visible: !cellItem.isGrp
                             anchors.fill: parent
                             anchors.margins: 4
                             radius: Theme.rounding - 4
@@ -1541,6 +1609,7 @@ PanelWindow {
 
                         MouseArea {
                             id: cellMouse
+                            enabled: !cellItem.isGrp
                             anchors.fill: parent
                             hoverEnabled: true
                             onPositionChanged: mouse => {
@@ -1548,6 +1617,39 @@ PanelWindow {
                                     WinSwitchState.selected = cellItem.modelData.index;
                             }
                             onClicked: root.confirm(cellItem.modelData.index)
+                        }
+                    }
+                    }
+
+                GridView {
+                    id: grid
+                    visible: !root.tableMode && !root.groupModel
+                    anchors.fill: parent
+                    cellWidth: root.cellW + root.cellHOverhead
+                    cellHeight: root.cellHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    currentIndex: root.visualSelected
+                    model: root.results
+
+                    delegate: cellComp
+                }
+
+                // /group: the same cells, in sections under full-width headers
+                Flickable {
+                    id: groupScroll
+                    visible: !root.tableMode && !!root.groupModel
+                    anchors.fill: parent
+                    clip: true
+                    contentHeight: groupFlow.height
+                    boundsBehavior: Flickable.StopAtBounds
+                    Flow {
+                        id: groupFlow
+                        width: groupScroll.width
+                        Repeater {
+                            id: groupRepeater
+                            model: root.groupModel ? root.groupModel.model : []
+                            delegate: cellComp
                         }
                     }
                 }
@@ -1607,6 +1709,10 @@ PanelWindow {
                 event.accepted = true;
             } else if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
                 if (!event.isAutoRepeat) root._startNavRepeat(() => root._advanceRow(-root.cols));
+                event.accepted = true;
+            } else if (event.key === Qt.Key_G && (event.modifiers & Qt.ControlModifier) && root.groupView) {
+                const gid = WinSwitchQueryDsl.groupOfRow(root.groupView.display, root.visualSelected);
+                if (gid) root.toggleGroup(gid);
                 event.accepted = true;
             } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
                 // query-dsl.md's "Search-box history": Ctrl+R works
