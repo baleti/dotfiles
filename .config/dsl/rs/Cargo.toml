@@ -1,0 +1,13 @@
+[package]
+name = "pickerdsl"
+version = "0.1.0"
+edition = "2021"
+
+# The picker query DSL (~/.config/docs/query-dsl.md) as a Rust library: the same primitives as dsl.py /
+# dsl.js, plus a schema-driven parse / filter / columns / sort / group engine, proven by the shared
+# vectors in ../tests.json. Consumers: winswitch-ui, launcher-ui.
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"

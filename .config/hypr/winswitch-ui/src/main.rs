@@ -81,13 +81,15 @@ struct Win {
     class: String,
     title: String,
     ws: String,
-    hay: String, // lowercase "title class workspace", what bare text is matched against
+    pid: String,
+    meta: HashMap<String, String>, // tmux-* / claude-* values from the enrich stream
     w: i32,
     h: i32,
     active: bool,
 }
 
 enum Msg {
+    Enrich { addr: String, meta: Vec<(String, String)> },
     Thumb { addr: String, w: u32, h: u32, data: Vec<u8>, cached: bool },
     CacheDone(usize),
     AltUp,
@@ -153,13 +155,13 @@ fn load_windows() -> Vec<Win> {
             a.iter()
                 .map(|w| {
                     let (class, title, ws) = (s(w, "class"), s(w, "title"), s(w, "workspace"));
-                    let hay = format!("{title} {class} {ws}").to_lowercase();
                     Win {
                         addr: s(w, "address"),
                         class,
                         title,
                         ws,
-                        hay,
+                        pid: w["pid"].as_i64().map(|p| p.to_string()).unwrap_or_default(),
+                        meta: HashMap::new(),
                         w: w["width"].as_i64().unwrap_or(0) as i32,
                         h: w["height"].as_i64().unwrap_or(0) as i32,
                         active: w["active"].as_bool().unwrap_or(false),
@@ -184,84 +186,51 @@ fn load_tabs() -> Vec<(u32, i32)> {
 
 // ---- the shared DSL's bare-text rules (quickshell/lib/dsl.js: tokenize, substrIdx) ----
 
-struct Tok {
-    text: String,
-    lead_quote: bool,
-    quoted: bool,
-    neg: bool,
-}
-
-fn tokenize(q: &str) -> Vec<Tok> {
-    let mut out = vec![];
-    let (mut cur, mut started) = (String::new(), false);
-    let (mut lead_quote, mut in_quotes, mut qc, mut quoted, mut neg) = (false, false, '\0', false, false);
-    for c in q.chars() {
-        if c == '!' && !started && !neg {
-            neg = true;
-            continue;
+/// The picker query DSL (~/.config/dsl/rs): winswitch's type vocabulary and verbs.
+fn make_schema() -> pickerdsl::Schema {
+    use pickerdsl::{VerbDef, VerbKind};
+    let mut types = vec!["title", "workspace", "pid", "monitor", "windows"];
+    for (g, subs) in [("tmux", &["session", "window", "title"][..]), ("claude", &["title", "path", "session", "age", "fts"][..])] {
+        for s in subs {
+            types.push(Box::leak(format!("{g}-{s}").into_boxed_str()));
         }
-        let opens = c == '"' || (c == '\'' && !started);
-        if if in_quotes { c == qc } else { opens } {
-            if !started {
-                lead_quote = true;
-            }
-            if !in_quotes {
-                qc = c;
-            } else {
-                quoted = true;
-            }
-            in_quotes = !in_quotes;
-            started = true;
-            continue;
+    }
+    let mut sc = pickerdsl::Schema::new(&types, vec![
+        VerbDef { short: "fts", long: "", kind: VerbKind::App { takes_arg: true }, max_parts: 2 },
+        VerbDef { short: "sw", long: "switch-workspace", kind: VerbKind::App { takes_arg: false }, max_parts: 1 },
+    ]);
+    sc.exact_types = vec!["windows".into()];
+    sc
+}
+
+const DEFAULT_COLUMNS: [&str; 2] = ["title", "workspace"];
+
+/// Window rows as the DSL engine sees them.
+struct WinSrc<'a>(&'a [Win]);
+
+impl pickerdsl::Source for WinSrc<'_> {
+    fn value(&self, row: usize, ty: &str) -> String {
+        let w = &self.0[row];
+        match ty {
+            "title" => w.title.clone(),
+            "workspace" => w.ws.clone(),
+            "pid" => w.pid.clone(),
+            _ => w.meta.get(ty).cloned().unwrap_or_default(),
         }
-        if c.is_whitespace() && !in_quotes {
-            if started {
-                out.push(Tok { text: std::mem::take(&mut cur), lead_quote, quoted, neg });
-                started = false;
-                lead_quote = false;
-                quoted = false;
-            }
-            neg = false;
-            continue;
-        }
-        started = true;
-        cur.push(c);
     }
-    if started {
-        out.push(Tok { text: cur, lead_quote, quoted, neg });
+    fn haystack(&self, row: usize) -> String {
+        let w = &self.0[row];
+        format!("{} {} {}", w.title, w.class, w.ws)
     }
-    out
 }
 
-fn is_word(c: Option<&char>) -> bool {
-    c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
-}
-
-/// Case-insensitive substring; with `exact` (a quoted term) the match must stand alone.
-fn substr(needle: &str, hay: &str, exact: bool) -> bool {
-    let n: Vec<char> = needle.to_lowercase().chars().collect();
-    let h: Vec<char> = hay.to_lowercase().chars().collect();
-    if n.is_empty() {
-        return true;
-    }
-    if n.len() > h.len() {
-        return false;
-    }
-    let (lead, trail) = (is_word(n.first()), is_word(n.last()));
-    (0..=h.len() - n.len()).any(|i| {
-        h[i..i + n.len()] == n[..]
-            && (!exact || (!(lead && i > 0 && is_word(h.get(i - 1))) && !(trail && is_word(h.get(i + n.len())))))
-    })
-}
-
-fn matches(win: &Win, toks: &[Tok]) -> bool {
-    toks.iter().all(|t| substr(&t.text, &win.hay, t.quoted) != t.neg)
-}
-
-/// A token that starts a DSL command (`/fv`, `/s`, a verb being typed, ...): the DSL engine
-/// lives in the Quickshell grid.
-fn needs_dsl(q: &str) -> bool {
-    tokenize(q).iter().any(|t| !t.lead_quote && t.text.starts_with('/'))
+/// Parts of the query the native UI cannot evaluate: app verbs (/fts, /sw), /g (needs the grouped
+/// grid) and the full-text type. Those go to the Quickshell grid.
+fn needs_qs(schema: &pickerdsl::Schema, q: &str) -> bool {
+    let p = pickerdsl::parse(schema, q);
+    !p.apps.is_empty()
+        || p.group_raw.is_some()
+        || p.terms.iter().any(|t| matches!(t, pickerdsl::Term::Scoped { keys, .. } if schema.resolve_keys(keys).iter().any(|k| k == "claude-fts")))
 }
 
 // ---- layout: ported from WinSwitch.qml (_typicalAspect/_gridDims/_cellSize/frameSize) ----
@@ -381,6 +350,22 @@ fn spawn_capture(targets: Vec<(String, u32, u32)>, tx: Sender<Msg>) {
         let Some(out) = child.stdout.take() else { return };
         for line in BufReader::new(out).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            if v["type"] == "enrich" {
+                if let (Some(addr), Some(m)) = (v["address"].as_str(), v["meta"].as_object()) {
+                    // enrich keys are `group_sub`; the DSL's type names are `group-sub` (claude_time is claude-age)
+                    let meta = m
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            let name = k.replacen('_', "-", 1).replace("claude-time", "claude-age");
+                            v.as_str().map(|v| (name, v.to_string()))
+                        })
+                        .collect();
+                    if tx.send(Msg::Enrich { addr: addr.to_string(), meta }).is_err() {
+                        break;
+                    }
+                }
+                continue;
+            }
             if v["type"] != "thumbnail" {
                 continue;
             }
@@ -631,7 +616,9 @@ struct App {
     query: String,
     cursor: usize, // in chars
     history: Vec<String>,
-    filtered: Vec<usize>, // window indices passing the query, in list order
+    schema: pickerdsl::Schema,
+    columns: Vec<String>, // the active columns for the current query (title first)
+    filtered: Vec<usize>, // window indices passing the query, in list order (sorted by /s)
     selected: i32,        // window index, -1 = none
     applied_seq: u32,
     scroll: i32,
@@ -660,6 +647,12 @@ impl App {
         self.layout.as_ref().map_or(1, |l| l.cols as usize)
     }
 
+    /// Cell height: the layout's, plus 14 px per active column past the default two (WinSwitch.qml's
+    /// labelAllowance); the thumbnail frame keeps its size.
+    fn cell_hgt(&self) -> i32 {
+        self.layout.as_ref().map_or(0, |l| l.cell_hgt) + (self.columns.len() as i32 - 2).max(0) * 14
+    }
+
     fn header_h(&self) -> i32 {
         if self.locked { SEARCH_H + 4 } else { 0 }
     }
@@ -667,8 +660,9 @@ impl App {
     /// (card height, rows of cells that fit)
     fn card_dims(&self) -> (i32, i32) {
         let l = self.layout.as_ref().unwrap();
-        let h = (self.header_h() + l.rows * l.cell_hgt + 32).min(l.card_max_h);
-        (h, ((h - 32 - self.header_h()) / l.cell_hgt).max(1))
+        let ch = self.cell_hgt();
+        let h = (self.header_h() + l.rows * ch + 32).min(l.card_max_h);
+        (h, ((h - 32 - self.header_h()) / ch).max(1))
     }
 
     fn visual(&self) -> i32 {
@@ -685,8 +679,11 @@ impl App {
 
     /// Re-apply the query: the selection stays if it still matches, else the first result.
     fn refilter(&mut self) {
-        let toks = tokenize(&self.query);
-        self.filtered = (0..self.windows.len()).filter(|&i| matches(&self.windows[i], &toks)).collect();
+        let parsed = pickerdsl::parse(&self.schema, &self.query);
+        let src = WinSrc(&self.windows);
+        self.filtered = pickerdsl::select_rows(&self.schema, &parsed, &src, self.windows.len());
+        let defaults: Vec<String> = DEFAULT_COLUMNS.iter().map(|s| s.to_string()).collect();
+        self.columns = pickerdsl::active_columns(&self.schema, &parsed, &defaults, &src, self.windows.len());
         if !self.query.is_empty() && !self.filtered.is_empty() && self.visual() < 0 {
             self.selected = self.filtered[0] as i32;
         }
@@ -808,7 +805,7 @@ impl App {
         self.cursor = cursor.min(self.qlen());
         self.refilter();
         self.dirty = true;
-        if needs_dsl(&self.query) {
+        if needs_qs(&self.schema, &self.query) {
             self.handoff(false);
         }
     }
@@ -1028,6 +1025,13 @@ impl App {
                 self.history = h;
                 self.dirty = true;
             }
+            Msg::Enrich { addr, meta } => {
+                if let Some(w) = self.windows.iter_mut().find(|w| w.addr == addr) {
+                    w.meta.extend(meta);
+                    self.refilter();
+                    self.dirty = true;
+                }
+            }
             Msg::CacheDone(n) => self.note(&format!("cached thumbnails decoded ({n})")),
             Msg::Thumb { addr, w, h, data, cached } => {
                 if let Some(size) = tiny_skia::IntSize::from_wh(w, h) {
@@ -1126,6 +1130,7 @@ impl App {
         }
 
         // grid
+        let cell_hgt = self.cell_hgt();
         let (gx, gy) = (cx + 16, cy + 16 + self.header_h());
         let cell_full_w = l.cell_w + CELL_H_OVERHEAD;
         let size = FONT_PX * sc;
@@ -1137,11 +1142,11 @@ impl App {
         for (slot, &wi) in self.filtered.iter().enumerate().skip(first).take((vis_rows * l.cols) as usize) {
             let local = (slot - first) as i32;
             let (col, row) = (local % l.cols, local / l.cols);
-            let (x, y) = (gx + col * cell_full_w, gy + row * l.cell_hgt);
-            hits.push((x, y, cell_full_w, l.cell_hgt, wi));
+            let (x, y) = (gx + col * cell_full_w, gy + row * cell_hgt);
+            hits.push((x, y, cell_full_w, cell_hgt, wi));
             let win = &self.windows[wi];
             // rectangle inset 4
-            let (rx, ry, rw, rh) = (x + 4, y + 4, cell_full_w - 8, l.cell_hgt - 8);
+            let (rx, ry, rw, rh) = (x + 4, y + 4, cell_full_w - 8, cell_hgt - 8);
             if wi as i32 == sel {
                 let cell = rrect(rx as f32 + 0.5, ry as f32 + 0.5, rw as f32 - 1.0, rh as f32 - 1.0, 6.0);
                 fill(&mut pm, &cell, tf, th.primary, 41);
@@ -1158,16 +1163,39 @@ impl App {
                 pm.draw_pixmap(ox, oy, t.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
             }
             stroke(&mut pm, &frame, tf, [255, 255, 255], 46, 1.0);
-            // title (centered, <= 2 lines), then "#workspace" left-aligned
+            // one line per active column: the first (title) centered and up to 2 lines, the rest left-aligned
             let text_w = (rw - 12) as f32 * sc;
             let mut ty = (fy + l.max_h + 4) as f32 * sc;
-            let title = if win.title.is_empty() { &win.class } else { &win.title };
-            for line in wrap_lines(&self.font, size, title, text_w, 2) {
-                let lw_ = text_width(&self.font, size, &line).min(text_w);
-                draw_text(&mut pm, &self.font, size, (rx + 6) as f32 * sc + (text_w - lw_) / 2.0, ty + asc, th.text, &line, text_w);
-                ty += lh;
+            let mut first = true;
+            for col in &self.columns {
+                let mut v = pickerdsl::Source::value(&WinSrc(&self.windows), wi, col);
+                if col == "title" && v.is_empty() {
+                    v = win.class.clone();
+                }
+                if v.is_empty() {
+                    continue;
+                }
+                if v.chars().count() > 80 {
+                    v = v.chars().take(80).collect::<String>() + "\u{2026}";
+                }
+                let prefix = match col.as_str() {
+                    "title" => String::new(),
+                    "workspace" => "#".to_string(),
+                    "monitor" | "windows" => format!("{col}: "),
+                    c => c.split_once('-').map_or(format!("{c}: "), |(_, sub)| format!("{sub}: ")),
+                };
+                if first {
+                    first = false;
+                    for line in wrap_lines(&self.font, size, &format!("{prefix}{v}"), text_w, 2) {
+                        let lw_ = text_width(&self.font, size, &line).min(text_w);
+                        draw_text(&mut pm, &self.font, size, (rx + 6) as f32 * sc + (text_w - lw_) / 2.0, ty + asc, th.text, &line, text_w);
+                        ty += lh;
+                    }
+                } else {
+                    draw_text(&mut pm, &self.font, size, (rx + 6) as f32 * sc, ty + asc, th.text, &format!("{prefix}{v}"), text_w);
+                    ty += lh;
+                }
             }
-            draw_text(&mut pm, &self.font, size, (rx + 6) as f32 * sc, ty + asc, th.text, &format!("#{}", win.ws), text_w);
         }
         self.hits = hits;
 
@@ -1551,6 +1579,8 @@ fn main() {
         shift: false,
         locked: false,
         list_focused: false,
+        schema: make_schema(),
+        columns: vec![],
         filtered: vec![],
         windows,
         thumbs: HashMap::new(),
@@ -1591,46 +1621,19 @@ fn main() {
 }
 
 #[cfg(test)]
-mod dsl_conformance {
-    //! The shared DSL conformance vectors (~/.config/dsl/tests.json, query-dsl.md): the tokenizer and
-    //! substring rules must agree with every other implementation.
+mod dsl_engine {
+    //! The tokenizer / substring vectors live in the pickerdsl crate now; here only what is local:
+    //! which queries the native UI hands to Quickshell.
     use super::*;
 
-    fn vectors() -> serde_json::Value {
-        let path = std::env::var("HOME").unwrap() + "/.config/dsl/tests.json";
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-    }
-
     #[test]
-    fn tokenize_vectors() {
-        let t = vectors();
-        for c in t["tokenize"].as_array().unwrap() {
-            let got: Vec<(String, bool, bool, bool)> = tokenize(c["query"].as_str().unwrap()).into_iter().map(|k| (k.text, k.lead_quote, k.quoted, k.neg)).collect();
-            let want: Vec<(String, bool, bool, bool)> = c["expect"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| (e[0].as_str().unwrap().to_string(), e[1].as_bool().unwrap(), e[2].as_bool().unwrap(), e[3].as_bool().unwrap()))
-                .collect();
-            assert_eq!(got, want, "query {}", c["query"]);
+    fn only_unported_features_hand_off() {
+        let sc = make_schema();
+        for q in ["/fv/title foo", "brave /s/title", "/rt/workspace", "/at/tmux", "!brave", "\"/etc\"", "/", "/f"] {
+            assert!(!needs_qs(&sc, q), "{q}");
         }
-    }
-
-    #[test]
-    fn substr_vectors() {
-        let t = vectors();
-        for c in t["substr"].as_array().unwrap() {
-            let got = substr(c["needle"].as_str().unwrap(), c["hay"].as_str().unwrap(), c["exact"].as_bool().unwrap());
-            assert_eq!(got, c["expect"].as_bool().unwrap(), "{} in {}", c["needle"], c["hay"]);
+        for q in ["/g/workspace", "/fts/claude-live foo", "/sw", "/fv/claude-fts word"] {
+            assert!(needs_qs(&sc, q), "{q}");
         }
-    }
-
-    #[test]
-    fn commands_need_the_dsl_engine() {
-        assert!(needs_dsl("/fv/title foo"));
-        assert!(needs_dsl("brave /s/title"));
-        assert!(!needs_dsl("brave"));
-        assert!(!needs_dsl("\"/etc\""));
-        assert!(!needs_dsl("!brave"));
     }
 }

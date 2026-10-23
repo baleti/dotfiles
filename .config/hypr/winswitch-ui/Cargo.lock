@@ -255,6 +255,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pickerdsl"
+version = "0.1.0"
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -666,6 +670,7 @@ name = "winswitch-ui"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "pickerdsl",
  "png 0.18.1",
  "serde_json",
  "smithay-client-toolkit",
