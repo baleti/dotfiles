@@ -1,0 +1,8 @@
+[Unit]
+Description=Pull new image CLIP / face records from host1 into the local indexes
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/bin/index/photos/remote_images.py pull
+Nice=15
