@@ -11,7 +11,6 @@ import "notifications"
 import "revitremote"
 import "appmenu"
 import "rdpvm"
-import "launcher"
 import "rssreader"
 import "keybinds"
 import "winswitch"
@@ -32,26 +31,6 @@ ShellRoot {
         target: "mprisPicker"
         function toggle(): void {
             MprisPickerState.toggle(Hyprland.focusedMonitor?.name ?? "");
-        }
-    }
-
-    // App launcher (mod + Super_l). Same single-top-level-target /
-    // latched-monitor pattern as mprisPicker.
-    IpcHandler {
-        target: "launcher"
-        function toggle(): void {
-            LauncherState.toggle(Hyprland.focusedMonitor?.name ?? "");
-        }
-        // From the native launcher (~/.config/hypr/launcher-ui): open with a query typed,
-        // and count a launch in the frecency file (one writer for it).
-        function openWith(query: string): void {
-            LauncherState.openWith(Hyprland.focusedMonitor?.name ?? "", query);
-        }
-        function bump(id: string): void {
-            LauncherHistory.bump(id);
-        }
-        function recordQuery(query: string): void {
-            LauncherQueryHistory.record(query);
         }
     }
 
@@ -242,15 +221,6 @@ ShellRoot {
         model: Quickshell.screens
 
         NotifLayer {
-            required property var modelData
-            screen: modelData
-        }
-    }
-
-    Variants {
-        model: Quickshell.screens
-
-        AppLauncher {
             required property var modelData
             screen: modelData
         }
