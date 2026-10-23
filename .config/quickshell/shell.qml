@@ -42,6 +42,14 @@ ShellRoot {
         function toggle(): void {
             LauncherState.toggle(Hyprland.focusedMonitor?.name ?? "");
         }
+        // From the native launcher (~/.config/hypr/launcher-ui): open with a query typed,
+        // and count a launch in the frecency file (one writer for it).
+        function openWith(query: string): void {
+            LauncherState.openWith(Hyprland.focusedMonitor?.name ?? "", query);
+        }
+        function bump(id: string): void {
+            LauncherHistory.bump(id);
+        }
     }
 
     // RSS reader (mod + R). Same single-top-level-target / latched-monitor

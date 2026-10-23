@@ -32,6 +32,16 @@ QtObject {
         }
     }
 
+    // Handed over from the native launcher (~/.config/hypr/launcher-ui) when the query
+    // needs the DSL engine: opens with `query` already typed.
+    property string pendingQuery: ""
+    function openWith(mon: string, query: string): void {
+        if (root.active)
+            return;
+        root.pendingQuery = query;
+        root.toggle(mon);
+    }
+
     function close(): void {
         root.active = false;
     }
