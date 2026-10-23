@@ -167,16 +167,21 @@ def parse_group(text, known, aliases=None):
     (not a group token, or inert: no keys, a key naming nothing, an unknown/repeated trailing part, a
     level without pf, or a bucket that fits none of the keys). Trailing parts are recognised by shape,
     in any order: a bucket (pf | parent-folder | day | week | month | year, exact), a level (digits,
-    pf only), a direction (a prefix of ascending / descending). Key aliases `pf` / `parent-folder` mean
+    pf only), a direction (a prefix of ascending / descending), `collapse` (every section starts folded). Key aliases `pf` / `parent-folder` mean
     the path type with the pf bucket. Default bucket per key from group_kind; dir None unless given (groups then follow the row order). aliases: {short key: type name} (e.g. dm).
     A bucket (or pf level) that fits none of the keys makes the command inert."""
     parts = text.split("/")
     if len(parts) < 3 or parts[0] != "" or parts[1] not in GROUP_VERBS or not parts[2].strip(","):
         return None
     bucket = level = direction = None
+    collapse = False
     for p in parts[3:]:
         low = p.lower()
-        if low in GROUP_BUCKETS:
+        if low == "collapse":
+            if collapse:
+                return None
+            collapse = True
+        elif low in GROUP_BUCKETS:
             if bucket is not None:
                 return None
             bucket = "pf" if low == "parent-folder" else low
@@ -219,7 +224,10 @@ def parse_group(text, known, aliases=None):
         return None
     if level is not None and not any(s["bucket"] == "pf" for s in specs):
         return None
-    return {"specs": specs, "dir": direction}
+    out = {"specs": specs, "dir": direction}
+    if collapse:
+        out["collapse"] = True   # every section starts folded (only present when typed)
+    return out
 
 
 def _days_from_civil(y, m, d):

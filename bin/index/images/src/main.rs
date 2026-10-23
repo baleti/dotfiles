@@ -655,6 +655,8 @@ struct App {
     gslot_v: Vec<Option<usize>>,
     gslot_of_v: Vec<usize>,
     gcollapsed: std::collections::HashSet<String>,
+    /// /g/.../collapse has already folded the sections of this query's layout
+    gseeded: bool,
     gnote: String,
     /// per group id: (bytes, pages) summed over every row under the header, nested groups included
     gagg: HashMap<String, (u64, u64)>,
@@ -854,7 +856,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             let base = &frag[..frag.len() - last.len()];
             let _ = keys;
             for (word, label) in [("pf", "parent folder (1 = immediate, then /2 ...)"), ("parent-folder", "same as pf"), ("day", "by day"), ("week", "by week"),
-                                  ("month", "by month"), ("year", "by year"), ("asc", "oldest / smallest / A first"), ("desc", "newest / biggest first")] {
+                                  ("month", "by month"), ("year", "by year"), ("asc", "oldest / smallest / A first"), ("desc", "newest / biggest first"), ("collapse", "start with every section folded")] {
                 if word.starts_with(last.as_str()) && !tail.split('/').rev().skip(1).any(|t| t == word) { out.push((format!("{base}{word} "), label.to_string())); }
             }
         } else {
@@ -1659,6 +1661,7 @@ impl App {
             gslot_v: Vec::new(),
             gslot_of_v: Vec::new(),
             gcollapsed: Default::default(),
+            gseeded: false,
             gnote: String::new(),
             gagg: HashMap::new(),
             gdirs: HashMap::new(),
@@ -1744,6 +1747,7 @@ impl App {
         self.group = group;
         self.gmeta_seq = 0;                       // the old layout goes; the plain list shows until the new metadata arrives
         self.gcollapsed.clear();
+        self.gseeded = false;
         self.gnote.clear();
         self.req_q = rest;
         self.req_sort = sort.keys.join(",");
@@ -1812,6 +1816,13 @@ impl App {
         for (k, v) in &self.gdirs { dirs.insert(k.clone(), v.clone()); }
         self.gfull = group::group_layout(self.gmeta.len(), &p, &get, &today, &|_, label| dirs.get(label).cloned());
         self.compute_agg();
+        // /g/.../collapse: this query's sections start folded (live updates later leave the user's folds alone)
+        if p.collapse && !self.gseeded {
+            self.gseeded = true;
+            for e in &self.gfull {
+                if let group::Entry::Header { id, .. } = e { self.gcollapsed.insert(id.clone()); }
+            }
+        }
         self.apply_fold();
     }
 
@@ -4176,7 +4187,8 @@ mod dsl_conformance {
         match p {
             None => serde_json::Value::Null,
             Some(p) => serde_json::json!({ "specs": p.specs.iter().map(|s| serde_json::json!({ "name": s.name, "bucket": s.bucket, "level": s.level })).collect::<Vec<_>>(),
-                                           "dir": match p.desc { None => serde_json::Value::Null, Some(true) => "desc".into(), Some(false) => "asc".into() } }),
+                                           "dir": match p.desc { None => serde_json::Value::Null, Some(true) => "desc".into(), Some(false) => "asc".into() } })
+                .as_object().cloned().map(|mut o| { if p.collapse { o.insert("collapse".into(), true.into()); } serde_json::Value::Object(o) }).unwrap(),
         }
     }
 

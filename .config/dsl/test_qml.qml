@@ -34,6 +34,16 @@ QtObject {
         check("groupDisplay rows", gd.rows.length, 5);
         const gd2 = Dsl.groupDisplay(G.rows, Dsl.parseGroup("/g/pf,dm/month", G.known, G.aliases), get, { "/p/x": true }, G.today);
         check("groupDisplay folded", gd2.rows.map(r => r.name), ["b","c","d"]);
+        // /g/.../collapse: every section starts folded, a toggle unfolds just that one, and back
+        const pc = Dsl.parseGroup("/g/pf,dm/month/collapse", G.known, G.aliases);
+        const init = Dsl.groupInitial(pc);
+        check("collapse parsed", pc.collapse, true);
+        check("collapse initial", Dsl.groupInitial(Dsl.parseGroup("/g/pf", G.known, G.aliases)), {});
+        check("collapse folds all rows", Dsl.groupDisplay(G.rows, pc, get, init, G.today).rows.length, 0);
+        const gid = Dsl.groupDisplay(G.rows, pc, get, init, G.today).items[0].id;
+        const open1 = Dsl.groupToggle(init, gid);
+        check("collapse toggle unfolds one", Dsl.groupDisplay(G.rows, pc, get, open1, G.today).items.filter(i => i.kind === "group" && !i.folded).length > 0, true);
+        check("collapse toggle back", Dsl.groupIsFolded(Dsl.groupToggle(open1, gid), gid), true);
         check("groupOfRow", Dsl.groupOfRow(gd, 0).length > 0, true);
         print("qml dsl.js: " + (fails === 0 ? "ok" : fails + " failures"));
         Qt.quit();

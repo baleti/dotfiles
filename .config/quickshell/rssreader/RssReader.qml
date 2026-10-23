@@ -151,11 +151,9 @@ PanelWindow {
     readonly property var groupView: root.groupParsed
         ? { display: QueryDsl.groupDisplay(root._viewRows, root.groupParsed, (it, f) => String(root._fieldVals(it, f)[0] || ""), root.groupCollapsed) }
         : null
-    onGroupParsedChanged: root.groupCollapsed = ({})
+    onGroupParsedChanged: root.groupCollapsed = QueryDsl.groupInitial(root.groupParsed)
     function toggleGroup(id) {
-        const c = Object.assign({}, root.groupCollapsed);
-        if (c[id]) delete c[id]; else c[id] = true;
-        root.groupCollapsed = c;
+        root.groupCollapsed = QueryDsl.groupToggle(root.groupCollapsed, id);
     }
     // what the list model shows (headers included) and each entry's position in `view`
     readonly property var groupModel: root.groupView ? QueryDsl.groupModel([], root.groupView.display) : null

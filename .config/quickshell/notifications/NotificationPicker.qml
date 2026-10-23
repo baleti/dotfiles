@@ -208,11 +208,9 @@ PanelWindow {
         ? { display: ClipboardQueryDsl.groupDisplay(root._resultsRaw, root.groupParsed, (e, f) => String((e.fields || {})[f] === undefined ? "" : e.fields[f]), root.groupCollapsed) }
         : null
     readonly property var groupModel: root.groupView ? ClipboardQueryDsl.groupModel([], root.groupView.display) : null
-    onGroupParsedChanged: root.groupCollapsed = ({})
+    onGroupParsedChanged: root.groupCollapsed = ClipboardQueryDsl.groupInitial(root.groupParsed)
     function toggleGroup(id) {
-        const c = Object.assign({}, root.groupCollapsed);
-        if (c[id]) delete c[id]; else c[id] = true;
-        root.groupCollapsed = c;
+        root.groupCollapsed = ClipboardQueryDsl.groupToggle(root.groupCollapsed, id);
     }
     // the ListView index of the row at position v of `results`
     function _modelIdx(v) { return root.groupModel ? root.groupModel.vOf.indexOf(v) : v; }

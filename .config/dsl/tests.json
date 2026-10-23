@@ -1375,6 +1375,56 @@
           ],
           "dir": null
         }
+      },
+      {
+        "text": "/g/size/collapse",
+        "expect": {
+          "specs": [
+            {
+              "name": "size",
+              "bucket": "size",
+              "level": 1
+            }
+          ],
+          "dir": null,
+          "collapse": true
+        }
+      },
+      {
+        "text": "/g/dm/week/collapse",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "week",
+              "level": 1
+            }
+          ],
+          "dir": null,
+          "collapse": true
+        }
+      },
+      {
+        "text": "/g/path/pf/2/desc/collapse",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 2
+            }
+          ],
+          "dir": "desc",
+          "collapse": true
+        }
+      },
+      {
+        "text": "/g/size/collapse/collapse",
+        "expect": null
+      },
+      {
+        "text": "/g/size/collapse/bogus",
+        "expect": null
       }
     ],
     "value": [

@@ -420,11 +420,9 @@ PanelWindow {
                 (w, name) => String(WinSwitchQueryDsl.sortFieldValue(w, root.metas[w.index] || {}, WinSwitchQueryDsl.fieldOfName(name)) || ""), root.groupCollapsed) }
         : null
     readonly property var groupModel: root.groupView ? WinSwitchQueryDsl.groupModel([], root.groupView.display) : null
-    onGroupParsedChanged: root.groupCollapsed = ({})
+    onGroupParsedChanged: root.groupCollapsed = WinSwitchQueryDsl.groupInitial(root.groupParsed)
     function toggleGroup(id) {
-        const c = Object.assign({}, root.groupCollapsed);
-        if (c[id]) delete c[id]; else c[id] = true;
-        root.groupCollapsed = c;
+        root.groupCollapsed = WinSwitchQueryDsl.groupToggle(root.groupCollapsed, id);
     }
     // keep the selected cell inside the grouped flow's viewport
     function _revealInGroups() {

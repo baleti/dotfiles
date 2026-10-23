@@ -706,7 +706,11 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   fold key (mod+1: `Ctrl+G`, rebindable) on the selected row's section. State is held in memory per group
   id and reset when the query changes. A collapsed header keeps its count; the folded rows leave the
   sequence, so keyboard navigation skips them. Up / Down in a grouped grid keep the column and cross into
-  the neighbouring section.
+  the neighbouring section. A trailing `collapse` part (`/g/extension/collapse`, `/g/dm/week/collapse`, any
+  position among the trailing parts, once) starts every section folded; clicking a header or the fold key
+  then opens just that one. In the shared cores it is `collapse: true` on the parse result (absent when not
+  typed); the QML pickers keep it as the `"*"` default in their fold map (`groupInitial` / `groupToggle` in
+  `dsl.js`), mod+1 folds the sections of the first layout of each query (later live updates leave folds alone).
 - **Rendering** is each picker's own: a full-width header row with a break above it in the images grid,
   a header line between rows in list pickers. mod+1 asks the server for the first 20,000 matches
   (names, sizes, dates only), groups them locally and says `grouped the first N of M` when the result set

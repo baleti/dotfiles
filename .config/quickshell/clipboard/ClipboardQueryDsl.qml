@@ -579,5 +579,7 @@ QtObject {
     function parseGroup(raw, known) { return raw ? D.parseGroup(raw, known, null) : null; }
     function groupDisplay(rows, parsed, get, collapsed) { return D.groupDisplay(rows, parsed, get, collapsed); }
     function groupModel(prefix, display) { return D.groupModel(prefix, display); }
+    function groupInitial(parsed) { return D.groupInitial(parsed); }
+    function groupToggle(collapsed, id) { return D.groupToggle(collapsed, id); }
     function groupOfRow(display, v) { return D.groupOfRow(display, v); }
 }

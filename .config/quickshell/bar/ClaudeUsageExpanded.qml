@@ -629,11 +629,9 @@ Rectangle {
         ? { display: QueryDsl.groupDisplay(root._sortedRaw, root.groupParsed, (r, f) => String(root._searchFieldVals(r, f, r.account)[0] || ""), root.groupCollapsed) }
         : null
     readonly property var groupModel: root.groupView ? QueryDsl.groupModel([], root.groupView.display) : null
-    onGroupParsedChanged: root.groupCollapsed = ({})
+    onGroupParsedChanged: root.groupCollapsed = QueryDsl.groupInitial(root.groupParsed)
     function toggleGroup(id) {
-        const c = Object.assign({}, root.groupCollapsed);
-        if (c[id]) delete c[id]; else c[id] = true;
-        root.groupCollapsed = c;
+        root.groupCollapsed = QueryDsl.groupToggle(root.groupCollapsed, id);
     }
     // the Repeater index of the row at position v of `sortedProcs`
     function _modelIdx(v) { return root.groupModel ? root.groupModel.vOf.indexOf(v) : v; }
