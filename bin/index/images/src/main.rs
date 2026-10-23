@@ -2863,6 +2863,9 @@ impl eframe::App for App {
         } else {
             tab
         };
+        // with the history popup open Tab belongs to it (below), not to completion
+        let hist_tab = tab && self.hist_popup;
+        let tab = tab && !self.hist_popup;
         // emacs-style Ctrl+E: caret to the end of the query (Ctrl+A keeps selecting everything)
         if keys.consume(ui, "caret_end") {
             self.cursor_end = true;
@@ -3021,12 +3024,14 @@ impl eframe::App for App {
         if self.hist_popup {
             let picked = self.hist_picked;
             // Tab / Space accept a highlighted entry like Enter (Space's text event is dropped too)
-            let (tab, space) = ui.input_mut(|i| {
-                if !picked { return (false, false); }
+            let space = ui.input_mut(|i| {
+                if !picked { return false; }
                 let sp = i.consume_key(egui::Modifiers::NONE, Key::Space);
                 if sp { i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == " ")); }
-                (i.consume_key(egui::Modifiers::NONE, Key::Tab), sp)
+                sp
             });
+            // like the completion menu, Tab confirms the highlighted entry (the first one if none is yet)
+            if hist_tab { self.hist_picked = true; }
             let (down, up, enter, esc) = ui.input_mut(|i| (
                 i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) | keys.consume_in(i, "next"),
                 i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) | keys.consume_in(i, "prev"),
@@ -3036,7 +3041,7 @@ impl eframe::App for App {
             let matches = self.hist_matches();
             let m = matches.len();
             if esc { self.hist_popup = false; }
-            else if enter || tab || space {
+            else if enter || hist_tab || space {
                 if let Some(q) = matches.get(self.hist_sel).filter(|_| self.hist_picked).cloned() {
                     self.query = q;
                     self.last_change = Instant::now() - Duration::from_millis(200);
