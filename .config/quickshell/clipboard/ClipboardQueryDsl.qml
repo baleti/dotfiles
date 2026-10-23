@@ -50,8 +50,8 @@ QtObject {
 
     // picker.rs's VERB_FORMS.
     readonly property var verbForms: [
-        "fv", "ft", "at", "rt", "s",
-        "filter-value", "filter-type", "add-type", "remove-type", "sort"
+        "fv", "ft", "at", "rt", "s", "g",
+        "filter-value", "filter-type", "add-type", "remove-type", "sort", "group"
     ]
 
     // picker.rs's verb_meta -- long-form alias + one-line description, for
@@ -62,7 +62,8 @@ QtObject {
         "ft": { alias: "/filter-type",  desc: "show only the matching columns" },
         "at": { alias: "/add-type",     desc: "add the matching columns" },
         "rt": { alias: "/remove-type",  desc: "drop the matching columns" },
-        "s":  { alias: "/sort",         desc: "order rows by one field, optional asc / desc" }
+        "s":  { alias: "/sort",         desc: "order rows by one field, optional asc / desc" },
+        "g":  { alias: "/group",        desc: "fold rows into sections, /g/key[/bucket][/dir]" }
     })
 
     // Case-insensitive substring containment; empty needle always matches
@@ -90,9 +91,9 @@ QtObject {
     // which spelling was typed (winswitch's `_canonName`).
     readonly property var _aliasToShort: ({
         "filter-value": "fv", "filter-type": "ft", "add-type": "at",
-        "remove-type": "rt", "sort": "s"
+        "remove-type": "rt", "sort": "s", "group": "g"
     })
-    readonly property var _shortForms: ["fv", "ft", "at", "rt", "s"]
+    readonly property var _shortForms: ["fv", "ft", "at", "rt", "s", "g"]
     // "" (the empty verb slot of "//path") is the default verb /fv -
     // query-dsl.md "Default verb". Only reachable with a via slash after
     // it; tokVerb guards the bare-"/" case.
@@ -107,9 +108,9 @@ QtObject {
     // is the keys part, `dir` the third part (/s only), `bad` marks a
     // malformed token (too many parts): inert.
     // { verb (canonical short form), via (the keys part), dir, bad } or null (query-dsl.md "Grammar")
-    readonly property var _verbMap: ({ "": "fv", "fv": "fv", "ft": "ft", "at": "at", "rt": "rt", "s": "s",
-        "filter-value": "fv", "filter-type": "ft", "add-type": "at", "remove-type": "rt", "sort": "s" })
-    readonly property var _maxParts: ({ "s": 3 })
+    readonly property var _verbMap: ({ "": "fv", "fv": "fv", "ft": "ft", "at": "at", "rt": "rt", "s": "s", "g": "g",
+        "filter-value": "fv", "filter-type": "ft", "add-type": "at", "remove-type": "rt", "sort": "s", "group": "g" })
+    readonly property var _maxParts: ({ "s": 3, "g": 4 })
     function tokVerb(tok) {
         if (tok.leadQuote) return null;
         const c = D.splitCmd(tok.text, root._verbMap, root._maxParts);
@@ -223,6 +224,7 @@ QtObject {
         const openFields = [];
         const columnOps = [];
         let sort = null;
+        let groupRaw = "";
         let i = 0;
         while (i < toks.length) {
             const tok = toks[i];
@@ -256,6 +258,9 @@ QtObject {
                     for (const f of root.resolveFields(via, fieldNames))
                         if (openFields.indexOf(f) < 0) openFields.push(f);
                 }
+            } else if (tv.verb === "g") {
+                // the whole token goes to D.parseGroup (resolved against the picker's field names); the last one wins
+                groupRaw = tok.text;
             } else if (tv.verb === "ft" || tv.verb === "at" || tv.verb === "rt") {
                 if (keysTyped) columnOps.push({ verb: tv.verb, path: via });
             } else if (tv.verb === "s" && keysTyped) {
@@ -270,7 +275,7 @@ QtObject {
         }
         return {
             fieldTerms: fieldTerms, text: words.join(" ").toLowerCase(), negWords: negWords.map(w => w.toLowerCase()), exactWords: exactWords, negExact: negExact, openFields: openFields,
-            columnOps: columnOps, sort: sort
+            columnOps: columnOps, sort: sort, groupRaw: groupRaw
         };
     }
 
@@ -569,4 +574,10 @@ QtObject {
         }
         return text;
     }
+
+    // ---- /group (query-dsl.md "/group"): thin wrappers over lib/dsl.js ----
+    function parseGroup(raw, known) { return raw ? D.parseGroup(raw, known, null) : null; }
+    function groupDisplay(rows, parsed, get, collapsed) { return D.groupDisplay(rows, parsed, get, collapsed); }
+    function groupModel(prefix, display) { return D.groupModel(prefix, display); }
+    function groupOfRow(display, v) { return D.groupOfRow(display, v); }
 }
