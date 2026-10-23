@@ -622,7 +622,24 @@ Rectangle {
     // fallback used to just be root.allProcs's own concatenation order).
     // The search box's own /s, when present, overrides it (see
     // root.searchParsed).
-    readonly property var sortedProcs: {
+    // /group: sections folded by clicking a header (or Ctrl+G on the selected row); reset when the query changes
+    property var groupCollapsed: ({})
+    readonly property var groupParsed: QueryDsl.parseGroup(root.searchParsed.groupRaw, root.searchTypeNames)
+    readonly property var groupView: root.groupParsed
+        ? { display: QueryDsl.groupDisplay(root._sortedRaw, root.groupParsed, (r, f) => String(root._searchFieldVals(r, f, r.account)[0] || ""), root.groupCollapsed) }
+        : null
+    readonly property var groupModel: root.groupView ? QueryDsl.groupModel([], root.groupView.display) : null
+    onGroupParsedChanged: root.groupCollapsed = ({})
+    function toggleGroup(id) {
+        const c = Object.assign({}, root.groupCollapsed);
+        if (c[id]) delete c[id]; else c[id] = true;
+        root.groupCollapsed = c;
+    }
+    // the Repeater index of the row at position v of `sortedProcs`
+    function _modelIdx(v) { return root.groupModel ? root.groupModel.vOf.indexOf(v) : v; }
+    readonly property var sortedProcs: root.groupView ? root.groupView.display.rows : root._sortedRaw
+
+    readonly property var _sortedRaw: {
         const base = root.searchFilteredProcs;
         const s = root.searchParsed.sort;
         // Each key resolves to one or more fields (fuzzy keys expand, query-dsl.md "Keys");
@@ -1537,7 +1554,7 @@ Rectangle {
     // itemAt is always populated for an in-range index.
     function _selDelegate() {
         return (root.selIndex >= 0 && root.selIndex < root.sortedProcs.length)
-            ? rowsRepeater.itemAt(root.selIndex) : null;
+            ? rowsRepeater.itemAt(root._modelIdx(root.selIndex)) : null;
     }
     // Scroll the selected row fully into the fixed-height viewport.
     function _ensureSelVisible() {
@@ -1594,6 +1611,13 @@ Rectangle {
         const n = root.sortedProcs.length;
         if (n === 0)
             return;
+        if (event.key === Qt.Key_G && (event.modifiers & Qt.ControlModifier) && root.groupView) {
+            // fold / unfold the /group section of the selected row
+            const gid = QueryDsl.groupOfRow(root.groupView.display, root.selActive ? root.selIndex : 0);
+            if (gid) root.toggleGroup(gid);
+            event.accepted = true;
+            return;
+        }
         // Ctrl+J/Ctrl+K alias Down/Up, same convention as every other
         // picker (AppLauncher/WinSwitch/RssReader) - needed here now that
         // plain Down/Up, while the search box has focus, are claimed for
@@ -2685,7 +2709,7 @@ Rectangle {
 
             Repeater {
                 id: rowsRepeater
-                model: root.sortedProcs
+                model: root.groupModel ? root.groupModel.model : root.sortedProcs
 
                 // Wrapping Rectangle purely for the hover highlight -- the
                 // row content is the RowLayout inside it. Uses a
@@ -2706,8 +2730,11 @@ Rectangle {
                     id: procRow
                     required property var modelData
                     required property int index
+                    // position in root.sortedProcs (a /group header has none, and is never selected)
+                    readonly property int logical: root.groupModel ? root.groupModel.vOf[procRow.index] : procRow.index
+                    readonly property bool isGroup: !!modelData.grp
                     width: rowsColumn.width
-                    implicitHeight: procRowLayout.implicitHeight
+                    implicitHeight: procRow.isGroup ? 26 : procRowLayout.implicitHeight
                     height: implicitHeight
                     radius: 3
                     // One highlight now, one selection state -- mouse hover
@@ -2716,7 +2743,7 @@ Rectangle {
                     // lighter "just pointed at" tint anymore to reconcile
                     // against the keyboard one (request 2026-09-28: "moving
                     // mouse should modify it, same as up down keys").
-                    color: (root.selActive && procRow.index === root.selIndex)
+                    color: (!procRow.isGroup && root.selActive && procRow.logical === root.selIndex)
                         ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.22)
                         : "transparent"
 
@@ -2737,9 +2764,9 @@ Rectangle {
                     HoverHandler {
                         id: procRowHover
                         onHoveredChanged: {
-                            if (!hovered || !root.mouseMovedSinceOpen)
+                            if (!hovered || !root.mouseMovedSinceOpen || procRow.isGroup)
                                 return;
-                            root.selIndex = procRow.index;
+                            root.selIndex = procRow.logical;
                             root.selActive = true;
                         }
                     }
@@ -2752,12 +2779,32 @@ Rectangle {
                     // own area first; every other cell falls through here.
                     MouseArea {
                         anchors.fill: parent
+                        enabled: !procRow.isGroup
                         cursorShape: (procRow.modelData.hypr_address || procRow.modelData.tmux_session) ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: root.focusHyprWindow(procRow.modelData)
                     }
 
+                    Item {
+                        visible: procRow.isGroup
+                        anchors.fill: parent
+                        Rectangle { x: 6 + (procRow.modelData.depth || 0) * 14; width: parent.width - x - 6; height: 1; anchors.bottom: parent.bottom; color: Theme.muted; opacity: 0.35 }
+                        Text {
+                            x: 8 + (procRow.modelData.depth || 0) * 14
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 3
+                            text: (procRow.modelData.folded ? "▸ " : "▾ ") + (procRow.modelData.label || "") + "   " + (procRow.modelData.count || 0) + (procRow.modelData.folded ? " (folded)" : "")
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 2
+                            font.bold: true
+                            color: Theme.text
+                            opacity: 0.85
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: root.toggleGroup(procRow.modelData.id) }
+                    }
+
                     RowLayout {
                         id: procRowLayout
+                        visible: !procRow.isGroup
                         anchors.left: parent.left
                         anchors.right: parent.right
                         spacing: 0
