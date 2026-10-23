@@ -3,7 +3,7 @@
 Everything here is generic code. The private parts are kept outside the repo:
 
 - `~/.config/indexes/photos.json`: machine paths, mounts, SSH hosts, the Recoll index list.
-- `~/.config/indexes/collections.json`: the list of paths whose content is indexed (all into one Recoll index, `documents`), per-path opt-outs (`"chroma": false`, `"clip_pages": false`), and the `ai1` SSH command. Read through `photos/index_config.py`.
+- `~/.config/indexes/collections.json`: the list of paths whose content is indexed (all into one Recoll index, `documents`), every index type on for every path (fulltext, chroma, page-CLIP, image CLIP, faces; a path object can switch one off, none do), `max_images_per_run`, and the `ai1` SSH command. Read through `photos/index_config.py`.
 - `~/.config/indexes/search-app.json`: folders hidden from results unless opted in with `//path`.
 - `~/.cache/indexes/`: all index data (Recoll/Xapian, Chroma, embeddings, crops, models).
 
@@ -19,7 +19,7 @@ Everything here is generic code. The private parts are kept outside the repo:
 | PDF page images | `photos/pdf_pages_clip.py` | CLIP on large images inside PDFs, one record per page. Resumable through a done list. |
 | Full text | Recoll (`recollindex`), one merged index, `~/.cache/indexes/documents/recoll`, built from the path list (`recoll.conf` is rewritten from it by the driver) | Word search over file contents. Narrow by folder with words before the verb: `ksr /fts contractor`. A listed path that does not exist is skipped and its documents stay. |
 | Semantic text | `chroma/recoll_fulltext_to_chroma.py` | Chunks extracted text, embeds on ai1 (`chroma/minilm_embed_ai1.py`), stores in Chroma. |
-| Driver | `photos/index_all.py` | Runs full text, Chroma and page-CLIP for the paths in `collections.json` (all on unless a path opts out). Chroma counts documents already embedded in the old per-folder stores (`~/.cache/indexes/<old name>/chroma`, kept as read-only shards) as done. |
+| Driver | `photos/index_all.py` | Runs full text, Chroma, page-CLIP, image CLIP and InsightFace faces for the paths in `collections.json` (all on unless a path opts out; images come from the file-name catalog, at most `max_images_per_run` new ones per run). Chroma counts documents already embedded in the old per-folder stores (`~/.cache/indexes/<old name>/chroma`, kept as read-only shards) as done. |
 | Catalog refresh | `~/.config/systemd/user/catalog-*.{service,timer}` | Safety-net walks: local nightly at 03:00 and once after each boot (`catalog-local`, incremental, about 30 s; what it finds is mostly files still held open and being written), newest restic snapshot every 6 h (`catalog-remote`), Google Drive weekly on Sunday 04:20 (`catalog-drive-full`), the NFS roots monthly (`catalog-extra`). A full walk drops deleted files and old versions. Full builds touch `catalog.db.gen`, which makes the server reload; live changes do not (see below). |
 | Nightly | `~/.config/systemd/user/nightly-index.{service,timer}` | 02:30 run of the driver, nice 19, idle I/O, 2 CPUs, memory capped at 8 GB. |
 | Nightly supplier-details | `~/.config/systemd/user/index-supplier-details.{service,timer}` | 01:15 plain `recollindex` of the supplier-details collection (nice 19, idle I/O, 3 GB cap, 3 h timeout). Separate because the 02:30 driver walks collections in config order and hit its 12 h timeout (orms extractions that fail with `internfile failure` take ~20 min each) before reaching supplier-details; the driver still lists it, but finds nothing left to do. |
