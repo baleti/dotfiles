@@ -57,9 +57,9 @@ use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Trans
 
 static FONT_DATA: &[u8] = include_bytes!("/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf");
 
-const FONT_PX: f32 = 13.0; // Theme.fontSize
+const FONT_PX: f32 = 12.0; // Theme.fontSize - 1 (the name text)
+const ICON_PX: u32 = 48; // icons are rasterized once at this size and scaled down when drawn
 const QUERY_PX: f32 = 14.0; // Theme.fontSize + 1
-const CARD_W: i32 = 560;
 const HEADER_H: i32 = 44;
 const ROW_H: i32 = 30;
 const HANDOFF_TIMEOUT: Duration = Duration::from_millis(2500);
@@ -68,6 +68,7 @@ struct DApp {
     id: String,
     name: String,
     generic: String,
+    icon: String,
     exec: String,
     terminal: bool,
     path: Option<String>,
@@ -78,6 +79,8 @@ type Hist = HashMap<String, (u32, i64)>; // id -> (count, last unix seconds)
 
 enum Msg {
     Apps { apps: Vec<DApp>, hist: Hist, ms: f64 },
+    Icon { name: String, w: u32, h: u32, data: Vec<u8> },
+    QHistory(Vec<String>),
     QsMapped,
     HandoffFailed,
 }
@@ -203,6 +206,7 @@ fn needs_dsl(q: &str) -> bool {
 fn parse_desktop(id: &str, text: &str) -> Option<DApp> {
     let mut in_entry = false;
     let (mut name, mut generic, mut exec, mut typ) = (String::new(), String::new(), String::new(), String::new());
+    let mut icon = String::new();
     let (mut hidden, mut terminal, mut path) = (false, false, None);
     for line in text.lines() {
         let line = line.trim();
@@ -218,6 +222,7 @@ fn parse_desktop(id: &str, text: &str) -> Option<DApp> {
             "Name" => name = v.trim().to_string(),
             "GenericName" => generic = v.trim().to_string(),
             "Exec" => exec = v.trim().to_string(),
+            "Icon" => icon = v.trim().to_string(),
             "Type" => typ = v.trim().to_string(),
             "NoDisplay" | "Hidden" => hidden |= v.trim() == "true",
             "Terminal" => terminal = v.trim() == "true",
@@ -229,7 +234,7 @@ fn parse_desktop(id: &str, text: &str) -> Option<DApp> {
         return None;
     }
     let hay = format!("{name} {generic}").to_lowercase();
-    Some(DApp { id: id.to_string(), name, generic, exec, terminal, path, hay })
+    Some(DApp { id: id.to_string(), name, generic, icon, exec, terminal, path, hay })
 }
 
 fn walk(dir: &Path, prefix: &str, seen: &mut HashSet<String>, out: &mut Vec<DApp>) {
@@ -283,6 +288,112 @@ fn score(hist: &Hist, id: &str) -> i64 {
     let age_days = if last > 0 { (now - last) as f64 / 86400.0 } else { 9999.0 };
     let recency = if age_days < 3.0 { 3 } else if age_days < 14.0 { 2 } else if age_days < 60.0 { 1 } else { 0 };
     count as i64 * 4 + recency
+}
+
+// ---- icons ----
+// Names resolve to files through the Quickshell launcher's existing script (its theme priority
+// list is the policy: Papirus, Tela, breeze, Adwaita, hicolor); the answers are cached on disk,
+// so only names not seen before ever reach the script.
+
+fn icon_cache_path() -> PathBuf {
+    home().join(".cache/launcher-ui/icons.json")
+}
+
+fn resolve_icons(names: &[String]) -> HashMap<String, String> {
+    let mut cache: HashMap<String, String> =
+        std::fs::read_to_string(icon_cache_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let missing: Vec<&String> = names
+        .iter()
+        .filter(|n| !n.starts_with('/') && !cache.get(*n).is_some_and(|p| Path::new(p).exists()))
+        .collect();
+    if !missing.is_empty() {
+        let out = Command::new("python3").arg(home().join(".config/quickshell/scripts/resolve-icons.py")).args(&missing).stderr(Stdio::null()).output();
+        if let Ok(o) = out {
+            if let Ok(found) = serde_json::from_slice::<HashMap<String, String>>(&o.stdout) {
+                cache.extend(found);
+                let _ = std::fs::create_dir_all(home().join(".cache/launcher-ui"));
+                let _ = std::fs::write(icon_cache_path(), serde_json::to_string(&cache).unwrap_or_default());
+            }
+        }
+    }
+    for n in names {
+        if n.starts_with('/') {
+            cache.insert(n.clone(), n.clone());
+        }
+    }
+    cache
+}
+
+/// An icon file as premultiplied RGBA at ICON_PX x ICON_PX (aspect kept, centered).
+fn load_icon(path: &str) -> Option<(u32, u32, Vec<u8>)> {
+    let sz = ICON_PX;
+    if path.ends_with(".svg") {
+        let data = std::fs::read(path).ok()?;
+        let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
+        let size = tree.size();
+        let k = (sz as f32 / size.width()).min(sz as f32 / size.height());
+        let mut pm = resvg::tiny_skia::Pixmap::new(sz, sz)?;
+        let tf = resvg::tiny_skia::Transform::from_row(k, 0.0, 0.0, k, (sz as f32 - size.width() * k) / 2.0, (sz as f32 - size.height() * k) / 2.0);
+        resvg::render(&tree, tf, &mut pm.as_mut());
+        return Some((sz, sz, pm.take()));
+    }
+    if !path.ends_with(".png") {
+        return None; // xpm: not supported
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut dec = png::Decoder::new(BufReader::new(file));
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = dec.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (sw, sh) = (info.width as usize, info.height as usize);
+    let ch = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Grayscale => 1,
+        _ => return None,
+    };
+    if sw == 0 || sh == 0 {
+        return None;
+    }
+    let px = |x: usize, y: usize| -> [u32; 4] {
+        let i = (y * sw + x) * ch;
+        match ch {
+            4 => [buf[i] as u32, buf[i + 1] as u32, buf[i + 2] as u32, buf[i + 3] as u32],
+            3 => [buf[i] as u32, buf[i + 1] as u32, buf[i + 2] as u32, 255],
+            2 => [buf[i] as u32, buf[i] as u32, buf[i] as u32, buf[i + 1] as u32],
+            _ => [buf[i] as u32, buf[i] as u32, buf[i] as u32, 255],
+        }
+    };
+    let k = (sz as f32 / sw as f32).min(sz as f32 / sh as f32);
+    let (dw, dh) = (((sw as f32 * k).round() as usize).clamp(1, sz as usize), ((sh as f32 * k).round() as usize).clamp(1, sz as usize));
+    let (ox, oy) = ((sz as usize - dw) / 2, (sz as usize - dh) / 2);
+    let mut out = vec![0u8; (sz * sz * 4) as usize];
+    for dy in 0..dh {
+        let (y0, y1) = (dy * sh / dh, ((dy + 1) * sh / dh).max(dy * sh / dh + 1).min(sh));
+        for dx in 0..dw {
+            let (x0, x1) = (dx * sw / dw, ((dx + 1) * sw / dw).max(dx * sw / dw + 1).min(sw));
+            let (mut r, mut g, mut b, mut a, mut n) = (0u32, 0u32, 0u32, 0u32, 0u32);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let v = px(x, y);
+                    // premultiplied accumulation
+                    r += v[0] * v[3] / 255;
+                    g += v[1] * v[3] / 255;
+                    b += v[2] * v[3] / 255;
+                    a += v[3];
+                    n += 1;
+                }
+            }
+            let o = ((oy + dy) * sz as usize + ox + dx) * 4;
+            out[o] = (r / n) as u8;
+            out[o + 1] = (g / n) as u8;
+            out[o + 2] = (b / n) as u8;
+            out[o + 3] = (a / n) as u8;
+        }
+    }
+    Some((sz, sz, out))
 }
 
 /// Exec= with the field codes (%f %U ...) dropped and %% unescaped.
@@ -424,6 +535,11 @@ struct App {
     shift: bool,
     apps: Vec<DApp>,
     hist: Hist,
+    icons: HashMap<String, Pixmap>,
+    qhist: Vec<String>, // search-box history, oldest first (the Quickshell launcher owns the file)
+    hist_idx: i32,      // -1 = on the draft, not cycling
+    hist_draft: String,
+    walked: bool,       // Down walked the results: Up walks them back before it recalls history
     query: String,
     cursor: usize, // in chars
     results: Vec<usize>,
@@ -445,6 +561,13 @@ impl App {
 
     fn scale(&self) -> f32 {
         self.scale_120 as f32 / 120.0
+    }
+
+    /// AppLauncher.qml: icon gutter (40) + the widest of the first 13 names + right padding (28),
+    /// floored at 360 and capped at 560.
+    fn card_w(&self) -> i32 {
+        let widest = self.results.iter().take(13).map(|&i| text_width(&self.font, FONT_PX, &self.apps[i].name)).fold(0.0f32, f32::max);
+        ((widest + 68.0).round() as i32).clamp(360, 560)
     }
 
     fn card_h(&self) -> i32 {
@@ -553,6 +676,8 @@ impl App {
         self.cursor = cursor.min(self.qlen());
         self.selected = 0;
         self.scroll = 0;
+        self.hist_idx = -1;
+        self.walked = false;
         self.refilter();
         if needs_dsl(&self.query) {
             self.handoff();
@@ -577,6 +702,81 @@ impl App {
         self.set_query(q, from);
     }
 
+    /// zsh-autosuggestions style: the rest of the newest history entry starting with the query.
+    fn ghost(&self) -> String {
+        if self.cursor != self.qlen() || self.query.trim().is_empty() {
+            return String::new();
+        }
+        for e in self.qhist.iter().rev() {
+            if e.len() > self.query.len() && e.starts_with(&self.query) {
+                return e[self.query.len()..].to_string();
+            }
+        }
+        String::new()
+    }
+
+    /// Recall text without it counting as an edit (it must not end the history cycle).
+    fn recall(&mut self, text: String) {
+        self.query = text;
+        self.cursor = self.qlen();
+        self.selected = 0;
+        self.scroll = 0;
+        self.refilter();
+        if needs_dsl(&self.query) {
+            self.handoff();
+        }
+    }
+
+    fn history_prev(&mut self) {
+        if self.qhist.is_empty() {
+            return;
+        }
+        if self.hist_idx < 0 {
+            self.hist_draft = self.query.clone();
+            self.hist_idx = self.qhist.len() as i32;
+        }
+        if self.hist_idx > 0 {
+            self.hist_idx -= 1;
+            let t = self.qhist[self.hist_idx as usize].clone();
+            self.recall(t);
+        }
+    }
+
+    fn history_next(&mut self) {
+        if self.hist_idx < 0 {
+            return;
+        }
+        self.hist_idx += 1;
+        if self.hist_idx as usize >= self.qhist.len() {
+            self.hist_idx = -1;
+            let t = std::mem::take(&mut self.hist_draft);
+            self.recall(t);
+        } else {
+            let t = self.qhist[self.hist_idx as usize].clone();
+            self.recall(t);
+        }
+    }
+
+    /// Down / Ctrl+J: forward through history once Up has started cycling, else walk the results.
+    fn down_key(&mut self) {
+        if self.hist_idx >= 0 {
+            self.history_next();
+        } else {
+            self.nav(1);
+            self.walked = true;
+        }
+    }
+
+    /// Up / Ctrl+K: walk the results back once Down walked them, else recall history.
+    fn up_key(&mut self) {
+        if self.walked && self.selected > 0 {
+            self.nav(-1);
+        } else {
+            self.walked = false;
+            self.history_prev();
+        }
+    }
+
     fn handle_key(&mut self, ev: KeyEvent) {
         if self.handing_off {
             return; // typed while Quickshell takes over: dropped, not leaked to a window
@@ -591,8 +791,13 @@ impl App {
             Keysym::Escape => self.exit = true,
             Keysym::Return | Keysym::KP_Enter => self.launch(self.selected),
             Keysym::Tab | Keysym::ISO_Left_Tab => self.handoff(), // completion
-            Keysym::Down => self.nav(1),
-            Keysym::Up => self.nav(-1),
+            Keysym::Down => self.down_key(),
+            Keysym::Up => self.up_key(),
+            Keysym::Right | Keysym::End if self.cursor == n && !self.ghost().is_empty() && !self.shift => {
+                let q = format!("{}{}", self.query, self.ghost());
+                let c = q.chars().count();
+                self.set_query(q, c);
+            }
             Keysym::Left => {
                 self.cursor = self.cursor.saturating_sub(1);
                 self.dirty = true;
@@ -612,8 +817,13 @@ impl App {
             Keysym::BackSpace => self.delete_range(self.cursor.saturating_sub(1), self.cursor),
             Keysym::Delete => self.delete_range(self.cursor, (self.cursor + 1).min(n)),
             _ if self.ctrl => match ks {
-                Keysym::j | Keysym::n => self.nav(1),
-                Keysym::k | Keysym::p => self.nav(-1),
+                Keysym::j | Keysym::n => self.down_key(),
+                Keysym::k | Keysym::p => self.up_key(),
+                Keysym::f if self.cursor == n && !self.ghost().is_empty() => {
+                    let q = format!("{}{}", self.query, self.ghost());
+                    let c = q.chars().count();
+                    self.set_query(q, c);
+                }
                 Keysym::r => self.handoff(), // history popup
                 Keysym::a => {
                     self.cursor = 0;
@@ -653,6 +863,18 @@ impl App {
                 self.hist = hist;
                 self.refilter();
             }
+            Msg::Icon { name, w, h, data } => {
+                if let Some(size) = tiny_skia::IntSize::from_wh(w, h) {
+                    if let Some(pm) = Pixmap::from_vec(data, size) {
+                        self.icons.insert(name, pm);
+                        self.dirty = true;
+                    }
+                }
+            }
+            Msg::QHistory(h) => {
+                self.qhist = h;
+                self.dirty = true;
+            }
             Msg::QsMapped => {
                 if self.handing_off {
                     self.note("quickshell launcher mapped");
@@ -679,11 +901,12 @@ impl App {
         let tf = Transform::from_scale(sc, sc);
         let th = &self.theme;
         let card_h = self.card_h();
-        let (cx, cy) = ((lw - CARD_W) / 2, (lh_ as f32 * 0.2).round() as i32);
-        self.card_rect = (cx, cy, CARD_W, card_h);
+        let card_w = self.card_w();
+        let (cx, cy) = ((lw - card_w) / 2, (lh_ as f32 * 0.2).round() as i32);
+        self.card_rect = (cx, cy, card_w, card_h);
 
-        fill(&mut pm, &rrect(cx as f32, cy as f32, CARD_W as f32, card_h as f32, 10.0), tf, [26, 26, 26], 230);
-        stroke(&mut pm, &rrect(cx as f32 + 0.5, cy as f32 + 0.5, CARD_W as f32 - 1.0, card_h as f32 - 1.0, 9.5), tf, th.primary, 255, 1.0);
+        fill(&mut pm, &rrect(cx as f32, cy as f32, card_w as f32, card_h as f32, 10.0), tf, [26, 26, 26], 230);
+        stroke(&mut pm, &rrect(cx as f32 + 0.5, cy as f32 + 0.5, card_w as f32 - 1.0, card_h as f32 - 1.0, 9.5), tf, th.primary, 255, 1.0);
 
         // search row: magnifier, query, caret
         let (hx, hy) = ((cx + 16) as f32, cy as f32);
@@ -698,15 +921,20 @@ impl App {
         let (asc, lh) = metrics(&self.font, size);
         let top = (hy + (HEADER_H as f32 - lh / sc) / 2.0) * sc;
         let tx = (cx + 40) as f32 * sc;
-        let max_w = (CARD_W - 56) as f32 * sc;
+        let max_w = (card_w - 56) as f32 * sc;
         draw_text(&mut pm, &self.font, size, tx, top + asc, th.text, &self.query, max_w);
         let before: String = self.query.chars().take(self.cursor).collect();
         let cxp = tx + text_width(&self.font, size, &before);
+        let ghost = self.ghost();
+        if !ghost.is_empty() {
+            let full = text_width(&self.font, size, &self.query);
+            draw_text(&mut pm, &self.font, size, tx + full, top + asc, [136, 136, 136], &ghost, max_w - full);
+        }
         if let Some(r) = Rect::from_xywh(cxp, top, (1.5 * sc).max(1.0), lh) {
             pm.fill_rect(r, &paint(th.primary, 255), Transform::identity(), None);
         }
         // separator
-        if let Some(r) = Rect::from_xywh((cx + 8) as f32 * sc, (cy + HEADER_H) as f32 * sc, (CARD_W - 16) as f32 * sc, sc.max(1.0)) {
+        if let Some(r) = Rect::from_xywh((cx + 8) as f32 * sc, (cy + HEADER_H) as f32 * sc, (card_w - 16) as f32 * sc, sc.max(1.0)) {
             pm.fill_rect(r, &paint(th.text_dim, 40), Transform::identity(), None);
         }
 
@@ -719,18 +947,26 @@ impl App {
         let mut hits = vec![];
         for (i, &ai) in self.results.iter().enumerate().skip(self.scroll).take(rows) {
             let y = list_y + (i - self.scroll) as i32 * ROW_H;
-            hits.push((cx + 8, y, CARD_W - 16, ROW_H, i));
+            hits.push((cx + 8, y, card_w - 16, ROW_H, i));
             if i == self.selected {
-                fill(&mut pm, &rrect((cx + 8) as f32, y as f32 + 1.0, (CARD_W - 16) as f32, (ROW_H - 2) as f32, 6.0), tf, th.primary, 64);
+                fill(&mut pm, &rrect((cx + 8) as f32, y as f32 + 1.0, (card_w - 16) as f32, (ROW_H - 2) as f32, 6.0), tf, th.primary, 64);
             }
             let app = &self.apps[ai];
-            // icon placeholder: a rounded chip with the initial (icons are not in the PoC)
-            fill(&mut pm, &rrect((cx + 16) as f32, y as f32 + 5.0, 20.0, 20.0, 5.0), tf, th.text_dim, 40);
-            let initial: String = app.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-            let iw = text_width(&self.font, size, &initial);
-            draw_text(&mut pm, &self.font, size, (cx + 26) as f32 * sc - iw / 2.0, (y as f32 + (ROW_H as f32 - lh / sc) / 2.0) * sc + asc, th.text_dim, &initial, 30.0 * sc);
             let base = (y as f32 + (ROW_H as f32 - lh / sc) / 2.0) * sc + asc;
-            draw_text(&mut pm, &self.font, size, (cx + 46) as f32 * sc, base, th.text, &app.name, (CARD_W - 64) as f32 * sc);
+            if let Some(ic) = self.icons.get(&app.icon) {
+                // rasterized at ICON_PX, drawn 20 logical px wide
+                let k = (20.0 * sc) / ICON_PX as f32;
+                let tf_i = Transform::from_row(k, 0.0, 0.0, k, (cx + 12) as f32 * sc, (y as f32 + 5.0) * sc);
+                let pp = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+                pm.draw_pixmap(0, 0, ic.as_ref(), &pp, tf_i, None);
+            } else {
+                // not loaded (yet): a rounded chip with the initial
+                fill(&mut pm, &rrect((cx + 12) as f32, y as f32 + 5.0, 20.0, 20.0, 5.0), tf, th.text_dim, 40);
+                let initial: String = app.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                let iw = text_width(&self.font, size, &initial);
+                draw_text(&mut pm, &self.font, size, (cx + 22) as f32 * sc - iw / 2.0, base, th.text_dim, &initial, 30.0 * sc);
+            }
+            draw_text(&mut pm, &self.font, size, (cx + 40) as f32 * sc, base, th.text, &app.name, (card_w - 56) as f32 * sc);
         }
         self.hits = hits;
 
@@ -1029,7 +1265,28 @@ fn main() {
         let s = Instant::now();
         let apps = scan();
         let hist = load_history();
+        // most-used apps first, so the icons you see first arrive first
+        let mut order: Vec<usize> = (0..apps.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(score(&hist, &apps[i].id)));
+        let names: Vec<String> = {
+            let mut seen = HashSet::new();
+            order.iter().map(|&i| apps[i].icon.clone()).filter(|n| !n.is_empty() && seen.insert(n.clone())).collect()
+        };
         let _ = tx_scan.send(Msg::Apps { apps, hist, ms: s.elapsed().as_secs_f64() * 1000.0 });
+        let paths = resolve_icons(&names);
+        for n in names {
+            if let Some((w, h, data)) = paths.get(&n).and_then(|p| load_icon(p)) {
+                if tx_scan.send(Msg::Icon { name: n, w, h, data }).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let tx_q = tx.clone();
+    std::thread::spawn(move || {
+        let h: Vec<String> = std::fs::read_to_string(home().join(".cache/quickshell/launcher-query-history.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let _ = tx_q.send(Msg::QHistory(h));
     });
 
     let mut app = App {
@@ -1061,6 +1318,11 @@ fn main() {
         shift: false,
         apps: vec![],
         hist: HashMap::new(),
+        icons: HashMap::new(),
+        qhist: vec![],
+        hist_idx: -1,
+        hist_draft: String::new(),
+        walked: false,
         query: String::new(),
         cursor: 0,
         results: vec![],
@@ -1082,6 +1344,7 @@ fn main() {
         }
     }
     app.note("exit");
+    let query = app.query.clone();
     let launch = app.pending_launch.take().map(|i| {
         let a = &app.apps[i];
         (a.id.clone(), a.name.clone(), clean_exec(&a.exec), a.terminal, a.path.clone())
@@ -1101,6 +1364,9 @@ fn main() {
         let ok = c.spawn().is_ok();
         // counted in Quickshell's frecency file through its IPC (one writer)
         let _ = Command::new("qs").args(["ipc", "call", "launcher", "bump", &id]).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        if !query.trim().is_empty() {
+            let _ = Command::new("qs").args(["ipc", "call", "launcher", "recordQuery", query.trim()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        }
         log.push(format!("+{:7.1}ms launched {name} ({id}) ok={ok}", t0.elapsed().as_secs_f64() * 1000.0));
     }
     write_log(&log);
