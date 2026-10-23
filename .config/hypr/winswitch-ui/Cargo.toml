@@ -1,0 +1,25 @@
+[package]
+name = "winswitch-ui"
+version = "0.1.0"
+edition = "2021"
+
+# Prototype of an alt-tab frontend that is its own small process instead of
+# a Quickshell component. Captures still come from ../winswitch (the existing
+# capture worker, which holds the screencopy permission).
+[dependencies]
+smithay-client-toolkit = "0.20"
+tiny-skia = "0.11"
+ab_glyph = "0.2"
+png = "0.18"
+serde_json = "1"
+
+[[bin]]
+name = "winswitch-ui"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
