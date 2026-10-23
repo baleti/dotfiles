@@ -118,6 +118,7 @@ enum Msg {
     Thumb { addr: String, w: u32, h: u32, data: Vec<u8>, cached: bool },
     CacheDone(usize),
     AltUp,
+    Cancel,
     Tab { dir: i32, seq: u32 },
     Nav(i32, i32),
     NavHistory,
@@ -472,6 +473,7 @@ fn spawn_events(stream: UnixStream, tx: Sender<Msg>) {
             let mut it = ev.split_whitespace();
             let msg = match (it.next(), it.next(), it.next()) {
                 (Some("altup"), _, _) => Msg::AltUp,
+                (Some("cancel"), _, _) => Msg::Cancel,
                 (Some("uitab"), Some(dir), seq) => Msg::Tab { dir: if dir == "prev" { -1 } else { 1 }, seq: seq.and_then(|s| s.parse().ok()).unwrap_or(0) },
                 (Some("nav"), Some("left"), _) => Msg::Nav(-1, 0),
                 (Some("nav"), Some("right"), _) => Msg::Nav(1, 0),
@@ -1407,6 +1409,7 @@ impl App {
 
     fn on_msg(&mut self, m: Msg) {
         match m {
+            Msg::Cancel => self.exit = true,
             Msg::AltUp => {
                 if !self.locked && !self.handing_off {
                     self.note("alt released");
