@@ -740,7 +740,7 @@ struct App {
     /// first result in view as of the last frame, and the layout (view, columns, cell size) it was measured in:
     /// when zoom or the window width changes the layout, the view scrolls back to this result instead of keeping the pixel offset
     anchor_v: usize,
-    /// the anchor's distance below the top of the view (px); the selection is the anchor while it is in view
+    /// where the view's centre falls within the anchor item (0 = its top edge, 1 = its bottom edge)
     anchor_dy: f32,
     view_sig: (u8, usize, u32),
     popup: bool,
@@ -2492,7 +2492,7 @@ impl App {
         let stride = t + text_h + 10.0;
         let sig = (1u8, cols, t as u32);
         if sig != self.view_sig {
-            self.grid_off = ((self.anchor_v / cols) as f32 * stride - self.anchor_dy).max(0.0);
+            self.grid_off = (((self.anchor_v / cols) as f32 + self.anchor_dy) * stride - view_h / 2.0).max(0.0);
             area = area.vertical_scroll_offset(self.grid_off);
         }
         if self.scroll_pending {
@@ -2520,14 +2520,9 @@ impl App {
         });
         self.grid_off = out.state.offset.y;
         self.view_sig = sig;
-        let sel_top = (self.selected / cols) as f32 * stride;
-        if sel_top >= self.grid_off - 0.5 && sel_top + stride - 10.0 <= self.grid_off + view_h + 0.5 {
-            self.anchor_v = self.selected;
-            self.anchor_dy = sel_top - self.grid_off;
-        } else {
-            self.anchor_v = (self.grid_off / stride).round() as usize * cols;
-            self.anchor_dy = 0.0;
-        }
+        let c = (self.grid_off + view_h / 2.0) / stride;
+        self.anchor_v = c.floor() as usize * cols;
+        self.anchor_dy = c.fract();
     }
 
     /// Paints one group header across `rect` (a line above its members) and reports a click on it.
@@ -2629,7 +2624,7 @@ impl App {
         if sig != self.view_sig {
             if let Some(&sl) = self.gslot_of_v.get(self.anchor_v) {
                 if let Some(l) = lines.iter().find(|l| l.0.is_none() && sl >= l.1 && sl < l.1 + l.2) {
-                    self.grid_off = (l.3 - self.anchor_dy).max(0.0);
+                    self.grid_off = (l.3 + self.anchor_dy * l.4 - view_h / 2.0).max(0.0);
                     area = area.vertical_scroll_offset(self.grid_off);
                 }
             }
@@ -2676,13 +2671,12 @@ impl App {
         });
         self.grid_off = out.state.offset.y;
         self.view_sig = sig;
-        let sel_line = self.gslot_of_v.get(self.selected).and_then(|&sl|
-            lines.iter().find(|l| l.0.is_none() && sl >= l.1 && sl < l.1 + l.2));
-        if let Some(l) = sel_line.filter(|l| l.3 >= self.grid_off - 0.5 && l.3 + l.4 <= self.grid_off + view_h + 0.5) {
-            self.anchor_v = self.selected;
-            self.anchor_dy = l.3 - self.grid_off;
-        } else if let Some(l) = lines.iter().find(|l| l.0.is_none() && l.3 + l.4 > self.grid_off + 0.5) {
-            if let Some(v) = self.gslot_v[l.1] { self.anchor_v = v; self.anchor_dy = 0.0; }
+        let cy = self.grid_off + view_h / 2.0;
+        if let Some(l) = lines.iter().find(|l| l.0.is_none() && l.3 + l.4 > cy) {
+            if let Some(v) = self.gslot_v[l.1] {
+                self.anchor_v = v;
+                self.anchor_dy = ((cy - l.3) / l.4).clamp(0.0, 1.0);
+            }
         }
     }
 
@@ -3929,7 +3923,7 @@ impl eframe::App for App {
                 let sig = (2u8, 0usize, row_h as u32);
                 if sig != self.view_sig {
                     let sl = if self.group_active() { self.gslot_of_v.get(self.anchor_v).copied().unwrap_or(0) } else { self.anchor_v };
-                    self.list_off = (sl as f32 * row_h - self.anchor_dy).max(0.0);
+                    self.list_off = ((sl as f32 + self.anchor_dy) * row_h - self.results_h / 2.0).max(0.0);
                     area = area.vertical_scroll_offset(self.list_off);
                 }
                 if self.scroll_pending {
@@ -4047,19 +4041,12 @@ impl eframe::App for App {
                     });
                 self.list_off = area_out.state.offset.y;
                 self.view_sig = sig;
-                let top_slot = (self.list_off / row_h).round() as usize;
-                let sel_slot = if grouped { self.gslot_of_v.get(self.selected).copied().unwrap_or(0) } else { self.selected };
-                let vh = self.results_h;
-                let sel_top = sel_slot as f32 * row_h;
-                if sel_top >= self.list_off - 0.5 && sel_top + row_h <= self.list_off + vh + 0.5 {
-                    self.anchor_v = self.selected;
-                    self.anchor_dy = sel_top - self.list_off;
-                } else {
-                    self.anchor_v = if grouped {
-                        (top_slot..self.gvis.len()).find_map(|sl| self.gslot_v[sl]).unwrap_or(self.anchor_v)
-                    } else { top_slot };
-                    self.anchor_dy = 0.0;
-                }
+                let c = (self.list_off + self.results_h / 2.0) / row_h;
+                let top_slot = c.floor() as usize;
+                self.anchor_dy = c.fract();
+                self.anchor_v = if grouped {
+                    (top_slot..self.gvis.len()).find_map(|sl| self.gslot_v[sl]).unwrap_or(self.anchor_v)
+                } else { top_slot };
                 }
                 if let Some(id) = self.pending_fold.take() { self.toggle_group(&id); }
                 if let (Some(hit), Some(at)) = (right_hit, right_at) {
