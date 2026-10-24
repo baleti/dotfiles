@@ -3462,6 +3462,7 @@ impl eframe::App for App {
         // grouped views: the cursor also visits the section headers (see nav_step / nav_left / nav_right)
         let (mut ctrl_j_n, mut ctrl_k_n) = (ctrl_j_n, ctrl_k_n);
         let (mut left, mut right, mut enter) = (left, right, enter);
+        let (mut carry_h, mut carry_l) = (0usize, 0usize);   // Ctrl+H / Ctrl+L presses the plain row movement below still gets
         let gnav = self.group_active() && !self.gvis.is_empty() && !self.popup && !self.hist_popup && self.trash_pending.is_none() && self.props.is_none();
         if gnav {
             let cols = if grid { self.grid_cols.max(1) } else { 1 };
@@ -3484,18 +3485,21 @@ impl eframe::App for App {
                 if dn + upn > 0 { down = false; up = false; ctrl_j_n = 0; ctrl_k_n = 0; }
             }
             if was_list && self.list_focus {
-                let h_peek = ui.input(|i| keys.pressed_in(i, "item_prev"));
-                let l_peek = ui.input(|i| keys.pressed_in(i, "item_next"));
+                let (h_n0, l_n0) = (take_act(ui, &keys, "item_prev"), take_act(ui, &keys, "item_next"));
                 let plain_mod = !shift && !ctrl && !alt;
-                if (left && plain_mod || h_peek) && (self.sel_header.is_some() || !grid || self.at_run_col0(cols)) {
+                if left && plain_mod && (self.sel_header.is_some() || !grid || self.at_run_col0(cols)) {
                     self.nav_left();
-                    if h_peek { take_act(ui, &keys, "item_prev"); }
                     left = false;
                 }
-                if (right && plain_mod || l_peek) && self.sel_header.is_some() {
+                if right && plain_mod && self.sel_header.is_some() {
                     self.nav_right();
-                    if l_peek { take_act(ui, &keys, "item_next"); }
                     right = false;
+                }
+                for _ in 0..h_n0 {
+                    if self.sel_header.is_some() || !grid || self.at_run_col0(cols) { self.nav_left(); } else { carry_h += 1; }
+                }
+                for _ in 0..l_n0 {
+                    if self.sel_header.is_some() { self.nav_right(); } else { carry_l += 1; }
                 }
                 if enter && self.sel_header.is_some() {
                     if let Some(id) = self.sel_header.clone() { self.toggle_group(&id); }
@@ -3527,8 +3531,8 @@ impl eframe::App for App {
             let cols = if grid { self.grid_cols.max(1) } else { 1 };
             let shift_any = ui.input(|i| i.modifiers.shift);
             // Ctrl+H / Ctrl+L: previous / next item, in grid and list alike (consumed before the query box)
-            let h_n = take_act(ui, &keys, "item_prev");
-            let l_n = take_act(ui, &keys, "item_next");
+            let h_n = take_act(ui, &keys, "item_prev") + carry_h;
+            let l_n = take_act(ui, &keys, "item_next") + carry_l;
             let j_n = if was_list { ctrl_j_n } else { 0 };
             let k_n = if was_list { ctrl_k_n } else { 0 };
             let cur = self.selected as i64;
