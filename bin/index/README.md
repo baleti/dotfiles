@@ -163,3 +163,7 @@ and btrfs ingestion, NFS stream and monthly walk, nightly collections, nightly R
   memory pressure or a `MemoryHigh` limit evicts it and each keystroke waits for disk reads (seconds). Only the original-case blob (read for result rows) is
   dropped from the process after load. There is no `MemoryHigh` on the service any more; `MemoryMax=3G` stays. `NAMES_IDLE_S` is gone.
 
+- **Malloc settings** (service drop-in): `MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=1048576`, `MALLOC_TRIM_THRESHOLD_=8388608`. The server handles each keystroke in its own thread and
+  every query builds several 4-35 MB numpy arrays; with glibc defaults each thread gets a 64 MB arena that keeps the freed blocks, so anonymous memory crept from ~100 MB to
+  ~800 MB within hours of normal use. With these settings big arrays are `mmap`ed and returned at once: 1556 typed-prefix queries, 8 in parallel, left 213 MB anonymous.
+  What stays is the pinned scan data (~0.8 GB, file-backed, `Locked` in smaps), which is what makes typing instant.
