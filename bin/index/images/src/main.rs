@@ -737,6 +737,10 @@ struct App {
     chord_key: Option<Key>,
     /// grid scroll offset after the last frame (for keeping the grid still while the selection moves)
     grid_off: f32,
+    /// first result in view as of the last frame, and the layout (view, columns, cell size) it was measured in:
+    /// when zoom or the window width changes the layout, the view scrolls back to this result instead of keeping the pixel offset
+    anchor_v: usize,
+    view_sig: (u8, usize, u32),
     popup: bool,
     /// /face pane: indexed faces as crops to pick from (no names involved)
     face_pane: Option<FacePane>,
@@ -1721,6 +1725,8 @@ impl App {
             stats: None,
             chord_key: None,
             grid_off: 0.0,
+            anchor_v: 0,
+            view_sig: (0, 0, 0),
             popup: false,
             face_pane: None,
             path_pane: None,
@@ -2481,6 +2487,11 @@ impl App {
         // the spacing is set before show_rows so its row stride is exactly the one computed here
         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
         let stride = t + text_h + 10.0;
+        let sig = (1u8, cols, t as u32);
+        if sig != self.view_sig {
+            self.grid_off = (self.anchor_v / cols) as f32 * stride;
+            area = area.vertical_scroll_offset(self.grid_off);
+        }
         if self.scroll_pending {
             // keep the grid still while the selection moves inside the view; when it leaves, scroll by
             // whole rows so the rows stay aligned to the same screen positions
@@ -2505,6 +2516,8 @@ impl App {
             }
         });
         self.grid_off = out.state.offset.y;
+        self.view_sig = sig;
+        self.anchor_v = (self.grid_off / stride).round() as usize * cols;
     }
 
     /// Paints one group header across `rect` (a line above its members) and reports a click on it.
@@ -2602,6 +2615,15 @@ impl App {
         let content_h = y;
         let view_h = ui.available_height() - 2.0;
         let mut area = egui::ScrollArea::vertical().max_height(view_h).auto_shrink([false, false]);
+        let sig = (3u8, cols, t as u32);
+        if sig != self.view_sig {
+            if let Some(&sl) = self.gslot_of_v.get(self.anchor_v) {
+                if let Some(l) = lines.iter().find(|l| l.0.is_none() && sl >= l.1 && sl < l.1 + l.2) {
+                    self.grid_off = l.3;
+                    area = area.vertical_scroll_offset(l.3);
+                }
+            }
+        }
         if self.scroll_pending {
             if let Some(&sel_slot) = self.gslot_of_v.get(self.selected) {
                 if let Some(&(_, _, _, ly, lh)) = lines.iter().find(|l| l.0.is_none() && sel_slot >= l.1 && sel_slot < l.1 + l.2) {
@@ -2643,6 +2665,10 @@ impl App {
             }
         });
         self.grid_off = out.state.offset.y;
+        self.view_sig = sig;
+        if let Some(l) = lines.iter().find(|l| l.0.is_none() && l.3 + l.4 > self.grid_off + 0.5) {
+            if let Some(v) = self.gslot_v[l.1] { self.anchor_v = v; }
+        }
     }
 
     /// Ctrl+Enter: show the photo selected in Dolphin, at its real folder on the gdrive mount.
@@ -3885,6 +3911,12 @@ impl eframe::App for App {
                 let mut area = egui::ScrollArea::vertical()
                     .max_height(ui.available_height() - 2.0)
                     .auto_shrink([false, false]);
+                let sig = (2u8, 0usize, row_h as u32);
+                if sig != self.view_sig {
+                    let sl = if self.group_active() { self.gslot_of_v.get(self.anchor_v).copied().unwrap_or(0) } else { self.anchor_v };
+                    self.list_off = sl as f32 * row_h;
+                    area = area.vertical_scroll_offset(self.list_off);
+                }
                 if self.scroll_pending {
                     // keep the list still while the selection moves inside the view; scroll just enough when it leaves, and only
                     // a jump (Home, End, PageUp/Down, a new query) re-centres. The offset is clamped to the real range: asking
@@ -3999,6 +4031,11 @@ impl eframe::App for App {
                         }
                     });
                 self.list_off = area_out.state.offset.y;
+                self.view_sig = sig;
+                let top_slot = (self.list_off / row_h).round() as usize;
+                self.anchor_v = if grouped {
+                    (top_slot..self.gvis.len()).find_map(|sl| self.gslot_v[sl]).unwrap_or(self.anchor_v)
+                } else { top_slot };
                 }
                 if let Some(id) = self.pending_fold.take() { self.toggle_group(&id); }
                 if let (Some(hit), Some(at)) = (right_hit, right_at) {
