@@ -335,7 +335,7 @@ function groupLayout(rows, parsed, get, today) {
             var x = a[1], y = b[1], c;
             if (x[0] === 0 && y[0] === 0) c = x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0;
             else c = compareFieldValues(String(x[1]), String(y[1]), "asc");
-            return gsort.dir === "desc" ? -c : c;
+            return gsort.dir === "asc" ? c : -c;   // descending unless asc is typed, like /s
         });
         return aggs.map(function (a) { return a[0]; });
     }
