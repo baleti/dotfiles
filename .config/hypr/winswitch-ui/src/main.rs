@@ -723,7 +723,14 @@ impl App {
     fn card_dims(&self) -> (i32, i32) {
         let l = self.layout.as_ref().unwrap();
         let (ch, popup) = (self.cell_hgt(), self.popup_h());
-        let h = (self.header_h() + popup + l.rows * ch + 32).min(l.card_max_h);
+        // fit the card to what is shown: a filtered list or a folded /g view needs fewer rows than the
+        // full window set the cell size was computed for
+        let body = if self.group.is_some() {
+            self.flow().1.max(ch)
+        } else {
+            ((self.filtered.len() as i32 + l.cols - 1) / l.cols).clamp(1, l.rows) * ch
+        };
+        let h = (self.header_h() + popup + body + 32).min(l.card_max_h);
         (h, ((h - 32 - self.header_h() - popup) / ch).max(1))
     }
 
