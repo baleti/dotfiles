@@ -280,11 +280,10 @@ hl.define_submap("alt-switch", function()
             hl.dispatch(hl.dsp.exec_cmd(cmd))
         end
     end
-    -- xkb turns Alt+Print into Sys_Req, so bind that too (else it only fired once Alt was released)
-    hl.bind("ALT + Sys_Req", shot("qs ipc call shotty toggle"), { description = "Screenshot a region (annotate)" })
-    hl.bind("ALT + SHIFT + Sys_Req", shot("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate, hyprshot+satty fallback)" })
-    hl.bind("ALT + Print", shot("qs ipc call shotty toggle"), { description = "Screenshot a region (annotate)" })
-    hl.bind("ALT + SHIFT + Print", shot("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate, hyprshot+satty fallback)" })
+    -- Alt+Print cannot be used here: the kernel's Magic SysRq filter swallows Alt+PrintScreen and
+    -- only re-injects it when Alt is released (Hyprland never sees it while Alt is held).
+    hl.bind("CTRL + ALT + s", shot("qs ipc call shotty toggle"), { description = "Screenshot a region (annotate)" })
+    hl.bind("CTRL + ALT + SHIFT + s", shot("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate, hyprshot+satty fallback)" })
 end)
 
 -- Focus by address, for Quickshell's `Hyprland.dispatch(...)`: a dispatch
