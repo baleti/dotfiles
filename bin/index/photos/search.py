@@ -35,7 +35,7 @@ def _cached_load(jsonl, prefix, field_fn):
     emb_p, meta_p = os.path.join(CACHE, prefix + ".npy"), os.path.join(CACHE, prefix + ".json")
     src_mtime = os.path.getmtime(jsonl) if os.path.exists(jsonl) else 0
     if os.path.exists(emb_p) and os.path.exists(meta_p) and os.path.getmtime(emb_p) >= src_mtime:
-        return np.load(emb_p), json.load(open(meta_p))
+        return np.load(emb_p, mmap_mode="r"), json.load(open(meta_p))     # embeddings stay on disk (page cache), not in the heap
     embs, meta = [], []
     if os.path.exists(jsonl):
         for line in open(jsonl, encoding="utf-8"):
@@ -194,11 +194,21 @@ _RELOAD_S = 60
 _last_load = {"t": 0.0, "clip": None, "faces": None, "people": None}
 _index = {}
 
+_last_use = {"t": 0.0}
+
+def unload():
+    """Drop the loaded clip/face/people tables (the next image or face query reloads them from the cache files)."""
+    _index.clear()
+    _last_load["t"] = 0.0
+    import gc
+    gc.collect()
+
 def _refresh():
     """Reload indexes/people at most every _RELOAD_S seconds (the jsonl files grow
     while indexing, and re-parsing them on every keystroke would be too slow)."""
     import time
     now = time.time()
+    _last_use["t"] = now
     if _index and now - _last_load["t"] < _RELOAD_S:
         return
     _index["clip"] = load_clip()
