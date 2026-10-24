@@ -1,0 +1,20 @@
+{
+  "default_search_provider": {"synced_guid": "fj-google-0001"},
+  "default_search_provider_data": {
+    "template_url_data": {
+      "short_name": "Google",
+      "keyword": "google.com",
+      "url": "https://www.google.com/search?q={searchTerms}",
+      "suggestions_url": "https://www.google.com/complete/search?client=chrome&q={searchTerms}",
+      "favicon_url": "https://www.google.com/favicon.ico",
+      "safe_for_autoreplace": false,
+      "prepopulate_id": 1,
+      "id": "2",
+      "date_created": "13300000000000000",
+      "last_modified": "13300000000000000",
+      "input_encodings": "UTF-8",
+      "created_by_policy": 0,
+      "synced_guid": "fj-google-0001"
+    }
+  }
+}
