@@ -141,3 +141,14 @@ the file-name walk (`exclude` in index-dirs.json: a path, or a bare folder name 
 the live watcher) next to the config's own exclusions and mount points, every content index with documents and size on disk,
 and the schedule of each indexing job (fanotify watcher, Drive changes and weekly full listing, local safety-net walk, restic
 and btrfs ingestion, NFS stream and monthly walk, nightly collections, nightly Revit/DWG) with last and next run.
+
+## Compact name table and automatic NFS roots (2026-10-24)
+- **Compact name table**: `NAMES_COMPACT=1` (set in `~/.config/systemd/user/images-search.service.d/compact.conf`, with `MemoryHigh=2G` / `MemoryMax=3G`)
+  makes `filesearch.NameTable` map a snapshot instead of holding 4M+ Python strings. The snapshot (`catalog.db.nt/NameTable-<gen>/`: lower-case
+  and original-case blobs, offsets, sort orders as `.npy`, about 1.6 GB on disk) is built by a child process (`filesearch.py --build NameTable DB OUT`,
+  about 35 s, 2.3 GB peak while it runs) whenever the catalog generation changes, and the server maps it (anonymous memory ~0.1-0.3 GB, the rest is
+  reclaimable page cache). Results are identical to the in-memory table (checked on 2060 queries plus live-overlay ops). Unset the variable to go back.
+  The restic and btrfs tables are not converted yet.
+- **Path search covers every content-indexed path**: `catalog.py` adds an extra (NFS) root for every directory under `/mnt/backups` that is
+  a Recoll `topdirs` entry of an index in `fts.indexes` or a path in `collections.json`, unless an existing extra root already contains it. So
+  `supplier-details` is found by name as well as by content. After adding such an index run `systemctl --user start catalog-extra` and restart `catalog-host1-watch`.

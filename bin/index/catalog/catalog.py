@@ -18,6 +18,40 @@ import config
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import index_dirs
 C = config.CFG["catalog"]
+
+
+def _nfs_fts_roots(cfg):
+    """host1 directories chosen for content (full-text) indexing that no extra root covers yet: path search must reach every
+    path whose contents are searchable. Read from the Recoll topdirs of every index in fts.indexes and from the paths of
+    collections.json; only directories under the NFS mount of host1's backups are added (the rest is walked locally or via rclone)."""
+    import shlex
+    local, remote, host = "/mnt/backups", "/home/user1/backups", "host1"
+    cands = []
+    try:
+        for ix in config.CFG.get("fts", {}).get("indexes", []):
+            conf = os.path.join(os.path.expanduser(ix), "recoll.conf")
+            for line in open(conf):
+                if line.startswith("topdirs"):
+                    cands += shlex.split(line.split("=", 1)[1])
+    except OSError:
+        pass
+    try:
+        for e in json.load(open(os.path.expanduser("~/.config/indexes/collections.json"))).get("paths", []):
+            cands.append(e["path"] if isinstance(e, dict) else e)
+    except (OSError, ValueError, KeyError):
+        pass
+    have = [r["root"].rstrip("/") for r in cfg.get("extra_roots", [])]
+    out = []
+    for c in cands:
+        c = os.path.normpath(os.path.expanduser(c))
+        if not c.startswith(local + "/") or any(c == h or c.startswith(h + "/") for h in have + [o["root"] for o in out]):
+            continue
+        if os.path.isdir(c):
+            out = [o for o in out if not o["root"].startswith(c + "/")]      # a parent replaces children added before
+            out.append({"root": c, "ssh": host, "remote_root": remote + c[len(local):]})
+    return out
+
+C["extra_roots"] = list(C.get("extra_roots", [])) + _nfs_fts_roots(C)
 DB = os.environ.get("CATALOG_DB") or C["db"]
 HOME = os.path.expanduser("~")
 
