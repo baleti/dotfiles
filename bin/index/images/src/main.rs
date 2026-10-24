@@ -2525,6 +2525,21 @@ impl App {
         self.anchor_dy = c.fract();
     }
 
+    /// The group headers that enclose slot `first` but sit above it, outermost first: (slot, depth).
+    /// These stay pinned at the top of the view while their group scrolls past.
+    fn sticky_stack(&self, first: usize) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut cur = usize::MAX;
+        for s in (0..first.min(self.gvis.len())).rev() {
+            if let group::Entry::Header { depth, .. } = &self.gvis[s] {
+                let d = *depth as usize;
+                if d < cur { out.push((s, d)); cur = d; if d == 0 { break; } }
+            }
+        }
+        out.reverse();
+        out
+    }
+
     /// Paints one group header across `rect` (a line above its members) and reports a click on it.
     fn group_header(&mut self, ui: &mut egui::Ui, rect: egui::Rect, slot: usize, list_cols: Option<(f32, f32, f32)>) {
         let pal = self.pal;
@@ -2653,9 +2668,12 @@ impl App {
                 let (va, vb) = (self.gslot_v[a].unwrap_or(0), self.gslot_v[b - 1].unwrap_or(0));
                 self.ensure_rows(va, vb);
             }
+            let first_full = lines.partition_point(|l| l.3 < vp.min.y - 0.5);
+            let stack = if self.group_active() { self.sticky_stack(lines.get(first_full).map_or(self.gvis.len(), |l| l.1)) } else { Vec::new() };
             for l in lines[first..].iter().take_while(|l| l.3 < vp.max.y) {
                 let top = origin.y + l.3;
                 if let Some(hs) = l.0 {
+                    if l.3 < vp.min.y - 0.5 { continue; }   // pinned at the top instead
                     let rect = egui::Rect::from_min_size(egui::pos2(origin.x, top), egui::vec2(avail, hdr_h));
                     self.group_header(ui, rect, hs, None);
                     continue;
@@ -2667,6 +2685,18 @@ impl App {
                         self.grid_cell(ui, ctx, v, t, text_h, clicked, dbl, right);
                     });
                 }
+            }
+            // sticky headers: each stays at the top until the next header of its level (or higher) pushes it out
+            let bg = self.pal.bg;
+            for (j, &(hs, d)) in stack.iter().enumerate() {
+                let next_y = lines[first_full.min(lines.len())..].iter().take_while(|l| l.3 < vp.max.y + hdr_h)
+                    .find(|l| matches!(l.0, Some(s) if matches!(&self.gvis[s], group::Entry::Header { depth, .. } if *depth as usize <= d)))
+                    .map(|l| l.3);
+                let mut y = vp.min.y + j as f32 * hdr_h;
+                if let Some(ny) = next_y { y = y.min(ny - hdr_h); }
+                let rect = egui::Rect::from_min_size(egui::pos2(origin.x, origin.y + y), egui::vec2(avail, hdr_h));
+                ui.painter().rect_filled(rect, 0.0, bg);
+                self.group_header(ui, rect, hs, None);
             }
         });
         self.grid_off = out.state.offset.y;
@@ -3953,12 +3983,19 @@ impl eframe::App for App {
                         }
                         let thumb = self.thumb;
                         let terms = query_terms(&self.last_sent);
+                        // sticky headers: the groups enclosing the first fully visible row stay pinned at the top
+                        let (list_left, list_w, clip_top, first_top) = (ui.cursor().left(), ui.available_width(), ui.clip_rect().top(), ui.cursor().top());
+                        let first_full = if first_top < clip_top - 0.5 { range.start + 1 } else { range.start };
+                        let stack = if grouped { self.sticky_stack(first_full) } else { Vec::new() };
+                        let range_end = range.end;
+                        let range_start = range.start;
                         for slot in range {
                             let idx = if grouped {
                                 match self.gslot_v[slot] {
                                     Some(v) => v,
                                     None => {
                                         let (hr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+                                        if slot < first_full { continue; }   // pinned at the top instead
                                         let c = cols(hr.left() + 6.0 + thumb + 12.0, hr.right(), &frac, show_score);
                                         self.group_header(ui, hr, slot, Some((c.path_x, c.size_r, c.pages_x)));
                                         continue;
@@ -4033,6 +4070,17 @@ impl eframe::App for App {
                                 right_at = ui.input(|i| i.pointer.interact_pos());
                                 right_hit = Some(idx);
                             }
+                        }
+                        for (j, &(hs, d)) in stack.iter().enumerate() {
+                            let slot_y = |sl: usize| first_top + (sl as f32 - range_start as f32) * row_h;
+                            let next_y = (first_full..range_end).find(|&sl| matches!(&self.gvis[sl], group::Entry::Header { depth, .. } if *depth as usize <= d))
+                                .map(slot_y);
+                            let mut y = clip_top + j as f32 * row_h;
+                            if let Some(ny) = next_y { y = y.min(ny - row_h); }
+                            let hr = egui::Rect::from_min_size(egui::pos2(list_left, y), egui::vec2(list_w, row_h));
+                            ui.painter().rect_filled(hr, 0.0, pal.bg);
+                            let c = cols(hr.left() + 6.0 + thumb + 12.0, hr.right(), &frac, show_score);
+                            self.group_header(ui, hr, hs, Some((c.path_x, c.size_r, c.pages_x)));
                         }
                         if self.total == 0 && !self.busy {
                             ui.add_space(20.0);
