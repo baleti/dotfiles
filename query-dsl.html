@@ -1,0 +1,2447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Picker query DSL · dotfiles docs</title>
+<meta name="description" content="Documentation for the $HOME dotfiles repository.">
+<link rel="stylesheet" href="assets/style.css">
+<script>window.SITE_ROOT="";</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <button id="navtoggle" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <a class="brand" href="index.html">dotfiles<span>docs</span></a>
+  <span class="ai-badge" title="These pages are written by an AI (Claude) from the dotfiles repo, not hand-maintained. Last built 2026-10-24 13:06 UTC.">AI-generated<span class="ai-stamp"> &middot; 2026-10-24 13:06 UTC</span></span>
+  <input type="search" id="search" placeholder="Search  ( / )" autocomplete="off"
+         spellcheck="false" aria-label="Search the documentation">
+</header>
+<div class="layout">
+  <nav id="sidebar" class="sidebar" aria-label="Documentation navigation"><div class="machines"><a href="index.html" class="on">shared</a><a href="wsl/index.html">wsl</a><a href="host3/index.html">host3</a><a href="host6/index.html">host6</a><a href="qemu/index.html">qemu</a></div><div class="navgroup"><p class="navgroup-title">Machines</p><ul class="navlist"><li><a href="wsl/index.html">wsl</a></li><li><a href="host3/index.html">host3</a></li><li><a href="host6/index.html">host6</a></li><li><a href="qemu/index.html">qemu</a></li></ul></div><div class="navgroup"><p class="navgroup-title">Shared</p><ul class="navlist"><li><a href="tmux.html">tmux</a></li><li><a href="zsh-and-terminal.html">zsh & terminal</a></li><li><a href="claude-history.html">claude-history</a></li><li><a href="query-dsl.html" aria-current="page">Picker query DSL</a></li></ul></div></nav>
+  <main id="main">
+    
+    <article class="doc">
+<h1 id="picker-query-dsl">Picker query DSL</h1>
+<p>The small query language typed into the search box of every picker in
+this repo: the fzf-driven tmux pickers (window-search, claude-history,
+focus-picker), winswitch's grid search, the Quickshell pickers
+(clipboard, notification, revit-remote, appmenu, app launcher, RSS
+reader, the Claude usage panel), the images picker, the
+<code>search</code> command and the Android app. It arrived at
+independently in <code>window-search.py</code>, was reused in
+<code>claude-history</code> and <code>focus-picker.py</code>, then
+reimplemented for winswitch and the clipboard family (first in Rust/GTK
+- since replaced by Quickshell QML in 2026-09 - then in JS), and finally
+given one syntax and shared primitives (below). The code no longer
+exists in four languages' worth of copies; the <em>semantics</em> are
+what this doc fixes, and <code>~/.config/dsl/tests.json</code> checks
+them.</p>
+<blockquote>
+<p><strong>Reading the older sections.</strong> Several sections below
+were written while winswitch and the clipboard/notification pickers were
+GTK programs sharing a Rust <code>picker.rs</code>/<code>query.rs</code>
+engine. Both were replaced by QML (<code>WinSwitchQueryDsl.qml</code>,
+<code>ClipboardQueryDsl.qml</code>, over the shared
+<code>lib/dsl.js</code>); <code>picker.rs</code> is now a small helper
+crate (age formatting, cache directory) with no DSL code. Where those
+sections say "GTK pickers", <code>picker.rs</code> or
+<code>query.rs</code>, read the QML consumers in the table below - the
+behaviour they describe is carried by them.</p>
+</blockquote>
+<blockquote>
+<p><strong>Native apps (2026-10-23).</strong> alt-tab
+(<code>~/.config/hypr/winswitch-ui</code>) and the Super-key launcher
+(<code>~/.config/hypr/launcher-ui</code>) are standalone Rust programs
+now, not Quickshell components; the Quickshell launcher
+(<code>launcher/</code>, <code>QueryDsl.qml</code>) is gone. Where the
+sections below say "the QML launcher" or
+<code>WinSwitchQueryDsl.qml</code>, the behaviour is carried by those
+two programs over the Rust crate described next (alt-tab still hands
+<code>/fts</code> and <code>/sw</code> to the Quickshell grid, which
+also serves the mod+Tab group picker).</p>
+</blockquote>
+<p><strong>Rust reference implementation (2026-10-23).</strong>
+<code>~/.config/dsl/rs</code> (crate <code>pickerdsl</code>) is the most
+complete implementation of this document: the primitives of
+<code>dsl.py</code>, a schema-driven engine (parse a query into row
+filters, column operations, sort, <code>/g</code> and app-owned verbs;
+evaluate them over rows through a <code>Source</code> trait; auto-shown
+filter fields; the <code>/ft pattern</code> value glob),
+<code>/group</code> (via <code>~/.config/dsl/group.rs</code>), command
+spans for highlighting, and the whole completion layer (completion
+context, candidates, verb-stage depth, Ctrl+Space AND-narrowing,
+accepting a candidate, popup rows, Ctrl+R history matching). A picker
+supplies a <code>Schema</code> (type names, extra verbs, descriptions,
+which verbs completion hides) and a <code>Source</code>; nothing else is
+grammar. When behaviour here is ambiguous, read it and its tests
+(<code>cargo test</code> in that directory, which also runs
+<code>tests.json</code>).</p>
+<p><strong>Shared code (2026-10-22).</strong> The grammar's pure
+primitives live once per language:
+<code>~/.config/quickshell/lib/dsl.js</code> (every QML consumer -
+launcher, rss-reader, claude-usage, winswitch, the clipboard family -
+imports it) and <code>~/.config/dsl/dsl.py</code> (claude-history,
+focus-picker, window-search, the <code>search</code> command). They hold
+key resolution (exact name wins, else substring, comma list,
+alphabetical sort-key expansion), the <code>/verb/keys[/dir]</code>
+splitter, direction words, the tokenizer (quotes, <code>!</code>),
+quoted-term matching and the sort comparator. What stays per picker is
+what depends on its data: the type registry, row values, tokenizer
+quirks, completion presentation, and the images picker's Rust and the
+Android app's Kotlin ports (neither can import them).
+<strong>Conformance suite:</strong>
+<code>~/.config/dsl/tests.json</code> is run by every implementation
+that can load it (<code>~/.config/dsl/run-tests.sh</code>: Python, QML,
+and the images picker's <code>cargo test dsl_conformance</code>); when
+the grammar changes, change the vectors first and the failing
+implementations are the ones left to update. (It already caught one
+divergence: the images picker accepted <code>d</code> as no direction
+because both words contain a <code>d</code>; the rule is a
+<em>prefix</em> of ascending / descending.) This table is the complete
+inventory - if you add a new consumer, add its row here too.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Keybind</th>
+<th>File</th>
+<th>Searches</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>window-search</td>
+<td>tmux prefix+C-w</td>
+<td><code>~/.config/tmux/scripts/window-search.py</code></td>
+<td>live tmux pane scrollback, BM25-ranked</td>
+</tr>
+<tr>
+<td>claude-history</td>
+<td>tmux prefix+C-c</td>
+<td><code>~/bin/claude-history</code></td>
+<td>saved Claude Code conversation transcripts, BM25-ranked</td>
+</tr>
+<tr>
+<td>focus-picker</td>
+<td>tmux prefix+w</td>
+<td><code>~/.config/tmux/scripts/focus-picker.py</code></td>
+<td>tmux panes, MRU-ordered (no ranking)</td>
+</tr>
+<tr>
+<td>winswitch</td>
+<td>Alt+Tab (hold)</td>
+<td><code>~/.config/quickshell/winswitch/WinSwitchQueryDsl.qml</code> +
+<code>WinSwitch.qml</code> (the Rust <code>query.rs</code> it was ported
+from was removed 2026-10-22)</td>
+<td>open windows (Hyprland), grid layout - plus tmux/Claude Code
+metadata cross-referenced onto them</td>
+</tr>
+<tr>
+<td>group picker</td>
+<td>mod+Tab</td>
+<td><code>~/.config/quickshell/services/GroupPickerState.qml</code> +
+<code>~/bin/group-windows</code> (no UI of its own: it feeds the active
+window's Hyprland group tabs into
+<code>WinSwitchState.startGroup()</code>, so the grid, thumbnails and
+search box are winswitch's, the grammar is winswitch's
+<code>WinSwitchQueryDsl.qml</code>)</td>
+<td>the tabs of the active window's Hyprland group, same fields as
+winswitch (title is the file name for apps like nsxiv that title
+themselves with their own name)</td>
+</tr>
+<tr>
+<td>clipboard-picker</td>
+<td>mod+v</td>
+<td><code>~/.config/quickshell/clipboard/ClipboardPicker.qml</code>
+(headless backend:
+<code>~/.config/hypr/clipboard-picker/src/bin/clipboard-picker.rs</code>)</td>
+<td>cliphist clipboard history, list layout</td>
+</tr>
+<tr>
+<td>notification-picker</td>
+<td>mod+CTRL+n</td>
+<td><code>~/.config/quickshell/notifications/NotificationPicker.qml</code>
+(headless backend:
+<code>~/.config/hypr/clipboard-picker/src/bin/notification-picker.rs</code>;
+imports <code>ClipboardQueryDsl.qml</code> directly rather than an 8th
+hand-port)</td>
+<td>notifyd's retained notification history</td>
+</tr>
+<tr>
+<td>revit-remote picker</td>
+<td>mod+`</td>
+<td><code>~/.config/quickshell/revitremote/</code>
+(<code>RevitRemotePicker.qml</code> + <code>RevitRemoteModel.qml</code>,
+imports <code>ClipboardQueryDsl.qml</code> like notification-picker;
+backend <code>~/bin/revit-remote</code> =
+<code>~/src/revit-ballet/tools/remote/revit-remote</code>; design in
+revit-ballet <code>docs/remote-commands-and-query-dsl.md</code>)</td>
+<td>add-in commands of every reachable Revit instance (this machine's
+VMs, other machines), one row per command x instance; Enter runs it
+there</td>
+</tr>
+<tr>
+<td>appmenu picker</td>
+<td>mod+a</td>
+<td><code>~/.config/quickshell/appmenu/</code>
+(<code>AppMenuPicker.qml</code> + <code>AppMenuModel.qml</code>, imports
+<code>ClipboardQueryDsl.qml</code> like revit-remote picker; backend
+<code>~/.config/hypr/scripts/appmenu-atspi.py pick</code>/<code>activate</code>,
+replaced the rofi list)</td>
+<td>the focused window's menu items, flattened (AT-SPI, or the app's own
+<code>appmenu/&lt;pid&gt;.sock</code>); one row per item, preview =
+<code>File › Open</code>; fields <code>item</code>, <code>menu</code>,
+<code>path</code>, <code>app</code>, <code>shortcut</code>,
+<code>state</code> (<code>checked</code>/<code>unchecked</code>); Enter
+activates it. Items are collected before the picker opens (Gecko menus
+are opened lazily and closed again with Escape while the app still has
+the keyboard), mod+a again closes it</td>
+</tr>
+<tr>
+<td>app-launcher</td>
+<td>mod+Super_l</td>
+<td><code>~/.config/quickshell/launcher/</code>
+(<code>QueryDsl.qml</code> + <code>AppLauncher.qml</code>)</td>
+<td>freedesktop <code>.desktop</code> apps, launch-frecency ordered
+(QML)</td>
+</tr>
+<tr>
+<td>rss-reader</td>
+<td>Alt+Shift+R</td>
+<td><code>~/.config/quickshell/rssreader/RssReader.qml</code> (imports
+the launcher's <code>QueryDsl.qml</code>)</td>
+<td>rssd's fetched articles, title/feed/tag/body</td>
+</tr>
+<tr>
+<td>claude-usage</td>
+<td><code>/</code> (panel open, CTRL+ALT+c)</td>
+<td><code>~/.config/quickshell/bar/ClaudeUsageExpanded.qml</code>
+(imports the launcher's <code>QueryDsl.qml</code>)</td>
+<td>active Claude Code processes across all 3 accounts,
+title/pid/status/tokens/path/account plus
+<code>tmux-*</code>/<code>hypr-*</code> fields</td>
+</tr>
+<tr>
+<td>claude-agents (Android)</td>
+<td>search box, conversation list</td>
+<td><code>~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt</code></td>
+<td>live (currently-running) host3 Claude Code conversations synced to
+the phone; flat
+<code>title</code>/<code>account</code>/<code>tokens</code>/<code>age</code>
+fields, no groups. Only <code>/fv</code>, <code>/s</code> do anything
+(no dynamic columns, same as app-launcher);
+<code>/ft</code>/<code>/at</code>/<code>/rt</code> still parsed for
+correct arity, inert. Autocompletion is live-as-you-type rather than
+Tab-gated (no physical Tab key on a phone): it completes the keys,
+direction and value stages of the one syntax as they are typed</td>
+</tr>
+<tr>
+<td>images (photo search)</td>
+<td>mod+Super_l → "Search files" (launcher entry)</td>
+<td><code>~/bin/index/images/</code> (egui Rust window; query engine =
+<code>~/bin/index/photos/search_server.py</code>, user service
+<code>images-search</code>, 127.0.0.1:8765)</td>
+<td>photos by content (CLIP) and by person (faces); opens on newest
+photos, live as you type</td>
+</tr>
+</tbody>
+</table>
+<p><strong>app-launcher action commands.</strong> Besides the five
+verbs, the launcher has <code>/move-to-workspace</code> (exact-matched
+like the others, not a filter/sort verb): Enter on it opens a second
+list of existing workspaces for the window that was focused when the
+launcher opened. Typing filters; Enter moves the window there. A typed
+name with no exact match offers <code>+ new workspace "name"</code>,
+which creates it (numeric names such as <code>37</code> included - they
+are names, not ids) at the smallest unused id above the window's current
+workspace (Hyprland orders workspaces by integer id and cannot renumber,
+so this is the nearest free slot after the current one, not guaranteed
+adjacent) and names it. Esc returns to the app list.
+<code>/add-workspace [name]</code> adds an empty workspace right after
+the current one and focuses it. If the id right after the current one is
+taken, the contiguous run of workspaces above it is shifted up by one
+(windows move, names kept) so it really lands adjacent; that shift is
+skipped (first free id instead) when a window in the run is grouped or a
+run workspace is visible on another monitor; the usual empty-workspace
+cleanup removes it when focus leaves. No name = current number + 1 if
+that name is free, otherwise a decimal (<code>590.1</code>,
+<code>590.2</code>...). On a decimal workspace (<code>590.1</code>) it
+continues that series (<code>590.2</code>, ... <code>590.10</code>,
+<code>590.11</code>), never <code>591.1</code>.
+<code>/move-workspace</code> is the sibling: the same second list (minus
+the current workspace, no "new" row), and choosing one moves the
+<em>current workspace</em> to the smallest unused id above the chosen
+one (windows move, name is kept, view follows), i.e. to just after
+it.</p>
+<p><strong>images (photo search) - its own grammar, same keys.</strong>
+Not the verb grammar: the verbs are <code>/face &lt;name&gt;</code>
+(photos showing a registered person) and <code>/clip &lt;text&gt;</code>
+(CLIP text match), each its own function like <code>/fts</code> because
+it changes the search space (photos only, ranked by meaning). The
+per-column tags stay <code>//</code>: <code>//name &lt;text&gt;</code>
+(file name), <code>//path &lt;text&gt;</code> (folder),
+<code>//size &gt;5M</code> / <code>&lt;200K</code> (size comparison),
+and <code>//dm &lt;text&gt;</code> (date modified; <code>2015-06</code>
+substring or <code>&gt;2015-06</code> / <code>&lt;2015-06</code>).
+<code>//mime &lt;kind&gt;</code> (a file kind such as
+<code>image</code>, <code>pdf</code>, <code>code</code>,
+<code>directory</code> (folders only), or a bare extension) and
+<code>//ext &lt;.pdf&gt;</code> (<code>//extension</code>; one exact
+extension, the leading dot optional, case ignored -
+<code>//ext .csv</code>). Repeated
+<code>//mime</code>/<code>//ext</code> entries OR together, so
+<code>//ext .jpg //ext .png</code> finds both; <code>!//ext .log</code>
+excludes one. Tab after <code>//ext</code> offers the commonest
+extensions in the index. Several filters AND together; bare words act as
+<code>/clip</code> plus any matching registered person. In photo mode
+(<code>/clip</code>, <code>/face</code>, bare words) the filters compose
+left to right and AND: <code>/clip</code> and <code>/face</code> take
+the words after them up to the next <code>/command</code> or
+<code>//tag</code>; a <code>//tag</code> takes exactly one value (quote
+it for spaces), so words after it are not swallowed; <code>//mime</code>
+and <code>//ext</code> work here exactly as in name search, and
+<code>!</code> negates them; and a bare word that is just an extension,
+such as <code>.jpeg</code>, is a file-name substring filter and never
+part of the CLIP text. So <code>/clip brick .jpeg</code> is the bricks,
+kept only where the name contains <code>.jpeg</code>, and
+<code>/clip brick //ext .jpg //ext .png</code> keeps jpg or png.</p>
+<p><strong>Content search (<code>/fts</code>,
+<code>/full-text-search</code>, <code>/chroma</code>) - images picker
+and the <code>search</code> command.</strong> Anything written
+<em>before</em> the verb is the ordinary name filter (the default
+function: words in the full path, <code>!word</code>,
+<code>//name</code> <code>//path</code> <code>//size</code>
+<code>//dm</code> <code>//mime</code> <code>//ext</code>); the verb then
+searches the contents of exactly the files that filter lets through, so
+<code>monier road /fts masonry support angle</code> finds the files with
+"monier" and "road" in their path whose text contains all three words.
+The verb takes the words after it as Recoll query-language terms (words
+are ANDed, <code>OR</code>, <code>"phrase"</code>, <code>-term</code>),
+and <code>//</code> tags still filter its results wherever they are
+written, so <code>/fts dgcl design //mime pdf</code> finds PDFs whose
+contents contain both words. <code>/fts/&lt;index&gt; terms</code>
+searches one content index (a unique prefix of its folder name is
+enough, e.g. <code>/fts/part3 cdm</code>; an unknown name is reported as
+an error), and a first word after the verb that is exactly an index name
+does the same (<code>/fts part3-books cdm</code>). The names are the
+<code>fts</code> list in <code>/facets</code>. Only files that are in a
+Recoll (Xapian) content index can match: a content search never shows a
+file that has not been content-indexed. Name search (no verb) covers
+every file regardless. <code>/chroma words</code> is the semantic
+sibling: files whose text means something close to the words, best first
+with a score, over the Chroma indexes
+(<code>/chroma/&lt;index&gt;</code> for one; it does not cover the BM3
+collections yet), with the same name filter in front and the same
+<code>//</code> tags. <code>/fts</code> lists every matching file (no
+cap per index; a file reachable from two roots is listed once). Its
+words are Recoll query language, so <code>masonry -support</code>
+excludes and a leading <code>-term</code> works; the DSL's own
+<code>!word</code> is accepted as the same thing
+(<code>masonry !support</code>). All the <code>//</code> tags work on
+<code>/fts</code> and <code>/chroma</code> results, <code>//dm</code>
+included (the date comes from the index). Order is relevance (best
+first) unless a sort is explicit: <code>/s/size</code>,
+<code>/s/date</code>, <code>/s/name</code>, <code>/s/path</code>,
+<code>/s/extension</code>, <code>/s/depth</code> (stackable) all apply
+to <code>/fts</code>/<code>/chroma</code>; with no <code>/s</code> the
+column sort is not applied. One content verb per query:
+<code>/fts</code> with <code>/chroma</code>, or either with
+<code>/clip</code> or <code>/face</code>, is reported as an error, as
+are an unknown index and a verb with no words. For <code>/chroma</code>
+with any filter (before the verb or a <code>//</code> tag) the nearest
+2,000 chunks per index are searched instead of 400, and when fewer than
+20 files survive the filters it looks up to 16,000 deep (about 8 s), so
+a filtered total is "within the nearest chunks", not exhaustive. Checks:
+<code>~/bin/index/tools/query_dsl_check.py</code> (compositions and edge
+cases through the <code>search</code> CLI) and
+<code>search_cli_check.py</code>.</p>
+<p><strong>Revit matches are gron.</strong> For
+<code>.rvt/.rfa/.rte/.rft</code> results the preview pane shows each
+match as gron lines (<code>json.levels[3].name = "Level 1";</code>, one
+snippet per matching model element, its fields kept together) instead of
+a text slice (<code>photos/gron_rvt.py</code>, built on the rvt2text
+outline; swap <code>outline_leaves</code> when the extractor gets
+structured output). In the preview pane the text can be selected with
+the mouse; Ctrl+C or right-click &gt; Copy copies it (Settings can put
+the pane below the results instead of beside them).</p>
+<p><strong>Preview pane.</strong> While a <code>/fts</code> query is
+showing results (list view), a second pane on the right previews the
+highlighted file: Recoll's own snippets (<code>Query.getsnippets</code>
+with its default context-word and occurrence limits, so passages and
+stemmed matches are the ones Recoll's GUI would show), each with its
+page number when the format has pages, and the matched words in bold. It
+follows the cursor, is resizable, and is fetched from the search
+server's <code>/snippets</code> endpoint.</p>
+<p><strong>Folder scope (<code>//path</code>).</strong> A substring
+match on the folder path, usable on every search (names,
+<code>/fts</code>, <code>/clip</code>, <code>/face</code>).
+<code>gdrive/</code> stands for the gdrive mount and <code>~/</code> for
+home, so <code>//path gdrive/office</code> matches every file whose path
+contains that text, not only that folder. Quote a value that has spaces:
+<code>//path gdrive/"part 3"</code>. Example:
+<code>/fts career essay cdm daniel //path gdrive/"part 3"</code>.
+Folders listed as off by default in the app's config are hidden unless
+the query contains <code>//path</code> with that folder's keyword.
+Typing <code>//path</code> then Tab lists matching folders from the
+whole catalog, which you can page through.
+<code>!//path gdrive/office</code> is the inverse: every file whose path
+does <em>not</em> contain that text (see Negation); it never opts an
+off-by-default folder in.</p>
+<p><strong>Caret keys (all DSL search boxes).</strong>
+<code>Ctrl+E</code> moves the caret to the end of the query, as in
+Emacs. <code>Ctrl+A</code> keeps its usual meaning of selecting
+everything in the box, so it does not move the caret. <code>Home</code>
+and <code>End</code> also work.</p>
+<p>Keys follow the pickers above: Up/Down or
+<code>Ctrl+j</code>/<code>Ctrl+k</code> move,
+<code>PgUp</code>/<code>PgDn</code> page,
+<code>Home</code>/<code>End</code> jump, <code>Enter</code> opens,
+<code>Esc</code> closes.</p>
+<p><strong>Ordering (<code>/s</code>, <code>/sort</code>).</strong> The
+one place this picker uses the verb grammar:
+<code>/s/&lt;field&gt;[,&lt;field&gt;...][/asc|/desc]</code>, one token,
+behaves as in <code>/sort</code> below, with these differences. Fields:
+<code>name</code>, <code>path</code>, <code>size</code>,
+<code>date-modified</code> (alias <code>dm</code>, <code>date</code>) -
+the four columns - plus <code>extension</code>, <code>depth</code>
+(number of path components), which have no column, and
+<code>pages</code> (page count of local PDFs: the <code>#P</code>
+column; the first 5000 matches are counted and ordered, non-PDFs come
+last in both directions). Names resolve like keys (exact, else unique
+substring; an ambiguous or unknown one such as <code>/s/d</code> makes
+that <code>/s</code> inert). <strong>Repeated <code>/s</code> commands
+stack instead of replacing</strong>, in order:
+<code>/s/date-modified /s/size</code> (or
+<code>/s/date-modified,size</code>) sorts by date modified and, among
+rows with the same date, by size; ties on every key fall back to path
+order. One direction applies to every key (the last one given).
+Timestamps and sizes are real numbers, so <code>ascending</code> is
+oldest/smallest first (no age-style inversion); the default direction is
+descending (newest/largest first), as is the order with no
+<code>/s</code>. <strong>Clicking a column header edits the
+query</strong>: it replaces any <code>/s</code> with
+<code>/s/&lt;column&gt;</code> (a second click on the same column
+appends <code>/asc</code>, a third goes back), so the box always shows
+what the list is sorted by and the arrow follows the first key. Photo
+(<code>//clip</code>, <code>//face</code>) results keep their score
+order. Sorting is done server-side
+(<code>filesearch.NameTable.query</code>,
+<code>sort=date,size</code>).</p>
+<p>Completion: <code>Tab</code> (or <code>Ctrl+Space</code> when no
+popup is open) completes the fragment at the end of the query. One
+candidate completes immediately; two or more open a popup. Stage 1
+completes <code>//</code> to one of the tags above; stage 2 completes a
+person's name after <code>//face</code>. While the popup is open, typing
+narrows it in place, <code>Up</code>/<code>Down</code> or
+<code>Ctrl+j</code>/<code>Ctrl+k</code> move its highlight,
+<code>Tab</code> or <code>Enter</code> accepts the highlighted
+candidate, and <code>Esc</code> closes only the popup, not the window.
+<code>Ctrl+Space</code> does not AND-narrow here: the photo grammar has
+no verb stage to narrow.</p>
+<p>See <a href="tmux.html">tmux.md</a> for the tmux bindings and <a
+href="host3/rust-tools.html">rust-tools.md</a> for winswitch and the
+clipboard-family pickers.</p>
+<p><strong>Completion-UI maturity varies</strong> - the
+grammar/semantics above are shared by every row in that table, but not
+every picker has caught up on how its Tab-completion is
+<em>presented</em> (see Autocompletion, below, for the current rule:
+hidden until Tab, and even then only as a popup when there's more than
+one candidate). winswitch, clipboard-picker, notification-picker,
+app-launcher, rss-reader and claude-usage all follow it; claude-history
+followed it from the start (a nested fzf, since it has no in-layout
+widget tree to put a popup in). focus-picker (2026-09-13) followed the
+same nested-fzf pattern: the header's quiet <code>[tab → x]</code> hint
+still shows what a unique candidate would complete to (and Tab still
+completes it directly, no popup, when there's only one), but 2+
+candidates now open a small nested fzf (<code>complete()</code>, run via
+<code>tab:execute(...)+transform-query(cat ...)</code> -
+<code>transform-query</code> alone never hands a command the real
+terminal a nested interactive fzf needs, only <code>execute(...)</code>
+does, same reasoning as claude-history's own split) instead of silently
+picking the first one with no way to see or choose the others.
+window-search still has no completion assistance at all - pre-existing,
+independent of the popup-visibility rule (nothing pops up there to begin
+with) - worth bringing forward if its DSL usage grows enough to need it,
+but not fixed as part of this change.</p>
+<h2 id="the-shape-of-it">The shape of it</h2>
+<p>Every picker shows a <strong>result set</strong> (windows, panes,
+clipboard entries, scrollback-bearing windows, ...) with, potentially,
+several named <strong>types</strong> per entry - a "type" here is any
+one field that can be filtered on or shown as a column
+(<code>title</code>, <code>workspace</code>, <code>pid</code>,
+<code>age</code>, <code>app</code>; <code>tmux-session</code>,
+<code>claude-title</code>, ... - a related family shares a hyphenated
+name prefix, see Keys).</p>
+<p><strong>Type names are each picker's own vocabulary, not required to
+be shared across the table above.</strong> Only the DSL's grammar and
+semantics are meant to stay consistent picker to picker (see the intro
+above); concrete type names are each picker's own call, and one picker
+lacking a type another picker has is not automatically a gap to fix.
+winswitch has <code>tmux-*</code> and <code>claude-*</code> types
+because its entities - Hyprland windows - only optionally run inside
+tmux or Claude Code; the pickers whose rows already <em>are</em> tmux
+entities (focus-picker, window-search, claude-history) name theirs
+<code>tmux</code>, <code>session</code>, <code>window</code>,
+<code>pane</code> as they always did. claude-history in particular has a
+flat type literally named <code>tmux</code> (a
+<code>session:window.pane</code> display string), which is why it never
+grew <code>tmux-*</code> siblings.</p>
+<p>The DSL does three orthogonal things to that set, and nothing
+else:</p>
+<ul>
+<li><strong>filter rows</strong> - which entries survive
+(<code>/filter-value</code>, and bare typed text, which is the same
+thing)</li>
+<li><strong>filter columns</strong> - which types are shown
+(<code>/filter-type</code>, <code>/add-type</code>,
+<code>/remove-type</code>)</li>
+<li><strong>order</strong> - what sequence the survivors appear in
+(<code>/sort</code>)</li>
+</ul>
+<p>This is the <code>SELECT ... WHERE ... ORDER BY</code> triad, in the
+interactive piped-verb dialect that Kusto/KQL (<code>where</code> /
+<code>project</code> / <code>project-away</code> /
+<code>sort by</code>), Splunk SPL (<code>where</code> /
+<code>fields</code> / <code>fields -</code> / <code>sort</code>) and
+PowerShell (<code>Where-Object</code> / <code>Select-Object</code> /
+<code>Sort-Object</code>) all landed on before this. Each
+<code>/verb</code> token is one pipeline stage; there is no explicit
+pipe character, whitespace between tokens is the pipe.</p>
+<h2 id="grammar">Grammar</h2>
+<p><em>Reworked 2026-10-22: one syntax, built from slashes and commas
+only (no dots, no <code>path:value</code>, no space-separated paths or
+directions).</em></p>
+<p>The search box text is split on whitespace into tokens (a
+<code>"..."</code>-quoted run stays one token, interior whitespace
+intact - see Quoting). Each token is either:</p>
+<pre><code>/verb/keys[/dir] arg   a command: verb exact-matched, keys = what it acts on (see Keys)
+//keys arg             the verb left empty: shorthand for /fv/keys arg (see Default verb)
+&quot;phrase&quot;               quoted literal - never a command, always row-filter text
+bareword               anything else - an implicit /filter-value argument
+!&lt;any of the above&gt;    negated: a leading ! inverts a row filter (see Negation)</code></pre>
+<p>The command token has up to three <code>/</code>-separated parts, and
+<strong>each part's role is fixed by its position</strong>, which is
+what keeps the grammar free of guessing: part 1 the verb, part 2 the
+<strong>keys</strong>, part 3 (only <code>/sort</code>) the
+<strong>direction</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Token</th>
+<th>Reads as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/fv/title rvt</code> or <code>//title rvt</code></td>
+<td>rows whose <code>title</code> contains <code>rvt</code></td>
+</tr>
+<tr>
+<td><code>//p rvt</code></td>
+<td>rows where <code>pid</code> OR <code>path</code> (any key containing
+<code>p</code>) contains <code>rvt</code></td>
+</tr>
+<tr>
+<td><code>//title,path rvt</code></td>
+<td>rows where <code>title</code> OR <code>path</code> contains
+<code>rvt</code></td>
+</tr>
+<tr>
+<td><code>/s/title</code></td>
+<td>sort by <code>title</code>, <strong>descending</strong> (the default
+direction)</td>
+</tr>
+<tr>
+<td><code>/s/title,status/asc</code></td>
+<td>sort by <code>title</code>, ties by <code>status</code>,
+ascending</td>
+</tr>
+<tr>
+<td><code>/ft/tmux</code>, <code>/at/claude-title</code>,
+<code>/rt/pid</code></td>
+<td>column verbs, same key list</td>
+</tr>
+<tr>
+<td><code>/fts/claude-live word</code></td>
+<td>an app verb (e.g. winswitch's full text) with its own key list</td>
+</tr>
+</tbody>
+</table>
+<p>A command's argument is the single value token that follows it
+(<code>/fv</code> only; <code>/ft /at /rt /s</code> take none - their
+keys sit in the token itself), up to the next <code>/verb</code>, end of
+input, or a token that is itself a command. A token past a verb's arity
+is not absorbed: it resumes as an ordinary token, which, being a plain
+token with no verb, is a bare <code>/filter-value</code>.
+<strong><code>/fv</code> is the fallback</strong> - every token left
+over becomes a row filter, never silently dropped.
+<code>/s/name blender</code> is therefore <em>two</em> things: sort by
+<code>name</code>, and filter to <code>blender</code>.</p>
+<p>A command <strong>without keys</strong> (<code>/fv</code>,
+<code>/s</code>, <code>/ft</code> alone) is inert: it takes no argument,
+so <code>/fv foo</code> is just the bare word <code>foo</code>. A
+malformed token (too many parts, a direction on a verb that has none, an
+unknown verb) is inert too and never an error - "half-typed stays a
+no-op" is the rule everywhere.</p>
+<h3 id="verbs">Verbs</h3>
+<table>
+<thead>
+<tr>
+<th>Short</th>
+<th>Long</th>
+<th>Axis</th>
+<th>Takes</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/fv</code></td>
+<td><code>/filter-value</code></td>
+<td>rows</td>
+<td>keys + 1 value</td>
+<td>keep rows whose value matches; drop the rest</td>
+</tr>
+<tr>
+<td><code>/ft</code></td>
+<td><code>/filter-type</code></td>
+<td>columns</td>
+<td>keys</td>
+<td>keep only the columns whose <em>name</em> matches; hide the
+rest</td>
+</tr>
+<tr>
+<td><code>/at</code></td>
+<td><code>/add-type</code></td>
+<td>columns</td>
+<td>keys</td>
+<td>add the columns whose name matches into view</td>
+</tr>
+<tr>
+<td><code>/rt</code></td>
+<td><code>/remove-type</code></td>
+<td>columns</td>
+<td>keys</td>
+<td>drop the columns whose name matches from view</td>
+</tr>
+<tr>
+<td><code>/s</code></td>
+<td><code>/sort</code></td>
+<td>order</td>
+<td>keys + optional <code>/dir</code></td>
+<td>order rows by the key fields</td>
+</tr>
+<tr>
+<td><code>/g</code></td>
+<td><code>/group</code></td>
+<td>view</td>
+<td>keys + optional bucket / level / <code>/dir</code></td>
+<td>fold the rows into collapsible sections</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Verb names are exact-matched</strong> against exactly these
+five short and five long forms (plus the empty spelling <code>//</code>,
+see Default verb) - nothing else, no substring or fuzzy resolution on
+the verb itself, ever. A type name never sits in verb position, so
+adding a type can never collide with the verb vocabulary. It is a
+<em>key's</em> own resolution that is fuzzy (next section), precisely
+because key position and verb position are kept so strictly separate. An
+unrecognised <code>/xyz</code> token is inert. Both the short and long
+form of a verb mean exactly the same thing; autocomplete offers the
+short forms.</p>
+<h3 id="keys">Keys</h3>
+<p>Part 2 of a command is a <strong>comma-separated list of
+keys</strong>. A key names one or more types (a type = any one field
+that can be filtered on or shown as a column). Resolution, per key:</p>
+<ol type="1">
+<li>a type whose name <strong>equals</strong> the key (case-insensitive)
+wins, alone;</li>
+<li>otherwise <strong>every type whose name contains</strong> the key
+(substring) - the key is fuzzy: <code>//p</code> reaches
+<code>pid</code> and <code>path</code>;</li>
+<li>the key list's matches are <strong>unioned</strong> across its
+commas (<code>//title,path</code>).</li>
+</ol>
+<p>A key that resolves to nothing contributes nothing. A key list that
+resolves to nothing makes its command inert (for a filter: "narrows to
+nothing", an honest empty result; for a column verb: a silent no-op).
+Empty keys (<code>//a,,b</code>, a trailing comma) are skipped, and an
+entirely empty key list (<code>//</code>, <code>/fv/</code>) is "nothing
+typed yet": inert, never "matches everything".</p>
+<p><strong>Type names are flat.</strong> A family of related types
+shares a name prefix with a hyphen: <code>tmux-session</code>,
+<code>tmux-window</code>, <code>tmux-pane</code>,
+<code>claude-title</code>, <code>claude-live</code>,
+<code>claude-archive</code>, <code>hypr-workspace</code>. There are no
+groups, no dotted subfields and no <code>*</code>: because keys are
+substring-matched, <code>//tmux</code> already reaches every
+<code>tmux-*</code> type, <code>//tmux-win</code> just the window one,
+and <code>/at/claude</code> adds every <code>claude-*</code> column.
+Each picker owns its vocabulary (only the grammar is shared).
+Exact-name-wins keeps a short name from being swallowed by its own
+family: <code>//title</code> is the plain <code>title</code>, not also
+<code>tmux-title</code> and <code>claude-title</code> (type
+<code>//tit</code> or <code>//-title</code> to mean them all).</p>
+<p><strong><code>/sort</code> expands a fuzzy key into every type it
+reaches, alphabetically</strong> (2026-10-22; before, an ambiguous key
+made the sort inert): <code>/s/pa</code> is <code>/s/pages,path</code>,
+<code>/s/tmux</code> is
+<code>/s/tmux-session,tmux-title,tmux-window</code>. The exact name
+still wins alone (<code>/s/path</code> is just <code>path</code>), a
+type already in the chain is not repeated, and a key that names nothing
+makes the whole <code>/s</code> inert. To sort by one type only, name
+it.</p>
+<h3 id="default-verb-">Default verb (<code>//</code>)</h3>
+<p><code>/fv</code> is the <strong>default verb</strong>: leave the verb
+slot empty and the second <code>/</code> still introduces the keys, to
+<code>/fv</code>.</p>
+<pre><code>//claude ovh          =  /fv/claude ovh
+//                    =  /fv/     (nothing typed after yet)</code></pre>
+<p>This is the <em>only</em> default the grammar has: <code>//</code>
+always means <code>/fv/</code>, never <code>/ft/</code> or
+<code>/s/</code>. A lone <code>/</code> followed by a word is an
+unrecognised verb, and a <code>/verb/keys</code> token whose verb
+<em>is</em> named is unaffected. Everything that holds for
+<code>/fv/keys</code> holds for <code>//keys</code> unchanged - it is a
+spelling resolved at tokenizing time: arity (one value token), no-op
+while the value is pending, Auto-show, inline colouring, quoting
+(<code>"//foo"</code> is literal; a pasted <code>//host/share</code> has
+too many parts and is inert, so quote it), completion (<code>//</code> +
+Tab is the key stage of <code>/fv/</code>).</p>
+<h3 id="fv-without-a-path"><code>/fv</code> without a path</h3>
+<p>At the very start, a search box already behaves as if
+<code>/fv</code> were prepended: bare words are filters over the
+free-text haystack (below). That is the only "default" a user needs, so
+<code>/</code> alone is <strong>not</strong> a shorthand for
+<code>/fv</code>.</p>
+<h3 id="filter-value-fv---and-bare-text"><code>/filter-value</code>
+(<code>/fv</code>) - and bare text</h3>
+<p>Filters which rows survive. Two forms:</p>
+<ul>
+<li><strong>bare text</strong> (<code>text</code>, no verb) -
+substring-match <code>text</code> (quote it, <code>"5"</code>, to match
+only the standalone <code>5</code>, not <code>599</code>),
+case-insensitively, against the picker's always-present free-text
+haystack (window title+class+workspace; clipboard preview; pane
+scrollback; notification app+summary+body; app name + generic name;
+article title+feed+tag+body). This is the one form every picker
+guarantees and the one a casual user needs no syntax for;
+<code>/fv</code> itself needs no spelling here (a lone <code>/fv</code>
+with no keys is inert, see Grammar). Keep this haystack to short,
+controlled strings: the app launcher deliberately leaves
+<code>.desktop</code> <code>Comment=</code> and <code>Keywords=</code>
+<em>out</em> of it (reachable only as scoped <code>//comment</code> /
+<code>//keywords</code>), because substring-matching prose mid-word
+turned <code>ala</code> into a hit on "sc<strong>ala</strong>ble" and
+"b<strong>ala</strong>nce".</li>
+<li><strong><code>//keys value</code></strong> (=
+<code>/fv/keys value</code>) - scope: keep rows where a type matching
+one of the <code>keys</code> has a value containing <code>value</code>
+(substring, case-insensitive; see Keys for how fuzzy keys and commas
+resolve). <strong><code>value</code> prefixed with <code>&gt;</code>
+<code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code> compares instead
+of substring-matching</strong> (clipboard-picker/notification-picker
+only, added 2026-09-28 - <code>//lines &gt;4</code>) - reuses
+<code>/sort</code>'s own comparator (<code>compareFieldValues</code>;
+see "Sort comparison, precisely" below) so a filter and a sort never
+disagree about what "greater" means for the same field. Only means
+anything when <em>both</em> the row's value and the operand are one of
+the two shapes that comparator recognises - plain integers
+(<code>//chars &gt;500</code>) or age buckets
+(<code>//age &gt;3h</code>, meaning "older than 3h" - the operator
+compares the raw stored age, larger is further in the past, no
+direction-trap inversion the way <code>/s/age/asc</code> needs);
+anything else (a non-numeric field, or an operand that isn't) never
+matches, rather than falling back to <code>&gt;4</code> as literal
+substring text. No <code>=</code> operator - plain substring already
+covers loose equality. Not yet ported to any other consumer.
+<strong>Keys alone, with no value yet, are a no-op</strong> (never
+"flash to zero" on a valid partial keystroke, see Design principles) -
+but the named columns are Auto-shown at once.</li>
+</ul>
+<p>There is no "existence" filter (<code>/fv claude</code> used to keep
+rows that had any value in the claude group): groups are gone (see
+Keys). To keep only the rows that have a value in a field, match
+anything in it, e.g. <code>//claude-session .</code>.</p>
+<p>Multiple <code>/fv</code> terms (and multiple bare words) are
+<strong>AND-ed</strong>, order independent: every one must match a
+surviving row. Bare words are each their own term (<code>foo bar</code>
+requires both, independently) except in clipboard-picker /
+notification-picker, whose bare words join into one space-separated
+phrase matched as a single contiguous run - that predates this DSL and
+is left as-is (see <code>ClipboardQueryDsl.qml</code>).</p>
+<p>BM25-ranked pickers (window-search, claude-history) keep their own
+extra row-filter spelling on top of this - prefix-expanded bare words
+and <code>"phrase"</code> as <em>required exact</em> text - because
+ranking a large scrollback corpus needs them and an unranked
+couple-dozen-window grid does not. (<code>!</code> negation used to be
+on this list; it is now part of the shared grammar, see Negation below.)
+Those are documented in each script's own header; everything in
+<em>this</em> doc applies to them unchanged otherwise.</p>
+<h3 id="negation-">Negation (<code>!</code>)</h3>
+<p>A leading <code>!</code> on a row filter inverts it: the term keeps
+exactly the rows its positive form would drop. Added 2026-10-06 to every
+consumer that has a row filter (window-search and claude-history already
+had it, ad hoc).</p>
+<pre><code>!alacritty                     rows whose free-text haystack does NOT contain it
+!&quot;foo bar&quot;                     ... does not contain the exact phrase
+!//path gdrive/office          rows where NO type matching &quot;path&quot; contains the value
+!/fv/claude-title ovh          explicit-verb spelling, same thing
+!//claude-session .            rows with no claude session at all (see the existence note in /fv)
+//lines !&gt;4                    comparisons invert too: rows where &quot;lines &gt; 4&quot; is not true
+alacritty !//path gdrive/      terms still AND: contains &quot;alacritty&quot;, NOT under gdrive/</code></pre>
+<ul>
+<li><strong>Where the <code>!</code> goes.</strong> On the term's first
+token: the verb token (<code>!//path x</code>, <code>!/fv x</code>,
+<code>!/fv/path x</code>), or the bare word / quoted phrase
+(<code>!x</code>, <code>!"x y"</code>). A <code>!</code> on the
+<em>value</em> token (<code>//path !x</code>) means the same; writing
+both is still one negation, not a double one.</li>
+<li><strong>Complement, exactly.</strong> For any term <code>T</code>,
+the rows matching <code>T</code> and the rows matching <code>!T</code>
+partition the result set. In particular a group scope
+(<code>!//claude ovh</code>) drops a row if <em>any</em> subfield
+contains the value (the complement of the positive union rule), a path
+that resolves to nothing (positive: narrows to nothing) negates to "keep
+everything", and a row whose value is missing or not comparable
+(<code>!//lines &gt;4</code> on a non-numeric row) is kept, because the
+positive form did not match it.</li>
+<li><strong>Only row filters.</strong> <code>!/s</code>,
+<code>!/ft</code>, <code>!/at</code>, <code>!/rt</code> parse (so their
+arguments are still consumed and don't leak out as bare words) but do
+nothing. Negation is not a column or order operation.</li>
+<li><strong>Still forming is inert.</strong> A lone <code>!</code>, or
+<code>!</code> followed by space, is a token still being typed and
+changes nothing - the same "never flash to zero on a partial keystroke"
+rule as a half-typed verb. <code>!//path</code> with no value yet is the
+existing value-pending no-op.</li>
+<li><strong>Literal <code>!</code>.</strong> Quote it:
+<code>"!important"</code> is the text <code>!important</code>. (The
+<code>!</code> must be the first character of the token;
+<code>a!b</code> is plain text.)</li>
+<li><strong>Purely negative queries</strong> (<code>!foo</code> alone)
+show everything except the matches. No special case in an unranked
+picker.</li>
+<li><strong>Highlighting.</strong> A negated term has nothing to
+highlight in a row that survives it, so match highlighting skips
+it.</li>
+<li><strong>Auto-show.</strong> <code>!//claude</code> /
+<code>!//path x</code> still auto-show the field they scope to
+(Auto-shown filter fields): seeing the value that was <em>not</em>
+matched is exactly how you check the exclusion did what you meant. The
+per-subfield "which subfield matched this row" labelling (winswitch) is
+positive-only and ignores negated terms.</li>
+<li><strong>Completion and coloring</strong> see through the
+<code>!</code>: it is not part of the command, so <code>!/fv/</code> +
+Tab completes like <code>/fv/</code>, replacement keeps the
+<code>!</code>, and the validity coloring starts after it.</li>
+<li><strong>Off-by-default folders (images picker).</strong> Only a
+<em>positive</em> <code>//path &lt;keyword&gt;</code> opts a hidden
+folder in; <code>!//path &lt;keyword&gt;</code> excludes that folder and
+never reveals it.</li>
+<li><strong>Not everywhere.</strong> Pickers whose engine can't invert a
+given verb leave it inert rather than guess: in the images picker
+<code>/clip</code> and <code>/fts</code> take no <code>!</code> (CLIP
+"not like X" has no meaning; Recoll has its own <code>-term</code>
+inside <code>/fts</code>), while <code>!//path</code>,
+<code>!//name</code>, <code>!//size</code>, <code>!//dm</code>,
+<code>!//mime</code>, <code>!//ext</code>,
+<code>!/face &lt;name&gt;</code> (photos <em>without</em> that person)
+and bare name words work; bare words in photo mode are CLIP text, so a
+<code>!word</code> there is inert. notification-picker shares
+<code>ClipboardQueryDsl.qml</code> with clipboard-picker and so has all
+of it; <code>picker.rs</code> no longer holds a DSL engine.</li>
+</ul>
+<p><strong>Where it's implemented.</strong> Shared launcher
+<code>QueryDsl.qml</code> (<code>tokenize</code> strips the
+<code>!</code> into <code>neg</code>, <code>parse</code> carries it onto
+terms, <code>applyNeg</code> is what each consumer's matcher wraps its
+result in - app-launcher, rss-reader, claude-usage),
+<code>WinSwitchQueryDsl.qml</code>, <code>ClipboardQueryDsl.qml</code>
+(clipboard + notification pickers; bare negated words are a separate
+<code>negWords</code> list because positive bare words are joined into
+one phrase), <code>focus-picker.py</code>
+(<code>tokenize(query, negs)</code>), the Android
+<code>QueryDsl.kt</code> (<code>Token.neg</code>), and the images
+picker: the egui client only forwards the query (and skips negated terms
+when highlighting) while the server parses it -
+<code>filesearch.py</code> (<code>_take_tags</code> files a negated pair
+under the key <code>"!tag"</code>, so positive consumers are untouched;
+<code>split_neg_terms</code>; <code>NameTable._match</code>) and
+<code>photos/search.py</code> (<code>parse</code> returns a third
+<code>negated</code> field; negated filters are subtracted after the
+AND). <code>claude-history</code> and <code>window-search.py</code> keep
+their own earlier implementations.</p>
+<h3
+id="filter-type-ft-add-type-at-remove-type-rt"><code>/filter-type</code>
+(<code>/ft</code>), <code>/add-type</code> (<code>/at</code>),
+<code>/remove-type</code> (<code>/rt</code>)</h3>
+<p>Change which columns are shown. <strong>Never filter rows</strong> -
+orthogonal by construction. All three take a key list in their token
+(<code>/ft/title,pid</code>) and are processed <strong>left to
+right</strong> against one running ordered set that starts at the
+picker's default columns:</p>
+<ul>
+<li><strong><code>/ft/keys</code></strong> - intersect: keep only the
+currently-shown columns whose name matches the keys, drop the others.
+"Filter down to these."</li>
+<li><strong><code>/at/keys</code></strong> - union: add every matching
+column that isn't already shown, at the end.</li>
+<li><strong><code>/rt/keys</code></strong> - subtract: remove every
+matching column.</li>
+</ul>
+<p>Order is significant: <code>/ft/claude /at/workspace</code> shows the
+claude types plus <code>workspace</code>;
+<code>/at/workspace /ft/claude</code> shows only claude types (the
+<code>/ft</code> drops the <code>workspace</code> the <code>/at</code>
+just added). Adding a column that is already shown, or
+removing/filtering one that is not, is a silent no-op.</p>
+<p>Defaults per picker:</p>
+<ul>
+<li><strong>winswitch</strong>: <code>title</code> alone (today's grid
+label). <code>workspace</code>, <code>pid</code>, and every
+<code>tmux</code>/<code>claude</code> subfield are hidden until an
+<code>/at</code> (or a surviving <code>/ft</code>) brings them in. There
+is no <code>class</code> type at all - it wasn't a useful column or
+filter key, so it was dropped from the type registry entirely (it still
+contributes to the free-text haystack alongside <code>title</code>, same
+as always - see <code>/filter-value</code>, above).</li>
+<li><strong>clipboard-picker</strong>:
+<code>chars</code>/<code>lines</code>/<code>mime</code>, in that order
+(<code>chars</code>/ <code>lines</code>: the row's old always-on size
+badge, now real columns instead - see below; <code>mime</code>:
+comma-separated MIME types offered, trimmed of any
+<code>;parameter</code> such as <code>;charset=utf-8</code> for display
+- see <code>cliphist-store-logged.sh</code>'s multi-format bundle
+manifest in rust-tools.md). <code>mime</code> and <code>age</code> both
+have a content-fitted width (<code>TextMetrics</code> against the longer
+of the column's own header label and the longest value among the
+currently-shown rows, 2026-10-02 - a flat hardcoded floor stayed the
+binding constraint whenever every visible value was short, reported as
+the column looking "twice as wide as it needs to be") rather than a
+fixed one: <code>mime</code>'s comma-joined multi-format entries can run
+long, so it's additionally capped at 30% of the box width so it can
+never crowd the preview text out entirely; <code>age</code> (a
+<code>humanize_ago</code> bucket, <code>^\d+[smhd]$</code>) is
+inherently short and bounded, so it auto-sizes with no percentage cap
+and a proportionally smaller padding buffer than <code>mime</code>'s
+(fractional-scale sub-pixel rounding error scales with glyph count -
+generous padding sized for an 81-character <code>mime</code> string
+roughly doubles a 2-3 character <code>age</code> value).
+<code>type</code>/<code>chars</code>/<code>lines</code> stay
+fixed-width. <code>type</code>/<code>age</code> are hidden until
+<code>/at</code>'d or Auto-shown by a <code>/fv</code> filter, same as
+before this feature existed (2026-09-28). <code>age</code> was
+<code>date</code> until 2026-10-02 - "date" read as a calendar date, the
+column actually shows elapsed time since copy, same rename reasoning as
+focus-picker's <code>time</code> -&gt; <code>age</code>.</li>
+<li><strong>notification-picker</strong>:
+<code>app</code>/<code>age</code>, both on from open - there was no
+pre-existing "always shown" info to preserve the way clipboard-picker's
+size badge was, so defaulting both on is what makes the table useful
+immediately. <code>age</code> auto-sizes the same way clipboard-picker's
+does (<code>app</code> stays fixed-width).</li>
+<li><strong>revit-remote picker</strong>:
+<code>input</code>/<code>instance</code> on from open; the command's
+name is the row's own preview text, so <code>command</code> is only a
+column after <code>/at command</code>. Fields: <code>command</code>
+(display name), <code>class</code>, <code>input</code>,
+<code>output</code>, <code>target</code>, <code>instance</code> (target,
+Revit year, pid), <code>year</code>, <code>pid</code>,
+<code>state</code> (<code>idle</code>, or
+<code>dialog: &lt;title&gt;</code> while a modal dialog holds that Revit
+up). Free text is display name + class + target + year only;
+<code>input</code> is deliberately left out so <code>any</code> does not
+match every command that needs a selection (<code>//input any</code>
+does). <code>pid</code> sorts numerically.</li>
+<li><strong>fzf pickers</strong>: focus-picker renders columns and
+honours all three verbs; window-search / claude-history render a single
+ranked line and ignore column verbs (inert, not an error).</li>
+</ul>
+<p>A family prefix as a column key (<code>/at/claude</code>) means every
+type under it, each its own column; <code>/at/claude-title</code> is
+just the one.</p>
+<h3 id="sort-s"><code>/sort</code> (<code>/s</code>)</h3>
+<p>Reorder the survivors; never filter or hide.</p>
+<ul>
+<li><strong><code>/s/key1[,key2,...][/dir]</code></strong> - order rows
+by <code>key1</code>; rows that tie on it are broken by
+<code>key2</code>, and so on for however many comma-separated keys are
+chained. Each key resolves like any key (exact name wins, else every
+type containing it) and a fuzzy key <strong>expands into all its types
+in alphabetical order</strong> (<code>/s/pa</code> =
+<code>/s/pages,path</code>); a key that resolves to nothing makes the
+<em>whole</em> <code>/s</code> inert, not just that key.
+<code>/s/tokens</code> alone is the plain single-key sort.</li>
+<li><strong><code>/dir</code></strong>, the optional third part:
+<code>asc</code> / <code>desc</code> (or any non-empty prefix of
+<code>ascending</code> / <code>descending</code>: <code>a</code>,
+<code>de</code>, ...). It is taken by <strong>position</strong>, so it
+can never be confused with a key or a following word:
+<code>/s/title,status/desc blender</code> sorts and then filters on
+<code>blender</code>. No <code>/dir</code> means
+<strong>descending</strong> (2026-10-22; was ascending): biggest /
+newest / last first, and <code>/asc</code> asks for the other way. One
+direction applies to every key in the chain - there is no per-key
+direction; to run one key the other way, give it its own second
+<code>/s</code> and rely on the last-wins replacement. Only the
+<strong>last</strong> <code>/s</code> in a query takes effect (replace,
+not stack) - except in the images picker, where repeated <code>/s</code>
+stack. A direction on any other verb makes it inert. Absent entirely,
+the picker's own default order stands (MRU, cliphist recency, winswitch
+focus-history, BM25 score). Honoured by winswitch, focus-picker,
+clipboard-picker and notification-picker (2026-09-28); inert in the BM25
+pickers (score <em>is</em> the order).</li>
+<li>The old space forms (<code>/s name desc</code>,
+<code>/sort name</code>) are gone: the verb takes its keys and direction
+from its own token only.</li>
+</ul>
+<p><strong>Sort indicators.</strong> Wherever a picker marks the sort in
+its column headers, the header of every column named by the typed
+<code>/s/key1,key2,.../dir</code> is marked: the first key (the primary)
+with the direction arrow <code>▲</code>/<code>▼</code> as before, every
+further key (a tie-breaker, <strong>secondary</strong>) with the same
+arrow in a different colour - so <code>/s/dm,size/desc</code> shows
+<code>MODIFIED ▼</code> as the primary and <code>SIZE ▼</code> in the
+second colour. A click-sorted header (no typed <code>/s</code>) is
+always primary. Implemented in the images picker (accent colour primary,
+text colour secondary), the claude-usage panel (muted primary, accent
+secondary; its header click and the typed <code>/s</code> share the
+arrows) and focus-picker (bold primary, cyan secondary, in its fzf
+header). Pickers with no sortable column headers (alt-tab, clipboard,
+notification, app-launcher, rss-reader, claude-history) have nothing to
+mark.</p>
+<p>Multi-key chaining dates from 2026-09-02 (then
+<code>/sort/tokens/title</code>, with <code>/</code> between keys; the
+comma replaced the slash 2026-10-22 so <code>/</code> can mean "next
+part").</p>
+<p><strong>Sort comparison, precisely.</strong> Every type is stored and
+matched as a string, but plain lexicographic comparison is wrong for two
+shapes the pickers already have. The comparator
+(<code>compare_field_values</code>) sniffs both values being
+compared:</p>
+<ul>
+<li><strong>Plain integers</strong> (<code>workspace</code>,
+<code>pid</code>, a raw token count): <code>"10"</code> must sort after
+<code>"2"</code>, not before - both sides parse as non-negative ints
+-&gt; numeric compare. This applies to the <em>underlying</em> value,
+not a display- formatted one: a token count shown as <code>"58k"</code>
+sorts on the real integer it came from, not that string
+(formatted-with-a-suffix strings don't parse as plain ints at all, so
+without this they'd silently fall to the lexicographic case below and
+sort nonsensically by leading digit). Reported 2026-09-02 for exactly
+this field, missed in an early implementation's DSL-driven
+<code>/sort</code> path - <strong>any sort UI a picker offers must share
+this one comparator</strong>, DSL-driven or not (e.g. a clickable column
+header that also re-sorts the same rows) - two sort entry points
+disagreeing on <code>"100"</code> vs. <code>"2"</code> because only one
+of them got the numeric-sniffing treatment is the bug, not a variant
+worth keeping.</li>
+<li><strong>Age buckets</strong> (<code>age</code>, from
+<code>humanize_ago</code> - <code>"30s"</code>, <code>"5m"</code>,
+<code>"3h"</code>, <code>"2d"</code>): comparing the strings is nonsense
+across units. Both sides match <code>^\d+[smhd]$</code> -&gt; convert to
+seconds and compare that.</li>
+<li>Otherwise -&gt; lexicographic (correct already for
+<code>title</code> / <code>app</code> / <code>type</code>).</li>
+</ul>
+<p><strong>The direction trap.</strong> <code>age</code>'s stored value
+is an <em>age</em> (seconds ago) - smaller means more recent.
+<code>/s/age/desc</code> means "newest first" in the ordinary calendar
+sense, which is <em>ascending by age in seconds</em>. So for age-shaped
+values the requested direction is inverted before it reaches the numeric
+comparison: <code>ascending</code> (oldest first, chronological)
+compares age descending internally; <code>descending</code> (newest
+first) compares age ascending. Plain ints and text apply the direction
+literally. The trap is specific to "time since" values.</p>
+<h3 id="group-g"><code>/group</code> (<code>/g</code>)</h3>
+<p><em>Added 2026-10-23.</em> Folds the rows into collapsible sections.
+A <strong>view transform</strong>: it never filters, hides or reorders
+rows, it only puts break lines (section headers) between them.</p>
+<ul>
+<li><strong><code>/g/key1[,key2,...][/part...]</code></strong> - one
+section per distinct value of <code>key1</code>; a second key nests a
+sub-section inside each, and so on, outer first. Keys resolve like
+<code>/sort</code> keys (exact name wins, a fuzzy key expands to every
+type it reaches, alphabetically); a key that names nothing makes the
+whole <code>/g</code> inert. Only the <strong>last</strong> valid
+<code>/g</code> in a query takes effect.</li>
+<li><strong>Trailing parts</strong>, recognised by <em>shape</em>, in
+any order, each at most once: a <strong>bucket</strong>, a
+<strong>level</strong> (digits) and a <strong>direction</strong> (a
+prefix of <code>ascending</code> / <code>descending</code>;
+<code>d</code> is <code>desc</code>). Anything else makes the command
+inert.</li>
+<li><strong>Buckets</strong> (exact words). A bucket applies to the keys
+it fits; one that fits no key makes <code>/g</code> inert.
+<ul>
+<li><code>pf</code> / <code>parent-folder</code> (path types): the
+folder holding the entry; <strong>level</strong> picks the ancestor:
+<code>/g/path/pf/1</code> (the default) is the immediate parent,
+<code>/g/path/pf/2</code> the one above it. <code>pf</code> and
+<code>parent-folder</code> also work as a <em>key</em> standing for the
+path type: <code>/g/pf</code>, <code>/g/pf/2</code>,
+<code>/g/pf,dm/month</code>. The level means nothing without
+<code>pf</code> (inert).</li>
+<li><code>day</code> | <code>week</code> | <code>month</code> |
+<code>year</code> (date types): <code>/g/dm/week</code>. Labels read
+<code>Today</code>, <code>Yesterday</code>, <code>This week</code>,
+<code>Last week</code>, <code>This month</code>, <code>This year</code>,
+else a date (<code>2026-10-14</code>, <code>Week of 2026-10-12</code>,
+<code>September 2026</code>). Weeks start on Monday.</li>
+<li>No bucket: the default of the key's family, picked from its
+<em>name</em> - date types (<code>date</code>, <code>modified</code>,
+<code>created</code>, <code>time</code>, <code>dm</code>...) group by
+<code>day</code>; <code>size</code> by order of magnitude
+(<code>&lt; 1 KB</code>, <code>1 - 10 KB</code> ...
+<code>10 GB or more</code>); <code>age</code> (<code>5m</code>,
+<code>3h</code>) into <code>Last hour</code> / <code>Last day</code> /
+<code>Last week</code> / <code>Last month</code> / <code>Older</code>;
+path types by <code>pf</code> (level 1) - so <code>/g/path</code> is
+<code>/g/path/pf/1</code>; anything else by the exact value. A type
+whose name contains <code>path</code> holds the entry's full path, its
+own name included.</li>
+</ul></li>
+<li><strong>Order.</strong> With no direction typed, groups appear in
+the order their rows already have: the active <code>/s</code>, or the
+picker's default (newest first in mod+1, i.e. <code>/s/dm/desc</code>),
+so a group sits where its first row is. Exception, mod+1 only:
+<code>pf</code> (parent-folder) groups are folders, so they are ordered
+by the folder's own date modified (newest first; <code>asc</code>
+reverses), asked of the server's <code>POST /mtimes</code>; a folder the
+catalog has no date for falls back to its newest file.
+<code>/g/key/asc</code> or <code>/g/key/desc</code> instead sorts the
+groups by their key (newest day / biggest size / newest age bucket first
+for <code>desc</code>; text values Z-A for <code>desc</code>). The
+<code>(none)</code> group (empty or unparseable value) is always last.
+Rows inside a group keep the order the rest of the query gives them, so
+<code>/g/dm/week /s/size</code> is "per week, biggest first".</li>
+<li><strong>Sorting the sections themselves.</strong> A trailing
+<code>s/key[/dir]</code> (or <code>sort/key[/dir]</code>) part, once,
+orders the groups by an aggregate of <code>key</code> over all the rows
+in each (nested ones included), at every level; it replaces the key /
+folder-date ordering, and <code>(none)</code> stays last.
+<code>/g/path/pf/1/s/size</code> is "folders, biggest total first"
+(<code>/s/size/asc</code> the other way; direction defaults to
+descending, like <code>/s</code>). The aggregate follows the key's kind:
+<code>size</code> is the total bytes, a date type the newest value,
+<code>count</code> (always accepted) the number of rows, an all-integer
+type (<code>pages</code>) the sum, anything else its smallest value. A
+direction typed <em>before</em> the <code>s</code> part still belongs to
+the group key and is ignored while a section sort is present. This is
+separate from <code>/s/size</code>, which orders the <strong>rows
+inside</strong> the sections:
+<code>/g/path/pf/1/s/size /s/size/desc</code> does both. The parse
+result carries <code>sort: {name, dir}</code> (absent when not typed). A
+bare <code>s</code>, an unknown key or a second <code>s</code> part
+makes the <code>/g</code> inert.</li>
+<li><strong>Pipeline.</strong> Like <code>/s</code>, a <code>/g</code>
+token is position-independent, and it always acts on the <strong>result
+of the filters</strong>: <code>/fv/name .rvt /g/dm/week</code> and
+<code>/g/dm/week /fv/name .rvt</code> both group only the
+<code>.rvt</code> rows, counts are of surviving rows, and a group with
+no surviving rows does not exist. Order of the stages is fixed - rows
+-&gt; filter -&gt; sort -&gt; group - whatever order they are typed in.
+A value token owned by <code>//key</code> or <code>/fv/key</code> is
+never read as a <code>/g</code>. A column verb
+(<code>/ft /at /rt</code>) cannot hide the grouped key's
+<em>section</em>: the headers come from the underlying value.</li>
+<li><strong>Collapse.</strong> Each section header can be folded by
+clicking it, or from the keyboard with the picker's fold key (mod+1:
+<code>Ctrl+G</code>, rebindable) on the selected row's section. State is
+held in memory per group id and reset when the query changes. A
+collapsed header keeps its count; the folded rows leave the sequence, so
+keyboard navigation skips them. Up / Down in a grouped grid keep the
+column and cross into the neighbouring section. A trailing
+<code>collapse</code> part (<code>/g/extension/collapse</code>,
+<code>/g/dm/week/collapse</code>, any position among the trailing parts,
+once) starts every section folded; clicking a header or the fold key
+then opens just that one. In the shared cores it is
+<code>collapse: true</code> on the parse result (absent when not typed);
+the QML pickers keep it as the <code>"*"</code> default in their fold
+map (<code>groupInitial</code> / <code>groupToggle</code> in
+<code>dsl.js</code>), mod+1 folds the sections of the first layout of
+each query (later live updates leave folds alone).</li>
+<li><strong>Rendering</strong> is each picker's own: a full-width header
+row with a break above it in the images grid, a header line between rows
+in list pickers. mod+1 asks the server for the first 20,000 matches
+(names, sizes, dates only), groups them locally and says
+<code>grouped the first N of M</code> when the result set is bigger; the
+thumbnails of the visible rows load lazily as before. A picker that does
+not group treats <code>/g</code> as inert.</li>
+<li><strong>Who honours it</strong> (2026-10-23): mod+1 (grid and list),
+alt-tab (winswitch), the clipboard and notification pickers, the app
+launcher, the RSS reader and the Claude usage panel fold into sections
+(header click or the fold key, Ctrl+G, on the selected row); the
+<code>search</code> CLI prints <code>## label  [n]</code> lines between
+the groups (<code>--json</code>: a <code>"group"</code> array per row;
+<code>-0</code> and <code>-c</code> ignore it). The fzf pickers
+(focus-picker, window-search, claude-history) cannot fold a list into
+sections: <code>/g</code> is recognised there and ignored, never
+searched as text.</li>
+<li><strong>Tests</strong>: the <code>group</code> vectors in
+<code>tests.json</code> (parse / value / layout / visible / extract) run
+in Python, QML and Rust; <code>test_dsl.py</code> also runs the pipeline
+checks - every typing order of filter, sort and group gives the same
+rows and layout, counts only ever cover the rows the filters kept, an
+empty filter leaves no groups, and 300 random token mixes always cover
+each surviving row exactly once.</li>
+<li><strong>Shared code</strong>: <code>parse_group</code>,
+<code>group_value</code>, <code>group_layout</code>,
+<code>group_visible</code>, <code>extract_group</code> in
+<code>~/.config/dsl/dsl.py</code>,
+<code>~/.config/quickshell/lib/dsl.js</code> and
+<code>~/.config/dsl/group.rs</code>, all proven by the
+<code>group</code> vectors in <code>tests.json</code>.</li>
+</ul>
+<h3 id="quoting">Quoting</h3>
+<p><code>"..."</code> is checked first at every token position, so it is
+the universal escape hatch: a token that starts with <code>"</code> is
+<strong>never</strong> parsed as a command, and a literal <code>/</code>
+(or any other reserved character) inside quotes is just text. Beyond
+escaping, quoting lets a value or path segment span whitespace without
+splitting into separate tokens: <code>//title "imperial rome"</code>,
+<code>//app "discord canary"</code>.</p>
+<p>A quoted value is matched as a <strong>literal contiguous
+substring</strong>, whitespace included, that must also <strong>stand
+alone</strong> (no letter/digit directly before or after it - see
+"Resolution, precisely") - <code>//title "imp rom"</code> matches only a
+title that actually contains the run <code>imp rom</code>, not "Imperial
+Rome". (This is a change from the older behaviour, where quoting meant
+subsequence-across- whitespace. Substring is now the single matching
+rule everywhere; "imperial rome" is what you type to match "Imperial
+Rome".) The BM25 pickers keep their own quoting meaning (required exact
+phrase) as noted above.</p>
+<p><strong>images picker.</strong> Quotes group words everywhere in the
+box, not only in values: <code>"career essay"</code> is one search term
+(a literal contiguous substring of the file name or path, and
+highlighted as one run), <code>//name "tasks of"</code> and
+<code>//path "part 3"</code> take the whole quoted run as their value,
+and <code>/fts/part3-books daniel "career essay"</code> passes the
+quoted run to Recoll as a phrase. <code>/s</code> and <code>/sort</code>
+inside quotes are plain text, never commands, and quoted runs keep their
+inner spacing when the order verbs are taken out of the query. An
+unterminated quote runs to the end of the box.</p>
+<p>A <code>//tag</code> always owns the next token as its value,
+whatever that token looks like, so <code>//path /etc</code> filters on
+the path <code>/etc</code> and <code>//path /sort</code> on the text
+<code>/sort</code>; neither is read as a command. A <code>/</code> token
+that is not directly after a <code>//tag</code>
+(<code>//path / /sort dm asc</code> - the value is the lone
+<code>/</code>, then the sort) is parsed as usual. Photo
+(<code>//clip</code>, <code>//face</code>) queries are handled by the
+photo engine and do not group quoted words.</p>
+<h2 id="syntax-highlighting">Syntax highlighting</h2>
+<p>Every search box that implements this DSL colours the
+<strong>commands</strong> in its own text, so you can see at a glance
+what the parser will treat as a command and what it will treat as plain
+text.</p>
+<ul>
+<li><strong>Painted:</strong> a token that the app's parser recognises
+as a command: an exact verb (<code>/fv /ft /at /rt /s</code>, plus an
+app's own such as <code>/fts /clip /face</code>), the
+<code>/verb/via</code> form, and a <code>//tag</code> default-verb form
+that names a real field. The leading <code>!</code> of a negated command
+is not part of the command and stays plain.</li>
+<li><strong>Not painted:</strong> barewords,
+<code>"quoted phrases"</code>, a <code>//tag</code>'s value (it owns the
+next token whatever it looks like), and any <code>/token</code> that is
+not a command, such as the path <code>/mnt/host1-backups/office</code>.
+There is no "invalid command" colour: a token the parser would treat as
+plain text looks like plain text. A <code>/token</code> still being
+typed that might become a verb is also left plain.</li>
+<li><strong>How:</strong> the command is recoloured with the theme
+accent and set bold; the rest of the text keeps the normal text colour.
+It is the text itself, not an underline.</li>
+<li><strong>Colours come from the wallpaper palette.</strong> Apps read
+the generated Material You scheme
+(<code>~/.local/state/quickshell/scheme.json</code>, written by
+<code>gen-theme.py</code>): text is <code>onSurface</code>, commands are
+<code>primary</code>. Never hard-code a colour; a wallpaper change
+recolours the boxes.</li>
+</ul>
+<p>Implementations: the Quickshell pickers share
+<code>~/.config/quickshell/theme/DslHighlight.qml</code> (a
+transparent-text overlay inside the <code>TextInput</code>, fed the
+app's command spans; the input keeps the caret and selection). The
+images picker does it with an egui text layouter
+(<code>command_spans</code> / <code>query_job</code> in
+<code>~/bin/index/images/src/main.rs</code>). Not yet done: the tmux
+TUIs (window-search, claude-history, focus-picker) and the Android
+app.</p>
+<h2 id="autocompletion">Autocompletion</h2>
+<blockquote>
+<p><strong>2026-10-22 rework - current stages.</strong> Completion
+follows the single syntax of Grammar: (1) <em>verb stage</em>:
+<code>/</code> + Tab lists the five verbs, the app verbs, and every
+<code>verb/key</code> combination (Verb-stage depth); <code>//</code> +
+Tab is the key stage of <code>/fv/</code>. (2) <em>key stage</em>, after
+<code>/verb/</code> and again after each <code>,</code>: the type names,
+narrowed by the fragment after the last comma (accepting replaces just
+that fragment and keeps the typed verb spelling, <code>//</code> or
+<code>/fv/</code>). (3) <em>direction stage</em>, <code>/s/keys/</code>
++ Tab: <code>asc</code> / <code>desc</code>. (4) <em>value stage</em>,
+after a resolved <code>//keys </code>: live values of the resolved
+types. There are no colon (<code>path:value</code>) or space-path
+(<code>/s name </code>) stages any more; where older text below
+describes them, read the keys-in-the-token equivalent.</p>
+</blockquote>
+<p><strong>The popup is Tab-triggered to open, never shown just from
+typing.</strong> Nothing pops up on its own as you type
+<code>/frag</code> - typing alone only ever affects the row
+filter/columns/order the same way it always did. Pressing Tab is what
+asks "what could this become": if there's exactly one candidate, it
+completes immediately with no popup ever built or shown at all, the same
+way ordinary shell tab-completion silently completes an unambiguous
+path; only 2+ candidates actually reveal a popup, to choose among them.
+This applies uniformly everywhere: the QML consumers show/hide an
+overlay <code>Rectangle</code>, claude-history spawns/dismisses a nested
+fzf (see below) - always Tab-gated to <em>open</em>, never live. An
+always-on popup that repainted on every keystroke was tried first and
+dropped: it read as obtrusive, and once in a while it stole a
+focus/resize cycle at exactly the wrong moment.</p>
+<p><strong><code>Ctrl+Space</code> also opens it, same as Tab.</strong>
+Landed first in clipboard-picker/notification-picker (2026-09-28), then
+ported everywhere else with a Tab-triggered popup at all, same day. A
+second way to ask "what could this become," bound to the closed-popup
+state specifically: once a popup is already open on a Verb-stage
+completion, <code>Ctrl+Space</code> instead AND-narrows it (see
+"Ctrl+Space AND-narrows a Verb-stage popup," below) - the same key does
+either job depending on whether there's already something open to
+narrow, never both at once. Implemented as one extra
+<code>else if</code> branch guarded on the popup being <em>closed</em>
+(<code>!acPopup.visible</code>/<code>!ac.visible</code>/<code>!root.acOpen</code>,
+picker to picker), calling the exact same completion-trigger function
+Tab's own closed-popup branch already calls - no new function, no
+grammar change, purely a second key reaching the same door. Landed in:
+<code>ClipboardPicker.qml</code>/ <code>NotificationPicker.qml</code>
+(<code>Keys.onPressed</code>, the reference implementation, both share
+the identical handler by hand, not by import);
+<code>WinSwitch.qml</code> (<code>_triggerCompletion()</code>);
+<code>AppLauncher.qml</code> (<code>_triggerCompletion()</code>);
+<code>RssReader.qml</code> (<code>_triggerCompletion()</code>);
+<code>ClaudeUsageExpanded.qml</code> (<code>triggerCompletion()</code>,
+no underscore - this file's own naming, unrelated to the feature).
+focus-picker and claude-history have no <code>acOpen</code>-style flag
+to gate on - their "popup" is a nested fzf process, not a QML Rectangle
+- so there the outer fzf's own <code>--bind</code> gains a second
+<code>ctrl-space:execute(complete_cmd)+transform-query(...)</code> line,
+byte-for-byte the same action <code>tab:execute(...)</code> already
+runs; the nested completion fzf's own <code>ctrl-space:put( )</code>
+binding (its AND-narrowing) is untouched, since it's a different fzf
+process with a different query box. window-search stays out of scope, as
+it has no completion popup at all to extend (see the maturity note at
+the top of this section).</p>
+<p><strong>Once open, typing further narrows it instead of closing
+it</strong> (changed 2026-09-10 - the original rule closed the popup on
+the next keystroke, "the fragment it was built from is stale now, Tab
+recomputes fresh for wherever the cursor is"; reported as the wrong call
+once popups routinely held more than a handful of entries:
+<code>/fv/</code> + Tab lists every field, and typing <code>p</code>
+should narrow that list to <code>path</code>/<code>pid</code>/... in
+place, not force another Tab press). Every keystroke while the popup is
+showing recomputes candidates fresh from the current text - the same
+computation Tab itself uses, just re-run on each change rather than
+gated behind the key - and replaces the shown rows with whatever comes
+back, resetting the highlight to the top: narrows as the fragment
+narrows, jumps to a whole new candidate set if the edit crosses into a
+different stage (finishing a type path and typing the value that follows
+it, say), and closes itself once nothing matches at all - the same
+"narrows to nothing" honest-empty-result rule the rest of the grammar
+already follows (see Design principles), not a special case. Unlike
+Tab's own trigger, narrowing down to exactly one candidate by typing
+never auto-accepts it - the popup still shows that one row and still
+waits for an explicit accept (Enter / Space / Tab - every picker accepts
+all three; Ctrl+Space is the AND-narrowing key, not accept), since
+silently applying a completion just because typing happened to narrow to
+a single match would be a surprise, not a convenience. Typing while
+nothing is open still never opens anything from scratch - that half of
+the original rule is unchanged, only the "once shown" half flipped from
+close-and-retrigger to narrow-in-place.</p>
+<p>Typing <code>/</code> then pressing Tab is enough to discover the
+whole grammar (the list just won't appear until you actually press Tab -
+see above). All the QML pickers grow the same popup: an overlay under
+the search box (winswitch, the clipboard family, the app launcher,
+rss-reader, claude-usage); the two fzf pickers spawn a nested fzf
+instead. Stages:</p>
+<ol type="1">
+<li><strong>Verb</strong> (<code>/frag</code>, nothing after it yet):
+candidates are every short verb form whose name contains
+<code>frag</code> as a substring (<code>/f</code> -&gt;
+<code>/fv</code>, <code>/ft</code>; <code>/</code> alone -&gt; all of
+them), plus every <code>verb/key</code> combination (see Verb-stage
+depth). Accepting a bare verb inserts <code>/verb/</code> (the keys part
+follows); accepting a deep candidate lands the whole command.</li>
+<li><strong>Keys</strong> (<code>/verb/frag</code>, <code>//frag</code>,
+and again after each <code>,</code>): candidates are the type names
+containing <code>frag</code>. Accepting one replaces just that fragment
+and keeps the typed spelling (<code>//</code> or <code>/fv/</code>);
+after <code>/fv</code> / <code>//</code> a trailing space is added (the
+value follows), after the other verbs nothing is (a <code>,</code> or
+<code>/dir</code> can follow).</li>
+<li><strong>Direction</strong> (<code>/s/keys/frag</code>): candidates
+are <code>asc</code> / <code>desc</code>.</li>
+<li><strong>Filter value</strong> (<code>//keys frag</code>, keys
+resolving to one type): every distinct non-empty value that type has
+across the current entries right now, substring-narrowed by
+<code>frag</code>, deduplicated and sorted. This is the one stage
+genuinely scoped to a small corpus.</li>
+</ol>
+<p><strong>An empty fragment lists everything for that stage, once Tab
+asks.</strong> <code>/</code></p>
+<ul>
+<li>Tab is every verb plus every verb/key combination the grammar can
+build (see Verb-stage depth, below); <code>//</code> / <code>/fv/</code>
++ Tab is every type name; <code>//keys </code> + Tab is every value that
+type has. Discovery doesn't need a first character typed - just Tab, at
+any point - which is what makes "hidden until Tab" (above) fine for
+discoverability rather than a tradeoff against it.</li>
+</ul>
+<h3 id="verb-stage-depth">Verb-stage depth</h3>
+<p>The Verb stage (stage 1, above) does not stop at the bare verbs: its
+candidate list is every verb <strong>plus every key-taking verb crossed
+with every type name it can take</strong>, rendered as the complete
+<code>verb/key</code> string (<code>fv/workspace</code>,
+<code>s/tmux-session</code>, <code>at/claude-title</code>, ...; the app
+verbs add their own, e.g. alt-tab's <code>fts/claude</code>,
+<code>fts/claude-live</code>, <code>fts/claude-archive</code>,
+<code>fts/tmux</code>). A fragment of the <em>type</em>, not just the
+verb, is therefore enough to reach a whole command: <code>/wo</code> +
+Tab reaches <code>/fv/workspace</code>, <code>/ft/workspace</code>,
+<code>/at/workspace</code>, <code>/rt/workspace</code> and
+<code>/s/workspace</code>, and <code>/cla</code> + Tab reaches every
+verb crossed with each <code>claude-*</code> type, narrowed by typing
+more (<code>/claude-t</code> keeps the types containing
+<code>t</code>).</p>
+<p>Matching is the one rule everywhere:
+<code>substr(fragment, candidate_text)</code> against the
+<em>complete</em> <code>verb/key</code> string, so a fragment of either
+half reaches the same row. Accepting one inserts its full text and
+nothing else: <code>/fv/workspace </code> (a trailing space, the value
+follows) or <code>/s/workspace</code> (no space: a <code>,</code> or
+<code>/dir</code> can follow) - exactly what the same command parses to
+when typed by hand, so this adds completion candidates and changes
+nothing about the grammar. An empty fragment lists the whole vocabulary
+(<code>/</code> + Tab).</p>
+<p>The candidate list is computed from each picker's own type registry
+(winswitch's <code>typeNames</code>/<code>allPaths</code>, the clipboard
+family's <code>fieldNames</code>, the launcher's <code>typeNames</code>,
+...), never hardcoded; a picker only crosses the verbs that do something
+there (the clipboard family and the launcher cross <code>/fv</code> and
+<code>/s</code>; claude-history crosses <code>/fv</code>; focus-picker
+also <code>/at /rt /ft</code> against its column names). Every picker
+with a completion popup implements it: the QML consumers in their
+<code>_verbStageUniverse</code>/<code>verbStageUniverse</code>,
+focus-picker and claude-history (nested fzf) in
+<code>completion_stage</code>/<code>complete_query</code>; window-search
+has no completion at all.</p>
+<p><strong>Row anatomy for a deep candidate</strong> (extends Suggestion
+row anatomy, below): label is the full <code>/verb/key</code> string;
+alias is the verb's own <code>/long-form</code>
+(<code>/filter-value</code> for an <code>/fv/...</code> row), as for a
+plain verb candidate; description is the <em>type's</em> one-liner
+(<code>typeDescs</code>: "the Hyprland workspace" for
+<code>workspace</code>), not the verb's - the type is the newer,
+less-obvious half once the verb is visible in the label.</p>
+<p><strong>Ctrl+Space AND-narrows a Verb-stage popup instead of
+accepting it.</strong> With the popup open on a
+<code>"verb"</code>-stage completion, <code>Ctrl+Space</code> inserts a
+literal space and keeps the popup open, rather than accepting the
+highlighted row the way plain <code>Space</code> does (see Suggestion
+row anatomy, below, for <code>Space</code>'s ordinary meaning) - so
+<code>/wo</code> + Tab (five rows: every verb crossed with
+<code>workspace</code>) + <code>Ctrl+Space</code> + <code>fv</code>
+narrows that same five down to just <code>/fv/workspace</code>, the one
+row whose full <code>verb/path</code> text contains <em>both</em>
+<code>wo</code> and <code>fv</code>. Each fragment (space-separated,
+including the one the popup was already open on) must independently
+substring-match a candidate's complete text - an AND over the fragments,
+not a second, narrower substring search - so fragment order never
+matters and a third <code>Ctrl+Space</code> narrows further the same way
+a second one does. Every other popup (type-path, value, bare value, sort
+direction) narrows the same way since 2026-10-21: <code>//cla</code> +
+Tab + <code>Ctrl+Space</code> + <code>tit</code> keeps only candidates
+containing both <code>cla</code> and <code>tit</code>
+(<code>claude-title</code>). The first word is still the real completion
+fragment (so the candidate set is whatever <code>cla</code> completes
+to); each further word must also substring-match the candidate's text.
+Accept replaces from the frozen fragment start, same as the Verb stage.
+Implemented in winswitch (<code>acArgMulti</code>), the
+ClipboardQueryDsl family (<code>_argMulti</code>: clipboard,
+notification, revit-remote, appmenu) and the launcher / rss-reader /
+claude-usage panel (<code>acArgMulti</code>, re-entering
+<code>_acCandidates</code> with the first word). Not applied to the Verb
+stage, which has its own universe-wide AND (above). No-op, not a grammar
+change, either - the text that ends up typed (<code>/wo fv</code>) is
+never itself parsed as two tokens the way plain typing normally would be
+(that would make <code>wo</code> a literal <code>/fv</code> text search
+once a space followed it, since <code>wo</code> isn't a prefix of any
+verb - see Design principles' "never flash to zero"): the popup
+intercepts recomputation while this mode is active and replaces the
+whole span from the completion's original opening <code>/</code> through
+the cursor in one go on accept, the same as accepting any other
+Verb-stage row already does.</p>
+<p>Same rollout as Verb-stage depth, same day: winswitch first
+(<code>WinSwitch.qml</code>'s
+<code>acVerbMulti</code>/<code>acVerbMultiStart</code>), then each other
+QML consumer (the clipboard family, app-launcher, rss-reader,
+claude-usage).</p>
+<p><strong>The fzf-native completion popup (focus-picker,
+claude-history) picked this up 2026-09-13</strong>, once it had a real
+popup at all (see Verb-stage depth's own rollout note, above) -
+<code>Ctrl+Space</code> is bound there to fzf's own <code>put( )</code>
+action (insert a literal space into fzf's <em>own</em> query box,
+without accepting), the same functional outcome as the GTK/QML families'
+custom AND-narrowing logic, but for a structurally different reason:
+this popup has no separate "Space accepts" rule to work around in the
+first place (<code>Enter</code>/<code>Tab</code> accept here, plain
+<code>Space</code> does fzf's own ordinary thing - typing a literal
+character - see Shared popup UI, below, for why this family never got
+the other two's "Space also accepts" convention), so plain
+<code>Space</code> already inserts a literal space and narrows same as
+<code>Ctrl+Space</code> would; the binding exists anyway so the
+<em>key</em> matches winswitch's, not because the space needed rescuing
+from an accept binding. The AND-narrowing itself needs no DSL code
+either: this popup runs fzf's own untouched fuzzy matcher already (see
+Search-box history, below, for why that's deliberate here and not the
+grammar's usual substring rule), which already ANDs space-separated
+fragments together natively - typing a second fragment after any space,
+<code>Ctrl+Space</code>-typed or not, was already narrowing further
+before this change; <code>put( )</code> only adds the specific
+keystroke. Not scoped to a "Verb stage" the way winswitch's is, either -
+this popup only ever shows one flat candidate list per Tab press
+(Verb-stage depth already flattens verb and path together into one popup
+- see above), so there's no separate stage for it to be inert in.
+window-search has no completion popup at all to extend this into (see
+the maturity note at the top of Autocompletion).</p>
+<h2 id="auto-shown-filter-fields">Auto-shown filter fields</h2>
+<p>A type actively scoped by a filter (<code>//claude-title ovh</code>,
+<code>/fv/claude ovh</code>) is shown even without an explicit
+<code>/at</code> - and even past an <code>/ft</code>/<code>/rt</code>
+that would otherwise hide it - so the value that actually matched is
+visible whenever more than one candidate is left to choose between,
+rather than a filter narrowing the result set for reasons that aren't on
+screen. This is additive to whatever
+<code>/ft</code>/<code>/at</code>/<code>/rt</code> computed (or, in a
+picker with no column system, to its fixed default display) - never a
+replacement - and it disappears the moment the scoping term is
+deleted.</p>
+<p><strong>It triggers the moment the keys are named, not just once a
+value narrows anything.</strong> <code>//claude-session</code> with no
+value yet (about to add one) already resolves its keys to real types;
+that stays a no-op for row filtering ("never flash to zero on a partial
+keystroke", Design principles) but Auto-show reads the same resolution
+and shows the column at once. A key list that resolves to nothing (a
+typo, a fragment on its way to a name) shows nothing, exactly as it does
+for a complete term. <strong>An empty keys part is nothing typed
+yet</strong>: <code>//</code> or <code>/fv/</code> must not resolve at
+all - an empty substring matches every type name, and the union rule a
+fuzzy key legitimately gets (<code>//cl</code> reaching every type
+containing <code>cl</code>) would auto-show every column at once
+(reported 2026-09-13). Each implementation guards the early trigger on a
+non-empty key list
+(<code>keys.replace(/,/g, "").length &gt; 0</code>).</p>
+<p>What "shown" means is picker-specific:</p>
+<ul>
+<li><strong>winswitch</strong>: the referenced types become active
+columns exactly like an <code>/at</code>
+(<code>WinSwitchQueryDsl.qml</code>'s
+<code>filterReferencedFields</code>, folded into
+<code>activeColumns</code>), rendered as one extra line each under the
+thumbnail (<code>WinSwitch.qml</code>'s <code>labelLines</code>); the
+grid's cells grow (<code>labelAllowance</code>) to fit.</li>
+<li><strong>clipboard / notification / revit-remote / appmenu
+pickers</strong>: a dim extra line under the entry's preview
+(<code>ClipboardPicker.qml</code> and siblings, over
+<code>ClipboardQueryDsl.referencedFields</code>) - these have no real
+column system.</li>
+<li><strong>app-launcher / rss-reader</strong>: a dim second (RSS:
+third) line under the app name / article title, skipping fields the row
+already shows unconditionally.</li>
+<li><strong>claude-usage</strong>: a no-op - its table already renders
+every type as a column (<code>/ft /at /rt</code> are inert there).</li>
+</ul>
+<p>Auto-show is implemented in the QML consumers only; window-search,
+focus-picker and claude-history have no extra-line rendering to
+feed.</p>
+<p><strong>A family type's auto-shown line is labelled with its own
+name, and gated per row when the key reached several types.</strong>
+Types of a family share a hyphenated prefix (<code>claude-title</code>,
+<code>claude-path</code>, ...), and a fuzzy key
+(<code>//claude ovh</code>) reaches all of them, so which type actually
+matched differs row to row. In winswitch:</p>
+<ul>
+<li><strong>Labelling.</strong> A family type's line renders as
+<code>sub: value</code> (<code>title: ovh proposal draft</code>) rather
+than a bare value; the reader cannot otherwise tell which type they are
+looking at. This applies to every such line, including one added with
+<code>/at/claude</code>.</li>
+<li><strong>Per-row gating.</strong> A type reached through a
+<em>multi-type</em> scoped filter is shown only on rows where it is the
+one that matched; a type shown for any other reason (<code>/at</code>, a
+key naming exactly one type) is always shown once it has a non-empty
+value.</li>
+<li><strong>Match-centred preview.</strong> The shown value is capped
+(80 chars), and when the line is tied to a matched filter value the
+window is centred on the match's first occurrence instead of starting at
+character 0 - the first 80 characters of a long field rarely contain the
+matched substring, so the preview read as unrelated noise even on a
+correct match. Types not tied to a matched value keep plain
+start-truncation.</li>
+</ul>
+<p><code>WinSwitchQueryDsl.qml</code>'s <code>scopedGroupFilters</code>
+(the <code>{group, value}</code> pairs for multi-type keys) and
+<code>excerpt</code> (the centring helper) are the reference;
+<code>WinSwitch.qml</code>'s <code>labelLines</code> applies both per
+row.</p>
+<h3 id="suggestion-row-anatomy">Suggestion row anatomy</h3>
+<p>Each row is three fields, left to right, in the style of emacs
+<code>marginalia</code> / zsh's completion descriptions:</p>
+<pre><code>/ft   (/filter-type)   show only the matching columns
+└─┬─  └──────┬──────┘   └──────────────┬─────────────┘
+ what      the long-form alias,        a one-line description
+ accepting  greyed - a hint that       of what the verb does,
+ inserts    /ft *is* /filter-type,     also greyed
+            not a second command</code></pre>
+<ul>
+<li><strong>Verb stage</strong>: label is the short form; the alias is
+its <code>/long-form</code> in parens, greyed; the description is the
+verb's one-liner (below).</li>
+<li><strong>Type-path stage</strong>: label is the type (or group) name;
+no alias; the description is what that field/group <em>is</em> in this
+picker (e.g. <code>title</code> -&gt; "the window title",
+<code>claude</code> -&gt; "Claude Code session metadata"). A picker with
+no per-field blurbs may leave the description empty.</li>
+<li><strong>Value / direction stages</strong>: label only; these are
+concrete data, not grammar, so there's nothing to describe.</li>
+</ul>
+<p>Only the alias and description are greyed; the label itself takes the
+normal / selected-row colour. A picker that can't render three columns
+(the BM25 single-line pickers) shows the label alone.</p>
+<p>Verb one-liners (keep these consistent across implementations - the
+quickshell launcher reads them from <code>QueryDsl.qml</code>'s
+<code>verbInfo</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Verb</th>
+<th>Alias</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/fv</code></td>
+<td><code>/filter-value</code></td>
+<td>keep rows whose value matches (substring)</td>
+</tr>
+<tr>
+<td><code>/ft</code></td>
+<td><code>/filter-type</code></td>
+<td>show only the matching columns</td>
+</tr>
+<tr>
+<td><code>/at</code></td>
+<td><code>/add-type</code></td>
+<td>add the matching columns</td>
+</tr>
+<tr>
+<td><code>/rt</code></td>
+<td><code>/remove-type</code></td>
+<td>drop the matching columns</td>
+</tr>
+<tr>
+<td><code>/s</code></td>
+<td><code>/sort</code></td>
+<td>order rows by one field, optional asc / desc</td>
+</tr>
+</tbody>
+</table>
+<p>Shared popup UI: <code>Tab</code> triggers completion when nothing's
+open yet (see above - unique candidate applies directly, 2+ opens the
+popup). Once the popup <em>is</em> open, <code>Tab</code>
+<strong>confirms the highlighted suggestion</strong>, the same as
+<code>Enter</code> (changed 2026-10-16: it used to move the highlight
+down in the QML and fzf-native families, which made Tab behave
+differently per picker; it now means "accept" everywhere, the
+AutoCAD-style convention <code>Space</code> already followed). Moving
+the highlight is <code>Down</code>/<code>Up</code> (and
+<code>Ctrl+j</code>/<code>Ctrl+k</code> where bound),
+<code>Shift+Tab</code> steps it back; none of those accept. Per
+family:</p>
+<ul>
+<li><strong>QML pickers</strong> (app-launcher, rss-reader,
+claude-usage, winswitch, clipboard/notification/revit-remote pickers):
+<code>Tab</code> accepts; <code>Shift+Tab</code> steps the highlight
+back (wrapping); <code>Down</code>/<code>Up</code> (and, in
+app-launcher/ winswitch, <code>Ctrl+j</code>/<code>Ctrl+k</code>) move
+it, clamped. winswitch's <code>Alt+Tab</code> while locked into search
+mode is the one place Tab still cycles the highlight (a chord, so it
+can't be mistaken for a plain accept).</li>
+<li><strong>Clipboard-family pickers</strong>
+(<code>ClipboardQueryDsl.qml</code>): <code>Tab</code> accepts outright;
+<code>Ctrl+j</code>/<code>Ctrl+k</code> move the highlight (clamped, not
+wrapped).</li>
+</ul>
+<p><code>Space</code> accepts the highlighted suggestion everywhere the
+popup is open, in both families, alongside whichever of
+<code>Tab</code>/<code>Enter</code> already did (added 2026-09-10 - the
+AutoCAD convention of the spacebar confirming the current
+command/entry). It's consumed only while the popup is showing; with no
+popup open, <code>Space</code> types a literal space into the query
+exactly as it always did.</p>
+<ul>
+<li><strong>fzf-native pickers</strong> (focus-picker, claude-history -
+a nested fzf process, not an in-layout widget the picker itself draws
+and can rebind at will): the nested <code>complete&gt;</code> /
+<code>history&gt;</code> fzf is launched with
+<code>--bind tab:accept</code>, so <code>Tab</code> accepts like
+<code>Enter</code>; <code>Down</code>/<code>Up</code> move the highlight
+and <code>Space</code> types a literal space into fzf's <em>own</em>
+query box (never repurposed to accept: this family has no "Space also
+accepts" rule - accepting is already one keystroke away, and
+<code>Space</code> narrowing further is what Ctrl+Space AND-narrowing,
+above, builds on directly).</li>
+</ul>
+<p><code>Escape</code> dismisses just the popup, never the picker. In a
+picker where Tab already meant something else while nothing's open
+(clipboard-picker/notification-picker's and the RSS reader's search-list
+focus toggle), completion only claims the key when it actually found a
+candidate - a bare Tab with nothing to complete falls through to that
+other meaning unchanged, it doesn't just eat the keypress. One bug worth
+remembering if the popup ever silently stops appearing: a
+<code>GtkListBox</code> built with <code>no-show-all</code> (so the
+picker's one-time startup <code>show_all()</code> doesn't reveal an
+empty popup) also ignores a <em>later</em> <code>show_all()</code> meant
+to reveal it - every row/label has to be shown explicitly and the list
+revealed with a direct <code>.show()</code>.</p>
+<p><strong>Inline command-validity coloring.</strong> As a command is
+typed, the whole <code>/verb</code> (or <code>/verb/via</code>, or
+<code>//via</code>) token is colored to show whether it currently
+resolves to a real command, not left in the query's ordinary text color:
+one color once it's a recognized verb, a distinctly different one while
+it isn't (an unrecognized verb, or a genuinely-wrong-looking
+<code>/xyz</code> that isn't even a prefix of one) - the same
+at-a-glance "is this valid" a shell's own syntax highlighting already
+gives a command name. A still-forming prefix of a real verb (typing
+<code>/f</code> on the way to <code>/fv</code>) stays neutral - not
+wrong yet, just incomplete - rather than flashing the invalid color on
+every keystroke. Scoped to <strong>verb-name validity only</strong>:
+<code>/fv/bogus_field</code> still colors as valid, because an
+unresolved via isn't necessarily a mistake (<code>/ft</code>'s via falls
+back to a legitimate value pattern when it doesn't resolve as a path -
+see above - so "did the via resolve" isn't a reliable valid/invalid
+signal the way "is this a real verb" is). This is presentation only and
+never changes matching or resolution - a "wrong" color is exactly what
+<code>is_verb_prefix</code>/ <code>Verb::parse</code> (or a picker's own
+equivalent) already says is unresolved, nothing new to compute, just
+something new to render the answer with. <code>commandSpans</code> (in
+<code>WinSwitchQueryDsl.qml</code>, <code>ClipboardQueryDsl.qml</code>
+and each launcher-style consumer's <code>_commandSpans</code>) is the
+one function that answers it, from a token list identical to what
+<code>starts_command</code>/ <code>tok_verb</code> already tokenize the
+query into.</p>
+<p>Never hardcode either color - both come from whatever dynamic theme
+source the app already has, since this desktop regenerates its whole
+palette from the wallpaper (<code>gen-theme.py</code>); a color baked
+into a picker's source would just go stale the next regeneration, or
+clash outright. the QML consumers read the generated <code>Theme</code>
+colours (from <code>~/.local/state/quickshell/ scheme.json</code>) - its
+<code>primary</code>/ <code>error</code> keys are the valid/invalid pair
+here (not <code>secondary</code>: this theme's <code>secondary</code>
+sits too close in hue to <code>primary</code> to read as a distinct
+"wrong" signal, where <code>error</code> is a deliberately different one
+- check the live values before picking a role, don't assume the name
+alone); the QML consumers already have a <code>Theme</code> singleton
+fed from the same generated file (<code>Theme.cyan</code> /
+<code>Theme.red</code> map to those same two roles). Which specific role
+name means "valid" vs "invalid" is still each app's own call in
+principle - the DSL only cares that the two stay visually distinct and
+both move when the theme does, never that they're any particular hex
+value.</p>
+<p>(The GTK implementation could recolour glyph ranges with Pango
+attributes; that is gone with GTK.) QtQuick's plain
+<code>TextInput</code> has no equivalent (no per-range rich-text
+styling), and recoloring the <em>whole</em> input would falsely tint
+bare filter words alongside the command - so the QML consumers draw a
+thin colored underline under just the command span instead, positioned
+via <code>TextInput.positionToRectangle</code> (which stays correct once
+the field scrolls, unlike computing an x-offset by hand with
+<code>TextMetrics</code>) rather than recoloring the glyphs themselves.
+The three fzf-driven pickers (window-search, claude-history,
+focus-picker) don't have this at all yet: fzf owns and renders its own
+query line with no hook for a script to recolor it live per keystroke,
+so there's no direct equivalent of either technique above - the closest
+fzf-native analogue would be a colored validity hint folded into a
+dynamically-redrawn header (the way focus-picker's
+<code>[tab → x]</code> hint already works), which is a materially
+different mechanism and hasn't been built.</p>
+<p><strong>Per-picker autocomplete scope.</strong> A picker only offers
+the verbs that do something for it. The app launcher shows no columns,
+so it offers <code>/fv</code>, <code>/s</code> only -
+<code>/ft</code>/<code>/at</code>/<code>/rt</code> are still
+<em>parsed</em> (shared grammar) but inert, so they're left out of the
+popup rather than suggested and then ignored. claude-history only acts
+on <code>/fv</code> at all (see its own header), so its Tab-completion
+only ever offers that - the verb stage lists
+<code>fv</code>/<code>filter-value</code> and nothing else, and only via
+paths get completed (<code>/fv/field value</code>, steering towards that
+spelling specifically even though the older colon spelling is gone). Its
+completion UI can't be an in-layout popup the GTK pickers' way (fzf has
+one list, not a widget tree) - a unique candidate completes directly,
+the same way shell tab-completion does with no ambiguity to show; an
+ambiguous one opens a small <em>nested</em> fzf as the actual picker,
+launched via <code>execute(...)</code> (which hands the terminal over to
+it, same as fzf's own <code>execute(less {})</code>) and fed back into
+the query with <code>transform-query(...)</code> once you pick one.</p>
+<h2 id="search-box-history-up-arrow-ctrlr">Search-box history (Up-arrow,
+Ctrl+R)</h2>
+<p>Two bindings, modeled directly on zsh's own line editor plus this
+user's fzf <code>ctrl-r</code> widget (<code>~/.zshrc</code>'s
+<code>_fzf_history_widget_wrapper</code>, plain
+<code>fzf-history-widget</code> underneath - its only customization is
+<em>where</em> the popup renders, <code>--tmux</code> placement, never
+<em>how</em> it matches or orders), so the shell muscle memory transfers
+straight into every picker's search box with no new mechanism to
+learn.</p>
+<ul>
+<li><p><strong>Up-arrow</strong> cycles the search box's whole text
+backward through that picker's own previously-submitted queries,
+most-recent-first - the same job zsh's default
+<code>up-line-or-history</code> binding does.
+<strong>Down-arrow</strong> walks forward again, symmetric with Up,
+eventually landing back on whatever was actually being typed before the
+first Up press (the pre-cycle draft, restored verbatim, even if it was
+empty) rather than getting stuck on the oldest entry once you've walked
+past it - zsh does the same. Scoped to whenever the search box is
+focused and <strong>no popup (completion or history) is currently
+open</strong> - both because Up/Down are already claimed for moving the
+completion popup's highlight once one is open (QML pickers:
+<code>Down</code>/<code>Up</code> move it, clamped - see Shared popup
+UI, above), and because replacing the box's text out from under an open
+completion popup that's narrowed to the <em>old</em> text would be
+actively confusing. <strong>The fzf-native pickers give up Up/Down as
+row-navigation entirely</strong> to make room for this (there's no
+separate "popup" state to scope around there the way there is for a QML
+completion overlay - Up/Down are the <em>main list's</em> own navigation
+by default) - row navigation moves to
+<code>ctrl-j</code>/<code>ctrl-k</code> instead, which cost nothing new
+to bind since they're already fzf's own default synonyms for
+down/up.</p></li>
+<li><p><strong>Ctrl+K / Ctrl+J are Up / Down in the search box</strong>
+(added 2026-10-21), wherever Up/Down are history:
+<strong>Ctrl+K</strong> cycles back through past entries exactly like Up
+and so starts a history walk. <strong>Ctrl+J</strong> is Down, which has
+two meanings: while a walk is on (an Up/Ctrl+K press has happened and
+the pre-cycle draft hasn't been restored yet) it steps forward through
+history; otherwise it is <em>not</em> history at all and does what plain
+Down does in that picker - move on into the results (focus the list /
+the second entry below the already-selected first one, per Focus between
+search box and results, below). So Ctrl+J never starts a walk and never
+replays an entry from a cold box. With a completion/history popup open
+Ctrl+J/K keep moving its highlight, and with the results focused they
+navigate rows as before. Consequence: in the pickers with history, row
+navigation back <em>up</em> from the search box is no longer Ctrl+K (it
+is history now), same as Up. Implemented in app-launcher, winswitch,
+rss-reader, claude-usage (<code>Ctrl+J/K</code> branches next to the
+Down/Up ones), images (<code>kb_up</code>/<code>kb_down</code> in
+<code>main.rs</code>), and focus-picker / claude-history via
+<code>~/bin/fzf-histnav</code> (fzf <code>transform</code>: keeps a
+depth counter + the query history last put in the box, so Down/Ctrl+J
+only step history forward while the box still holds it; all four of
+Up/Ctrl+K/Down/Ctrl+J bind to it, and Down with no walk moves the fzf
+list down and records the query as before). Pickers with no search-box
+history (clipboard, notification, app-menu, revit-remote, window-search)
+are unchanged: Ctrl+J/K stay plain row navigation.</p></li>
+<li><p><strong>The Ctrl+R popup closes once an entry is chosen</strong>
+(all pickers), and is never carried across a close/reopen of the window.
+Choosing an entry (Enter/Tab/click) replaces the whole query and ends
+the popup - unlike a Tab-completion popup, which stays open and
+re-narrows after accepting a stage, there is nothing further to complete
+in a finished query. Implementations close the popup <em>before</em>
+writing the text, or the text-change recompute reopens it (app-launcher,
+rss-reader, claude-usage); winswitch and images already did; the fzf
+pickers' nested popup exits on accept by construction.</p></li>
+<li><p><strong>Ctrl+R</strong> opens a popup - the same shared popup
+machinery Tab-completion already uses (nested fzf for the fzf-native
+pickers, in-layout <code>GtkListBox</code>/QML overlay elsewhere - see
+Autocompletion, above), but pointed at a different corpus and a
+different matcher:</p>
+<ul>
+<li><strong>Corpus</strong>: the picker's own history list,
+most-recent-first, same list Up-arrow cycles through - not the DSL's
+verb/type/value candidates.</li>
+<li><strong>Matcher</strong>: fzf's own default fuzzy algorithm, not
+this DSL's plain substring rule (Resolution, precisely, below) - a
+deliberate second exception to "no subsequence matching anywhere" (the
+first being <code>/ft</code>'s glob-pattern fallback), made because the
+whole point of this binding is reusing zsh ctrl-r muscle memory, not
+staying internally consistent with the rest of the grammar. This is free
+for the three fzf-native pickers: the nested completion fzf already runs
+with fzf's untouched default matcher (no <code>--disabled</code>, no
+<code>--exact</code> - only the <em>outer</em> fzf runs
+<code>--disabled</code>, to hand filtering to the DSL), so pointing that
+exact same nested-fzf plumbing at the history file instead of the
+candidate list needs no new matching code, only a new corpus and a new
+trigger key. Non-fzf pickers approximate the same feel with a
+fuzzy/subsequence scorer in their own popup instead of substring, since
+there's no nested fzf to borrow one from.</li>
+<li><strong>Seed</strong>: the popup opens pre-filtered by whatever's
+currently in the search box (<code>fzf --query "$LBUFFER"</code>'s own
+behavior), not empty - then narrows further exactly like a
+Tab-completion popup already does on every keystroke
+(recompute-in-place, reset highlight to top, close on zero matches - see
+Autocompletion, above; nothing new to invent here either).</li>
+<li><strong>Accept</strong> (Enter - the fzf-native family's own accept
+key, see Shared popup UI's fzf-native bullet, above; not Space/Tab,
+which do fzf's own ordinary things in this popup too) replaces the
+<strong>entire</strong> search-box text with the chosen history entry,
+cursor at the end - a whole-line replace, not an insert at cursor,
+matching zsh's own <code>LBUFFER=$selected</code>. The caret must really
+be parked at the end of the inserted text (not left where it was, or at
+the start) in every picker, so typing carries on from the end of the
+recalled query.</li>
+<li><strong>Escape</strong> dismisses just the popup, search box left
+exactly as it was before Ctrl+R was pressed - same as every other popup
+in this DSL.</li>
+</ul></li>
+<li><p><strong>Inline suggestion (zsh-autosuggestions).</strong> While
+typing, the rest of the <strong>newest</strong> history entry that
+starts with the text typed so far (case-sensitive prefix, strictly
+longer than the text) is drawn in greyed-out text directly after the
+cursor, from the same history list Up-arrow and Ctrl+R use.
+<strong>Right-arrow</strong>, <strong>End</strong> or
+<strong>Ctrl+F</strong> accepts it (appends the greyed text and parks
+the cursor at the end); anything else typed just narrows or drops it.
+Shown only when the cursor is at the end of a non-blank search box and
+no popup (completion or history) is open; Shift+arrow and a cursor
+mid-text never take it, so Right/End keep their ordinary editing meaning
+whenever there is no suggestion. Nothing is recorded by accepting it
+(history is only written on accept / selection-move, as above). Landed
+2026-10-11 in the images picker (egui) and the four QML pickers
+(app-launcher, winswitch, rss-reader, claude-usage), each via a
+<code>suggest(text)</code> helper on its history store. The fzf-native
+pickers (focus-picker, claude-history) cannot draw ghost text inside
+fzf's query line, so they are out of scope; clipboard-, notification-
+and revit-remote pickers have no search-box history yet, so no
+suggestion either.</p></li>
+</ul>
+<p><strong>What gets recorded, and when.</strong> A query is appended to
+that picker's own history the moment the user <em>acts on it in the
+results grid</em> - not on every keystroke, and not while a query is
+only still being typed. Two things count as "acted on," added 2026-09-13
+after the first cut (accept only) turned out to be too narrow in
+practice: an actual <strong>accept</strong> (Enter activating a row -
+the shell analogue, "a command" being whatever was run) and, separately,
+<strong>moving the row selection</strong> after typing (arrow/ctrl-j/
+ctrl-k navigating the results without ever accepting one) - browsing a
+query's results is itself evidence the query was finished and useful,
+even if the session ends without jumping anywhere. Neither fires
+mid-typing: a keystroke that only changes the query text itself is never
+on its own a trigger, only what comes <em>after</em> typing pauses - so
+a query still being composed never gets a half-typed fragment recorded
+(this DSL's own "never flash to zero on a valid partial keystroke"
+spirit, applied to history instead of results - see Design principles,
+below). An empty search box at either moment records nothing (a shell
+doesn't journal a blank line either). Whitespace runs are collapsed to
+one space before storing or comparing (mirrors this user's
+<code>HIST_REDUCE_BLANKS</code>), and a submitted query identical, after
+that normalization, to an existing entry anywhere in history removes the
+older occurrence and re-appends fresh at the end instead of growing a
+duplicate - mirrors <code>HIST_IGNORE_ALL_DUPS</code>, which this user's
+<code>.zshrc</code> already sets, so a query typed a third time floats
+back to "most recent" instead of piling up three near-identical rows in
+the Ctrl+R popup.</p>
+<p><strong>One history list per picker, not shared across them.</strong>
+Same reasoning the doc already gives for field/group vocabularies not
+needing to match picker to picker (The shape of it, above): each
+picker's queries are shaped by, and only meaningful against, that
+picker's own corpus and type vocabulary - a <code>claude-title</code>
+scope typed in claude-usage means nothing replayed into window-search.
+Stored per picker under its own cache directory (mirroring
+<code>~/.zsh_history</code> itself - one file per shell, not a merged
+global one), unbounded, like this user's own
+<code>HISTSIZE=99999999</code>/<code>SAVEHIST</code>, rather than capped
+and pruned.</p>
+<p><strong>Written immediately, read fresh on every Ctrl+R - not just
+cached at picker startup.</strong> Mirrors
+<code>INC_APPEND_HISTORY</code> + <code>SHARE_HISTORY</code>: a one-shot
+fzf-native picker (window-search, focus-picker, claude-history) is a
+fresh process every invocation anyway, so this is automatic there -
+there's no earlier in-memory snapshot to go stale. It matters more for
+the long-lived QML/GTK pickers - the quickshell shell process and its
+panels stay resident across many separate open/close cycles, unlike a
+shell that exits with its terminal - so each of those should re-read its
+history file at the moment Ctrl+R opens the popup rather than rely on
+whatever it loaded once at <code>qs</code> startup, so a query submitted
+in one open-close cycle is visible to Ctrl+R the very next time that
+same picker is opened, the same way a second concurrent zsh session sees
+a first session's just-run command under <code>SHARE_HISTORY</code>.</p>
+<p><strong>Out of scope: claude-agents (Android).</strong> No physical
+Up-arrow or Ctrl+R exists on a phone keyboard, and its
+<code>QueryDsl.kt</code> already departs from the desktop completion
+model for the same reason (live-as-you-type, no Tab-gating - see the
+table entry above); a touch-native equivalent (e.g. a swipe-to-recall
+gesture, or a persistent "recent searches" chip row) would be its own
+design, not a port of this section, and hasn't been asked for.</p>
+<p><strong>Rollout: focus-picker and claude-history, 2026-09-13; the
+rest not yet built.</strong> Landed first in the two fzf-native tmux
+pickers, where it turned out to need almost no new mechanism: fzf's own
+<code>--history=FILE</code> flag already <em>is</em> Up-arrow-style
+cycling (confirmed directly, a scripted <code>expect</code> session
+against real fzf - loads oldest-first, writes the file only on a genuine
+accept, never on Escape/ctrl-c, and restores the pre-cycle draft
+verbatim once you walk forward past the newest entry - every part of the
+Up-arrow bullet above, for free). Bound to the literal
+<code>up</code>/<code>down</code> actions
+(<code>--bind up:prev-history --bind down:next-history</code>), not
+fzf's own ctrl-p/ctrl-n auto-remap default, since real usage showed
+that's what "Up-arrow" actually needs to mean here - row navigation
+moves to <code>ctrl-j</code>/<code>ctrl-k</code> instead (see the
+Up-arrow bullet's own note on this). <code>dedupe_history()</code>
+(<code>focus-picker.py</code>, <code>claude-history</code>) is the one
+thing fzf's flag doesn't do on its own - it appends unconditionally, no
+<code>HIST_IGNORE_ALL_DUPS</code> equivalent - so both run it right
+after the outer fzf exits, collapsing the file to last-occurrence-wins
+order before the <em>next</em> invocation's <code>--history</code> load
+or this invocation's own Ctrl+R popup ever reads it. The "moving the
+selection also records" half of "What gets recorded, and when" (above)
+is <code>ctrl-j</code>/<code>ctrl-k</code>'s own
+<code>execute-silent</code> bind, appending the live query with no
+read-modify-write (<code>record_history()</code> in focus-picker.py;
+<code>history_candidates()</code>'s sibling <code>record</code> mode +
+socket handler in claude-history) - left as a raw, undeduped append on
+every nav keystroke rather than a full read-dedupe- write each time,
+since <code>dedupe_history()</code> already cleans it up once at exit
+and a same-session Ctrl+R seeing a few repeats of one line in the
+meantime is cosmetic, not a correctness problem. Ctrl+R
+(<code>history_search()</code> in focus-picker.py;
+<code>history_candidates()</code> + <code>CLIENT_SRC</code>'s new
+<code>history</code> mode in claude-history) reuses the exact same
+execute()+transform-query() nested-fzf plumbing Tab-completion already
+had, pointed at the history file instead of the DSL candidate list, with
+one behavioral difference from Tab: it always opens the popup (zsh's own
+ctrl-r widget does too, unconditionally) rather than Tab's "a unique
+candidate completes silently" rule, since Ctrl+R's whole point is
+<em>browsing</em>, not narrowing to an obvious single answer.
+window-search stays out of scope for the same reason it already sits out
+of the rest of Autocompletion (see the maturity note at the top of this
+document).</p>
+<p><strong>Rollout, continued: all four QML pickers plus the Rust GTK
+pickers, also 2026-09-13.</strong> None of these have fzf's
+<code>--history</code> to lean on, so each needed its own
+Up/Down-vs-list-navigation call and its own from-scratch fuzzy-match
+popup for Ctrl+R - but every one reused its <em>existing</em>
+Tab-completion popup machinery for that popup (acItems/acSel/ accept in
+QML;
+<code>suggestions</code>/<code>suggestion_idx</code>/<code>accept_suggestion</code>
+in Rust) rather than building a second component: only what
+<em>computes</em> the popup's candidates differs
+(<code>_acHistoryCandidates</code>/
+<code>compute_history_candidates</code> - an ordered-subsequence fuzzy
+match, ported by hand into JS three times and once into Rust as
+<code>_fuzzySubsequence</code>/ <code>fuzzy_subsequence</code>) and, in
+the QML pickers, a mode flag/kind variant so
+<code>onTextChanged</code>/<code>connect_changed</code> know which
+computation to keep re-running while the popup stays open.</p>
+<ul>
+<li><strong>app-launcher</strong>
+(<code>LauncherQueryHistory.qml</code>, <code>AppLauncher.qml</code>):
+Down/ Up already meant "move the completion popup's highlight, else move
+the results list" - moving the <em>results list</em> half to
+Ctrl+J/Ctrl+K (split out of the combined
+Down/<code>Key_J</code>-with-ctrl condition that used to alias them)
+freed Down/Up for history-cycling. Recorded on <code>launch()</code>
+(accept) and on Ctrl+J/Ctrl+K/PageDown/PageUp (selection-move).</li>
+<li><strong>winswitch</strong> (<code>WinSwitchQueryHistory.qml</code>,
+<code>WinSwitch.qml</code>): same Down/Up-vs-Ctrl+J/K split, but only in
+the locked/search-box-focused key handler - the <em>other</em>
+(unlocked, plain Alt+Tab hold-and-cycle) handler is untouched, since it
+never has a query typed for history to be about.
+<code>_acAccept</code>'s existing <code>kind.kind</code> switch (already
+how every completion stage decides what to splice into the query) grew
+one more case, <code>"history"</code>, that replaces the whole query
+instead of splicing at a fragment. Recorded on <code>confirm()</code>
+and inside <code>_advance</code>/<code>_advanceRow</code> (both
+grid-navigation paths, locked or not - <code>record()</code> no-ops on
+an empty query, so plain Alt+Tab cycling with nothing typed stays a
+no-op).</li>
+<li><strong>rss-reader</strong> (<code>RssQueryHistory.qml</code>,
+<code>RssReader.qml</code>): the search box's Down/Up, with the
+completion popup closed, used to just <code>_returnFocusToList()</code>
+- already redundant with Tab and Escape, which do the same job, so
+repurposing them for history-cycling loses nothing. Recorded on
+<code>openCurrent()</code> and inside <code>move()</code>.</li>
+<li><strong>claude-usage</strong>
+(<code>ClaudeUsageQueryHistory.qml</code>,
+<code>ClaudeUsageExpanded.qml</code>): the one QML picker with no
+pre-existing Ctrl+J/Ctrl+K alias for Down/Up at all (its two-tier
+key-handler split - <code>handleKey()</code> for the panel, a separate
+one for the search box - had never needed one, since Down/Up simply
+bubbled from the unhandled-in-search-box case up to
+<code>handleKey</code>). Added Ctrl+J/Ctrl+K there from scratch,
+forwarding to <code>handleKey()</code> explicitly the same way the
+search box already explicitly forwards Enter, and pulled Down/Up out of
+that bubble path entirely so they land on history-cycling in the search
+box instead. Recorded on <code>focusHyprWindow()</code> and inside
+<code>handleKey</code>'s own Down/Up/Ctrl+J/Ctrl+K arms.</li>
+<li><strong>clipboard-picker / notification-picker</strong>
+(<code>picker.rs</code>, shared): no QML-style two-popup split needed -
+<code>SuggestionKind</code> grew a <code>History</code> variant next to
+<code>Verb</code>/<code>Field</code>/<code>Value</code>, and
+<code>accept_suggestion</code>'s existing per-kind switch grew one more
+arm (whole-query replace, same as winswitch's <code>"history"</code>
+case). Ctrl+j/Ctrl+k were <em>already</em> the only way to move the
+results list once a popup could be showing (this picker's Up/Down were
+dual-purpose from the start, unlike the QML pickers' history/list split
+being new work) - the change was pulling plain Up/Down out of the shared
+<code>step</code> calculation entirely, freeing them for
+<code>history_prev</code>/<code>history_next</code>.
+<code>connect_changed</code> recognises a live history popup via
+<code>state.suggestion_kind</code> being <code>Some(History)</code> -
+the same field every other stage already used to mean "a popup session
+is open," rather than a second boolean. The history file itself is plain
+text, one query per line, oldest-first - deliberately the same shape
+fzf's own <code>--history</code> file already uses (see the tmux
+pickers' rollout above), even though nothing here reads it with fzf;
+each binary gets its own file via <code>cache_dir(program_name)</code>,
+already how this file keeps clipboard-picker's and notification-picker's
+own per-program state apart. Recorded on
+<code>connect_row_activated</code> (accept, covers both a mouse
+double-click and Enter's synthetic <code>row.activate()</code>) and
+inside the arrow-key list-navigation arm of the key-press handler
+(selection-move). Verified with <code>cargo check --all-targets</code>,
+<code>cargo clippy</code> (zero new warnings) and
+<code>cargo test</code> (21/21, including a new
+<code>fuzzy_subsequence_is_ordered_not_contiguous</code> case) - not yet
+live-tested in a real picker invocation.</li>
+</ul>
+<p>None of the seven implementations above have been exercised against a
+running instance yet (the QML pickers only <code>qmllint</code>-checked,
+the Rust ones only <code>cargo check</code>/<code>test</code>-checked) -
+live behavior should be confirmed via each picker's own keybind before
+relying on this day to day.</p>
+<h2 id="focus-between-search-box-and-results-down--tab">Focus between
+search box and results (Down / Tab)</h2>
+<p>Added 2026-10-21 (alt+tab, rss-reader, claude-usage, app-launcher).
+One rule for every picker that has a search box above a results area,
+whatever the results look like (thumbnail grid, article list, schedule,
+plain rows):</p>
+<ul>
+<li><strong>Down</strong> in the search box moves focus <em>into the
+results</em>, when no completion/history popup is open and the box is
+not mid-history-cycle. With a popup open Down still moves its highlight;
+while cycling history (an Up press has happened and the draft hasn't
+been restored yet) Down still walks history forward (see Search-box
+history, above) - so the first Down after typing, or after cycling back
+to the draft, leaves the box. The query text is left exactly as
+typed.</li>
+<li><strong>Tab</strong> in the results returns focus to the search box
+(cursor at the end of the query). Tab <em>inside</em> the search box is
+unchanged: it is completion (see Autocompletion); where completion has
+nothing to offer and the picker already had a list-focus mode
+(rss-reader) it falls through to the same toggle.</li>
+<li>Typing a printable character while the results have focus returns to
+the search box and appends it (alt+tab). Escape keeps its usual meaning
+(close the picker); Enter acts on the selection.</li>
+<li>While results have focus, the picker's bare-key navigation (arrows,
+Ctrl+J/K, j/k where the list has them) applies as in an unlocked
+view.</li>
+<li><strong>Single-focus pickers</strong> (query entry never loses
+focus; row navigation is Up/Down or Ctrl+J/K on top of it: clipboard,
+notification, app-menu, revit-remote pickers, and the fzf TUIs) have no
+separate results focus to move to, so the rule degrades to: Down walks
+the results (app-launcher gained this: it used to be dead unless
+history-cycling). They need no Tab-back.</li>
+<li><strong>Up is not history once you have walked the results</strong>
+(2026-10-21). Up/Ctrl+K is history only from a cold box. After
+Down/Ctrl+J has moved the selection from the search box (single-focus
+pickers: app-launcher, claude-history, focus-picker), Up/Ctrl+K moves it
+back up the results; when it is back on the first row the next Up starts
+history as usual. Any edit of the query ends the walk. Where the results
+have their own focus (alt+tab, rss-reader, claude-usage, images)
+Up/Ctrl+K already navigate rows there, and the table views
+(<code>/fts/archive</code>) take the same focus hand-over as the grid.
+fzf TUIs: <code>~/bin/fzf-histnav</code> remembers the query at the Down
+that walked the list (<code>$state.walked</code>) and uses
+<code>$FZF_POS</code> to know when the first row is reached.</li>
+</ul>
+<p>Per implementation: <code>winswitch/WinSwitch.qml</code>
+(<code>listFocused</code>,
+<code>_focusList()</code>/<code>_focusSearch()</code>; unlocked Alt+Tab
+cycling is untouched - Tab still advances there),
+<code>rssreader/RssReader.qml</code> (<code>_returnFocusToList()</code>,
+existing Tab toggle), <code>bar/ClaudeUsageExpanded.qml</code> (Down
+hands focus to the panel's row selection, Tab in <code>Bar.qml</code>
+brings it back), <code>launcher/AppLauncher.qml</code> (single-focus
+form). Not yet live-tested.</p>
+<h2 id="resolution-precisely">Resolution, precisely</h2>
+<ul>
+<li><strong>Verb</strong>: exact match against the fixed spellings
+(<code>fv ft at rt s</code> and their long forms, plus an app's own such
+as <code>fts</code>/<code>sw</code>, plus the empty <code>//</code>).
+Nothing else.</li>
+<li><strong>Keys</strong>: per key, the type named exactly wins alone,
+else every type whose name contains it (case-insensitive substring);
+unioned across the comma list. A sort key expands the same way,
+alphabetically. <strong>Filter values</strong>: substring containment
+(<code>"rome" in value</code>). <strong>Direction</strong>: any
+non-empty prefix of <code>ascending</code> /
+<code>descending</code>.</li>
+<li><strong>Quoted values stand alone</strong>: a value in
+<code>"double"</code> or <code>'single'</code> quotes (bare, or a scoped
+value <code>//path "5"</code>) must not touch a letter, digit or
+underscore on either side, so <code>"5"</code> matches <code>5</code>
+but not <code>15</code> or <code>599</code>, and <code>"rome"</code>
+matches "Rome wasn't" but not "Romeo". Unquoted <code>5</code> is the
+ordinary substring and matches 599 too. A <code>'</code> only opens a
+quote at the start of a token, so apostrophes inside words
+(<code>don't</code>) stay plain text. The quote must be closed: while
+only the opening quote is typed (<code>"5</code>) the term is still an
+ordinary substring, and becomes exact when the closing quote lands.</li>
+<li><strong>BM25 pickers' bare words</strong>: prefix-expansion against
+the corpus vocabulary, BM25-scored - their own thing, on top of the
+above.</li>
+</ul>
+<p>No subsequence matching anywhere anymore (it was the old
+winswitch/GTK rule - <code>"crit"</code> matching
+<code>"alacritty"</code>). Substring is stricter and more predictable,
+and at these corpus sizes the looseness bought nothing.</p>
+<h2 id="design-principles">Design principles</h2>
+<ul>
+<li><strong>Never flash to zero results on a valid-so-far partial
+keystroke.</strong> A token still being typed (<code>/</code>,
+<code>/f</code>, <code>/ft </code>, <code>/ft cla</code>,
+<code>/s age </code>, a flat-type <code>/fv/path</code> with no value
+yet, an unterminated <code>"phrase</code>) is inert - contributes no
+requirement - rather than searched for literally as typed. A bare
+<code>/</code> (the empty string as the verb-name fragment) is the
+boundary case here worth calling out explicitly: every verb form
+trivially "starts with" the empty string, so
+<code>is_verb_prefix</code>/ <code>isVerbPrefix</code> needs no
+special-casing to cover it - a guard excluding the empty string
+(<code>!s.is_empty()</code>, <code>s.length &gt; 0</code>,
+<code>bool(s)</code>) looks like reasonable defensive code but actively
+reintroduces this exact regression, since it makes the very first
+keystroke of <em>any</em> command fall through as literal text instead
+of staying inert. Reported 2026-09-13 against winswitch (typing
+<code>/</code> alone cleared the whole grid) and found identically
+broken in every hand-written port that had this guard
+(<code>QueryDsl.qml</code>, <code>ClipboardQueryDsl.qml</code>, the old
+<code>picker.rs</code>, <code>focus-picker.py</code>) - window-search.py
+and claude-history are naturally immune, since their regex-based
+bare-word fallback tokenizes <code>/</code> down to zero alphanumeric
+characters and contributes nothing on its own.</li>
+<li><strong>Every picker keeps one plain-typing default with no syntax
+at all.</strong> Bare text is always <code>/filter-value</code> over the
+free-text haystack. The DSL is additive, never a wall a casual user has
+to learn first.</li>
+<li><strong><code>/filter-value</code> is the universal fallback, not
+just the no-syntax default.</strong> Every verb has a fixed arity (max
+tokens it consumes, <code>/sort</code>'s direction slot additionally
+conditional on resolving); a token beyond what the <em>preceding</em>
+verb actually needed is never swallowed into that command just because
+no new <code>/verb</code> intervened - it resumes as an ordinary token
+and, if nothing else claims it, becomes its own <code>/fv</code> term.
+<code>/s/name blender</code> sorts by <code>name</code> and filters to
+<code>blender</code>, rather than losing <code>blender</code> as a
+discarded sort-direction argument.</li>
+<li><strong>Verbs are a closed, exact-matched vocabulary.</strong> This
+is the point of the redesign - a command can never be confused for a
+type name.</li>
+<li><strong>No real regex anywhere.</strong> Every match is substring
+containment (or, in the BM25 pickers, prefix-expansion); the only
+<code>*</code> is <code>/ft</code>'s value-pattern glob
+(<code>/ft/64*</code>), a hand-parsed pattern, not a wildcard
+engine.</li>
+<li><strong>The three axes are orthogonal.</strong> Row filters
+(<code>/fv</code>, bare text) never change columns; column verbs
+(<code>/ft</code>, <code>/at</code>, <code>/rt</code>) never change
+which rows survive; order verbs (<code>/sort</code>) never change
+either.</li>
+<li><strong>Column verbs are a left-to-right pipeline;</strong> row
+filters are an order-independent AND; <code>/sort</code> is
+last-wins.</li>
+<li><strong>Quoting is the universal escape hatch,</strong> checked
+before every other grammar form.</li>
+<li><strong>An unresolvable <em>complete</em> path narrows to
+nothing</strong> (honest empty result) rather than degrading to a
+literal text search - these corpora are small and unranked enough that
+"matches nothing" is the clearer answer. (The BM25 pickers, being
+ranked, still degrade a typo'd scoped term to a plain ranked
+search.)</li>
+<li><strong>Selection follows the user, not the query - where there's no
+reason for it to follow something else.</strong> clipboard-picker /
+notification- picker open with nothing selected; the first navigation
+selects the top visible entry; a selection filtered out of view is
+cleared. <code>Enter</code> with nothing selected activates the top
+visible entry. winswitch's grid is the deliberate exception - it
+auto-selects on open, because landing on the previously active window
+the instant a single Alt+Tab tap completes is the whole point of
+alt-tab.</li>
+</ul>
+<h3
+id="full-text-search-over-claude-conversations-one-engine-2026-10-21">Full-text
+search over Claude conversations: one engine (2026-10-21)</h3>
+<p>One source for every consumer: a Recoll/Xapian index of Claude
+conversations, <code>~/.cache/indexes/claude/recoll</code>, a collection
+like the others under <code>~/.cache/indexes/</code> (not registered in
+photos.json's <code>fts.indexes</code>, so mod+1's <code>/fts</code>
+doesn't search it). <code>~/bin/claude-fts-index</code>
+(<code>claude-fts-index.timer</code>, every 2 min) writes
+<code>~/.cache/indexes/claude/sessions/&lt;session-id&gt;.txt</code> for
+each transcript of every <code>~/.claude*</code> profile - whole
+history, AI title first line, then user + assistant text blocks only -
+re-extracting only changed transcripts, then runs
+<code>recollindex</code> (which re-reads only changed files).</p>
+<p><code>claude-history --fts QUERY</code> is the single query entry
+(recollq underneath): prints
+<code>session_id&lt;TAB&gt;relevance%</code>, best first.
+<code>!word</code> -&gt; <code>-word</code>, <code>"phrases"</code> as
+is, the last bare word matches as a prefix (live typing).</p>
+<ul>
+<li>tmux picker (prefix+C-c): bare words, <code>"phrases"</code> and
+<code>!neg</code> are plain substring filters over the table's own
+values (tmux location, time, path, title); full text only through
+<code>/fts word</code> (one word or one <code>"quoted phrase"</code> per
+<code>/fts</code>; repeat it to AND more) or <code>/fv/body</code>. The
+preview pane is hidden until <code>/fts</code> is in the query.</li>
+<li>alt-tab: <code>/fts[/claude] term</code>, see the scopes below.</li>
+<li>Claude usage panel (ctrl+alt+c): <code>/fts term</code>; with no
+explicit sort, rows order by relevance.</li>
+</ul>
+<p>Alt-tab and the usage panel show a match-preview strip (excerpts of
+the highlighted entry's conversation around the searched words, from
+<code>claude-history --snippets SESSION QUERY</code>) only while a
+full-text term is in the query.</p>
+<h4 id="fts---live-and-archived-conversations-2026-10-22">/fts - live
+and archived conversations (2026-10-22)</h4>
+<p>The index holds every conversation; which ones are <em>running</em>
+is decided at query time (sessions registry), not stored in it.
+<code>/fts</code> is an app verb whose <strong>keys</strong> name the
+scope: the scope names are <code>claude-live</code>,
+<code>claude-archive</code> and <code>tmux</code> (scrollback, below),
+resolved like any other keys (exact name wins, else substring, comma
+list unioned):</p>
+<table>
+<thead>
+<tr>
+<th>Spelling</th>
+<th>Searches</th>
+<th>Rows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/fts word</code></td>
+<td>running, archived AND tmux scrollback (no keys = every scope)</td>
+<td>live rows first-class, archived and tmux ones appended (best match
+first)</td>
+</tr>
+<tr>
+<td><code>/fts/claude word</code></td>
+<td>the same (<code>claude</code> reaches both scope names)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>/fts/live word</code> (= <code>/fts/claude-live</code>)</td>
+<td>running only</td>
+<td>live rows</td>
+</tr>
+<tr>
+<td><code>/fts/archive [word]</code> (=
+<code>/fts/claude-archive</code>)</td>
+<td>past only (running ones excluded); without a word, newest first</td>
+<td>table: acct, title, msgs, tkns, age, path</td>
+</tr>
+<tr>
+<td><code>/fts/tmux word</code></td>
+<td>tmux scrollback only</td>
+<td>one row per matching pane (status <code>tmux</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>So <code>live</code>, <code>archive</code>, <code>claude-live</code>,
+<code>arch</code>, <code>tmux</code> all work (any key that reaches
+exactly one scope name); a key set that reaches both - or
+<code>/fts/live,archive</code></p>
+<ul>
+<li>is plain <code>/fts</code>. Writing both <code>/fts/live</code> and
+<code>/fts/archive</code> is plain <code>/fts</code> too. The same
+spellings are used everywhere (picker, panel, alt-tab). The verb is
+still exact (<code>/fts</code>); only its keys are fuzzy.</li>
+</ul>
+<p>Per implementation:</p>
+<ul>
+<li><strong>prefix+C-c</strong>: default (no <code>/fts</code>) lists
+the running sessions in the panel's columns
+(<code>ACCT STATUS TITLE MSGS TKNS AGE SESS WIN PANE WKS PID PATH</code>),
+Enter jumps to the pane. <code>/fts word</code> adds archived hits to
+the same table (their live-only cells blank; Enter resumes them in a new
+tmux window under their own account). <code>/fts/archive</code> swaps to
+the shorter archive columns.</li>
+<li><strong>ctrl+alt+c panel</strong>: same: <code>/fts word</code>
+appends archived rows after the live matches; <code>/fts/archive</code>
+drops the columns that only exist for a running session (status, tmux
+sess/win/pane, workspace, pid). Enter/click on an archived row resumes
+it.</li>
+<li><strong>alt-tab</strong>: <code>/fts/live word</code> keeps the
+window grid, filtered; <code>/fts/archive</code> and plain
+<code>/fts word</code> replace the grid by a table (live rows marked
+<code>●</code>; Enter focuses the window, on an archived row resumes
+it). The table keeps the grid's height.</li>
+</ul>
+<p>Resuming (<code>claude-history --resume-window</code> for the panel
+and alt-tab: a new tmux session in the session's cwd, labelled with the
+account, attached in a new alacritty window; prefix+C-c:
+<code>--resume-tmux</code>, a new tmux window) always uses the account
+the conversation last ran under.</p>
+<p>Not to be confused with the images picker's
+<code>/fts/&lt;index&gt;</code> (file contents, index name after the
+slash): different app, different corpus.</p>
+<h4 id="tmux-scrollback-in-fts-2026-10-22">tmux scrollback in
+<code>/fts</code> (2026-10-22)</h4>
+<p><code>claude-fts-index</code> (the same timer/daemon that keeps the
+conversation index) also indexes the scrollback of every tmux pane into
+a <strong>second, separate Xapian database</strong>,
+<code>~/.cache/indexes/tmux/recoll</code> (one <code>.txt</code> per
+pane in <code>~/.cache/indexes/tmux/panes/</code>,
+<code>meta.json</code> for session/window/title/cwd; a pane's document
+is rewritten only when its text changed, and dropped when the pane goes
+away). <strong>Panes that host a live Claude session are
+skipped</strong>: their text is already in the conversation index, so
+nothing is indexed twice. At most the last 20000 lines of a pane are
+kept.</p>
+<ul>
+<li><strong>claude-history (prefix+C-c)</strong> and the <strong>usage
+panel</strong>: <code>/fts word</code> and <code>/fts/tmux word</code>
+add one row per matching pane (title = pane title, status
+<code>tmux</code>, the SESS/WIN/PANE columns filled); Enter goes to the
+pane (<code>claude-history --focus-tmux %12</code>: select its window
+and pane, focus the Hyprland window showing that session, else open a
+terminal attached to it).</li>
+<li><strong>alt-tab</strong>: the conversations table gains the same
+rows; its <code>//tmux-session</code>, <code>//tmux-window</code>,
+<code>//tmux-title</code> (and so <code>//tmux</code>) keys filter them.
+Any scope except live-only (<code>/fts/live</code>, which filters the
+window grid) shows the table.</li>
+<li><strong>focus-picker (prefix+w)</strong> lists panes, so
+<code>/fts word</code> / <code>/fts/tmux word</code> simply keeps the
+panes whose scrollback contains the word (<code>!/fts word</code> the
+others); other scope keys make it inert.</li>
+<li>Composes with row filters: <code>//tmux emacs /fts journ</code> =
+panes whose tmux session/window/title contain "emacs"
+<strong>and</strong> whose scrollback contains "journ".</li>
+</ul>
+
+    </article>
+  </main>
+  <aside class="toc"><p class="toc-title">On this page</p><ul><li class="lvl2"><a href="#the-shape-of-it">The shape of it</a></li><li class="lvl2"><a href="#grammar">Grammar</a></li><li class="lvl3"><a href="#verbs">Verbs</a></li><li class="lvl3"><a href="#keys">Keys</a></li><li class="lvl3"><a href="#default-verb-">Default verb (//)</a></li><li class="lvl3"><a href="#fv-without-a-path">/fv without a path</a></li><li class="lvl3"><a href="#filter-value-fv---and-bare-text">/filter-value (/fv) - and bare text</a></li><li class="lvl3"><a href="#negation-">Negation (!)</a></li><li class="lvl3"><a href="#sort-s">/sort (/s)</a></li><li class="lvl3"><a href="#group-g">/group (/g)</a></li><li class="lvl3"><a href="#quoting">Quoting</a></li><li class="lvl2"><a href="#syntax-highlighting">Syntax highlighting</a></li><li class="lvl2"><a href="#autocompletion">Autocompletion</a></li><li class="lvl3"><a href="#verb-stage-depth">Verb-stage depth</a></li><li class="lvl2"><a href="#auto-shown-filter-fields">Auto-shown filter fields</a></li><li class="lvl3"><a href="#suggestion-row-anatomy">Suggestion row anatomy</a></li><li class="lvl2"><a href="#search-box-history-up-arrow-ctrlr">Search-box history (Up-arrow, Ctrl+R)</a></li><li class="lvl2"><a href="#focus-between-search-box-and-results-down--tab">Focus between search box and results (Down / Tab)</a></li><li class="lvl2"><a href="#resolution-precisely">Resolution, precisely</a></li><li class="lvl2"><a href="#design-principles">Design principles</a></li></ul></aside>
+</div>
+<div id="searchpanel" hidden></div>
+<script src="assets/search-index.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>
