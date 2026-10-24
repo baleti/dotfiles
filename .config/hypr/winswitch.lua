@@ -267,22 +267,6 @@ hl.define_submap("alt-switch", function()
     hl.bind("CTRL + ALT + j", function() emit("nav down") end, { repeating = true, description = "Window switcher: selection down" })
     hl.bind("CTRL + ALT + k", function() emit("nav up") end, { repeating = true, description = "Window switcher: selection up" })
     hl.bind("CTRL + ALT + l", function() emit("nav right") end, { repeating = true, description = "Window switcher: selection right" })
-    -- Screenshots keep working while Alt is held (this submap replaces the whole keymap). The
-    -- switcher holds an exclusive keyboard grab, so close it first (no focus change), else the
-    -- screenshot tool only gets the keyboard once Alt is released.
-    local function shot(cmd)
-        return function()
-            alt_timer:set_enabled(false)
-            hl.dispatch(hl.dsp.submap("reset"))
-            os.remove(UI_MARKER)
-            emit("cancel")
-            hl.dispatch(hl.dsp.exec_cmd(cmd))
-        end
-    end
-    -- Alt+Print cannot be used here: the kernel's Magic SysRq filter swallows Alt+PrintScreen and
-    -- only re-injects it when Alt is released (Hyprland never sees it while Alt is held).
-    hl.bind("CTRL + ALT + s", shot("qs ipc call shotty toggle"), { description = "Screenshot a region (annotate)" })
-    hl.bind("CTRL + ALT + SHIFT + s", shot("hyprshot -m region --raw | satty -f - --actions-on-enter save-to-clipboard --actions-on-escape exit --disable-notifications"), { description = "Screenshot a region (annotate, hyprshot+satty fallback)" })
 end)
 
 -- Focus by address, for Quickshell's `Hyprland.dispatch(...)`: a dispatch
