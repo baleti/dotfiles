@@ -272,6 +272,7 @@ hl.define_submap("alt-switch", function()
     -- screenshot tool only gets the keyboard once Alt is released.
     local function shot(cmd)
         return function()
+            local lf = io.open((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/winswitch-shot.log", "a"); if lf then lf:write(os.date("%T"), " alt_down=", tostring(alt_down()), " shot ", cmd:sub(1, 20), "\n"); lf:close() end
             alt_timer:set_enabled(false)
             hl.dispatch(hl.dsp.submap("reset"))
             os.remove(UI_MARKER)
