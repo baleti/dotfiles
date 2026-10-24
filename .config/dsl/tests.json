@@ -1425,6 +1425,86 @@
       {
         "text": "/g/size/collapse/bogus",
         "expect": null
+      },
+      {
+        "text": "/g/path/pf/1/s/size",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 1
+            }
+          ],
+          "dir": null,
+          "sort": {
+            "name": "size",
+            "dir": null
+          }
+        }
+      },
+      {
+        "text": "/g/path/pf/1/sort/size/desc",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 1
+            }
+          ],
+          "dir": null,
+          "sort": {
+            "name": "size",
+            "dir": "desc"
+          }
+        }
+      },
+      {
+        "text": "/g/path/desc/s/count/asc",
+        "expect": {
+          "specs": [
+            {
+              "name": "path",
+              "bucket": "pf",
+              "level": 1
+            }
+          ],
+          "dir": "desc",
+          "sort": {
+            "name": "count",
+            "dir": "asc"
+          }
+        }
+      },
+      {
+        "text": "/g/dm/s/size/desc",
+        "expect": {
+          "specs": [
+            {
+              "name": "date-modified",
+              "bucket": "day",
+              "level": 1
+            }
+          ],
+          "dir": null,
+          "sort": {
+            "name": "size",
+            "dir": "desc"
+          }
+        }
+      },
+      {
+        "text": "/g/path/s",
+        "expect": null
+      },
+      {
+        "text": "/g/path/s/bogus",
+        "expect": null
+      },
+      {
+        "text": "/g/path/s/size/s/size",
+        "expect": null
       }
     ],
     "value": [
@@ -2600,6 +2680,218 @@
             1,
             "(none)\u001f/",
             "/",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/path/pf/1/s/size",
+        "expect": [
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "r",
+            2
+          ]
+        ]
+      },
+      {
+        "text": "/g/path/pf/1/sort/size/desc",
+        "expect": [
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "r",
+            3
+          ]
+        ]
+      },
+      {
+        "text": "/g/path/desc/s/count/asc",
+        "expect": [
+          [
+            "h",
+            0,
+            "/p/y",
+            "/p/y",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "/p/x/z",
+            "/p/x/z",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "/q",
+            "/q",
+            1
+          ],
+          [
+            "r",
+            3
+          ],
+          [
+            "h",
+            0,
+            "/p/x",
+            "/p/x",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ]
+        ]
+      },
+      {
+        "text": "/g/dm/s/size/desc",
+        "expect": [
+          [
+            "h",
+            0,
+            "2026-09-01",
+            "2026-09-01",
+            1
+          ],
+          [
+            "r",
+            2
+          ],
+          [
+            "h",
+            0,
+            "Today",
+            "Today",
+            2
+          ],
+          [
+            "r",
+            0
+          ],
+          [
+            "r",
+            4
+          ],
+          [
+            "h",
+            0,
+            "Yesterday",
+            "Yesterday",
+            1
+          ],
+          [
+            "r",
+            1
+          ],
+          [
+            "h",
+            0,
+            "(none)",
+            "(none)",
             1
           ],
           [

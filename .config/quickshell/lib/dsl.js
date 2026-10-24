@@ -149,10 +149,14 @@ function groupKind(name) {
 function parseGroup(text, known, aliases) {
     var parts = text.split("/");
     if (parts.length < 3 || parts[0] !== "" || GROUP_VERBS.indexOf(parts[1]) < 0 || parts[2].replace(/,/g, "") === "") return null;
-    var bucket = null, level = null, direction = null, collapse = false, i;
+    var bucket = null, level = null, direction = null, collapse = false, sortKey = null, sortDir = null, i;
     for (i = 3; i < parts.length; i++) {
         var p = parts[i], low = p.toLowerCase();
-        if (low === "collapse") {
+        if (low === "s" || low === "sort") {   // `/s/key[/dir]`: order the groups themselves by an aggregate of key over their rows
+            if (sortKey !== null || i + 1 >= parts.length) return null;
+            sortKey = parts[++i];
+            if (i + 1 < parts.length && parseDirection(parts[i + 1]) !== null) sortDir = parseDirection(parts[++i]);
+        } else if (low === "collapse") {
             if (collapse) return null;
             collapse = true;
         } else if (GROUP_BUCKETS.indexOf(low) >= 0) {
@@ -191,6 +195,17 @@ function parseGroup(text, known, aliases) {
     if (bucket !== null && !hasBucket) return null;
     if (level !== null && !hasPf) return null;
     var res = { specs: specs, dir: direction };
+    if (sortKey !== null) {
+        var sl = sortKey.toLowerCase(), sname;
+        if (sl === "count") sname = "count";
+        else if (aliases && aliases.hasOwnProperty(sl) && known.indexOf(aliases[sl]) >= 0) sname = aliases[sl];
+        else {
+            var sr = resolveSortKeys([sortKey], known);
+            if (!sr || sr.length === 0) return null;
+            sname = sr.slice().sort()[0];
+        }
+        res.sort = { name: sname, dir: sortDir };
+    }
     if (collapse) res.collapse = true;   // every section starts folded (only present when typed)
     return res;
 }
@@ -288,10 +303,46 @@ function groupValue(spec, raw, today) {
 // ["r", index] rows. Groups ordered by key per parsed.dir (age buckets newest-first when desc; "(none)"
 // last), rows keep their incoming order. get(row, name) -> raw value. id = labels joined by U+001F.
 function groupLayout(rows, parsed, get, today) {
-    var specs = parsed.specs, direction = parsed.dir, out = [];
+    var specs = parsed.specs, direction = parsed.dir, gsort = parsed.sort || null, out = [];
+    // What a group is worth under /g/.../s/name: [0, number] or [1, text]. count: rows; size: total bytes;
+    // date: the newest value; other: the sum when every value is an integer (pages), else the smallest text.
+    function aggregate(members, name) {
+        if (name === "count") return [0, members.length];
+        var kind = groupKind(name), vals = members.map(function (i) { return get(rows[i], name); }), i, best;
+        if (kind === "size") {
+            var tot = 0;
+            vals.forEach(function (v) { tot += _sizeBytes(v) || 0; });
+            return [0, tot];
+        }
+        vals = vals.filter(function (v) { return v !== ""; });
+        if (kind === "date") {
+            best = "";
+            vals.forEach(function (v) { if (best === "" || compareFieldValues(best, v, "asc") < 0) best = v; });
+            return [1, best];
+        }
+        if (vals.length > 0 && vals.every(function (v) { return /^\d+$/.test(v); })) {
+            var sum = 0;
+            vals.forEach(function (v) { sum += parseInt(v, 10); });
+            return [0, sum];
+        }
+        best = "";
+        vals.forEach(function (v) { if (best === "" || compareFieldValues(v, best, "asc") < 0) best = v; });
+        return [1, best];
+    }
+    function sortGroups(full) {
+        var aggs = full.map(function (g) { return [g, aggregate(g[2], gsort.name)]; });
+        aggs.sort(function (a, b) {
+            var x = a[1], y = b[1], c;
+            if (x[0] === 0 && y[0] === 0) c = x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0;
+            else c = compareFieldValues(String(x[1]), String(y[1]), "asc");
+            return gsort.dir === "desc" ? -c : c;
+        });
+        return aggs.map(function (a) { return a[0]; });
+    }
     function order(list, spec) {
         var full = list.filter(function (g) { return g[0] !== ""; });
         var none = list.filter(function (g) { return g[0] === ""; });
+        if (gsort) return sortGroups(full).concat(none);
         if (direction === null) return full.concat(none);   // no explicit dir: groups follow the order their rows already have
         full.sort(function (a, b) {
             if (spec.bucket === "value") return compareFieldValues(a[0], b[0], direction);
