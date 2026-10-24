@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Brave (Firejail)
+GenericName=Separate Brave instance
+Comment=Run a separate, firejail-sandboxed instance of Brave
+Exec=firejail brave %U
+Icon=brave-desktop
+Terminal=false
+Categories=Network;WebBrowser;
+StartupWMClass=brave-browser
