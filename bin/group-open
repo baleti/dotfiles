@@ -230,7 +230,7 @@ def mime_candidates(mime):
 def desktop_exec(mime):
     for m in mime_candidates(mime):
         d = subprocess.run(["xdg-mime", "query", "default", m], capture_output=True, text=True).stdout.strip()
-        if not d:
+        if not d or d == "group-open.desktop":   # never resolve to ourselves
             continue
         for base in APP_DIRS:
             f = os.path.join(base, d)
