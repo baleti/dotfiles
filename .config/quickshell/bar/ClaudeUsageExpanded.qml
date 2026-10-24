@@ -339,7 +339,7 @@ Rectangle {
     // column-click sort (root.sort).
     property string searchText: ""
     readonly property var searchTypeNames: [
-        "title", "pid", "status", "tokens", "path", "account",
+        "title", "pid", "status", "tokens", "path", "account", "host",
         "tmux-session", "tmux-window", "tmux-pane",
         "hypr-workspace", "hypr-monitor", "hypr-window",
     ]
@@ -545,6 +545,7 @@ Rectangle {
         case "tokens": return [row.context_tokens !== null && row.context_tokens !== undefined ? String(row.context_tokens) : ""];
         case "path": return [root.shortCwd(row.cwd)];
         case "account": return [account];
+        case "host": return [row.host || "host3"];
         case "tmux-session": return [row.tmux_session || ""];
         case "tmux-window": return [row.tmux_window || ""];
         case "tmux-pane": return [row.tmux_pane || ""];
@@ -719,6 +720,7 @@ Rectangle {
         "tokens": "context tokens used",
         "path": "working directory",
         "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7 / claude8",
+        "host": "host3 / host2 / host1",
         "tmux-session": "tmux session id",
         "tmux-window": "tmux window id",
         "tmux-pane": "tmux pane id",
@@ -1086,7 +1088,7 @@ Rectangle {
         const keys = QueryDsl.resolveSortKeys(s.fields, root.searchTypeNames);
         return keys !== null ? { keys, asc: s.dir !== "desc" } : null;
     }
-    readonly property var _colField: ({ acct: "account", status: "status", title: "title", tokens: "tokens", path: "path", pid: "pid",
+    readonly property var _colField: ({ acct: "account", host: "host", status: "status", title: "title", tokens: "tokens", path: "path", pid: "pid",
         tmuxSession: "tmux-session", tmuxWindow: "tmux-window", tmuxPane: "tmux-pane", hyprWorkspace: "hypr-workspace" })
     // 0 = not a sort key, 1 = primary, 2 = secondary
     function sortRole(col) {
@@ -1110,6 +1112,7 @@ Rectangle {
     function compareForSort(a, b, col) {
         switch (col) {
         case "acct": return root.acctIndex(a.account) - root.acctIndex(b.account);
+        case "host": return (a.host || "host3").localeCompare(b.host || "host3");
         case "status": return (a.status || "").localeCompare(b.status || "");
         case "title": return (a.title || "").localeCompare(b.title || "");
         case "pid": return (a.pid || 0) - (b.pid || 0);
@@ -1170,7 +1173,7 @@ Rectangle {
     // hyprland "wks" column below (originally a grouped workspace+monitor
     // pair; monitor dropped 2026-09-08).
     readonly property var colDefaults: ({
-        acct: 30, status: root.statusNaturalW, title: 400, tokens: root.tokensNaturalW, last: 44,
+        acct: 30, host: 44, status: root.statusNaturalW, title: 400, tokens: root.tokensNaturalW, last: 44,
         tmuxSession: root.tmuxSessionNaturalW, tmuxWindow: root.tmuxWindowNaturalW, tmuxPane: root.tmuxPaneNaturalW,
         hyprWorkspace: root.hyprWorkspaceNaturalW,
         pid: root.pidNaturalW, path: 100,
@@ -1180,6 +1183,9 @@ Rectangle {
     // hover shows the real account name via the shared cursor-following
     // hint (root.showHint) instead of spending width on the full name.
     property real colAcctW: colDefaults.acct
+    // "host" column (request 2026-10-24): which machine runs the session
+    // (host3 = this one; others come from the daemon's ssh poll, remote:true).
+    property real colHostW: colDefaults.host
     // Whichever is wider of the "status" header (label + its clickable
     // sort-arrow suffix) and the actual idle/busy/wait values currently
     // shown (root.statusNaturalW) -- used to be a flat 52 sized for the
@@ -1257,6 +1263,7 @@ Rectangle {
 
     function resetColumnWidths() {
         root.colAcctW = root.colDefaults.acct;
+        root.colHostW = root.colDefaults.host;
         root.colStatusW = root.colDefaults.status;
         root.colTitleW = root.colDefaults.title;
         root.colTokensW = root.colDefaults.tokens;
@@ -1291,7 +1298,7 @@ Rectangle {
     // without their trailing filler Item eating any slack (or, if this
     // exceeds Bar.qml's max, without something being cut off beyond what
     // that filler removal already implies).
-    readonly property real tableNaturalWidth: root.colAcctW + root.handleW + root.colStatusW + root.handleW
+    readonly property real tableNaturalWidth: root.colAcctW + root.handleW + root.colHostW + root.handleW + root.colStatusW + root.handleW
         + root.colTitleW + root.handleW + root.colTokensW + root.handleW
         + root.colLastW + root.handleW + root.colTmuxGroupW + root.handleW
         + root.colHyprWorkspaceW + root.handleW + root.colPidW + root.handleW
@@ -1506,6 +1513,16 @@ Rectangle {
         }
         if (!row.hypr_address && !row.tmux_session)
             return;
+        if (row.remote) {
+            // Other host: no local tmux/Hyprland window -- open a terminal
+            // ssh'd in and attached to that pane's session.
+            ClaudeUsageQueryHistory.record(root.searchText);
+            const rcmd = "tmux select-window -t @" + row.tmux_window + "; tmux select-pane -t %" + row.tmux_pane
+                + "; exec tmux attach -t '$" + row.tmux_session + "'";
+            spawnAttachProc.exec(["alacritty", "-e", "ssh", "-t", row.host, rcmd]);
+            root.picked();
+            return;
+        }
         // query-dsl.md's "Search-box history": a real accept records the
         // query, same as fzf's own --history flag does for the tmux
         // pickers.
@@ -2347,6 +2364,8 @@ Rectangle {
 
                 Item { Layout.preferredWidth: root.colAcctW }
                 Item { Layout.preferredWidth: root.handleW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colHostW }
+                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                 Item { visible: !root.archiveMode; Layout.preferredWidth: root.colStatusW }
                 Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                 Item { Layout.preferredWidth: root.colTitleW }
@@ -2410,6 +2429,27 @@ Rectangle {
                     Layout.fillHeight: true
                     targetWidth: root.colAcctW
                     onWidthChangeRequested: w => root.colAcctW = w
+                }
+                Text {
+                    text: qsTr("host") + root.sortArrow("host")
+                    color: root.sortColor("host")
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    elide: Text.ElideRight
+                    Layout.preferredWidth: root.colHostW
+                    visible: !root.archiveMode
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSort("host")
+                    }
+                }
+                ColumnResizeHandle {
+                    Layout.preferredWidth: root.handleW
+                    visible: !root.archiveMode
+                    Layout.fillHeight: true
+                    targetWidth: root.colHostW
+                    onWidthChangeRequested: w => root.colHostW = w
                 }
                 Text {
                     text: qsTr("status") + root.sortArrow("status")
@@ -2835,6 +2875,16 @@ Rectangle {
                             }
                         }
                         Item { Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: modelData.host || "host3"
+                            color: modelData.remote ? Theme.cyan : Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: root.colHostW
+                            visible: !root.archiveMode
+                        }
+                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.rowStatusLabel(modelData)
                             color: root.rowStatusColor(modelData)

@@ -695,6 +695,53 @@ def hyprland_windows_by_tmux_session(procs: dict = None) -> dict:
     return result
 
 
+LOCAL_HOST = "host3"
+REMOTE_HOSTS = ("host2", "host1")
+REMOTE_REFRESH_S = 15
+_remote_lock = threading.Lock()
+_remote_rows: dict = {}   # host -> rows from its last successful poll
+
+
+def _remote_loop() -> None:
+    """Background poll of other hosts' sessions over ssh (helper:
+    ~/bin/claude-sessions-remote.py on each). A dead/slow host only keeps
+    its previous rows (dropped after 3 failed polls) and never blocks the
+    main loop."""
+    fails = {h: 0 for h in REMOTE_HOSTS}
+    while True:
+        for h in REMOTE_HOSTS:
+            try:
+                out = subprocess.run(
+                    ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", h,
+                     "python3 ~/bin/claude-sessions-remote.py"],
+                    capture_output=True, timeout=12, text=True, check=True).stdout
+                rows = json.loads(out)
+                for r in rows:
+                    r["host"] = h
+                with _remote_lock:
+                    _remote_rows[h] = rows
+                fails[h] = 0
+            except Exception:
+                fails[h] += 1
+                if fails[h] >= 3:
+                    with _remote_lock:
+                        _remote_rows.pop(h, None)
+        time.sleep(REMOTE_REFRESH_S)
+
+
+def merge_remote(sessions_data: dict) -> dict:
+    with _remote_lock:
+        snap = {h: list(r) for h, r in _remote_rows.items()}
+    for rows in snap.values():
+        for r in rows:
+            acct = r.get("account")
+            if acct in sessions_data:
+                sessions_data[acct] = sessions_data[acct] + [r]
+    for acct, rows in sessions_data.items():
+        rows.sort(key=lambda s: s.get("updated_at_ms") or 0, reverse=True)
+    return sessions_data
+
+
 def list_sessions(base: Path, tty_panes: dict, procs: dict, hypr_by_session: dict) -> list:
     sessions_dir = base / "sessions"
     if not sessions_dir.is_dir():
@@ -759,6 +806,7 @@ def list_sessions(base: Path, tty_panes: dict, procs: dict, hypr_by_session: dic
             status = data.get("status")
 
         rows.append({
+            "host": LOCAL_HOST,
             "pid": pid,
             "status": status,
             "title": title,
@@ -1239,6 +1287,7 @@ def main() -> None:
     # rather than sharing this loop: its blocking network calls must never
     # delay this loop's own session-recompute/inotify responsiveness.
     threading.Thread(target=fetch_loop, daemon=True).start()
+    threading.Thread(target=_remote_loop, daemon=True).start()
 
     while True:
         now = time.time()
@@ -1253,13 +1302,15 @@ def main() -> None:
             tty_panes = _tmux_panes_by_tty()
             hypr_by_session = hyprland_windows_by_tmux_session(procs)
             sessions_data = {name: list_sessions(base, tty_panes, procs, hypr_by_session) for name, base in ACCOUNTS}
+            local_data = sessions_data
+            sessions_data = merge_remote(dict(sessions_data))
             last_sessions_run = time.time()
             next_sessions = last_sessions_run + SESSIONS_INTERVAL
             dirty = True
 
             base_by_name = dict(ACCOUNTS)
             seen_pids = set()
-            for name, rows in sessions_data.items():
+            for name, rows in local_data.items():
                 for row in rows:
                     pid = row.get("pid")
                     if pid is None:
