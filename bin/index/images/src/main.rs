@@ -334,7 +334,11 @@ fn handlers_for(mime: &str) -> Vec<(String, String)> {
     let Ok(out) = out else { return Vec::new() };
     let mut v = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let t = line.trim();
+        let mut t = line.trim();
+        // the first line reads `Default application for "<mime>": <id>.desktop`; keep only the id
+        if t.starts_with("Default application for") {
+            t = t.rsplit(": ").next().unwrap_or(t).trim();
+        }
         if let Some(id) = t.strip_suffix(".desktop") {
             let id = format!("{id}.desktop");
             let name = desktop_name(&id).unwrap_or_else(|| id.clone());
@@ -724,6 +728,10 @@ struct App {
     last_recorded: String,
     /// mime type of the hit the menu / properties were opened for (computed once, on open)
     menu_mime: Option<String>,
+    /// local files the open-with menu acts on: the whole multi-selection when the right-clicked row is in it, else that row
+    menu_paths: Vec<PathBuf>,
+    /// the menu's files are of more than one mime type (then only Group Open is offered)
+    menu_mixed: bool,
     props_mime: String,
     /// true while keyboard focus is in the result list (query box is not auto-focused then)
     list_focus: bool,
@@ -1744,6 +1752,8 @@ impl App {
             props: None,
             menu_fresh: false,
             menu_mime: None,
+            menu_paths: Vec::new(),
+            menu_mixed: false,
             history: load_history(),
             hist_mtime: file_mtime(&history_path()),
             set_mtime: file_mtime(&Settings::path()),
@@ -2406,10 +2416,18 @@ impl App {
 
     /// Opens the context menu for one hit; the mime type is looked up once here, not per frame.
     fn open_menu(&mut self, at: egui::Pos2, hit: usize) {
+        let sel = self.selection();
+        self.menu_paths = if sel.len() > 1 && sel.contains(&hit) {
+            sel.into_iter().filter_map(|i| self.hit_now(i)).map(|h| local_path(&h.remote)).filter(|p| p.exists()).collect()
+        } else {
+            self.hit_now(hit).map(|h| local_path(&h.remote)).filter(|p| p.exists()).into_iter().collect()
+        };
         self.menu_mime = self.hit_now(hit)
             .map(|h| local_path(&h.remote))
             .filter(|p| p.exists())
             .map(|p| mime_of(&p));
+        self.menu_mixed = self.menu_paths.len() > 1
+            && self.menu_paths.iter().any(|p| Some(mime_of(p)) != self.menu_mime);
         if let Some(m) = self.menu_mime.clone() {
             self.handlers.entry(m.clone()).or_insert_with(|| handlers_for(&m));
         }
@@ -2427,6 +2445,19 @@ impl App {
     }
 
     fn open_selected(&mut self) {
+        let sel = self.selection();
+        if sel.len() > 1 {
+            let paths: Vec<PathBuf> = sel.into_iter().filter_map(|i| self.hit_now(i))
+                .map(|h| local_path(&h.remote)).filter(|p| p.exists()).collect();
+            if paths.len() > 1 {
+                self.status = format!("opening {} files in one window group", paths.len());
+                std::thread::spawn(move || {
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let _ = std::process::Command::new(format!("{home}/bin/group-open")).args(&paths).status();
+                });
+                return;
+            }
+        }
         self.open_hit(self.selected);
     }
 
@@ -3632,12 +3663,11 @@ impl eframe::App for App {
 
         // context menu (right-click or F10): one entry, "Open with" submenu
         if let (Some(at), Some(hit)) = (self.menu_at, self.menu_hit) {
-            let local = self.hit_now(hit).map(|h| local_path(&h.remote));
             let mime = self.menu_mime.clone();
             // photo results (they carry a score) can search for the face in them
             let face_remote = self.hit_now(hit).filter(|h| h.score.is_some()).map(|h| h.remote);
             let mut face_query: Option<String> = None;
-            let mut chosen: Option<(String, PathBuf)> = None;
+            let mut chosen: Option<(String, Vec<PathBuf>)> = None;
             let area = egui::Area::new(egui::Id::new("ctxmenu"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(at)
@@ -3653,11 +3683,15 @@ impl eframe::App for App {
                             match &mime {
                                 None => { ui.label(RichText::new("not available locally").color(pal.dim)); }
                                 Some(m) => {
-                                    let apps = self.handlers.entry(m.clone()).or_insert_with(|| handlers_for(m)).clone();
+                                    let apps = if self.menu_mixed {
+                                        vec![("group-open.desktop".to_string(), "Group Open (all in one window)".to_string())]
+                                    } else {
+                                        self.handlers.entry(m.clone()).or_insert_with(|| handlers_for(m)).clone()
+                                    };
                                     if apps.is_empty() { ui.label(RichText::new("no applications").color(pal.dim)); }
                                     for (id, name) in apps {
                                         if ui.button(name).clicked() {
-                                            chosen = Some((id, local.clone().unwrap()));
+                                            chosen = Some((id, self.menu_paths.clone()));
                                             ui.close();
                                         }
                                     }
@@ -3671,9 +3705,16 @@ impl eframe::App for App {
                 self.last_change = Instant::now() - Duration::from_millis(200);
                 self.menu_at = None;
                 self.menu_hit = None;
-            } else if let Some((id, path)) = chosen {
+            } else if let Some((id, paths)) = chosen {
                 std::thread::spawn(move || {
-                    let _ = std::process::Command::new("gtk-launch").arg(&id).arg(&path).status();
+                    if id == "group-open.desktop" {
+                        let _ = std::process::Command::new("gtk-launch").arg(&id).args(&paths).status();
+                    } else {
+                        // one launch per file: many viewers (zathura %U) open only the first file they are given
+                        for p in &paths {
+                            let _ = std::process::Command::new("gtk-launch").arg(&id).arg(p).status();
+                        }
+                    }
                 });
                 self.menu_at = None;
                 self.menu_hit = None;
