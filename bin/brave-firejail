@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fresh sandboxed Brave with Google pre-seeded as default search engine.
+d=$(mktemp -d /tmp/brave-fj.XXXXXX)
+mkdir -p "$d/Default"
+cp ~/.config/brave-firejail/template-Preferences.json "$d/Default/Preferences"
+firejail brave --user-data-dir="$d" --no-first-run "$@"
+rm -rf "$d"
