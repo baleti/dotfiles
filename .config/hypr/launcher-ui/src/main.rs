@@ -822,6 +822,7 @@ struct App {
     hypr: HyprInfo,
     query: String,
     cursor: usize, // in chars
+    sel_all: bool, // Ctrl+A: whole query selected
     results: Vec<usize>,
     selected: usize,
     scroll: usize,
@@ -1293,6 +1294,30 @@ impl App {
         let ks = ev.keysym;
         let n = self.qlen();
         let popup = self.ac.is_some();
+        if std::mem::take(&mut self.sel_all) && n > 0 {
+            let typed = ev.utf8.as_deref().filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+            match ks {
+                Keysym::BackSpace | Keysym::Delete => {
+                    self.set_query(String::new(), 0);
+                    return;
+                }
+                Keysym::Left | Keysym::Home => {
+                    self.cursor = 0;
+                    self.dirty = true;
+                    return;
+                }
+                Keysym::Right | Keysym::End => {
+                    self.cursor = n;
+                    self.dirty = true;
+                    return;
+                }
+                _ if !self.ctrl && typed.is_some() => {
+                    self.set_query(typed.unwrap_or_default().to_string(), typed.map_or(0, |t| t.chars().count()));
+                    return;
+                }
+                _ => self.dirty = true,
+            }
+        }
         match ks {
             Keysym::Escape => {
                 if popup {
@@ -1372,7 +1397,8 @@ impl App {
                 }
                 Keysym::r => self.open_history(),
                 Keysym::a => {
-                    self.cursor = 0;
+                    self.sel_all = n > 0;
+                    self.cursor = n;
                     self.dirty = true;
                 }
                 Keysym::e => {
@@ -1499,6 +1525,12 @@ impl App {
             at = b.max(at);
         }
         seg(&mut pm, at, qc.len(), th.text, &mut x);
+        if self.sel_all {
+            let w = text_width(&self.font, size, &self.query).min(max_w);
+            if let Some(r) = Rect::from_xywh(tx, top, w, lh) {
+                pm.fill_rect(r, &paint(th.primary, 70), Transform::identity(), None);
+            }
+        }
         let before: String = self.query.chars().take(self.cursor).collect();
         let cxp = tx + text_width(&self.font, size, &before);
         let ghost = self.ghost();
@@ -1997,6 +2029,7 @@ fn main() {
         walked: false,
         query: String::new(),
         cursor: 0,
+        sel_all: false,
         results: vec![],
         selected: 0,
         scroll: 0,
