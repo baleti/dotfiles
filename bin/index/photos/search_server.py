@@ -590,9 +590,17 @@ def _count_pages(path):
     m = re.search(r"^Pages:\s+(\d+)", out, re.M)
     return int(m.group(1)) if m else 0
 
-def add_pages(results, wait=1.5, cache_only=False):
+SLOW_REQ_MS = float(os.environ.get("SLOW_REQ_MS", "150"))      # any request slower than this is logged with its URL
+PAGES_WAIT = float(os.environ.get("PAGES_WAIT", "0.2"))      # how long a query response waits for uncached page counts
+
+def add_pages(results, wait=None, cache_only=False, stale=None):
     """Sets r["pages"] (page count of local PDFs). Counts not ready within `wait` seconds keep counting in the background
-    and show up on the next query."""
+    and show up on the next query. A response nobody waits for any more (`stale`) starts no new counts, so typing fast
+    does not queue pdfinfo runs (each may take seconds on a Drive or NFS file) behind the one that is on screen."""
+    if wait is None:
+        wait = PAGES_WAIT
+    if stale is not None and stale():
+        cache_only = True
     pending = []
     for r in results:
         path = r["remote"]
@@ -942,6 +950,15 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers(); self.wfile.write(body)
     def do_GET(self):
+        t0 = time.perf_counter()
+        try:
+            return self._do_GET()
+        finally:
+            ms = 1000 * (time.perf_counter() - t0)
+            if ms > SLOW_REQ_MS:
+                print(f"slow request {ms:.0f} ms: {self.path[:160]}", file=sys.stderr, flush=True)
+
+    def _do_GET(self):
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/query":
             q, view = view_options((qs.get("q", [""])[0]).strip())
@@ -1014,7 +1031,7 @@ class H(BaseHTTPRequestHandler):
                     # the catalog stores epoch seconds; the picker expects the same ISO text photos use
                     if isinstance(r.get("mtime"), int):
                         r["mtime"] = None if r["mtime"] < 172800 or r["mtime"] in (filesearch.UNKNOWN_MTIME, 123456789) else time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(r["mtime"]))
-                add_pages(results, cache_only=nothumb)
+                add_pages(results, cache_only=nothumb, stale=stale)
                 return self._json(200, {"count": count, "results": results, "errors": errors, "stats": stats})
             try:
                 with _q_lock:
