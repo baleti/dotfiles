@@ -3919,7 +3919,7 @@ impl eframe::App for App {
             self.snip_focus = false;
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
         }
-        if is_fts(&self.req_q) && self.total > 0 && !grid {
+        if is_fts(&self.req_q) && self.total > 0 {
             self.preview_pane(ui);
         }
         egui::Frame::new()
