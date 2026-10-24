@@ -4293,7 +4293,13 @@ mod dsl_conformance {
             None => serde_json::Value::Null,
             Some(p) => serde_json::json!({ "specs": p.specs.iter().map(|s| serde_json::json!({ "name": s.name, "bucket": s.bucket, "level": s.level })).collect::<Vec<_>>(),
                                            "dir": match p.desc { None => serde_json::Value::Null, Some(true) => "desc".into(), Some(false) => "asc".into() } })
-                .as_object().cloned().map(|mut o| { if p.collapse { o.insert("collapse".into(), true.into()); } serde_json::Value::Object(o) }).unwrap(),
+                .as_object().cloned().map(|mut o| {
+                    if p.collapse { o.insert("collapse".into(), true.into()); }
+                    if let Some(g) = &p.sort {
+                        o.insert("sort".into(), serde_json::json!({ "name": g.name, "dir": match g.desc { None => serde_json::Value::Null, Some(true) => "desc".into(), Some(false) => "asc".into() } }));
+                    }
+                    serde_json::Value::Object(o)
+                }).unwrap(),
         }
     }
 
