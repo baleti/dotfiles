@@ -30,6 +30,8 @@ BACKUPS3, BACKUPS1 = "/mnt/host1-backups", "/home/user1/backups"
 REMOTE = config.REMOTE                           # gdrive-crypt:
 EXT = (".jpg", ".jpeg", ".png", ".webp")
 CHUNK = 1500
+BATCH_TIMEOUT = 40 * 60          # a 1500-image batch normally takes about 8 minutes
+MAX_STALLS = 3                   # consecutive batches without a single new record: give up this run
 KINDS = ("clip", "face")
 KEY = {"clip": "clip", "face": "faces"}          # worker -> flag name in image-paths.json
 
@@ -42,6 +44,18 @@ def status(state, **extra):
     tmp = STATUS + ".tmp"
     json.dump({"state": state, "updated": time.time(), **extra}, open(tmp, "w"))
     os.replace(tmp, STATUS)
+
+
+def run_batch(cmd, timeout):
+    """Run one index_photos batch; kill it (and its ssh children) if it stalls, e.g. after a broken GPU-worker pipe."""
+    p = subprocess.Popen(cmd, start_new_session=True)
+    try:
+        p.wait(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        return False
 
 
 def cleanup_credentials():
@@ -170,7 +184,7 @@ def main():
             return
         db.executemany("INSERT OR REPLACE INTO images VALUES (?,?)", adopt)
         db.commit()
-        processed = 0
+        processed = stalls = 0
         for (base, need), items in sorted(work.items(), key=lambda kv: len(kv[1])):          # smallest groups first
             for i in range(0, len(items), CHUNK):
                 if time.time() > deadline:
@@ -189,12 +203,19 @@ def main():
                     cmd += ["--only", w]
                 log(f"batch {processed + 1:,}-{processed + len(chunk):,} of {total:,} via {'+'.join(need)}")
                 status("running", started=started, processed=processed, remaining=total - processed, folders=counts)
-                subprocess.run(cmd, check=False)
+                finished = run_batch(cmd, BATCH_TIMEOUT)
+                if not finished:
+                    log(f"batch stalled for {BATCH_TIMEOUT // 60} min and was killed")
                 done.refresh()
                 ok = [(k, s) for _, k, s in chunk if all(k in done.sets[w] for w in need)]
                 db.executemany("INSERT OR REPLACE INTO images VALUES (?,?)", ok)
                 db.commit()
                 processed += len(ok)
+                stalls = 0 if ok else stalls + 1
+                if stalls >= MAX_STALLS:
+                    log(f"{MAX_STALLS} batches in a row produced nothing (GPU worker down?); stopping this run")
+                    status("error", started=started, error="no progress", processed=processed, remaining=total - processed)
+                    return
                 if len(ok) < len(chunk):
                     log(f"{len(chunk) - len(ok)} of this batch got no record (unreadable or the GPU worker failed); they are retried next run")
         status("done", started=started, finished=time.time(), processed=processed, remaining=0, folders=counts)
