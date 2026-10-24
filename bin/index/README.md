@@ -167,3 +167,9 @@ and btrfs ingestion, NFS stream and monthly walk, nightly collections, nightly R
   every query builds several 4-35 MB numpy arrays; with glibc defaults each thread gets a 64 MB arena that keeps the freed blocks, so anonymous memory crept from ~100 MB to
   ~800 MB within hours of normal use. With these settings big arrays are `mmap`ed and returned at once: 1556 typed-prefix queries, 8 in parallel, left 213 MB anonymous.
   What stays is the pinned scan data (~0.8 GB, file-backed, `Locked` in smaps), which is what makes typing instant.
+- **Folders stored once** (`NAMES_DEDUP=1`, class `filesearch.DedupNameTable`, snapshot `DedupNameTable-<gen>`): 4.46M paths share 292k folders, so the scan text keeps
+  lower-case names (123 MB) and lower-case folders (29 MB) apart, with a 4-byte folder number per entry, instead of 501 MB of full paths. A word without `/` is matched
+  in the name blob and in the folder blob and combined per entry; a word with `/` either lies inside a folder path or runs over the last separator (folder ends with the
+  part before it, name starts with the part after it). Pinned scan data went from 748 MB to 453 MB, RSS from ~1.3 GB to ~0.6 GB, typing queries 30-40 ms. Verified identical to the
+  plain table on 3,396 queries (folder-spanning words, `//path` tags, sorts, typed prefixes, live-overlay ops). Unset `NAMES_DEDUP` to go back; the plain snapshot format is unchanged.
+- **History popup (Ctrl+R / F4)**: entries that contain the typed text as-is are listed first (newest first), the looser fzf-style subsequence matches after them.
