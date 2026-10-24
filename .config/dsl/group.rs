@@ -278,7 +278,7 @@ pub fn group_layout(n_rows: usize, parsed: &Parsed, get: &dyn Fn(usize, &str) ->
         let by_folder = spec.bucket == "pf" && full.iter().any(|k| ko(depth, k).is_some());
         if let Some(gs) = &p.sort {
             let aggs: HashMap<String, (Option<f64>, String)> = full.iter().map(|k| (k.clone(), group_aggregate(&groups[k].1, &gs.name, get))).collect();
-            let desc = gs.desc.unwrap_or(false);
+            let desc = gs.desc.unwrap_or(true);   // descending unless asc is typed, like /s
             full.sort_by(|a, b| {
                 let (x, y) = (&aggs[a], &aggs[b]);
                 let c = match (x.0, y.0) {
