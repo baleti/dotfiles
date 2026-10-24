@@ -4461,7 +4461,7 @@ mod highlight_tests {
     fn only_real_commands() {
         assert_eq!(words("/mnt/host1-backups/office/bm3/monier/01 WIP/"), Vec::<&str>::new());
         assert_eq!(words("/fts part3-books cdm"), vec!["/fts"]);
-        assert_eq!(words("/chroma/hwo digital twin //mime pdf"), vec!["/chroma/hwo", "//mime"]);
+        assert_eq!(words("/chroma/proj digital twin //mime pdf"), vec!["/chroma/proj", "//mime"]);
         assert_eq!(words("report /hide-dotfiles /show-backup-restic"), vec!["/hide-dotfiles", "/show-backup-restic"]);
         assert_eq!(words("/fts/part3 cdm //mime pdf /s size"), vec!["/fts/part3", "//mime", "/s"]);
         assert_eq!(words("//path /etc /sort"), vec!["//path", "/sort"]);
@@ -4479,7 +4479,7 @@ mod content_verb_tests {
         assert!(is_fts("/fts masonry"));
         assert!(is_fts("monier road /fts masonry support angle"));
         assert!(is_fts("monier //ext .pdf /fts/bm3-monier angle"));
-        assert!(is_fts("report /chroma/hwo digital twin"));
+        assert!(is_fts("report /chroma/proj digital twin"));
         assert!(!is_fts("monier road masonry"));
         assert!(!is_fts("//path /fts"));
         assert!(!is_fts("/ftsx notes"));

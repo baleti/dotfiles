@@ -69,7 +69,7 @@ rc, out, err = run_chroma("--json", "-q", "-n", "10", "/chroma clash tolerances 
 rows = [json.loads(l) for l in out.splitlines()]
 scores = [r.get("score") for r in rows]
 check("/chroma returns scored results, best first", rc == 0 and len(rows) >= 5 and None not in scores and scores == sorted(scores, reverse=True), (err or out)[:120])
-rc, out, err = run_chroma("--json", "-q", "--snippets", "-n", "2", "/chroma/hwo handover requirements")
+rc, out, err = run_chroma("--json", "-q", "--snippets", "-n", "2", "/chroma/proj handover requirements")
 rows = [json.loads(l) for l in out.splitlines()]
 check("/chroma/<index> with snippets", rc == 0 and rows and all(r["path"].startswith("/") for r in rows) and any(r.get("snippets") for r in rows), (err or out)[:120])
 rc, out, err = run("--json", "-q", "-n", "5", "/clip brick wall")
