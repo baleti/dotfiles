@@ -742,6 +742,8 @@ struct App {
     anchor_v: usize,
     /// where the view's centre falls within the anchor item (0 = its top edge, 1 = its bottom edge)
     anchor_dy: f32,
+    /// a /group section header the cursor is on (its id); the rows are not highlighted while one is
+    sel_header: Option<String>,
     view_sig: (u8, usize, u32),
     popup: bool,
     /// /face pane: indexed faces as crops to pick from (no names involved)
@@ -1750,6 +1752,7 @@ impl App {
             grid_off: 0.0,
             anchor_v: 0,
             anchor_dy: 0.0,
+            sel_header: None,
             view_sig: (0, 0, 0),
             popup: false,
             face_pane: None,
@@ -1898,6 +1901,94 @@ impl App {
         }
         self.total = self.grows.len();
         self.selected = self.selected.min(self.total.saturating_sub(1));
+        if let Some(id) = &self.sel_header {
+            if self.header_slot(id).is_none() { self.sel_header = None; }
+        }
+    }
+
+    fn header_slot(&self, id: &str) -> Option<usize> {
+        self.gvis.iter().position(|e| matches!(e, group::Entry::Header { id: i, .. } if i == id))
+    }
+
+    /// The slot of the shown sequence the cursor is on: the selected header, else the selected row.
+    fn sel_slot(&self) -> usize {
+        if let Some(s) = self.sel_header.as_deref().and_then(|id| self.header_slot(id)) { return s; }
+        self.gslot_of_v.get(self.selected).copied().unwrap_or(0)
+    }
+
+    fn is_header(&self, slot: usize) -> bool { matches!(self.gvis.get(slot), Some(group::Entry::Header { .. })) }
+
+    /// Puts the cursor on `slot`: a header is selected as such (the row cursor parks on the nearest row), a row normally.
+    fn select_slot(&mut self, slot: usize) {
+        match self.gvis.get(slot).cloned() {
+            Some(group::Entry::Header { id, .. }) => {
+                let near = (slot..self.gvis.len()).find_map(|s| self.gslot_v[s]).or_else(|| (0..slot).rev().find_map(|s| self.gslot_v[s]));
+                if let Some(v) = near { self.selected = v; }
+                self.anchor = None;
+                self.sel_header = Some(id);
+                self.scroll_pending = true;
+            }
+            Some(group::Entry::Row(_)) => { if let Some(v) = self.gslot_v[slot] { self.move_cursor(v, false); } }
+            None => {}
+        }
+    }
+
+    /// Down / Up in a grouped view: like the plain row movement, but the cursor also stops on every section
+    /// header it passes (folded sections have no rows, so this is the only way onto them).
+    fn nav_step(&mut self, down: bool, cols: usize, grid: bool) {
+        let len = self.gvis.len();
+        if len == 0 { return; }
+        if self.sel_header.is_none() && self.total == 0 { self.select_slot(if down { 0 } else { len - 1 }); return; }
+        let s = self.sel_slot();
+        if self.sel_header.is_some() {
+            let t = if down { s + 1 } else { s.wrapping_sub(1) };
+            if t < len { self.select_slot(t); }
+            return;
+        }
+        let v = self.selected;
+        let nv = if grid && cols > 1 { self.vstep(v, if down { 1 } else { -1 }, cols) }
+            else if down { (v + 1).min(self.total - 1) } else { v.saturating_sub(1) };
+        let ns = self.gslot_of_v.get(nv).copied().unwrap_or(s);
+        let hdr = if down {
+            (s + 1..if nv == v { len } else { ns }).find(|&x| self.is_header(x))
+        } else {
+            (if nv == v { 0 } else { ns + 1 }..s).rev().find(|&x| self.is_header(x))
+        };
+        if let Some(h) = hdr { self.select_slot(h); }
+        else if nv != v { self.move_cursor(nv, false); }
+    }
+
+    /// Left / Ctrl+H: from a row, up to its section header; from an open header, fold it; from a folded one, up to the parent.
+    fn nav_left(&mut self) {
+        if let Some(id) = self.sel_header.clone() {
+            if !self.gcollapsed.contains(&id) { self.toggle_group(&id); return; }
+            let Some(s) = self.header_slot(&id) else { return };
+            let depth = match &self.gvis[s] { group::Entry::Header { depth, .. } => *depth, _ => 0 };
+            if let Some(p) = (0..s).rev().find(|&x| matches!(&self.gvis[x], group::Entry::Header { depth: d, .. } if *d < depth)) { self.select_slot(p); }
+        } else if let Some(&slot) = self.gslot_of_v.get(self.selected) {
+            if let Some(h) = (0..slot).rev().find(|&x| self.is_header(x)) { self.select_slot(h); }
+        }
+    }
+
+    /// Right / Ctrl+L on a header: unfold it if folded, then step into its first entry.
+    fn nav_right(&mut self) {
+        let Some(id) = self.sel_header.clone() else { return };
+        if self.gcollapsed.contains(&id) { self.toggle_group(&id); }
+        let Some(s) = self.header_slot(&id) else { return };
+        let depth = match &self.gvis[s] { group::Entry::Header { depth, .. } => *depth, _ => 0 };
+        let inside = match self.gvis.get(s + 1) {
+            Some(group::Entry::Header { depth: d, .. }) => *d > depth,
+            Some(group::Entry::Row(_)) => true,
+            None => false,
+        };
+        if inside { self.select_slot(s + 1); }
+    }
+
+    /// True when the selected row is in the first column of its run of rows (the grid's Left goes up a level there).
+    fn at_run_col0(&self, cols: usize) -> bool {
+        let mut start = self.selected;
+        while start > 0 && !self.run_break(start) { start -= 1; }
+        (self.selected - start) % cols == 0
     }
 
     /// Fold or unfold the group header `id`. The cursor stays on its row, or moves to the nearest row when
@@ -2137,6 +2228,7 @@ impl App {
     }
 
     fn in_selection(&self, idx: usize) -> bool {
+        if self.sel_header.is_some() { return false; }
         match self.anchor {
             Some(a) => idx >= a.min(self.selected) && idx <= a.max(self.selected),
             None => idx == self.selected,
@@ -2146,6 +2238,7 @@ impl App {
     /// Move the cursor; with `extend` the range grows from the anchor, otherwise it collapses.
     fn move_cursor(&mut self, to: usize, extend: bool) {
         self.scroll_pending = true;
+        self.sel_header = None;
         if extend {
             if self.anchor.is_none() { self.anchor = Some(self.selected); }
         } else {
@@ -2577,6 +2670,10 @@ impl App {
         let y = rect.bottom() - 4.0;
         let painter = ui.painter();
         if resp.hovered() { painter.rect_filled(rect, 4.0, pal.accent.gamma_multiply(0.08)); }
+        if self.sel_header.as_deref() == Some(id.as_str()) {
+            painter.rect_filled(rect, 4.0, pal.accent.gamma_multiply(0.22));
+            painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())), 0.0, pal.accent);
+        }
         painter.line_segment([egui::pos2(x, rect.bottom() - 1.0), egui::pos2(rect.right() - 6.0, rect.bottom() - 1.0)], Stroke::new(1.0, pal.border));
         let chev = if folded { "▸" } else { "▾" };
         let (bytes, pages) = self.gagg.get(&id).copied().unwrap_or((0, 0));
@@ -2622,7 +2719,7 @@ impl App {
                 painter.text(egui::pos2(x + galley.size().x + 12.0, y), egui::Align2::LEFT_BOTTOM, tail, small, pal.dim);
             },
         }
-        if resp.clicked() { self.pending_fold = Some(id); }
+        if resp.clicked() { self.sel_header = Some(id.clone()); self.list_focus = true; self.pending_fold = Some(id); }
     }
 
     /// The grid when /group is active: group headers across the full width, the members of each flowing in
@@ -2666,12 +2763,14 @@ impl App {
             }
         }
         if self.scroll_pending {
-            if let Some(&sel_slot) = self.gslot_of_v.get(self.selected) {
-                if let Some(&(_, _, _, ly, lh)) = lines.iter().find(|l| l.0.is_none() && sel_slot >= l.1 && sel_slot < l.1 + l.2) {
+            {
+                let sel_slot = self.sel_slot();
+                let on_header = self.sel_header.is_some();
+                if let Some(&(_, _, _, ly, lh)) = lines.iter().find(|l| if on_header { l.0 == Some(sel_slot) } else { l.0.is_none() && sel_slot >= l.1 && sel_slot < l.1 + l.2 }) {
                     let off = self.grid_off;
                     if ly < off || ly + lh > off + view_h {
                         // the header above the row stays in view when the row is the first of its group
-                        let top = if ly < off { (ly - hdr_h).max(0.0) } else { ly + lh - view_h };
+                        let top = if ly < off { if on_header { ly } else { (ly - hdr_h).max(0.0) } } else { ly + lh - view_h };
                         area = area.vertical_scroll_offset(top.max(0.0));
                     }
                 }
@@ -2935,7 +3034,7 @@ impl eframe::App for App {
 
         // Delete: only when the confirmation dialog is closed
         let del = self.trash_pending.is_none() && ui.input(|i| i.key_pressed(Key::Delete));
-        if del && !self.popup && self.total > 0 {
+        if del && !self.popup && self.total > 0 && self.sel_header.is_none() {
             self.request_trash();
         }
 
@@ -2989,9 +3088,18 @@ impl eframe::App for App {
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         // Tab in the results list hands focus back to the query box (and does not complete anything);
         // Tab in the query box stays completion only
+        let hdr_sel = if self.list_focus && !self.popup && self.group_active() { self.sel_header.clone() } else { None };
+        // Space on a selected section header folds / unfolds it, like Tab
+        if hdr_sel.is_some() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Space)) {
+            ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == " ")));
+            if let Some(id) = &hdr_sel { self.toggle_group(id); }
+        }
         let tab = if tab && self.list_focus && !self.popup {
-            self.list_focus = false;
-            ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+            if let Some(id) = &hdr_sel { self.toggle_group(id); }
+            else {
+                self.list_focus = false;
+                ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+            }
             false
         } else {
             tab
@@ -3219,9 +3327,10 @@ impl eframe::App for App {
         let box_free = !was_list && !self.popup && !self.hist_popup && self.trash_pending.is_none() && self.props.is_none();
         let kb_up = box_free && ctrl_k;
         let kb_down = box_free && ctrl_j && self.hist_pos.is_some();
-        if !was_list && n > 0 && !self.popup && self.trash_pending.is_none() && self.props.is_none() && (ctrl_j || ctrl_k) && !kb_up && !kb_down {
+        if !was_list && (n > 0 || (self.group_active() && !self.gvis.is_empty())) && !self.popup && self.trash_pending.is_none() && self.props.is_none() && (ctrl_j || ctrl_k) && !kb_up && !kb_down {
             self.list_focus = true;
-            self.move_cursor(if ctrl_j { 0 } else { n - 1 }, false);
+            if self.group_active() && !self.gvis.is_empty() { let t = if ctrl_j { 0 } else { self.gvis.len() - 1 }; self.select_slot(t); }
+            else { self.move_cursor(if ctrl_j { 0 } else { n - 1 }, false); }
         }
         let (down, up, left, right, pgdn, pgup, home, end, enter, ctrl_enter, esc, _cj, _ck) = ui.input(|i| {
             (
@@ -3282,10 +3391,54 @@ impl eframe::App for App {
             else if self.props.is_some() { self.props = None; }
             else { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
-        let alt_enter = ui.input(|i| keys.pressed_in(i, "properties"));
+        // grouped views: the cursor also visits the section headers (see nav_step / nav_left / nav_right)
+        let (mut ctrl_j_n, mut ctrl_k_n) = (ctrl_j_n, ctrl_k_n);
+        let (mut left, mut right, mut enter) = (left, right, enter);
+        let gnav = self.group_active() && !self.gvis.is_empty() && !self.popup && !self.hist_popup && self.trash_pending.is_none() && self.props.is_none();
+        if gnav {
+            let cols = if grid { self.grid_cols.max(1) } else { 1 };
+            let (shift, ctrl, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.ctrl, i.modifiers.alt));
+            if !was_list && down && !shift && !ctrl && !alt {
+                // Down from the query box enters the list on its first entry (the first header)
+                self.list_focus = true;
+                self.select_slot(0);
+                down = false;
+            } else if was_list && !shift {
+                let (dn, upn) = ((down as usize) + ctrl_j_n, (up as usize) + ctrl_k_n);
+                for _ in 0..dn { self.nav_step(true, cols, grid); }
+                for _ in 0..upn {
+                    if self.sel_slot() == 0 {
+                        self.list_focus = false;     // Up from the very first entry hands focus back to the query box
+                        break;
+                    }
+                    self.nav_step(false, cols, grid);
+                }
+                if dn + upn > 0 { down = false; up = false; ctrl_j_n = 0; ctrl_k_n = 0; }
+            }
+            if was_list && self.list_focus {
+                let h_peek = ui.input(|i| keys.pressed_in(i, "item_prev"));
+                let l_peek = ui.input(|i| keys.pressed_in(i, "item_next"));
+                let plain_mod = !shift && !ctrl && !alt;
+                if (left && plain_mod || h_peek) && (self.sel_header.is_some() || !grid || self.at_run_col0(cols)) {
+                    self.nav_left();
+                    if h_peek { take_act(ui, &keys, "item_prev"); }
+                    left = false;
+                }
+                if (right && plain_mod || l_peek) && self.sel_header.is_some() {
+                    self.nav_right();
+                    if l_peek { take_act(ui, &keys, "item_next"); }
+                    right = false;
+                }
+                if enter && self.sel_header.is_some() {
+                    if let Some(id) = self.sel_header.clone() { self.toggle_group(&id); }
+                    enter = false;
+                }
+            }
+        }
+        let alt_enter = ui.input(|i| keys.pressed_in(i, "properties") && self.sel_header.is_none());
         if alt_enter && n > 0 && !self.popup && self.trash_pending.is_none() { self.open_props(self.selected); }
         let f10 = keys.consume(ui, "menu");
-        if f10 && n > 0 && !self.popup && self.trash_pending.is_none() {
+        if f10 && n > 0 && !self.popup && self.trash_pending.is_none() && self.sel_header.is_none() {
             let at = self.row_rects.get(&self.selected).map(|r| r.left_bottom()).unwrap_or(egui::pos2(40.0, 120.0));
             self.open_menu(at, self.selected);
         }
@@ -3296,10 +3449,10 @@ impl eframe::App for App {
             // egui-winit may report Ctrl+C / Ctrl+X as copy/cut events instead of key presses
             let ev_copy = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Copy)); i.events.retain(|e| !matches!(e, egui::Event::Copy)); had });
             let ev_cut = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Cut)); i.events.retain(|e| !matches!(e, egui::Event::Cut)); had });
-            if key_c || ev_copy { self.copy_selection(false); }
-            if key_x || ev_cut { self.copy_selection(true); }
+            if (key_c || ev_copy) && self.sel_header.is_none() { self.copy_selection(false); }
+            if (key_x || ev_cut) && self.sel_header.is_none() { self.copy_selection(true); }
             if take_act(ui, &keys, "fold") > 0 && self.group_active() {
-                if let Some(id) = self.group_of(self.selected) { self.toggle_group(&id); }
+                if let Some(id) = self.sel_header.clone().or_else(|| self.group_of(self.selected)) { self.toggle_group(&id); }
             }
         }
         if n > 0 && !self.popup {
@@ -3355,7 +3508,7 @@ impl eframe::App for App {
             if self.last_change.elapsed() >= Duration::from_millis(400) { self.record_history(); }
             self.open_selected();
         }
-        if ctrl_enter && n > 0 && !self.popup { self.reveal_selected(); }
+        if ctrl_enter && n > 0 && !self.popup && self.sel_header.is_none() { self.reveal_selected(); }
 
         // confirmation dialog for moving files to the trash: modal, explicit, Esc cancels
         if let Some(files) = self.trash_pending.clone() {
@@ -3983,7 +4136,7 @@ impl eframe::App for App {
                     // for more at the bottom made the whole list shake on every key press.
                     let view_h = ui.available_height() - 2.0;
                     let n_slots = if self.group_active() { self.gvis.len() } else { self.total };
-                    let sel_slot = if self.group_active() { self.gslot_of_v.get(self.selected).copied().unwrap_or(0) } else { self.selected };
+                    let sel_slot = if self.group_active() { self.sel_slot() } else { self.selected };
                     let max_off = (n_slots as f32 * row_h - view_h).max(0.0);
                     let (top, bottom, off) = (sel_slot as f32 * row_h, (sel_slot + 1) as f32 * row_h, self.list_off);
                     let new = if top < off - row_h || bottom > off + view_h + row_h { Some(top - view_h * 0.4) }
