@@ -1108,6 +1108,16 @@ class H(BaseHTTPRequestHandler):
             return self._json(200, {"ready": ready, "thumb": thumb_path(remote)})
         self._json(404, {"error": "not found"})
 
+NAMES_IDLE_S = float(os.environ.get("NAMES_IDLE_S", "300"))
+
+def _release_name_pages():
+    """After a few idle minutes the name table's mapped pages are handed back (they stay cached, the next query faults them in)."""
+    for t in [NAMES] + [b["table"] for b in BACKUPS.values()]:
+        if t.paths and t.last_used and time.time() - t.last_used > NAMES_IDLE_S and not getattr(t, "_released", False):
+            t.release_pages(); t._released = True
+        elif t.last_used and time.time() - t.last_used <= NAMES_IDLE_S:
+            t._released = False
+
 def _idle_unloader():
     import ctypes, gc
     while True:

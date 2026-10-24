@@ -438,6 +438,7 @@ class NameTable:
         self._loading = False
         self._buffer = []
         self.needs_reload = False
+        self.last_used = 0.0
 
     def load(self):
         if self.compact and self.db_path:
@@ -588,12 +589,19 @@ class NameTable:
             fb = fld.encode("utf-8", "surrogatepass")
             orig.seek(0)
             off[fld] = np.fromiter((line.startswith(fb) for line in iter(orig.readline, b"")), bool, n) if n else np.zeros(0, bool)
+        if off and n:
+            orig.madvise(mmap.MADV_DONTNEED)       # that pass touched every page of the original-case blob; only result rows need it
+        ext_codes, size_arr, mt_arr, order = ld("ext_codes"), ld("size_arr"), ld("mt_arr"), ld("order")
+        if self.pin:    # a name search scans these on every keystroke: under memory pressure they must not be evicted and faulted back one page at a time
+            n_pinned = pin_in_ram([arr, starts, order, ext_codes, size_arr, mt_arr, *orders.values()])
+            print(f"name table: {n_pinned/1e6:.0f} MB of the mapped snapshot pinned in RAM", flush=True)
         with self.lock:
             self.paths, self.sizes, self.mtimes = paths, _Col(ld("sizes_raw")), _Col(ld("mtimes_raw"))
             self.blob, self.starts, self.arr = lower, starts, arr
-            self.order = ld("order")
-            self.ext_codes, self.ext_names = ld("ext_codes"), meta["ext_names"]
-            self.size_arr, self.mt_arr, self.orders = ld("size_arr"), ld("mt_arr"), orders
+            self._maps = [m for m in (orig,) if not isinstance(m, bytes)]     # only the original-case blob is cold (result rows)
+            self.order = order
+            self.ext_codes, self.ext_names = ext_codes, meta["ext_names"]
+            self.size_arr, self.mt_arr, self.orders = size_arr, mt_arr, orders
             self.off_masks = off
             self.dirs = dirs
             self._tm_cache = collections.OrderedDict()
@@ -608,6 +616,25 @@ class NameTable:
             for op in self._buffer:
                 self._apply(op)
             self._buffer = []
+
+    def release_pages(self):
+        """Tell the kernel this process no longer needs the mapped pages of the snapshot (they stay in the page cache and come
+        back as cheap minor faults on the next query): the process shows only what it really uses while the picker is idle."""
+        import mmap
+        n = 0
+        for m in list(getattr(self, "_maps", [])):
+            try:
+                m.madvise(mmap.MADV_DONTNEED); n += 1
+            except (OSError, ValueError, AttributeError):
+                pass
+        for a in [*self.sort_keys.values()]:                      # sort keys serve multi-key sorts only
+            mm = getattr(a, "_mmap", None)
+            if mm is not None:
+                try:
+                    mm.madvise(mmap.MADV_DONTNEED); n += 1
+                except (OSError, ValueError, AttributeError):
+                    pass
+        return n
 
     def top_exts(self, n=60):
         """The commonest extensions, for //ext completion."""
@@ -726,6 +753,7 @@ class NameTable:
         `extras`: further, separately loaded tables (the restic and btrfs backups) whose matches are merged in."""
         extras = [t for t in extras if t is not None and len(t.paths) > 0]
         t_start = time.perf_counter()
+        self.last_used = time.time()
         key = (q, sort, bool(desc), tuple((id(t), t._ver) for t in extras))
         with self.lock:
             cached, ver = self._cache, self._ver
