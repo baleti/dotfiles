@@ -16,7 +16,11 @@ pub struct Spec { pub name: String, pub bucket: String, pub level: usize }
 pub struct Parsed { pub specs: Vec<Spec>, /// None: no explicit direction, groups follow the order their rows already have
     pub desc: Option<bool>,
     /// `/g/.../collapse`: every section starts folded
-    pub collapse: bool }
+    pub collapse: bool,
+    /// `/g/.../s/key[/dir]`: order the groups themselves by an aggregate of `key` over their rows
+    pub sort: Option<GroupSort> }
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupSort { pub name: String, pub desc: Option<bool> }
 /// A laid-out entry: a group header or the index of a row.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry { Header { depth: usize, id: String, label: String, count: usize }, Row(usize) }
@@ -54,9 +58,18 @@ pub fn parse_group(text: &str, known: &[&str], aliases: &[(&str, &str)]) -> Opti
     if parts.len() < 3 || !parts[0].is_empty() || !(parts[1] == "g" || parts[1] == "group") || parts[2].replace(',', "").is_empty() { return None; }
     let (mut bucket, mut level, mut dir): (Option<String>, Option<usize>, Option<bool>) = (None, None, None);
     let mut collapse = false;
-    for p in &parts[3..] {
+    let (mut sort_key, mut sort_dir): (Option<String>, Option<bool>) = (None, None);
+    let mut i = 3;
+    while i < parts.len() {
+        let p = &parts[i];
+        i += 1;
         let low = p.to_lowercase();
-        if low == "collapse" {
+        if low == "s" || low == "sort" {
+            if sort_key.is_some() || i >= parts.len() { return None; }
+            sort_key = Some(parts[i].to_string());
+            i += 1;
+            if i < parts.len() { if let Some(d) = direction(parts[i]) { sort_dir = Some(d); i += 1; } }
+        } else if low == "collapse" {
             if collapse { return None; }
             collapse = true;
         } else if BUCKETS.contains(&low.as_str()) {
@@ -94,7 +107,17 @@ pub fn parse_group(text: &str, known: &[&str], aliases: &[(&str, &str)]) -> Opti
     }
     if let Some(b) = &bucket { if !specs.iter().any(|s| &s.bucket == b) { return None; } }
     if level.is_some() && !specs.iter().any(|s| s.bucket == "pf") { return None; }
-    Some(Parsed { specs, desc: dir, collapse })
+    let sort = match sort_key {
+        None => None,
+        Some(k) => {
+            let low = k.to_lowercase();
+            let name = if low == "count" { "count".to_string() }
+                else if let Some((_, t)) = aliases.iter().find(|(a, t)| *a == low && known.contains(t)) { t.to_string() }
+                else { sort_keys(&k, known).into_iter().next()? };
+            Some(GroupSort { name, desc: sort_dir })
+        }
+    };
+    Some(Parsed { specs, desc: dir, collapse, sort })
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -213,6 +236,26 @@ pub fn compare_field_values(a: &str, b: &str, desc: bool) -> std::cmp::Ordering 
     if desc { ord.reverse() } else { ord }
 }
 
+/// What a group is worth under `/g/.../s/name`: a number or text. count: rows; size: total bytes; date: the newest
+/// value; other: the sum when every value is an integer (pages), else the smallest text.
+fn group_aggregate(members: &[usize], name: &str, get: &dyn Fn(usize, &str) -> String) -> (Option<f64>, String) {
+    use std::cmp::Ordering;
+    if name == "count" { return (Some(members.len() as f64), String::new()); }
+    let vals: Vec<String> = members.iter().map(|&i| get(i, name)).collect();
+    if kind(name) == "size" { return (Some(vals.iter().map(|v| size_bytes(v).unwrap_or(0.0)).sum()), String::new()); }
+    let vals: Vec<String> = vals.into_iter().filter(|v| !v.is_empty()).collect();
+    let mut best = String::new();
+    if kind(name) == "date" {
+        for v in vals { if best.is_empty() || compare_field_values(&best, &v, false) == Ordering::Less { best = v; } }
+        return (None, best);
+    }
+    if !vals.is_empty() && vals.iter().all(|v| v.bytes().all(|c| c.is_ascii_digit())) {
+        return (Some(vals.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).sum()), String::new());
+    }
+    for v in vals { if best.is_empty() || compare_field_values(&v, &best, false) == Ordering::Less { best = v; } }
+    (None, best)
+}
+
 /// Rows (already filtered and ordered) -> headers + rows. `get(row, name)` is the raw value.
 ///
 /// `key_override(depth, label)`: for a `pf` level, the folder's own sort key (its date modified, as a string that
@@ -233,7 +276,18 @@ pub fn group_layout(n_rows: usize, parsed: &Parsed, get: &dyn Fn(usize, &str) ->
         }
         let (mut full, none): (Vec<String>, Vec<String>) = order.into_iter().partition(|k| !k.is_empty());
         let by_folder = spec.bucket == "pf" && full.iter().any(|k| ko(depth, k).is_some());
-        if by_folder {
+        if let Some(gs) = &p.sort {
+            let aggs: HashMap<String, (Option<f64>, String)> = full.iter().map(|k| (k.clone(), group_aggregate(&groups[k].1, &gs.name, get))).collect();
+            let desc = gs.desc.unwrap_or(false);
+            full.sort_by(|a, b| {
+                let (x, y) = (&aggs[a], &aggs[b]);
+                let c = match (x.0, y.0) {
+                    (Some(m), Some(n)) => m.partial_cmp(&n).unwrap_or(Ordering::Equal),
+                    _ => compare_field_values(&format!("{}", x.0.map_or(x.1.clone(), |m| m.to_string())), &format!("{}", y.0.map_or(y.1.clone(), |m| m.to_string())), false),
+                };
+                if desc { c.reverse() } else { c }
+            });
+        } else if by_folder {
             // folders carry their own date modified: newest first by default, the typed direction otherwise
             let desc = p.desc.unwrap_or(true);
             let key = |k: &String| ko(depth, k).unwrap_or_default();

@@ -175,9 +175,21 @@ def parse_group(text, known, aliases=None):
         return None
     bucket = level = direction = None
     collapse = False
-    for p in parts[3:]:
+    sort_key = sort_dir = None
+    i = 3
+    while i < len(parts):
+        p = parts[i]
+        i += 1
         low = p.lower()
-        if low == "collapse":
+        if low in ("s", "sort"):   # `/s/key[/dir]`: order the groups themselves by an aggregate of key over their rows
+            if sort_key is not None or i >= len(parts):
+                return None
+            sort_key = parts[i]
+            i += 1
+            if i < len(parts) and parse_direction(parts[i]):
+                sort_dir = parse_direction(parts[i])
+                i += 1
+        elif low == "collapse":
             if collapse:
                 return None
             collapse = True
@@ -225,6 +237,18 @@ def parse_group(text, known, aliases=None):
     if level is not None and not any(s["bucket"] == "pf" for s in specs):
         return None
     out = {"specs": specs, "dir": direction}
+    if sort_key is not None:
+        low = sort_key.lower()
+        if low == "count":
+            sname = "count"
+        elif aliases and low in aliases and aliases[low] in known:
+            sname = aliases[low]
+        else:
+            r = resolve_sort_keys([sort_key], known)
+            if not r:
+                return None
+            sname = sorted(r)[0]
+        out["sort"] = {"name": sname, "dir": sort_dir}
     if collapse:
         out["collapse"] = True   # every section starts folded (only present when typed)
     return out
@@ -341,10 +365,49 @@ def group_layout(rows, parsed, get, today):
     their incoming order. get(row, name) -> the raw field value. id = labels from the root joined by
     U+001F - the stable handle for collapse state."""
     specs, direction = parsed["specs"], parsed["dir"]
+    gsort = parsed.get("sort")
+
+    def aggregate(members, name):
+        """What a group is worth under `/g/.../s/name`: (0, number) or (1, text). count: rows; size: total bytes;
+        date: the newest value; other: the sum when every value is an integer (pages), else the smallest text."""
+        if name == "count":
+            return 0, float(len(members))
+        kind = group_kind(name)
+        vals = [get(rows[i], name) for i in members]
+        if kind == "size":
+            return 0, float(sum(_size_bytes(v) or 0 for v in vals))
+        vals = [v for v in vals if v != ""]
+        if kind == "date":
+            best = ""
+            for v in vals:
+                if best == "" or compare_field_values(best, v, "asc") < 0:
+                    best = v
+            return 1, best
+        if vals and all(v.isdigit() for v in vals):
+            return 0, float(sum(int(v) for v in vals))
+        best = ""
+        for v in vals:
+            if best == "" or compare_field_values(v, best, "asc") < 0:
+                best = v
+        return 1, best
+
+    def sort_groups(full):
+        import functools
+        aggs = {id(g): aggregate(g[2], gsort["name"]) for g in full}
+        def cmp(a, b):
+            x, y = aggs[id(a)], aggs[id(b)]
+            if x[0] == 0 and y[0] == 0:
+                c = (x[1] > y[1]) - (x[1] < y[1])
+            else:
+                c = compare_field_values(str(x[1]), str(y[1]), "asc")
+            return -c if gsort["dir"] == "desc" else c
+        return sorted(full, key=functools.cmp_to_key(cmp))
 
     def order(keyed, spec):
         full = [k for k in keyed if k[0] != ""]
         none = [k for k in keyed if k[0] == ""]
+        if gsort:
+            return sort_groups(full) + none
         if direction is None:       # no explicit /dir: groups follow the order their rows already have (the active /s)
             return full + none
         num = spec["bucket"] == "value"

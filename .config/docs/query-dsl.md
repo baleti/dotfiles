@@ -696,6 +696,16 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   newest age bucket first for `desc`; text values Z-A for `desc`). The `(none)` group (empty or
   unparseable value) is always last. Rows inside a group keep the order the rest of the query gives them,
   so `/g/dm/week /s/size` is "per week, biggest first".
+- **Sorting the sections themselves.** A trailing `s/key[/dir]` (or `sort/key[/dir]`) part, once, orders the
+  groups by an aggregate of `key` over all the rows in each (nested ones included), at every level; it replaces
+  the key / folder-date ordering, and `(none)` stays last. `/g/path/pf/1/s/size` is "folders, smallest total first"
+  (`/s/size/desc` the other way; direction defaults to ascending, like `/s`). The aggregate follows the key's kind:
+  `size` is the total bytes, a date type the newest value, `count` (always accepted) the number of rows, an
+  all-integer type (`pages`) the sum, anything else its smallest value. A direction typed *before* the `s` part
+  still belongs to the group key and is ignored while a section sort is present. This is separate from
+  `/s/size`, which orders the **rows inside** the sections: `/g/path/pf/1/s/size /s/size/desc` does both. The
+  parse result carries `sort: {name, dir}` (absent when not typed). A bare `s`, an unknown key or a second `s`
+  part makes the `/g` inert.
 - **Pipeline.** Like `/s`, a `/g` token is position-independent, and it always acts on the **result of the
   filters**: `/fv/name .rvt /g/dm/week` and `/g/dm/week /fv/name .rvt` both group only the `.rvt` rows,
   counts are of surviving rows, and a group with no surviving rows does not exist. Order of the stages is
