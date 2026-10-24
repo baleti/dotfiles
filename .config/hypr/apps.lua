@@ -7,7 +7,9 @@
 -- `class` is the literal window class (hyprctl clients -j | jq '.[].class'),
 -- used as an exact match by get_windows and as an anchored regex in window rules.
 return {
-    { key = "1", slug = "search-files", class = "images",                       cmd = "/home/user1/bin/index/images/target/release/images" },
+    -- always_new: the key (and the launcher) only opens another window of it (each has its own query; Ctrl+N inside
+    -- does the same with the current query); it is never hidden or summoned, so there is nothing to autostart.
+    { key = "1", slug = "search-files", class = "images",                       cmd = "/home/user1/bin/index/images/target/release/images", always_new = true, no_autostart = true },
     { key = "2", slug = "element",     class = "Element",                      cmd = "element-desktop" },
     { key = "3", slug = "thunderbird", class = "org.mozilla.Thunderbird",      cmd = "thunderbird" },
     -- UBUNTU_MENUPROXY=0: appmenu-gtk3-parser's DBus menu-export walk hits

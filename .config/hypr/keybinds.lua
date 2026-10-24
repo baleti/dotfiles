@@ -119,7 +119,11 @@ end
 
 for _, app in ipairs(apps) do
     if app.key then
-        hl.bind(mainMod .. " + " .. app.key, toggle_app(app.class, app.slug, app.cmd), { description = "Launch / toggle " .. app.slug })
+        if app.always_new then
+            hl.bind(mainMod .. " + " .. app.key, hl.dsp.exec_cmd(app.cmd), { description = "New " .. app.slug .. " window" })
+        else
+            hl.bind(mainMod .. " + " .. app.key, toggle_app(app.class, app.slug, app.cmd), { description = "Launch / toggle " .. app.slug })
+        end
     end
 end
 
@@ -128,7 +132,7 @@ end
 function summon_app(slug)
     for _, app in ipairs(apps) do
         if app.slug == slug then
-            toggle_app(app.class, app.slug, app.cmd)()
+            if app.always_new then hl.dispatch(hl.dsp.exec_cmd(app.cmd)) else toggle_app(app.class, app.slug, app.cmd)() end
             return
         end
     end
