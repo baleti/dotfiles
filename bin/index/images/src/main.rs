@@ -860,12 +860,33 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
         // `/g/<keys>[/<bucket|level|dir>...]`: a type after the last comma, or the next trailing part
         let head = &frag[..frag.len() - chain.len()];
         if let Some((keys, tail)) = chain.split_once('/') {
-            let last = tail.rsplit('/').next().unwrap_or("").to_lowercase();
+            let tparts: Vec<String> = tail.split('/').map(|t| t.to_lowercase()).collect();
+            let last = tparts.last().cloned().unwrap_or_default();
+            let before = &tparts[..tparts.len() - 1];
             let base = &frag[..frag.len() - last.len()];
             let _ = keys;
-            for (word, label) in [("pf", "parent folder (1 = immediate, then /2 ...)"), ("parent-folder", "same as pf"), ("day", "by day"), ("week", "by week"),
-                                  ("month", "by month"), ("year", "by year"), ("asc", "oldest / smallest / A first"), ("desc", "newest / biggest first"), ("collapse", "start with every section folded")] {
-                if word.starts_with(last.as_str()) && !tail.split('/').rev().skip(1).any(|t| t == word) { out.push((format!("{base}{word} "), label.to_string())); }
+            let is_s = |t: &String| t == "s" || t == "sort";
+            if before.last().map_or(false, is_s) {
+                // `.../s/<field>`: what the sections are ordered by (count = rows in the section)
+                for name in SORT_FIELDS.iter().map(|(n, _)| *n).chain(["count"]) {
+                    if name.contains(last.as_str()) { out.push((format!("{base}{name}"), "order sections by".to_string())); }
+                }
+            } else if before.len() >= 2 && is_s(&before[before.len() - 2]) {
+                // `.../s/<field>/<dir>`
+                for (word, full) in [("asc", "smallest / oldest first"), ("desc", "biggest / newest first (default)")] {
+                    if word.starts_with(last.as_str()) { out.push((format!("{base}{word} "), full.to_string())); }
+                }
+            } else {
+                let sorted_already = before.iter().any(is_s);
+                for (word, label) in [("pf", "parent folder (1 = immediate, then /2 ...)"), ("parent-folder", "same as pf"), ("day", "by day"), ("week", "by week"),
+                                      ("month", "by month"), ("year", "by year"), ("asc", "oldest / smallest / A first"), ("desc", "newest / biggest first"),
+                                      ("s", "order the sections themselves: s/<field>[/asc|desc]"), ("collapse", "start with every section folded")] {
+                    if word == "s" && sorted_already { continue; }
+                    if word.starts_with(last.as_str()) && !before.iter().any(|t| t == word) {
+                        // `s` goes on into its field, so no trailing space
+                        out.push((format!("{base}{word}{}", if word == "s" { "/" } else { " " }), label.to_string()));
+                    }
+                }
             }
         } else {
             let comma = chain.rfind(',').map(|c| c + 1).unwrap_or(0);

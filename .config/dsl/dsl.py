@@ -400,7 +400,7 @@ def group_layout(rows, parsed, get, today):
                 c = (x[1] > y[1]) - (x[1] < y[1])
             else:
                 c = compare_field_values(str(x[1]), str(y[1]), "asc")
-            return -c if gsort["dir"] == "desc" else c
+            return c if gsort["dir"] == "asc" else -c   # descending unless asc is typed, like /s
         return sorted(full, key=functools.cmp_to_key(cmp))
 
     def order(keyed, spec):

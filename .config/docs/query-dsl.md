@@ -698,8 +698,8 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   so `/g/dm/week /s/size` is "per week, biggest first".
 - **Sorting the sections themselves.** A trailing `s/key[/dir]` (or `sort/key[/dir]`) part, once, orders the
   groups by an aggregate of `key` over all the rows in each (nested ones included), at every level; it replaces
-  the key / folder-date ordering, and `(none)` stays last. `/g/path/pf/1/s/size` is "folders, smallest total first"
-  (`/s/size/desc` the other way; direction defaults to ascending, like `/s`). The aggregate follows the key's kind:
+  the key / folder-date ordering, and `(none)` stays last. `/g/path/pf/1/s/size` is "folders, biggest total first"
+  (`/s/size/asc` the other way; direction defaults to descending, like `/s`). The aggregate follows the key's kind:
   `size` is the total bytes, a date type the newest value, `count` (always accepted) the number of rows, an
   all-integer type (`pages`) the sum, anything else its smallest value. A direction typed *before* the `s` part
   still belongs to the group key and is ignored while a section sort is present. This is separate from
