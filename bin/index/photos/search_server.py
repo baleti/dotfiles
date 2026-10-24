@@ -522,17 +522,31 @@ def fts_snippets(remote, text):
 THUMBS = os.path.join(config.DATA_DIR, "thumbs")
 
 META = {}
-for _stem, _folder in config.SOURCES.items():
-    _p = os.path.join(config.DATA_DIR, "lists", _stem + ".json")
-    if not os.path.exists(_p): continue
-    for _e in json.load(open(_p, encoding="utf-8")):
-        META[f"{config.REMOTE}{_folder}/{_e['Path']}"] = (_e.get("Size"), _e.get("ModTime"))
+_meta_loaded = [False]
+_meta_lock = threading.Lock()
+
+def _meta_load():
+    """Sizes/dates of the photo lists, read on first use and dropped again when idle (see _idle_unloader)."""
+    with _meta_lock:
+        if _meta_loaded[0]:
+            return
+        for _stem, _folder in config.SOURCES.items():
+            _p = os.path.join(config.DATA_DIR, "lists", _stem + ".json")
+            if not os.path.exists(_p): continue
+            for _e in json.load(open(_p, encoding="utf-8")):
+                META[f"{config.REMOTE}{_folder}/{_e['Path']}"] = (_e.get("Size"), _e.get("ModTime"))
+        _meta_loaded[0] = True
+    _use["t"] = time.time()
 
 def with_meta(r):
+    if not _meta_loaded[0]:
+        _meta_load()
     size, mtime = META.get(r["remote"], (None, None))
     r["size"], r["mtime"] = size, mtime
     return r
 PORT = config.SERVER_PORT
+_use = {"t": 0.0}                    # last time anything but the name table was needed
+IDLE_UNLOAD_S = float(os.environ.get("IDLE_UNLOAD_S", "600"))
 _q_lock = threading.Lock()          # one query at a time (onnx session is not re-entrant)
 _pending = queue.LifoQueue()   # newest request first: what is on screen now beats what was scrolled past
 _queued = set()
@@ -826,6 +840,9 @@ BACKUPS = {
               "loading": threading.Event(), "setup": "btrfs_store.py build", "name": "btrfs snapshots"},
 }
 
+for _b in BACKUPS.values():
+    _b["table"].compact = NAMES.compact       # the backup tables are mapped from snapshots too
+
 def _backup_load(b):
     try:
         b["table"].load()
@@ -1091,16 +1108,43 @@ class H(BaseHTTPRequestHandler):
             return self._json(200, {"ready": ready, "thumb": thumb_path(remote)})
         self._json(404, {"error": "not found"})
 
+def _idle_unloader():
+    import ctypes, gc
+    while True:
+        time.sleep(60)
+        last = max(_use["t"], search._last_use["t"])
+        if not last or time.time() - last < IDLE_UNLOAD_S:
+            continue
+        if not (search._index or _meta_loaded[0]):
+            continue
+        if not _q_lock.acquire(timeout=5):
+            continue
+        try:
+            search.unload()
+            try:
+                import clip_text
+                clip_text.unload()
+            except Exception:
+                pass
+            with _meta_lock:
+                META.clear(); _meta_loaded[0] = False
+            gc.collect()
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)       # hand the freed heap back to the OS
+            except OSError:
+                pass
+            print("idle: image/face tables and text model unloaded", file=sys.stderr, flush=True)
+        finally:
+            _q_lock.release()
+
 def main():
     global DELTA_TOKEN
     DELTA_TOKEN = delta_token()
     NAMES.load()
     filesearch.start_refresh(NAMES)
-    with _q_lock:
-        search._refresh()
-        from clip_text import embed_texts
-        embed_texts(["warm up"])            # load the text model once, up front
-    threading.Thread(target=warm_face_pool, daemon=True).start()
+    # Only the name table is resident. The image/face tables, the text model and the photo metadata load on first use
+    # (the first image or face query takes a few seconds) and are dropped again after IDLE_UNLOAD_S without use.
+    threading.Thread(target=_idle_unloader, daemon=True).start()
     threading.Thread(target=hq_worker, daemon=True).start()
     for _ in range(8):                      # thumbnails are I/O bound (rclone / FUSE reads), so run several at once
         threading.Thread(target=thumb_worker, daemon=True).start()

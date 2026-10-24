@@ -14,6 +14,11 @@ def _load():
         _sess = ort.InferenceSession(os.path.join(HERE, "text_model.onnx"),
                                      providers=["CPUExecutionProvider"])
 
+def unload():
+    """Free the tokenizer and the ONNX session (reloaded by the next embed_texts)."""
+    global _sess, _tok
+    _sess = None; _tok = None
+
 def embed_texts(texts):
     _load()
     enc = _tok(list(texts), padding=True, truncation=True, max_length=77, return_tensors="np")
