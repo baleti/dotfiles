@@ -728,9 +728,12 @@ impl App {
         let body = if self.group.is_some() {
             self.flow().1.max(ch)
         } else {
-            ((self.filtered.len() as i32 + l.cols - 1) / l.cols).clamp(1, l.rows) * ch
+            let want = ((self.filtered.len() as i32 + l.cols - 1) / l.cols).max(1);
+            // whole rows only: a scrolling list must not leave a partial row of slack under the last one
+            let fit = ((l.card_max_h - self.header_h() - popup - 32) / ch).max(1);
+            want.min(fit) * ch
         };
-        let h = (self.header_h() + popup + body + 32).min(l.card_max_h);
+        let h = (self.header_h() + popup + body + 32).min(l.card_max_h.max(self.header_h() + popup + ch + 32));
         (h, ((h - 32 - self.header_h() - popup) / ch).max(1))
     }
 
