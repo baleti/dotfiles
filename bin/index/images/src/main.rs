@@ -131,6 +131,23 @@ fn history_path() -> PathBuf {
     PathBuf::from(&cfg().data_dir).join("search-files-history.txt")
 }
 
+extern "C" { fn flock(fd: i32, op: i32) -> i32; }
+
+/// Holds an exclusive lock on the history file's lock file until dropped, so windows (processes) never interleave
+/// their read-merge-write of the shared history.
+struct HistoryLock(Option<std::fs::File>);
+impl HistoryLock {
+    fn acquire() -> HistoryLock {
+        use std::os::fd::AsRawFd;
+        let _ = std::fs::create_dir_all(&cfg().data_dir);
+        let f = std::fs::OpenOptions::new().create(true).write(true).open(history_path().with_extension("txt.lock")).ok();
+        if let Some(f) = &f { unsafe { flock(f.as_raw_fd(), 2); } }   // LOCK_EX
+        HistoryLock(f)
+    }
+}
+
+fn file_mtime(p: &Path) -> Option<std::time::SystemTime> { std::fs::metadata(p).and_then(|m| m.modified()).ok() }
+
 fn load_history() -> Vec<String> {
     std::fs::read_to_string(history_path())
         .map(|t| t.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
@@ -692,6 +709,9 @@ struct App {
     menu_fresh: bool,
     /// search history (oldest first), persisted to the data dir, one query per line
     history: Vec<String>,
+    /// modification times of the shared history / settings files as last read (other windows write them too)
+    hist_mtime: Option<std::time::SystemTime>,
+    set_mtime: Option<std::time::SystemTime>,
     /// Ctrl+R / F4 popup: open flag, highlighted row, and the query text last recorded
     hist_popup: bool,
     /// Up/Down in the query box: position in the history (0 = newest) while browsing, the text typed before, and the text last put in the box
@@ -1471,7 +1491,7 @@ impl Chord {
 
 /// The shortcuts that can be rebound: (action id, what it does). Arrows, Enter, Tab, Esc, paging, Delete and
 /// Shift+arrows stay fixed.
-const ACTIONS: [(&str, &str); 14] = [
+const ACTIONS: [(&str, &str); 15] = [
     ("settings", "Open settings"),
     ("complete", "Complete (query box; same as Tab)"),
     ("caret_end", "Caret to the end of the query"),
@@ -1486,6 +1506,7 @@ const ACTIONS: [(&str, &str); 14] = [
     ("copy", "Copy the selection"),
     ("cut", "Cut the selection"),
     ("fold", "Fold / unfold the /group section of the selected result"),
+    ("new_window", "Open a new window with the same query"),
 ];
 
 #[derive(Clone)]
@@ -1510,6 +1531,7 @@ impl Keymap {
             ("copy", vec![c(true, false, Key::C)]),
             ("cut", vec![c(true, false, Key::X)]),
             ("fold", vec![c(true, false, Key::G)]),
+            ("new_window", vec![c(true, false, Key::N)]),
         ] {
             map.insert(act.to_string(), chords);
         }
@@ -1723,6 +1745,8 @@ impl App {
             menu_fresh: false,
             menu_mime: None,
             history: load_history(),
+            hist_mtime: file_mtime(&history_path()),
+            set_mtime: file_mtime(&Settings::path()),
             hist_popup: false,
             hist_pos: None,
             hist_draft: String::new(),
@@ -2271,10 +2295,52 @@ impl App {
         let q = normalize_query(&self.query);
         if q.is_empty() || q == self.last_recorded { return; }
         self.last_recorded = q.clone();
-        self.history.retain(|h| h != &q);
-        self.history.push(q);
-        let _ = std::fs::create_dir_all(PathBuf::from(&cfg().data_dir));
-        let _ = std::fs::write(history_path(), self.history.join("\n") + "\n");
+        // the file is shared by every window: merge into what is on disk now (not into this window's older copy),
+        // write it atomically, and take the merged list as our own
+        let _lock = HistoryLock::acquire();
+        let mut merged = load_history();
+        merged.retain(|h| h != &q);
+        merged.push(q);
+        let tmp = history_path().with_extension("txt.tmp");
+        if std::fs::write(&tmp, merged.join("\n") + "\n").is_ok() { let _ = std::fs::rename(&tmp, history_path()); }
+        self.history = merged;
+        self.hist_mtime = file_mtime(&history_path());
+    }
+
+    /// Picks up what other windows wrote to the shared files: the search history (unless a walk through it is in
+    /// progress), and the settings / shortcuts (unless the settings window is open here).
+    fn sync_shared(&mut self) {
+        let m = file_mtime(&history_path());
+        if m != self.hist_mtime && self.hist_pos.is_none() && !self.hist_popup {
+            self.history = load_history();
+            self.hist_mtime = m;
+        }
+        let m = file_mtime(&Settings::path());
+        if m != self.set_mtime && !self.settings_open && self.rebind.is_none() {
+            self.set_mtime = m;
+            let new = Settings::load();
+            self.keys = Keymap::load();
+            if new != self.settings {
+                self.settings = new;
+                self.send_query();
+            }
+        }
+    }
+
+    /// Ctrl+N: another window of this program, opened on the same query and zoom.
+    fn spawn_window(&mut self) {
+        use std::os::unix::process::CommandExt;
+        let Ok(exe) = std::env::current_exe() else { return };
+        // a rebuilt binary leaves /proc/self/exe pointing at "<path> (deleted)": the new file sits at the plain path
+        let exe = PathBuf::from(exe.to_string_lossy().trim_end_matches(" (deleted)"));
+        let r = std::process::Command::new(exe)
+            .env("IMAGES_QUERY", &self.query)
+            .env("IMAGES_THUMB", self.thumb.to_string())
+            .env_remove("IMAGES_SHOT")
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .process_group(0)       // its own group, so it outlives this window
+            .spawn();
+        if let Err(e) = r { self.status = format!("new window failed: {e}"); }
     }
 
     /// Delete key: stage the selected trashable files for the confirmation dialog.
@@ -3084,6 +3150,8 @@ impl eframe::App for App {
         if keys.consume(ui, "settings") {
             self.settings_open = !self.settings_open;
         }
+        if keys.consume(ui, "new_window") && !self.popup { self.spawn_window(); }
+        self.sync_shared();
         // completion keys: consumed before the text edit sees them (so Tab does not move focus)
         let tab = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         // Tab in the results list hands focus back to the query box (and does not complete anything);
