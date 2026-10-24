@@ -47,7 +47,7 @@ def main():
             for d in ic.chroma_shards():
                 cmd += ["--also-done", d]
             for p in ic.opted_out("chroma", cfg):
-                cmd += ["--skip-prefix", p]
+                cmd += ["--skip-prefix", ic.index_path(p)]
             subprocess.run(cmd, check=False)
         elif t in ("clip", "faces"):
             print("   runs on host1 (remote_images.py), not here", flush=True)

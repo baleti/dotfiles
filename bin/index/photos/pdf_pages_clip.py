@@ -99,7 +99,7 @@ def main():
     pdfs, seen = [], set()
     for line in open(a.list, encoding="utf-8"):
         coll, _, path = line.rstrip("\n").partition("\t")
-        if not path or not index_config.flag(path, "clip_pages", cfg) or path in seen:
+        if not path or not index_config.flag(config.to_local(path), "clip_pages", cfg) or path in seen:
             continue
         seen.add(path)
         pdfs.append(path)

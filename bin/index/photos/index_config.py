@@ -47,16 +47,23 @@ def entries(cfg=None):
     return out
 
 
+def index_path(p):
+    """A configured path as the Recoll index stores it: photos.json "path_map" turns /mnt/backups/... into the
+    /home/user1/backups/... the existing documents were indexed under (host3 keeps a symlink there), so nothing is re-extracted."""
+    import config
+    return config.to_index(p)
+
+
 CAD_SKIP = "*.rvt *.rfa *.rte *.rft *.dwg *.dxf"        # Revit and DWG have their own indexes (index_cad.py)
 
 
 def recoll_conf(cfg=None):
     """Text of the merged index's recoll.conf: every path as a topdir, CAD files skipped except under "cad": true paths."""
     ents = entries(cfg)
-    lines = ["topdirs = " + " ".join('"%s"' % p.replace('"', "") for p, _ in ents), ""]
+    lines = ["topdirs = " + " ".join('"%s"' % index_path(p).replace('"', "") for p, _ in ents), ""]
     for p, f in ents:
         if not f["cad"]:
-            lines += [f"[{p}]", f"skippedNames+ = {CAD_SKIP}", ""]
+            lines += [f"[{index_path(p)}]", f"skippedNames+ = {CAD_SKIP}", ""]
     return "\n".join(lines)
 
 
