@@ -158,3 +158,8 @@ and btrfs ingestion, NFS stream and monthly walk, nightly collections, nightly R
   already out of process (`recollq` per query, Chroma in its own on-demand worker). The restic and btrfs tables use the same compact snapshots
   (`catalog-restic.db.nt`, `catalog-btrfs.db.nt`; building them takes 10-30 s and up to 2.8 GB in a short-lived child). The recent-term cache keeps
   16 masks (`TERM_CACHE`, 4.4 MB each). After an unload the process keeps ~150-250 MB of imported Python/torch modules; only a restart returns that.
+- **Pinned, not released** (fix the same day): the scan data of the compact table (lower-case blob, offsets, date/size/ext arrays and sort orders, about 840 MB
+  of mapped snapshot) is `mlock`ed (`LimitMEMLOCK=infinity` in the service drop-in), because a name search touches all of it on every keystroke; unpinned,
+  memory pressure or a `MemoryHigh` limit evicts it and each keystroke waits for disk reads (seconds). Only the original-case blob (read for result rows) is
+  dropped from the process after load. There is no `MemoryHigh` on the service any more; `MemoryMax=3G` stays. `NAMES_IDLE_S` is gone.
+
