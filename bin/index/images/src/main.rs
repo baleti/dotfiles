@@ -2284,11 +2284,22 @@ impl App {
     /// History entries matching the current search text, most recent first.
     fn hist_matches(&self) -> Vec<String> {
         let needle = normalize_query(&self.query);
-        self.history.iter().rev()
-            .filter(|h| needle.is_empty() || fuzzy_match(h, &needle))
-            .take(10)
-            .cloned()
-            .collect()
+        if needle.is_empty() {
+            return self.history.iter().rev().take(10).cloned().collect();
+        }
+        // entries that contain the typed text as it is come first (newest first), then the looser subsequence matches:
+        // typing "/fts" must put the searches that really have "/fts" in them above the ones that merely contain / f t s in order
+        let low = needle.to_lowercase();
+        let mut out: Vec<String> = self.history.iter().rev()
+            .filter(|h| h.to_lowercase().contains(&low))
+            .take(10).cloned().collect();
+        if out.len() < 10 {
+            for h in self.history.iter().rev() {
+                if out.len() >= 10 { break; }
+                if !out.contains(h) && fuzzy_match(h, &needle) { out.push(h.clone()); }
+            }
+        }
+        out
     }
 
     /// The unfinished remainder of the newest history entry that starts with the current text.

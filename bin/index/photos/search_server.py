@@ -72,7 +72,7 @@ def icon_for(path):
             subprocess.run(["rsvg-convert", "-w", "256", "-h", "256", svg, "-o", out], capture_output=True)
     _icon_state["cache"][name] = out if os.path.exists(out) else ""
     return _icon_state["cache"][name]
-NAMES = filesearch.NameTable(os.path.expanduser(config.CFG["catalog"]["db"]))
+NAMES = (filesearch.DedupNameTable if os.environ.get("NAMES_DEDUP") == "1" else filesearch.NameTable)(os.path.expanduser(config.CFG["catalog"]["db"]))
 NAMES.pin = True        # the main name table stays resident; the backup and live-overlay tables do not
 NAMES.compact = os.environ.get("NAMES_COMPACT") == "1"   # memory-mapped snapshot instead of Python lists (see catalog/filesearch.py)
 

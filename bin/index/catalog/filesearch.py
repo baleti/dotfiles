@@ -951,6 +951,259 @@ class NameTable:
             mask[np.searchsorted(self.starts, cand, side="right") - 1] = True
         return mask
 
+
+class _DedupLines:
+    """Read-only sequence of full paths held as (folder, name): every distinct folder is stored once and each entry keeps only its
+    folder number and its own name, so 4.4M paths that share 290k folders cost the names plus one copy of each folder."""
+    def __init__(self, names, name_starts, dirs, dir_starts, dir_id):
+        self.names, self.name_starts, self.dirs, self.dir_starts, self.dir_id = names, name_starts, dirs, dir_starts, dir_id
+        self.n, self.nd = len(name_starts), len(dir_starts)
+        self.nsize, self.dsize = len(names), len(dirs)
+
+    def __len__(self):
+        return self.n
+
+    def _line(self, mm, starts, i, n, size):
+        s = int(starts[i])
+        e = int(starts[i + 1]) - 1 if i + 1 < n else size
+        return mm[s:e]
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self[k] for k in range(*i.indices(self.n))]
+        if i < 0:
+            i += self.n
+        if not 0 <= i < self.n:
+            raise IndexError(i)
+        d = self._line(self.dirs, self.dir_starts, int(self.dir_id[i]), self.nd, self.dsize)
+        nm = self._line(self.names, self.name_starts, i, self.n, self.nsize)
+        return (d + b"/" + nm).decode("utf-8", "surrogatepass")
+
+    def __iter__(self):
+        dl = []
+        self.dirs.seek(0)
+        for line in iter(self.dirs.readline, b""):
+            dl.append(line.rstrip(b"\n"))
+        self.names.seek(0)
+        ids = self.dir_id
+        for i, line in enumerate(iter(self.names.readline, b"")):
+            yield (dl[int(ids[i])] + b"/" + line.rstrip(b"\n")).decode("utf-8", "surrogatepass")
+
+
+def _snap_write_dedup(out, rows_iter, dates):
+    """The v2 snapshot: names and folders stored apart (see _DedupLines). Same lookup arrays as the plain snapshot."""
+    import array, mmap
+    os.makedirs(out, exist_ok=True)
+    f_nl, f_no = open(os.path.join(out, "names_l.bin"), "wb"), open(os.path.join(out, "names_o.bin"), "wb")
+    f_dl, f_do = open(os.path.join(out, "dirs_l.bin"), "wb"), open(os.path.join(out, "dirs_o.bin"), "wb")
+    nst_l, nst_o, dst_l, dst_o = array.array("q"), array.array("q"), array.array("q"), array.array("q")
+    dir_id, sizes, mts = array.array("i"), array.array("q"), array.array("q")
+    seen = {}
+    off_nl = off_no = off_dl = off_do = 0
+    prev = None
+    for p, sz, mt in rows_iter:
+        if p == prev:
+            continue
+        prev = p
+        p = p.replace("\n", " ")
+        if "/" not in p:
+            p = "/" + p                                  # the catalog only holds absolute paths; keep the layout total anyway
+        d, nm = p.rsplit("/", 1)
+        did = seen.get(d)
+        if did is None:
+            did = len(seen); seen[d] = did
+            do = d.encode("utf-8", "surrogatepass"); dl = d.lower().encode("utf-8", "surrogatepass")
+            if did:
+                f_dl.write(b"\n"); f_do.write(b"\n"); off_dl += 1; off_do += 1
+            dst_l.append(off_dl); dst_o.append(off_do)
+            f_dl.write(dl); f_do.write(do); off_dl += len(dl); off_do += len(do)
+        no = nm.encode("utf-8", "surrogatepass"); nl = nm.lower().encode("utf-8", "surrogatepass")
+        if nst_l:
+            f_nl.write(b"\n"); f_no.write(b"\n"); off_nl += 1; off_no += 1
+        nst_l.append(off_nl); nst_o.append(off_no)
+        f_nl.write(nl); f_no.write(no); off_nl += len(nl); off_no += len(no)
+        dir_id.append(did)
+        sizes.append(_Col.NULL if sz is None else sz)
+        mts.append(_Col.NULL if mt is None else mt)
+    for f in (f_nl, f_no, f_dl, f_do):
+        f.close()
+    n = len(nst_l)
+    sv = lambda name, a, dt: np.save(os.path.join(out, name + ".npy"), np.frombuffer(a, dt) if len(a) else np.zeros(0, dt))
+    sv("name_starts_l", nst_l, np.int64); sv("name_starts_o", nst_o, np.int64)
+    sv("dir_starts_l", dst_l, np.int64); sv("dir_starts_o", dst_o, np.int64)
+    sv("dir_id", dir_id, np.int32)
+    raw_sizes = np.frombuffer(sizes, np.int64) if n else np.zeros(0, np.int64)
+    raw_mts = np.frombuffer(mts, np.int64) if n else np.zeros(0, np.int64)
+    np.save(os.path.join(out, "sizes_raw.npy"), raw_sizes); np.save(os.path.join(out, "mtimes_raw.npy"), raw_mts)
+    if n:
+        fo = [open(os.path.join(out, x), "rb") for x in ("names_o.bin", "dirs_o.bin")]
+        mms = [mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) for f in fo]
+        paths = _DedupLines(mms[0], np.frombuffer(nst_o, np.int64), mms[1], np.frombuffer(dst_o, np.int64), np.frombuffer(dir_id, np.int32))
+    else:
+        paths, mms, fo = [], [], []
+    ext_codes, ext_names, size_arr, mt_arr, orders, keys = _extras(paths, _Col(raw_sizes), _Col(raw_mts))
+    mt = np.where(raw_mts == _Col.NULL, 0, raw_mts)
+    order = np.argsort(-mt) if n else np.zeros(0, np.int64)
+    for name, a in (("ext_codes", ext_codes), ("size_arr", size_arr), ("mt_arr", mt_arr), ("order", order)):
+        np.save(os.path.join(out, name + ".npy"), a)
+    for k, v in orders.items():
+        np.save(os.path.join(out, f"orders.{k}.npy"), v)
+    for k, v in keys.items():
+        np.save(os.path.join(out, f"keys.{k}.npy"), v)
+    del paths
+    for m in mms:
+        m.close()
+    for f in fo:
+        f.close()
+    with open(os.path.join(out, "dirs.txt"), "w", encoding="utf-8", errors="surrogatepass") as f:
+        f.write("\n".join(sorted(seen)))
+    with open(os.path.join(out, "meta.json"), "w") as f:
+        json.dump({"version": SNAP_VERSION + 1, "dedup": True, "n": n, "nd": len(seen), "ext_names": ext_names,
+                   "dates": [d for d in dates if d], "orders": sorted(orders), "keys": sorted(keys)}, f)
+    return n
+
+
+class DedupNameTable(NameTable):
+    """NameTable whose scan data keeps each folder once: lower-case names and lower-case folders are scanned separately and
+    combined per entry through its folder number. A word without "/" lies wholly in the folder part or the name; a word with
+    "/" either lies inside a folder path or runs over the last separator (folder ends with the part before it, name starts with
+    the part after it)."""
+    compact = True
+
+    def _build_snapshot(self, out):
+        rows, dates, con = self._snap_rows()
+        try:
+            return _snap_write_dedup(out, rows, dates)
+        finally:
+            if con is not None:
+                con.close()
+
+    def _map_snapshot(self, snap, stamp):
+        import mmap
+        meta = json.load(open(os.path.join(snap, "meta.json")))
+        ld = lambda name: np.load(os.path.join(snap, name + ".npy"), mmap_mode="r")
+        def mapped(name):
+            path = os.path.join(snap, name)
+            if not os.path.getsize(path):
+                return b""
+            with open(path, "rb") as f:
+                return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        n = meta["n"]
+        names_l, names_o, dirs_l, dirs_o = (mapped(x) for x in ("names_l.bin", "names_o.bin", "dirs_l.bin", "dirs_o.bin"))
+        nst_l, nst_o, dst_l, dst_o, dir_id = (ld(x) for x in ("name_starts_l", "name_starts_o", "dir_starts_l", "dir_starts_o", "dir_id"))
+        paths = _DedupLines(names_o, nst_o, dirs_o, dst_o, dir_id) if n else []
+        names_arr = np.frombuffer(names_l, np.uint8) if n else np.zeros(0, np.uint8)
+        dirs_arr = np.frombuffer(dirs_l, np.uint8) if len(dirs_l) else np.zeros(0, np.uint8)
+        orders = {k: ld(f"orders.{k}") for k in meta["orders"]}
+        keys = {k: ld(f"keys.{k}") for k in meta["keys"]}
+        ext_codes, size_arr, mt_arr, order = ld("ext_codes"), ld("size_arr"), ld("mt_arr"), ld("order")
+        with open(os.path.join(snap, "dirs.txt"), encoding="utf-8", errors="surrogatepass") as f:
+            dirs = f.read().split("\\n") if n else []
+        off = {}
+        for fld, _ in off_default_entries():
+            fb = fld.encode("utf-8", "surrogatepass")
+            off[fld] = np.fromiter((p.encode("utf-8", "surrogatepass").startswith(fb) for p in paths), bool, n) if n else np.zeros(0, bool)
+        for m in (names_o, dirs_o):
+            if not isinstance(m, bytes) and off:
+                m.madvise(mmap.MADV_DONTNEED)
+        if self.pin:
+            n_pinned = pin_in_ram([names_arr, dirs_arr, nst_l, dst_l, dir_id, order, ext_codes, size_arr, mt_arr, *(v for k, v in orders.items() if k != "path")])    # the path order is just 0..n-1
+            print(f"name table: {n_pinned/1e6:.0f} MB of the mapped snapshot pinned in RAM (folders stored once)", flush=True)
+        with self.lock:
+            self.paths, self.sizes, self.mtimes = paths, _Col(ld("sizes_raw")), _Col(ld("mtimes_raw"))
+            self.blob, self.starts, self.arr = names_l, nst_l, names_arr
+            self.dir_blob, self.dir_starts, self.dir_arr, self.dir_id = dirs_l, dst_l, dirs_arr, dir_id
+            self._maps = [m for m in (names_o, dirs_o) if not isinstance(m, bytes)]
+            self.order = order
+            self.ext_codes, self.ext_names = ext_codes, meta["ext_names"]
+            self.size_arr, self.mt_arr, self.orders = size_arr, mt_arr, orders
+            self.off_masks = off
+            self.dirs = dirs
+            self._tm_cache = collections.OrderedDict()
+            self._last = None
+            self.sort_keys = keys
+            self._cache = None
+            self.dates = meta["dates"]
+            self.loaded_mtime = stamp
+            self.dead = np.zeros(n, bool)
+            self.d_entries, self._delta, self.needs_reload = {}, None, False
+            self._ver += 1
+            for op in self._buffer:
+                self._apply(op)
+            self._buffer = []
+
+    # ---- matching -----------------------------------------------------------------------------------
+    def _scan_lines(self, arr, starts, term):
+        """bool per line of a blob: the line contains term."""
+        out = np.zeros(len(starts), np.uint8)
+        if len(starts) and len(arr) >= len(term):
+            t = np.frombuffer(term, np.uint8)
+            _native().mark_lines(arr.ctypes.data, len(arr), starts.ctypes.data, len(starts), t.ctypes.data, len(term), out.ctypes.data)
+        return out.view(bool)
+
+    def _dirs_ending_with(self, tail):
+        """bool per folder: the lower-case folder path ends with tail (b"" matches every folder)."""
+        nd = len(self.dir_starts)
+        if not tail:
+            return np.ones(nd, bool)
+        cand = np.flatnonzero(self._scan_lines(self.dir_arr, self.dir_starts, tail))
+        res = np.zeros(nd, bool)
+        mm, st, size = self.dir_blob, self.dir_starts, len(self.dir_blob)
+        for i in cand.tolist():
+            s = int(st[i]); e = int(st[i + 1]) - 1 if i + 1 < nd else size
+            if e - s >= len(tail) and mm[e - len(tail):e] == tail:
+                res[i] = True
+        return res
+
+    def _names_starting_with(self, idx, head):
+        """bool per entry in idx: its lower-case name starts with head."""
+        if not head:
+            return np.ones(len(idx), bool)
+        q = len(head)
+        ha = np.frombuffer(head, np.uint8)
+        top = len(self.arr) - 1
+        keep = np.zeros(len(idx), bool)
+        for a in range(0, len(idx), 200_000):
+            sl = np.asarray(self.starts[idx[a:a + 200_000]], np.int64)
+            pos = np.minimum(sl[:, None] + np.arange(q), top)
+            keep[a:a + 200_000] = (self.arr[pos] == ha).all(axis=1)
+        return keep
+
+    def _term_mask(self, term):
+        N = len(self.paths)
+        if len(term) == 0:
+            return np.ones(N, bool)
+        if _native() is None:
+            return super()._term_mask(term)
+        if b"/" not in term:
+            m = self._scan_lines(self.arr, self.starts, term).copy()
+            m |= self._scan_lines(self.dir_arr, self.dir_starts, term)[self.dir_id]
+            return m
+        parts = term.split(b"/")
+        head, tail = parts[-1], b"/".join(parts[:-1])
+        m = self._scan_lines(self.dir_arr, self.dir_starts, term)[self.dir_id]          # the word lies inside a folder path
+        ends = self._dirs_ending_with(tail)                                              # or runs over the last separator
+        cand = np.flatnonzero(ends[self.dir_id])
+        if len(cand):
+            m[cand[self._names_starting_with(cand, head)]] = True
+        return m
+
+    def _filter_candidates(self, cand, term):
+        if b"/" in term or _native() is None or not len(term):
+            return self._term_mask(term)[cand]
+        cand = np.ascontiguousarray(cand, np.int64)
+        t = np.frombuffer(term, np.uint8)
+        lib = _native()
+        keep = np.zeros(len(cand), np.uint8)
+        lib.filter_lines(self.arr.ctypes.data, len(self.arr), self.starts.ctypes.data, len(self.starts),
+                         cand.ctypes.data, len(cand), t.ctypes.data, len(term), keep.ctypes.data)
+        did = np.ascontiguousarray(self.dir_id[cand], np.int64)
+        keepd = np.zeros(len(cand), np.uint8)
+        lib.filter_lines(self.dir_arr.ctypes.data, len(self.dir_arr), self.dir_starts.ctypes.data, len(self.dir_starts),
+                         did.ctypes.data, len(did), t.ctypes.data, len(term), keepd.ctypes.data)
+        return (keep | keepd).astype(bool)
+
+
 class ResticTable(NameTable):
     """The restic backups as a table of their own (catalog-restic.db), loaded only when a query asks for them."""
     def _fetch(self):
@@ -973,7 +1226,7 @@ def start_refresh(table, every=60):
 
 if __name__ == "__main__":
     if len(sys.argv) == 5 and sys.argv[1] == "--build":
-        cls = {"NameTable": NameTable, "ResticTable": ResticTable, "BtrfsTable": BtrfsTable}[sys.argv[2]]
+        cls = {"NameTable": NameTable, "DedupNameTable": DedupNameTable, "ResticTable": ResticTable, "BtrfsTable": BtrfsTable}[sys.argv[2]]
         print("snapshot rows:", cls(sys.argv[3])._build_snapshot(sys.argv[4]), flush=True)
     else:
         sys.exit("usage: filesearch.py --build NameTable|ResticTable|BtrfsTable DB OUTDIR")
