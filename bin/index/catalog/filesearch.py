@@ -6,7 +6,7 @@ blob with bytes.find, maps hits back to lines with searchsorted, then checks the
 other terms per candidate. Each keystroke is one scan over RAM; nothing on disk
 is touched and no per-query process is started.
 """
-import functools, bisect, collections, ctypes, json, os, re, sqlite3, subprocess, threading, time
+import functools, bisect, collections, ctypes, json, os, re, sqlite3, subprocess, sys, threading, time
 import numpy as np
 
 # file kinds by extension: `//mime <kind>` (any extension name also works, e.g. //mime pdf)
@@ -301,8 +301,119 @@ def pin_in_ram(arrays):
                 done += a.nbytes
     return done
 
+class _Lines:
+    """Read-only sequence over the newline-joined lines of a memory-mapped blob; a line is decoded only when
+    asked for, so a table of millions of paths holds no Python string objects (the pages stay in the page cache)."""
+    def __init__(self, mm, starts):
+        self.mm, self.starts, self.n, self.size = mm, starts, len(starts), len(mm)
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self[k] for k in range(*i.indices(self.n))]
+        if i < 0:
+            i += self.n
+        if not 0 <= i < self.n:
+            raise IndexError(i)
+        s = int(self.starts[i])
+        e = int(self.starts[i + 1]) - 1 if i + 1 < self.n else self.size
+        return self.mm[s:e].decode("utf-8", "surrogatepass")
+
+    def __iter__(self):
+        self.mm.seek(0)
+        for line in iter(self.mm.readline, b""):
+            yield line.rstrip(b"\n").decode("utf-8", "surrogatepass")
+
+
+class _Col:
+    """An int64 column, NULL stored as a sentinel, read back as int or None like the lists it replaces."""
+    NULL = -(2 ** 63)
+
+    def __init__(self, a):
+        self.a = a
+
+    def __len__(self):
+        return len(self.a)
+
+    def __getitem__(self, i):
+        v = int(self.a[i])
+        return None if v == self.NULL else v
+
+    def __iter__(self):
+        for v in self.a.tolist():
+            yield None if v == self.NULL else v
+
+
+SNAP_VERSION = 1
+
+
+def _snap_write(out, rows_iter, dates):
+    """Stream (path, size, mtime) rows, already ordered by path, into snapshot files under `out`. Peak memory is the
+    set of folders plus the object arrays of _extras, not the whole table as Python lists."""
+    import array, mmap
+    os.makedirs(out, exist_ok=True)
+    fl, fo = open(os.path.join(out, "lower.bin"), "wb"), open(os.path.join(out, "orig.bin"), "wb")
+    st_l, st_o, sizes, mts = array.array("q"), array.array("q"), array.array("q"), array.array("q")
+    off_l = off_o = 0
+    dirs = set()
+    prev = None
+    for p, sz, mt in rows_iter:
+        if p == prev:                  # the same path can come from several sources: the newest row wins
+            continue
+        prev = p
+        p = p.replace("\n", " ")
+        o = p.encode("utf-8", "surrogatepass")
+        l = p.lower().encode("utf-8", "surrogatepass")
+        if st_l:
+            fl.write(b"\n"); fo.write(b"\n"); off_l += 1; off_o += 1
+        st_l.append(off_l); st_o.append(off_o)
+        fl.write(l); fo.write(o); off_l += len(l); off_o += len(o)
+        sizes.append(_Col.NULL if sz is None else sz)
+        mts.append(_Col.NULL if mt is None else mt)
+        if "/" in p:
+            dirs.add(p.rsplit("/", 1)[0])
+    fl.close(); fo.close()
+    n = len(st_l)
+    a_stl = np.frombuffer(st_l, np.int64) if n else np.zeros(0, np.int64)
+    a_sto = np.frombuffer(st_o, np.int64) if n else np.zeros(0, np.int64)
+    raw_sizes = np.frombuffer(sizes, np.int64) if n else np.zeros(0, np.int64)
+    raw_mts = np.frombuffer(mts, np.int64) if n else np.zeros(0, np.int64)
+    np.save(os.path.join(out, "starts_l.npy"), a_stl)
+    np.save(os.path.join(out, "starts_o.npy"), a_sto)
+    np.save(os.path.join(out, "sizes_raw.npy"), raw_sizes)
+    np.save(os.path.join(out, "mtimes_raw.npy"), raw_mts)
+    # the lookup arrays come from the very same function the in-memory table uses, so the two cannot drift apart
+    f1 = open(os.path.join(out, "orig.bin"), "rb")
+    mm = mmap.mmap(f1.fileno(), 0, access=mmap.ACCESS_READ) if n else None
+    paths = _Lines(mm, a_sto) if n else []
+    ext_codes, ext_names, size_arr, mt_arr, orders, keys = _extras(paths, _Col(raw_sizes), _Col(raw_mts))
+    mt = np.where(raw_mts == _Col.NULL, 0, raw_mts)
+    order = np.argsort(-mt) if n else np.zeros(0, np.int64)
+    np.save(os.path.join(out, "ext_codes.npy"), ext_codes)
+    np.save(os.path.join(out, "size_arr.npy"), size_arr)
+    np.save(os.path.join(out, "mt_arr.npy"), mt_arr)
+    np.save(os.path.join(out, "order.npy"), order)
+    for k, v in orders.items():
+        np.save(os.path.join(out, f"orders.{k}.npy"), v)
+    for k, v in keys.items():
+        np.save(os.path.join(out, f"keys.{k}.npy"), v)
+    del paths
+    if mm is not None:
+        mm.close()
+    f1.close()
+    with open(os.path.join(out, "dirs.txt"), "w", encoding="utf-8", errors="surrogatepass") as f:
+        f.write("\n".join(sorted(dirs)))
+    with open(os.path.join(out, "meta.json"), "w") as f:           # written last: its presence marks a complete snapshot
+        json.dump({"version": SNAP_VERSION, "n": n, "ext_names": ext_names, "dates": [d for d in dates if d],
+                   "orders": sorted(orders), "keys": sorted(keys)}, f)
+    return n
+
+
 class NameTable:
     pin = False     # the live search server sets this: keep the scan data resident
+    compact = False  # map a snapshot of the table from disk (page cache) instead of building Python lists
     def __init__(self, db_path):
         self.db_path = db_path
         self.paths = []        # original-case paths, index-aligned with blob lines
@@ -328,6 +439,8 @@ class NameTable:
         self.needs_reload = False
 
     def load(self):
+        if self.compact and self.db_path:
+            return self._load_compact()
         t0 = time.time()
         with self.lock:
             self._loading, self._buffer = True, []      # live changes that arrive while loading are replayed afterwards
@@ -390,6 +503,105 @@ class NameTable:
             self.loaded_mtime = stamp
             # a fresh snapshot already contains what the live overlay held, except what arrived while it loaded
             self.dead = np.zeros(len(paths), bool)
+            self.d_entries, self._delta, self.needs_reload = {}, None, False
+            self._ver += 1
+            for op in self._buffer:
+                self._apply(op)
+            self._buffer = []
+
+
+    # ---- compact (memory-mapped snapshot) mode ----------------------------------------------------------
+    def _snap_rows(self):
+        """(row iterator ordered by path, newest first; months with files; connection to close) for the builder."""
+        if type(self)._fetch is not NameTable._fetch:           # the backup tables bring their own row source
+            rows, dates = self._fetch()
+            return iter(rows), dates, None
+        con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        def gen():
+            cur = con.execute("SELECT path, size, mtime FROM entries ORDER BY path, mtime DESC")
+            while True:
+                rows = cur.fetchmany(100000)
+                if not rows:
+                    break
+                yield from rows
+        dates = [r[0] for r in con.execute(
+            "SELECT DISTINCT strftime('%Y-%m', mtime, 'unixepoch', 'localtime') d FROM entries "
+            "WHERE mtime IS NOT NULL ORDER BY d DESC")]
+        return gen(), dates, con
+
+    def _build_snapshot(self, out):
+        rows, dates, con = self._snap_rows()
+        try:
+            return _snap_write(out, rows, dates)
+        finally:
+            if con is not None:
+                con.close()
+
+    def _load_compact(self):
+        import shutil
+        t0 = time.time()
+        with self.lock:
+            self._loading, self._buffer = True, []
+        try:
+            stamp = self._stale_marker()
+            root = self.db_path + ".nt"
+            snap = os.path.join(root, f"{type(self).__name__}-{int(stamp * 1000)}")
+            if not os.path.exists(os.path.join(snap, "meta.json")):
+                os.makedirs(root, exist_ok=True)
+                tmp = snap + ".tmp"
+                shutil.rmtree(tmp, ignore_errors=True)
+                # a child process builds it, so the big transient memory never lands in (or stays with) the server
+                subprocess.run(["nice", "-n", "10", sys.executable, os.path.abspath(__file__), "--build",
+                                type(self).__name__, self.db_path, tmp], check=True)
+                os.rename(tmp, snap)
+            self._map_snapshot(snap, stamp)
+            for d in os.listdir(root):                       # older snapshots of this table are no longer needed
+                if d.startswith(type(self).__name__ + "-") and os.path.join(root, d) != snap:
+                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+        finally:
+            with self.lock:
+                self._loading = False
+        print(f"name table (compact): {len(self.paths)} paths, {len(self.blob)/1e6:.0f} MB blob mapped, {time.time()-t0:.1f}s", flush=True)
+
+    def _map_snapshot(self, snap, stamp):
+        import mmap
+        meta = json.load(open(os.path.join(snap, "meta.json")))
+        ld = lambda name: np.load(os.path.join(snap, name + ".npy"), mmap_mode="r")
+        def mapped(name):
+            path = os.path.join(snap, name)
+            if not os.path.getsize(path):
+                return b""
+            with open(path, "rb") as f:
+                return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        n = meta["n"]
+        lower, orig = mapped("lower.bin"), mapped("orig.bin")
+        starts, starts_o = ld("starts_l"), ld("starts_o")
+        paths = _Lines(orig, starts_o) if n else []
+        arr = np.frombuffer(lower, np.uint8) if n else np.zeros(0, np.uint8)
+        orders = {k: ld(f"orders.{k}") for k in meta["orders"]}
+        keys = {k: ld(f"keys.{k}") for k in meta["keys"]}
+        with open(os.path.join(snap, "dirs.txt"), encoding="utf-8", errors="surrogatepass") as f:
+            dirs = f.read().split("\n") if n else []
+        off = {}
+        for fld, _ in off_default_entries():
+            fb = fld.encode("utf-8", "surrogatepass")
+            orig.seek(0)
+            off[fld] = np.fromiter((line.startswith(fb) for line in iter(orig.readline, b"")), bool, n) if n else np.zeros(0, bool)
+        with self.lock:
+            self.paths, self.sizes, self.mtimes = paths, _Col(ld("sizes_raw")), _Col(ld("mtimes_raw"))
+            self.blob, self.starts, self.arr = lower, starts, arr
+            self.order = ld("order")
+            self.ext_codes, self.ext_names = ld("ext_codes"), meta["ext_names"]
+            self.size_arr, self.mt_arr, self.orders = ld("size_arr"), ld("mt_arr"), orders
+            self.off_masks = off
+            self.dirs = dirs
+            self._tm_cache = collections.OrderedDict()
+            self._last = None
+            self.sort_keys = keys
+            self._cache = None
+            self.dates = meta["dates"]
+            self.loaded_mtime = stamp
+            self.dead = np.zeros(n, bool)
             self.d_entries, self._delta, self.needs_reload = {}, None, False
             self._ver += 1
             for op in self._buffer:
@@ -728,3 +940,11 @@ def start_refresh(table, every=60):
             time.sleep(every)
             table.refresh_if_stale()
     threading.Thread(target=loop, daemon=True).start()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 5 and sys.argv[1] == "--build":
+        cls = {"NameTable": NameTable, "ResticTable": ResticTable, "BtrfsTable": BtrfsTable}[sys.argv[2]]
+        print("snapshot rows:", cls(sys.argv[3])._build_snapshot(sys.argv[4]), flush=True)
+    else:
+        sys.exit("usage: filesearch.py --build NameTable|ResticTable|BtrfsTable DB OUTDIR")
