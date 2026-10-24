@@ -257,6 +257,7 @@ def _extras(paths, sizes, mtimes):
     }
     return codes, ext_names, size_arr, mt_arr, orders, keys
 
+TERM_CACHE = int(os.environ.get("TERM_CACHE", "16"))      # recent term masks kept (4.4 MB each at 4.4M paths)
 SLOW_MS = float(os.environ.get("SEARCH_SLOW_MS", "0"))
 NARROW_MAX = 400_000            # filter the previous matches only when there are few; otherwise the parallel scan is faster
 STAT_SAMPLE_OVER = 500_000      # matches above this get a sampled (approximate) summary line
@@ -885,7 +886,7 @@ class NameTable:
         m = self._term_mask(term)
         with self.lock:
             self._tm_cache[term] = m
-            while len(self._tm_cache) > 64:
+            while len(self._tm_cache) > TERM_CACHE:
                 self._tm_cache.popitem(last=False)
         return m
 

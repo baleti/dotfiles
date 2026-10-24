@@ -152,3 +152,9 @@ and btrfs ingestion, NFS stream and monthly walk, nightly collections, nightly R
 - **Path search covers every content-indexed path**: `catalog.py` adds an extra (NFS) root for every directory under `/mnt/host1-backups` that is
   a Recoll `topdirs` entry of an index in `fts.indexes` or a path in `collections.json`, unless an existing extra root already contains it. So
   `supplier-details` is found by name as well as by content. After adding such an index run `systemctl --user start catalog-extra` and restart `catalog-host1-watch`.
+- **Only the name table is resident** (2026-10-24): `search_server.py` starts with just the compact name table (~0.1 GB anonymous memory). The CLIP/face
+  matrices are memory-mapped from `~/.cache/indexes/photos/cache/*.npy`, their metadata, the CLIP text model and the photo size/date lists load on the
+  first image/face query (about 7 s) and are dropped again after `IDLE_UNLOAD_S` (default 600 s) without use (`_idle_unloader`). Full-text search was
+  already out of process (`recollq` per query, Chroma in its own on-demand worker). The restic and btrfs tables use the same compact snapshots
+  (`catalog-restic.db.nt`, `catalog-btrfs.db.nt`; building them takes 10-30 s and up to 2.8 GB in a short-lived child). The recent-term cache keeps
+  16 masks (`TERM_CACHE`, 4.4 MB each). After an unload the process keeps ~150-250 MB of imported Python/torch modules; only a restart returns that.
