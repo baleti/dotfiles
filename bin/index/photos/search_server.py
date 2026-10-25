@@ -682,6 +682,8 @@ def display_folder(d):
     home = os.path.expanduser("~")
     return "~/" + d[len(home) + 1:] if d.startswith(home + "/") else d
 
+_paths_cache = {"frag": None, "rows": []}      # the last //path fragment and its folder list (the picker pages through it)
+
 def path_candidates(frag, offset, top):
     """Folders matching a //path fragment, in order: (total, page)."""
     if _paths_cache["frag"] != frag:
@@ -1106,6 +1108,33 @@ class H(BaseHTTPRequestHandler):
                     rows = search.face_pane(n, seed)
                 faces = [{"id": r["id"], "thumb": face_crop(r)} for r in rows]
             return self._json(200, {"faces": [f for f in faces if f["thumb"]]})
+        if u.path == "/debugmem":
+            # where the process memory is: Python objects by type, numpy arrays that own memory, the biggest module-level containers
+            import gc, collections, numpy as _np
+            cnt, sz = collections.Counter(), collections.Counter()
+            arrays = 0
+            for o in gc.get_objects():
+                t = type(o).__name__
+                cnt[t] += 1
+                try:
+                    sz[t] += sys.getsizeof(o)
+                except Exception:
+                    pass
+                if isinstance(o, _np.ndarray) and not isinstance(o, _np.memmap) and o.base is None:
+                    arrays += o.nbytes
+            glob = {}
+            for k, v in list(globals().items()):
+                if isinstance(v, (dict, list, set, collections.deque)) and len(v) > 1000:
+                    glob[k] = len(v)
+            smaps = {}
+            for line in open("/proc/self/smaps_rollup"):
+                if line.split(":")[0] in ("Rss", "Anonymous", "Locked", "Swap"):
+                    smaps[line.split(":")[0]] = int(line.split()[1]) // 1024
+            return self._json(200, {"smaps_mb": smaps, "python_objects_mb_by_type": {k: round(v / 1e6, 1) for k, v in sz.most_common(12)},
+                                    "object_counts": dict(cnt.most_common(8)), "owned_numpy_arrays_mb": round(arrays / 1e6, 1),
+                                    "big_globals": glob, "gc_objects": sum(cnt.values()),
+                                    "names": {"d_entries": len(NAMES.d_entries), "tm_cache": len(NAMES._tm_cache),
+                                              "has_cache": NAMES._cache is not None}})
         if u.path == "/ver":
             # bumps whenever the name table changes (live delta or reload): the picker polls this to refresh itself
             return self._json(200, {"ver": NAMES._ver + sum(b["table"]._ver for b in BACKUPS.values()) + _chroma_up[0]})
@@ -1135,10 +1164,36 @@ def _release_name_pages():
         elif t.last_used and time.time() - t.last_used <= NAMES_IDLE_S:
             t._released = False
 
+def _mem_line():
+    """One log line: the process memory (smaps) next to the size of the Python objects, so a creeping process shows which side grows."""
+    import gc
+    d = {}
+    for line in open("/proc/self/smaps_rollup"):
+        k = line.split(":")[0]
+        if k in ("Rss", "Anonymous", "Locked", "Swap"):
+            d[k] = int(line.split()[1]) // 1024
+    py = 0
+    for o in gc.get_objects():
+        try:
+            py += sys.getsizeof(o)
+        except Exception:
+            pass
+    return f"mem: rss={d.get('Rss')}MB anon={d.get('Anonymous')}MB swap={d.get('Swap')}MB locked={d.get('Locked')}MB python_objects={py // 1048576}MB " \
+           f"overlay={len(NAMES.d_entries)} term_cache={len(NAMES._tm_cache)} pages_cache={len(_pages_cache)} threads={threading.active_count()}"
+
 def _idle_unloader():
     import ctypes, gc
+    tick = 0
     while True:
         time.sleep(60)
+        tick += 1
+        if tick % 10 == 0:
+            print(_mem_line(), file=sys.stderr, flush=True)
+        if NAMES.last_used and time.time() - NAMES.last_used > 60:      # nobody is typing: hand freed heap pages back to the OS
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except OSError:
+                pass
         last = max(_use["t"], search._last_use["t"])
         if not last or time.time() - last < IDLE_UNLOAD_S:
             continue

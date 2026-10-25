@@ -1098,7 +1098,7 @@ class DedupNameTable(NameTable):
         keys = {k: ld(f"keys.{k}") for k in meta["keys"]}
         ext_codes, size_arr, mt_arr, order = ld("ext_codes"), ld("size_arr"), ld("mt_arr"), ld("order")
         with open(os.path.join(snap, "dirs.txt"), encoding="utf-8", errors="surrogatepass") as f:
-            dirs = f.read().split("\\n") if n else []
+            dirs = f.read().split("\n") if n else []
         off = {}
         for fld, _ in off_default_entries():
             fb = fld.encode("utf-8", "surrogatepass")
