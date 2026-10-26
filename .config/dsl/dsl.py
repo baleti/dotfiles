@@ -583,9 +583,14 @@ def parse(schema, query):
             if bad:
                 continue
             arg = None
-            if kind == "app:arg" and i < len(toks) and not schema.starts_command(toks[i]):
-                arg = toks[i][0].replace('"', "")
+            # an app verb's argument is every word up to the next command (like /fts in the search CLI),
+            # so `/fts red key` is one two-word query, not `/fts red` plus a row filter `key`
+            words = []
+            while kind == "app:arg" and i < len(toks) and not schema.starts_command(toks[i]):
+                words.append(("!" if toks[i][3] else "") + toks[i][0].replace('"', ""))
                 i += 1
+            if words:
+                arg = " ".join(words)
             top["apps"].append((verb, keys, arg, tok[3]))
             continue
         if keys is None or bad:

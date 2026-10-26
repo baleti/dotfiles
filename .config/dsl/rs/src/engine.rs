@@ -193,9 +193,13 @@ pub fn parse(schema: &Schema, query: &str) -> Parsed {
                 continue;
             }
             let mut arg = None;
-            if takes_arg && i < toks.len() && !schema.starts_command(&toks[i]) {
-                arg = Some(toks[i].text.replace('"', ""));
+            let mut words: Vec<String> = Vec::new();
+            while takes_arg && i < toks.len() && !schema.starts_command(&toks[i]) {
+                words.push(format!("{}{}", if toks[i].neg { "!" } else { "" }, toks[i].text.replace('"', "")));
                 i += 1;
+            }
+            if !words.is_empty() {
+                arg = Some(words.join(" "));
             }
             top.apps.push(AppCmd { verb: cmd.verb, keys: cmd.keys, arg, neg: tok.neg });
             continue;

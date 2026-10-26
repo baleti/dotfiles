@@ -531,10 +531,12 @@ function parseQuery(schema, query) {
         if (kind.indexOf("app") === 0) {
             if (cmd.bad) continue;
             var arg = null;
-            if (kind === "app:arg" && i < toks.length && !_startsCommand(schema, toks[i])) {
-                arg = toks[i].text.replace(/"/g, "");
+            var words = [];
+            while (kind === "app:arg" && i < toks.length && !_startsCommand(schema, toks[i])) {
+                words.push((toks[i].neg ? "!" : "") + toks[i].text.replace(/"/g, ""));
                 i++;
             }
+            if (words.length) arg = words.join(" ");
             top.apps.push({ verb: cmd.verb, keys: cmd.keys, arg: arg, neg: tok.neg });
             continue;
         }

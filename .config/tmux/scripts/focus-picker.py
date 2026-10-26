@@ -475,6 +475,7 @@ def fts_panes(word):
     """Pane ids ('%12') whose scrollback (the Recoll index claude-fts-index keeps) contains `word`."""
     import base64
     conf = os.path.expanduser("~/.cache/indexes/tmux/recoll")
+    word = " ".join("-" + w[1:] if w.startswith("!") and len(w) > 1 else w for w in word.split())
     terms = word if any(c.isspace() or c in '"-' for c in word) else word + "*"
     r = subprocess.run(["recollq", "-c", conf, "-n", "0-5000", "-F", "url", "--", terms], capture_output=True, text=True)
     out = set()
@@ -536,11 +537,13 @@ def parse_query(query):
                 if verb == "fts" and not bad:
                     # full text over tmux scrollback (keyless = every scope, i.e. tmux here); /fts/<keys>:
                     # keys that reach no tmux scope make it inert
-                    if i < n and not starts_cmd(toks[i][1], toks[i][2]):
-                        word, w_neg = toks[i][1], toks[i][0] in negs
+                    # the argument is every word up to the next command (shared engine rule): `/fts red key`
+                    words = []
+                    while i < n and not starts_cmd(toks[i][1], toks[i][2]):
+                        words.append(("!" if toks[i][0] in negs else "") + toks[i][1])
                         i += 1
-                        if not keys or not keys.replace(",", "") or resolve_keys(keys, FTS_SCOPES):
-                            fts.append((word, verb_neg or w_neg))
+                    if words and (not keys or not keys.replace(",", "") or resolve_keys(keys, FTS_SCOPES)):
+                        fts.append((" ".join(words), verb_neg))
                     continue
                 if keys is None or bad:
                     continue  # keyless / malformed: inert, takes no argument
