@@ -331,4 +331,42 @@ mod conformance {
             assert_eq!(got, c["sign"].as_i64().unwrap().signum(), "{c}");
         }
     }
+
+    struct PipeRows<'a> {
+        rows: &'a [serde_json::Value],
+        hay: Vec<String>,
+    }
+    impl Source for PipeRows<'_> {
+        fn value(&self, row: usize, ty: &str) -> String {
+            self.rows[row][ty].as_str().unwrap_or("").to_string()
+        }
+        fn haystack(&self, row: usize) -> String {
+            self.hay.iter().map(|f| self.value(row, f)).collect::<Vec<_>>().join(" ")
+        }
+    }
+
+    #[test]
+    fn pipeline() {
+        let v = vectors();
+        let p = &v["pipeline"];
+        let mut schema = Schema::new(&strs(&p["schema"]["types"]).iter().map(|s| s.as_str()).collect::<Vec<_>>(), vec![]);
+        for a in p["schema"]["appVerbs"].as_array().unwrap() {
+            let short: &'static str = Box::leak(a[0].as_str().unwrap().to_string().into_boxed_str());
+            schema.verbs.push(VerbDef { short, long: "", kind: VerbKind::App { takes_arg: a[2].as_bool().unwrap() }, max_parts: 2, desc: "" });
+        }
+        schema.exact_types = strs(&p["schema"]["exact"]);
+        let rows = p["rows"].as_array().unwrap();
+        let src = PipeRows { rows, hay: strs(&p["hay"]) };
+        for c in p["cases"].as_array().unwrap() {
+            let q = c["query"].as_str().unwrap();
+            let parsed = parse(&schema, q);
+            let ids: Vec<String> = select_rows(&schema, &parsed, &src, rows.len()).iter().map(|&r| rows[r]["id"].as_str().unwrap().to_string()).collect();
+            assert_eq!(ids.concat(), strs(&c["ids"]).concat(), "ids {q}");
+            assert_eq!(active_columns(&schema, &parsed, &strs(&p["defaults"]), &src, rows.len()), strs(&c["cols"]), "cols {q}");
+            let apps: Vec<serde_json::Value> = parsed.apps.iter().map(|a| serde_json::json!([a.verb, a.keys, a.arg, a.neg])).collect();
+            assert_eq!(serde_json::Value::Array(apps), c["apps"], "apps {q}");
+            let g = parsed.group_raw.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null);
+            assert_eq!(g, c["group"], "group {q}");
+        }
+    }
 }

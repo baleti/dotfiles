@@ -488,3 +488,223 @@ def extract_group(tokens, known, aliases=None, owns_next=_owns_next):
             continue
         rest.append(t)
     return rest, parsed
+
+
+# --- the engine: parse a query into row filters / column ops / sort / group, evaluate against rows.
+# Mirrors rs/src/engine.rs (the reference) and the engine in lib/dsl.js; proven by tests.json "pipeline".
+# A picker supplies a Schema (type vocabulary + app verbs) and rows as dicts {type: value} (a list value
+# is a multi-valued type); `haystack` is the free-text a bare word is searched in.
+
+def _is_word(c):
+    return c is not None and (c.isalnum() or c == "_")
+
+
+def substr_idx(needle, hay, exact=False):
+    """Case-insensitive substring index (-1 = none). exact: the match may not touch a word character
+    on a side where the needle itself starts / ends with one (quoted terms)."""
+    n, h = needle.lower(), hay.lower()
+    if not n:
+        return 0
+    lead, trail = _is_word(n[0]), _is_word(n[-1])
+    for i in range(len(h) - len(n) + 1):
+        if h[i:i + len(n)] != n:
+            continue
+        if exact and ((lead and i > 0 and _is_word(h[i - 1])) or (trail and i + len(n) < len(h) and _is_word(h[i + len(n)]))):
+            continue
+        return i
+    return -1
+
+
+def substr(needle, hay, exact=False):
+    return substr_idx(needle, hay, exact) >= 0
+
+
+CORE_VERBS = (  # (short, long, kind, max_parts)
+    ("fv", "filter-value", "fv", 2), ("ft", "filter-type", "ft", 2), ("at", "add-type", "at", 2),
+    ("rt", "remove-type", "rt", 2), ("s", "sort", "s", 3), ("g", "group", "g", 4),
+)
+
+
+class Schema:
+    """types: every type name in display order; app_verbs: [(short, long, takes_arg)] (e.g. /fts);
+    exact_types: compared whole rather than by substring (a count)."""
+    def __init__(self, types, app_verbs=(), exact_types=()):
+        self.types = list(types)
+        self.exact_types = set(exact_types)
+        self.verbs = [(s, l, k, m) for s, l, k, m in CORE_VERBS]
+        self.verbs += [(s, l, "app:arg" if a else "app", 2) for s, l, a in app_verbs]
+        self.spellings = {"": "fv"}
+        for s, l, _, _ in self.verbs:
+            self.spellings[s] = s
+            if l:
+                self.spellings[l] = s
+        self.max_parts = {s: m for s, _, _, m in self.verbs}
+        self.kinds = {s: k for s, _, k, _ in self.verbs}
+
+    def tok_verb(self, tok):
+        return None if tok[1] else split_cmd(tok[0], self.spellings, self.max_parts)
+
+    def is_verb_prefix(self, s):
+        return any(v[0].startswith(s) or (v[1] and v[1].startswith(s)) for v in self.verbs)
+
+    def starts_command(self, tok):
+        text = tok[0]
+        if tok[1] or not text.startswith("/"):
+            return False
+        rest = text[1:]
+        name = rest.split("/")[0]
+        return (name == "" and "/" in rest) or name in self.spellings or self.is_verb_prefix(rest)
+
+    def resolve_keys(self, keys):
+        return resolve_names(keys, self.types)
+
+
+def parse(schema, query):
+    """-> {terms, col_ops, sort, sort_raw, group_raw, apps}. terms: ("free", text, exact, neg) |
+    ("scoped", keys, value, exact, neg); sort: (fields, dir) resolved against the schema or None;
+    sort_raw: (keys, dir) as typed; apps: [(verb, keys, arg, neg)]."""
+    toks = tokenize(query)
+    top = {"terms": [], "col_ops": [], "sort": None, "sort_raw": None, "group_raw": None, "apps": []}
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        i += 1
+        cmd = schema.tok_verb(tok)
+        if cmd is None:
+            mid_typing = not tok[1] and tok[0].startswith("/") and schema.is_verb_prefix(tok[0][1:])
+            if not mid_typing:
+                top["terms"].append(("free", tok[0], tok[2], tok[3]))
+            continue
+        verb, keys, dir_, bad = cmd
+        kind = schema.kinds.get(verb)
+        if kind is None:
+            continue
+        if kind.startswith("app"):
+            if bad:
+                continue
+            arg = None
+            if kind == "app:arg" and i < len(toks) and not schema.starts_command(toks[i]):
+                arg = toks[i][0].replace('"', "")
+                i += 1
+            top["apps"].append((verb, keys, arg, tok[3]))
+            continue
+        if keys is None or bad:
+            continue
+        via = keys.lower()
+        typed = bool(via.replace(",", ""))
+        r = {"terms": [], "col_ops": [], "sort": None, "sort_raw": None, "group_raw": None} if (tok[3] and kind != "fv") else top
+        if kind == "fv":
+            if i < len(toks) and not schema.starts_command(toks[i]):
+                r["terms"].append(("scoped", via, toks[i][0], toks[i][2], tok[3] or toks[i][3]))
+                i += 1
+            elif typed and schema.resolve_keys(via):
+                r["terms"].append(("scoped", via, "", False, tok[3]))
+        elif kind in ("ft", "at", "rt"):
+            if typed:
+                r["col_ops"].append((kind, via))
+        elif kind == "g":
+            r["group_raw"] = tok[0]
+        elif kind == "s":
+            d = "desc"
+            if dir_ is not None:
+                d = parse_direction(dir_)
+                if d is None:
+                    continue
+            ks = [k for k in via.split(",") if k]
+            if ks:
+                r["sort_raw"] = (ks, d)
+                fields = resolve_sort_keys(ks, schema.types)
+                if fields:
+                    r["sort"] = (fields, d)
+    return top
+
+
+def _vals(row, ty):
+    v = row.get(ty, "")
+    return [str(x) for x in v] if isinstance(v, list) else [str(v)]
+
+
+def term_matches(schema, row, term, haystack, external=None):
+    """external(row, ty, value) -> True/False/None: a type answered outside the row text (full-text index)."""
+    if term[0] == "free":
+        m = substr(term[1], haystack, term[2])
+        neg = term[3]
+    else:
+        _, keys, value, exact, neg = term
+        m = False
+        for ty in schema.resolve_keys(keys):
+            hit = external(row, ty, value) if external else None
+            if hit is not None:
+                ok = value == "" or hit
+            elif ty in schema.exact_types:
+                ok = value == "" or _vals(row, ty)[0] == value
+            else:
+                ok = any(substr(value, v, exact) for v in _vals(row, ty))
+            if ok:
+                m = True
+                break
+    return m != neg
+
+
+def sort_rows(rows, sort, get=None):
+    """Stable sort by the chain (fields, dir); get(row, field) -> str (default: first value)."""
+    import functools
+    get = get or (lambda r, f: _vals(r, f)[0])
+    fields, d = sort
+    def cmp(a, b):
+        for f in fields:
+            c = compare_field_values(get(a, f), get(b, f), d)
+            if c:
+                return c
+        return 0
+    return sorted(rows, key=functools.cmp_to_key(cmp))
+
+
+def select_rows(schema, parsed, rows, haystack, external=None):
+    """Rows that survive the filters, in sorted order. haystack(row) -> str."""
+    out = [r for r in rows if all(term_matches(schema, r, t, haystack(r), external) for t in parsed["terms"])]
+    return sort_rows(out, parsed["sort"]) if parsed["sort"] else out
+
+
+def glob_match(pattern, value):
+    import fnmatch
+    p, v = pattern.lower(), value.lower()
+    if "*" not in p:
+        return p in v
+    parts = [x for x in p.split("*") if x]
+    if not parts:
+        return True
+    pos = 0
+    for idx, part in enumerate(parts):
+        rest = v[pos:]
+        if idx == 0 and not p.startswith("*"):
+            if not rest.startswith(part):
+                return False
+            pos += len(part)
+        elif idx == len(parts) - 1 and not p.endswith("*"):
+            if not rest.endswith(part):
+                return False
+        else:
+            f = rest.find(part)
+            if f < 0:
+                return False
+            pos += f + len(part)
+    return True
+
+
+def active_columns(schema, parsed, defaults, rows):
+    cols = list(defaults)
+    for op, keys in parsed["col_ops"]:
+        fields = schema.resolve_keys(keys)
+        if op == "ft" and not fields:
+            cols = [t for t in schema.types if any(glob_match(keys, _vals(r, t)[0]) for r in rows)]
+        elif op == "ft":
+            cols = [c for c in cols if c in fields]
+        elif op == "at":
+            cols += [f for f in fields if f not in cols]
+        else:
+            cols = [c for c in cols if c not in fields]
+    for t in parsed["terms"]:
+        if t[0] == "scoped":
+            cols += [f for f in schema.resolve_keys(t[1]) if f not in cols]
+    return cols

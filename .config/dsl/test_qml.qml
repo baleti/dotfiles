@@ -45,6 +45,16 @@ QtObject {
         check("collapse toggle unfolds one", Dsl.groupDisplay(G.rows, pc, get, open1, G.today).items.filter(i => i.kind === "group" && !i.folded).length > 0, true);
         check("collapse toggle back", Dsl.groupIsFolded(Dsl.groupToggle(open1, gid), gid), true);
         check("groupOfRow", Dsl.groupOfRow(gd, 0).length > 0, true);
+        const P = T.pipeline;
+        const sch = Dsl.makeSchema(P.schema.types, P.schema.appVerbs, P.schema.exact);
+        const hay = r => P.hay.map(f => r[f]).join(" ");
+        for (const c of P.cases) {
+            const p = Dsl.parseQuery(sch, c.query);
+            check("pipeline ids " + c.query, Dsl.selectRows(sch, p, P.rows, hay).map(r => r.id), c.ids);
+            check("pipeline cols " + c.query, Dsl.activeColumns(sch, p, P.defaults, P.rows), c.cols);
+            check("pipeline apps " + c.query, p.apps.map(a => [a.verb, a.keys, a.arg, a.neg]), c.apps);
+            check("pipeline group " + c.query, p.groupRaw, c.group);
+        }
         print("qml dsl.js: " + (fails === 0 ? "ok" : fails + " failures"));
         Qt.quit();
     }
