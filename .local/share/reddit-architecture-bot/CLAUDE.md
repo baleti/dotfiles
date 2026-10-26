@@ -24,6 +24,7 @@ reasonable calls yourself and just do the task, logging what you did.
   invocation you make must inherit it (don't hardcode 9222, that's a different,
   unrelated profile).
 - `subreddits.txt` in this directory lists the subreddits this account is subscribed to.
+  **r/architecture is off-limits (Ok_Armadillo can no longer access it, as of 2026-10-26)** - never visit it or try to post there; the "should I study/pursue architecture" and burnout special cases still apply on r/architecturestudent and r/Architects.
   Pick 1–2 at random each run — don't just always start from the top of the list.
 - `logs/` holds one file per past run (`YYYY-MM-DD_HHMMSS.log`, plain shell/tool output)
   plus your own `logs/YYYY-MM-DD_HHMMSS_actions.md` files (see "What to log" below).
