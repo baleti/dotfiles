@@ -202,7 +202,7 @@ def tokenize(text):
 # degrades to a plain bare-word search over the literal text instead of
 # being dropped. The colon form (`/fv field:word`) is gone. The other
 # shared-grammar verbs (/ft, /at, /rt, /s) are recognised but inert
-# here: fixed columns and no re-sort. Full text is `/fts word` (Recoll),
+# here: fixed columns. /s[/keys[/dir]] orders the rows (same keys as the usage panel; /s/age = newest first). Full text is `/fts word` (Recoll),
 # only live ones `/fts/live`, only past ones `/fts/archive`.
 #
 #   path     session's working directory
@@ -220,6 +220,9 @@ def tokenize(text):
 # whole field, not tokenized/ranked. body is the conversation text, searched
 # through the Recoll index like /fts.
 FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "status", "acct", "body"]
+# /s keys: the usage panel's names (ClaudeUsageExpanded searchTypeNames), so /s/age sorts alike in both
+SORT_FIELDS = ["account", "status", "title", "msgs", "tokens", "age", "tmux-session", "tmux-window",
+               "tmux-pane", "hypr-workspace", "pid", "path"]
 FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
 
 # Long verb forms before their short forms so ordered alternation doesn't
@@ -241,7 +244,7 @@ QUERY_ELEM_RE = re.compile(
     r')'
 )
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts fts_scopes")
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts fts_scopes sort")
 
 
 FTS_SCOPE_NAMES = ["claude-live", "claude-archive", "tmux"]
@@ -264,6 +267,32 @@ def fts_scope(q):
     return set().union(*q.fts_scopes)
 
 
+def _sort_val(r, field):
+    """A row's value for a /s key, as the strings dsl.compare_field_values expects."""
+    if field == "age":
+        return f"{max(0, int(time.time() - r['mtime']))}s"   # exact seconds; compare inverts the direction
+    v = {"account": _acct_no(r["account"]), "status": STATUS_LABELS.get(r.get("status") or "", r.get("status") or ""),
+         "title": r["title"], "msgs": r.get("msgs"), "tokens": r.get("tokens"), "path": r["cwd"],
+         "tmux-session": r.get("sess"), "tmux-window": r.get("win"), "tmux-pane": r.get("pane"),
+         "hypr-workspace": r.get("wks"), "pid": r.get("pid")}.get(field)
+    return "" if v is None else str(v)
+
+
+def apply_sort(rows, sort):
+    """Order rows by a parsed /s (keys, dir); an unresolvable key list leaves them as they are (inert)."""
+    keys = dsl.resolve_sort_keys(sort[0], SORT_FIELDS) if sort else None
+    if not keys:
+        return rows
+    import functools
+    def cmp(a, b):
+        for f in keys:
+            c = dsl.compare_field_values(_sort_val(a, f), _sort_val(b, f), sort[1])
+            if c:
+                return c
+        return 0
+    return sorted(rows, key=functools.cmp_to_key(cmp))
+
+
 def resolve_fields(keys):
     """query-dsl.md "Keys" over FIELD_NAMES (shared primitive: ~/.config/dsl/dsl.py)."""
     return dsl.resolve_names(keys, FIELD_NAMES)
@@ -273,6 +302,7 @@ def parse_query(query):
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     field_terms, neg_field_terms = [], []
     fts, neg_fts, fts_scopes = [], [], []
+    sort = None
     for m in QUERY_ELEM_RE.finditer(query):
         neg, via_field, via_word, fts_keys, fts_arg, quoted, bare = (g or "" for g in m.groups())
         if m.group(0).lstrip("!").startswith("/fts"):
@@ -282,7 +312,11 @@ def parse_query(query):
                 (neg_fts if neg else fts).append(fts_arg.lower())
             continue
         if m.group(0).lstrip("!")[:1] == "/" and not via_field:
-            continue  # /ft /at /rt /s: inert here (fixed columns, no re-sort)
+            # /s[/keys[/dir]] orders the rows (the last one wins); /ft /at /rt /g stay inert (fixed columns)
+            cmd = dsl.split_cmd(m.group(0).lstrip("!"), {"s": "s", "sort": "s"}, {"s": 3})
+            if cmd and not neg and not cmd[3] and cmd[1]:
+                sort = (cmd[1].split(","), dsl.parse_direction(cmd[2] or "") or "desc")
+            continue
         if via_field:
             fields = resolve_fields(via_field)
             if fields:
@@ -305,7 +339,7 @@ def parse_query(query):
                 soft.append(bare.lower())
         elif quoted.strip():
             (neg_phrases if neg else phrases).append(quoted.strip().lower())
-    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts, fts_scopes)
+    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts, fts_scopes, sort)
 
 
 def phrase_hint(raw):
@@ -958,6 +992,7 @@ def search(snap, query):
             r["sid"] = r["session_id"]
         base = extra if archive_only else sorted(base + extra, key=lambda r: -r.get("score", 0))
 
+    base = apply_sort(base, q.sort)
     other = [(f, t, False) for f, t in q.field_terms if f != ["body"]] + \
             [(f, t, True) for f, t in q.neg_field_terms if f != ["body"]]
     out = []
