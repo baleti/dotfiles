@@ -378,6 +378,7 @@ PanelWindow {
                 }
             }
         }
+        onEntered: if (!escCatcher.activeFocus && ShottyState.editingShapeIndex < 0) escCatcher.forceActiveFocus()
         onDoubleClicked: mouse => {
             if (ShottyState.phase !== "toolbar") return;
             const gx = root.screen.x + mouse.x, gy = root.screen.y + mouse.y;
@@ -385,6 +386,11 @@ PanelWindow {
             if (idx >= 0) ShottyState.beginEditShape(idx);
         }
         onPositionChanged: mouse => {
+            // Hovering the selection must not cost Ctrl+C/Enter/Esc: take key focus
+            // back whenever something else holds it (a text shape being typed into
+            // keeps it on purpose, hence the editingShapeIndex guard).
+            if (!escCatcher.activeFocus && ShottyState.editingShapeIndex < 0)
+                escCatcher.forceActiveFocus();
             // pressed must gate EVERY branch here, not just "toolbar" --
             // hoverEnabled: true (added for the pan/crosshair cursor swap)
             // makes this fire on every mouse move regardless of button

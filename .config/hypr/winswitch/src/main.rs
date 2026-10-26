@@ -36,6 +36,13 @@ use hyprctl::Window;
 /// a thumbnail/enrichment line, same as a capture that fails outright.
 const DEADLINE: Duration = Duration::from_millis(2500);
 
+/// The DEADLINE only starts once the first thumbnail has arrived. Until then the
+/// compositor may not even have looked at our first screencopy request (a stalled,
+/// swapped-out Hyprland); exiting before it does makes it resolve the permission for a
+/// dead pid and pop an "Unknown application" prompt that the allowlist can never match.
+/// Hard cap so a wedged compositor still lets this process go.
+const FIRST_REPLY_CAP: Duration = Duration::from_secs(20);
+
 fn thumb_dir() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
     base.join("winswitch")
@@ -153,12 +160,15 @@ fn main() {
     let thumb_rx = wayland_capture::start(&windows);
     let enrich_rx = enrich::start(&windows);
 
-    let deadline = Instant::now() + DEADLINE;
+    let mut deadline = Instant::now() + FIRST_REPLY_CAP;
     let mut thumbs_done = 0usize;
     loop {
         let mut progressed = false;
         while let Ok(msg) = thumb_rx.try_recv() {
             progressed = true;
+            if thumbs_done == 0 {
+                deadline = Instant::now() + DEADLINE;
+            }
             thumbs_done += 1;
             let Some(w) = windows.get(msg.index) else { continue };
             // WINSWITCH_SKIP_BLANK=1 (group picker, group-open): a flat frame is "not drawn
