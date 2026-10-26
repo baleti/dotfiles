@@ -294,11 +294,13 @@ QtObject {
                 const names = tv.via ? root.resolveNames(tv.via, ["claude-live", "claude-archive", "tmux"])
                                      : ["claude-live", "claude-archive", "tmux"];
                 const scope = { live: names.indexOf("claude-live") >= 0, archive: names.indexOf("claude-archive") >= 0, tmux: names.indexOf("tmux") >= 0 };
-                let term = "";
-                if (i < toks.length && !root.startsCommand(toks[i])) {
-                    term = toks[i].text.replace(/"/g, "");
+                // the argument is every word up to the next command: `/fts red key` is one query
+                const words = [];
+                while (i < toks.length && !root.startsCommand(toks[i])) {
+                    words.push((toks[i].neg ? "!" : "") + toks[i].text.replace(/"/g, ""));
                     i++;
                 }
+                const term = words.join(" ");
                 (top.ftsTokens = top.ftsTokens || []).push({ scope, term, neg: !!tok.neg });
                 continue;
             }
