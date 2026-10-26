@@ -478,3 +478,182 @@ function groupModel(prefix, display) {
     });
     return { model: model, vOf: vOf };
 }
+
+// ---- the engine: parse a query into row filters / column ops / sort / group and evaluate it against
+// rows. Mirrors dsl.py and rs/src/engine.rs (the reference); proven by tests.json "pipeline". A picker
+// supplies a schema (makeSchema) and rows as { type: value } objects (an array value = a multi-valued
+// type); `haystack(row)` is the free text a bare word is searched in.
+
+var CORE_VERBS = [["fv", "filter-value", "fv", 2], ["ft", "filter-type", "ft", 2], ["at", "add-type", "at", 2],
+                  ["rt", "remove-type", "rt", 2], ["s", "sort", "s", 3], ["g", "group", "g", 4]];
+
+// types: every type name in display order; appVerbs: [[short, long, takesArg]] (e.g. ["fts", "", true]);
+// exactTypes: compared whole rather than by substring (a count).
+function makeSchema(types, appVerbs, exactTypes) {
+    var s = { types: types, exactTypes: exactTypes || [], spellings: { "": "fv" }, maxParts: {}, kinds: {}, verbs: [] };
+    var all = CORE_VERBS.slice();
+    (appVerbs || []).forEach(function (a) { all.push([a[0], a[1], a[2] ? "app:arg" : "app", 2]); });
+    all.forEach(function (v) {
+        s.verbs.push(v);
+        s.spellings[v[0]] = v[0];
+        if (v[1]) s.spellings[v[1]] = v[0];
+        s.maxParts[v[0]] = v[3];
+        s.kinds[v[0]] = v[2];
+    });
+    return s;
+}
+function _isVerbPrefix(schema, s) {
+    return schema.verbs.some(function (v) { return v[0].indexOf(s) === 0 || (v[1] && v[1].indexOf(s) === 0); });
+}
+function _startsCommand(schema, tok) {
+    if (tok.leadQuote || tok.text.charAt(0) !== "/") return false;
+    var rest = tok.text.slice(1), name = rest.split("/")[0];
+    return (name === "" && rest.indexOf("/") >= 0) || schema.spellings.hasOwnProperty(name) || _isVerbPrefix(schema, rest);
+}
+
+// -> { terms, colOps, sort, sortRaw, groupRaw, apps }. terms: { scoped: false, text, exact, neg } |
+// { scoped: true, keys, value, exact, neg }; sort: { fields, dir } resolved against the schema or null;
+// sortRaw: { keys, dir } as typed; colOps: [{ op: "ft"|"at"|"rt", keys }]; apps: [{ verb, keys, arg, neg }].
+function parseQuery(schema, query) {
+    var toks = tokenize(query);
+    var top = { terms: [], colOps: [], sort: null, sortRaw: null, groupRaw: null, apps: [] };
+    var i = 0;
+    while (i < toks.length) {
+        var tok = toks[i++];
+        var cmd = tok.leadQuote ? null : splitCmd(tok.text, schema.spellings, schema.maxParts);
+        if (cmd === null) {
+            var mid = !tok.leadQuote && tok.text.charAt(0) === "/" && _isVerbPrefix(schema, tok.text.slice(1));
+            if (!mid) top.terms.push({ scoped: false, text: tok.text, exact: tok.quoted, neg: tok.neg });
+            continue;
+        }
+        var kind = schema.kinds[cmd.verb];
+        if (kind === undefined) continue;
+        if (kind.indexOf("app") === 0) {
+            if (cmd.bad) continue;
+            var arg = null;
+            if (kind === "app:arg" && i < toks.length && !_startsCommand(schema, toks[i])) {
+                arg = toks[i].text.replace(/"/g, "");
+                i++;
+            }
+            top.apps.push({ verb: cmd.verb, keys: cmd.keys, arg: arg, neg: tok.neg });
+            continue;
+        }
+        if (cmd.keys === null || cmd.bad) continue;
+        var via = cmd.keys.toLowerCase();
+        var typed = via.replace(/,/g, "").length > 0;
+        var r = (tok.neg && kind !== "fv") ? { terms: [], colOps: [] } : top;
+        if (kind === "fv") {
+            if (i < toks.length && !_startsCommand(schema, toks[i])) {
+                r.terms.push({ scoped: true, keys: via, value: toks[i].text, exact: toks[i].quoted, neg: tok.neg || toks[i].neg });
+                i++;
+            } else if (typed && resolveNames(via, schema.types).length > 0) {
+                r.terms.push({ scoped: true, keys: via, value: "", exact: false, neg: tok.neg });
+            }
+        } else if (kind === "ft" || kind === "at" || kind === "rt") {
+            if (typed) r.colOps.push({ op: kind, keys: via });
+        } else if (kind === "g") {
+            r.groupRaw = tok.text;
+        } else if (kind === "s") {
+            var d = "desc";
+            if (cmd.dir !== null) {
+                d = parseDirection(cmd.dir);
+                if (d === null) continue;
+            }
+            var ks = via.split(",").filter(function (k) { return k.length > 0; });
+            if (ks.length > 0) {
+                r.sortRaw = { keys: ks, dir: d };
+                var fields = resolveSortKeys(ks, schema.types);
+                if (fields !== null && fields.length > 0) r.sort = { fields: fields, dir: d };
+            }
+        }
+    }
+    return top;
+}
+
+function _vals(row, ty) {
+    var v = row[ty];
+    if (v === undefined || v === null) return [""];
+    return Array.isArray(v) ? v.map(String) : [String(v)];
+}
+
+// external(row, ty, value) -> true/false/null: a type answered outside the row text (full-text index)
+function termMatches(schema, row, term, haystack, external) {
+    var m;
+    if (!term.scoped) {
+        m = substr(term.text, haystack, term.exact);
+    } else {
+        m = resolveNames(term.keys, schema.types).some(function (ty) {
+            var hit = external ? external(row, ty, term.value) : null;
+            if (hit !== null && hit !== undefined) return term.value === "" || hit;
+            if (schema.exactTypes.indexOf(ty) >= 0) return term.value === "" || _vals(row, ty)[0] === term.value;
+            return _vals(row, ty).some(function (v) { return substr(term.value, v, term.exact); });
+        });
+    }
+    return m !== term.neg;
+}
+
+// stable sort by { fields, dir }; get(row, field) -> string (default: the first value)
+function sortRows(rows, sort, get) {
+    get = get || function (r, f) { return _vals(r, f)[0]; };
+    return rows.map(function (r, i) { return [r, i]; }).sort(function (a, b) {
+        for (var k = 0; k < sort.fields.length; k++) {
+            var c = compareFieldValues(get(a[0], sort.fields[k]), get(b[0], sort.fields[k]), sort.dir);
+            if (c !== 0) return c;
+        }
+        return a[1] - b[1];
+    }).map(function (p) { return p[0]; });
+}
+
+// the rows that survive the filters, in sorted order
+function selectRows(schema, parsed, rows, haystack, external) {
+    var out = rows.filter(function (r) {
+        var h = haystack(r);
+        return parsed.terms.every(function (t) { return termMatches(schema, r, t, h, external); });
+    });
+    return parsed.sort ? sortRows(out, parsed.sort) : out;
+}
+
+// case-insensitive `*` glob (a pattern without `*` is a substring test)
+function globMatch(pattern, value) {
+    var p = pattern.toLowerCase(), v = value.toLowerCase();
+    if (p.indexOf("*") < 0) return v.indexOf(p) >= 0;
+    var parts = p.split("*").filter(function (x) { return x.length > 0; });
+    if (parts.length === 0) return true;
+    var pos = 0;
+    for (var idx = 0; idx < parts.length; idx++) {
+        var part = parts[idx], rest = v.slice(pos);
+        if (idx === 0 && p.charAt(0) !== "*") {
+            if (rest.indexOf(part) !== 0) return false;
+            pos += part.length;
+        } else if (idx === parts.length - 1 && p.charAt(p.length - 1) !== "*") {
+            if (rest.length < part.length || rest.slice(rest.length - part.length) !== part) return false;
+        } else {
+            var f = rest.indexOf(part);
+            if (f < 0) return false;
+            pos += f + part.length;
+        }
+    }
+    return true;
+}
+
+// the columns to show: the defaults run through the column ops in order, plus any type a `//keys`
+// scoped to (auto-show)
+function activeColumns(schema, parsed, defaults, rows) {
+    var cols = defaults.slice();
+    parsed.colOps.forEach(function (o) {
+        var fields = resolveNames(o.keys, schema.types);
+        if (o.op === "ft" && fields.length === 0) {
+            cols = schema.types.filter(function (t) { return rows.some(function (r) { return globMatch(o.keys, _vals(r, t)[0]); }); });
+        } else if (o.op === "ft") {
+            cols = cols.filter(function (c) { return fields.indexOf(c) >= 0; });
+        } else if (o.op === "at") {
+            fields.forEach(function (f) { if (cols.indexOf(f) < 0) cols.push(f); });
+        } else {
+            cols = cols.filter(function (c) { return fields.indexOf(c) < 0; });
+        }
+    });
+    parsed.terms.forEach(function (t) {
+        if (t.scoped) resolveNames(t.keys, schema.types).forEach(function (f) { if (cols.indexOf(f) < 0) cols.push(f); });
+    });
+    return cols;
+}
