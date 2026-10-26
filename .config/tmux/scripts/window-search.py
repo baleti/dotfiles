@@ -133,14 +133,8 @@ def tokenize(text):
 #   /ft/... /at/... /rt/... /s/...  and their long forms
 # See ~/.config/docs/query-dsl.md ("Grammar"). Verb names are exact; `keys`
 # in a scoped term fuzzy-resolve (see resolve_fields).
-QUERY_ELEM_RE = re.compile(
-    r'(!?)(?:'
-    r'/(?:filter-value|fv|)/([a-zA-Z,-]+)(?:\s+("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g|)(?:/|\s|$))\S+))?'
-    r'|/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g)(?:/\S*)?'
-    r'|"([^"]*)"'
-    r'|(\S+)'
-    r')'
-)
+# Verb recognition, argument spans, negation, quoting and /s parsing come from the shared engine
+# (~/.config/dsl/dsl.py, vectors in tests.json "pipeline"); built after FIELD_NAMES below.
 
 # recoll ANDs all elements together ("all elements in the search entry are
 # normally combined with an implicit AND"). "all" reproduces that: every bare
@@ -200,7 +194,10 @@ FILTER_FIELDS = {"tmux-session"}
 # so this is the one place that translates between them.
 FIELD_KEY = {"tmux-session": "session", "tmux-window": "window", "tmux-title": "title", "body": "body"}
 
-Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms")
+Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms sort")
+SCHEMA = dsl.Schema(FIELD_NAMES)
+# /s keys: the filter fields (body has no single value) plus the window's age; relevance stays the order unless /s is explicit
+SORT_FIELDS = ["tmux-session", "tmux-window", "tmux-title", "age"]
 
 
 def resolve_fields(keys):
@@ -237,41 +234,31 @@ def parse_query(query):
     the list while the phrase is half-entered."""
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     field_terms, neg_field_terms = [], []
-    for neg, fprefix, fterm, quoted, bare in QUERY_ELEM_RE.findall(query):
-        fterm = fterm.strip('"')
-        # exactly one alternative participates; `bare` is non-empty whenever
-        # it is the one that matched, so it doubles as the discriminator.
-        # An unterminated quote lands here (no closing quote for the phrase
-        # branch to match), and tokenize drops the stray " - which is what
-        # degrades a half-typed phrase to bare words rather than to nothing.
-        if fprefix:
-            fields = resolve_fields(fprefix)
-            if fields:
-                (neg_field_terms if neg else field_terms).append((fields, fterm.lower()))
-                continue
-            # unresolvable keys - fall through to plain bare-word handling on
-            # the whole "keys term" text, same "still usable half-typed"
-            # reasoning as an unterminated quote
-            bare = f"{fprefix} {fterm}" if fterm else fprefix
-        if bare:
-            toks = tokenize(bare)
-            for tok in toks:
-                (neg_terms if neg else terms).append(tok)
-            # A bare word carrying punctuation - ctrl+., --stat, ~/.config -
-            # loses that punctuation to TOKEN_RE, so `ctrl+.` searches for
-            # nothing more than `ctrl`. Rather than make bare words literal
-            # (which would break prefix expansion, and with it typing), the
-            # raw text is kept as a *soft* literal: it adds score where it
-            # actually occurs but filters nothing, so the window holding the
-            # real "ctrl+." rises to the top while every "ctrl" window still
-            # shows up. prefix=True keeps the bonus live mid-word.
-            if not neg and toks and any(not c.isalnum() for c in bare):
-                soft.append(bare.lower())
-        elif quoted.strip():
-            # kept as the raw string, not tokens - see phrase_re. A phrase of
-            # pure punctuation ("+.") is legal and searchable for that reason.
-            (neg_phrases if neg else phrases).append(quoted.strip().lower())
-    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms)
+    p = dsl.parse(SCHEMA, query)
+    for t in p["terms"]:
+        if t[0] == "scoped":
+            _, keys, value, exact, neg = t
+            if value:   # keys alone (value still pending) contribute nothing; unresolvable keys narrow to nothing
+                fields = resolve_fields(keys)
+                (neg_field_terms if neg else field_terms).append((fields, value.lower()))
+            continue
+        _, bare, exact, neg = t
+        # a closed quote is an exact phrase kept as the raw string (see phrase_re): a phrase of pure
+        # punctuation ("+.") is legal and searchable that way
+        if exact:
+            if bare.strip():
+                (neg_phrases if neg else phrases).append(bare.strip().lower())
+            continue
+        toks = tokenize(bare)
+        for tok in toks:
+            (neg_terms if neg else terms).append(tok)
+        # A bare word carrying punctuation - ctrl+., --stat, ~/.config - loses that punctuation to
+        # TOKEN_RE, so `ctrl+.` would search for nothing more than `ctrl`. The raw text is kept as a
+        # *soft* literal: it adds score where it occurs but filters nothing.
+        if not neg and toks and any(not c.isalnum() for c in bare):
+            soft.append(bare.lower())
+    sort = p["sort_raw"]
+    return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, sort)
 
 
 def phrase_re(raw, prefix=False):
@@ -847,6 +834,13 @@ def search(snapshot_path, query):
                 s += field_term_score(fields, subtoks, w, vocabs, dfs, avgdls, n)
             scored.append((s, wid, w))
     scored.sort(key=lambda t: -t[0])
+    keys = dsl.resolve_sort_keys(q.sort[0], SORT_FIELDS) if q.sort else None
+    if keys:   # an explicit /s overrides relevance
+        def val(t, f):
+            w = t[2]
+            return {"tmux-session": w["session"], "tmux-window": w["window_name"], "tmux-title": w["pane_title"],
+                    "age": f"{max(0, int(time.time() - w['activity']))}s"}[f]
+        scored = dsl.sort_rows(scored, (keys, q.sort[1]), val)
 
     # the soft literals highlight and steer the jump too, since they are what
     # the user typed even though they did not filter

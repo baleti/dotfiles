@@ -219,30 +219,17 @@ def tokenize(text):
 # prose - `//path conf` is a plain case-insensitive substring test against the
 # whole field, not tokenized/ranked. body is the conversation text, searched
 # through the Recoll index like /fts.
-FIELD_NAMES = ["path", "tmux", "session", "window", "pane", "title", "time", "status", "acct", "body"]
-# /s keys: the usage panel's names (ClaudeUsageExpanded searchTypeNames), so /s/age sorts alike in both
-SORT_FIELDS = ["account", "status", "title", "msgs", "tokens", "age", "tmux-session", "tmux-window",
-               "tmux-pane", "hypr-workspace", "pid", "path"]
-FILTER_FIELDS = {"path", "tmux", "session", "window", "pane", "time"}
+# the usage panel's type names (ClaudeUsageExpanded searchTypeNames) so //keys and /s/keys mean the same in both;
+# body is the full-text pseudo-type (Recoll), never a sort key
+SORT_FIELDS = ["title", "pid", "status", "tokens", "msgs", "age", "path", "account",
+               "tmux-session", "tmux-window", "tmux-pane", "hypr-workspace"]
+FIELD_NAMES = SORT_FIELDS + ["body"]
+FILTER_FIELDS = {"path", "tmux-session", "tmux-window", "tmux-pane", "age"}
+_OLD_FILTER_KEY = {"tmux-session": "session", "tmux-window": "window", "tmux-pane": "pane", "age": "time"}
 
-# Long verb forms before their short forms so ordered alternation doesn't
-# let `/s` swallow the `s` of `/sort`. The via-form alternative
-# (`/fv/field word`) has to come before the generic catch-all line below -
-# alternation tries left to right and takes the first that matches at all,
-# so if the generic "/fv(?:\s+\S+)?" line came first it would happily
-# match just "/fv" (its optional trailing arg requires whitespace, not a
-# literal "/") and leave "/field word" to be re-scanned as its own,
-# unrelated tokens. See ~/.config/docs/query-dsl.md.
-_ARG = r'("[^"]*"|(?!/(?:filter-value|fv|filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g|fts|)(?:/|\s|$))\S+)'
-QUERY_ELEM_RE = re.compile(
-    r'(!?)(?:'
-    r'/(?:filter-value|fv|)/([a-zA-Z,-]+)(?:\s+' + _ARG + r')?'
-    r'|/fts(?:/([a-zA-Z,-]+))?(?=\s|$)(?:\s+' + _ARG + r')?'
-    r'|/(?:filter-type|ft|add-type|at|remove-type|rt|sort|s|group|g)(?:/\S*)?'  # /g: inert here (fzf cannot fold sections)
-    r'|"([^"]*)"'
-    r'|(\S+)'
-    r')'
-)
+# Verb recognition, argument spans, negation, quoting and /s parsing all come from the shared engine
+# (~/.config/dsl/dsl.py, vectors in tests.json "pipeline"); /fts is this picker's app verb.
+SCHEMA = dsl.Schema(FIELD_NAMES, [("fts", "", True)])
 
 Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts fts_scopes sort")
 
@@ -281,16 +268,7 @@ def _sort_val(r, field):
 def apply_sort(rows, sort):
     """Order rows by a parsed /s (keys, dir); an unresolvable key list leaves them as they are (inert)."""
     keys = dsl.resolve_sort_keys(sort[0], SORT_FIELDS) if sort else None
-    if not keys:
-        return rows
-    import functools
-    def cmp(a, b):
-        for f in keys:
-            c = dsl.compare_field_values(_sort_val(a, f), _sort_val(b, f), sort[1])
-            if c:
-                return c
-        return 0
-    return sorted(rows, key=functools.cmp_to_key(cmp))
+    return dsl.sort_rows(rows, (keys, sort[1]), _sort_val) if keys else rows
 
 
 def resolve_fields(keys):
@@ -302,43 +280,29 @@ def parse_query(query):
     terms, phrases, neg_terms, neg_phrases, soft = [], [], [], [], []
     field_terms, neg_field_terms = [], []
     fts, neg_fts, fts_scopes = [], [], []
-    sort = None
-    for m in QUERY_ELEM_RE.finditer(query):
-        neg, via_field, via_word, fts_keys, fts_arg, quoted, bare = (g or "" for g in m.groups())
-        if m.group(0).lstrip("!").startswith("/fts"):
-            # `/fts[/keys] [word]`: full text over the conversations. No scope = live AND archived.
-            fts_scopes.append(fts_scope_of(fts_keys))
-            if fts_arg:
-                (neg_fts if neg else fts).append(fts_arg.lower())
+    p = dsl.parse(SCHEMA, query)
+    for verb, keys, arg, neg in p["apps"]:
+        # `/fts[/keys] [word]`: full text over the conversations. No scope = live AND archived.
+        fts_scopes.append(fts_scope_of(keys))
+        if arg:
+            (neg_fts if neg else fts).append(arg.lower())
+    for t in p["terms"]:
+        if t[0] == "scoped":
+            _, keys, value, exact, neg = t
+            if value:   # keys alone (value still pending) contribute nothing; unresolvable keys narrow to nothing
+                (neg_field_terms if neg else field_terms).append((resolve_fields(keys), value.lower()))
             continue
-        if m.group(0).lstrip("!")[:1] == "/" and not via_field:
-            # /s[/keys[/dir]] orders the rows (the last one wins); /ft /at /rt /g stay inert (fixed columns)
-            cmd = dsl.split_cmd(m.group(0).lstrip("!"), {"s": "s", "sort": "s"}, {"s": 3})
-            if cmd and not neg and not cmd[3] and cmd[1]:
-                sort = (cmd[1].split(","), dsl.parse_direction(cmd[2] or "") or "desc")
+        _, bare, exact, neg = t
+        if exact:
+            if bare.strip():
+                (neg_phrases if neg else phrases).append(bare.strip().lower())
             continue
-        if via_field:
-            fields = resolve_fields(via_field)
-            if fields:
-                if via_word:
-                    (neg_field_terms if neg else field_terms).append((fields, via_word.strip('"').lower()))
-                # else: keys alone, no value yet - no-op, deliberately
-                # not appended at all (an always-true term would be wrong
-                # specifically for the negated form).
-                continue
-            # unresolvable keys - fall through to plain bare-word handling
-            # on the whole "keys word" text (both already consumed by this
-            # one regex match) - `tokenize()` splits it back into
-            # independent words either way.
-            bare = f"{via_field} {via_word}" if via_word else via_field
-        if bare:
-            toks = tokenize(bare)
-            for tok in toks:
-                (neg_terms if neg else terms).append(tok)
-            if not neg and toks and any(not c.isalnum() for c in bare):
-                soft.append(bare.lower())
-        elif quoted.strip():
-            (neg_phrases if neg else phrases).append(quoted.strip().lower())
+        toks = tokenize(bare)
+        for tok in toks:
+            (neg_terms if neg else terms).append(tok)
+        if not neg and toks and any(not c.isalnum() for c in bare):
+            soft.append(bare.lower())
+    sort = (p["sort_raw"][0], p["sort_raw"][1]) if p["sort_raw"] else None
     return Query(terms, phrases, neg_terms, neg_phrases, soft, field_terms, neg_field_terms, fts, neg_fts, fts_scopes, sort)
 
 
@@ -1001,11 +965,11 @@ def search(snap, query):
         if not all(t in text for t in table_pos) or any(t in text for t in table_neg):
             continue
         status = r.get("status") or ""
-        vals = {"path": r["cwd"], "title": r["title"], "time": relative_age(r["mtime"]),
+        vals = {"path": r["cwd"], "title": r["title"], "age": relative_age(r["mtime"]),
                 "status": STATUS_LABELS.get(status, status) if status else "archive",
-                "acct": _acct_no(r["account"]),
-                "tmux": f'{r.get("sess", "")}:{r.get("win", "")}.{r.get("pane", "")}',
-                "session": r.get("sess", ""), "window": r.get("win", ""), "pane": r.get("pane", "")}
+                "account": _acct_no(r["account"]), "msgs": str(r.get("msgs") or ""), "tokens": str(r.get("tokens") or ""),
+                "pid": str(r.get("pid") or ""), "tmux-session": r.get("sess", ""), "tmux-window": r.get("win", ""),
+                "tmux-pane": r.get("pane", ""), "hypr-workspace": r.get("wks", "")}
         # //keys value, !//keys value: the term must (not) appear in one of the resolved types
         if not all(any(term in str(vals.get(f, "")).lower() for f in fields if f in vals) != neg
                    for fields, term, neg in other):
@@ -1043,7 +1007,7 @@ def _value_candidates(fields, fragment, snap, live_map, targets):
     for sid, s in snap["sessions"].items():
         filter_text = session_filter_text(sid, s, live_map, targets)
         for f in fields:
-            v = filter_text.get(f, "")
+            v = filter_text.get(_OLD_FILTER_KEY.get(f, f), "")
             if v and fragment in v:
                 seen.add(v)
     return sorted(seen)

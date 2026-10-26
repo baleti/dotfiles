@@ -3316,5 +3316,65 @@
         ]
       }
     ]
-  }
+  },
+ "pipeline": {
+  "_doc": "Whole-query vectors: parse -> filter -> sort -> columns for one schema. hay = fields joined by a space for bare words; exact = types compared whole; apps = [[verb, keys, arg, neg]] of app-owned verbs (/fts takes an argument); group = the last /g token as typed. Every engine (dsl.py, dsl.js, Rust pickerdsl) must give identical ids / cols / apps / group.",
+  "schema": {"types": ["title", "pid", "status", "tokens", "age", "path", "tmux-session"], "exact": ["pid"], "appVerbs": [["fts", "", true]]},
+  "hay": ["title", "status", "path"],
+  "defaults": ["title", "status"],
+  "rows": [
+   {"id": "a", "title": "Reddit API automation", "pid": "30", "status": "idle", "tokens": "284000", "age": "21d", "path": "~/src/reddit", "tmux-session": "3"},
+   {"id": "b", "title": "Personal apps for phone", "pid": "4", "status": "busy", "tokens": "668000", "age": "1d", "path": "~/src/phone", "tmux-session": "1"},
+   {"id": "c", "title": "Reddit bot, \"v2\"", "pid": "100", "status": "idle", "tokens": "72000", "age": "5m", "path": "~/bin", "tmux-session": "10"},
+   {"id": "d", "title": "Access to architecture", "pid": "13", "status": "waiting", "tokens": "76000", "age": "26m", "path": "~/src/arch", "tmux-session": "2"},
+   {"id": "e", "title": "redditor notes", "pid": "3", "status": "idle", "tokens": "9000", "age": "3h", "path": "~/notes", "tmux-session": "2"}
+  ],
+  "cases": [
+   {"query": "reddit", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "!reddit", "ids": ["b", "d"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "\"reddit\"", "ids": ["a", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "reddit idle", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "//title reddit", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "!//status idle", "ids": ["b", "d"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "//stat idle", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "//status idle,busy", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "//pid 3", "ids": ["e"], "cols": ["title", "status", "pid"], "apps": [], "group": null},
+   {"query": "/fv/title phone", "ids": ["b"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/fv foo", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/fv", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/fv/", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "reddit /s/pid", "ids": ["c", "a", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "reddit /s/pid/asc", "ids": ["e", "a", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "reddit /s/age", "ids": ["c", "e", "a"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "reddit /s/age/asc", "ids": ["a", "e", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/tokens", "ids": ["b", "a", "d", "c", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/tokens/a", "ids": ["e", "c", "d", "a", "b"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/status,pid/asc", "ids": ["b", "e", "a", "c", "d"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/st", "ids": ["d", "a", "c", "e", "b"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/nothing", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/title/ascx", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/pid/asc/extra", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "!/s/pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/pid /s/title/asc", "ids": ["d", "b", "a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "\"/s/pid\"", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/sort/pid/asc", "ids": ["e", "b", "d", "a", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/fts reddit /s/age", "ids": ["c", "d", "e", "b", "a"], "cols": ["title", "status"], "apps": [["fts", null, "reddit", false]], "group": null},
+   {"query": "/fts reddit", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [["fts", null, "reddit", false]], "group": null},
+   {"query": "/fts/live reddit /s/pid/asc", "ids": ["e", "b", "d", "a", "c"], "cols": ["title", "status"], "apps": [["fts", "live", "reddit", false]], "group": null},
+   {"query": "/fts", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [["fts", null, null, false]], "group": null},
+   {"query": "/fts /s/pid", "ids": ["c", "a", "d", "b", "e"], "cols": ["title", "status"], "apps": [["fts", null, null, false]], "group": null},
+   {"query": "!/fts reddit idle", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [["fts", null, "reddit", true]], "group": null},
+   {"query": "/fts/a/b x", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/f", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/zzz", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/ft/title", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/at/pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status", "pid"], "apps": [], "group": null},
+   {"query": "/rt/status", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/ft/title /at/tokens //pid 3", "ids": ["e"], "cols": ["title", "tokens", "pid"], "apps": [], "group": null},
+   {"query": "/g/status idle", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status"},
+   {"query": "idle /g/status /s/pid", "ids": ["c", "a", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status"}
+  ]
+ }
 }

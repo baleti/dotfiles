@@ -57,6 +57,49 @@ for c in T["impl"]["images-parse-sort"]["cases"]:
 for c in T["splitraw"]:
     check(f'search tokenize {c["query"]!r}', _m.tokenize(c["query"]), c["expect"])
 
+# ---- pipeline: whole-query vectors (parse -> filter -> sort -> columns) -----------------------------------
+P = T["pipeline"]
+_sch = dsl.Schema(P["schema"]["types"], [tuple(v) for v in P["schema"]["appVerbs"]], P["schema"]["exact"])
+_hay = lambda r: " ".join(r[f] for f in P["hay"])
+for c in P["cases"]:
+    p = dsl.parse(_sch, c["query"])
+    check(f'pipeline ids {c["query"]!r}', [r["id"] for r in dsl.select_rows(_sch, p, P["rows"], _hay)], c["ids"])
+    check(f'pipeline cols {c["query"]!r}', dsl.active_columns(_sch, p, P["defaults"], P["rows"]), c["cols"])
+    check(f'pipeline apps {c["query"]!r}', [list(a) for a in p["apps"]], c["apps"])
+    check(f'pipeline group {c["query"]!r}', p["group_raw"], c["group"])
+
+# ---- Python consumers: their own parse_query must agree with the shared engine on /s, /fts and //keys --------
+def _load(name, path):
+    l = importlib.machinery.SourceFileLoader(name, os.path.expanduser(path))
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, l))
+    sys.argv = [name]
+    l.exec_module(m)
+    return m
+_ch = _load("claude_history", "~/bin/claude-history")
+_ws = _load("window_search", "~/.config/tmux/scripts/window-search.py")
+_fp = _load("focus_picker", "~/.config/tmux/scripts/focus-picker.py")
+_QS = [c["query"] for c in P["cases"]] + ["//tmux-s 3", "/s/age/asc /fts x", "/s/tmux-session,age", "!//title idle", "/fts/tmux foo"]
+for q in _QS:
+    # claude-history: sort, /fts args and scoped terms
+    e = dsl.parse(dsl.Schema(_ch.FIELD_NAMES, [("fts", "", True)]), q)
+    c = _ch.parse_query(q)
+    check(f'claude-history sort {q!r}', c.sort, e["sort_raw"])
+    check(f'claude-history fts {q!r}', sorted(c.fts + c.neg_fts), sorted(a[2].lower() for a in e["apps"] if a[2]))
+    check(f'claude-history scoped {q!r}', sorted(t for _, t in c.field_terms + c.neg_field_terms),
+          sorted(t[2].lower() for t in e["terms"] if t[0] == "scoped" and t[2]))
+    # window-search
+    w = _ws.parse_query(q)
+    check(f'window-search sort {q!r}', w.sort, dsl.parse(_ws.SCHEMA, q)["sort_raw"])
+    # focus-picker (its own parser): sort and scoped / fts terms
+    f = _fp.parse_query(q)
+    es = dsl.parse(dsl.Schema(_fp.FILTER_FIELDS, [("fts", "", True)]), q)
+    names = dsl.resolve_sort_keys(es["sort_raw"][0], list(_fp.SORT_KEYS)) if es["sort_raw"] else None
+    want = (names, {"asc": "ascending", "desc": "descending"}[es["sort_raw"][1]]) if names else None
+    check(f'focus-picker sort {q!r}', f[3], want)
+    check(f'focus-picker fts {q!r}', sorted(w_ for w_, _ in f[4]), sorted(a[2] for a in es["apps"] if a[2] and (not a[1] or dsl.resolve_names(a[1], _fp.FTS_SCOPES))))  # scope keys that miss tmux make /fts inert here
+    check(f'focus-picker scoped {q!r}', sorted(str(t) for _, t, _ in f[1]),
+          sorted(t[2].lower() for t in es["terms"] if t[0] == "scoped" and t[2]))
+
 # ---- composability: /g is a view over the rows the filters kept (rows -> filter -> sort -> group) --------
 import itertools, random
 _rows = [{"name": n, "path": p, "size": str(s), "date-modified": d, "pages": "", "extension": n.rsplit(".", 1)[-1], "depth": str(p.count("/"))}
