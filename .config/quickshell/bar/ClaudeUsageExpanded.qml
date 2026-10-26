@@ -339,7 +339,7 @@ Rectangle {
     // column-click sort (root.sort).
     property string searchText: ""
     readonly property var searchTypeNames: [
-        "title", "pid", "status", "tokens", "path", "account", "host",
+        "title", "pid", "status", "tokens", "msgs", "age", "path", "account", "host",
         "tmux-session", "tmux-window", "tmux-pane",
         "hypr-workspace", "hypr-monitor", "hypr-window",
     ]
@@ -543,6 +543,9 @@ Rectangle {
         case "pid": return [String(row.pid)];
         case "status": return [row.archived ? "archive" : (row.tmuxRow ? "tmux" : (row.status || ""))];
         case "tokens": return [row.context_tokens !== null && row.context_tokens !== undefined ? String(row.context_tokens) : ""];
+        case "msgs": return [row.msgs !== null && row.msgs !== undefined ? String(row.msgs) : ""];
+        // exact seconds as "<n>s": QueryDsl.compareFieldValues reads it as an age (direction inverted: /s/age = newest first)
+        case "age": return [Math.max(0, Math.floor((Date.now() - (row.updated_at_ms || 0)) / 1000)) + "s"];
         case "path": return [root.shortCwd(row.cwd)];
         case "account": return [account];
         case "host": return [row.host || "host3"];
