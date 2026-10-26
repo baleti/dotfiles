@@ -52,7 +52,17 @@ comma list, alphabetical sort-key expansion), the `/verb/keys[/dir]` splitter,
 direction words, the tokenizer (quotes, `!`), quoted-term matching and the sort comparator. What stays per
 picker is what depends on its data: the type registry, row values, tokenizer
 quirks, completion presentation, and the images picker's Rust and the Android
-app's Kotlin ports (neither can import them). **Conformance suite:**
+app's Kotlin ports (neither can import them). **Engine and whole-query vectors (2026-10-26).** Beyond the primitives, `dsl.py`
+(`Schema`, `parse`, `select_rows`, `active_columns`), `dsl.js` (`makeSchema`,
+`parseQuery`, `selectRows`, `activeColumns`) and the Rust `pickerdsl` crate hold the
+same parse -> filter -> sort -> columns engine, proven identical by the `pipeline`
+section of `tests.json` (45 queries: ids in order, columns, app verbs like `/fts`, `/g`).
+claude-history and window-search parse through the Python engine (their old regex
+parsers are gone; unresolvable `//keys` now narrow to nothing like everywhere else).
+focus-picker keeps its own parser and, with the launcher/clipboard QML parsers, is held to
+the engine by consumer checks in `test_dsl.py` / `test_qml_consumers.qml`. Not
+covered: winswitch's parser (needs the Quickshell module to load).
+**Conformance suite:**
 `~/.config/dsl/tests.json` is run by every implementation that can load it
 (`~/.config/dsl/run-tests.sh`: Python, QML, and the images picker's `cargo
 test dsl_conformance`); when the grammar changes, change the vectors first and
@@ -609,8 +619,9 @@ Reorder the survivors; never filter or hide.
   where repeated `/s` stack. A direction on any other verb makes it inert.
   Absent entirely, the picker's own default order stands (MRU, cliphist
   recency, winswitch focus-history, BM25 score). Honoured by winswitch,
-  focus-picker, clipboard-picker and notification-picker (2026-09-28);
-  inert in the BM25 pickers (score *is* the order).
+  focus-picker, clipboard-picker and notification-picker (2026-09-28). In the
+  BM25 pickers (claude-history, window-search) relevance stays the order until
+  an explicit, resolvable `/s` overrides it (2026-10-26: `/fts reddit /s/age`).
 - The old space forms (`/s name desc`, `/sort name`) are gone: the verb takes
   its keys and direction from its own token only.
 
