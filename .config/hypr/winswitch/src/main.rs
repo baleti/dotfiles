@@ -36,11 +36,11 @@ use hyprctl::Window;
 /// a thumbnail/enrichment line, same as a capture that fails outright.
 const DEADLINE: Duration = Duration::from_millis(2500);
 
-/// The DEADLINE only starts once the first thumbnail has arrived. Until then the
-/// compositor may not even have looked at our first screencopy request (a stalled,
-/// swapped-out Hyprland); exiting before it does makes it resolve the permission for a
-/// dead pid and pop an "Unknown application" prompt that the allowlist can never match.
-/// Hard cap so a wedged compositor still lets this process go.
+/// Not shortened to DEADLINE any more: requests still queued when this process exits are
+/// answered by Hyprland for a dead pid, which it cannot resolve to the allowlisted path, so
+/// every straggler pops an "Unknown application" permission prompt (seen on /sw, which
+/// captures ~90 windows against a stalled compositor). Wait for all of them; this cap only
+/// lets a wedged compositor go.
 const FIRST_REPLY_CAP: Duration = Duration::from_secs(20);
 
 fn thumb_dir() -> PathBuf {
@@ -166,9 +166,6 @@ fn main() {
         let mut progressed = false;
         while let Ok(msg) = thumb_rx.try_recv() {
             progressed = true;
-            if thumbs_done == 0 {
-                deadline = Instant::now() + DEADLINE;
-            }
             thumbs_done += 1;
             let Some(w) = windows.get(msg.index) else { continue };
             // WINSWITCH_SKIP_BLANK=1 (group picker, group-open): a flat frame is "not drawn
