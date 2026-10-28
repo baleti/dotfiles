@@ -241,7 +241,7 @@ fn add_workspace_lua(target: &str, cur: i64) -> String {
          local used, names = {{}}, {{}} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end \
          local name = {} \
          if name == '' then local base = cur and tonumber(cur.name) or 0 \
-         local n = math.floor(base) + 1 while names[tostring(n)] do n = n + 1 end name = tostring(n) end \
+         local n = math.floor(base) + 1 while names[tostring(n)] or used[n] do n = n + 1 end name = tostring(n) end \
          if names[name] then return end \
          local anchor = cur and cur.id or 0 \
          local id = anchor + 1 \

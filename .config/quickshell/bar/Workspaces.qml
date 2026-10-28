@@ -81,7 +81,7 @@ Row {
             root.cancelRename();
             return;
         }
-        const collision = Hyprland.workspaces.values.some(w => w.id !== ws.id && w.name === trimmed);
+        const collision = root.wsAll.some(w => w.id !== ws.id && w.name === trimmed);
         if (collision) {
             // Block it: leave the field open (with the offending text
             // still in it) so the user can pick a different name instead
@@ -206,7 +206,10 @@ Row {
     property real thumbMonitorH: 0
 
     Process { id: mkdirThumbProc }
-    Component.onCompleted: mkdirThumbProc.exec(["mkdir", "-p", root.thumbDir])
+    Component.onCompleted: {
+        mkdirThumbProc.exec(["mkdir", "-p", root.thumbDir]);
+        wsListProc.running = true;
+    }
 
     readonly property Timer _hoverTimer: Timer {
         id: hoverTimer
@@ -347,13 +350,52 @@ Row {
     Connections {
         target: Hyprland
         function onRawEvent(ev) {
-            if (/workspace|movewindow|openwindow|closewindow/.test(ev.name))
+            if (/workspace|movewindow|openwindow|closewindow|monitor|urgent/.test(ev.name))
                 wsRefreshTimer.restart();
         }
     }
-    Timer { id: wsRefreshTimer; interval: 150; onTriggered: Hyprland.refreshWorkspaces() }
+    Timer {
+        id: wsRefreshTimer
+        interval: 150
+        onTriggered: {
+            Hyprland.refreshWorkspaces();
+            wsListProc.running = false;
+            wsListProc.running = true;
+        }
+    }
 
-    readonly property var allWs: Hyprland.workspaces.values.filter(ws => ws.id > 0 && ws.monitor?.name === root.screen.name).sort((a, b) => a.id - b.id)
+    // The workspace list comes straight from `hyprctl` rather than
+    // Hyprland.workspaces: quickshell keys its workspace objects by NAME,
+    // so two workspaces sharing a name (different ids) collapsed into one
+    // pill -- only whichever was active showed. Entries are plain objects
+    // {id, name, active, urgent, monitor:{name,x,y,width,height}}.
+    property var wsAll: []
+
+    Process {
+        id: wsListProc
+        command: ["bash", "-c", "jq -cn --argjson w \"$(hyprctl workspaces -j)\" --argjson m \"$(hyprctl monitors -j)\" '{w:$w,m:$m}'"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let d;
+                try { d = JSON.parse(text); } catch (e) { return; }
+                const mons = {};
+                for (const m of d.m)
+                    mons[m.name] = m;
+                root.wsAll = d.w.filter(w => w.id > 0).map(w => {
+                    const m = mons[w.monitor] || {};
+                    const hw = Hyprland.workspaces.values.find(x => x.id === w.id);
+                    return {
+                        id: w.id,
+                        name: w.name,
+                        active: !!m.activeWorkspace && m.activeWorkspace.id === w.id,
+                        urgent: hw ? hw.urgent : false,
+                        monitor: { name: w.monitor, x: m.x || 0, y: m.y || 0, width: m.width || 0, height: m.height || 0 }
+                    };
+                });
+            }
+        }
+    }
+    readonly property var allWs: root.wsAll.filter(ws => ws.monitor.name === root.screen.name).sort((a, b) => a.id - b.id)
 
     // [lo, hi] inclusive indices into allWs that stay visible.
     readonly property var range: {
@@ -443,13 +485,14 @@ Row {
         // identity -- an unrelated workspace change elsewhere used to
         // rebuild every delegate here, causing a visible flicker.
         model: ScriptModel {
+            objectProp: "id"
             values: root.allWs.slice(root.range[0], root.range[1] + 1)
         }
 
         Rectangle {
             id: wsBtn
 
-            required property HyprlandWorkspace modelData
+            required property var modelData
 
             readonly property bool isActive: modelData.active
             readonly property bool isUrgent: modelData.urgent
