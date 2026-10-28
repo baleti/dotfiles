@@ -1071,9 +1071,28 @@ Item {
                 // reclaimGraphFocus, not the root.forceActiveFocus() side
                 // of the media/calendar pattern.
                 onRenamingChanged: if (!renaming) root.refocusActivePanel()
+                // Deferred (not a direct recheckCrowding call): overflow
+                // depends on pillFont via maxWidth, so reacting
+                // synchronously made a binding loop and visible lag.
+                onOverflowingChanged: overflowTimer.restart()
+                onCountChanged: { root.growVisited = []; overflowTimer.restart(); }
             }
         }
         Submap { id: submapItem; fontSize: root.pillFont }
+    }
+
+    // Shrink one step per tick while the workspace pills still have to
+    // fall back to "…+N" stubs (down to the floor), so all fit before any
+    // are hidden. Growing back is recheckCrowding's usual path.
+    Timer {
+        id: overflowTimer
+        interval: 60
+        onTriggered: {
+            if (workspaces.overflowing && root.pillFont > 8)
+                root.pillFont -= 1;
+            else
+                root.recheckCrowding();
+        }
     }
 
     Connections { target: leftRow; function onWidthChanged() { root.recheckCrowding(); } }
