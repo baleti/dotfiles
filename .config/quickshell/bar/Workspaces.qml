@@ -208,7 +208,7 @@ Row {
     Process { id: mkdirThumbProc }
     Component.onCompleted: {
         mkdirThumbProc.exec(["mkdir", "-p", root.thumbDir]);
-        wsListProc.running = true;
+        root._refreshWsList();
     }
 
     readonly property Timer _hoverTimer: Timer {
@@ -359,8 +359,7 @@ Row {
         interval: 150
         onTriggered: {
             Hyprland.refreshWorkspaces();
-            wsListProc.running = false;
-            wsListProc.running = true;
+            root._refreshWsList();
         }
     }
 
@@ -371,30 +370,64 @@ Row {
     // {id, name, active, urgent, monitor:{name,x,y,width,height}}.
     property var wsAll: []
 
+    property var _wsJson: null
+    property var _monJson: null
+
+    function _rebuildWsAll() {
+        if (!root._wsJson || !root._monJson)
+            return;
+        const mons = {};
+        for (const m of root._monJson)
+            mons[m.name] = m;
+        root.wsAll = root._wsJson.filter(w => w.id > 0).map(w => {
+            const m = mons[w.monitor] || {};
+            const hw = Hyprland.workspaces.values.find(x => x.id === w.id);
+            return {
+                id: w.id,
+                name: w.name,
+                active: !!m.activeWorkspace && m.activeWorkspace.id === w.id,
+                urgent: hw ? hw.urgent : false,
+                monitor: { name: w.monitor, x: m.x || 0, y: m.y || 0, width: m.width || 0, height: m.height || 0 }
+            };
+        });
+    }
+
+    function _refreshWsList() {
+        // Both replies are needed before rebuilding; a request still in
+        // flight is left alone (its reply is at most one event stale and
+        // the next event re-queries).
+        if (!wsListProc.running) {
+            root._wsJson = null;
+            wsListProc.running = true;
+        }
+        if (!monListProc.running) {
+            root._monJson = null;
+            monListProc.running = true;
+        }
+    }
+
     Process {
         id: wsListProc
-        command: ["bash", "-c", "jq -cn --argjson w \"$(hyprctl workspaces -j)\" --argjson m \"$(hyprctl monitors -j)\" '{w:$w,m:$m}'"]
+        command: ["hyprctl", "workspaces", "-j"]
         stdout: StdioCollector {
             onStreamFinished: {
-                let d;
-                try { d = JSON.parse(text); } catch (e) { return; }
-                const mons = {};
-                for (const m of d.m)
-                    mons[m.name] = m;
-                root.wsAll = d.w.filter(w => w.id > 0).map(w => {
-                    const m = mons[w.monitor] || {};
-                    const hw = Hyprland.workspaces.values.find(x => x.id === w.id);
-                    return {
-                        id: w.id,
-                        name: w.name,
-                        active: !!m.activeWorkspace && m.activeWorkspace.id === w.id,
-                        urgent: hw ? hw.urgent : false,
-                        monitor: { name: w.monitor, x: m.x || 0, y: m.y || 0, width: m.width || 0, height: m.height || 0 }
-                    };
-                });
+                try { root._wsJson = JSON.parse(text); } catch (e) { return; }
+                root._rebuildWsAll();
             }
         }
     }
+
+    Process {
+        id: monListProc
+        command: ["hyprctl", "monitors", "-j"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try { root._monJson = JSON.parse(text); } catch (e) { return; }
+                root._rebuildWsAll();
+            }
+        }
+    }
+
     readonly property var allWs: root.wsAll.filter(ws => ws.monitor.name === root.screen.name).sort((a, b) => a.id - b.id)
 
     // [lo, hi] inclusive indices into allWs that stay visible.
@@ -444,6 +477,8 @@ Row {
         }
         return [lo, hi];
     }
+    readonly property int count: root.allWs.length
+    readonly property bool overflowing: root.hiddenBefore + root.hiddenAfter > 0
     readonly property int hiddenBefore: root.range[0]
     readonly property int hiddenAfter: root.allWs.length - 1 - root.range[1]
 
