@@ -35,6 +35,38 @@ Rectangle {
     readonly property real vol: phone ? phone.volume : AudioSvc.volume
     readonly property bool isMuted: phone ? false : AudioSvc.muted
 
+    // {cardKey: {title, sink, source}} grouped by card, plus _order (sorted by title). Devices without a card get their own entry.
+    readonly property var pairsByKey: {
+        const byCard = {};
+        const order = [];
+        const add = (kind, d) => {
+            const k = d.card || d.name;
+            if (!byCard[k]) {
+                byCard[k] = { title: d.cardDescription || d.description, sink: null, source: null };
+                order.push(k);
+            }
+            if (!byCard[k][kind]) byCard[k][kind] = d;
+        };
+        AudioSvc.sinks.forEach(d => add("sink", d));
+        AudioSvc.sources.forEach(d => add("source", d));
+        // Stable order (never default-first) so selecting a pair doesn't move it.
+        order.sort((a, b) => byCard[a].title.localeCompare(byCard[b].title) || a.localeCompare(b));
+        byCard._order = order;
+        return byCard;
+    }
+
+    // The Repeater's model: only reassigned when the set/order of pairs
+    // changes, NOT on every volume tick -- otherwise the delegates (and the
+    // slider being dragged) are destroyed mid-drag.
+    property var pairKeys: []
+    function _syncPairKeys() {
+        const k = pairsByKey._order || [];
+        if (k.join("\n") !== pairKeys.join("\n"))
+            pairKeys = k;
+    }
+    onPairsByKeyChanged: _syncPairKeys()
+    Component.onCompleted: _syncPairKeys()
+
     // The graph only polls while the panel is open.
     Binding { target: AudioSvc; property: "graphWanted"; value: root.expanded }
 
@@ -104,7 +136,7 @@ Rectangle {
             text: btn.glyph
             font.family: Theme.iconFontFamily
             font.pixelSize: Theme.fontSize
-            color: btn.active ? Theme.red : Theme.text
+            color: btn.active ? Theme.muted : Theme.text
         }
         MouseArea {
             id: ma
@@ -173,22 +205,24 @@ Rectangle {
         width: parent.width - 24
         spacing: 10
 
-        // ---- Output -----------------------------------------------------
+        // ---- Phone (MPRIS target) ---------------------------------------
         Row {
+            visible: !!root.phone
             width: parent.width
             spacing: 8
             Heading { text: qsTr("Output"); anchors.verticalCenter: parent.verticalCenter }
             Label {
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - x - 0
-                text: root.phone ? qsTr("Phone (%1)").arg(root.phone.identity) : (AudioSvc.sinkDescription || qsTr("no output device"))
+                text: root.phone ? qsTr("Phone (%1)").arg(root.phone.identity) : ""
             }
         }
         Row {
+            visible: !!root.phone
             width: parent.width
             spacing: 10
             IconButton {
-                glyph: root.isMuted ? Icons.volMuted : ((!root.phone && AudioSvc.sinkBluetooth) ? Icons.volHeadphone : Icons.levelIcon(Icons.volLevels, Math.min(1, root.vol)))
+                glyph: (!root.phone && AudioSvc.sinkBluetooth) ? (root.isMuted ? Icons.volHeadphoneMuted : Icons.volHeadphone) : (root.isMuted ? Icons.volMuted : Icons.levelIcon(Icons.volLevels, Math.min(1, root.vol)))
                 active: root.isMuted
                 onClicked: { if (!root.phone) AudioSvc.toggleMute(); }
             }
@@ -291,41 +325,114 @@ Rectangle {
             }
         }
 
-        // ---- Input ------------------------------------------------------
-        Row {
-            width: parent.width
-            spacing: 8
-            Heading { text: qsTr("Input"); anchors.verticalCenter: parent.verticalCenter }
-            Label {
-                anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - x
-                text: AudioSvc.sourceDescription || qsTr("no input device")
-            }
-        }
-        Row {
-            width: parent.width
-            spacing: 10
-            IconButton {
-                glyph: AudioSvc.sourceMuted ? "\uf131" : "\uf130"
-                active: AudioSvc.sourceMuted
-                onClicked: AudioSvc.toggleSourceMute()
-            }
-            VolumeSlider {
-                width: parent.width - 30 - 52 - 20
-                anchors.verticalCenter: parent.verticalCenter
-                maxValue: 1
-                value: AudioSvc.sourceVolume
-                dimmed: AudioSvc.sourceMuted
-                onMoved: v => AudioSvc.setSourceVolume(v)
-            }
-            Text {
-                width: 52
-                anchors.verticalCenter: parent.verticalCenter
-                horizontalAlignment: Text.AlignRight
-                text: AudioSvc.sourceMuted ? qsTr("muted") : Math.round(AudioSvc.sourceVolume * 100) + "%"
-                color: AudioSvc.sourceMuted ? Theme.muted : Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSize - 1
+        // ---- Speaker / mic pairs ----------------------------------------
+        // Sinks and sources grouped by their card (a laptop's built-in
+        // audio, a headset's A2DP/HFP sink+mic, ...). Clicking a pair's
+        // header makes its speaker and mic the defaults.
+        Repeater {
+            model: root.pairKeys
+
+            delegate: Column {
+                id: pair
+                required property var modelData
+                readonly property var pairData: root.pairsByKey[modelData] || ({ title: "", sink: null, source: null })
+                readonly property var sink: pairData.sink
+                readonly property var source: pairData.source
+                readonly property bool isDefault: (sink && sink.default) || (source && source.default)
+                width: content.width
+                spacing: 6
+
+                Rectangle {
+                    width: parent.width
+                    height: 24
+                    radius: Theme.rounding - 3
+                    color: hdrMa.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                    Rectangle {
+                        id: pairRadio
+                        x: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 14; height: 14; radius: 7
+                        color: "transparent"
+                        border.color: pair.isDefault ? Theme.cyan : Theme.muted
+                        border.width: 1.5
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 8; height: 8; radius: 4
+                            color: Theme.cyan
+                            visible: pair.isDefault
+                        }
+                    }
+                    Heading {
+                        anchors.left: pairRadio.right
+                        anchors.leftMargin: 8
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
+                        text: pair.pairData.title
+                    }
+                    MouseArea {
+                        id: hdrMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: AudioSvc.setDefaults(pair.sink ? pair.sink.name : "", pair.source ? pair.source.name : "")
+                    }
+                }
+
+                Row {
+                    visible: !!pair.sink
+                    width: parent.width
+                    spacing: 10
+                    IconButton {
+                        glyph: !pair.sink ? "" : pair.sink.bluetooth ? (pair.sink.muted ? Icons.volHeadphoneMuted : Icons.volHeadphone) : (pair.sink.muted ? Icons.volMuted : Icons.levelIcon(Icons.volLevels, Math.min(1, pair.sink.volume)))
+                        active: !!pair.sink && pair.sink.muted
+                        onClicked: AudioSvc.toggleDeviceMute("sink", pair.sink.name)
+                    }
+                    VolumeSlider {
+                        width: parent.width - 30 - 52 - 20
+                        anchors.verticalCenter: parent.verticalCenter
+                        value: pair.sink ? pair.sink.volume : 0
+                        dimmed: !!pair.sink && pair.sink.muted
+                        onMoved: v => AudioSvc.setDeviceVolume("sink", pair.sink.name, v)
+                    }
+                    Text {
+                        width: 52
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignRight
+                        text: !pair.sink ? "" : pair.sink.muted ? qsTr("muted") : Math.round(pair.sink.volume * 100) + "%"
+                        color: pair.sink && pair.sink.muted ? Theme.muted : Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 1
+                    }
+                }
+
+                Row {
+                    visible: !!pair.source
+                    width: parent.width
+                    spacing: 10
+                    IconButton {
+                        glyph: pair.source && pair.source.muted ? "\uf131" : "\uf130"
+                        active: !!pair.source && pair.source.muted
+                        onClicked: AudioSvc.toggleDeviceMute("source", pair.source.name)
+                    }
+                    VolumeSlider {
+                        width: parent.width - 30 - 52 - 20
+                        anchors.verticalCenter: parent.verticalCenter
+                        maxValue: 1
+                        value: pair.source ? pair.source.volume : 0
+                        dimmed: !!pair.source && pair.source.muted
+                        onMoved: v => AudioSvc.setDeviceVolume("source", pair.source.name, v)
+                    }
+                    Text {
+                        width: 52
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignRight
+                        text: !pair.source ? "" : pair.source.muted ? qsTr("muted") : Math.round(pair.source.volume * 100) + "%"
+                        color: pair.source && pair.source.muted ? Theme.muted : Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 1
+                    }
+                }
             }
         }
 

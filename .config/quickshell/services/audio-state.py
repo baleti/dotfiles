@@ -83,6 +83,24 @@ def main():
             "profiles": profiles,
         })
 
+    def devices(devs, default_name):
+        out = []
+        for d in devs:
+            if d.get("name", "").endswith(".monitor") or d.get("monitor_of_sink") not in (None, 4294967295):
+                continue  # skip sink monitors; they aren't mics
+            props = d.get("properties") or {}
+            out.append({
+                "name": d.get("name", ""),
+                "description": d.get("description", ""),
+                "volume": fraction(d),
+                "muted": bool(d.get("mute", False)),
+                "bluetooth": is_bt(props),
+                "card": props.get("device.name", ""),
+                "cardDescription": props.get("device.description", ""),
+                "default": d.get("name") == default_name,
+            })
+        return out
+
     sink_props = (sink or {}).get("properties") or {}
     print(json.dumps({
         "server": info.get("server_name", ""),
@@ -102,6 +120,8 @@ def main():
             "monitor": bool((source or {}).get("monitor_of_sink") is not None
                             and (source or {}).get("monitor_of_sink") != 4294967295),
         },
+        "sinks": devices(sinks, info.get("default_sink_name")),
+        "sources": devices(sources, info.get("default_source_name")),
         "playbackApps": apps(sink_inputs),
         "captureApps": apps(source_outputs),
         "btCards": bt_cards,

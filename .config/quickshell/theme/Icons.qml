@@ -4,7 +4,8 @@ import QtQuick
 // Nerd Font / Font Awesome glyphs, carried over from the old
 // ~/.config/waybar/config.jsonc and ~/.config/hypr/scripts/waybar-mpris.sh.
 QtObject {
-    readonly property string volMuted: ""
+    readonly property string volMuted: "󰝟"
+    readonly property string volHeadphoneMuted: "󰟎"
     readonly property string volHeadphone: ""
     readonly property string volHeadset: ""
     readonly property var volLevels: ["", "", ""]
