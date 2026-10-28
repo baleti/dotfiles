@@ -1,0 +1,5 @@
+#!/bin/sh
+# cadq rvt --category Walls --where "Unconnected Height<2300mm" [--level L] [--type T] [--path P] [--limit N]
+# cadq dwg --layer WALL --block X --text "FIRE" [--path P]       (queries the facts DB on host1; see ~/bin/index/README.md "CAD facts index")
+q=$(printf '%q ' "$@")
+exec ssh -o BatchMode=yes host1 "python3 ~/bin/index/cadfacts.py query --db ~/.cache/indexes/cadfacts/facts.db $q"
