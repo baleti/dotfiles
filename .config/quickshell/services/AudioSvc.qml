@@ -28,6 +28,12 @@ Singleton {
     property real sourceVolume: 0
     property bool sourceMuted: false
 
+    // Every real output / input device (monitors excluded), each
+    // {name, description, volume, muted, bluetooth, card, cardDescription,
+    // default}. VolumeExpanded pairs them up by card.
+    property var sinks: []
+    property var sources: []
+
     property var playbackApps: []
     property var captureApps: []
     property var btCards: []
@@ -105,6 +111,8 @@ Singleton {
         root.sourceDescription = s.source.description;
         root.sourceVolume = s.source.volume;
         root.sourceMuted = s.source.muted;
+        root.sinks = s.sinks || [];
+        root.sources = s.sources || [];
         root.playbackApps = s.playbackApps;
         root.captureApps = s.captureApps;
         root.btCards = s.btCards;
@@ -154,6 +162,44 @@ Singleton {
     function toggleSourceMute(): void {
         root.sourceMuted = !root.sourceMuted;
         Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]);
+    }
+
+    // ---- per-device writes (any sink/source, not just the default) -------
+    function _patch(list, name, fields) {
+        return list.map(d => d.name === name ? Object.assign({}, d, fields) : d);
+    }
+
+    function setDeviceVolume(kind: string, name: string, fraction: real): void {
+        const v = Math.max(0, Math.min(kind === "sink" ? 1.5 : 1, fraction));
+        Quickshell.execDetached(["pactl", "set-" + kind + "-volume", name, Math.round(v * 100) + "%"]);
+        if (kind === "sink") root.sinks = _patch(root.sinks, name, { volume: v });
+        else root.sources = _patch(root.sources, name, { volume: v });
+        const d = (kind === "sink" ? root.sinks : root.sources).find(x => x.name === name);
+        if (d && d.default) {
+            if (kind === "sink") root.volume = v;
+            else root.sourceVolume = v;
+        }
+    }
+
+    function toggleDeviceMute(kind: string, name: string): void {
+        Quickshell.execDetached(["pactl", "set-" + kind + "-mute", name, "toggle"]);
+        const list = kind === "sink" ? root.sinks : root.sources;
+        const d = list.find(x => x.name === name);
+        if (!d) return;
+        if (kind === "sink") root.sinks = _patch(list, name, { muted: !d.muted });
+        else root.sources = _patch(list, name, { muted: !d.muted });
+        if (d.default) {
+            if (kind === "sink") root.muted = !d.muted;
+            else root.sourceMuted = !d.muted;
+        }
+    }
+
+    // Make a speaker/mic pair the default; either half may be "" (skipped).
+    function setDefaults(sink: string, source: string): void {
+        if (sink) Quickshell.execDetached(["pactl", "set-default-sink", sink]);
+        if (source) Quickshell.execDetached(["pactl", "set-default-source", source]);
+        root.sinks = root.sinks.map(d => sink ? Object.assign({}, d, { default: d.name === sink }) : d);
+        root.sources = root.sources.map(d => source ? Object.assign({}, d, { default: d.name === source }) : d);
     }
 
     function setProfile(card: string, profile: string): void {
