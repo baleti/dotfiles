@@ -1087,11 +1087,14 @@ Item {
     Timer {
         id: overflowTimer
         interval: 60
+        repeat: true
         onTriggered: {
-            if (workspaces.overflowing && root.pillFont > 8)
+            if (workspaces.overflowing && root.pillFont > 8) {
                 root.pillFont -= 1;
-            else
+            } else {
+                stop();
                 root.recheckCrowding();
+            }
         }
     }
 
