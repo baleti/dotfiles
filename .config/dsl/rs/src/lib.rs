@@ -105,8 +105,18 @@ pub fn substr_idx(needle: &str, hay: &str, exact: bool) -> Option<usize> {
     })
 }
 
+/// `a||b` -> ["a", "b"] (empty parts dropped; none left -> [""], the empty needle). A quoted term is literal.
+pub fn alternatives(needle: &str, exact: bool) -> Vec<&str> {
+    if exact || !needle.contains("||") {
+        return vec![needle];
+    }
+    let a: Vec<&str> = needle.split("||").filter(|x| !x.is_empty()).collect();
+    if a.is_empty() { vec![""] } else { a }
+}
+
+/// Substring test; an unquoted `a||b` needle matches when any alternative does.
 pub fn substr(needle: &str, hay: &str, exact: bool) -> bool {
-    substr_idx(needle, hay, exact).is_some()
+    alternatives(needle, exact).iter().any(|a| substr_idx(a, hay, exact).is_some())
 }
 
 /// Keys: a comma list; per key the name equal to it wins alone, else every name containing it;

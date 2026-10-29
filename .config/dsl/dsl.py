@@ -515,8 +515,16 @@ def substr_idx(needle, hay, exact=False):
     return -1
 
 
+def alternatives(needle, exact=False):
+    """`a||b` -> ["a", "b"] (empty parts dropped; none left -> [""], the empty needle). A quoted term is literal."""
+    if exact or "||" not in needle:
+        return [needle]
+    return [a for a in needle.split("||") if a] or [""]
+
+
 def substr(needle, hay, exact=False):
-    return substr_idx(needle, hay, exact) >= 0
+    """Substring test; an unquoted `a||b` needle matches when any alternative does."""
+    return any(substr_idx(a, hay, exact) >= 0 for a in alternatives(needle, exact))
 
 
 CORE_VERBS = (  # (short, long, kind, max_parts)

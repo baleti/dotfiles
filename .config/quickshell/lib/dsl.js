@@ -70,7 +70,17 @@ function substrIdx(needle, hay, exact) {
     }
     return -1;
 }
-function substr(needle, hay, exact) { return substrIdx(needle, hay, exact) >= 0; }
+// `a||b` -> ["a", "b"] (empty parts dropped; none left -> [""], the empty needle). A quoted term is literal.
+function alternatives(needle, exact) {
+    var n = String(needle);
+    if (exact || n.indexOf("||") < 0) return [n];
+    var a = n.split("||").filter(function (x) { return x.length > 0; });
+    return a.length > 0 ? a : [""];
+}
+// Substring test; an unquoted `a||b` needle matches when any alternative does.
+function substr(needle, hay, exact) {
+    return alternatives(needle, exact).some(function (a) { return substrIdx(a, hay, exact) >= 0; });
+}
 
 // Sort comparison (query-dsl.md "Sort comparison, precisely"): plain integers numerically, age
 // buckets (30s/5m/3h/2d) by seconds with the direction inverted (the direction trap), else

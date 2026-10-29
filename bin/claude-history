@@ -971,7 +971,7 @@ def search(snap, query):
                 "pid": str(r.get("pid") or ""), "tmux-session": r.get("sess", ""), "tmux-window": r.get("win", ""),
                 "tmux-pane": r.get("pane", ""), "hypr-workspace": r.get("wks", "")}
         # //keys value, !//keys value: the term must (not) appear in one of the resolved types
-        if not all(any(term in str(vals.get(f, "")).lower() for f in fields if f in vals) != neg
+        if not all(any(dsl.substr(term, str(vals.get(f, ""))) for f in fields if f in vals) != neg
                    for fields, term, neg in other):
             continue
         out.append(f'{r["sid"]}\t{fmt(r)}')

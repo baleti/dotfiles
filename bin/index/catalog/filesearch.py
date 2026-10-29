@@ -80,6 +80,17 @@ def _native():
             _NATIVE = False
     return _NATIVE or None
 
+_LIT = "\x00\x00"     # a literal "||" inside a quoted value, until alts() hands it back
+
+def alts(value):
+    """`a||b` -> ["a", "b"]: one value standing for several alternatives (query-dsl.md "Alternatives (`||`)").
+    Empty parts are dropped; none left -> [""]. A quoted value arrives with its `||` already shielded."""
+    return [a.replace(_LIT, "||") for a in value.split("||") if a] or [""]
+
+def name_has(base, value):
+    """A //name value against a lowercased file name: any alternative contained."""
+    return any(a.lower() in base for a in alts(value))
+
 def expand_path_value(value):
     """What a //path value means on disk, lowercased: gdrive/x -> the gdrive mount, ~/x -> home."""
     v = value.replace('"', "").strip()
@@ -90,8 +101,12 @@ def expand_path_value(value):
     return v.lower()
 
 def path_matches(path, value):
-    """Substring match: //path gdrive/office matches every path that contains that text."""
-    return expand_path_value(value) in path.lower()
+    """Substring match: //path gdrive/office matches every path that contains that text (any alternative of a||b;
+    a value still wrapped in quotes is literal)."""
+    low = path.lower()
+    if value.lstrip().startswith('"'):
+        return expand_path_value(value) in low
+    return any(expand_path_value(a) in low for a in alts(value))
 
 def wants(ext, w):
     """One //mime or //ext entry against a file's extension: ".pdf" (from //ext) is that extension exactly;
@@ -128,6 +143,11 @@ def tokens(query):
 def unquote(tok):
     return tok.replace('"', "")
 
+def unquote_value(tok):
+    """unquote, but a quoted token keeps its `||` literal (shielded for alts())."""
+    u = unquote(tok)
+    return u.replace("||", _LIT) if tok.startswith('"') else u
+
 def _take_tags(query, names):
     """Pull '//tag value' pairs (value may be "quoted text") out of a query -> ({tag: [values]}, rest tokens joined).
     A leading "!" (on the tag, or on its value) negates the pair (query-dsl.md "Negation"): it lands under
@@ -143,7 +163,7 @@ def _take_tags(query, names):
             val, neg = toks[i + 1], bool(m.group(1))
             if val.startswith("!") and len(val) > 1:
                 val, neg = val[1:], True
-            found[("!" if neg else "") + m.group(2).lower()].append(unquote(val))
+            found[("!" if neg else "") + m.group(2).lower()].append(unquote_value(val))
             i += 2
         else:
             rest.append(toks[i]); i += 1
@@ -151,8 +171,8 @@ def _take_tags(query, names):
 
 def _kinds(found, neg=""):
     """//mime values as they are, //ext (alias //extension) values as ".ext" (a leading dot is optional)."""
-    exts = found[neg + "ext"] + found[neg + "extension"]
-    return [m.lower() for m in found[neg + "mime"]] + ["." + e.lower().lstrip(".") for e in exts if e.lstrip(".")]
+    exts = [a for e in found[neg + "ext"] + found[neg + "extension"] for a in alts(e)]
+    return [a.lower() for m in found[neg + "mime"] for a in alts(m) if a] + ["." + e.lower().lstrip(".") for e in exts if e.lstrip(".")]
 
 def split_mime(query):
     """'//mime image //ext .csv foo "bar baz"' -> (['image', '.csv'], 'foo "bar baz"')."""
@@ -171,9 +191,9 @@ def split_neg_terms(rest):
     for t in tokens(rest):
         if t.startswith("!") and len(t) > 1:
             if unquote(t[1:]):
-                neg.append(unquote(t[1:]).lower())
+                neg.append(unquote_value(t[1:]).lower())
         elif unquote(t):
-            pos.append(unquote(t).lower())
+            pos.append(unquote_value(t).lower())
     return pos, neg
 
 def split_tags(query):
@@ -181,6 +201,9 @@ def split_tags(query):
     return _take_tags(query, ["name", "path", "size", "dm"])
 
 def _size_ok(sz, cond):
+    return any(_size_one(sz, a) for a in alts(cond))
+
+def _size_one(sz, cond):
     m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMGT]?)B?$", cond.strip(), re.I)
     if not m or sz is None:
         return False
@@ -189,6 +212,9 @@ def _size_ok(sz, cond):
     return sz > v if m.group(1) == ">" else sz < v
 
 def _date_ok(mtime, cond):
+    return any(_date_one(mtime, a) for a in alts(cond))
+
+def _date_one(mtime, cond):
     """cond: '2015-06' (substring) or '>2015-06' / '<2015-06' (ISO prefix comparison)."""
     if mtime is None:
         return False
@@ -203,11 +229,11 @@ def tag_ok(i, paths, sizes, mtimes, wanted, tags):
     base = p.rsplit("/", 1)[-1].lower()
     if wanted and not matches_mime(p, wanted, sizes[i] is None):
         return False
-    if any(t.lower() not in base for t in tags["name"]):
+    if any(not name_has(base, t) for t in tags["name"]):
         return False
-    if any(t.lower() not in p.lower() for t in tags["path"]):
+    if any(not path_matches(p, t) for t in tags["path"]):
         return False
-    if any(t.lower() in base for t in tags.get("!name", [])):
+    if any(name_has(base, t) for t in tags.get("!name", [])):
         return False
     if any(path_matches(p, t) for t in tags.get("!path", [])):
         return False
@@ -280,6 +306,12 @@ def _merge_stats(parts):
     return out
 
 def _size_mask(size_arr, cond):
+    out = np.zeros(len(size_arr), bool)
+    for a in alts(cond):
+        out |= _size_mask_one(size_arr, a)
+    return out
+
+def _size_mask_one(size_arr, cond):
     m = re.match(r"^([<>])\s*([0-9.]+)\s*([KMGT]?)B?$", cond.strip(), re.I)
     if not m:
         return np.zeros(len(size_arr), bool)
@@ -842,8 +874,8 @@ class NameTable:
             old = last[1]
             if terms == old:
                 return last[2]
-            narrow = (len(terms) == len(old) + 1 and terms[:len(old)] == old) or \
-                     (len(terms) == len(old) and terms[:-1] == old[:-1] and bool(old) and terms[-1].startswith(old[-1]))
+            narrow = "||" not in terms[-1] and ((len(terms) == len(old) + 1 and terms[:len(old)] == old) or
+                     (len(terms) == len(old) and terms[:-1] == old[:-1] and bool(old) and terms[-1].startswith(old[-1])))
             if narrow and len(last[2]) <= NARROW_MAX:
                 keep = self._filter_candidates(last[2], terms[-1].encode("utf-8"))
                 idx = last[2][keep]
@@ -862,13 +894,13 @@ class NameTable:
             if f in self.off_masks:
                 mask &= ~self.off_masks[f]
         for t in terms:
-            mask &= self._cached_term_mask(t.encode("utf-8"))
+            mask &= self._alt_mask(t)
         for t in neg_terms:
-            mask &= ~self._cached_term_mask(t.encode("utf-8"))
+            mask &= ~self._alt_mask(t)
         for v in tags["path"]:
-            mask &= self._cached_term_mask(expand_path_value(v).encode("utf-8"))
+            mask &= self._alt_mask(v, expand_path_value)
         for v in tags["!path"]:
-            mask &= ~self._cached_term_mask(expand_path_value(v).encode("utf-8"))
+            mask &= ~self._alt_mask(v, expand_path_value)
         if not_wanted:
             banned = [k for k, e in enumerate(ext_names) if any(wants(e, w) for w in not_wanted)]
             hit = np.isin(ext_codes, np.array(banned, np.int32)) & (size_arr >= 0)
@@ -903,6 +935,14 @@ class NameTable:
         with self.lock:
             self._last = (rest_key, terms, idx)
         return idx
+
+    def _alt_mask(self, value, expand=lambda a: a):
+        """Lines containing any alternative of an `a||b` value (a single value: just its own mask)."""
+        out = None
+        for a in alts(value):
+            m = self._cached_term_mask(expand(a).encode("utf-8"))
+            out = m if out is None else (out | m)
+        return out
 
     def _cached_term_mask(self, term):
         """Masks for recent terms are kept, so extending a query only scans the new word."""

@@ -200,7 +200,7 @@ def make_prefilter(before, whole):
     """A predicate (path, size, mtime) -> bool for the name filter written before a content verb, or None if there is
     none: words must occur in the full path (case-insensitive), !words must not, plus //name //path //size //dm //mime //ext
     and their negations, exactly as in name search."""
-    from filesearch import split_mime_all, split_tags, split_neg_terms, matches_mime, _size_ok, _date_ok, path_matches
+    from filesearch import split_mime_all, split_tags, split_neg_terms, matches_mime, _size_ok, _date_ok, path_matches, name_has
     if not before.strip():
         return None
     wanted, not_wanted, rest = split_mime_all(before)
@@ -211,7 +211,7 @@ def make_prefilter(before, whole):
     def ok(path, size, mtime):
         low = path.lower()
         base = low.rsplit("/", 1)[-1]
-        if any(t not in low for t in pos) or any(t in low for t in neg):
+        if any(not name_has(low, t) for t in pos) or any(name_has(low, t) for t in neg):
             return False
         if (wanted and not matches_mime(path, wanted)) or (not_wanted and matches_mime(path, not_wanted)):
             return False
@@ -219,7 +219,7 @@ def make_prefilter(before, whole):
             return False
         if not all(path_matches(path, v) for v in paths) or any(path_matches(path, v) for v in tags["!path"]):
             return False
-        if not all(t.lower() in base for t in tags["name"]) or any(t.lower() in base for t in tags["!name"]):
+        if not all(name_has(base, t) for t in tags["name"]) or any(name_has(base, t) for t in tags["!name"]):
             return False
         if tags["size"] or tags["!size"]:
             if not all(_size_ok(size, c) for c in tags["size"]) or any(_size_ok(size, c) for c in tags["!size"]):
@@ -285,7 +285,7 @@ def recoll_terms(text):
 def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=False, skip_ext=(), cancel=None):
     """/fts <recoll terms> [//mime kind] [//name x] [//path x] [//size >5M] [//dm 2024]: only content-indexed files can match.
     Searches every content index; //path narrows by folder. Relevance order unless a sort is explicit."""
-    from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, _date_ok, path_matches, hidden_folders
+    from filesearch import split_mime_all, split_tags, matches_mime, _size_ok, _date_ok, path_matches, hidden_folders, name_has
     wanted, not_wanted, rest = split_mime_all(text)
     paths, rest = split_path_tags(rest)
     tags, terms = split_tags(rest)
@@ -315,12 +315,12 @@ def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=Fal
     rows = [r for r in pool if (not wanted or matches_mime(r["remote"], wanted))
             and not (not_wanted and matches_mime(r["remote"], not_wanted))
             and not any(path_matches(r["remote"], v) for v in tags["!path"])
-            and not any(t.lower() in name(r) for t in tags["!name"])
+            and not any(name_has(name(r), t) for t in tags["!name"])
             and not any(_size_ok(r["size"], c) for c in tags["!size"])
             and not any(_date_ok(r["mtime"], c) for c in tags["!dm"])
             and not any(r["remote"].startswith(f) for f in hidden)
             and all(path_matches(r["remote"], v) for v in paths)
-            and all(t.lower() in name(r) for t in tags["name"])
+            and all(name_has(name(r), t) for t in tags["name"])
             and all(_size_ok(r["size"], c) for c in tags["size"])
             and all(_date_ok(r["mtime"], c) for c in tags["dm"])]
     rows = apply_sort(rows, sort if explicit else None, desc)
@@ -386,7 +386,7 @@ def chroma_query(text, sort, desc, offset, limit, via=None, before="", explicit=
     """/chroma <what it is about> [//mime kind] [//name x] [//path x] [//size >5M]: documents whose text is closest in
     meaning to the words (MiniLM embeddings over the content indexes), best first, one row per file with the score.
     The pool is the nearest chunks of every index, so the total is what the closest chunks cover, not every file."""
-    from filesearch import matches_mime, _size_ok, _date_ok, path_matches, hidden_folders
+    from filesearch import matches_mime, _size_ok, _date_ok, path_matches, hidden_folders, name_has
     wanted, not_wanted, paths, tags, words = chroma_words(text)
     if content_verb(words):
         return [], 0, "only one /fts or /chroma per query", None
@@ -403,9 +403,9 @@ def chroma_query(text, sort, desc, offset, limit, via=None, before="", explicit=
         if (wanted and not matches_mime(path, wanted)) or (not_wanted and matches_mime(path, not_wanted)):
             return None
         base = path.rsplit("/", 1)[-1].lower()
-        if (any(path_matches(path, v) for v in tags["!path"]) or any(t.lower() in base for t in tags["!name"])
+        if (any(path_matches(path, v) for v in tags["!path"]) or any(name_has(base, t) for t in tags["!name"])
                 or any(_size_ok(size, c) for c in tags["!size"]) or any(path.startswith(f) for f in hidden)
-                or not all(path_matches(path, v) for v in paths) or not all(t.lower() in base for t in tags["name"])
+                or not all(path_matches(path, v) for v in paths) or not all(name_has(base, t) for t in tags["name"])
                 or not all(_size_ok(size, c) for c in tags["size"])
                 or any(_date_ok(mtime, c) for c in tags["!dm"]) or not all(_date_ok(mtime, c) for c in tags["dm"])):
             return None

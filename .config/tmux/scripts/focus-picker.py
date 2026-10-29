@@ -401,7 +401,8 @@ def _term(text):
 def _has(term, hay):
     """Substring test; an Exact term must not touch a letter/digit/underscore on either side."""
     if not isinstance(term, Exact) or not term:
-        return term in hay
+        # an unquoted `a||b` matches when any alternative does (query-dsl.md "Alternatives")
+        return any(a in hay for a in dsl.alternatives(term, False))
     pat = (r"(?<![A-Za-z0-9_])" if (term[0].isalnum() or term[0] == "_") else "") \
         + re.escape(term) \
         + (r"(?![A-Za-z0-9_])" if (term[-1].isalnum() or term[-1] == "_") else "")
