@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Brave (temp)
+GenericName=Temporary Brave instance
+Comment=Run Brave with a throwaway profile in /tmp, deleted on close (no sandbox)
+Exec=/home/user1/bin/brave-temp %U
+Icon=brave-desktop
+Terminal=false
+Categories=Network;WebBrowser;
+StartupWMClass=brave-browser
