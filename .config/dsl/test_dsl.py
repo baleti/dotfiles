@@ -15,6 +15,8 @@ def check(name, got, want):
 
 for c in T["resolve"]:
     check(f'resolve {c["keys"]!r}', dsl.resolve_names(c["keys"], c["names"]), c["expect"])
+for c in T["substr"]:
+    check(f'substr {c["needle"]!r} in {c["hay"]!r}', dsl.substr(c["needle"], c["hay"], c["exact"]), c["expect"])
 for c in T["sortkeys"]:
     check(f'sortkeys {c["keys"]!r}', dsl.resolve_sort_keys(c["keys"], c["names"]), c["expect"])
 for c in T["direction"]:

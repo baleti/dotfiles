@@ -393,6 +393,14 @@
     ]
   },
   "substr": [
+    {"needle": "directory||rws", "hay": "rws", "exact": false, "expect": true},
+    {"needle": "directory||rws", "hay": "Directory", "exact": false, "expect": true},
+    {"needle": "directory||rws", "hay": "pdf", "exact": false, "expect": false},
+    {"needle": "a||", "hay": "xay", "exact": false, "expect": true},
+    {"needle": "||a", "hay": "xyz", "exact": false, "expect": false},
+    {"needle": "||", "hay": "xyz", "exact": false, "expect": true},
+    {"needle": "a||b", "hay": "a||b", "exact": true, "expect": true},
+    {"needle": "a||b", "hay": "a", "exact": true, "expect": false},
     {
       "needle": "rvt",
       "hay": "My RVT model",
