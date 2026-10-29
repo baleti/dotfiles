@@ -110,7 +110,7 @@ def main():
     q.execute("date:1970-01-01/2099-12-31", stemming=0)
     seen = skipped = embedded = failed = 0
     pend_ids, pend_docs, pend_meta = [], [], []
-    t0 = time.time()
+    t0 = last_flush = time.time()
 
     def flush():
         nonlocal pend_ids, pend_docs, pend_meta
@@ -146,8 +146,9 @@ def main():
             pend_docs.append(piece)
             pend_meta.append({"url": d.url, "title": d.title or "", "chunk": k})
         embedded += 1
-        if len(pend_docs) >= 1024:
+        if len(pend_docs) >= 1024 or (pend_docs and time.time() - last_flush > 300):      # also by time: a killed run keeps its work
             flush()
+            last_flush = time.time()
         if seen % 200 == 0:
             print(f"  {seen} seen, {embedded} new, {skipped} skipped, {failed} failed, {time.time()-t0:.0f}s", flush=True)
     flush()
