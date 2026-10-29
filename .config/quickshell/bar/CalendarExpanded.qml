@@ -42,7 +42,9 @@ Rectangle {
     property bool expanded: false
     readonly property bool hovered: mouseArea.containsMouse
 
-    readonly property date today: new Date()
+    // Re-sampled on every open/close (and by the timer below): a bare
+    // `new Date()` binding has no dependencies, so it froze at shell start.
+    property date today: new Date()
     property int viewYear: today.getFullYear()
     property int viewMonth: today.getMonth() // 0-11
     // Day cursor + selection. cursorDate is the moving end (ring); anchorDate
@@ -220,7 +222,10 @@ Rectangle {
         interval: 5 * 60 * 1000
         repeat: true
         running: root.expanded
-        onTriggered: root.runAgendaProcs()
+        onTriggered: {
+            root.today = new Date();
+            root.runAgendaProcs();
+        }
     }
 
     // Mouse ‹/› and Ctrl+Left/Right (Ctrl+h/l): shift the month and carry
@@ -253,7 +258,9 @@ Rectangle {
     // current month/year, not last time's - including out of the
     // year-picker if it was left open.
     onExpandedChanged: {
+        root.today = new Date();
         if (expanded) {
+            root.goToday();
             root.runAgendaProcs();
         } else {
             root.goToday();
