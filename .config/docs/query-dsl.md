@@ -306,7 +306,7 @@ guessing: part 1 the verb, part 2 the **keys**, part 3 (only `/sort`) the
 | `/ft/tmux`, `/at/claude-title`, `/rt/pid` | column verbs, same key list |
 | `/fts/claude-live word` | an app verb (e.g. winswitch's full text) with its own key list |
 
-A command's argument is the single value token that follows it (`/fv`
+**App verbs with a text argument (`/fts`) take every word up to the next `/verb`** (`/fts red key` searches both words; `!word` excludes; use `//field value` for a row filter after it). A command's argument is the single value token that follows it (`/fv`
 only; `/ft /at /rt /s` take none - their keys sit in the token itself), up
 to the next `/verb`, end of input, or a token that is itself a command. A
 token past a verb's arity is not absorbed: it resumes as an ordinary token,
