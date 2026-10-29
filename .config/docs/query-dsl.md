@@ -116,7 +116,8 @@ changes the search space (photos only, ranked by meaning). The per-column tags s
 `//mime <kind>` (a file kind such as `image`, `pdf`, `code`, `directory` (folders only), or a bare extension) and
 `//ext <.pdf>` (`//extension`; one exact extension, the leading dot optional, case
 ignored - `//ext .csv`). Repeated `//mime`/`//ext` entries OR together, so
-`//ext .jpg //ext .png` finds both; `!//ext .log` excludes one. Tab after `//ext`
+`//ext .jpg //ext .png` finds both (so does `//ext .jpg||.png`, and `!//mime directory||rws`
+excludes both kinds - see Alternatives); `!//ext .log` excludes one. Tab after `//ext`
 offers the commonest extensions in the index.
 Several filters AND together; bare words act as `/clip` plus any matching
 registered person.
@@ -528,6 +529,53 @@ it - `filesearch.py` (`_take_tags` files a negated pair under the key
 `NameTable._match`) and `photos/search.py` (`parse` returns a third
 `negated` field; negated filters are subtracted after the AND). `claude-history`
 and `window-search.py` keep their own earlier implementations.
+
+### Alternatives (`||`)
+
+Added 2026-10-29. Inside the value of a row filter, `||` separates
+**alternatives**: the term matches when any one of them does.
+
+```
+//mime directory||rws           rows whose mime contains "directory" OR "rws"
+//title foo||bar                title contains foo or bar
+foo||bar                        bare word: haystack contains foo or bar
+!//mime directory||rws          =  !//mime directory !//mime rws   (neither)
+//size >5M||<1K                 (images) comparisons per alternative; //dm 2015||2016 too
+foo||bar //path a||b            terms still AND: one alternative of each
+"a||b"                          quoted: the literal text a||b, never split
+```
+
+- **Why it is the negation-friendly spelling.** NOT (a OR b) is NOT a AND NOT b,
+  so `!//mime directory||rws` is exactly `!//mime directory !//mime rws`: one
+  term instead of repeating the key. A positive `//mime directory||rws` is the
+  OR that two repeated `//mime` entries already were in the images picker.
+- **Empty parts are skipped**: `a||` is `a` (a half-typed alternative never
+  flashes the list to zero), `||a` is `a`, and a bare `||` is the empty value
+  (inert, like any empty value).
+- **Only unquoted values.** A quoted term is literal, so `"a||b"` searches for
+  the text `a||b`. A single `|` is plain text.
+- **Per alternative, the term is unchanged**: each one is an ordinary
+  substring (case-insensitive), `>4` / `<1` comparisons keep their meaning in
+  the pickers that have them, and `//path` alternatives are each expanded
+  (`gdrive/`, `~/`).
+- **Highlighting** marks every alternative that occurs.
+- **Not supported**: `||` between *terms* (`//a x || //b y`) - OR across
+  different keys is `//a,b x`, same key different values is `||`. The two
+  BM25-ranked pickers (window-search, claude-history) do not tokenise `||`
+  in bare ranked words; claude-history's `//keys` filters and focus-picker
+  honour it fully.
+
+**Where it's implemented.** The shared primitive is `substr` /
+`alternatives` in `dsl/dsl.py`, `quickshell/lib/dsl.js` and `dsl/rs/src/lib.rs`
+(so every QML picker, alt-tab, the launcher and the Python pickers get it for
+free), vectors in `tests.json` `substr`. Also: the Android `QueryDsl.kt`
+(`containsTerm`), `focus-picker.py` (`_has`), `claude-history` (`//keys`
+filter), and for the images picker `filesearch.py` (`alts`: `_kinds` for
+`//mime` / `//ext`, `path_matches`, `name_has`, `_size_ok`, `_date_ok`, the
+mask path in `NameTable._match`, which also skips its narrow-the-previous-
+result shortcut while the last word contains `||`), `search_server.py` (the
+`/fts` pre-filter and the other filters call the same helpers) and the egui
+client's highlighter (`query_terms`).
 
 ### `/filter-type` (`/ft`), `/add-type` (`/at`), `/remove-type` (`/rt`)
 

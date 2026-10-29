@@ -199,7 +199,10 @@ fn query_terms(q: &str) -> Vec<String> {
         if tok == "/clip" || tok == "/face" || tok.starts_with("//") { skip_value = true; continue; }
         if skip_value { skip_value = false; continue; }
         let t = tok.replace('"', "").to_ascii_lowercase();
-        if !t.is_empty() { out.push(t); }
+        // an unquoted `a||b` is two alternatives (query-dsl.md "Alternatives"): highlight each
+        if !tok.starts_with('"') && t.contains("||") {
+            out.extend(t.split("||").filter(|x| !x.is_empty()).map(str::to_string));
+        } else if !t.is_empty() { out.push(t); }
     }
     out
 }
