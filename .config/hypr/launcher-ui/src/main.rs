@@ -10,14 +10,16 @@
 //! accept typing) before the list is filled. Timings go to ~/.cache/launcher-ui.log.
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
+use std::io::{BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ab_glyph::{point, Font, FontRef, PxScale, ScaleFont};
 use smithay_client_toolkit::reexports::calloop::channel::{self, Event as ChanEvent, Sender};
+use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
@@ -80,6 +82,8 @@ enum Msg {
     Icons(Vec<(String, Vec<u8>)>),
     QHistory(Vec<String>),
     Hypr(HyprInfo),
+    /// a second invocation (the Super release bind): reveal the hidden capture instance, or close an open one
+    Toggle,
 }
 
 /// What the workspace actions need from Hyprland, fetched off the main thread at start.
@@ -797,6 +801,9 @@ struct App {
     exit: bool,
     first_frame: bool,
     first_key: bool,
+    /// `--capture` instance (started on the Super press): holds the keyboard and buffers typing, draws nothing
+    hidden: bool,
+    release_watch: bool,
     ctrl: bool,
     shift: bool,
     apps: Vec<DApp>,
@@ -1427,8 +1434,24 @@ impl App {
         }
     }
 
+    fn reveal(&mut self) {
+        self.hidden = false;
+        self.layer.wl_surface().set_input_region(None);
+        self.layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        self.layer.commit();
+        self.note("revealed");
+        self.dirty = true;
+    }
+
     fn on_msg(&mut self, m: Msg) {
         match m {
+            Msg::Toggle => {
+                if self.hidden {
+                    self.reveal();
+                } else {
+                    self.exit = true;
+                }
+            }
             Msg::Apps { apps, hist, ms } => {
                 self.note(&format!("{} desktop entries scanned in {ms:.1}ms", apps.len()));
                 self.apps = apps;
@@ -1476,6 +1499,23 @@ impl App {
         let p = |v: i32| (v as f32 * sc).round() as i32;
         let (lw, lh_) = (self.width as i32, self.height as i32);
         let (w, h) = (p(lw), p(lh_));
+        if self.hidden {
+            // capture phase: a transparent surface, just enough to be granted the keyboard
+            if self.first_frame {
+                self.first_frame = false;
+                let (bw, bh) = if self.viewport.is_some() { (1, 1) } else { (w, h) };
+                let (buffer, canvas) = self.pool.create_buffer(bw, bh, bw * 4, wl_shm::Format::Argb8888).expect("buffer");
+                canvas.fill(0);
+                if let Some(v) = &self.viewport {
+                    v.set_destination(lw, lh_);
+                }
+                self.layer.wl_surface().damage_buffer(0, 0, bw, bh);
+                buffer.attach_to(self.layer.wl_surface()).expect("attach");
+                self.layer.commit();
+                self.note("hidden capture surface committed");
+            }
+            return;
+        }
         let mut pm = Pixmap::new(w as u32, h as u32).unwrap();
         let tf = Transform::from_scale(sc, sc);
         let th = &self.theme;
@@ -1762,7 +1802,12 @@ impl KeyboardHandler for App {
     fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32, _: &[u32], _: &[Keysym]) {
         self.note("keyboard focus");
     }
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {}
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {
+        if self.hidden {
+            self.note("keyboard focus taken while hidden: chord, giving up");
+            self.exit = true;
+        }
+    }
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, ev: KeyEvent) {
         self.handle_key(ev);
     }
@@ -1770,6 +1815,19 @@ impl KeyboardHandler for App {
     fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, m: Modifiers, _: RawModifiers, _: u32) {
         self.ctrl = m.ctrl;
         self.shift = m.shift;
+        if self.hidden && !m.logo && !self.release_watch {
+            // Super is up: the release bind should reveal us within a few ms; if it never does the
+            // press was a chord (Super+1 ...), so give the keyboard back
+            self.release_watch = true;
+            self.note("super released while hidden");
+            let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(150)), |_, _, app: &mut App| {
+                if app.hidden {
+                    app.note("no reveal after Super release: chord, giving up");
+                    app.exit = true;
+                }
+                TimeoutAction::Drop
+            });
+        }
     }
     fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
 }
@@ -1902,11 +1960,36 @@ fn pid_path() -> PathBuf {
 }
 
 /// A second press toggles the launcher closed: if another instance is alive, stop it and exit.
-fn already_open() -> bool {
-    let Ok(text) = std::fs::read_to_string(pid_path()) else { return false };
-    let Ok(pid) = text.trim().parse::<u32>() else { return false };
+fn sock_path() -> PathBuf {
+    runtime_dir().join("launcher-ui.sock")
+}
+
+/// The pid of another live launcher-ui instance, if any.
+fn other_instance() -> Option<u32> {
+    let text = std::fs::read_to_string(pid_path()).ok()?;
+    let pid = text.trim().parse::<u32>().ok()?;
     let alive = std::fs::read_to_string(format!("/proc/{pid}/comm")).map(|c| c.trim() == "launcher-ui").unwrap_or(false);
-    if alive && pid != std::process::id() {
+    (alive && pid != std::process::id()).then_some(pid)
+}
+
+/// Ask the running instance to reveal itself (capture phase) or close (already open). A freshly
+/// started capture instance may not be listening yet, so retry briefly while its pid is alive.
+fn signal_running() -> bool {
+    for _ in 0..10 {
+        if let Ok(mut s) = UnixStream::connect(sock_path()) {
+            return s.write_all(b"toggle").is_ok();
+        }
+        if other_instance().is_none() {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// Fallback toggle for an instance that is not listening: stop it and exit.
+fn already_open() -> bool {
+    if let Some(pid) = other_instance() {
         let _ = Command::new("kill").arg(pid.to_string()).status();
         let _ = std::fs::remove_file(pid_path());
         return true;
@@ -1916,7 +1999,14 @@ fn already_open() -> bool {
 
 fn main() {
     let t0 = Instant::now();
-    if already_open() {
+    // `--capture` runs on the Super press: it takes the keyboard invisibly so keys typed while Super is
+    // still held are kept; the normal run on the Super release then reveals it (or closes an open one)
+    let capture = std::env::args().any(|a| a == "--capture");
+    if capture {
+        if other_instance().is_some() {
+            return;
+        }
+    } else if signal_running() || already_open() {
         return;
     }
     let _ = std::fs::write(pid_path(), std::process::id().to_string());
@@ -1935,6 +2025,12 @@ fn main() {
     let shm = Shm::bind(&globals, &qh).expect("shm");
 
     let surface = compositor.create_surface(&qh);
+    if capture {
+        // pointer events pass through the invisible surface (Super+drag etc.)
+        if let Ok(region) = smithay_client_toolkit::compositor::Region::new(&compositor) {
+            surface.set_input_region(Some(region.wl_region()));
+        }
+    }
     let frac_mgr = globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()).ok();
     let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
     let frac = frac_mgr.as_ref().map(|m| m.get_fractional_scale(&surface, &qh, ()));
@@ -1942,7 +2038,9 @@ fn main() {
     let fractional = frac.is_some() && viewport.is_some();
     let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("launcher-ui"), None);
     layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+    // the hidden capture phase only asks for on-demand focus: an exclusive grab blocks Hyprland's own
+    // focus changes (Super+hjkl ...); a bind that moves focus simply takes the keyboard back (see leave)
+    layer.set_keyboard_interactivity(if capture { KeyboardInteractivity::OnDemand } else { KeyboardInteractivity::Exclusive });
     layer.set_exclusive_zone(-1);
     layer.set_size(0, 0);
     layer.commit();
@@ -1957,6 +2055,17 @@ fn main() {
             }
         })
         .expect("channel");
+    let _ = std::fs::remove_file(sock_path());
+    if let Ok(listener) = UnixListener::bind(sock_path()) {
+        let tx_s = tx.clone();
+        std::thread::spawn(move || {
+            for c in listener.incoming() {
+                if c.is_ok() && tx_s.send(Msg::Toggle).is_err() {
+                    break;
+                }
+            }
+        });
+    }
     // Hyprland state for the workspace actions, off the main thread
     let tx_h = tx.clone();
     std::thread::spawn(move || {
@@ -2018,6 +2127,8 @@ fn main() {
         exit: false,
         first_frame: true,
         first_key: false,
+        hidden: capture,
+        release_watch: false,
         ctrl: false,
         shift: false,
         apps: vec![],
@@ -2075,6 +2186,7 @@ fn main() {
     drop(app);
     let _ = conn.roundtrip();
     let _ = std::fs::remove_file(pid_path());
+    let _ = std::fs::remove_file(sock_path());
     if let Some((Some((id, name, exec, terminal, path)), _)) = &pending {
         let cmd = if *terminal { format!("alacritty -e sh -c '{}'", exec.replace('\'', "'\\''")) } else { exec.clone() };
         let mut c = Command::new("sh");
