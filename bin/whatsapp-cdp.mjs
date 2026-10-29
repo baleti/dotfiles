@@ -24,6 +24,7 @@ for (const s of steps) {
   const [name, a, b] = s.split(':');
   if (name === 'click') await click(+a, +b);
   if (name === 'esc') { await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }); }
+  if (name === 'type') for (const ch of a) { await send('Input.dispatchKeyEvent', { type: 'char', text: ch, key: ch }); await jitter(150, 400); }
   if (name === 'wait') await sleep(+a);
   if (name === 'shot') await shot(a);
   await jitter(1500, 2800);
