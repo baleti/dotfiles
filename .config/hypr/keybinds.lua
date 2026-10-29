@@ -443,6 +443,14 @@ hl.bind(mainMod .. " + l", hl.dsp.focus({ direction = "right" }), { repeating = 
 -- app launcher: a small native process, ~/.config/hypr/launcher-ui (icons, the shared picker DSL from
 -- ~/.config/dsl/rs, completion, history, /g sections, workspace actions). It replaced the Quickshell
 -- launcher (and, before that, `rofi -show drun`). A second tap toggles it closed; Escape also closes.
+-- On the Super *press* a `--capture` instance takes the keyboard invisibly and buffers whatever is typed
+-- (so "mod /add" rolled together keeps its "/"); the release bind below reveals it. If the press was a
+-- chord (Super+1 ...) no reveal comes and the capture instance gives the keyboard back after 150 ms.
+-- Which of the two binds matches depends on whether Hyprland evaluates the modifier state before or
+-- after applying the Super press; the instance guards against a double start.
+local launcherUi = os.getenv("HOME") .. "/.config/hypr/launcher-ui/target/release/launcher-ui"
+hl.bind("Super_l", hl.dsp.exec_cmd(launcherUi .. " --capture"), { description = "Launcher: capture typing from the Super press" })
+hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd(launcherUi .. " --capture"), { description = "Launcher: capture typing from the Super press" })
 hl.bind(mainMod .. " + Super_l", hl.dsp.exec_cmd(os.getenv("HOME") .. "/.config/hypr/launcher-ui/target/release/launcher-ui"), { release = true, description = "Open the app launcher" })
 
 -- master/stack layout cycling
