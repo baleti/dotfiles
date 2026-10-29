@@ -1,0 +1,10 @@
+# HANDOFF c8-perf (updated 2026-10-29, claude8; account at cap, stopped)
+STATE (all committed; dwg-ballet start-page on host2 ~/dwg-viewer contains it; worktree ~/dwg-ballet-perf branch perf-rust; local copy ~/dwg-ballet-staged for host3 deploy)
+- DWG scene Rust fast path, spawn-pool workers, clip/sane kernels, twist alias, tools/fastparity.py: see perf-progress.md (host3 first layout 1.56 s vs 3.80 s stock for the 2.9 MB drawing).
+- NEW 2026-10-29: SAVE speed. doc.save() was 70-90% of every Save As (pure-Python LZ77); native lz77_compress + adler hooked at the end of dwgwrite.py. Saved files BYTE-IDENTICAL on 9/9 writable corpus drawings, writer 7x-16x faster (AC1032_00 11.97 -> 0.74 s; whole Save As with verification 18.1 -> 4.4 s).
+- QUEUE-perf.md (20 items): done 1, 3, 5, 6, 7, 8, 9; partial 2 (declined, glue-bound), 4 (needs templates/blank_*.dwg from the oracle VM, NEEDS-FROM-ORACLE.md), 10 (fuzz). Results in perf-progress.md; harness scripts in ~/demo-state/perf/.
+NEXT (first thing next session)
+1. Item 10: fix the abort in bspline_samples (dwgscene_fast_src/src/lib.rs ~line 245; validate degree/knots/ctrl lengths, return Err), rebuild (python3 dwgscene_fast_src/build.py --offline on host2 with PATH=$HOME/.cargo/bin), rerun perf/fuzznative.py 20000 6 (expect 0 crashes), also fuzz flatten_block SPLINE with absurd degree; copy the .so to ~/dwg-viewer and ~/dwg-ballet-staged.
+2. Items 11-20 of QUEUE-perf.md (Bits parity on writer streams, host3 cold-open after deploy, RVT regression gate, stale-scene-after-edit race test, cache invalidation after save, hatch port, parser batch decode, 3-OS CI, sheets render budget).
+3. Waiting on others: host3 deploy of ~/dwg-ballet-staged (c8-native/orchestrator, DEPLOY-dwg-ballet-host3.md); RVT sys.path guards (perf-syspath.patch.txt, 1.6 s of 10 s); savegate owner items 5-7 in NEEDS-FROM-PERF.md (source-parse memo, orphan .sgtmp cleanup, EPERM lock fallback on exFAT).
+Gotchas: host2 has NO shared home with host3; kill by pid not pkill -f (matches the ssh shell); ~/dwg-viewer on host2 has its own dwgscene_fast.abi3.so (git-ignored, copy the new build there).
