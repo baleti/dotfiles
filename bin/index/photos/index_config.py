@@ -60,8 +60,9 @@ CAD_SKIP = "*.rvt *.rfa *.rte *.rft *.dwg *.dxf"        # Revit and DWG have the
 def recoll_conf(cfg=None):
     """Text of the merged index's recoll.conf: every path as a topdir, CAD files skipped except under "cad": true paths."""
     ents = entries(cfg)
+    # idxflushmb: write to disk every 200 MB of new data (the default flushes every 10000 documents, hours of work for slow files)
     # filtermaxseconds: Recoll's default of 1200 s per file let a handful of hanging filters (jpeg textures, odd PDFs) cost days
-    lines = ["topdirs = " + " ".join('"%s"' % index_path(p).replace('"', "") for p, _ in ents), "filtermaxseconds = 90", ""]
+    lines = ["topdirs = " + " ".join('"%s"' % index_path(p).replace('"', "") for p, _ in ents), "filtermaxseconds = 90", "idxflushmb = 200", ""]
     for p, f in ents:
         if not f["cad"]:
             lines += [f"[{index_path(p)}]", f"skippedNames+ = {CAD_SKIP}", ""]
