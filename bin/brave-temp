@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fresh throwaway Brave profile in /tmp (no firejail), removed on exit.
+d=$(mktemp -d /tmp/brave-temp.XXXXXX)
+mkdir -p "$d/Default"
+cp ~/.config/brave-firejail/template-Preferences.json "$d/Default/Preferences"
+brave --user-data-dir="$d" --no-first-run "$@"
+rm -rf "$d"
