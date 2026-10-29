@@ -142,71 +142,68 @@ end
 hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }), { description = "Next workspace (scroll)" })
 hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }), { description = "Previous workspace (scroll)" })
 
--- Step back/forth between workspaces on the *current* monitor, using
--- Hyprland's built-in monitor-relative workspace selector ("r-1"/"r+1"):
--- it skips workspaces bound to any other monitor, so this never hops to a
--- workspace currently shown elsewhere, and creates a new one past the end
--- with no manual per-monitor bookkeeping needed.
+-- Step back/forth between workspaces on the *current* monitor in bar order
+-- (the quickshell bar sorts pills by workspace id; names are user-renamed
+-- and independent of position). Hyprland's "r-1"/"r+1" is plain id
+-- arithmetic, so from an id whose neighbour id doesn't exist it creates a
+-- fresh workspace named after that id -- a duplicate of a name already
+-- used by another id. Instead: go to the neighbouring existing workspace on
+-- this monitor; past the last one, create a new workspace with an id above
+-- every existing id whose name is also unused, but only when `create` is set
+-- (window moves); plain navigation stops at the ends -- new workspaces come
+-- from the /add-workspace command. (Never "name:N": that makes an id -1337
+-- workspace the bar hides.) Past the first one: no-op.
+local function step_workspace_id(delta, create)
+    local cur = hl.get_active_workspace()
+    if not cur then return nil end
+    local monitor_id = cur.monitor and cur.monitor.id
+    local here, names, max_id = {}, {}, 0
+    for _, w in ipairs(hl.get_workspaces()) do
+        if w.id > 0 then
+            names[w.name] = true
+            if w.id > max_id then max_id = w.id end
+            if w.monitor and w.monitor.id == monitor_id then table.insert(here, w.id) end
+        end
+    end
+    table.sort(here)
+    if delta < 0 then
+        for i = #here, 1, -1 do
+            if here[i] < cur.id then return here[i] end
+        end
+        return nil
+    end
+    for _, id in ipairs(here) do
+        if id > cur.id then return id end
+    end
+    if not create then return nil end
+    local n = max_id + 1
+    while names[tostring(n)] do n = n + 1 end
+    return n
+end
+
+local function step_workspace(delta)
+    local target = step_workspace_id(delta)
+    if target then hl.dispatch(hl.dsp.focus({ workspace = target })) end
+end
+
 hl.bind("CTRL + ALT + h", function()
     if winswitch.nav("left") then return end
-    hl.dispatch(hl.dsp.focus({ workspace = "r-1" }))
+    step_workspace(-1)
 end, { repeating = true, description = "Previous workspace on this monitor" })
 hl.bind("CTRL + ALT + l", function()
     if winswitch.nav("right") then return end
-    hl.dispatch(hl.dsp.focus({ workspace = "r+1" }))
+    step_workspace(1)
 end, { repeating = true, description = "Next workspace on this monitor" })
 
--- ALT+CTRL+SHIFT+[h/l]: jump straight to the next/previous workspace that
--- actually has windows on it, skipping empty numeric gaps. "r-1"/"r+1" above
--- walk workspace *numbers* one at a time, so from 6 with 7 empty and 8
--- occupied, CTRL+ALT+l lands on (creating) 7 instead of 8. This walks the
--- sorted set of workspace ids seen on any window instead, restricted to the
--- current monitor (like "r-1"/"r+1") so it never hops to a workspace shown
--- on a different monitor.
-local function occupied_workspace_ids(monitor_id)
-    local ids, seen = {}, {}
-    for _, w in ipairs(hl.get_windows({})) do
-        local id = w.workspace and w.workspace.id
-        local mon = w.workspace and w.workspace.monitor
-        if id and id > 0 and mon and mon.id == monitor_id and not seen[id] then
-            seen[id] = true
-            table.insert(ids, id)
-        end
-    end
-    table.sort(ids)
-    return ids
-end
-
-local function jump_to_occupied_workspace(forward)
-    return function()
-        local cur = hl.get_active_workspace()
-        local cur_id = cur and cur.id or 1
-        local monitor_id = cur and cur.monitor and cur.monitor.id
-        local ids = occupied_workspace_ids(monitor_id)
-        if forward then
-            for _, id in ipairs(ids) do
-                if id > cur_id then
-                    hl.dispatch(hl.dsp.focus({ workspace = id }))
-                    return
-                end
-            end
-        else
-            for i = #ids, 1, -1 do
-                if ids[i] < cur_id then
-                    hl.dispatch(hl.dsp.focus({ workspace = ids[i] }))
-                    return
-                end
-            end
-        end
-    end
-end
-
-hl.bind("ALT + CTRL + SHIFT + h", jump_to_occupied_workspace(false), { repeating = true, description = "Previous occupied workspace" })
-hl.bind("ALT + CTRL + SHIFT + l", jump_to_occupied_workspace(true),  { repeating = true, description = "Next occupied workspace" })
-
 -- Move the active window along with you to the prev/next workspace on this monitor.
-hl.bind(mainMod .. " + CTRL + SHIFT + h", hl.dsp.window.move({ workspace = "r-1" }), { repeating = true, description = "Move window to previous workspace on this monitor" })
-hl.bind(mainMod .. " + CTRL + SHIFT + l", hl.dsp.window.move({ workspace = "r+1" }), { repeating = true, description = "Move window to next workspace on this monitor" })
+hl.bind(mainMod .. " + CTRL + SHIFT + h", function()
+    local target = step_workspace_id(-1)
+    if target then hl.dispatch(hl.dsp.window.move({ workspace = target })) end
+end, { repeating = true, description = "Move window to previous workspace on this monitor" })
+hl.bind(mainMod .. " + CTRL + SHIFT + l", function()
+    local target = step_workspace_id(1, true)
+    if target then hl.dispatch(hl.dsp.window.move({ workspace = target })) end
+end, { repeating = true, description = "Move window to next workspace on this monitor" })
 
 -- Move/resize windows with mainMod + LMB/RMB and dragging
 hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(),   { mouse = true, description = "Move window (drag with mouse)" })
