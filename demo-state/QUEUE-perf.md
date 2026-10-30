@@ -40,3 +40,4 @@ Rules: client files local only; host2/host1 for heavy runs; byte/semantic parity
 34. [ ] RVT gate cold variant (item 30) and edit-stage profile: rvtedit __init__ 30 s (params 21 s x2) is cacheable per source sha.
 35. [ ] Gate power for RVT: flip one bit in the RVT writer output before verify (same harness idea as gatepower.py); pass = refused or element-identical.
 36. [x] (done 2026-10-30 on host3, 4 more drawings; the host1 large-file variant stays open) DWG: add 10 more drawings (AC1018/1024/1027/1032 large) to gatepower with 150 trials on host1 when it has memory.
+37. [x] (done 2026-10-30) gate power with torn-write style corruption: truncate / zero run / duplicated block / 8 flips, 0 escapes in 600 trials
