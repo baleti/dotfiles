@@ -34,3 +34,4 @@ Rules: client files local only; host2/host1 for heavy runs; byte/semantic parity
 28. [x] (done 2026-10-30, perf/killcache.py + sweep fix) Cache disk bound: after 100 distinct files opened, cache dir size and prune behaviour; pass = <= keep entries, no partial dirs left by a kill during write_layout.
 29. [x] (done 2026-10-30: import dwgballet.server 0.13 s, aiohttp 0.12 of it, nothing to lazy-load) Startup import cost of dwgballet (python -X importtime): list imports > 20 ms, lazy-load the heavy ones (owner c8-native).
 30. [ ] RVT cold-geometry gate variant: rvtgate with the geometry cache disabled (needs the switch from c8-viewer), baselines for 3 files.
+31. [x] (2026-10-30 gate detection power, perf/gatepower.py: 300 single-bit-flip trials, 1 ESCAPE reported to c8-savegate in NEEDS-FROM-SAVEGATE.md)
