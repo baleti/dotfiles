@@ -15,7 +15,7 @@ class Real(unittest.TestCase):
         by = {}
         for f in files: by.setdefault(open(f, 'rb').read(6), []).append(f)
         pick = [f for v in sorted(by) for f in by[v][:max(1, MAXN // max(1, len(by)))]]
-        e = Env('realcorpus', overwrite=True); tally = {'ok': 0, 'refused': 0, 'unreadable': 0}; bad = []
+        e = Env('realcorpus', overwrite=True); tally = {'ok': 0, 'refused': 0, 'unreadable': 0}; bad = []; reasons = []
         try:
             for i, src in enumerate(pick):
                 ver = open(src, 'rb').read(6).decode('latin1'); f = os.path.join(e.work, 'f%d.dwg' % i); open(f, 'wb').write(open(src, 'rb').read()); h0 = sha(f)
@@ -25,7 +25,7 @@ class Real(unittest.TestCase):
                 try:
                     c, r = s.post('/api/save', {'layers': {name: {'off': True}}})
                     if c != 200:
-                        tally['refused'] += 1
+                        tally['refused'] += 1; reasons.append((ver, str(r.get('error'))[:110]))
                         if sha(f) != h0: bad.append((i, ver, 'refused but changed'))
                         continue
                     if not valid_dwg(f): bad.append((i, ver, 'invalid after save'))
@@ -36,7 +36,7 @@ class Real(unittest.TestCase):
                     tally['ok'] += 1
                 finally: s.kill()
                 if junk(e.work): bad.append((i, ver, 'junk'))
-            print('real corpus', len(pick), 'files', tally, 'bad', bad)
+            print('real corpus', len(pick), 'files', tally, 'bad', bad, '\nrefusals', reasons)
             self.assertEqual(bad, [])
         finally: e.close()
 
