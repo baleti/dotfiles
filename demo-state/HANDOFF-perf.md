@@ -1,4 +1,6 @@
-# HANDOFF c8-perf (updated 2026-10-29, claude8; account at cap, stopped)
+# HANDOFF c8-perf (updated 2026-10-30, claude8)
+DONE 2026-10-30: items 10 (native fuzz 0 aborts), 15 + 16 (stale-scene bugs: cache.key full-content hash, server.fresh() reload; commits 636e2b8..c92974c in host2 ~/dwg-ballet-perf; merge request in NEEDS-FROM-PERF.md). Also done: 11, 12 (0.89 s first layout on 2.9 MB), 13 (perf/rvtgate.py), 19 snippet, 20 measurement; full parity 53/53. NEXT: parity of the 6 largest on host1 (h1run run parityall refused, host1 busy; edit parityall.sh to ls -S | head -6), items 14 (needs RVT write path), 17 hatch port, 18 parser batch decode, 19 merge by c8-crossplat; then add 10 more queue items.
+
 STATE (all committed; dwg-ballet start-page on host2 ~/dwg-viewer contains it; worktree ~/dwg-ballet-perf branch perf-rust; local copy ~/dwg-ballet-staged for host3 deploy)
 - DWG scene Rust fast path, spawn-pool workers, clip/sane kernels, twist alias, tools/fastparity.py: see perf-progress.md (host3 first layout 1.56 s vs 3.80 s stock for the 2.9 MB drawing).
 - NEW 2026-10-29: SAVE speed. doc.save() was 70-90% of every Save As (pure-Python LZ77); native lz77_compress + adler hooked at the end of dwgwrite.py. Saved files BYTE-IDENTICAL on 9/9 writable corpus drawings, writer 7x-16x faster (AC1032_00 11.97 -> 0.74 s; whole Save As with verification 18.1 -> 4.4 s).

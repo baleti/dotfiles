@@ -1,0 +1,25 @@
+  # QUEUE-perf item 19: add under `jobs:` in dwg-ballet .github/workflows/ci.yml (synthetic data only, no corpus)
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python -m pip install -r packaging/requirements-app.txt pytest
+      - run: python dwgscene_fast_src/build.py
+      # bit-exact kernel parity against the Python originals on random synthetic inputs
+      - run: python dwgscene_fast_src/tests/parity.py
+      - run: python dwgscene_fast_src/tests/clip_parity.py
+      - run: python dwgscene_fast_src/tests/sane_parity.py
+      - run: python dwgscene_fast_src/tests/lz_parity.py
+      - run: python dwgscene_fast_src/tests/bits_parity.py
+      - run: python dwgscene_fast_src/tests/hatch_parity.py
+      # pure-Python fallback must still pass with the native module present AND absent
+      - run: python -m pytest -q tests --ignore=tests/browser
+      - run: python -c "import os; os.remove('dwgscene_fast.pyd' if os.name=='nt' else 'dwgscene_fast.abi3.so')"
+      - run: python -m pytest -q tests --ignore=tests/browser

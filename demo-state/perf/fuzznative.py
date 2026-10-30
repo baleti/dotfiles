@@ -40,6 +40,8 @@ calls = [
     lambda: R.dumps(val()),
     lambda: R.rows_batch(*[val() for _ in range(rnd.randint(0, 5))]),
     lambda: R.lz77_compress(bytes(rnd.randrange(256) for _ in range(rnd.randint(0, 80))), rnd.choice([0, 1, 24, 10**6]), rnd.choice([0, 1, 5, 0x7FFF]), rnd.choice([0, 1, 16384]), rnd.choice([0, 1, 3, 4, 5])),
+    lambda: R.hatch_loops(val(), rnd.choice(floats(2)), MAT(), rnd.choice([None, ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)), val()])),
+    lambda: R.hatch_loops([{"segs": [rnd.choice([("P", tuple(floats(2)), rnd.choice(floats(2))), ("L", tuple(floats(2)), tuple(floats(2))), ("A", tuple(floats(2)), rnd.choice(floats(2)), rnd.choice(floats(2)), rnd.choice(floats(2)), rnd.choice([True, False])), ("E", tuple(floats(2)), tuple(floats(2)), rnd.choice(floats(2)), rnd.choice(floats(2)), rnd.choice(floats(2)), rnd.choice([True, False])), ("S", 3), val()]) for _ in range(rnd.randint(0, 6))]} for _ in range(rnd.randint(0, 3))], rnd.choice(floats(2)), MAT()),
     lambda: R.lz77_compress(val()),
     lambda: R.adler(rnd.choice([b"", b"abc", val()]), rnd.choice(SC)),
     lambda: [getattr(R.Bits(bytes(rnd.randrange(256) for _ in range(rnd.randint(0, 40))), rnd.choice([0, 3, 100, -1, 2**70])), rnd.choice(["B", "BB", "BS", "BL", "RC", "RS", "RL", "RD", "BD", "BD3", "H", "TV", "MC", "MS", "bits"]), lambda *a: None)(*[rnd.choice([0, 1, 7, 64, 10**9, -1]) for _ in range(rnd.randint(0, 2))]) for _ in range(5)],
