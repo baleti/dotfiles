@@ -33,7 +33,7 @@ Rules: client files local only; host2/host1 for heavy runs; byte/semantic parity
 27. [x] (done 2026-10-30, measured, no change worth making) Scene JSON size: gzip level / dumps cost per layout (AC1032_00): measure bytes and ms of Rust dumps vs json.dumps, check the client parses both identically.
 28. [x] (done 2026-10-30, perf/killcache.py + sweep fix) Cache disk bound: after 100 distinct files opened, cache dir size and prune behaviour; pass = <= keep entries, no partial dirs left by a kill during write_layout.
 29. [x] (done 2026-10-30: import dwgballet.server 0.13 s, aiohttp 0.12 of it, nothing to lazy-load) Startup import cost of dwgballet (python -X importtime): list imports > 20 ms, lazy-load the heavy ones (owner c8-native).
-30. [ ] RVT cold-geometry gate variant: rvtgate with the geometry cache disabled (needs the switch from c8-viewer), baselines for 3 files.
+30. [x] (done 2026-10-30, rvtgate.py --cold, RVT_NO_GEOM_CACHE=1) RVT cold-geometry gate variant: rvtgate with the geometry cache disabled (needs the switch from c8-viewer), baselines for 3 files.
 31. [x] (2026-10-30 gate detection power, perf/gatepower.py: 300 single-bit-flip trials, 1 ESCAPE reported to c8-savegate in NEEDS-FROM-SAVEGATE.md)
 32. [ ] Re-run perf/gatepower.py (host2, 150 trials x 5 files) after c8-savegate's fix; pass = ESCAPE 0 everywhere.
 33. [ ] After the elements-cache/processes fix: re-time RVT Save As on 2024 Structural with perf/srm_t.py; pass < 60 s, verify_diffs 0, only_target_moved true.
