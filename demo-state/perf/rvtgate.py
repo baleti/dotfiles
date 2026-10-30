@@ -2,7 +2,10 @@
 Runs rvtballet.build.convert into a fresh dir (cold converter cache), records total + the converter's own log timings, compares with the stored baseline (fail if total > +15%)."""
 import sys, os, time, json, tempfile, re
 REPO = os.path.expanduser("~/src/rvt-viewer"); sys.path.insert(0, REPO)
-args = sys.argv[1:]; base = os.path.expanduser("~/rvtgate_baseline.json"); upd = False
+args = sys.argv[1:]
+if "--cold" in args: args.remove("--cold"); os.environ["RVT_NO_GEOM_CACHE"] = "1"; COLD = True
+else: COLD = False
+base = os.path.expanduser("~/rvtgate_baseline_cold.json" if COLD else "~/rvtgate_baseline.json"); upd = False
 if "--baseline" in args: i = args.index("--baseline"); base = args[i + 1]; del args[i:i + 2]
 if "--update" in args: args.remove("--update"); upd = True
 from rvtballet import build
