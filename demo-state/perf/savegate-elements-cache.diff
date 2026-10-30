@@ -1,0 +1,32 @@
+--- /home/user1/src/savegate/savegate/rvt_elements.py	2026-10-29 01:34:17.322151852 +0000
++++ rvt_elements_new.py	2026-10-30 11:00:08.228094275 +0000
+@@ -4,7 +4,29 @@
+ import os, sys, tempfile, hashlib, json
+ 
+ 
++def _cache_path(buf, flags):
++    d = os.environ.get('SAVEGATE_ELEMENTS_CACHE') or os.path.join(os.path.expanduser('~'), '.cache', 'savegate', 'elements')
++    h = hashlib.sha1(buf).hexdigest()
++    return os.path.join(d, '%s_%s.json' % (h, ''.join('1' if f else '0' for f in flags)))
++
++
+ def elements(buf, reader_dir=None, with_geometry=True, with_params=True, with_records=True):
++    """memoised on the sha1 of the file bytes (+ flags): the SOURCE file of a Save is snapshotted again on every save of an open document (345 s of 577 s on a 26 MB model)"""
++    cp = _cache_path(buf, (with_geometry, with_params, with_records))
++    try:
++        with open(cp) as f: return {int(k) if k.lstrip('-').isdigit() else k: v for k, v in json.load(f).items()}
++    except (OSError, ValueError): pass
++    out = _elements(buf, reader_dir, with_geometry, with_params, with_records)
++    try:
++        os.makedirs(os.path.dirname(cp), exist_ok=True)
++        tmp = '%s.%d.tmp' % (cp, os.getpid())
++        with open(tmp, 'w') as f: json.dump({str(k): v for k, v in out.items()}, f)
++        os.replace(tmp, cp)
++    except OSError: pass
++    return out
++
++
++def _elements(buf, reader_dir=None, with_geometry=True, with_params=True, with_records=True):
+     reader_dir = reader_dir or os.environ.get('SAVEGATE_RVT_READER') or os.path.expanduser('~/rvt-research')
+     if reader_dir not in sys.path: sys.path.insert(0, reader_dir)
+     import rvt_geometry as G
