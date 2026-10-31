@@ -110,16 +110,25 @@ def path_matches(path, value):
 
 def wants(ext, w):
     """One //mime or //ext entry against a file's extension: ".pdf" (from //ext) is that extension exactly;
-    anything else is a kind name or an extension."""
+    anything else is an extension or a kind name, and a kind name may be typed partially: "imag" is "image",
+    "d" is every kind containing a d (document, code, audio, ...)."""
     if w.startswith("."):
         return w[1:] == ext
-    return w == ext or EXT_KIND.get(ext) == w
+    return w == ext or kind_wanted(EXT_KIND.get(ext), w)
+
+def kind_wanted(kind, w):
+    """A file kind (None when its extension is in no kind) against a //mime word: a substring of the kind name."""
+    return bool(kind) and bool(w) and w in kind
+
+def wants_directory(wanted):
+    """Does a //mime list ask for folders: any word that is a substring of "directory" ("dir", "d", "ory")."""
+    return any(not w.startswith(".") and w in DIRECTORY for w in wanted)
 
 def matches_mime(path, wanted, is_dir=False):
     """wanted: list of kind names, extensions or ".ext" entries; a file matches if any applies.
     A directory matches only "directory"; its name's dots are not an extension."""
     if is_dir:
-        return DIRECTORY in wanted
+        return wants_directory(wanted)
     ext = kind_of(path)
     return any(wants(ext, w) for w in wanted)
 
@@ -904,7 +913,7 @@ class NameTable:
         if not_wanted:
             banned = [k for k, e in enumerate(ext_names) if any(wants(e, w) for w in not_wanted)]
             hit = np.isin(ext_codes, np.array(banned, np.int32)) & (size_arr >= 0)
-            if DIRECTORY in not_wanted:
+            if wants_directory(not_wanted):
                 hit |= size_arr < 0
             mask &= ~hit
         for c in tags["!size"]:
@@ -912,7 +921,7 @@ class NameTable:
         if wanted:
             allowed = [k for k, e in enumerate(ext_names) if any(wants(e, w) for w in wanted)]
             hit = np.isin(ext_codes, np.array(allowed, np.int32)) & (size_arr >= 0)
-            if DIRECTORY in wanted:
+            if wants_directory(wanted):
                 hit |= size_arr < 0
             mask &= hit
         for c in tags["size"]:

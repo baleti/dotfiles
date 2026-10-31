@@ -113,7 +113,10 @@ the verbs are `/face <name>` (photos showing a registered person) and
 changes the search space (photos only, ranked by meaning). The per-column tags stay `//`:
 `//name <text>` (file name), `//path <text>` (folder), `//size >5M` / `<200K` (size comparison), and
 `//dm <text>` (date modified; `2015-06` substring or `>2015-06` / `<2015-06`).
-`//mime <kind>` (a file kind such as `image`, `pdf`, `code`, `directory` (folders only), or a bare extension) and
+`//mime <kind>` (a file kind such as `image`, `pdf`, `code`, `directory` (folders only), or a bare extension; the kind
+may be typed partially - any substring of the kind name matches, so `//mime imag` is `//mime image`, `//mime dir` is folders,
+and `//mime d` matches every kind with a d in it (document, code, audio, directory), which narrows as you type; an exact
+extension such as `pdf` or `doc` still matches as before) and
 `//ext <.pdf>` (`//extension`; one exact extension, the leading dot optional, case
 ignored - `//ext .csv`). Repeated `//mime`/`//ext` entries OR together, so
 `//ext .jpg //ext .png` finds both (so does `//ext .jpg||.png`, and `!//mime directory||rws`
