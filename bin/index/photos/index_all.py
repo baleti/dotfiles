@@ -7,7 +7,9 @@ All paths feed one Recoll index, ~/.cache/indexes/documents. Without arguments e
   fulltext    recollindex on the merged config (recoll.conf is rewritten from the path list first)
   chroma      full-text chunk embeddings (ai1 GPU), recoll_fulltext_to_chroma.py; documents already embedded in
               the old per-folder stores (~/.cache/indexes/<old name>/chroma) count as done
-  clip_pages  CLIP on large images inside PDFs, pdf_pages_clip.py (appends to clip/pdf-pages.jsonl)
+  clip_pages  CLIP on large images inside PDFs: NOT run here any more (2026-10-31). pdf_pages_clip.py read every PDF
+              over NFS on host3's CPU and needs a CLIP worker on host1; it is to run on host1 next to the files
+              (see README). Progress is kept in clip/pdf-pages.done / pdf-pages.jsonl.
   clip, faces CLIP and InsightFace on the image files need a GPU: not here. They run on host1 through ai1 every 3 days,
               new and changed images only (remote_images.py + host1_image_job.py, timers image-index-start / image-index-pull).
 """
@@ -52,7 +54,7 @@ def main():
         elif t in ("clip", "faces"):
             print("   runs on host1 (remote_images.py), not here", flush=True)
         elif t == "clip_pages":
-            subprocess.run([PY, os.path.join(HERE, "pdf_pages_clip.py"), "--list", PDF_LIST, "--threads", "2"], check=False)
+            print("   runs on host1, not here (the old ai1 VM CLIP worker is gone; see README)", flush=True)
 
 
 if __name__ == "__main__":
