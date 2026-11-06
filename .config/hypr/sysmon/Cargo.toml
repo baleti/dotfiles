@@ -8,6 +8,10 @@ name = "sysmond"
 path = "src/bin/sysmond.rs"
 
 [[bin]]
+name = "netcap-probe"
+path = "src/bin/netcap-probe.rs"
+
+[[bin]]
 name = "sysmon-graph"
 path = "src/bin/sysmon-graph.rs"
 

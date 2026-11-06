@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod netcap;
+
 /// One sample per tick, so callers can convert to a duration however they like.
 pub const SAMPLE_INTERVAL_MS: u64 = 1000;
 
