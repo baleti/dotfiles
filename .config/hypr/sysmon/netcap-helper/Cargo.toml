@@ -1,0 +1,30 @@
+# Tiny privileged packet-metadata helper for sysmond. Deliberately a standalone
+# crate (own [workspace], own lockfile, own target dir): sysmond is large and
+# stays unprivileged; only THIS binary is ever given CAP_NET_RAW, installed
+# once root-owned (see ../install-netcap-helper.sh) and not rebuilt with sysmond.
+[package]
+name = "netcap-helper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+name = "netcap_helper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "netcap-helper"
+path = "src/main.rs"
+
+[dependencies]
+libc = "=0.2.189"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true

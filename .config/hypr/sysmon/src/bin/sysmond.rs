@@ -1618,6 +1618,10 @@ fn parse_nethogs_line(line: &str) -> Option<(i32, String, f64, f64)> {
     Some((pid, name, sent, recv))
 }
 
+/// True once the native capture (`sysmon::netcap`, fed by the privileged
+/// `netcap-helper`) started; the nethogs fallback is then never spawned.
+static NATIVE_NETCAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// One `nethogs -t` instance PER interface, always on. `nethogs`'s own CLI
 /// accepts several `device` args, but even given several it never splits
 /// its report *by* device -- so true per-interface attribution (2026-09-11:
@@ -1709,6 +1713,34 @@ fn recompute_top_net(h: &mut History) {
     h.top_net = top;
 }
 
+/// Publishes one interface's latest per-process (pid, name, sent_kb, recv_kb)
+/// samples -- from either the native packet capture (`sysmon::netcap`) or the
+/// nethogs fallback -- into the history: the untruncated `net_latest` list,
+/// this interface's own top-by-recv/top-by-sent snapshot sources, and the
+/// recomputed machine-wide `top_net`.
+fn net_publish(history: &Arc<Mutex<History>>, iface: &str, samples: Vec<(i32, String, f64, f64)>) {
+    let by_recv_entries: Vec<ProcEntry> = samples
+        .iter()
+        .filter(|(_, _, _, recv)| *recv > 0.0)
+        .map(|(pid, name, _, recv)| ProcEntry { pid: *pid, name: name.clone(), value: *recv, detail: String::new(), util_pct: 0.0 })
+        .collect();
+    let by_sent_entries: Vec<ProcEntry> = samples
+        .iter()
+        .filter(|(_, _, sent, _)| *sent > 0.0)
+        .map(|(pid, name, sent, _)| ProcEntry { pid: *pid, name: name.clone(), value: *sent, detail: String::new(), util_pct: 0.0 })
+        .collect();
+    let mut by_recv = top_n(by_recv_entries, SNAP_TOP_N);
+    let mut by_sent = top_n(by_sent_entries, SNAP_TOP_N);
+    enrich_details(&mut by_recv);
+    enrich_details(&mut by_sent);
+
+    let mut h = history.lock().unwrap();
+    h.net_latest.insert(iface.to_string(), samples);
+    h.hist_top_net_rx.insert(iface.to_string(), by_recv);
+    h.hist_top_net_tx.insert(iface.to_string(), by_sent);
+    recompute_top_net(&mut h);
+}
+
 /// Reads one interface's `nethogs -t` trace-mode output (one block per ~1s
 /// refresh) until the child exits -- expected to run for as long as the
 /// interface stays up; if it dies (the interface going down, a transient
@@ -1723,26 +1755,7 @@ fn nethogs_reader(stdout: std::process::ChildStdout, history: Arc<Mutex<History>
             let samples: Vec<(i32, String, f64, f64)> =
                 current.drain().map(|(pid, (name, sent, recv))| (pid, name, sent, recv)).collect();
 
-            let by_recv_entries: Vec<ProcEntry> = samples
-                .iter()
-                .filter(|(_, _, _, recv)| *recv > 0.0)
-                .map(|(pid, name, _, recv)| ProcEntry { pid: *pid, name: name.clone(), value: *recv, detail: String::new(), util_pct: 0.0 })
-                .collect();
-            let by_sent_entries: Vec<ProcEntry> = samples
-                .iter()
-                .filter(|(_, _, sent, _)| *sent > 0.0)
-                .map(|(pid, name, sent, _)| ProcEntry { pid: *pid, name: name.clone(), value: *sent, detail: String::new(), util_pct: 0.0 })
-                .collect();
-            let mut by_recv = top_n(by_recv_entries, SNAP_TOP_N);
-            let mut by_sent = top_n(by_sent_entries, SNAP_TOP_N);
-            enrich_details(&mut by_recv);
-            enrich_details(&mut by_sent);
-
-            let mut h = history.lock().unwrap();
-            h.net_latest.insert(iface.clone(), samples);
-            h.hist_top_net_rx.insert(iface.clone(), by_recv);
-            h.hist_top_net_tx.insert(iface.clone(), by_sent);
-            recompute_top_net(&mut h);
+            net_publish(&history, &iface, samples);
             continue;
         }
         if let Some((pid, name, sent, recv)) = parse_nethogs_line(&line) {
@@ -2807,7 +2820,9 @@ fn sample_loop(history: Arc<Mutex<History>>, clk_tck: f64, demand: Demand, netho
         // lets an interface that's down when first seen (wlan0 while on
         // ethernet, say) start being monitored the moment it comes up.
         for (name, rx_bps, tx_bps) in &rates {
-            nethogs_pool_ensure(&nethogs_pool, history.clone(), name);
+            if !NATIVE_NETCAP.load(Ordering::Relaxed) {
+                nethogs_pool_ensure(&nethogs_pool, history.clone(), name);
+            }
             let buf = h.net.entry(name.clone()).or_insert_with(TwoSeriesBuf::new);
             buf.a.push_raw(*rx_bps);
             buf.b.push_raw(*tx_bps);
@@ -3220,6 +3235,32 @@ fn main() {
     // as it discovers each one (see NethogsPool).
     let demand = Demand::new();
     let nethogs_pool = Arc::new(Mutex::new(NethogsPool { children: HashMap::new() }));
+
+    // Native per-process network attribution (replaces the nethogs children,
+    // which leak ~25 MB/day each). sysmond itself stays unprivileged: the
+    // packet capture lives in the tiny root-installed `netcap-helper` (see
+    // netcap-helper/ and install-netcap-helper.sh). If it isn't installed or
+    // can't confine itself, `start` fails and sample_loop falls back to nethogs.
+    {
+        let history = history.clone();
+        match sysmon::netcap::start(move |report| {
+            let ifaces: Vec<String> = report.keys().cloned().collect();
+            for (iface, samples) in report {
+                net_publish(&history, &iface, samples);
+            }
+            // Interfaces that vanished since the last tick: drop their lists.
+            let mut h = history.lock().unwrap();
+            let gone: Vec<String> = h.net_latest.keys().filter(|k| !ifaces.contains(k)).cloned().collect();
+            for k in gone {
+                h.net_latest.remove(&k);
+                h.hist_top_net_rx.remove(&k);
+                h.hist_top_net_tx.remove(&k);
+            }
+        }) {
+            Ok(()) => NATIVE_NETCAP.store(true, Ordering::Relaxed),
+            Err(e) => eprintln!("sysmond: native packet capture unavailable ({e}); falling back to nethogs (run install-netcap-helper.sh to enable it)"),
+        }
+    }
 
     {
         let history = history.clone();
