@@ -606,6 +606,8 @@ fn is_fts(q: &str) -> bool {
     false
 }
 
+enum Boot { People(Vec<String>), Facets(FacetsReply) }
+
 struct Fetch {
     seq: u64,
     page: usize,
@@ -657,6 +659,11 @@ struct App {
     seq: u64,
     snip_tx: Sender<(String, String, Result<Vec<Snip>, String>)>,
     snip_rx: Receiver<(String, String, Result<Vec<Snip>, String>)>,
+    /// people and facets arrive from background threads: they used to block the first frame (up to a second or two on a
+    /// cold server, where /people also holds the lock the first query needs)
+    boot_rx: Receiver<Boot>,
+    boot_tx: Sender<Boot>,
+    people_asked: bool,
     /// preview pane: snippets per (file, query)
     snips: HashMap<(String, String), SnipState>,
     tx: Sender<Fetch>,
@@ -1677,6 +1684,7 @@ impl App {
             }
         });
         let (snip_tx, snip_rx) = channel();
+        let (boot_tx, boot_rx) = channel::<Boot>();
         let mut app = Self {
             pal: load_palette(&cfg().scheme),
             query: String::new(),
@@ -1738,6 +1746,9 @@ impl App {
             rx,
             snip_tx,
             snip_rx,
+            boot_rx,
+            boot_tx: boot_tx.clone(),
+            people_asked: false,
             snips: HashMap::new(),
             total: 0,
             pages: HashMap::new(),
@@ -1799,8 +1810,10 @@ impl App {
             cand_multi: None,
             popup_q: String::new(),
         };
-        app.people = fetch_people();
-        app.facets = fetch_facets();
+        {   // facets (completion values) a moment after the first query has been sent; people only when /face is typed
+            let (tx, w) = (boot_tx, cc.egui_ctx.clone());
+            std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(400)); let _ = tx.send(Boot::Facets(fetch_facets())); w.request_repaint(); });
+        }
         app.send_query();
         let ver = app.ver.clone();
         std::thread::spawn(move || loop {
@@ -2189,6 +2202,14 @@ impl App {
     }
 
     fn drain(&mut self) {
+        if !self.people_asked && self.query.contains("/face") {
+            self.people_asked = true;
+            let (tx, w) = (self.boot_tx.clone(), self.wake.clone());
+            std::thread::spawn(move || { let _ = tx.send(Boot::People(fetch_people())); w.request_repaint(); });
+        }
+        while let Ok(b) = self.boot_rx.try_recv() {
+            match b { Boot::People(p) => self.people = p, Boot::Facets(f) => self.facets = f }
+        }
         while let Ok((remote, path)) = self.hq_rx.try_recv() {
             self.hq_map.insert(remote, path);
         }
