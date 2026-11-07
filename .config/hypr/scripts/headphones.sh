@@ -21,8 +21,10 @@ action="${1:?usage: headphones.sh connect|disconnect}"
 
 # shellcheck disable=SC1090
 [ -r "$conf" ] && . "$conf"
+# shellcheck disable=SC1090
+[ -r "${conf%.conf}.local.conf" ] && . "${conf%.conf}.local.conf"
 if [ -z "${HEADPHONES_ID:-}" ]; then
-    notify-send -u critical "Headphones" "HEADPHONES_ID not set in $conf"
+    notify-send -u critical "Headphones" "HEADPHONES_ID not set in ${conf%.conf}.local.conf"
     exit 1
 fi
 
