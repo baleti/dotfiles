@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily gate for the Debian health check (script itself decides if a run is due: 1-4 days adaptive, default 2)
+
+[Timer]
+OnBootSec=20min
+OnCalendar=*-*-* 09:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
