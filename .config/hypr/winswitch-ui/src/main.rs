@@ -11,7 +11,7 @@
 //!
 //! The main thread only draws and handles input. Everything slow runs on worker threads and
 //! arrives as messages over a calloop channel:
-//!   * fresh captures, streamed by the `winswitch` capture worker (taken on every invocation)
+//!   * fresh captures of the focused / not-yet-cached windows from the `winswitch` backend (the rest is kept fresh by `winswitch --daemon`)
 //!   * Hyprland socket2 events from winswitch.lua (`altup`, `uitab`, `nav`, `openlayer`)
 //! The window list is the file the Lua side already writes
 //! ($XDG_RUNTIME_DIR/winswitch-windows.json), so the first frame needs no IPC.
@@ -383,14 +383,15 @@ fn decode_scaled(path: &Path, fw: u32, fh: u32) -> Option<(u32, u32, Vec<u8>)> {
     Some((dw as u32, dh as u32, out))
 }
 
-/// Takes a fresh capture of every window now (nothing is cached between invocations): the
-/// `winswitch` capture worker (it holds the screencopy grant) streams one PNG per window, each
-/// decoded here to its frame size (`targets`: address -> physical frame size).
+/// Runs the `winswitch` backend in serve mode: tmux/Claude enrichment, plus a capture of only the
+/// focused window and windows the `winswitch --daemon` has not captured yet (the daemon keeps
+/// the rest of the cache fresh, throttled by load; no replay, `spawn_cache` reads the cache).
+/// Each PNG is decoded here to its frame size (`targets`: address -> physical frame size).
 fn spawn_capture(targets: Vec<(String, u32, u32)>, tx: Sender<Msg>) {
     let sizes: HashMap<String, (u32, u32)> = targets.into_iter().map(|(a, w, h)| (a, (w, h))).collect();
     std::thread::spawn(move || {
         let bin = PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/hypr/winswitch/target/release/winswitch");
-        let Ok(mut child) = Command::new(bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return };
+        let Ok(mut child) = Command::new(bin).env("WINSWITCH_NO_REPLAY", "1").stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return };
         let Some(out) = child.stdout.take() else { return };
         for line in BufReader::new(out).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };

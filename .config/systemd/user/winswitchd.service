@@ -1,0 +1,18 @@
+[Unit]
+Description=Throttled window-thumbnail refresher for alt-tab and /sw (winswitch --daemon)
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/hypr/winswitch/target/release/winswitch --daemon
+Restart=always
+RestartSec=5
+Nice=19
+CPUWeight=5
+CPUQuota=30%
+IOSchedulingClass=idle
+MemoryHigh=200M
+
+[Install]
+WantedBy=default.target

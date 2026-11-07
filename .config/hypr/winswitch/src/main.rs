@@ -15,8 +15,10 @@
 //! wayland-toplevel-export/dmabuf and tmux/Claude correlation.
 //! `hyprctl::list_windows()` here only decides what to capture.
 
+mod daemon;
 mod enrich;
 mod hyprctl;
+mod idle;
 mod output;
 mod protocol;
 mod wayland_capture;
@@ -126,7 +128,47 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> std::io::Resu
     Ok(())
 }
 
+/// PNG dimensions straight from the IHDR (no decode).
+fn png_size(path: &Path) -> Option<(i32, i32)> {
+    use std::io::Read;
+    let mut head = [0u8; 24];
+    fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+    let w = u32::from_be_bytes(head[16..20].try_into().ok()?) as i32;
+    let h = u32::from_be_bytes(head[20..24].try_into().ok()?) as i32;
+    Some((w, h))
+}
+
+/// Memory pressure (PSI "full" avg10): above this, serve mode takes no new captures at all.
+fn memory_pressure_high() -> bool {
+    let Ok(text) = fs::read_to_string("/proc/pressure/memory") else { return false };
+    text.lines()
+        .find(|l| l.starts_with("full"))
+        .and_then(|l| l.split_whitespace().find_map(|f| f.strip_prefix("avg10=")))
+        .and_then(|v| v.parse::<f64>().ok())
+        .map_or(false, |v| v > 6.0)
+}
+
+/// Newest cached capture per address: (run id, path).
+fn newest_cached(dir: &Path) -> std::collections::HashMap<String, (u128, PathBuf)> {
+    let mut m: std::collections::HashMap<String, (u128, PathBuf)> = std::collections::HashMap::new();
+    let Ok(rd) = fs::read_dir(dir) else { return m };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_suffix(".png") else { continue };
+        let Some((addr, run)) = stem.split_once('-') else { continue };
+        let Ok(run) = run.parse::<u128>() else { continue };
+        if m.get(addr).map_or(true, |(r, _)| run > *r) {
+            m.insert(addr.to_string(), (run, e.path()));
+        }
+    }
+    m
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--daemon") {
+        daemon::run();
+        return;
+    }
     let start = Instant::now();
     log_line("start (capture worker)");
 
@@ -157,9 +199,38 @@ fn main() {
     let run_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
 
     let skip_blank = std::env::var_os("WINSWITCH_SKIP_BLANK").is_some();
-    let thumb_rx = wayland_capture::start(&windows);
-    let enrich_rx = enrich::start(&windows);
 
+    // Serve mode (no WINSWITCH_ONLY): the `winswitch --daemon` keeps the cache fresh, so an
+    // invocation replays what is cached (unless WINSWITCH_NO_REPLAY: the native alt-tab reads
+    // the cache itself) and captures only the focused window plus windows with no capture yet,
+    // at most SERVE_CAP of them -- and none while memory pressure is high. It no longer
+    // captures every window each time, which stalled the compositor under memory pressure.
+    let mut capture_windows: Vec<Window> = windows.clone();
+    if only.is_none() {
+        let cached = newest_cached(&thumb_dir);
+        if std::env::var_os("WINSWITCH_NO_REPLAY").is_none() {
+            for w in &windows {
+                if let Some((_, p)) = cached.get(&w.address) {
+                    if let Some((cw, ch)) = png_size(p) {
+                        output::thumbnail(&w.address, &format!("file://{}", p.display()), cw, ch);
+                    }
+                }
+            }
+        }
+        const SERVE_CAP: usize = 6;
+        capture_windows = if memory_pressure_high() {
+            Vec::new()
+        } else {
+            windows.iter().enumerate().filter(|(i, w)| *i == 0 || !cached.contains_key(&w.address)).map(|(_, w)| w.clone()).take(SERVE_CAP).collect()
+        };
+    }
+    let thumb_rx = if capture_windows.is_empty() { std::sync::mpsc::channel().1 } else { wayland_capture::start(&capture_windows) };
+    let enrich_rx = if std::env::var_os("WINSWITCH_NO_ENRICH").is_some() { std::sync::mpsc::channel().1 } else { enrich::start(&windows) };
+
+    let no_enrich = std::env::var_os("WINSWITCH_NO_ENRICH").is_some();
+    let mut enrich_done = false;
+    // Nothing to capture: stay only as long as enrichment (tmux/Claude correlation) needs.
+    let enrich_wait = Instant::now() + Duration::from_secs(4);
     let mut deadline = Instant::now() + FIRST_REPLY_CAP;
     let mut thumbs_done = 0usize;
     loop {
@@ -167,7 +238,7 @@ fn main() {
         while let Ok(msg) = thumb_rx.try_recv() {
             progressed = true;
             thumbs_done += 1;
-            let Some(w) = windows.get(msg.index) else { continue };
+            let Some(w) = capture_windows.get(msg.index) else { continue };
             // WINSWITCH_SKIP_BLANK=1 (group picker, group-open): a flat frame is "not drawn
             // yet", not a thumbnail -- report nothing so the caller counts it as missing
             // and asks again later.
@@ -184,13 +255,21 @@ fn main() {
                 output::thumbnail(&w.address, &format!("file://{}", path.display()), msg.width, msg.height);
             }
         }
-        while let Ok((idx, meta)) = enrich_rx.try_recv() {
+        loop {
+            let (idx, meta) = match enrich_rx.try_recv() {
+                Ok(m) => m,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    enrich_done = true;
+                    break;
+                }
+                Err(_) => break,
+            };
             progressed = true;
             if let Some(w) = windows.get(idx) {
                 output::enrich(&w.address, &meta);
             }
         }
-        if thumbs_done >= windows.len() || Instant::now() >= deadline {
+        if (thumbs_done >= capture_windows.len() && (!capture_windows.is_empty() || no_enrich || enrich_done || Instant::now() >= enrich_wait)) || Instant::now() >= deadline {
             break;
         }
         if !progressed {
