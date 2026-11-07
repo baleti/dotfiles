@@ -670,6 +670,8 @@ struct App {
     gscroll: i32, // grouped view scroll, px in content space, snapped to a line start
     today: String,
     head_hits: Vec<(i32, i32, i32, i32, String)>,
+    sb_track: Option<(i32, i32, i32, i32)>, // scrollbar track rect (logical), when the list overflows
+    sb_grab: Option<i32>, // dragging the thumb: pointer offset inside it
     pop_hits: Vec<(i32, i32, i32, i32, usize)>,
     /// the open completion / history popup
     ac: Option<Ac>,
@@ -834,6 +836,46 @@ impl App {
             y += ch;
         }
         (out, y)
+    }
+
+    /// (content height, view height, scroll position) in px, None when everything fits.
+    fn sb_geom(&self) -> Option<(i32, i32, i32)> {
+        self.layout.as_ref()?;
+        let (content, view, pos) = if self.group.is_some() {
+            (self.flow().1, self.group_view_h(), self.gscroll)
+        } else {
+            let ch = self.cell_hgt();
+            let total = (self.filtered.len() as i32 + self.cols() as i32 - 1) / self.cols() as i32;
+            (total * ch, self.card_dims().1 * ch, self.scroll * ch)
+        };
+        (content > view && view > 0).then_some((content, view, pos))
+    }
+
+    fn sb_thumb_h(content: i32, view: i32) -> i32 {
+        (view as i64 * view as i64 / content as i64).max(24).min(view as i64) as i32
+    }
+
+    /// Scroll so the top of the view is at `px` (nearest whole row / line start).
+    fn set_scroll_px(&mut self, px: i32) {
+        let Some((content, view, _)) = self.sb_geom() else { return };
+        if self.group.is_some() {
+            let (items, _) = self.flow();
+            let bands = Self::bands(&items);
+            let max = bands.iter().copied().filter(|&b| b + view <= content.max(view)).max().unwrap_or(0).max(0);
+            self.gscroll = bands.iter().copied().filter(|&b| b <= max).min_by_key(|&b| (b - px).abs()).unwrap_or(0);
+        } else {
+            let ch = self.cell_hgt().max(1);
+            let max = ((content - view) / ch).max(0);
+            self.scroll = ((px as f32 / ch as f32).round() as i32).clamp(0, max);
+        }
+        self.dirty = true;
+    }
+
+    fn sb_drag_to(&mut self, y: f64) {
+        let (Some((content, view, _)), Some((_, ty, _, _)), Some(grab)) = (self.sb_geom(), self.sb_track, self.sb_grab) else { return };
+        let travel = (view - Self::sb_thumb_h(content, view)).max(1);
+        let frac = ((y as i32 - ty - grab) as f32 / travel as f32).clamp(0.0, 1.0);
+        self.set_scroll_px((frac * (content - view) as f32) as i32);
     }
 
     fn group_view_h(&self) -> i32 {
@@ -1753,6 +1795,18 @@ impl App {
                 }
             }
         }
+        // scrollbar: only when entries overflow the card
+        self.sb_track = None;
+        if let Some((content, view, pos)) = self.sb_geom() {
+            let (tx, ty, tw) = (cx + card_w - 11, gy, 4);
+            let th_ = Self::sb_thumb_h(content, view);
+            let off = ((view - th_) as i64 * pos as i64 / (content - view).max(1) as i64) as i32;
+            // slim pill in the card's own palette: faint dim-text track, accent-colour thumb (brighter while dragging)
+            fill(&mut pm, &rrect(tx as f32, ty as f32, tw as f32, view as f32, 2.0), tf, self.theme.text_dim, 38);
+            let hot = self.sb_grab.is_some();
+            fill(&mut pm, &rrect(tx as f32, (ty + off) as f32, tw as f32, th_ as f32, 2.0), tf, self.theme.primary, if hot { 255 } else { 150 });
+            self.sb_track = Some((tx - 5, ty, tw + 10, view));
+        }
         self.pop_hits = popup_hits;
         self.hits = hits;
         self.head_hits = head_hits;
@@ -1926,6 +1980,23 @@ impl PointerHandler for App {
         for ev in events {
             let (x, y) = ev.position;
             match ev.kind {
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } if self.sb_grab.is_some() => {
+                    self.sb_drag_to(y);
+                }
+                PointerEventKind::Release { button, .. } if button == 0x110 && self.sb_grab.is_some() => {
+                    self.sb_grab = None;
+                    self.dirty = true;
+                }
+                PointerEventKind::Press { button, .. } if button == 0x110 && self.sb_track.is_some_and(|(sx, sy, sw, sh)| x >= sx as f64 && x < (sx + sw) as f64 && y >= sy as f64 && y < (sy + sh) as f64) => {
+                    if let (Some((content, view, pos)), Some((_, ty, _, _))) = (self.sb_geom(), self.sb_track) {
+                        let th_ = Self::sb_thumb_h(content, view);
+                        let off = ((view - th_) as i64 * pos as i64 / (content - view).max(1) as i64) as i32;
+                        let rel = y as i32 - ty;
+                        // grab the thumb where pressed, or centre it under the pointer when clicking the track
+                        self.sb_grab = Some(if rel >= off && rel < off + th_ { rel - off } else { th_ / 2 });
+                        self.sb_drag_to(y);
+                    }
+                }
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     if self.pointer_moved(x, y) {
                         if let Some(i) = self.pop_at(x, y) {
@@ -2171,6 +2242,8 @@ fn main() {
         gscroll: 0,
         today: String::new(),
         head_hits: vec![],
+        sb_track: None,
+        sb_grab: None,
         pop_hits: vec![],
         schema: make_schema(),
         ac: None,
