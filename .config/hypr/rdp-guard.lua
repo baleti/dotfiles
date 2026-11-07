@@ -23,6 +23,12 @@
 -- Pause would only last until the next focus change (window.active would
 -- silently re-arm it the moment you looked away and back), and a Hyprland
 -- restart/reboot would forget the choice entirely.
+-- xfreerdp (XWayland) and sdl-freerdp3 (native Wayland, run with
+-- -grab-keyboard -grab-mouse so it never takes a shortcuts inhibitor).
+local function is_rdp(win)
+    return win and (win.class == "xfreerdp" or win.class == "com.freerdp.client.sdl3")
+end
+
 local STATE_FILE = os.getenv("HOME") .. "/.local/state/rdp-guard-enabled"
 
 local function guard_enabled()
@@ -60,7 +66,7 @@ hl.define_submap("rdp-guard", function()
 end)
 
 hl.on("window.active", function(win)
-    if win and win.class == "xfreerdp" and guard_enabled() then
+    if win and is_rdp(win) and guard_enabled() then
         hl.dispatch(hl.dsp.submap("rdp-guard"))
     else
         hl.dispatch(hl.dsp.submap("reset"))
@@ -75,8 +81,9 @@ end)
 -- xfreerdp is focused.
 hl.bind("Pause", function()
     local win = hl.get_active_window()
-    if win and win.class == "xfreerdp" then
+    if win and is_rdp(win) then
         set_guard_enabled(true)
         hl.dispatch(hl.dsp.submap("rdp-guard"))
     end
 end, { release = true, description = "Re-arm the RDP key-passthrough guard (xfreerdp only)" })
+

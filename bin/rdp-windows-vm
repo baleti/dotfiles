@@ -16,5 +16,5 @@ if ! probe; then
   probe || { echo "rdp-windows-vm: tunnel is up but RDP of CID $CID does not answer (VM not running, or not logged in yet?)" >&2; notify-send "Revit VM $CID" "RDP does not answer (VM not running or not logged in yet?)" 2>/dev/null; exit 1; }
 fi
 [ "${RDP_PROBE_ONLY:-0}" = 1 ] && { echo "CID $CID: RDP answers on 127.0.0.1:$PORT"; exit 0; }
-nohup xfreerdp3 /v:127.0.0.1:$PORT /d: /u:User /p: /cert:ignore +dynamic-resolution +clipboard -drives "/title:Revit VM CID $CID" "$@" >/dev/null 2>&1 < /dev/null &
+nohup ~/bin/sdl-rdp /v:127.0.0.1:$PORT /d: /u:User /p: /cert:ignore +dynamic-resolution +clipboard -drives "/title:Revit VM CID $CID" "$@" >/dev/null 2>&1 < /dev/null &
 disown

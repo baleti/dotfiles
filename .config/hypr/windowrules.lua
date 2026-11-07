@@ -93,3 +93,12 @@ hl.window_rule({
     float  = true,
     center = true,
 })
+
+-- sdl-freerdp3 maps as a floating window by default; keep it tiled.
+hl.window_rule({
+    name  = "sdl-freerdp-tile",
+    match = { class = "^com\\.freerdp\\.client\\.sdl3$" },
+
+    tile        = true,
+    no_max_size = true, -- SDL announces fixed min==max size hints at map, which makes Hyprland float it
+})

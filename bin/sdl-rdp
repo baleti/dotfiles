@@ -1,0 +1,30 @@
+#!/bin/bash
+# Shared launcher for sdl-freerdp3 with the flags we standardised on:
+#   -grab-keyboard -grab-mouse: SDL must not grab; Hyprland's rdp-guard submap (Pause toggles) handles key passthrough.
+#   /gfx /scale:100 /scale-desktop:100 are added to every launch.
+#   After launch, a short watcher un-floats the window if SDL/Hyprland floats it (sdl windows float by default).
+# SDL_RDP_NO_GRAB=1 omits the grab flags (experiments only).
+# usage: [RDP_PASSWORD=...] sdl-rdp <freerdp args...>   (password, if given, goes via env + /args-from so it is never in ps)
+# SDL reports the laptop's 1.5x display scale (the window is created before Hyprland places it) and FreeRDP would
+# send it to Windows as desktopScaleFactor=150 on every monitor -> everything huge. Explicit /scale:100
+# /scale-desktop:100 override that, giving xfreerdp's look on native Wayland (verified 2026-11-07).
+pw=$RDP_PASSWORD; unset RDP_PASSWORD
+exec 3< <(
+  printf '%s\n' "$@" /gfx /scale:100 /scale-desktop:100
+  [ -z "$SDL_RDP_NO_GRAB" ] && printf '%s\n' -grab-keyboard -grab-mouse
+  [ -n "$pw" ] && printf '/p:%s\n' "$pw"
+)
+sdl-freerdp3 /args-from:fd:3 &
+pid=$!
+if [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || [ -n "$(ls -d "$XDG_RUNTIME_DIR"/hypr/* 2>/dev/null)" ]; then
+  [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || export HYPRLAND_INSTANCE_SIGNATURE=$(basename "$(ls -dt "$XDG_RUNTIME_DIR"/hypr/* | head -1)")
+  (
+    # ~30 s, once a second, plain hyprctl calls (no event hooks): tile this process's window if it is floating
+    for _ in $(seq 1 30); do
+      kill -0 $pid 2>/dev/null || exit 0
+      hyprctl eval "for _, w in ipairs(hl.get_windows()) do if w.pid == $pid and w.floating then hl.dispatch(hl.dsp.window.float({ action = 'disable', window = w })) end end" >/dev/null 2>&1
+      sleep 1
+    done
+  ) &
+fi
+wait $pid
