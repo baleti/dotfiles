@@ -21,6 +21,8 @@ kv INODE_HIGH "$(df -Pi -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null 
 UPG=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep '^Inst ')
 kv UPGRADABLE_N "$(printf '%s' "$UPG" | grep -c .)"
 kv SECURITY_PENDING "$(printf '%s\n' "$UPG" | grep -i 'security' | awk '{print $2}' | join)"
+kv PENDING "$(printf '%s\n' "$UPG" | awk '{o=$0; sub(/^[^(]*\(/,"",o); split(o,a," "); print $2"|"a[2]}' | join)"
+kv KEPT_BACK "$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | awk '/kept back/{f=1;next} f&&/^  /{for(i=1;i<=NF;i++)print $i;next} {f=0}' | join)"
 kv APT_LISTS_AGE_H "$(f=$(ls -t /var/lib/apt/lists/*_Packages* /var/lib/apt/lists/*_InRelease 2>/dev/null | head -1); [ -n "$f" ] && echo $(( ($(date +%s) - $(stat -c %Y "$f")) / 3600 )) || echo -1)"
 
 # reboot needed / kernel lag
