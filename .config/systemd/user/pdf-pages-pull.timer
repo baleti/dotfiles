@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull PDF page CLIP records from host1 every 2 hours
+
+[Timer]
+OnCalendar=*-*-* 01/2:50:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=Pull PDF page CLIP records from host1 into the local indexes
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/bin/index/photos/remote_pdf_pages.py pull
+Nice=15

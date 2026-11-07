@@ -20,3 +20,12 @@ Data (indexes, people, listings, thumbnails, logs) lives in `data_dir` from the
 config and is never committed.
 
 Picker: `~/bin/index/images` (Rust, egui), reads the same config.
+
+## PDF page CLIP on host1 (2026-11-07)
+
+The old ai1 VM (with its `~/indexer` CLIP/face workers) was replaced by the podman pod `ai1` on host1 because of memory
+pressure. CLIP now runs as a throw-away container, `~/ai1-native/bin/clip-run.sh` (tar of images on stdin, JSON lines on
+stdout; GPU with a 900 MB cap, CPU fallback; venv `~/ai1-native/clip-venv`, model `~/ai1-native/models/clip/vision_model.onnx`,
+worker `ai1/clip_worker_pod.py`). `remote_pdf_pages.py start|pull|status` runs `pdf_pages_host1.py` (pdfimages + pdftoppm + CLIP,
+next to the files) as the user unit `pdf-pages` on host1 and pulls the records back (`pdf-pages-pull.timer`, every 2 h).
+Not ported yet: the face worker, the minilm/chroma worker (`worker.py`, `run-worker.sh`) and Drive PDFs (no rclone on host1 for them).
