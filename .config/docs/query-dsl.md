@@ -371,6 +371,18 @@ already reaches every `tmux-*` type, `//tmux-win` just the window one, and
 swallowed by its own family: `//title` is the plain `title`, not also
 `tmux-title` and `claude-title` (type `//tit` or `//-title` to mean them all).
 
+**Column verbs are the exception to rule 1** (spec 2026-11-07; see
+[Attribute-rich rows](#attribute-rich-rows-types-discovered-from-the-data)).
+`/ft`, `/at` and `/rt` only choose which columns are shown and never touch
+rows, so there is nothing for exact-name-wins to protect: for them every key
+is a plain case-insensitive **substring union** (rule 2 alone, then rule 3).
+`/at/phone` adds `phone` *and* `mobile-phone` *and* `phone-extension`, where
+`//phone` (a row filter) would still mean only the type named `phone`. A
+family that must not be swallowed is spelled out (`/at/mobile-phone`).
+Implementation status: pickers that existed before this date still apply
+rule 1 to their column verbs; the attribute-rich pickers below use the
+substring union from the start.
+
 **`/sort` expands a fuzzy key into every type it reaches, alphabetically**
 (2026-10-22; before, an ambiguous key made the sort inert): `/s/pa` is
 `/s/pages,path`, `/s/tmux` is `/s/tmux-session,tmux-title,tmux-window`. The exact
@@ -646,6 +658,45 @@ Defaults per picker:
 
 A family prefix as a column key (`/at/claude`) means every type under it, each
 its own column; `/at/claude-title` is just the one.
+
+#### Attribute-rich rows: types discovered from the data
+
+(Spec 2026-11-07.) A picker's vocabulary does not have to be a fixed registry.
+For rows that carry a large, uneven set of attributes (document metadata:
+owner, owning organisation, revision, status, scale, issue number, work
+package, category, ...), the vocabulary is **whatever attribute names occur in
+the data**, and the grammar above needs nothing new:
+
+- **Default columns stay small.** The row's own text (name, path) plus a
+  handful of cheap columns; the other attributes are stored with the row and
+  are **hidden until `/at`'d** (or until a `/fv` filter on them auto-shows
+  them, exactly like any other hidden type).
+- **`/at/key[,key...]` adds attribute columns by substring**, in the order
+  typed, after the default columns: `/at/owner,revision,phone`. Because
+  column verbs use the substring union (see Keys), `/at/phone` also brings
+  `mobile-phone`, and `/at/owner` brings `owner`, `owner-org` and
+  `owner-initials` - the hyphen family convention does the grouping, so
+  naming attributes with a shared prefix (`owner-org`, not `organisation of
+  owner`) is what makes them easy to add together.
+- **`/ft` and `/rt` work on the same set** (`/ft/owner,revision` shows only
+  those; `/rt/owner-initials` drops one), so a view can be built up or pared
+  down by any chain of the three verbs, processed left to right.
+- **Row filters and sorting use the same names**: `//owner smith`,
+  `/s/revision`, `/g/owner-org`. A type that exists on only some rows is blank
+  on the rest; a filter on it simply does not match those rows (honest empty
+  cells, never an error).
+- **Names are normalised to the flat form**: lower case, words joined by
+  hyphens, families by a shared prefix; values are strings (numbers and dates
+  sort by their own rule where the picker declares one, otherwise as text).
+- **The vocabulary completes like any other**: Tab at the key stage offers the
+  attribute names present in the current result set, so `/at/` shows what can
+  be added for exactly these rows. Different row sources may bring different
+  attributes; the list is the union over what is on screen.
+- **Paths may be URLs.** A row that has no file on disk (an entry in a
+  document system, say) shows a URL as its path. A URL whose last `/` segment
+  is the display name and whose earlier segments name the container reads
+  like a path, so name/path filters, sorting and grouping by path keep
+  working unchanged.
 
 ### `/sort` (`/s`)
 
