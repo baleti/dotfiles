@@ -72,3 +72,7 @@ pub mod hyprland_toplevel_export_v1 {
 pub mod linux_dmabuf_v1 {
     wayland_protocol_client!("./protocols/linux-dmabuf-v1.xml", []);
 }
+
+pub mod ext_idle_notify_v1 {
+    wayland_protocol_client!("./protocols/ext-idle-notify-v1.xml", []);
+}
