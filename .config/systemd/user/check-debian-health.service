@@ -1,0 +1,10 @@
+[Unit]
+Description=Debian security + health check across ssh-reachable servers (adaptive interval, emails on findings)
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/user1/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+ExecStart=/home/user1/bin/cron/check-debian-health.py
+
+[Install]
+WantedBy=default.target
