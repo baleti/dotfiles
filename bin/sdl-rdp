@@ -23,7 +23,7 @@ exec 3< <(
 # and send it to Windows. (Pipe output must be unbuffered, hence stdbuf, or the trigger line arrives late.)
 ready=$(mktemp -u "${XDG_RUNTIME_DIR:-/tmp}/sdl-rdp-ready.XXXXXX")
 stdbuf -o0 -e0 sdl-freerdp3 /args-from:fd:3 \
-  > >(while IFS= read -r l; do [ -n "$SDL_RDP_DEBUG" ] && printf '%s\n' "$l" >> "$SDL_RDP_DEBUG"; case $l in *"setting the window as resizable"*) : > "$ready";; esac; done) 2>&1 &
+  > >(while IFS= read -r l; do [ -n "$SDL_RDP_DEBUG" ] && printf '%s\n' "$l" >> "$SDL_RDP_DEBUG"; case $l in *"setting the window as resizable"*) : > "$ready";; *"Left/Top:"*"W/H="*) l=${l##*W/H=}; printf '%s\n' "${l%%)*}" > "$ready.size";; esac; done) 2>&1 &
 pid=$!
 if [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || [ -n "$(ls -d "$XDG_RUNTIME_DIR"/hypr/* 2>/dev/null)" ]; then
   [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || export HYPRLAND_INSTANCE_SIGNATURE=$(basename "$(ls -dt "$XDG_RUNTIME_DIR"/hypr/* | head -1)")
@@ -32,16 +32,25 @@ if [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || [ -n "$(ls -d "$XDG_RUNTIME_DIR"/hyp
     nudge() {  # refocus: focus another window on the workspace and straight back (only if this window is the active one)
       hyprctl eval "local rdp; for _, w in ipairs(hl.get_windows()) do if w.pid == $pid then rdp = w end end; local act = hl.get_active_window(); if rdp and act and act.pid == $pid then for _, w in ipairs(hl.get_windows()) do if w ~= rdp and w.workspace and rdp.workspace and w.workspace.id == rdp.workspace.id then hl.dispatch(hl.dsp.focus({ window = w })); hl.dispatch(hl.dsp.focus({ window = rdp })); break end end end" >/dev/null 2>&1
     }
-    nudged=0
-    # ~30 s, 5x per second, plain hyprctl calls (no event hooks): tile the window if floating; nudge once SDL is ready
-    for _ in $(seq 1 150); do
+    # ~60 s, 5x per second, plain hyprctl calls (no event hooks): tile the window if floating; once SDL is ready,
+    # refocus it (only while it is the active window) every 1.5 s until Windows has been sent a size other than
+    # the initial 1024x768 (read from SDL's own layout log line). Covers launches where the window is not yet
+    # active at that moment (e.g. opened from the picker overlay).
+    last=0
+    for _ in $(seq 1 300); do
       kill -0 $pid 2>/dev/null || break
       hl "if w.floating then hl.dispatch(hl.dsp.window.float({ action = 'disable', window = w })) end"
-      if [ $nudged = 0 ] && [ -e "$ready" ]; then nudged=1; [ -n "$SDL_RDP_DEBUG" ] && echo "$(date +%T.%3N) NUDGE start; hypr size: $(hyprctl clients -j | python3 -c "import json,sys;print([c['size'] for c in json.load(sys.stdin) if c['pid']==$pid])")" >> "$SDL_RDP_DEBUG"; sleep 0.15; nudge; sleep 0.5; nudge; sleep 1.5; nudge; fi
+      if [ -e "$ready" ] && [ "$(cat "$ready.size" 2>/dev/null)" = "1024x768" -o ! -e "$ready.size" ]; then
+        now=$(date +%s.%N)
+        if awk "BEGIN{exit !($now - $last >= 1.5)}"; then
+          [ -n "$SDL_RDP_DEBUG" ] && echo "$(date +%T.%3N) NUDGE try; sent=$(cat "$ready.size" 2>/dev/null) active=$(hyprctl activewindow -j | python3 -c "import json,sys;print(json.load(sys.stdin).get('pid'))") pid=$pid" >> "$SDL_RDP_DEBUG"
+          nudge; last=$(date +%s.%N)
+        fi
+      fi
       sleep 0.2
     done
-    rm -f "$ready"
+    rm -f "$ready" "$ready.size"
   ) &
 fi
 wait $pid
-rm -f "$ready"
+rm -f "$ready" "$ready.size"
