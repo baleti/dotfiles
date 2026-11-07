@@ -1,0 +1,17 @@
+[Unit]
+Description=search-web: the mod+1 file search as a WireGuard-only web app
+After=network-online.target images-search.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SEARCH_WEB_BIND_IP=10.10.0.2
+Environment=SEARCH_WEB_ALLOWED_SUBNET=10.10.0.0/24
+ExecStart=%h/src/search-web/search-web.py
+Restart=always
+RestartSec=10
+Nice=5
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target
