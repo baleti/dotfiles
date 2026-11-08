@@ -1748,7 +1748,7 @@ fn take_act(ui: &mut egui::Ui, keys: &Keymap, act: &str) -> usize {
 }
 
 /// Keys that cannot be rebound (shown in the settings window).
-const FIXED_KEYS: [(&str, &str); 13] = [
+const FIXED_KEYS: [(&str, &str); 12] = [
     ("Alt+D", "focus the search box"),
     ("Tab", "query box: complete; results: back to the query box"),
     ("Up / Down, Ctrl+K / Ctrl+J", "query box: walk the search history (Ctrl+J only once a walk started, else it enters the results); Down also enters the results"),
