@@ -58,8 +58,10 @@ namespace SearchApp
             return c;
         }
 
+        public bool NoSave;
         public void Save(string path = null)
         {
+            if (NoSave) return;
             try
             {
                 path = path ?? FilePath;

@@ -1,12 +1,16 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 
 namespace SearchApp
 {
     static class Program
     {
+        [DllImport("shell32.dll", SetLastError = true)]
+        static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
+
         [STAThread]
         static int Main(string[] args)
         {
@@ -19,8 +23,17 @@ namespace SearchApp
                 if (outPath != null) File.WriteAllText(outPath, sw.ToString()); else Console.Write(sw.ToString());
                 return rc;
             }
+            if (args.Contains("--shot"))
+            {
+                try { return Shot.Run(args); }
+                catch (Exception e) { int i = Array.IndexOf(args, "--out"); if (i >= 0 && i + 1 < args.Length) File.WriteAllText(args[i + 1], "EXCEPTION " + e); return 3; }
+            }
+            try { SetCurrentProcessExplicitAppUserModelID("Local.SearchApp"); } catch { }
+            var cfg = Config.Load();
+            string query = args.Length > 0 ? string.Join(" ", args) : "";
+            var th = new Theme(Theme.WindowsLight());
             var app = new Application();
-            return app.Run(new Window { Title = "Search files" });
+            return app.Run(new MainWindow(cfg, th, query));
         }
     }
 }
