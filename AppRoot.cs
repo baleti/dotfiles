@@ -300,6 +300,7 @@ namespace SearchApp
                 }
                 txt = sb.ToString();
             }
+            if (Updater.Pending && flash == null && !busy && errors.Count == 0) txt += "   \u00b7   update installed: Ctrl+Shift+R to restart into it";
             StatusText = txt; StatusTb.Text = txt; StatusTb.Foreground = b;
         }
 
@@ -313,6 +314,7 @@ namespace SearchApp
         {
             try
             {
+                if (Updater.Check()) UpdateStatus();
                 var j = await Api.Ver(CancellationToken.None);
                 if (j.Theme != null) Th.Apply(j.Theme, false);
                 if (j.Ver >= 0)
@@ -334,6 +336,12 @@ namespace SearchApp
         }
         async void LoadFacets() { try { facets = await Api.GetFacets(CancellationToken.None); } catch { } }
 
+        public void RestartApp()
+        {
+            if (Host == null) return;
+            Host.NewWindow(Q.Text);   // the new process is the exe now on disk
+            Host.CloseWindow();
+        }
         public void UpdateMaxIcon() { if (cbMax != null) { cbMax.Restore = Host != null && Host.IsMax; cbMax.InvalidateVisual(); } }
     }
 

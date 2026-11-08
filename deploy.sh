@@ -4,7 +4,11 @@ set -e
 cd "$(dirname "$0")"
 dotnet build -c Release -o out 2>&1 | grep -E " error|Elapsed" | sort -u
 ssh wsl 'mkdir -p /mnt/c/Users/USER/SearchApp/out'
-scp -q out/SearchApp.exe wsl:/mnt/c/Users/USER/SearchApp/SearchApp.exe || { scp -q out/SearchApp.exe wsl:/mnt/c/Users/USER/SearchApp/SearchApp-update.exe; echo 'SearchApp.exe is running: copied as SearchApp-update.exe, close the app and rename it'; }
+# A running exe cannot be overwritten but it can be renamed: move it aside, then put the new one in place.
+# The running copy keeps working; the next start uses the new file (the app also offers Ctrl+Shift+R to restart into it).
+D=/mnt/c/Users/USER/SearchApp
+scp -q out/SearchApp.exe wsl:$D/SearchApp.new.exe
+ssh wsl "cd $D && rm -f SearchApp-update.exe; [ -f SearchApp.exe ] && mv SearchApp.exe SearchApp.old-\$(date +%s).exe; mv SearchApp.new.exe SearchApp.exe; rm -f SearchApp.old-*.exe 2>/dev/null; ls"
 CFG=/mnt/c/Users/USER/AppData/Roaming/SearchApp/config.json
 if ! ssh wsl "test -f $CFG"; then
   T=$(mktemp)

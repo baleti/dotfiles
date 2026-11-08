@@ -39,7 +39,7 @@ namespace SearchApp
                 catch (Exception e) { int i = Array.IndexOf(args, "--out"); if (i >= 0 && i + 1 < args.Length) File.WriteAllText(args[i + 1], "EXCEPTION " + e); return 3; }
             }
             try { SetCurrentProcessExplicitAppUserModelID("Local.SearchApp"); } catch { }
-            System.Threading.Tasks.Task.Run(() => Opener.CleanTemp());
+            System.Threading.Tasks.Task.Run(() => { Opener.CleanTemp(); Updater.CleanOld(); });
             var cfg = Config.Load();
             string query = args.Length > 0 ? string.Join(" ", args) : cfg.LastQuery;
             bool restored = args.Length == 0 && !string.IsNullOrEmpty(query);
