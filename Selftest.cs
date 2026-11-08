@@ -121,6 +121,8 @@ namespace SearchApp
             chk("refuse", op.Plan(H("/etc/x", false)), "Refuse");
             bool d1 = Opener.IsDangerous(cfg, "/a/b.EXE"), d2 = Opener.IsDangerous(cfg, "/a/b.eml");
             o.WriteLine((d1 && !d2 ? "ok   " : "FAIL ") + "dangerous ext check"); if (!(d1 && !d2)) fails++;
+            var real = Config.Load(); string rm = real.MapToWindows("/mnt/share/m/PROJECTS/a/b.eml");
+            o.WriteLine("     real config: server=" + real.Server + " maps=" + real.PathMap.Count + " sample=" + rm); if (real.PathMap.Count == 0) { o.WriteLine("FAIL real config has no path map"); fails++; }
             Opener.Dry = true; Opener.Shell("M:\\x.eml"); Opener.OpenWith("M:\\x.eml"); Opener.Dry = false;
             o.WriteLine("     dry log: " + string.Join(" | ", Opener.Log));
             return fails;
@@ -158,6 +160,14 @@ namespace SearchApp
                 chk("ui sort desc", root.Q.Text.EndsWith("/s/size") && root.Hit(1) != null && root.Hit(0).Size >= root.Hit(1).Size, root.Q.Text + " first=" + (root.Hit(0) != null ? root.Hit(0).Size.ToString() : "?"));
                 root.Hdr.RaiseSort("size"); Shot.Pump(90000, () => !root.busy && root.sent.EndsWith("/asc"));
                 chk("ui sort asc", root.Q.Text.EndsWith("/s/size/asc") && root.Hit(0) != null && root.Hit(1) != null && root.Hit(0).Size <= root.Hit(1).Size, root.Q.Text);
+                try
+                {
+                    var win = new MainWindow(new Config { NoSave = true, Server = server }, new Theme(false), "x");
+                    new System.Windows.Interop.WindowInteropHelper(win).EnsureHandle();
+                    chk("ui main window constructs (not shown)", win.Root != null, null);
+                    win.Close();
+                }
+                catch (Exception e) { chk("ui main window", false, e.ToString()); }
                 Shot.Pump(2500);
                 chk("ui thumbnails requested", root.Thumbs.Requests > 0, "requests=" + root.Thumbs.Requests);
             }

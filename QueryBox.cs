@@ -17,7 +17,7 @@ namespace SearchApp
         public QueryBox(Theme t)
         {
             th = t; Height = 20; ClipToBounds = true;
-            Hl = new TextBlock { FontSize = 13, IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Center, Height = 20, RenderTransform = new TranslateTransform() };
+            Hl = new TextBlock { FontSize = 13, IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Center, Height = 20, RenderTransform = new TranslateTransform(1, 1) };
             Box = Ui.PlainTextBox(); Box.FontSize = 13; Box.VerticalContentAlignment = VerticalAlignment.Center; Box.VerticalAlignment = VerticalAlignment.Stretch;
             Box.SelectionOpacity = 1; Box.Foreground = Brushes.Transparent; Box.SpellCheck.IsEnabled = false; Box.UndoLimit = 100;
             Children.Add(Hl); Children.Add(Box);
@@ -27,7 +27,7 @@ namespace SearchApp
             Box.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((s, e) => SyncScroll()));
         }
         void HookScroll() { Box.ApplyTemplate(); sv = Box.Template.FindName("PART_ContentHost", Box) as ScrollViewer; SyncScroll(); }
-        void SyncScroll() { if (sv == null) { HookScroll(); } if (sv != null) ((TranslateTransform)Hl.RenderTransform).X = -sv.HorizontalOffset; }
+        void SyncScroll() { if (sv == null) { HookScroll(); } if (sv != null) { var tt = (TranslateTransform)Hl.RenderTransform; tt.X = 1 - sv.HorizontalOffset; tt.Y = 1; } }
 
         public string Text { get { return Box.Text; } }
         public void SetText(string s) { silent = true; Box.Text = s ?? ""; silent = false; Box.CaretIndex = Box.Text.Length; Redraw(); }

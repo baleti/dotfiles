@@ -11,6 +11,16 @@ namespace SearchApp
         [DllImport("shell32.dll", SetLastError = true)]
         static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
 
+        static void Log(Exception e)
+        {
+            try
+            {
+                string d = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SearchApp"); Directory.CreateDirectory(d);
+                File.AppendAllText(Path.Combine(d, "error.log"), DateTime.Now.ToString("s") + " " + e + "\r\n");
+            }
+            catch { }
+        }
+
         [STAThread]
         static int Main(string[] args)
         {
@@ -31,10 +41,13 @@ namespace SearchApp
             try { SetCurrentProcessExplicitAppUserModelID("Local.SearchApp"); } catch { }
             System.Threading.Tasks.Task.Run(() => Opener.CleanTemp());
             var cfg = Config.Load();
-            string query = args.Length > 0 ? string.Join(" ", args) : "";
+            string query = args.Length > 0 ? string.Join(" ", args) : cfg.LastQuery;
+            bool restored = args.Length == 0 && !string.IsNullOrEmpty(query);
             var th = new Theme(Theme.WindowsLight());
             var app = new Application();
-            return app.Run(new MainWindow(cfg, th, query));
+            app.DispatcherUnhandledException += (s, e) => { Log(e.Exception); e.Handled = true; };
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => Log(e.ExceptionObject as Exception);
+            return app.Run(new MainWindow(cfg, th, query, restored));
         }
     }
 }

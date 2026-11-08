@@ -131,6 +131,7 @@ namespace SearchApp
             Hdr.Resized += () => List.InvalidateVisual();
             Hdr.WidthsChanged += () => { Cfg.Save(); };
             Q.UserChanged += OnQueryInput;
+            Q.Box.LostKeyboardFocus += (s, e) => Dispatcher.BeginInvoke(new Action(() => { if (!Q.IsFocusedBox) ClosePopups(); }), DispatcherPriority.Background);
         }
 
         void OnThemeChanged() { ApplyThemeAll(); }
@@ -211,8 +212,8 @@ namespace SearchApp
             bool showHdr = !List.IsGrid && total > 0;
             Hdr.Query = sent.Length > 0 ? sent : q;
             Hdr.Visibility = showHdr ? Visibility.Visible : Visibility.Collapsed;
+            Hdr.RightPad = List.Compute().Bar ? Const.Bar : 0;
             List.InvalidateVisual(); Hdr.InvalidateVisual();
-            List.Total = total;
         }
 
         // ------------------------------------------------------------ query box

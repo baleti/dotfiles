@@ -14,7 +14,7 @@ namespace SearchApp
     public class MainWindow : Window, IHost
     {
         public AppRoot Root; readonly Config cfg; readonly Theme th;
-        public MainWindow(Config c, Theme t, string initialQuery)
+        public MainWindow(Config c, Theme t, string initialQuery, bool selectQuery = false)
         {
             cfg = c; th = t;
             Title = "Search files"; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResize;
@@ -28,7 +28,6 @@ namespace SearchApp
             if (w.max) WindowState = WindowState.Maximized;
             Root = new AppRoot(cfg, th, this);
             Content = Root;
-            try { Icon = BitmapFrame.Create(new Uri("pack://application:,,,/icon.ico")); } catch { }
             StateChanged += (s, e) => { AdjustMax(); Root.UpdateMaxIcon(); };
             PreviewKeyDown += Root.OnKey; PreviewTextInput += Root.OnTextInput;
             Closing += OnClosing;
@@ -39,7 +38,7 @@ namespace SearchApp
                 var f = Fonts.EnsureAsync(Root.Api);
                 await Root.InitialAsync(initialQuery);
                 Root.StartPolling();
-                Root.FocusQuery(false);
+                Root.FocusQuery(selectQuery);
             };
             Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) => Dispatcher.BeginInvoke(new Action(() => th.SetLight(Theme.WindowsLight())));
             th.Changed += () => Background = th.Bg;
