@@ -821,14 +821,13 @@ def enqueue(remote, tag=None):
 
 # ---- view settings: defaults in the picker's settings file, overridden per query by verbs ------------------
 SETTINGS_PATH = os.path.expanduser("~/.config/indexes/picker-settings.json")
-SETTINGS_DEFAULT = {"show_dotfiles": True, "show_backup_restic": False, "show_backup_btrfs": False,
-                    "show_fts_rvt": True, "show_fts_dwg": True}
+SETTINGS_DEFAULT = {"show_backup_restic": False, "show_backup_btrfs": False,
+                    "show_fts_rvt": True, "show_fts_dwg": True, "default_exclude": ".dat, .rws, //mime directory, /dotfiles"}
 # file formats a content search (/fts, /chroma) can leave out: Revit (project, family, template, family template) and
 # AutoCAD drawings. Both have their own Recoll index (revit, dwg; see index_cad.py).
 FTS_FORMATS = {"show_fts_rvt": {"rvt", "rfa", "rte", "rft"}, "show_fts_dwg": {"dwg", "dxf", "dwt"}}
 _settings = {"mtime": None, "value": dict(SETTINGS_DEFAULT)}
 VIEW_VERBS = {
-    "/show-dotfiles": (("show_dotfiles",), True), "/hide-dotfiles": (("show_dotfiles",), False),
     "/show-backup": (("show_backup_restic", "show_backup_btrfs"), True),
     "/hide-backup": (("show_backup_restic", "show_backup_btrfs"), False),
     "/show-backup-restic": (("show_backup_restic",), True), "/hide-backup-restic": (("show_backup_restic",), False),
@@ -846,20 +845,24 @@ def picker_settings():
     if m != _settings["mtime"]:
         value = dict(SETTINGS_DEFAULT)
         try:
-            value.update({k: bool(v) for k, v in json.load(open(SETTINGS_PATH)).items() if k in SETTINGS_DEFAULT})
+            value.update({k: (str(v) if k == "default_exclude" else bool(v))
+                          for k, v in json.load(open(SETTINGS_PATH)).items() if k in SETTINGS_DEFAULT})
         except (OSError, ValueError):
             pass
         _settings.update(mtime=m, value=value)
     return dict(_settings["value"])
+
+# /dotfiles is the path filter "has a dot component" (`/.`); !/dotfiles leaves such paths out
+DOTFILES_TERMS = {"/dotfiles": "/.", "!/dotfiles": "!/."}
 
 def view_options(q):
     """(query without the view verbs, effective view options). Verbs apply left to right, so a later one wins;
     /show-backup and /hide-backup set both backup kinds, the specific ones set just one."""
     opts = picker_settings()
     opts["explicit"] = set()                  # the settings a verb in this very query set (never stored)
-    toks = filesearch.tokens(q)
+    toks = [DOTFILES_TERMS.get(t.lower(), t) for t in filesearch.tokens(q)]
     if not any(t.lower() in VIEW_VERBS for t in toks):
-        return q, opts
+        return " ".join(toks) if any(t != u for t, u in zip(toks, filesearch.tokens(q))) else q, opts
     kept = []
     for t in toks:
         v = VIEW_VERBS.get(t.lower())
@@ -1011,12 +1014,21 @@ class H(BaseHTTPRequestHandler):
                 desc = qs.get("desc", ["1"])[0] == "1"
                 offset = int(qs.get("offset", ["0"])[0])
                 cv = content_verb(rest)                 # /fts or /chroma, with the name filter written before it
-                if not view["show_dotfiles"]:
-                    # the same negated term typed by hand: no path with a dot component (for a content verb it joins the name filter)
+                # default exclude: comma separated: extensions (`.dat`) or `//mime kind` terms left out of every search, as typed `!//ext .dat`
+                for x in re.split(r"[,\n]+", view.get("default_exclude") or ""):
+                    x = " ".join(x.split())
+                    if x.lower() == "/dotfiles":
+                        if "/." in filesearch.tokens(rest) + (filesearch.tokens(cv[1]) if cv else []):
+                            continue                    # the query asks for dotfiles itself: no default hiding
+                        x = "/."
+                    elif re.fullmatch(r"[\w+-]+|\.[\w+-]+", x) or re.fullmatch(r"//ext \.?[\w+-]+", x):
+                        x = "//ext ." + x.split()[-1].lstrip(".")
+                    elif not re.fullmatch(r"//mime [\w.+-]+", x):
+                        continue
                     if cv:
-                        cv = (cv[0], (cv[1] + " !/.").strip(), cv[2], cv[3])
+                        cv = (cv[0], (cv[1] + f" !{x}").strip(), cv[2], cv[3])
                     else:
-                        rest = (rest + " !/.").strip()
+                        rest = (rest + f" !{x}").strip()
                 errors = []
                 skip_ext = set()                         # formats the view settings leave out of content searches
                 for flag, exts in FTS_FORMATS.items():

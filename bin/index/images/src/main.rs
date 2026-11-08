@@ -212,8 +212,8 @@ fn query_terms(q: &str) -> Vec<String> {
 /// the images picker's verbs, `/verb/via`, and `//tag`. Quoted runs, a `//tag`'s value and
 /// anything else that merely starts with `/` (a path such as /mnt/x) are not commands.
 fn command_spans(q: &str) -> Vec<(usize, usize)> {
-    const VERBS: [&str; 22] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort", "g", "group",
-        "show-dotfiles", "hide-dotfiles", "show-backup", "hide-backup", "show-backup-restic", "hide-backup-restic",
+    const VERBS: [&str; 21] = ["fts", "full-text-search", "chroma", "semantic", "clip", "face", "s", "sort", "g", "group",
+        "dotfiles", "show-backup", "hide-backup", "show-backup-restic", "hide-backup-restic",
         "show-backup-btrfs", "hide-backup-btrfs", "show-fts-rvt", "hide-fts-rvt", "show-fts-dwg", "hide-fts-dwg"];
     const TAGS: [&str; 7] = ["name", "path", "size", "dm", "mime", "ext", "file"];
     let b = q.as_bytes();
@@ -858,7 +858,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
     ];
     if frag.starts_with('/') && !frag.starts_with("//") && !frag.contains(' ') && !prev.starts_with("//") {
         // a lone "/" lists every verb
-        const VERBS: [(&str, &str); 20] = [
+        const VERBS: [(&str, &str); 19] = [
             ("/fts ", "full-text search over every content index: /fts beta design //mime pdf"),
             ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
@@ -867,8 +867,7 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/sort/", "(/s) order the results by a field, e.g. /sort/size/desc"),
             ("/g/", "(/group) fold the results into sections, e.g. /g/dm/week or /g/pf/2"),
             ("/group/", "(/g) fold the results into sections, e.g. /group/dm/week"),
-            ("/show-dotfiles ", "include names starting with a dot (this search only)"),
-            ("/hide-dotfiles ", "leave out names starting with a dot (this search only)"),
+            ("/dotfiles ", "only paths with a dot component (!/dotfiles leaves them out; hidden by default via Default exclude)"),
             ("/show-backup ", "include restic backups and btrfs snapshots (this search only)"),
             ("/hide-backup ", "leave out restic backups and btrfs snapshots"),
             ("/show-backup-restic ", "include restic backups only"),
@@ -1269,10 +1268,11 @@ fn serve_appmenu(menu: Arc<AppMenu>) {
 }
 
 /// View settings, shared with the search server through ~/.config/indexes/picker-settings.json
-/// (a verb in the query overrides them for that search: /show-dotfiles /hide-dotfiles /show-backup[-restic|-btrfs] /hide-backup[-...]).
-#[derive(Clone, Copy, PartialEq)]
+/// (a verb in the query overrides them for that search: /dotfiles /show-backup[-restic|-btrfs] /hide-backup[-...]).
+#[derive(Clone, PartialEq)]
 struct Settings {
-    show_dotfiles: bool,
+    /// extensions (comma separated, e.g. ".dat, .rws, //mime directory") left out of every search
+    default_exclude: String,
     show_backup_restic: bool,
     show_backup_btrfs: bool,
     /// content searches (/fts, /chroma) include Revit files (rvt rfa rte rft) / AutoCAD drawings
@@ -1287,9 +1287,9 @@ impl Settings {
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/indexes/picker-settings.json")
     }
     fn load() -> Settings {
-        let mut s = Settings { show_dotfiles: true, show_backup_restic: false, show_backup_btrfs: false, show_fts_rvt: true, show_fts_dwg: true, preview_bottom: false };
+        let mut s = Settings { default_exclude: ".dat, .rws, //mime directory, /dotfiles".into(), show_backup_restic: false, show_backup_btrfs: false, show_fts_rvt: true, show_fts_dwg: true, preview_bottom: false };
         if let Some(v) = std::fs::read_to_string(Settings::path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
-            if let Some(b) = v["show_dotfiles"].as_bool() { s.show_dotfiles = b; }
+            if let Some(t) = v["default_exclude"].as_str() { s.default_exclude = t.to_string(); }
             if let Some(b) = v["show_backup_restic"].as_bool() { s.show_backup_restic = b; }
             if let Some(b) = v["show_backup_btrfs"].as_bool() { s.show_backup_btrfs = b; }
             if let Some(b) = v["show_fts_rvt"].as_bool() { s.show_fts_rvt = b; }
@@ -1300,7 +1300,7 @@ impl Settings {
     }
     fn save(&self, keys: &Keymap) {
         let v = serde_json::json!({
-            "show_dotfiles": self.show_dotfiles,
+            "default_exclude": self.default_exclude,
             "show_backup_restic": self.show_backup_restic,
             "show_backup_btrfs": self.show_backup_btrfs,
             "show_fts_rvt": self.show_fts_rvt,
@@ -2124,7 +2124,6 @@ impl App {
         if let Ok(mut items) = self.appmenu.items.lock() {
             *items = vec![
                 entry("settings", format!("Settings… ({settings_key})"), None),
-                entry("dotfiles", "Show dotfiles".into(), Some(self.settings.show_dotfiles)),
                 entry("restic", "Show restic backups".into(), Some(self.settings.show_backup_restic)),
                 entry("btrfs", "Show btrfs snapshots".into(), Some(self.settings.show_backup_btrfs)),
                 entry("rvt", "Search inside Revit files".into(), Some(self.settings.show_fts_rvt)),
@@ -2135,9 +2134,8 @@ impl App {
         for id in pending {
             match id.as_str() {
                 "settings" => self.settings_open = true,
-                "dotfiles" | "restic" | "btrfs" | "rvt" | "dwg" => {
+                "restic" | "btrfs" | "rvt" | "dwg" => {
                     match id.as_str() {
-                        "dotfiles" => self.settings.show_dotfiles = !self.settings.show_dotfiles,
                         "restic" => self.settings.show_backup_restic = !self.settings.show_backup_restic,
                         "btrfs" => self.settings.show_backup_btrfs = !self.settings.show_backup_btrfs,
                         "rvt" => self.settings.show_fts_rvt = !self.settings.show_fts_rvt,
@@ -3673,7 +3671,7 @@ impl eframe::App for App {
                     });
                     ui.add_space(10.0);
                     ui.label(RichText::new(format!("Type {need} to confirm:")).color(pal.text));
-                    let edit = ui.add(egui::TextEdit::singleline(&mut self.trash_typed).desired_width(200.0));
+                    let edit = ui.add(egui::TextEdit::singleline(&mut self.trash_typed).desired_width(260.0));
                     if !edit.has_focus() { edit.request_focus(); }
                     let ready = self.trash_typed.trim() == need;
                     ui.horizontal(|ui| {
@@ -3766,39 +3764,43 @@ impl eframe::App for App {
             let mut open = true;
             let mut changed = false;
             let mut start_rebind: Option<(&'static str, usize)> = None;
+            let win_w = (ctx.content_rect().width() * 0.90 - 60.0).clamp(320.0, 1100.0);
             egui::Window::new("Settings")
                 .open(&mut open)
+                .min_width(win_w)
+                .default_width(win_w)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
                 .show(&ctx, |ui| {
-                  egui::ScrollArea::vertical().max_height((ctx.content_rect().height() * 0.80 - 60.0).max(300.0)).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.set_min_width(640.0);
-                    ui.set_max_width(640.0);
+                  egui::ScrollArea::both().min_scrolled_width(win_w).max_height((ctx.content_rect().height() - 84.0 - 2.0 * (ctx.content_rect().width() * 0.05 + 16.0)).max(200.0)).min_scrolled_height((ctx.content_rect().height() - 84.0 - 2.0 * (ctx.content_rect().width() * 0.05 + 16.0)).max(200.0)).auto_shrink([false, false]).show(ui, |ui| {
+                    ui.set_min_width(win_w);
+                    ui.set_max_width(win_w);
                     ui.label(RichText::new("Search").strong().color(pal.accent));
                     let cmd = |ui: &mut egui::Ui, text: &str| { ui.label(RichText::new(text).monospace().size(11.0).color(pal.dim)); };
-                    ui.horizontal(|ui| {
-                        changed |= ui.checkbox(&mut self.settings.show_dotfiles, "Show dotfiles").changed();
-                        cmd(ui, "/show-dotfiles  /hide-dotfiles");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Default exclude");
+                        changed |= ui.add(egui::TextEdit::singleline(&mut self.settings.default_exclude).desired_width(260.0).hint_text(".dat, .rws, //mime directory, /dotfiles")).changed();
+                        cmd(ui, "comma separated: .ext, //mime kind or /dotfiles, left out of every search");
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         changed |= ui.checkbox(&mut self.settings.show_backup_restic, "Show restic backups").changed();
                         cmd(ui, "/show-backup-restic  /hide-backup-restic");
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         changed |= ui.checkbox(&mut self.settings.show_backup_btrfs, "Show btrfs snapshots").changed();
                         cmd(ui, "/show-backup-btrfs  /hide-backup-btrfs");
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         changed |= ui.checkbox(&mut self.settings.show_fts_rvt, "Content search covers Revit files (rvt rfa rte rft)").changed();
                         cmd(ui, "/show-fts-rvt  /hide-fts-rvt");
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         changed |= ui.checkbox(&mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings").changed();
                         cmd(ui, "/show-fts-dwg  /hide-fts-dwg");
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         changed |= ui.checkbox(&mut self.settings.preview_bottom, "Preview pane below the results (horizontal split)").changed();
                         cmd(ui, "default: beside them");
                     });
@@ -3886,14 +3888,14 @@ impl eframe::App for App {
                             self.rebind_msg.clear();
                             self.settings.save(&self.keys);
                         }
-                        ui.label(RichText::new("Click a shortcut, then press the new keys. Esc cancels, Backspace removes it.").size(11.0).color(pal.dim));
+                        ui.add(egui::Label::new(RichText::new("Click a shortcut, then press the new keys. Esc cancels, Backspace removes it.").size(11.0).color(pal.dim)).wrap());
                     });
                     ui.add_space(8.0);
                     ui.label(RichText::new("Fixed keys").strong().color(pal.accent));
                     egui::Grid::new("fixedkeys").num_columns(2).spacing([18.0, 3.0]).show(ui, |ui| {
                         for (k, v) in FIXED_KEYS {
                             ui.label(RichText::new(k).monospace().color(pal.text));
-                            ui.label(RichText::new(v).color(pal.dim));
+                            ui.add(egui::Label::new(RichText::new(v).color(pal.dim)).wrap());
                             ui.end_row();
                         }
                     });
@@ -4486,7 +4488,7 @@ mod highlight_tests {
         assert_eq!(words("/mnt/backups/office/corpus/alpha/01 WIP/"), Vec::<&str>::new());
         assert_eq!(words("/fts part3-books cdm"), vec!["/fts"]);
         assert_eq!(words("/chroma/proj digital twin //mime pdf"), vec!["/chroma/proj", "//mime"]);
-        assert_eq!(words("report /hide-dotfiles /show-backup-restic"), vec!["/hide-dotfiles", "/show-backup-restic"]);
+        assert_eq!(words("report /dotfiles /show-backup-restic"), vec!["/dotfiles", "/show-backup-restic"]);
         assert_eq!(words("/fts/part3 cdm //mime pdf /s size"), vec!["/fts/part3", "//mime", "/s"]);
         assert_eq!(words("//path /etc /sort"), vec!["//path", "/sort"]);
         assert_eq!(words("!//path /x \"/fts no\" /rv"), vec!["//path"]);
