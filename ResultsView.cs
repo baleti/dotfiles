@@ -284,7 +284,7 @@ namespace SearchApp
         public double ColW(string k) { return Cols.W[1 + Array.IndexOf(ColModel.Keys, k)]; }
 
         int CellAt(double x) { for (int i = 1; i <= 7; i++) if (Cols.W[i] > 0 && x >= Cols.X[i] && x < Cols.X[i] + Cols.W[i]) return i; return -1; }
-        int GripAt(double x) { for (int i = 1; i <= 6; i++) { if (Cols.W[i] <= 0) continue; double r = Cols.X[i] + Cols.W[i]; if (x >= r - 6 && x <= r + 6) return i; } return -1; }
+        int GripAt(double x) { for (int i = 2; i <= 6; i++) { if (Cols.W[i] <= 0) continue; double r = Cols.X[i]; if (x >= r - 6 && x <= r + 6) return i; } return -1; }
 
         protected override void OnRender(DrawingContext dc)
         {
@@ -304,7 +304,7 @@ namespace SearchApp
                 dc.DrawText(ft, new Point(Cols.X[i], ActualHeight - ft.Height - 2));
             }
             int g = drag >= 0 ? drag : hot;
-            if (g >= 1 && g <= 6) { double r = Cols.X[g] + Cols.W[g]; dc.DrawRoundedRectangle(Th.Accent, null, new Rect(r - 1, 2, 2, ActualHeight - 3), 1, 1); }
+            if (g >= 2 && g <= 6) { double r = Cols.X[g]; dc.DrawRoundedRectangle(Th.Accent, null, new Rect(r - 1, 2, 2, ActualHeight - 3), 1, 1); }
         }
 
         public void RaiseSort(string k) { if (SortClick != null) SortClick(k); }
@@ -314,7 +314,7 @@ namespace SearchApp
             if (drag >= 0)
             {
                 string k = ColModel.Keys[drag - 1]; moved = true;
-                double v = Math.Round(Math.Max(Const.MinW, Math.Min(startW + p.X - x0, startW + spare)));
+                double v = Math.Round(Math.Max(Const.MinW, Math.Min(startW - (p.X - x0), startW + spare)));
                 Cols.CW[k] = v;
                 if (k == "name") Cols.CW.Remove("path"); else if (k == "path") Cols.CW.Remove("name");
                 InvalidateVisual(); if (Resized != null) Resized(); return;
