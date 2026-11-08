@@ -51,7 +51,7 @@ namespace SearchApp
             {
                 var sec = new FileInfo(path).GetAccessControl(AccessControlSections.Owner);
                 var sid = sec.GetOwner(typeof(SecurityIdentifier));
-                try { return sid.Translate(typeof(NTAccount)).Value; } catch { return sid.Value; }
+                try { string n = sid.Translate(typeof(NTAccount)).Value; int i = n.LastIndexOf('\\'); return i >= 0 ? n.Substring(i + 1) : n; } catch { return sid.Value; }
             }
             catch { return ""; }
         }
