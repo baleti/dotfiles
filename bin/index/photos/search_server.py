@@ -1026,9 +1026,9 @@ class H(BaseHTTPRequestHandler):
                     elif not re.fullmatch(r"//mime [\w.+-]+", x):
                         continue
                     if cv:
-                        cv = (cv[0], (cv[1] + f" !{x}").strip(), cv[2], cv[3])
+                        cv = (cv[0], (f"!{x} " + cv[1]).strip(), cv[2], cv[3])
                     else:
-                        rest = (rest + f" !{x}").strip()
+                        rest = (f"!{x} " + rest).strip()
                 errors = []
                 skip_ext = set()                         # formats the view settings leave out of content searches
                 for flag, exts in FTS_FORMATS.items():
