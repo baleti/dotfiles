@@ -848,6 +848,9 @@ struct App {
     trash_pending: Option<Vec<(PathBuf, u64)>>,
     trash_typed: String,
     trash_perm: bool,
+    /// search tabs: each holds its query (the current tab's entry is only refreshed when leaving it)
+    tabs: Vec<String>,
+    tab_cur: usize,
     /// context menu: where it is shown and which hit it was opened for
     menu_at: Option<egui::Pos2>,
     menu_hit: Option<usize>,
@@ -1745,7 +1748,7 @@ fn take_act(ui: &mut egui::Ui, keys: &Keymap, act: &str) -> usize {
 }
 
 /// Keys that cannot be rebound (shown in the settings window).
-const FIXED_KEYS: [(&str, &str); 11] = [
+const FIXED_KEYS: [(&str, &str); 13] = [
     ("Alt+D", "focus the search box"),
     ("Tab", "query box: complete; results: back to the query box"),
     ("Up / Down, Ctrl+K / Ctrl+J", "query box: walk the search history (Ctrl+J only once a walk started, else it enters the results); Down also enters the results"),
@@ -1753,7 +1756,8 @@ const FIXED_KEYS: [(&str, &str); 11] = [
     ("Shift+arrows", "extend the selection"),
     ("PgUp / PgDn, Home / End", "move through the results"),
     ("Enter", "open the selected file"),
-    ("Delete", "move the selection to the trash"),
+    ("Delete / Shift+Delete", "results list: move the selection to the trash / delete it permanently"),
+    ("Ctrl+T / Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab", "new tab / close tab, next / previous tab"),
     ("Ctrl+A", "select the whole query"),
     ("Esc", "close the menu or dialog, then the window"),
     ("Ctrl+wheel / pinch", "zoom the thumbnails"),
@@ -1896,6 +1900,8 @@ impl App {
             trash_pending: None,
             trash_typed: String::new(),
             trash_perm: false,
+            tabs: vec![String::new()],
+            tab_cur: 0,
             menu_at: None,
             menu_hit: None,
             row_rects: HashMap::new(),
@@ -1960,6 +1966,52 @@ impl App {
         if let Ok(q) = std::env::var("IMAGES_QUERY") { app.query = q; }
         if let Some(t) = std::env::var("IMAGES_THUMB").ok().and_then(|t| t.parse::<f32>().ok()) { app.thumb = t; }
         app
+    }
+
+    /// Switch to another search tab (its query is restored and searched again).
+    fn tab_switch(&mut self, ctx: &egui::Context, to: usize) {
+        if to >= self.tabs.len() || to == self.tab_cur { return; }
+        self.tabs[self.tab_cur] = self.query.clone();
+        self.tab_cur = to;
+        self.query = self.tabs[to].clone();
+        self.list_focus = false;
+        self.anchor = None;
+        self.selected = 0;
+        self.sel_header = None;
+        self.cursor_end = true;
+        self.last_change = Instant::now() - Duration::from_millis(400);
+        self.send_query();
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+    }
+
+    fn tab_new(&mut self, ctx: &egui::Context) {
+        self.tabs[self.tab_cur] = self.query.clone();
+        self.tabs.insert(self.tab_cur + 1, String::new());
+        let to = self.tab_cur + 1;
+        self.tab_cur = to;
+        self.query.clear();
+        self.list_focus = false;
+        self.anchor = None;
+        self.selected = 0;
+        self.sel_header = None;
+        self.send_query();
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("query")));
+    }
+
+    fn tab_close(&mut self, ctx: &egui::Context, i: usize) {
+        if self.tabs.len() < 2 || i >= self.tabs.len() { return; }
+        self.tabs[self.tab_cur] = self.query.clone();
+        self.tabs.remove(i);
+        let to = if self.tab_cur > i || self.tab_cur >= self.tabs.len() { self.tab_cur.saturating_sub(1).min(self.tabs.len() - 1) } else { self.tab_cur };
+        self.query = self.tabs[to].clone();
+        self.tab_cur = to;
+        self.list_focus = false;
+        self.anchor = None;
+        self.selected = 0;
+        self.sel_header = None;
+        self.cursor_end = true;
+        self.send_query();
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("query")));
     }
 
     fn send_query(&mut self) {
@@ -3268,6 +3320,23 @@ impl eframe::App for App {
             ui.memory_mut(|m| m.request_focus(egui::Id::new("query")));
         }
 
+        // tabs: Ctrl+T new, Ctrl+Tab / Ctrl+Shift+Tab next / previous, Ctrl+W close
+        {
+            let (t_new, t_next, t_prev, t_close) = ui.input_mut(|i| (
+                i.consume_key(egui::Modifiers::CTRL, Key::T),
+                i.consume_key(egui::Modifiers::CTRL, Key::Tab),
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::Tab),
+                i.consume_key(egui::Modifiers::CTRL, Key::W),
+            ));
+            if t_new || t_next || t_prev || t_close {
+                ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+            }
+            let n = self.tabs.len();
+            if t_new && self.trash_pending.is_none() { self.tab_new(&ctx); }
+            else if t_next && n > 1 { let to = (self.tab_cur + 1) % n; self.tab_switch(&ctx, to); }
+            else if t_prev && n > 1 { let to = (self.tab_cur + n - 1) % n; self.tab_switch(&ctx, to); }
+            else if t_close && n > 1 { let i = self.tab_cur; self.tab_close(&ctx, i); }
+        }
         // holding Ctrl+J/K (or any Ctrl chord) repeats as key events plus stray text events: drop the text
         // so a held chord never types into the query box
         // Auto-repeat of a held Ctrl+J/K/H/L can arrive without the Ctrl modifier (and with the letter as
@@ -4101,6 +4170,42 @@ impl eframe::App for App {
             .fill(pal.bg)
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
+                // tab strip (only with more than one tab): narrow, compact
+                if self.tabs.len() > 1 {
+                    let mut go: Option<usize> = None;
+                    let mut close: Option<usize> = None;
+                    let mut newt = false;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for i in 0..self.tabs.len() {
+                            let q = if i == self.tab_cur { &self.query } else { &self.tabs[i] };
+                            let mut t: String = q.chars().take(14).collect();
+                            if q.chars().count() > 14 { t.push('…'); }
+                            if t.trim().is_empty() { t = "new".into(); }
+                            let on = i == self.tab_cur;
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(104.0, 22.0), egui::Sense::click());
+                            let bg = if on { pal.accent.gamma_multiply(0.22) } else if resp.hovered() { pal.text.gamma_multiply(0.10) } else { pal.text.gamma_multiply(0.05) };
+                            ui.painter().rect_filled(rect, 7.0, bg);
+                            if on { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 8.0, rect.bottom() - 2.0), egui::vec2(rect.width() - 16.0, 2.0)), 1.0, pal.accent); }
+                            ui.painter().text(egui::pos2(rect.left() + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, t, egui::FontId::monospace(11.0), if on { pal.text } else { pal.dim });
+                            let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 11.0, rect.center().y), egui::vec2(16.0, 16.0));
+                            let xh = resp.hovered() && ui.input(|i| i.pointer.hover_pos()).map_or(false, |p| xr.contains(p));
+                            if resp.hovered() { ui.painter().text(xr.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(13.0), if xh { pal.error } else { pal.dim }); }
+                            if resp.clicked() {
+                                if xh { close = Some(i); } else { go = Some(i); }
+                            }
+                            if resp.middle_clicked() { close = Some(i); }
+                        }
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                        if resp.hovered() { ui.painter().rect_filled(r, 7.0, pal.text.gamma_multiply(0.10)); }
+                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "+", egui::FontId::proportional(14.0), pal.dim);
+                        if resp.clicked() { newt = true; }
+                    });
+                    ui.add_space(4.0);
+                    if let Some(i) = close { self.tab_close(&ctx, i); }
+                    else if let Some(i) = go { self.tab_switch(&ctx, i); }
+                    else if newt { self.tab_new(&ctx); }
+                }
                 // search row, closed off from the results by a single rule
                 let row = egui::Frame::new()
                     .inner_margin(Margin::symmetric(4, 6))
