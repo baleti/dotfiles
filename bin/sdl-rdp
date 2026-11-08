@@ -37,15 +37,15 @@ if [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || [ -n "$(ls -d "$XDG_RUNTIME_DIR"/hyp
     # refocus it (only while it is the active window) every 1.5 s until Windows has been sent a size other than
     # the initial 1024x768 (read from SDL's own layout log line). Covers launches where the window is not yet
     # active at that moment (e.g. opened from the picker overlay).
-    last=0
+    last=0; tries=0
     for _ in $(seq 1 300); do
       kill -0 $pid 2>/dev/null || break
       hl "if w.floating then hl.dispatch(hl.dsp.window.float({ action = 'disable', window = w })) end"
-      if [ -e "$ready" ] && [ "$(cat "$ready.size" 2>/dev/null)" = "1024x768" -o ! -e "$ready.size" ]; then
+      if [ "$tries" -lt 3 ] && [ -e "$ready" ] && [ "$(cat "$ready.size" 2>/dev/null)" = "1024x768" -o ! -e "$ready.size" ]; then
         now=$(date +%s.%N)
         if awk "BEGIN{exit !($now - $last >= 1.5)}"; then
           [ -n "$SDL_RDP_DEBUG" ] && echo "$(date +%T.%3N) NUDGE try; sent=$(cat "$ready.size" 2>/dev/null) active=$(hyprctl activewindow -j | python3 -c "import json,sys;print(json.load(sys.stdin).get('pid'))") pid=$pid" >> "$SDL_RDP_DEBUG"
-          nudge; last=$(date +%s.%N)
+          nudge; tries=$((tries+1)); last=$(date +%s.%N)
         fi
       fi
       sleep 0.2
