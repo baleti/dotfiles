@@ -49,3 +49,19 @@ completion, Down into the list, arrows/Ctrl+J,K,H,L/PageUp/PageDown/Home/End, En
 Ctrl+wheel and Ctrl +/-/0/9 zoom, Ctrl+P settings, Ctrl+N new window, Ctrl+W close, Ctrl+Shift+R restart into an updated exe. New: right-click or Menu key for the context menu (Open, Open
 with, Show in folder, Copy path, Copy Windows path, Save a copy, Open in browser) and dragging a result out onto Explorer,
 Outlook or Teams. Esc cancels a running download.
+
+## Live updates from the Windows drives (the background watcher)
+
+`SearchApp.exe --watch` is a headless background process (no window, one instance) that listens to Windows' file change
+notifications for the folders in `"watch"` of `config.json` (drive letters only; works for local NTFS and SMB shares) and appends
+one JSON line per change to `%LOCALAPPDATA%\SearchApp\changes\*.jsonl`. On the Linux host `~/bin/index/catalog/winwatch.py`
+(systemd user unit `catalog-win-watch.service`) follows that file over ssh, remembers its position, applies the changes to the file
+catalog and pushes them to the running search server: new, changed, moved and deleted files show up in searches within seconds.
+
+    tools/deploy-watcher.sh      # restart the watcher with the newest exe, register it to start at logon (HKCU Run), and write
+                                 # the "watch" list into the PC's config from the catalog's extra_roots that live on the PC
+    SearchApp.exe --watch-stop | --install-watcher | --uninstall-watcher
+
+A folder that is moved in is listed completely; an event overflow or a share that was away makes the Linux side start a full walk
+(at most once an hour). Gaps of the Linux side lose nothing (the file position is kept). The watcher's own log is
+`%LOCALAPPDATA%\SearchApp\watcher.log`. After `./deploy.sh` run `tools/deploy-watcher.sh` too if the watcher code changed.

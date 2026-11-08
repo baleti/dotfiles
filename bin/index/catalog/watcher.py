@@ -231,18 +231,27 @@ class Watcher:
             store = LocalSync(db, sid)
             t_a = time.time()
             try:
+                # one unreadable path must not fail the whole batch (it used to be retried forever, holding the catalog's
+                # write lock for hours and starving every other writer): log it and carry on
                 for kind, path in structs:
-                    if kind == "scan":
-                        self.scan(path, store)
-                    else:
-                        store.delprefix(path)
+                    try:
+                        if kind == "scan":
+                            self.scan(path, store)
+                        else:
+                            store.delprefix(path)
+                    except OSError as e:
+                        log("skipped", kind, path, repr(e))
                 for p in due:
-                    store.put_path(p)
+                    try:
+                        store.put_path(p)
+                    except OSError as e:
+                        log("skipped", p, repr(e))
                 db.commit()
                 self.t["db"] += time.time() - t_a
             except Exception as e:
                 db.rollback()
-                log("flush failed, will retry:", repr(e))
+                import traceback
+                log("flush failed, will retry:", repr(e), traceback.format_exc()[-600:])
                 with self.lock:
                     self.struct = structs + self.struct
                     for p in due:

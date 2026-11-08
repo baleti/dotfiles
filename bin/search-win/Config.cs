@@ -15,7 +15,7 @@ namespace SearchApp
         public double Thumb = 16;
         public Dictionary<string, double> Cw = new Dictionary<string, double>();
         public WinState Window = new WinState();
-        public string LastQuery = ""; public bool ShowOwner = true;
+        public string LastQuery = ""; public bool ShowOwner = true; public List<string> Watch = new List<string>();
         public List<string> DangerousExt = new List<string>("exe bat cmd com ps1 psm1 vbs vbe js jse wsf wsh msi msp scr hta jar lnk reg cpl dll".Split(' '));
 
         public static string Dir
@@ -51,6 +51,7 @@ namespace SearchApp
                     if (w.TryGetValue("h", out o)) c.Window.h = Convert.ToDouble(o);
                     if (w.TryGetValue("max", out o)) c.Window.max = Convert.ToBoolean(o);
                 }
+                if (d.TryGetValue("watch", out v) && v is object[]) c.Watch = ((object[])v).Select(x => Convert.ToString(x)).ToList();
                 if (d.TryGetValue("showOwner", out v) && v is bool) c.ShowOwner = (bool)v;
                 if (d.TryGetValue("lastQuery", out v) && v is string) c.LastQuery = (string)v;
                 if (d.TryGetValue("dangerousExt", out v) && v is object[]) c.DangerousExt = ((object[])v).Select(x => Convert.ToString(x).ToLowerInvariant().TrimStart('.')).ToList();
@@ -76,7 +77,7 @@ namespace SearchApp
                 if (!double.IsNaN(Window.x)) { w["x"] = Window.x; w["y"] = Window.y; }
                 w["w"] = Window.w; w["h"] = Window.h; w["max"] = Window.max;
                 d["window"] = w;
-                d["lastQuery"] = LastQuery; d["showOwner"] = ShowOwner;
+                d["lastQuery"] = LastQuery; d["showOwner"] = ShowOwner; d["watch"] = Watch.Select(x => (object)x).ToArray();
                 d["dangerousExt"] = DangerousExt.Select(x => (object)x).ToArray();
                 string tmp = path + ".tmp";
                 File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d));

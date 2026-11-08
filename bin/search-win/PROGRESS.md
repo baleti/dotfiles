@@ -48,3 +48,15 @@ Started 2026-11-08 by the previous session; you take over. Read HANDOFF.md first
 ## Server wishes (do not change the server; write requests here)
 - Owner column: the Windows app reads owners itself for files under the drive map (NTFS/SMB, `OwnerCache`). Files that live on the Linux host have no owner in the API; a `owner` field per hit in /api/query would let the column work there too (and make it sortable).
 - /api/query with /s/size is very slow on the full catalog (about 60 s). A cached size index on the server would help.
+
+## Later work (after the first delivery)
+- search-web: `fileok` is a string check instead of a stat per result (a page of 200 results took 20 s over the sshfs mounts, now 0.3 s).
+- Query engine: `//<attribute> value` for every attribute stored with document-system entries (substring on the attribute name and
+  on the value, `!` negates; `//own` matches owner, owner-id, owner-org ...) and `//pages >N` (counted PDFs only). /facets lists
+  them, the Windows app completes and highlights them. The web page's completion list was not changed.
+- Owner column (Windows files through the drive map), left-edge column resizing, Ctrl+W, Ctrl+Shift+R restart, rename-aside deploy.
+- Live watcher for the Windows drives (see README). Found and fixed on the way: watcher.py (the local live watcher) retried a failing
+  batch forever and held the catalog's write lock since ~03:15, starving every other writer; it now skips unreadable paths.
+- Restarting images-search drops the live changes it holds in memory; touch `~/.cache/indexes/catalog/catalog.db.gen` afterwards (a
+  reload takes about a minute).
+- Not done: copying the catalog to the PC (the slowness was the per-result stat, not the indexes).

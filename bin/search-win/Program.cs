@@ -33,6 +33,7 @@ namespace SearchApp
                 if (outPath != null) File.WriteAllText(outPath, sw.ToString()); else Console.Write(sw.ToString());
                 return rc;
             }
+            if (args.Contains("--watch") || args.Contains("--watch-stop") || args.Contains("--install-watcher") || args.Contains("--uninstall-watcher")) return Watcher.Run(args);
             if (args.Contains("--shot"))
             {
                 try { return Shot.Run(args); }
