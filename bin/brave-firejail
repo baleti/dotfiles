@@ -3,5 +3,7 @@
 d=$(mktemp -d /tmp/brave-fj.XXXXXX)
 mkdir -p "$d/Default"
 cp ~/.config/brave-firejail/template-Preferences.json "$d/Default/Preferences"
-firejail brave --user-data-dir="$d" --no-first-run "$@"
+# browserpass: unpacked copy in ~/.browserpass-ext (manifest has a fixed key, so the
+# ID matches the native host allowed_origins); whitelisted in brave.local
+firejail brave --user-data-dir="$d" --no-first-run --load-extension="$HOME/.browserpass-ext" "$@"
 rm -rf "$d"

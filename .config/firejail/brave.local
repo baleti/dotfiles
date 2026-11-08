@@ -1,15 +1,23 @@
-# needed for browserpass extension
-# whitelist ${HOME}/.password-store
-# noblacklist ${HOME}/.password-store
-# whitelist ${HOME}/.gnupg
-# noblacklist ${HOME}/.gnupg
-# writable-run-user
-# whitelist ${RUNUSER}/gnupg
-
-# however I couldn't get browserpass to work on brave for some reason
-# it should have been already installed in package browserpass-chromium
-# therefore disabling access to gnupg
-nowhitelist ${HOME}/.gnupg
+# DECISION RECORD (2026-11-08) - browserpass in sandboxed Brave
+# - Sandboxed Brave has a THROWAWAY profile: `tmpfs ${HOME}/.config` below covers
+#   the BraveSoftware whitelist, so nothing installed in the profile persists.
+#   The extension is therefore loaded from ~/.browserpass-ext via --load-extension
+#   (bin/brave-open, bin/brave-firejail); rebuild it with bin/browserpass-ext-setup.
+# - Ctrl+Shift+L is swallowed by Brave itself, so it is remapped to Ctrl+Shift+Y by
+#   ~/.config/hypr/brave-browserpass.lua (full reasoning in bin/browserpass-ext-setup).
+# - gpg-agent (smartcard + pinentry) stays OUTSIDE the sandbox; only its socket is
+#   exposed, and private-keys-v1.d is blacklisted.
+# browserpass (native host runs inside the sandbox and calls gpg)
+# pass store is read-only; gpg-agent runs outside (holds the smartcard
+# and pinentry), only its socket is exposed. Secret key stubs stay hidden.
+noblacklist ${HOME}/.password-store
+whitelist ${HOME}/.password-store
+read-only ${HOME}/.password-store
+noblacklist ${HOME}/.gnupg
+whitelist ${HOME}/.gnupg
+blacklist ${HOME}/.gnupg/private-keys-v1.d
+writable-run-user
+whitelist ${RUNUSER}/gnupg
 
 nowhitelist ${HOME}/.kde/share/config/kdeglobals
 tmpfs ${HOME}/.kde
@@ -31,3 +39,8 @@ blacklist ${HOME}/.Xauthority
 dbus-user filter
 dbus-user.talk org.freedesktop.portal.*
 dbus-user.talk org.freedesktop.Notifications
+
+# browserpass extension, loaded via --load-extension (profile in ~/.config is tmpfs)
+noblacklist ${HOME}/.browserpass-ext
+whitelist ${HOME}/.browserpass-ext
+read-only ${HOME}/.browserpass-ext

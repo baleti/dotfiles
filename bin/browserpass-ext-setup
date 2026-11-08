@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Rebuild ~/.browserpass-ext: the browserpass-chromium extension with one patch.
+
+WHY THIS EXISTS (decision record, 2026-11-08)
+  Sandboxed Brave (firejail, see ~/.config/firejail/brave.local) gets a
+  throwaway profile: `tmpfs ${HOME}/.config` covers the BraveSoftware
+  whitelist. So the extension can't live in the profile; it is loaded from a
+  whitelisted unpacked copy via --load-extension (bin/brave-open,
+  bin/brave-firejail). Re-run this script after every browserpass-chromium
+  package update (the copy does not auto-update).
+
+THE PATCH
+  Wanted: Ctrl+Shift+L opens the browserpass popup (extension default).
+  Problem: in Brave a *real* Ctrl+Shift+L never reaches the extension (the
+  shortcut shows as assigned on brave://extensions/shortcuts, Hyprland and
+  the compositor deliver the key fine - confirmed with wev - but Brave
+  swallows it first; _execute_action never fires). Ctrl+Shift+F (fillBest)
+  works, and so does a custom command. So:
+    1. manifest: drop the suggested key from _execute_action, add a custom
+       "openPopup" command bound to Ctrl+Shift+Y
+    2. background.dist.js: handle "openPopup" via chrome.action.openPopup()
+    3. ~/.config/hypr/brave-browserpass.lua rewrites Ctrl+Shift+L ->
+       Ctrl+Shift+Y when Brave is focused (send_shortcut)
+  Net effect: user presses Ctrl+Shift+L, extension sees Ctrl+Shift+Y.
+  If Brave ever stops eating Ctrl+Shift+L, delete the hypr bind and
+  restore the stock _execute_action key instead of this patch.
+"""
+import glob, json, os, shutil, subprocess, sys, tempfile
+
+dest = os.path.expanduser("~/.browserpass-ext")
+crxs = sorted(glob.glob("/usr/lib/browserpass-chromium/browserpass-chromium-*.crx"))
+if not crxs:
+    sys.exit("browserpass-chromium package not installed")
+tmp = tempfile.mkdtemp()
+subprocess.run(["unzip", "-q", "-o", crxs[-1], "-d", tmp])  # unzip warns about the CRX header; harmless
+
+m = json.load(open(f"{tmp}/manifest.json"))
+# The packaged crx carries a different key (-> ID klfodd..., also allowed by the
+# native host). Pin the Web Store key so the ID is pjmbgaakjkbhpopmakjoedenlfdmcdgm,
+# which bin/brave-open's toolbar-pin seed and brave-firejail's template rely on.
+# (Public key, not a secret.)
+m["key"] = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAi7YpMyAwUW15FiUP7B4uOWRLeaeNKleIOWj81MtRVZ7hlA83oKKbl/Sy8lRHhF4ks9ZIy8VMevsVJ/XRpxPyts0HMS1JoDChGIwV4UK950DE4Xo+Sx48Pz8az+3wRjqwCKx6IPpfPFG9cKa1xDLp7yn9m2Ne75GJ/YIH01Cx3NB5ygKY+4f6rPjQjNij1hfbOgt+gfk9YlOIjysg4PJwxVgma4uhd441MUioBMdI5OQnipxXHzHXo1ZHZR1wvGn0geg+06CtKHdU5u4XUYxD90JVmSGJKM1J8ALIPLA8O7nx1zR1b1QYuUYITNCa5sdUfzrMXDmFFoYrST3fkQICjwIDAQAB"
+m["commands"]["_execute_action"] = {}
+m["commands"]["openPopup"] = {"description": "Open the browserpass popup",
+                              "suggested_key": {"default": "Ctrl+Shift+Y"}}
+json.dump(m, open(f"{tmp}/manifest.json", "w"), indent=3)
+
+p = f"{tmp}/js/background.dist.js"
+s = open(p).read()
+anchor = '    switch (command) {\n        case "fillBest":'
+assert anchor in s, "upstream changed; redo the patch"
+s = s.replace(anchor, '''    switch (command) {
+        case "openPopup":
+            try {
+                await chrome.action.openPopup();
+            } catch (e) {
+                console.log(e);
+            }
+            break;
+        case "fillBest":''', 1)
+open(p, "w").write(s)
+
+shutil.rmtree(dest, ignore_errors=True)
+shutil.move(tmp, dest)
+print("rebuilt", dest, "from", crxs[-1])

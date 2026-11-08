@@ -7,4 +7,5 @@ if [ "$#" -eq 1 ]; then
     /*) exec /home/user1/bin/brave-sandbox-open "$1" ;;
   esac
 fi
-exec firejail brave --force-renderer-accessibility "$@"
+# Profile in ~/.config is a per-sandbox tmpfs, so seed the browserpass toolbar pin inside it.
+exec firejail --quiet --profile=/etc/firejail/brave.profile sh -c 'd=$HOME/.config/BraveSoftware/Brave-Browser/Default; mkdir -p "$d"; echo "{\"extensions\":{\"pinned_extensions\":[\"pjmbgaakjkbhpopmakjoedenlfdmcdgm\"]}}" > "$d/Preferences"; exec brave --force-renderer-accessibility --load-extension="$HOME/.browserpass-ext" "$@"' brave "$@"
