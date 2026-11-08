@@ -312,6 +312,40 @@ fn list_only(list_focused: bool, pressed: bool) -> bool {
     list_focused && pressed
 }
 
+/// Flat, rounded, "modern" widgets: borderless soft-filled buttons that tint toward the accent on hover,
+/// roomier padding, rounded inputs and menus. Applies to every button/menu/popup/dialog in the app.
+fn apply_modern_style(st: &mut egui::Style, pal: &Palette) {
+    let r = egui::CornerRadius::same(8);
+    let fill = pal.text.gamma_multiply(0.09);
+    let w = &mut st.visuals.widgets;
+    w.noninteractive.corner_radius = r;
+    w.inactive.corner_radius = r;
+    w.hovered.corner_radius = r;
+    w.active.corner_radius = r;
+    w.open.corner_radius = r;
+    w.inactive.weak_bg_fill = fill;
+    w.inactive.bg_stroke = Stroke::NONE;
+    w.hovered.weak_bg_fill = pal.accent.gamma_multiply(0.22);
+    w.hovered.bg_stroke = Stroke::new(1.0, pal.accent.gamma_multiply(0.6));
+    w.hovered.expansion = 0.0;
+    w.active.weak_bg_fill = pal.accent.gamma_multiply(0.38);
+    w.active.bg_stroke = Stroke::new(1.0, pal.accent);
+    w.active.expansion = 0.0;
+    w.open.weak_bg_fill = pal.accent.gamma_multiply(0.16);
+    w.open.bg_stroke = Stroke::NONE;
+    st.visuals.window_corner_radius = egui::CornerRadius::same(12);
+    st.visuals.menu_corner_radius = egui::CornerRadius::same(10);
+    st.visuals.selection.bg_fill = pal.accent.gamma_multiply(0.45);
+    st.spacing.button_padding = egui::vec2(14.0, 6.0);
+    st.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    st.spacing.interact_size.y = 28.0;
+}
+
+/// A prominent action button (filled with `color`), for the confirming choice in a dialog.
+fn primary_button(text: &str, color: Color32) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text).color(Color32::WHITE).strong()).fill(color).stroke(Stroke::NONE)
+}
+
 fn take_count(ui: &mut egui::Ui, mods: egui::Modifiers, key: Key) -> usize {
     let mut c = 0;
     while c < 500 && ui.input_mut(|i| i.consume_key(mods, key)) {
@@ -1657,6 +1691,8 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // tooltips (the "#P" header's "number of pages", ...) appear at once instead of after egui's default delay
         cc.egui_ctx.all_styles_mut(|st| st.interaction.tooltip_delay = 0.0);
+        let mp = load_palette(&cfg().scheme);
+        cc.egui_ctx.all_styles_mut(|st| apply_modern_style(st, &mp));
         let mut fonts = FontDefinitions::default();
         if let Ok(bytes) = std::fs::read(FONT) {
             fonts.font_data.insert("jbmono".into(), std::sync::Arc::new(FontData::from_owned(bytes)));
@@ -3663,29 +3699,33 @@ impl eframe::App for App {
             let mut confirm = false;
             let mut cancel = ui.input(|i| i.key_pressed(Key::Escape));
             egui::Window::new("Move to trash?")
+                .title_bar(false)
                 .collapsible(false)
-                .resizable(true)
+                .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .default_size([720.0, 520.0])
-                .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(2.0, pal.error)).corner_radius(10.0).inner_margin(Margin::same(14)))
+                .fixed_size([560.0, 0.0])
+                .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(14.0).inner_margin(Margin::same(20)))
                 .show(&ctx, |ui| {
+                    ui.label(RichText::new("Move to trash?").size(20.0).strong().color(pal.text));
+                    ui.add_space(2.0);
                     ui.label(RichText::new(format!("{} file(s), {} total", files.len(), human(total)))
-                        .color(pal.error).size(18.0).strong());
+                        .color(pal.error).size(14.0).strong());
                     ui.label(RichText::new("Files are moved to the trash (recoverable), not erased. Only local files under your home folder are listed here.")
                         .color(pal.dim));
                     ui.add_space(8.0);
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
                         for (p, sz) in &files {
                             ui.label(RichText::new(format!("{:>10}  {}", human(*sz), p.display())).monospace().size(12.0).color(pal.text));
                         }
                     });
                     ui.add_space(10.0);
                     ui.label(RichText::new(format!("Type {need} to confirm:")).color(pal.text));
-                    let edit = ui.add(egui::TextEdit::singleline(&mut self.trash_typed).desired_width(260.0));
+                    let edit = ui.add(egui::TextEdit::singleline(&mut self.trash_typed).desired_width(f32::INFINITY).margin(Margin::symmetric(10, 8)));
                     if !edit.has_focus() { edit.request_focus(); }
                     let ready = self.trash_typed.trim() == need;
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(ready, egui::Button::new(RichText::new("Move to trash").color(pal.error))).clicked() {
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_enabled(ready, primary_button("Move to trash", pal.error.gamma_multiply(0.85))).clicked() {
                             confirm = true;
                         }
                         if ui.button("Cancel").clicked() {
