@@ -2801,7 +2801,7 @@ impl App {
         let painter = ui.painter();
         if resp.hovered() { painter.rect_filled(rect, 4.0, pal.accent.gamma_multiply(0.08)); }
         if self.sel_header.as_deref() == Some(id.as_str()) {
-            painter.rect_filled(rect, 4.0, pal.accent.gamma_multiply(0.22));
+            painter.rect_filled(rect, 4.0, pal.accent.gamma_multiply(if self.list_focus { 0.30 } else { 0.08 }));
             painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())), 0.0, pal.accent);
         }
         painter.line_segment([egui::pos2(x, rect.bottom() - 1.0), egui::pos2(rect.right() - 6.0, rect.bottom() - 1.0)], Stroke::new(1.0, pal.border));
@@ -3164,7 +3164,7 @@ impl eframe::App for App {
 
         // Delete: only when the confirmation dialog is closed
         let del = self.trash_pending.is_none() && ui.input(|i| i.key_pressed(Key::Delete));
-        if del && !self.popup && self.total > 0 && self.sel_header.is_none() {
+        if del && self.list_focus && !self.snip_focus && !self.popup && self.total > 0 && self.sel_header.is_none() {
             self.request_trash();
         }
 
@@ -3586,7 +3586,7 @@ impl eframe::App for App {
             let ev_copy = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Copy)); i.events.retain(|e| !matches!(e, egui::Event::Copy)); had });
             let ev_cut = ui.input_mut(|i| { let had = i.events.iter().any(|e| matches!(e, egui::Event::Cut)); i.events.retain(|e| !matches!(e, egui::Event::Cut)); had });
             if (key_c || ev_copy) && self.sel_header.is_none() { self.copy_selection(false); }
-            if (key_x || ev_cut) && self.sel_header.is_none() { self.copy_selection(true); }
+            if (key_x || ev_cut) && self.list_focus && self.sel_header.is_none() { self.copy_selection(true); }
             if take_act(ui, &keys, "fold") > 0 && self.group_active() {
                 if let Some(id) = self.sel_header.clone().or_else(|| self.group_of(self.selected)) { self.toggle_group(&id); }
             }
@@ -4341,11 +4341,15 @@ impl eframe::App for App {
                             let selected = self.in_selection(idx);
                             if !selected && !ui.is_rect_visible(rect) { continue; }
                             if selected {
-                                ui.painter().rect_filled(rect, 6.0, pal.accent.gamma_multiply(0.18));
+                                // focus cue: a focused list gets a strong fill + outline (Delete / Ctrl+X act on it);
+                                // otherwise the selection is only faintly marked and those keys are inert
+                                let foc = self.list_focus;
+                                ui.painter().rect_filled(rect, 6.0, pal.accent.gamma_multiply(if foc { 0.28 } else { 0.07 }));
+                                if foc { ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.5, pal.accent), egui::StrokeKind::Inside); }
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
                                     1.0,
-                                    pal.accent,
+                                    if foc { pal.accent } else { pal.border },
                                 );
                             }
                             let thumb_rect = egui::Rect::from_min_size(
