@@ -406,7 +406,39 @@ fn desktop_name(id: &str) -> Option<String> {
     None
 }
 
+/// extension -> mime from the shared-mime-info database (loaded once)
+fn mime_globs() -> &'static HashMap<String, String> {
+    static G: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+    G.get_or_init(|| {
+        let mut best: HashMap<String, (u32, String)> = HashMap::new();
+        for f in ["/usr/share/mime/globs2"] {
+            let Ok(t) = std::fs::read_to_string(f) else { continue };
+            for l in t.lines() {
+                let mut it = l.splitn(4, ':');
+                let (Some(w), Some(m), Some(g)) = (it.next(), it.next(), it.next()) else { continue };
+                let Some(ext) = g.strip_prefix("*.") else { continue };
+                if ext.contains(['*', '?', '[']) { continue; }
+                let w: u32 = w.parse().unwrap_or(50);
+                let e = ext.to_ascii_lowercase();
+                if best.get(&e).map_or(true, |(bw, _)| w > *bw) { best.insert(e, (w, m.to_string())); }
+            }
+        }
+        best.into_iter().map(|(k, (_, m))| (k, m)).collect()
+    })
+}
+
+/// Mime type of a result. Decided from the file NAME (instant, no I/O): sniffing the content with `file`
+/// would read the file, and on the Drive mount that means downloading it while the UI thread waits.
+/// Only names without a known extension on a non-mount path fall back to content sniffing.
 fn mime_of(path: &Path) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let g = mime_globs();
+    let mut rest = name.as_str();
+    while let Some(dot) = rest.find('.') {
+        rest = &rest[dot + 1..];
+        if let Some(m) = g.get(rest) { return m.clone(); }
+    }
+    if path.starts_with(PathBuf::from(&cfg().mount_root)) { return "application/octet-stream".into(); }
     std::process::Command::new("file").arg("--mime-type").arg("-b").arg(path).output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "application/octet-stream".into())
