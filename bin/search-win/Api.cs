@@ -149,6 +149,14 @@ namespace SearchApp
             foreach (var x in Arr(G(d, "dates"))) f.Dates.Add(Convert.ToString(x));
             foreach (var x in Arr(G(d, "mimes"))) f.Mimes.Add(Convert.ToString(x));
             foreach (var x in Arr(G(d, "exts"))) f.Exts.Add(Convert.ToString(x));
+            foreach (var x in Arr(G(d, "attrs")))
+            {
+                var a = Arr(x); if (a.Count < 2) continue;
+                var at = new Attr { Name = Convert.ToString(a[0]), Count = (long)Num(a[1], 0) };
+                if (a.Count > 2) foreach (var v in Arr(a[2])) at.Values.Add(Convert.ToString(v));
+                f.Attrs.Add(at);
+            }
+            foreach (var x in Arr(G(d, "tags"))) { var a = Arr(x); if (a.Count >= 2) f.ExtraTags.Add(new[] { Convert.ToString(a[0]), Convert.ToString(a[1]) }); }
             return f;
         }
         public async Task<KeyValuePair<long, List<string>>> Paths(string frag, CancellationToken ct)

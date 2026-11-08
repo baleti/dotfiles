@@ -335,7 +335,15 @@ namespace SearchApp
             LoadFacets(); LoadHist();
             Send(q);
         }
-        async void LoadFacets() { try { facets = await Api.GetFacets(CancellationToken.None); } catch { } }
+        async void LoadFacets()
+        {
+            try
+            {
+                facets = await Api.GetFacets(CancellationToken.None);
+                Dsl.AttrNames = facets.Attrs.Select(a => a.Name).Concat(facets.ExtraTags.Select(t => t[0])).ToList(); Q.Redraw();
+            }
+            catch { }
+        }
 
         public void RestartApp()
         {

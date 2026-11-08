@@ -123,6 +123,18 @@ namespace SearchApp
             o.WriteLine((d1 && !d2 ? "ok   " : "FAIL ") + "dangerous ext check"); if (!(d1 && !d2)) fails++;
             var real = Config.Load(); string rm = real.MapToWindows("/mnt/share/m/PROJECTS/a/b.eml");
             o.WriteLine("     real config: server=" + real.Server + " maps=" + real.PathMap.Count + " sample=" + rm);
+            {
+                var f = new Facets(); f.Attrs.Add(new Attr { Name = "owner", Count = 1441, Values = { "Anna Smith" } }); f.Attrs.Add(new Attr { Name = "owner-org", Count = 640, Values = { "Acme" } }); f.Attrs.Add(new Attr { Name = "status", Count = 5, Values = { "locked" } });
+                f.ExtraTags.Add(new[] { "pages", "PDF page count" });
+                var c = new List<Cand>(); var none = new List<string>();
+                Dsl.Completions("x //ow", f, none, c); bool a1 = c.Count == 2 && c[0].V == "//owner " && c[1].V == "//owner-org ";
+                Dsl.Completions("x //pa", f, none, c); bool a2 = c.Any(x => x.V == "//pages ") && c.Any(x => x.V == "//path ");
+                Dsl.Completions("x //owner ", f, none, c); bool a3 = c.Count == 2 && c[0].V == "\"Anna Smith\" ";
+                Dsl.Completions("x //status ", f, none, c); bool a4 = c.Count == 1 && c[0].V == "locked ";
+                Dsl.Completions("x //", f, none, c); bool a5 = c.Count == 7 + 1 + 3;
+                Dsl.AttrNames = new List<string> { "owner", "status" }; bool a6 = Dsl.CmdSpans("a //own x").Count == 1; Dsl.AttrNames = new List<string>();
+                bool ok = a1 && a2 && a3 && a4 && a5 && a6; o.WriteLine((ok ? "ok   " : "FAIL ") + "attribute completions " + a1 + a2 + a3 + a4 + a5 + a6); if (!ok) fails++;
+            }
             string own = OwnerCache.Read(System.Reflection.Assembly.GetExecutingAssembly().Location);
             o.WriteLine((own.Length > 0 ? "ok   " : "FAIL ") + "owner of the exe: " + own); if (own.Length == 0) fails++;
             Opener.Dry = true; Opener.Shell("M:\\x.eml"); Opener.OpenWith("M:\\x.eml"); Opener.Dry = false;

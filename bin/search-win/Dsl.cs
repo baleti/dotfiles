@@ -8,9 +8,15 @@ namespace SearchApp
 {
     public struct Cand { public string V, L; public Cand(string v, string l) { V = v; L = l; } }
 
+    public class Attr { public string Name; public long Count; public List<string> Values = new List<string>(); }
+
     public class Facets
     {
         public List<string> Dates = new List<string>(), Mimes = new List<string>(), Exts = new List<string>();
+        /// <summary>Document attributes from the server: name, number of files, common values.</summary>
+        public List<Attr> Attrs = new List<Attr>();
+        /// <summary>Further tags the server knows (for example //pages): name, description.</summary>
+        public List<string[]> ExtraTags = new List<string[]>();
     }
 
     /// <summary>Port of the query-language helpers of the web page (cmdSpans, queryTerms, completions, ...).</summary>
@@ -22,6 +28,9 @@ namespace SearchApp
             new[]{"pages","#P","pages"}, new[]{"date","MODIFIED","date-modified"} };
         static readonly HashSet<string> Verbs = new HashSet<string>(("fts full-text-search chroma semantic clip face s sort g group show-dotfiles hide-dotfiles show-backup hide-backup show-backup-restic hide-backup-restic show-backup-btrfs hide-backup-btrfs show-fts-rvt hide-fts-rvt show-fts-dwg hide-fts-dwg").Split(' '));
         static readonly HashSet<string> Tags = new HashSet<string>("name path size dm mime ext file".Split(' '));
+        /// <summary>Attribute and extra tag names from the server: a //word that is a part of one of them is a command too.</summary>
+        public static List<string> AttrNames = new List<string>();
+        static bool IsTag(string t) { return Tags.Contains(t) || (t.Length > 0 && AttrNames.Any(a => a.Contains(t))); }
         static readonly Regex ContentRx = new Regex(@"(^|\s)/(fts|chroma|full-text-search|semantic)(/\S*)?(\s|$)");
         static readonly Regex TokRx = new Regex("\"[^\"]*\"|\\S+");
 
@@ -79,7 +88,7 @@ namespace SearchApp
                 while (i < q.Length && q[i] != ' ') i++;
                 string tok = q.Substring(st, i - st);
                 if (own) { own = false; continue; }
-                if (tok.StartsWith("//")) { if (Tags.Contains(tok.Substring(2).Split('/')[0])) { outl.Add(new[] { st, i }); own = true; } }
+                if (tok.StartsWith("//")) { if (IsTag(tok.Substring(2).Split('/')[0])) { outl.Add(new[] { st, i }); own = true; } }
                 else if (tok.Length > 0 && tok[0] == '/') { if (Verbs.Contains(tok.Substring(1).Split('/')[0])) outl.Add(new[] { st, i }); }
             }
             return outl;
@@ -171,6 +180,13 @@ namespace SearchApp
                 string[][] s = { new[]{"<100K","smaller than 100 KiB"},new[]{">100K","larger than 100 KiB"},new[]{"<1M","smaller than 1 MiB"},new[]{">1M","larger than 1 MiB"},new[]{"<10M","smaller than 10 MiB"},new[]{">10M","larger than 10 MiB"},new[]{"<100M","smaller than 100 MiB"},new[]{">100M","larger than 100 MiB"},new[]{"<1G","smaller than 1 GiB"},new[]{">1G","larger than 1 GiB"},new[]{"<10G","smaller than 10 GiB"},new[]{">10G","larger than 10 GiB"}};
                 foreach (var x in s) o.Add(new Cand(x[0], x[1]));
             }
+            else if (tag == "pages")
+                foreach (var v in new[] { ">10", ">50", ">100", ">300", "<5" }) o.Add(new Cand(v, (v[0] == '>' ? "more than " : "fewer than ") + v.Substring(1) + " pages (counted PDFs)"));
+            else if (tag.Length > 0 && f.Attrs.Count > 0)
+            {
+                var seen = new HashSet<string>();
+                foreach (var a in f.Attrs) if (a.Name.Contains(tag)) foreach (var v in a.Values) if (seen.Add(v) && v.IndexOf('"') < 0) o.Add(new Cand(v.Any(IsWs) ? "\"" + v + "\"" : v, a.Name));
+            }
             return o;
         }
 
@@ -252,12 +268,16 @@ namespace SearchApp
             {
                 string body = frag.Substring(2);
                 var exact = TagList.FirstOrDefault(t => t[0] == body);
-                if (exact != null)
+                bool known = exact != null || facets.ExtraTags.Any(t => t[0] == body) || facets.Attrs.Any(a => a.Name == body);
+                if (known)
                 {
                     var vals = ValuesFor(body, facets);
                     if (vals.Count > 0) { foreach (var v in vals) outl.Add(new Cand("//" + body + " " + v.V + " ", v.L)); return start; }
                 }
                 foreach (var t in TagList) if (t[0].StartsWith(body, StringComparison.Ordinal)) outl.Add(new Cand("//" + t[0] + " ", t[1]));
+                foreach (var t in facets.ExtraTags) if (t[0].StartsWith(body, StringComparison.Ordinal)) outl.Add(new Cand("//" + t[0] + " ", t[1]));
+                foreach (var a in facets.Attrs)
+                    if (a.Name.Contains(body) && !TagList.Any(t => t[0] == a.Name)) outl.Add(new Cand("//" + a.Name + " ", "document attribute, " + Digits(a.Count) + " files (matches every attribute containing this)"));
             }
             else if (prev.StartsWith("//") && ValuesFor(prev.Substring(2), facets).Count > 0)
             {

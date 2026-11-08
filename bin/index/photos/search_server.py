@@ -581,6 +581,35 @@ def _pages_saver():
 _pages_load()
 threading.Thread(target=_pages_saver, daemon=True).start()
 
+filesearch.ATTR_DB = os.path.expanduser(config.CFG["catalog"]["db"])    # //owner, //status ... read entry_attrs
+filesearch.PAGES_FN = lambda p, size, mtime: _pages_cache.get((p, size, mtime)) or None   # //pages: counted PDFs only
+
+_attr_facets = {"stamp": None, "value": []}
+def attr_facets():
+    """Document attributes stored in the catalog (entry_attrs): [[type, files, [common values]]], most used first.
+    Values are listed only for attributes with a few distinct ones (status, project, organisation ...)."""
+    import sqlite3
+    db = filesearch.ATTR_DB
+    try:
+        st = os.stat(db).st_mtime
+    except OSError:
+        return []
+    if _attr_facets["stamp"] == st:
+        return _attr_facets["value"]
+    out = []
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        for typ, n, dist in con.execute("SELECT type, count(*), count(DISTINCT value) FROM entry_attrs GROUP BY type ORDER BY 2 DESC"):
+            vals = []
+            if dist <= 60:
+                vals = [v for (v,) in con.execute("SELECT value FROM entry_attrs WHERE type=? AND value<>'' GROUP BY value ORDER BY count(*) DESC LIMIT 60", (typ,))]
+            out.append([typ, n, vals])
+        con.close()
+    except sqlite3.Error:
+        out = []
+    _attr_facets["stamp"], _attr_facets["value"] = st, out
+    return out
+
 def _count_pages(path):
     try:
         out = subprocess.run(["pdfinfo", path], capture_output=True, text=True, timeout=20).stdout
@@ -1142,6 +1171,8 @@ class H(BaseHTTPRequestHandler):
             # values for the //dm and //mime completions
             return self._json(200, {"dates": NAMES.dates, "mimes": list(filesearch.KINDS),
                                     "exts": NAMES.top_exts(),
+                                    "attrs": attr_facets(),
+                                    "tags": [["pages", "PDF page count, e.g. >100 (PDFs whose pages are already counted)"]],
                                     "fts": [fts_name(c) for c in fts_indexes()]})
         if u.path == "/people":
             with _q_lock:

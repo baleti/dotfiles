@@ -207,7 +207,40 @@ def split_neg_terms(rest):
 
 def split_tags(query):
     """'//name x //path "y z" //size >5M //dm >2015-06 rest' -> ({'name':[x],...}, 'rest'); quotes are kept in rest."""
-    return _take_tags(query, ["name", "path", "size", "dm"])
+    return _take_tags(query, ["name", "path", "size", "dm", "pages"])
+
+# Tags the engine knows by themselves; any other `//word value` filters the document-system attributes stored in entry_attrs
+# (owner, project, status, revision, ...): the tag is a substring of the attribute's name (//own matches owner, owner-id,
+# owner-org, ...), the value a case-insensitive substring of its value. `!` negates. //pages filters PDF page counts.
+KNOWN_TAGS = {"name", "path", "size", "dm", "mime", "ext", "extension", "file", "pages"}
+ATTR_DB = None          # the catalog database holding entry_attrs (set by the search server)
+PAGES_FN = None         # (path, size, mtime) -> page count or None (set by the search server: the page-count cache)
+_ATTR_TAG = re.compile(r"(!?)//([A-Za-z][\w-]*)")
+
+def split_attr_tags(query):
+    """'//owner anna !//status locked rest' -> ([(neg, 'owner', 'anna'), (True, 'status', 'locked')], 'rest')."""
+    toks, rest, out, i = tokens(query), [], [], 0
+    while i < len(toks):
+        m = _ATTR_TAG.fullmatch(toks[i])
+        if m and m.group(2).lower() not in KNOWN_TAGS:
+            if i + 1 < len(toks) and not re.match(r"!?//[a-z]", toks[i + 1], re.I):
+                val, neg = toks[i + 1], bool(m.group(1))
+                if val.startswith("!") and len(val) > 1:
+                    val, neg = val[1:], True
+                out.append((neg, m.group(2).lower(), unquote_value(val)))
+                i += 2
+            else:
+                i += 1              # a tag with no value yet (still being typed) filters nothing
+        else:
+            rest.append(toks[i]); i += 1
+    return out, " ".join(rest)
+
+def _num_ok(n, cond):
+    m = re.match(r"^([<>]?)\s*(\d+)$", cond.strip())
+    if not m or n is None:
+        return False
+    v = int(m.group(2))
+    return n > v if m.group(1) == ">" else n < v if m.group(1) == "<" else n == v
 
 def _size_ok(sz, cond):
     return any(_size_one(sz, a) for a in alts(cond))
@@ -860,6 +893,7 @@ class NameTable:
                 by_kind, step > 1)
 
     def _match(self, q, sort, desc):
+        attrs, q = split_attr_tags(q)
         wanted, not_wanted, rest = split_mime_all(q)
         tags, rest = split_tags(rest)
         terms, neg_terms = split_neg_terms(rest)
@@ -875,7 +909,7 @@ class NameTable:
         rest_key = (tuple(sorts), desc, tuple(wanted), tuple(tags["size"]), tuple(tags["path"]),
                     tuple(tags["name"]), tuple(tags["dm"]), tuple(hidden_folders(q)),
                     tuple(not_wanted), tuple(neg_terms), tuple(tags["!name"]), tuple(tags["!path"]),
-                    tuple(tags["!size"]), tuple(tags["!dm"]))
+                    tuple(tags["!size"]), tuple(tags["!dm"]), tuple(attrs), tuple(tags["pages"]), tuple(tags["!pages"]))
         with self.lock:
             last = self._last
         # Typing usually extends the previous query: only the new word is checked, over the previous matches
@@ -926,6 +960,13 @@ class NameTable:
             mask &= hit
         for c in tags["size"]:
             mask &= _size_mask(size_arr, c)
+        for neg, tag, val in attrs:
+            m = self._attr_mask(tag, val, N)
+            mask &= ~m if neg else m
+        for c in tags["pages"]:
+            mask &= self._pages_mask(c, N, ext_codes, ext_names, size_arr)
+        for c in tags["!pages"]:
+            mask &= ~self._pages_mask(c, N, ext_codes, ext_names, size_arr)
         if order is not None:
             if desc and sorts[0] != "date":
                 order = order[::-1]
@@ -944,6 +985,51 @@ class NameTable:
         with self.lock:
             self._last = (rest_key, terms, idx)
         return idx
+
+    def _attr_paths(self, tag, val):
+        db = self.db_path if (self.db_path and os.path.exists(self.db_path)) else ATTR_DB
+        if not db:
+            return []
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                out = set()
+                for a in alts(val):
+                    out.update(r[0] for r in con.execute(
+                        "SELECT e.path FROM entry_attrs a JOIN entries e ON e.id = a.entry_id "
+                        "WHERE instr(lower(a.type), ?) > 0 AND instr(lower(a.value), ?) > 0", (tag, a.lower())))
+                return out
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return []
+
+    def _attr_mask(self, tag, val, N):
+        """Rows whose document attributes (names containing `tag`) contain `val`."""
+        mask = np.zeros(N, bool)
+        paths = self.paths
+        for p in self._attr_paths(tag, val):
+            i = bisect.bisect_left(paths, p, 0, N)
+            if i < N and paths[i] == p:
+                mask[i] = True
+        return mask
+
+    def _pages_mask(self, cond, N, ext_codes, ext_names, size_arr):
+        """PDFs whose (already counted) page number satisfies cond: '>10', '<5', '12', alternatives with ||."""
+        mask = np.zeros(N, bool)
+        fn = PAGES_FN
+        if fn is None:
+            return mask
+        pdf = [k for k, e in enumerate(ext_names) if e == "pdf"]
+        if not pdf:
+            return mask
+        cand = np.flatnonzero(np.isin(ext_codes, np.array(pdf, np.int32)) & (size_arr >= 0))
+        conds = alts(cond)
+        for i in cand.tolist():
+            n = fn(self.paths[i], self.sizes[i], self.mtimes[i])
+            if n and any(_num_ok(n, c) for c in conds):
+                mask[i] = True
+        return mask
 
     def _alt_mask(self, value, expand=lambda a: a):
         """Lines containing any alternative of an `a||b` value (a single value: just its own mask)."""
