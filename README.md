@@ -41,6 +41,6 @@ All on the PC, through `ssh wsl`, nothing is shown or launched:
 
 Same as the web page: Alt+D focus query, Enter search, Up/Down/Ctrl+J/K history, Ctrl+R or F4 history popup, Tab or Ctrl+Space
 completion, Down into the list, arrows/Ctrl+J,K,H,L/PageUp/PageDown/Home/End, Enter or double-click opens, Ctrl+C copies the path,
-Ctrl+wheel and Ctrl +/-/0/9 zoom, Ctrl+P settings, Ctrl+N new window. New: right-click or Menu key for the context menu (Open, Open
+Ctrl+wheel and Ctrl +/-/0/9 zoom, Ctrl+P settings, Ctrl+N new window, Ctrl+W close. New: right-click or Menu key for the context menu (Open, Open
 with, Show in folder, Copy path, Copy Windows path, Save a copy, Open in browser) and dragging a result out onto Explorer,
 Outlook or Teams. Esc cancels a running download.

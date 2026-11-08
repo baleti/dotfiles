@@ -38,6 +38,7 @@ namespace SearchApp
                 if (k == Key.OemMinus || k == Key.Subtract) { e.Handled = true; SetThumb(Cols.Thumb / 1.15); return; }
                 if (k == Key.D0 || k == Key.NumPad0) { e.Handled = true; SetThumb(16); return; }
                 if (k == Key.D9 || k == Key.NumPad9) { e.Handled = true; SetThumb(320); return; }
+                if (k == Key.W && !shift) { e.Handled = true; if (Host != null) Host.CloseWindow(); return; }
                 if (k == Key.N) { e.Handled = true; if (Host != null) Host.NewWindow(Q.Text); return; }
             }
             bool inQ = Q.IsFocusedBox;
