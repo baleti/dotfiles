@@ -260,7 +260,7 @@ namespace SearchApp
         protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
         {
             Focus(); var p = e.GetPosition(this); int i = IndexAt(p, Compute());
-            if (i >= 0 && RowRightClick != null) RowRightClick(i, e.GetPosition(Window.GetWindow(this) as IInputElement ?? this));
+            if (i >= 0 && RowRightClick != null) RowRightClick(i, p);
             e.Handled = true;
         }
 

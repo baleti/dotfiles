@@ -29,6 +29,7 @@ namespace SearchApp
                 catch (Exception e) { int i = Array.IndexOf(args, "--out"); if (i >= 0 && i + 1 < args.Length) File.WriteAllText(args[i + 1], "EXCEPTION " + e); return 3; }
             }
             try { SetCurrentProcessExplicitAppUserModelID("Local.SearchApp"); } catch { }
+            System.Threading.Tasks.Task.Run(() => Opener.CleanTemp());
             var cfg = Config.Load();
             string query = args.Length > 0 ? string.Join(" ", args) : "";
             var th = new Theme(Theme.WindowsLight());
