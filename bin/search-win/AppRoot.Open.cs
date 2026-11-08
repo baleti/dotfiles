@@ -119,16 +119,16 @@ namespace SearchApp
             menuScrim = new Border { Background = Brushes.Transparent };
             menuScrim.PreviewMouseDown += (s, e) => { CloseMenu(); e.Handled = true; };
             menuSp = new StackPanel(); menuRows = new List<Border>();
-            menuBox = new Border { Background = Th.Bg, BorderBrush = Th.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(0, 4, 0, 4), Child = menuSp, MinWidth = 220 };
+            menuBox = new Border { Background = Th.Bg, BorderBrush = Th.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Padding = new Thickness(6), Child = menuSp, MinWidth = 230 };
             menuBox.Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 8, Direction = 270, Opacity = .45, Color = Colors.Black };
             for (int k = 0; k < menuItems.Count; k++)
             {
                 var d = menuItems[k]; int ix = k;
-                if (d.Sep) { menuSp.Children.Add(new Border { Height = 1, Background = Th.Border, Margin = new Thickness(8, 4, 8, 4) }); menuRows.Add(null); continue; }
-                var g = new Grid { Margin = new Thickness(10, 3, 10, 3) };
+                if (d.Sep) { menuSp.Children.Add(new Border { Height = 1, Background = Th.Border, Margin = new Thickness(8, 5, 8, 5), Opacity = .6 }); menuRows.Add(null); continue; }
+                var g = new Grid { Margin = new Thickness(10, 6, 10, 6) };
                 g.Children.Add(new TextBlock { Text = d.Label, FontFamily = Fonts.Family, FontSize = 12, Foreground = d.Enabled ? Th.Text : Th.Dim, Opacity = d.Enabled ? 1 : .55 });
                 if (d.Hint != null) g.Children.Add(new TextBlock { Text = d.Hint, FontFamily = Fonts.Family, FontSize = 11, Foreground = Th.Dim, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(30, 0, 0, 0) });
-                var row = new Border { Child = g, Background = Brushes.Transparent, Tag = ix };
+                var row = new Border { Child = g, Background = Brushes.Transparent, Tag = ix, CornerRadius = new CornerRadius(7) };
                 row.MouseEnter += (s, e) => { if (d.Enabled) { menuSel = ix; MenuPaint(); } };
                 row.PreviewMouseLeftButtonUp += (s, e) => { e.Handled = true; MenuRun(ix); };
                 menuSp.Children.Add(row); menuRows.Add(row);
