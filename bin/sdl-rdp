@@ -12,6 +12,7 @@ pw=$RDP_PASSWORD; unset RDP_PASSWORD
 exec 3< <(
   printf '%s\n' "$@" /gfx /scale:100 /scale-desktop:100 "/log-filters:com.freerdp.client.sdl.disp:DEBUG${SDL_RDP_DEBUG:+,com.freerdp.client.SDL:DEBUG,com.freerdp.channels.disp.client:DEBUG}"
   [ -z "$SDL_RDP_NO_GRAB" ] && printf '%s\n' -grab-keyboard -grab-mouse
+  printf '%s\n' -toggle-fullscreen
   [ -n "$pw" ] && printf '/p:%s\n' "$pw"
 )
 # SDL only marks its window resizable once the RDP DisplayControl channel is up; the compositor's tiled size,
