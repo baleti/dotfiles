@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Checks bin/search against the raw search server (needs images-search running): counts, paging, ordering, output
 formats, exit codes, path mapping and the /fts /chroma /clip /face verbs. Prints one line per check, exit 1 on failure."""
-import json, subprocess, sys, urllib.parse, urllib.request
+import json, os, subprocess, sys, urllib.parse, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "photos"))
+from localcfg import localize
 
 SERVER = "http://127.0.0.1:8765"
 fails = 0
 
 def run(*args, timeout=300):
-    r = subprocess.run(["search", *args], capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(["search", *map(localize, args)], capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 
 def run_chroma(*args):
@@ -21,7 +23,7 @@ def run_chroma(*args):
         time.sleep(5)
 
 def server(q, top=1, sort="date", desc=1):
-    url = f"{SERVER}/query?" + urllib.parse.urlencode({"q": q, "sort": sort, "desc": desc, "offset": 0, "top": top})
+    url = f"{SERVER}/query?" + urllib.parse.urlencode({"q": localize(q), "sort": sort, "desc": desc, "offset": 0, "top": top})
     return json.load(urllib.request.urlopen(url, timeout=300))
 
 def check(name, ok, detail=""):

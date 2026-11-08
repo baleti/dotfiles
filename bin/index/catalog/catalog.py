@@ -14,7 +14,7 @@ Settings: "catalog" section of ~/.config/indexes/photos.json (private).
 """
 import argparse, json, os, re, shlex, sqlite3, subprocess, sys, time, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/photos")
-import config
+import config, localcfg
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import index_dirs
 C = config.CFG["catalog"]
@@ -25,7 +25,7 @@ def _nfs_fts_roots(cfg):
     path whose contents are searchable. Read from the Recoll topdirs of every index in fts.indexes and from the paths of
     collections.json; only directories under the NFS mount of host1's backups are added (the rest is walked locally or via rclone)."""
     import shlex
-    local, remote, host = "/mnt/backups", "/home/user1/backups", "host1"
+    local, remote, host = localcfg.backups_mount(), "/home/user1/backups", "host1"
     cands = []
     try:
         for ix in config.CFG.get("fts", {}).get("indexes", []):

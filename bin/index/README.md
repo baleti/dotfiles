@@ -3,6 +3,10 @@
 Everything here is generic code. The private parts are kept outside the repo:
 
 - `~/.config/indexes/photos.json`: machine paths, mounts, SSH hosts, the Recoll index list.
+  Everything private lives there (the directory is git-excluded), the code stays generic. `path_map` names the real backups mount
+  (`photos/localcfg.py`: `backups_mount()`, default `/mnt/backups`); `test_words` maps the generic words the checks in `tools/` are
+  written with (alpha, corpus, site, beta) to words that really occur in this machine's data, e.g. `{"alpha": "<project word>"}`.
+  A systemd unit that needs the real mount path gets it from an untracked drop-in (`*.service.d/local.conf`).
 - `~/.config/indexes/collections.json`: the list of paths whose content is indexed (all into one Recoll index, `documents`), every index type on for every path (fulltext, chroma, page-CLIP, image CLIP, faces; a path object can switch one off, none do), `max_images_per_run`, and the `ai1` SSH command. Read through `photos/index_config.py`.
 - `~/.config/indexes/search-app.json`: folders hidden from results unless opted in with `//path`.
 - `~/.cache/indexes/`: all index data (Recoll/Xapian, Chroma, embeddings, crops, models).

@@ -9,6 +9,8 @@ the extracted text. The text comes from rvt2text (the same outline the Recoll fi
 
 When the extractor learns to write structured output, replace outline_leaves(); everything else keeps working on leaves."""
 import collections, json, os, re, subprocess, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import localcfg
 
 REVIT_EXT = (".rvt", ".rfa", ".rte", ".rft")
 MAX_SNIPPETS = 20
@@ -152,8 +154,8 @@ def revit_text(path, timeout=120):
         return _text_cache[path]
     txt = ""
     try:
-        if path.startswith("/mnt/backups/"):
-            hp = "/home/user1/backups/" + path[len("/mnt/backups/"):]
+        if path.startswith(localcfg.backups_mount() + "/"):
+            hp = "/home/user1/backups/" + path[len(localcfg.backups_mount()) + 1:]
             r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "host1",
                                 "PATH=/home/user1/rvt-env/bin:$PATH python3 /home/user1/rvt-research/rvt_cache_get.py '" + hp.replace("'", "'\\''") + "'"],
                                capture_output=True, timeout=timeout)

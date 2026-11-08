@@ -5,8 +5,10 @@ import json, os, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "catalog"))
+sys.path.insert(0, HERE)
 import index_dirs
 import index_config
+import localcfg
 
 HOME = os.path.expanduser("~")
 IDX = os.path.join(HOME, ".cache/indexes")
@@ -16,7 +18,7 @@ JOBS = [
     ("catalog-watcher.service", "fanotify watcher (live)", "file names on this machine's disk",
      "One fanotify mark on the whole btrfs volume; a path is written once nothing touched it for a second, so new, renamed, changed and deleted files show up in about a second. Files still held open are updated when closed.",
      "continuous"),
-    ("catalog-host1-watch.service", "host1 NFS stream (live)", "file names of the host1 backups (/mnt/backups)",
+    ("catalog-host1-watch.service", "host1 NFS stream (live)", f"file names of the host1 backups ({localcfg.backups_mount()})",
      "Kernel notifications do not cross NFS, so host1 runs the same fanotify helper and streams the events over ssh (WireGuard); a reconnect after a gap starts a full walk.",
      "continuous"),
     ("catalog-drive-poll.timer", "Google Drive changes (rclone)", "file names on Google Drive",

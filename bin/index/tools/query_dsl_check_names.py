@@ -2,11 +2,13 @@
 """Algebraic / differential checks of the NAME search of the mod+1 query language through the `search` CLI: token order,
 repetition, partitions by negation, tag position, sort orders against a Python re-sort, paging, view verbs, odd input.
 Needs images-search running. Prints one line per check, exit 1 on failure."""
-import itertools, json, subprocess, sys
+import itertools, json, os, subprocess, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "photos"))
+from localcfg import localize
 
 fails = 0
 def search(*a, timeout=300):
-    r = subprocess.run(["search", "-q", *a], capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(["search", "-q", *map(localize, a)], capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 def count(q, *o):
     rc, out, err = search("-c", "--json", *o, q)

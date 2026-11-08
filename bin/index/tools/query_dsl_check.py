@@ -5,10 +5,11 @@ errors are reported, and /fts totals match Recoll itself. Prints one line per ch
 import json, subprocess, sys, base64, urllib.parse, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "photos"))
 import config
+from localcfg import localize
 
 fails = 0
 def search(*a, timeout=300):
-    r = subprocess.run(["search", "-q", *a], capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(["search", "-q", *map(localize, a)], capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 def count(q, *opts):
     rc, out, err = search("-c", "--json", *opts, q)

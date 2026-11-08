@@ -4,9 +4,11 @@ ones stay out of the document indexes:  revit (rvt rfa rte rft, via rvt2recoll.p
 The file list comes from the file-name catalog (`search`), not from a tree walk, and is fed to `recollindex -i`
 (unchanged files are skipped).  usage: index_cad.py revit|dwg [--limit N] [--roots 'PATHQ1,PATHQ2']"""
 import argparse, os, subprocess, sys, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import localcfg
 IDX = os.path.expanduser("~/.cache/indexes")
 KINDS = {"revit": [".rvt", ".rfa", ".rte", ".rft"], "dwg": [".dwg", ".dxf"]}
-ROOTS = ["/mnt/backups/office", "gdrive/office"]      # //path queries into the catalog
+ROOTS = [localcfg.backups_mount() + "/office", "gdrive/office"]      # //path queries into the catalog
 
 def files(kind, roots):
     out = []

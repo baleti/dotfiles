@@ -26,7 +26,8 @@ STATE = os.path.join(DATA, "images-state.db")
 STATUS = os.path.join(DATA, "images-job-status.json")
 LOCK = os.path.join(DATA, "images-job.lock")
 MOUNT3 = "/home/user1/gdrive-rclone-crypt"       # how host3 names the Drive mount
-BACKUPS3, BACKUPS1 = "/mnt/backups", "/home/user1/backups"
+import localcfg                                 # noqa: E402
+BACKUPS3, BACKUPS1 = localcfg.backups_mount(), "/home/user1/backups"
 REMOTE = config.REMOTE                           # gdrive-crypt:
 EXT = (".jpg", ".jpeg", ".png", ".webp")
 CHUNK = 1500
