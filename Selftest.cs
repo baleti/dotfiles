@@ -21,12 +21,14 @@ namespace SearchApp
 
         public static int Run(string[] a, TextWriter o)
         {
-            string golden = null; bool live = false; string server = "http://127.0.0.1:8795";
-            for (int i = 0; i < a.Length; i++) { if (a[i] == "--golden" && i + 1 < a.Length) golden = a[++i]; else if (a[i] == "--live") live = true; else if (a[i] == "--server" && i + 1 < a.Length) server = a[++i]; }
+            string golden = null; bool live = false, ui = false; string server = "http://127.0.0.1:8795";
+            for (int i = 0; i < a.Length; i++) { if (a[i] == "--golden" && i + 1 < a.Length) golden = a[++i]; else if (a[i] == "--live") live = true; else if (a[i] == "--ui") ui = true; else if (a[i] == "--server" && i + 1 < a.Length) server = a[++i]; }
             int fails = 0;
             if (golden != null) fails += Golden(golden, o);
             else o.WriteLine("(no --golden file given, offline logic tests skipped)");
             if (live) fails += Live(server, o);
+            fails += Plans(o);
+            if (ui) fails += Ui(server, o);
             o.WriteLine(fails == 0 ? "SELFTEST OK" : "SELFTEST FAILED: " + fails);
             return fails == 0 ? 0 : 1;
         }
@@ -102,25 +104,86 @@ namespace SearchApp
             return "UNKNOWN FN " + fn;
         }
 
+        // ---- open decisions (nothing is launched) ----
+        static int Plans(TextWriter o)
+        {
+            int fails = 0;
+            var cfg = new Config(); cfg.PathMap.Add(new[] { "/mnt/share/m/", "M:\\" }); cfg.PathMap.Add(new[] { "/mnt/share/q/", "Q:\\" });
+            var op = new Opener(cfg, new Api("http://127.0.0.1:1"));
+            Func<string, bool, Hit> H = (p, ok) => new Hit { Path = p, Remote = p, FileOk = ok };
+            Action<string, OpenPlan, string> chk = (n, pl, want) => { bool ok = pl.ToString() == want; o.WriteLine((ok ? "ok   " : "FAIL ") + "plan " + n + "  " + pl); if (!ok) fails++; };
+            chk("mapped exists", op.Plan(H("/mnt/share/m/A B/x.eml", true), p => true), "Local M:\\A B\\x.eml");
+            var dl = op.Plan(H("/srv/docs/y.pdf", true), p => false);
+            chk("unmapped", new OpenPlan { Kind = dl.Kind, Target = null }, "Download");
+            o.WriteLine("     copy path " + dl.Target);
+            var dl2 = op.Plan(H("/mnt/share/q/gone.pdf", true), p => false); chk("mapped but missing", new OpenPlan { Kind = dl2.Kind }, "Download");
+            chk("url", op.Plan(H("https://host.example/dms/view.aspx?ID=1&latest=true#/a/b", false)), "Url https://host.example/dms/view.aspx?ID=1&latest=true");
+            chk("refuse", op.Plan(H("/etc/x", false)), "Refuse");
+            bool d1 = Opener.IsDangerous(cfg, "/a/b.EXE"), d2 = Opener.IsDangerous(cfg, "/a/b.eml");
+            o.WriteLine((d1 && !d2 ? "ok   " : "FAIL ") + "dangerous ext check"); if (!(d1 && !d2)) fails++;
+            Opener.Dry = true; Opener.Shell("M:\\x.eml"); Opener.OpenWith("M:\\x.eml"); Opener.Dry = false;
+            o.WriteLine("     dry log: " + string.Join(" | ", Opener.Log));
+            return fails;
+        }
+
+        // ---- offscreen UI checks against the real server ----
+        static int Ui(string server, TextWriter o)
+        {
+            int fails = 0;
+            Action<string, bool, string> chk = (name, ok, info) => { o.WriteLine((ok ? "ok   " : "FAIL ") + name + (info != null ? "  " + info : "")); if (!ok) fails++; };
+            try
+            {
+                System.Threading.SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
+                var app = new System.Windows.Application { ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown };
+                var cfg = new Config { NoSave = true, Server = server };
+                var root = new AppRoot(cfg, new Theme(false), null); root.Width = 1200; root.Height = 700;
+                root.Measure(new System.Windows.Size(1200, 700)); root.Arrange(new System.Windows.Rect(0, 0, 1200, 700)); root.UpdateLayout();
+                var init = root.InitialAsync("sample");
+                Shot.Pump(30000, () => init.IsCompleted && !root.busy);
+                chk("ui initial query", root.total > 1000 && root.Hit(0) != null, "total=" + root.total);
+                // scroll to the very end: the last page must get fetched on demand
+                var g = root.List.Compute(); root.List.SetOff(root.List.MaxOff(g)); root.List.InvalidateVisual(); root.UpdateLayout();
+                Shot.Pump(15000, () => root.Hit((int)root.total - 1) != null);
+                chk("ui paging to last row", root.Hit((int)root.total - 1) != null, "pages loaded=" + root.pages.Count);
+                // zoom to grid mode and back
+                root.SetThumb(320); root.UpdateLayout(); chk("ui grid mode", root.List.IsGrid && root.Hdr.Visibility != System.Windows.Visibility.Visible, "thumb=" + root.Cols.Thumb);
+                root.SetThumb(16); root.UpdateLayout(); chk("ui list mode", !root.List.IsGrid && root.Hdr.Visibility == System.Windows.Visibility.Visible, null);
+                // stale handling: two quick queries, the later one must win
+                root.Q.SetText("sample minutes"); root.q = "sample minutes"; root.Send("zzzzqqqq9"); root.Send("sample minutes");
+                Shot.Pump(30000, () => !root.busy);
+                chk("ui stale response ignored", root.sent == "sample minutes" && root.total > 0 && root.total < 1000, "total=" + root.total);
+                // header sort rewrites the query
+                root.Hdr.RaiseSort("size"); Shot.Pump(90000, () => !root.busy && root.Hit(0) != null && root.sent.Contains("/s/size"));
+                o.WriteLine("     debug: sent=" + root.sent + " busy=" + root.busy + " total=" + root.total + " errs=" + string.Join(";", root.errors) + " h0=" + (root.Hit(0) == null ? "null" : root.Hit(0).Path));
+                chk("ui sort desc", root.Q.Text.EndsWith("/s/size") && root.Hit(1) != null && root.Hit(0).Size >= root.Hit(1).Size, root.Q.Text + " first=" + (root.Hit(0) != null ? root.Hit(0).Size.ToString() : "?"));
+                root.Hdr.RaiseSort("size"); Shot.Pump(90000, () => !root.busy && root.sent.EndsWith("/asc"));
+                chk("ui sort asc", root.Q.Text.EndsWith("/s/size/asc") && root.Hit(0) != null && root.Hit(1) != null && root.Hit(0).Size <= root.Hit(1).Size, root.Q.Text);
+                Shot.Pump(2500);
+                chk("ui thumbnails requested", root.Thumbs.Requests > 0, "requests=" + root.Thumbs.Requests);
+            }
+            catch (Exception e) { chk("ui exception", false, e.ToString()); }
+            return fails;
+        }
+
         // ---- live checks against the real server (read-only; settings are toggled and restored) ----
         static int Live(string server, TextWriter o)
         {
-            int fails = 0; var api = new Api(server); var ct = CancellationToken.None;
+            int fails = 0; var api = new Api(server); var ct = CancellationToken.None; string cid = "st" + Guid.NewGuid().ToString("N").Substring(0, 8);
             Action<string, bool, string> chk = (name, ok, info) => { o.WriteLine((ok ? "ok   " : "FAIL ") + name + (info != null ? "  " + info : "")); if (!ok) fails++; };
             try
             {
                 var v = api.Ver(ct).Result;
                 chk("ver", v.Ver >= 0 && v.Theme != null, "ver=" + v.Ver + " accent=" + (v.Theme == null ? "?" : v.Theme.Accent));
-                var q0 = api.Query("sample minutes", 0, 200, "selftest", 1, ct).Result;
+                var q0 = api.Query("sample minutes", 0, 200, cid, 1, ct).Result;
                 chk("query page0", q0.Count > 0 && q0.Results.Count > 0, "count=" + q0.Count + " got=" + q0.Results.Count);
                 if (q0.Results.Count > 0) { var h = q0.Results[0]; chk("hit fields", h.Path != null && h.Remote != null, h.Path + " size=" + h.Size + " mtime=" + h.Mtime + " thumb=" + h.Thumb + " fileok=" + h.FileOk + " pages=" + h.Pages); }
                 chk("stats", q0.Stats != null && q0.Stats.Kinds.Count > 0, q0.Stats == null ? "null" : Dsl.HSize(q0.Stats.Size) + " " + q0.Stats.DMin + ".." + q0.Stats.DMax);
                 if (q0.Count > 200)
                 {
-                    var q1 = api.Query("sample minutes", 200, 200, "selftest", 2, ct).Result;
+                    var q1 = api.Query("sample minutes", 200, 200, cid, 2, ct).Result;
                     chk("query page1", q1.Results.Count > 0 && q1.Results[0].Remote != q0.Results[0].Remote, "got=" + q1.Results.Count);
                 }
-                var qe = api.Query("/fts", 0, 10, "selftest", 3, ct).Result;
+                var qe = api.Query("/fts", 0, 10, cid, 3, ct).Result;
                 chk("error text", qe.Errors.Count > 0, string.Join("; ", qe.Errors));
                 var th = q0.Results.FirstOrDefault(x => !string.IsNullOrEmpty(x.Thumb));
                 if (th != null) { var b = api.GetBytes(th.Thumb, ct).Result; chk("thumb bytes", b.Length > 100, b.Length + " bytes"); }
@@ -133,7 +196,7 @@ namespace SearchApp
                 bool flipped = st2.FtsDwg == !orig;
                 var st3 = api.PostSettings(new Dictionary<string, object> { { "show_fts_dwg", orig } }).Result;
                 chk("settings toggle+restore", flipped && st3.FtsDwg == orig, "orig=" + orig);
-                var fts = api.Query("/fts minutes", 0, 5, "selftest", 4, ct).Result;
+                var fts = api.Query("/fts minutes", 0, 5, cid, 4, ct).Result;
                 if (fts.Results.Count > 0)
                 {
                     var sn = api.Snippets(fts.Results[0].Remote, "/fts minutes", ct).Result;

@@ -306,6 +306,7 @@ namespace SearchApp
             if (g >= 1 && g <= 5) { double r = Cols.X[g] + Cols.W[g]; dc.DrawRoundedRectangle(Th.Accent, null, new Rect(r - 1, 2, 2, ActualHeight - 3), 1, 1); }
         }
 
+        public void RaiseSort(string k) { if (SortClick != null) SortClick(k); }
         protected override void OnMouseMove(MouseEventArgs e)
         {
             var p = e.GetPosition(this);
