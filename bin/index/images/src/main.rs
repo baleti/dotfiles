@@ -755,6 +755,7 @@ struct App {
     /// delete confirmation: the exact local files that would be trashed, and the typed confirmation
     trash_pending: Option<Vec<(PathBuf, u64)>>,
     trash_typed: String,
+    trash_perm: bool,
     /// context menu: where it is shown and which hit it was opened for
     menu_at: Option<egui::Pos2>,
     menu_hit: Option<usize>,
@@ -1802,6 +1803,7 @@ impl App {
             anchor: None,
             trash_pending: None,
             trash_typed: String::new(),
+            trash_perm: false,
             menu_at: None,
             menu_hit: None,
             row_rects: HashMap::new(),
@@ -2429,7 +2431,7 @@ impl App {
     }
 
     /// Delete key: stage the selected trashable files for the confirmation dialog.
-    fn request_trash(&mut self) {
+    fn request_trash(&mut self, permanent: bool) {
         let mut files = Vec::new();
         let mut skipped = 0usize;
         for i in self.selection() {
@@ -2444,6 +2446,7 @@ impl App {
             return;
         }
         self.trash_typed.clear();
+        self.trash_perm = permanent;
         self.trash_pending = Some(files);
     }
 
@@ -2456,18 +2459,16 @@ impl App {
                 failed.push(p.display().to_string());
                 continue;
             }
-            let res = std::process::Command::new("gio").arg("trash").arg(p).status();
-            match res {
-                Ok(st) if st.success() => ok += 1,
-                _ => failed.push(p.display().to_string()),
-            }
+            let done = if self.trash_perm { std::fs::remove_file(p).is_ok() }
+                else { std::process::Command::new("gio").arg("trash").arg(p).status().map_or(false, |st| st.success()) };
+            if done { ok += 1 } else { failed.push(p.display().to_string()) }
         }
         self.anchor = None;
         self.send_query();
         self.status = if failed.is_empty() {
-            format!("moved {ok} file(s) to the trash")
+            format!("{} {ok} file(s)", if self.trash_perm { "deleted" } else { "trashed" })
         } else {
-            format!("moved {ok} file(s) to the trash; {} failed: {}", failed.len(), failed.join(", "))
+            format!("{} {ok} file(s); {} failed: {}", if self.trash_perm { "deleted" } else { "trashed" }, failed.len(), failed.join(", "))
         };
     }
 
@@ -3206,8 +3207,9 @@ impl eframe::App for App {
 
         // Delete: only when the confirmation dialog is closed
         let del = self.trash_pending.is_none() && ui.input(|i| i.key_pressed(Key::Delete));
+        let del_perm = ui.input(|i| i.modifiers.shift);   // Shift+Delete: erase for good instead of trashing
         if del && self.list_focus && !self.snip_focus && !self.popup && self.total > 0 && self.sel_header.is_none() {
-            self.request_trash();
+            self.request_trash(del_perm);
         }
 
         // Shift+arrows extend the list selection; consume them before the query box sees them
@@ -3686,60 +3688,51 @@ impl eframe::App for App {
                 else if was_list && cur == 0 && up_steps > 0 && delta < 0 && down_steps == 0 { self.list_focus = false; }
             }
         }
-        if enter && n > 0 && !self.popup && !self.hist_popup {
+        if enter && n > 0 && !self.popup && !self.hist_popup && self.trash_pending.is_none() {
             if self.last_change.elapsed() >= Duration::from_millis(400) { self.record_history(); }
             self.open_selected();
         }
         if ctrl_enter && n > 0 && !self.popup && self.sel_header.is_none() { self.reveal_selected(); }
 
-        // confirmation dialog for moving files to the trash: modal, explicit, Esc cancels
+        // confirmation dialog: plain Yes / No. Y or Enter = yes (Enter not for permanent delete), N or Esc = no
         if let Some(files) = self.trash_pending.clone() {
             let total: u64 = files.iter().map(|(_, s)| *s).sum();
-            let need = "DELETE";
-            let mut confirm = false;
-            let mut cancel = ui.input(|i| i.key_pressed(Key::Escape));
-            egui::Window::new("Move to trash?")
+            let perm = self.trash_perm;
+            let (esc, n_key, y_key, enter) = ui.input_mut(|i| (
+                i.consume_key(egui::Modifiers::NONE, Key::Escape),
+                i.consume_key(egui::Modifiers::NONE, Key::N),
+                i.consume_key(egui::Modifiers::NONE, Key::Y),
+                i.consume_key(egui::Modifiers::NONE, Key::Enter),
+            ));
+            ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+            let mut confirm = y_key || (enter && !perm);
+            let mut cancel = esc || n_key;
+            egui::Window::new("confirm-delete")
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .fixed_size([560.0, 0.0])
+                .fixed_size([420.0, 0.0])
                 .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(14.0).inner_margin(Margin::same(20)))
                 .show(&ctx, |ui| {
-                    ui.label(RichText::new("Move to trash?").size(20.0).strong().color(pal.text));
-                    ui.add_space(2.0);
-                    ui.label(RichText::new(format!("{} file(s), {} total", files.len(), human(total)))
-                        .color(pal.error).size(14.0).strong());
-                    ui.label(RichText::new("Files are moved to the trash (recoverable), not erased. Only local files under your home folder are listed here.")
-                        .color(pal.dim));
-                    ui.add_space(8.0);
-                    egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-                        for (p, sz) in &files {
-                            ui.label(RichText::new(format!("{:>10}  {}", human(*sz), p.display())).monospace().size(12.0).color(pal.text));
-                        }
-                    });
-                    ui.add_space(10.0);
-                    ui.label(RichText::new(format!("Type {need} to confirm:")).color(pal.text));
-                    let edit = ui.add(egui::TextEdit::singleline(&mut self.trash_typed).desired_width(f32::INFINITY).margin(Margin::symmetric(10, 8)));
-                    if !edit.has_focus() { edit.request_focus(); }
-                    let ready = self.trash_typed.trim() == need;
-                    ui.add_space(10.0);
+                    let what = if files.len() == 1 {
+                        files[0].0.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    } else { format!("{} files", files.len()) };
+                    let head = if perm { format!("Permanently delete {what}?") } else { format!("Move {what} to trash?") };
+                    ui.label(RichText::new(head).size(16.0).strong().color(if perm { pal.error } else { pal.text }));
+                    ui.label(RichText::new(if perm { format!("{} - this cannot be undone.", human(total)) } else { human(total) }).color(pal.dim));
+                    ui.add_space(12.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_enabled(ready, primary_button("Move to trash", pal.error.gamma_multiply(0.85))).clicked() {
-                            confirm = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
-                        }
+                        let yes = if perm { primary_button("Yes", pal.error.gamma_multiply(0.85)) } else { primary_button("Yes", pal.accent.gamma_multiply(0.7)) };
+                        if ui.add(yes).clicked() { confirm = true; }
+                        if ui.button("No").clicked() { cancel = true; }
                     });
                 });
             if confirm {
                 self.trash_pending = None;
-                self.trash_typed.clear();
                 self.do_trash(files);
             } else if cancel {
                 self.trash_pending = None;
-                self.trash_typed.clear();
                 self.status = "delete cancelled".into();
             }
         }
