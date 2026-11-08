@@ -336,6 +336,11 @@ fn apply_modern_style(st: &mut egui::Style, pal: &Palette) {
     st.visuals.window_corner_radius = egui::CornerRadius::same(12);
     st.visuals.menu_corner_radius = egui::CornerRadius::same(10);
     st.visuals.selection.bg_fill = pal.accent.gamma_multiply(0.45);
+    st.visuals.extreme_bg_color = pal.text.gamma_multiply(0.07);   // text-field fill: a little lighter than the window
+    w.inactive.bg_stroke = Stroke::new(1.0, pal.border.gamma_multiply(0.55));
+    w.noninteractive.bg_stroke = Stroke::new(1.0, pal.border.gamma_multiply(0.45));
+    st.visuals.selection.stroke = Stroke::new(1.0, pal.accent);
+    st.spacing.text_edit_width = 220.0;
     st.spacing.button_padding = egui::vec2(14.0, 6.0);
     st.spacing.item_spacing = egui::vec2(8.0, 6.0);
     st.spacing.interact_size.y = 28.0;
@@ -344,6 +349,61 @@ fn apply_modern_style(st: &mut egui::Style, pal: &Palette) {
 /// A prominent action button (filled with `color`), for the confirming choice in a dialog.
 fn primary_button(text: &str, color: Color32) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text).color(Color32::WHITE).strong()).fill(color).stroke(Stroke::NONE)
+}
+
+/// iOS-style switch with a trailing label. Returns the response (use `.changed()`).
+fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+    let accent = ui.visuals().selection.stroke.color;
+    let text_col = ui.visuals().text_color();
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, text_col);
+    let (w, h): (f32, f32) = (34.0, 20.0);
+    let size = egui::vec2(w + 10.0 + galley.size().x, h.max(galley.size().y));
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if resp.clicked() { *on = !*on; resp.mark_changed(); }
+    let t = ui.ctx().animate_bool_responsive(resp.id, *on);
+    let track = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.center().y - h / 2.0), egui::vec2(w, h));
+    let off_col = text_col.gamma_multiply(0.22);
+    let col = egui::Color32::from_rgba_unmultiplied(
+        (off_col.r() as f32 + (accent.r() as f32 - off_col.r() as f32) * t) as u8,
+        (off_col.g() as f32 + (accent.g() as f32 - off_col.g() as f32) * t) as u8,
+        (off_col.b() as f32 + (accent.b() as f32 - off_col.b() as f32) * t) as u8,
+        255,
+    );
+    let p = ui.painter();
+    p.rect_filled(track, h / 2.0, col);
+    if resp.hovered() { p.rect_stroke(track, h / 2.0, Stroke::new(1.0, accent.gamma_multiply(0.7)), egui::StrokeKind::Outside); }
+    let knob_x = track.left() + h / 2.0 + t * (w - h);
+    p.circle_filled(egui::pos2(knob_x, track.center().y), h / 2.0 - 3.0, egui::Color32::WHITE);
+    p.galley(egui::pos2(rect.left() + w + 10.0, rect.center().y - galley.size().y / 2.0), galley, text_col);
+    resp
+}
+
+/// Section heading for Settings: small, dim, upper-case, with room above.
+fn section_heading(ui: &mut egui::Ui, pal: &Palette, text: &str) {
+    ui.add_space(14.0);
+    ui.label(RichText::new(text.to_uppercase()).size(11.0).strong().color(pal.accent));
+    ui.add_space(4.0);
+}
+
+/// Context-menu look: flat left-aligned rows that highlight on hover (no button chrome).
+fn flat_menu_style(st: &mut egui::Style, pal: &Palette) {
+    egui::containers::menu::menu_style(st);
+    st.spacing.button_padding = egui::vec2(12.0, 6.0);
+    st.spacing.item_spacing = egui::vec2(0.0, 2.0);
+    st.spacing.menu_margin = Margin::same(6);
+    let r = egui::CornerRadius::same(7);
+    for w in [&mut st.visuals.widgets.inactive, &mut st.visuals.widgets.hovered, &mut st.visuals.widgets.active, &mut st.visuals.widgets.open] {
+        w.corner_radius = r;
+    }
+    st.visuals.widgets.hovered.weak_bg_fill = pal.accent.gamma_multiply(0.22);
+    st.visuals.widgets.active.weak_bg_fill = pal.accent.gamma_multiply(0.35);
+    st.visuals.widgets.open.weak_bg_fill = pal.accent.gamma_multiply(0.18);
+}
+
+/// One full-width, left-aligned menu row.
+fn menu_item(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    ui.add(egui::Button::new(text).min_size(egui::vec2(ui.available_width(), 0.0)))
 }
 
 fn take_count(ui: &mut egui::Ui, mods: egui::Modifiers, key: Key) -> usize {
@@ -1457,7 +1517,7 @@ fn dir_list_editor(ui: &mut egui::Ui, pal: &Palette, id: &str, hint: &str, dirs:
     }
     if let Some(i) = remove { dirs.remove(i); changed = true; }
     ui.horizontal(|ui| {
-        let resp = ui.add(egui::TextEdit::singleline(input).id_salt(id).hint_text(hint).desired_width(300.0));
+        let resp = ui.add(egui::TextEdit::singleline(input).id_salt(id).hint_text(hint).desired_width(300.0).margin(Margin::symmetric(10, 6)));
         let add = ui.button("Add").clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
         if add && !input.trim().is_empty() {
             let d = input.trim().trim_end_matches('/').to_string();
@@ -3597,7 +3657,7 @@ impl eframe::App for App {
             }
         }
         // Esc closes the innermost thing first: menu, then properties, then the window
-        if esc && !self.popup {
+        if esc && !self.popup && self.trash_pending.is_none() {   // the delete dialog takes Esc itself
             if self.menu_at.is_some() { self.menu_at = None; self.menu_hit = None; }
             else if self.settings_open { self.settings_open = false; self.idx_loaded = false; }
             else if self.props.is_some() { self.props = None; }
@@ -3780,14 +3840,20 @@ impl eframe::App for App {
                 .order(egui::Order::Foreground)
                 .fixed_pos(at)
                 .show(&ctx, |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    flat_menu_style(ui.style_mut(), &pal);
+                    egui::Frame::popup(ui.style()).corner_radius(12.0).inner_margin(Margin::same(6)).show(ui, |ui| {
+                      ui.set_min_width(190.0);
+                      ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                         if let Some(r) = &face_remote {
-                            if ui.button("Search for this face").clicked() {
+                            if menu_item(ui, "Search for this face").clicked() {
                                 face_query = Some(format!("/face \"@{}\"", r));
                                 ui.close();
                             }
                         }
-                        ui.menu_button("Open with", |ui| {
+                        let cfg_menu = egui::containers::menu::MenuConfig::new().style(move |st: &mut egui::Style| flat_menu_style(st, &pal));
+                        egui::containers::menu::MenuButton::new("Open with").config(cfg_menu).ui(ui, |ui| {
+                          ui.set_min_width(190.0);
+                          ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                             match &mime {
                                 None => { ui.label(RichText::new("not available locally").color(pal.dim)); }
                                 Some(m) => {
@@ -3798,14 +3864,16 @@ impl eframe::App for App {
                                     };
                                     if apps.is_empty() { ui.label(RichText::new("no applications").color(pal.dim)); }
                                     for (id, name) in apps {
-                                        if ui.button(name).clicked() {
+                                        if menu_item(ui, name).clicked() {
                                             chosen = Some((id, self.menu_paths.clone()));
                                             ui.close();
                                         }
                                     }
                                 }
                             }
+                          });
                         });
+                      });
                     });
                 });
             if let Some(q) = face_query {
@@ -3841,46 +3909,52 @@ impl eframe::App for App {
             let mut start_rebind: Option<(&'static str, usize)> = None;
             let win_w = (ctx.content_rect().width() * 0.90 - 60.0).clamp(320.0, 1100.0);
             egui::Window::new("Settings")
-                .open(&mut open)
+                .title_bar(false)
                 .min_width(win_w)
                 .default_width(win_w)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(10.0).inner_margin(Margin::same(14)))
+                .frame(egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(14.0).inner_margin(Margin::same(20)))
                 .show(&ctx, |ui| {
+                  ui.horizontal(|ui| {
+                      ui.label(RichText::new("Settings").size(18.0).strong().color(pal.text));
+                      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                          if ui.add(egui::Button::new(RichText::new("✕").size(14.0)).min_size(egui::vec2(30.0, 30.0))).clicked() { open = false; }
+                      });
+                  });
                   egui::ScrollArea::both().min_scrolled_width(win_w).max_height((ctx.content_rect().height() - 84.0 - 2.0 * (ctx.content_rect().width() * 0.05 + 16.0)).max(200.0)).min_scrolled_height((ctx.content_rect().height() - 84.0 - 2.0 * (ctx.content_rect().width() * 0.05 + 16.0)).max(200.0)).auto_shrink([false, false]).show(ui, |ui| {
                     ui.set_min_width(win_w);
                     ui.set_max_width(win_w);
-                    ui.label(RichText::new("Search").strong().color(pal.accent));
+                    section_heading(ui, &pal, "Search");
                     let cmd = |ui: &mut egui::Ui, text: &str| { ui.label(RichText::new(text).monospace().size(11.0).color(pal.dim)); };
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Default exclude");
-                        changed |= ui.add(egui::TextEdit::singleline(&mut self.settings.default_exclude).desired_width(260.0).hint_text(".dat, .rws, //mime directory, /dotfiles")).changed();
+                        changed |= ui.add(egui::TextEdit::singleline(&mut self.settings.default_exclude).desired_width(300.0).margin(Margin::symmetric(10, 6)).hint_text(".dat, .rws, //mime directory, /dotfiles")).changed();
                         cmd(ui, "comma separated: .ext, //mime kind or /dotfiles, left out of every search");
                     });
                     ui.horizontal_wrapped(|ui| {
-                        changed |= ui.checkbox(&mut self.settings.show_backup_restic, "Show restic backups").changed();
+                        changed |= switch(ui, &mut self.settings.show_backup_restic, "Show restic backups").changed();
                         cmd(ui, "/show-backup-restic  /hide-backup-restic");
                     });
                     ui.horizontal_wrapped(|ui| {
-                        changed |= ui.checkbox(&mut self.settings.show_backup_btrfs, "Show btrfs snapshots").changed();
+                        changed |= switch(ui, &mut self.settings.show_backup_btrfs, "Show btrfs snapshots").changed();
                         cmd(ui, "/show-backup-btrfs  /hide-backup-btrfs");
                     });
                     ui.horizontal_wrapped(|ui| {
-                        changed |= ui.checkbox(&mut self.settings.show_fts_rvt, "Content search covers Revit files (rvt rfa rte rft)").changed();
+                        changed |= switch(ui, &mut self.settings.show_fts_rvt, "Content search covers Revit files (rvt rfa rte rft)").changed();
                         cmd(ui, "/show-fts-rvt  /hide-fts-rvt");
                     });
                     ui.horizontal_wrapped(|ui| {
-                        changed |= ui.checkbox(&mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings").changed();
+                        changed |= switch(ui, &mut self.settings.show_fts_dwg, "Content search covers AutoCAD drawings").changed();
                         cmd(ui, "/show-fts-dwg  /hide-fts-dwg");
                     });
                     ui.horizontal_wrapped(|ui| {
-                        changed |= ui.checkbox(&mut self.settings.preview_bottom, "Preview pane below the results (horizontal split)").changed();
+                        changed |= switch(ui, &mut self.settings.preview_bottom, "Preview pane below the results (horizontal split)").changed();
                         cmd(ui, "default: beside them");
                     });
                     ui.add_space(10.0);
-                    ui.label(RichText::new("Indexing").strong().color(pal.accent));
+                    section_heading(ui, &pal, "Indexing");
                     if !self.idx_loaded {
                         self.idx_loaded = true;
                         if let Some((d, st, msg, info)) = IndexDirs::fetch() { self.idx = d; self.idx_state = st; self.idx_msg = msg; self.idx_info = info; }
@@ -3906,7 +3980,7 @@ impl eframe::App for App {
                     ] {
                         ui.horizontal(|ui| {
                             let b = match flag { 0 => &mut self.idx.bm25, 1 => &mut self.idx.chroma, 2 => &mut self.idx.clip, _ => &mut self.idx.face };
-                            idx_changed |= ui.checkbox(b, label).changed();
+                            idx_changed |= switch(ui, b, label).changed();
                             cmd(ui, verb);
                         });
                     }
@@ -3936,7 +4010,7 @@ impl eframe::App for App {
                     ui.add(egui::Label::new(RichText::new("What keeps each index current, how often, and the logic behind it. ● = running now.").size(10.5).color(pal.dim)).wrap());
                     show_schedule(ui, &pal, &self.idx_info);
                     ui.add_space(10.0);
-                    ui.label(RichText::new("Shortcuts").strong().color(pal.accent));
+                    section_heading(ui, &pal, "Shortcuts");
                     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                         egui::Grid::new("shortcuts").num_columns(2).spacing([18.0, 4.0]).show(ui, |ui| {
                             for (act, label) in ACTIONS {
@@ -3966,7 +4040,7 @@ impl eframe::App for App {
                         ui.add(egui::Label::new(RichText::new("Click a shortcut, then press the new keys. Esc cancels, Backspace removes it.").size(11.0).color(pal.dim)).wrap());
                     });
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Fixed keys").strong().color(pal.accent));
+                    section_heading(ui, &pal, "Fixed keys");
                     egui::Grid::new("fixedkeys").num_columns(2).spacing([18.0, 3.0]).show(ui, |ui| {
                         for (k, v) in FIXED_KEYS {
                             ui.label(RichText::new(k).monospace().color(pal.text));
