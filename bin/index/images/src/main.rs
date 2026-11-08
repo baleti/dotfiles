@@ -3173,7 +3173,7 @@ impl eframe::App for App {
         // in the list they stay with the query box's own shift-selection)
         let shift_down_n = take_count(ui, egui::Modifiers::SHIFT, Key::ArrowDown);
         let shift_up_n = take_count(ui, egui::Modifiers::SHIFT, Key::ArrowUp);
-        let (shift_left_n, shift_right_n) = if grid {
+        let (shift_left_n, shift_right_n) = if grid && self.list_focus {
             (take_count(ui, egui::Modifiers::SHIFT, Key::ArrowLeft), take_count(ui, egui::Modifiers::SHIFT, Key::ArrowRight))
         } else { (0, 0) };
 
@@ -3605,6 +3605,10 @@ impl eframe::App for App {
             let mut abs: Option<usize> = None;
             let mut extend = shift_any;
             let mut any = false;
+            // with the query box focused, modified Left/Right/Home/End (Ctrl+Shift+arrows selecting words etc.)
+            // belong to the text field, never to the results
+            let box_mod = !was_list && ui.input(|i| i.modifiers.ctrl || i.modifiers.shift || i.modifiers.alt);
+            let (right, left, home, end) = (right && !box_mod, left && !box_mod, home && !box_mod, end && !box_mod);
             if grid && right { delta += 1; any = true; }
             if grid && left { delta -= 1; any = true; }
             delta += l_n as i64; delta -= h_n as i64;
