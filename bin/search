@@ -42,7 +42,7 @@ VERBS (anywhere in the query)
   /s/FIELD[,FIELD][/asc|/desc]   sort by name, path, size, date-modified, extension, depth, pages (chain with commas, e.g. /s/size,name; descending unless /asc)
   /g/KEY[,KEY][/BUCKET][/asc|/desc]   fold the results into sections (printed as '## label  [n]' lines; --json adds a "group" array): KEY is a /s field or pf (parent folder);
                                  BUCKET is pf (+ /N for the Nth parent folder), day, week, month or year; e.g. /g/dm/week, /g/pf/2, /g/pf,dm/month
-  /show-dotfiles  /hide-dotfiles                         names starting with a dot
+  /dotfiles  !/dotfiles                                  only paths with a dot component / leave them out (hidden by default via the picker's Default exclude)
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
   /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
   /show-fts-dwg  /hide-fts-dwg                           the same for AutoCAD drawings (dwg dxf dwt)
@@ -255,8 +255,8 @@ def main():
     sel.add_argument("-n", "--limit", type=int, default=50, help="rows to print (default 50, 0 = all)")
     sel.add_argument("-s", "--sort", default=None, help="date (default), name, size, path, extension, depth; a/b chains keys")
     sel.add_argument("--asc", action="store_true", help="ascending: oldest / smallest / first first (default: descending, newest first)")
-    sel.add_argument("--dotfiles", dest="dotfiles", action="store_true", default=None, help="include names starting with a dot")
-    sel.add_argument("--no-dotfiles", dest="dotfiles", action="store_false", help="leave them out")
+    sel.add_argument("--dotfiles", dest="dotfiles", action="store_true", default=None, help="only names/paths starting with a dot (/dotfiles)")
+    sel.add_argument("--no-dotfiles", dest="dotfiles", action="store_false", help="leave them out (!/dotfiles)")
     sel.add_argument("--backup", choices=["restic", "btrfs", "all", "none"], help="include / exclude backup copies")
     sel.add_argument("--fts-rvt", dest="fts_rvt", action="store_true", default=None, help="content searches (/fts /chroma) include Revit files (rvt rfa rte rft)")
     sel.add_argument("--no-fts-rvt", dest="fts_rvt", action="store_false", help="content searches leave out Revit files")
@@ -298,7 +298,7 @@ def main():
             desc = False
     verbs = []
     if a.dotfiles is not None:
-        verbs.append("/show-dotfiles" if a.dotfiles else "/hide-dotfiles")
+        verbs.append("/dotfiles" if a.dotfiles else "!/dotfiles")
     if a.fts_rvt is not None:
         verbs.append("/show-fts-rvt" if a.fts_rvt else "/hide-fts-rvt")
     if a.fts_dwg is not None:

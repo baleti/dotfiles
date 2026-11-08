@@ -76,11 +76,11 @@ Everything here is generic code. The private parts are kept outside the repo:
 ## View settings, verbs and shortcuts
 
 - **Settings file** `~/.config/indexes/picker-settings.json` (`Ctrl+P` in the picker edits it): defaults for
-  `show_dotfiles` (true), `show_backup_restic` (false), `show_backup_btrfs` (false), and a `shortcuts` map
+  `default_exclude` (".dat, .rws, //mime directory, /dotfiles": comma separated extensions, `//mime` kinds or `/dotfiles` left out of every search; a query that itself uses `/dotfiles` skips the dotfiles entry), `show_backup_restic` (false), `show_backup_btrfs` (false), and a `shortcuts` map
   (action -> list of chords such as `"Ctrl+R"`, `"F4"`). The server reads the view defaults on every query.
 - **Query verbs** override the defaults for one search, anywhere in the query, later ones win:
-  `/show-dotfiles` `/hide-dotfiles`, `/show-backup` `/hide-backup` (both kinds), `/show-backup-restic`
-  `/hide-backup-restic`, `/show-backup-btrfs` `/hide-backup-btrfs`. Hiding dotfiles adds the negated term `!/.`.
+  `/dotfiles` (only paths with a dot component; `!/dotfiles` leaves them out, same as the term `!/.`), `/show-backup` `/hide-backup` (both kinds), `/show-backup-restic`
+  `/hide-backup-restic`, `/show-backup-btrfs` `/hide-backup-btrfs`.
 - **Restic backups** are a table of their own in the server, loaded in the background the first time a query asks
   for them (about 10 s; the status line says so and the panel refreshes when ready). One row per path (its newest
   version) with the path under the restic mount, `<mount>/ids/<short id><original path>`, so open, copy and

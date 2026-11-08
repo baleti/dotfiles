@@ -110,8 +110,7 @@ allr = paths(f"/fts {W}", 0)[0]
 check("paging returns everything, no duplicates", len(allr) == base == len(set(allr)), (len(allr), base, len(set(allr))))
 check("default order is stable between calls", paths(f"/fts {W}", 30)[0] == paths(f"/fts {W}", 30)[0])
 # dotfiles
-check("/hide-dotfiles never adds", count(f"/hide-dotfiles /fts {W}")[0] <= base)
-check("/show-dotfiles == default", count(f"/show-dotfiles /fts {W}")[0] == base)
+check("!/dotfiles never adds", count(f"!/dotfiles /fts {W}")[0] <= base)
 # the verb never leaks into plain name search
 check("plain words are not content search", count("masonry")[0] != base)
 

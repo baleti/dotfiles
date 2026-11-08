@@ -72,13 +72,12 @@ page_a = [r["path"] for r in rows(f"{S} //dm 2023", 2500)]
 check("limit prefix of full list (stable order)", page_a == whole[:2500])
 check("-n 1 / -n 0 / big -n", len(rows(S, 1)) == 1 and len(rows(f"{S} //dm 2023", 10**6)) == len(every))
 # view verbs
-check("/hide-dotfiles <= default", count(f"{S} /hide-dotfiles") <= count(S))
-check("/show-dotfiles >= /hide-dotfiles", count(f"{S} /show-dotfiles") >= count(f"{S} /hide-dotfiles"))
-check("later view verb wins", count(f"{S} /show-dotfiles /hide-dotfiles") == count(f"{S} /hide-dotfiles"))
+check("!/dotfiles == default (dotfiles are in Default exclude)", count(f"{S} !/dotfiles") == count(S))
+check("later view verb wins", count(f"{S} /hide-backup /show-backup") == count(f"{S} /show-backup"))
 check("/show-backup >= /hide-backup", count(f"{S} /show-backup") >= count(f"{S} /hide-backup"))
 check("/show-backup-restic + btrfs inside /show-backup", count(f"{S} /show-backup-restic") <= count(f"{S} /show-backup"))
-check("view verb position irrelevant", count(f"/hide-dotfiles {S} road") == count(f"{S} road /hide-dotfiles"))
-check("view verb between tag and value is not a verb", count(f"{S} //path /hide-dotfiles") >= 0)
+check("view verb position irrelevant", count(f"/hide-backup {S} road") == count(f"{S} road /hide-backup"))
+check("view verb between tag and value is not a verb", count(f"{S} //path /hide-backup") >= 0)
 # odd input never errors out
 for q in ("", " ", '"', '""', "!", "//", "///", "/", "//ext", "!//", "\\", "*", "?", "[", "(", "%", "alpha \"", "\t", "a" * 5000, "/s", "//size >", "//size >>1", "//dm >", "//path \"", ".", "..", "/.", "alpha /."):
     rc, out, err = search("-c", q)
