@@ -110,6 +110,7 @@ namespace SearchApp
             else if (a == "hist") { hist = hist.Count > 0 ? hist : new List<string> { "alpha", "beta" }; HpOpen(); HP.Picked = true; HpDraw(); }
             else if (a == "cp") { CpStart(); Shot.Pump(1500, () => CP.Open); }
             else if (a == "menu") { if (sel >= 0) ShowMenuForSelection(); }
+            else if (a.StartsWith("type:")) { Q.Box.Text = a.Substring(5); Shot.Pump(3000, () => sent == a.Substring(5) && !busy); }
             else if (a == "busy") { busy = true; busySince = DateTime.UtcNow.AddSeconds(-3); UpdateStatus(); }
         }
     }

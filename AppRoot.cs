@@ -176,6 +176,7 @@ namespace SearchApp
         async void FetchPage(int p, bool force)
         {
             int inf;
+            if (fresh && p != 0 && !force) return;   // a new query is waiting for its first page: do not mix its later pages into the old rows
             if (!force && (pages.ContainsKey(p) || (inflight.TryGetValue(p, out inf) && inf == seq))) return;
             int mySeq = seq; string qq = sent; inflight[p] = mySeq;
             try
