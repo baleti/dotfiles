@@ -26,7 +26,7 @@ SYNTAX = """QUERY LANGUAGE (identical to the mod+1 picker)
   words              every word must occur somewhere in the full path, case-insensitive:  montgomer corpus
   !word              leave out paths containing it:  !pdf-to-png        "a b"  a phrase with a space
   //name X           file name contains X                //path X   path contains X (gdrive/x = the Drive, ~/x = home)
-  //ext .pdf         exact extension (repeat to OR)      //mime K    kind: image pdf text code document audio video archive ebook
+  //ext .pdf         exact extension (repeat to OR)      //mime K    kind: image pdf text code document audio video archive ebook (K may be partial: imag, doc, d)
   //size >5M <200K   file size (K M G T)                //dm 2024-06   modified in that month;  //dm >2015-06  after;  //dm <2020  before
   !//tag value       negates a tag, e.g.  !//ext .tmp
 

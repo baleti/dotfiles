@@ -173,3 +173,16 @@ and btrfs ingestion, NFS stream and monthly walk, nightly collections, nightly R
   part before it, name starts with the part after it). Pinned scan data went from 748 MB to 453 MB, RSS from ~1.3 GB to ~0.6 GB, typing queries 30-40 ms. Verified identical to the
   plain table on 3,396 queries (folder-spanning words, `//path` tags, sorts, typed prefixes, live-overlay ops). Unset `NAMES_DEDUP` to go back; the plain snapshot format is unchanged.
 - **History popup (Ctrl+R / F4)**: entries that contain the typed text as-is are listed first (newest first), the looser fzf-style subsequence matches after them.
+
+## CAD facts index (sqlite) and Recoll filters, 2026-10-28
+
+Two layers, both built ON HOST1 by `cad_index_host1.py` (data and extractors live there; host3 never decodes):
+
+* **Recoll text** (`~/.cache/indexes/{revit,dwg}/recoll`, filters `rvt2recoll.py`, `dwg2recoll.py`): plain `/fts` finds names, sheet/view/family/type/material text (Revit) and DWG text, dimension strings, attributes, layer, block, layout and xref names. Paths are `/home/user1/backups/...`, valid on host3 through the symlink.
+* **Facts DB** (`~/.cache/indexes/cadfacts/facts.db`, sqlite, `cadfacts.py`): structured, for queries like Walls with Unconnected Height < 2300 mm. Revit: element (category, family, type, level, mark, name), numeric length/area/volume parameters converted to mm / m2 / m3, selected string parameters (Mark, Type Mark, Comments, Manufacturer, Fire Rating, ...), levels. DWG: layers, blocks, layouts, xrefs, text (deduplicated per file with a count), INSUNITS. Failures stay in `files.status/errors`; incremental by (path, size, mtime).
+  Query: `cadq rvt --category Walls --where "Unconnected Height<2300mm" --level "Level 1"`, `cadq dwg --layer WALL --text "FIRE"` (ssh to host1). `cadfacts.py stats --db ...` for counts and errors.
+
+Not stored (decoded live, on demand, from the file): geometry, every other parameter, schedules, hatch/line coordinates. Live reads: `python3 ~/rvt-research/rvt2facts.py FILE` (0.5-20 s per file cold, <1 GB RSS) and `dwg2text.py --jsonl FILE` (0.1-9 s typical); restrict by path/name/ext from the catalog first.
+
+Measured (2026-10-28): DWG facts DB about 10% of the source size (office sample: 400 files, 976 MB -> 73 MB, 183 KB/file; projected 53.5k designated DWGs about 10 GB). Revit facts about 3-7% of source after pruning derived MEP centreline parameters (an unpruned MEP model produced 28 MB of JSON for a 56 MB file); 1282 .rvt + 4983 .rfa designated. Extraction time per file: DWG median 0.2 s (python, host1), RVT 4-20 s.
+Guards: abort if MemAvailable < 4 GB, or qemu-ai1 restarts during the run (replaces the old absolute NRestarts>5 HALT file, which kept `nightly-cad-index` failing from 2026-10-20).
