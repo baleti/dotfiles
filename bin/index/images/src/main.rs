@@ -306,6 +306,12 @@ fn fit_text(ui: &egui::Ui, text: &str, font: &egui::FontId, width: f32) -> Strin
 }
 
 /// Counts and consumes every queued press of `key` with `mods` this frame (repeats included).
+/// Focus guard for keys the query text field also owns (caret movement): they count as result navigation
+/// only when the results list has focus.
+fn list_only(list_focused: bool, pressed: bool) -> bool {
+    list_focused && pressed
+}
+
 fn take_count(ui: &mut egui::Ui, mods: egui::Modifiers, key: Key) -> usize {
     let mut c = 0;
     while c < 500 && ui.input_mut(|i| i.consume_key(mods, key)) {
@@ -3468,12 +3474,16 @@ impl eframe::App for App {
             (
                 i.key_pressed(Key::ArrowDown),
                 i.key_pressed(Key::ArrowUp),
-                i.key_pressed(Key::ArrowLeft),
-                i.key_pressed(Key::ArrowRight),
+                // FOCUS GUARD: Left/Right/Home/End (with any modifiers) are the query box's caret keys. They
+                // reach the results ONLY while the results list itself has focus (`was_list`); there is no
+                // other path. New result-navigation keys that the text field also uses must go through
+                // `list_only` too.
+                list_only(was_list, i.key_pressed(Key::ArrowLeft)),
+                list_only(was_list, i.key_pressed(Key::ArrowRight)),
                 i.key_pressed(Key::PageDown),
                 i.key_pressed(Key::PageUp),
-                i.key_pressed(Key::Home),
-                i.key_pressed(Key::End),
+                list_only(was_list, i.key_pressed(Key::Home)),
+                list_only(was_list, i.key_pressed(Key::End)),
                 i.key_pressed(Key::Enter) && !i.modifiers.ctrl && !i.modifiers.alt,
                 keys.pressed_in(i, "reveal"),
                 i.key_pressed(Key::Escape),
@@ -3605,10 +3615,6 @@ impl eframe::App for App {
             let mut abs: Option<usize> = None;
             let mut extend = shift_any;
             let mut any = false;
-            // with the query box focused, modified Left/Right/Home/End (Ctrl+Shift+arrows selecting words etc.)
-            // belong to the text field, never to the results
-            let box_mod = !was_list && ui.input(|i| i.modifiers.ctrl || i.modifiers.shift || i.modifiers.alt);
-            let (right, left, home, end) = (right && !box_mod, left && !box_mod, home && !box_mod, end && !box_mod);
             if grid && right { delta += 1; any = true; }
             if grid && left { delta -= 1; any = true; }
             delta += l_n as i64; delta -= h_n as i64;
