@@ -1,5 +1,7 @@
 #!/bin/sh
-# usage: tools/pcrun.sh <outfile-name> args...   runs SearchApp.exe on the PC, writes the --out file, prints it
+# usage: tools/pcrun.sh <outfile-name> args...   runs SearchApp.exe on the PC (no window), writes the --out file, prints it
 # (WinExe has no console: the app writes the result file given as --out)
+. "$(dirname "$0")/pc.sh"
 n="$1"; shift
-ssh wsl "rm -f /mnt/c/Users/USER/SearchApp/out/$n; cd /mnt/c/Users/USER/SearchApp && timeout 120 ./SearchApp.exe $* --out 'C:\\Users\\USER\\SearchApp\\out\\$n'; cat /mnt/c/Users/USER/SearchApp/out/$n"
+args=""; for a in "$@"; do args="$args '$a'"; done
+ssh wsl "rm -f $PCDIR/out/$n; cd $PCDIR && timeout 120 ./SearchApp.exe $args --out '${PCWIN}\\SearchApp\\out\\$n'; cat $PCDIR/out/$n"

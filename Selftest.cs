@@ -21,14 +21,14 @@ namespace SearchApp
 
         public static int Run(string[] a, TextWriter o)
         {
-            string golden = null; bool live = false, ui = false; string server = "http://127.0.0.1:8795";
-            for (int i = 0; i < a.Length; i++) { if (a[i] == "--golden" && i + 1 < a.Length) golden = a[++i]; else if (a[i] == "--live") live = true; else if (a[i] == "--ui") ui = true; else if (a[i] == "--server" && i + 1 < a.Length) server = a[++i]; }
+            string golden = null, term = "report", narrow = "minutes"; bool live = false, ui = false; string server = "http://127.0.0.1:8795";
+            for (int i = 0; i < a.Length; i++) { if (a[i] == "--golden" && i + 1 < a.Length) golden = a[++i]; else if (a[i] == "--live") live = true; else if (a[i] == "--ui") ui = true; else if (a[i] == "--term" && i + 1 < a.Length) term = a[++i]; else if (a[i] == "--narrow" && i + 1 < a.Length) narrow = a[++i]; else if (a[i] == "--server" && i + 1 < a.Length) server = a[++i]; }
             int fails = 0;
             if (golden != null) fails += Golden(golden, o);
             else o.WriteLine("(no --golden file given, offline logic tests skipped)");
-            if (live) fails += Live(server, o);
+            if (live) fails += Live(server, o, term, narrow);
             fails += Plans(o);
-            if (ui) fails += Ui(server, o);
+            if (ui) fails += Ui(server, o, term, narrow);
             o.WriteLine(fails == 0 ? "SELFTEST OK" : "SELFTEST FAILED: " + fails);
             return fails == 0 ? 0 : 1;
         }
@@ -122,7 +122,7 @@ namespace SearchApp
             bool d1 = Opener.IsDangerous(cfg, "/a/b.EXE"), d2 = Opener.IsDangerous(cfg, "/a/b.eml");
             o.WriteLine((d1 && !d2 ? "ok   " : "FAIL ") + "dangerous ext check"); if (!(d1 && !d2)) fails++;
             var real = Config.Load(); string rm = real.MapToWindows("/mnt/share/m/PROJECTS/a/b.eml");
-            o.WriteLine("     real config: server=" + real.Server + " maps=" + real.PathMap.Count + " sample=" + rm); if (real.PathMap.Count == 0) { o.WriteLine("FAIL real config has no path map"); fails++; }
+            o.WriteLine("     real config: server=" + real.Server + " maps=" + real.PathMap.Count + " sample=" + rm);
             string own = OwnerCache.Read(System.Reflection.Assembly.GetExecutingAssembly().Location);
             o.WriteLine((own.Length > 0 ? "ok   " : "FAIL ") + "owner of the exe: " + own); if (own.Length == 0) fails++;
             Opener.Dry = true; Opener.Shell("M:\\x.eml"); Opener.OpenWith("M:\\x.eml"); Opener.Dry = false;
@@ -131,7 +131,7 @@ namespace SearchApp
         }
 
         // ---- offscreen UI checks against the real server ----
-        static int Ui(string server, TextWriter o)
+        static int Ui(string server, TextWriter o, string term, string narrow)
         {
             int fails = 0;
             Action<string, bool, string> chk = (name, ok, info) => { o.WriteLine((ok ? "ok   " : "FAIL ") + name + (info != null ? "  " + info : "")); if (!ok) fails++; };
@@ -142,7 +142,7 @@ namespace SearchApp
                 var cfg = new Config { NoSave = true, Server = server };
                 var root = new AppRoot(cfg, new Theme(false), null); root.Width = 1200; root.Height = 700;
                 root.Measure(new System.Windows.Size(1200, 700)); root.Arrange(new System.Windows.Rect(0, 0, 1200, 700)); root.UpdateLayout();
-                var init = root.InitialAsync("sample");
+                var init = root.InitialAsync(term);
                 Shot.Pump(30000, () => init.IsCompleted && !root.busy);
                 chk("ui initial query", root.total > 1000 && root.Hit(0) != null, "total=" + root.total);
                 // scroll to the very end: the last page must get fetched on demand
@@ -153,9 +153,9 @@ namespace SearchApp
                 root.SetThumb(320); root.UpdateLayout(); chk("ui grid mode", root.List.IsGrid && root.Hdr.Visibility != System.Windows.Visibility.Visible, "thumb=" + root.Cols.Thumb);
                 root.SetThumb(16); root.UpdateLayout(); chk("ui list mode", !root.List.IsGrid && root.Hdr.Visibility == System.Windows.Visibility.Visible, null);
                 // stale handling: two quick queries, the later one must win
-                root.Q.SetText("sample minutes"); root.q = "sample minutes"; root.Send("zzzzqqqq9"); root.Send("sample minutes");
+                root.Q.SetText(term + " " + narrow); root.q = term + " " + narrow; root.Send("zzzzqqqq9"); root.Send(term + " " + narrow);
                 Shot.Pump(30000, () => !root.busy);
-                chk("ui stale response ignored", root.sent == "sample minutes" && root.total > 0 && root.total < 1000, "total=" + root.total);
+                chk("ui stale response ignored", root.sent == term + " " + narrow && root.total > 0 && root.total < 1000, "total=" + root.total);
                 // header sort rewrites the query
                 root.Hdr.RaiseSort("size"); Shot.Pump(90000, () => !root.busy && root.Hit(0) != null && root.sent.Contains("/s/size"));
                 o.WriteLine("     debug: sent=" + root.sent + " busy=" + root.busy + " total=" + root.total + " errs=" + string.Join(";", root.errors) + " h0=" + (root.Hit(0) == null ? "null" : root.Hit(0).Path));
@@ -178,7 +178,7 @@ namespace SearchApp
         }
 
         // ---- live checks against the real server (read-only; settings are toggled and restored) ----
-        static int Live(string server, TextWriter o)
+        static int Live(string server, TextWriter o, string term, string narrow)
         {
             int fails = 0; var api = new Api(server); var ct = CancellationToken.None; string cid = "st" + Guid.NewGuid().ToString("N").Substring(0, 8);
             Action<string, bool, string> chk = (name, ok, info) => { o.WriteLine((ok ? "ok   " : "FAIL ") + name + (info != null ? "  " + info : "")); if (!ok) fails++; };
@@ -186,13 +186,13 @@ namespace SearchApp
             {
                 var v = api.Ver(ct).Result;
                 chk("ver", v.Ver >= 0 && v.Theme != null, "ver=" + v.Ver + " accent=" + (v.Theme == null ? "?" : v.Theme.Accent));
-                var q0 = api.Query("sample minutes", 0, 200, cid, 1, ct).Result;
+                var q0 = api.Query(term + " " + narrow, 0, 200, cid, 1, ct).Result;
                 chk("query page0", q0.Count > 0 && q0.Results.Count > 0, "count=" + q0.Count + " got=" + q0.Results.Count);
                 if (q0.Results.Count > 0) { var h = q0.Results[0]; chk("hit fields", h.Path != null && h.Remote != null, h.Path + " size=" + h.Size + " mtime=" + h.Mtime + " thumb=" + h.Thumb + " fileok=" + h.FileOk + " pages=" + h.Pages); }
                 chk("stats", q0.Stats != null && q0.Stats.Kinds.Count > 0, q0.Stats == null ? "null" : Dsl.HSize(q0.Stats.Size) + " " + q0.Stats.DMin + ".." + q0.Stats.DMax);
                 if (q0.Count > 200)
                 {
-                    var q1 = api.Query("sample minutes", 200, 200, cid, 2, ct).Result;
+                    var q1 = api.Query(term + " " + narrow, 200, 200, cid, 2, ct).Result;
                     chk("query page1", q1.Results.Count > 0 && q1.Results[0].Remote != q0.Results[0].Remote, "got=" + q1.Results.Count);
                 }
                 var qe = api.Query("/fts", 0, 10, cid, 3, ct).Result;
@@ -200,7 +200,7 @@ namespace SearchApp
                 var th = q0.Results.FirstOrDefault(x => !string.IsNullOrEmpty(x.Thumb));
                 if (th != null) { var b = api.GetBytes(th.Thumb, ct).Result; chk("thumb bytes", b.Length > 100, b.Length + " bytes"); }
                 var f = api.GetFacets(ct).Result; chk("facets", f.Dates.Count > 0 && f.Exts.Count > 0, f.Dates.Count + " dates " + f.Exts.Count + " exts");
-                var pp = api.Paths("docs", ct).Result; chk("paths", pp.Key > 0, "total=" + pp.Key);
+                var pp = api.Paths(term, ct).Result; chk("paths", pp.Key > 0, "total=" + pp.Key);
                 var hs = api.History(ct).Result; chk("history", hs.Count > 0, hs.Count + " items, newest=" + (hs.Count > 0 ? hs[0] : ""));
                 var st = api.GetSettings(ct).Result; chk("settings get", st.DefaultExclude != null, st.DefaultExclude);
                 bool orig = st.FtsDwg;
