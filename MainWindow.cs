@@ -31,6 +31,7 @@ namespace SearchApp
             StateChanged += (s, e) => { AdjustMax(); Root.UpdateMaxIcon(); };
             PreviewKeyDown += Root.OnKey; PreviewTextInput += Root.OnTextInput;
             Closing += OnClosing;
+            SourceInitialized += (s, e) => { var src = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle); if (src != null) src.AddHook(WndProc); };
             Loaded += async (s, e) =>
             {
                 AdjustMax(); Root.UpdateMaxIcon();
@@ -44,7 +45,32 @@ namespace SearchApp
             th.Changed += () => Background = th.Bg;
         }
         static bool OnScreen(double x, double y) { return x > SystemParameters.VirtualScreenLeft - 50 && y > SystemParameters.VirtualScreenTop - 50 && x < SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - 100 && y < SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - 100; }
-        void AdjustMax() { Root.Margin = WindowState == WindowState.Maximized ? SystemParameters.WindowResizeBorderThickness : new Thickness(0); }
+        void AdjustMax() { Root.Margin = new Thickness(0); }
+
+        // Maximised borderless window: stay inside the monitor's work area (so the status line is not hidden under the taskbar).
+        [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }
+        [StructLayout(LayoutKind.Sequential)] struct RC { public int l, t, r, b; }
+        [StructLayout(LayoutKind.Sequential)] struct MMI { public PT reserved, maxSize, maxPos, minTrack, maxTrack; }
+        [StructLayout(LayoutKind.Sequential)] struct MONINFO { public int size; public RC monitor, work; public int flags; }
+        [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr h, int flags);
+        [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr m, ref MONINFO mi);
+        IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp, ref bool handled)
+        {
+            if (msg == 0x0024)
+            {
+                var mmi = (MMI)Marshal.PtrToStructure(lp, typeof(MMI));
+                var mon = MonitorFromWindow(hwnd, 2);
+                var mi = new MONINFO { size = Marshal.SizeOf(typeof(MONINFO)) };
+                if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref mi))
+                {
+                    mmi.maxPos.x = mi.work.l - mi.monitor.l; mmi.maxPos.y = mi.work.t - mi.monitor.t;
+                    mmi.maxSize.x = mi.work.r - mi.work.l; mmi.maxSize.y = mi.work.b - mi.work.t;
+                    Marshal.StructureToPtr(mmi, lp, true);
+                }
+                handled = true;
+            }
+            return IntPtr.Zero;
+        }
         void OnClosing(object s, System.ComponentModel.CancelEventArgs e)
         {
             var rb = RestoreBounds; cfg.Window.max = WindowState == WindowState.Maximized;
