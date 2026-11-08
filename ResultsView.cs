@@ -7,7 +7,7 @@ using System.Windows.Media;
 
 namespace SearchApp
 {
-    public static class Const { public const int Page = 200; public const double Grid = 220, Gap = 10, CellTxt = 72, MinW = 40, Bar = 10; }
+    public static class Const { public const int Page = 200; public const double Grid = 220, Gap = 10, CellTxt = 72, MinW = 24, Bar = 10; }
 
     /// <summary>Column widths shared by the header and the rows (the page's --cols variable).</summary>
     public class ColModel
