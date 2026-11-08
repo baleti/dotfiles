@@ -117,6 +117,7 @@ namespace SearchApp
             else if (a == "cp") { CpStart(); Shot.Pump(1500, () => CP.Open); }
             else if (a == "menu") { if (sel >= 0) ShowMenuForSelection(); }
             else if (a.StartsWith("type:")) { Q.Box.Text = a.Substring(5); Shot.Pump(3000, () => sent == a.Substring(5) && !busy); }
+            else if (a == "tabs") { tabQ[0] = q; TabSync(); TabNew(); Q.SetText("invoice"); q = "invoice"; TabSync(); TabNew(); Q.SetText("minutes 2026"); q = "minutes 2026"; TabSync(); TabSwitch(1); }
             else if (a == "busy") { busy = true; busySince = DateTime.UtcNow.AddSeconds(-3); UpdateStatus(); }
         }
     }
