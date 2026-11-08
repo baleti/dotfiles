@@ -167,7 +167,7 @@ namespace SearchApp
                 if (h == null) continue;
                 var sd = Dsl.SplitDir(h.Path);
                 var f = NameFt(sd[1], 13, c.W[1] - 8, sel, "n"); dc.DrawText(f, new Point(c.X[1], y + (g.Stride - f.Height) / 2));
-                f = Plain(sd[0], 11, Th.Dim, c.W[2] - 8, "p"); dc.DrawText(f, new Point(c.X[2], y + (g.Stride - f.Height) / 2));
+                f = Plain(sd[0], 13, Th.Dim, c.W[2] - 8, "p"); dc.DrawText(f, new Point(c.X[2], y + (g.Stride - f.Height) / 2));
                 if (h.HasSize) { f = Plain(Dsl.HSize(h.Size), 11, Th.Dim, c.W[3] - 8, "s"); dc.DrawText(f, new Point(c.X[3], y + (g.Stride - f.Height) / 2)); }
                 if (h.Pages >= 0) { f = Plain(h.Pages.ToString(), 11, Th.Dim, c.W[4] - 8, "g"); dc.DrawText(f, new Point(c.X[4], y + (g.Stride - f.Height) / 2)); }
                 if (!string.IsNullOrEmpty(h.Mtime)) { f = Plain(Dsl.STime(h.Mtime), 11, Th.Dim, c.W[5] - 8, "d"); dc.DrawText(f, new Point(c.X[5], y + (g.Stride - f.Height) / 2)); }
