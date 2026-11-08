@@ -14,17 +14,17 @@ namespace SearchApp
     {
         public double Thumb = 16; public bool HasScore;
         public Dictionary<string, double> CW = new Dictionary<string, double>();
-        public double[] X = new double[7], W = new double[7];
-        public static readonly string[] Keys = { "name", "path", "size", "pages", "date" };
-        static readonly Dictionary<string, double> Def = new Dictionary<string, double> { { "size", 76 }, { "pages", 44 }, { "date", 116 } };
+        public double[] X = new double[8], W = new double[8]; public bool ShowOwner;
+        public static readonly string[] Keys = { "name", "path", "size", "pages", "date", "owner" };
+        static readonly Dictionary<string, double> Def = new Dictionary<string, double> { { "size", 76 }, { "pages", 44 }, { "date", 116 }, { "owner", 150 } };
         public bool Fixed(string k) { double v; return CW.TryGetValue(k, out v) && v > 0; }
         public void Layout(double width)
         {
             W[0] = 6 + Thumb + 12;
             W[3] = Fixed("size") ? CW["size"] : Def["size"]; W[4] = Fixed("pages") ? CW["pages"] : Def["pages"]; W[5] = Fixed("date") ? CW["date"] : Def["date"];
-            W[6] = HasScore ? 44 : 0;
+            W[6] = ShowOwner ? (Fixed("owner") ? CW["owner"] : Def["owner"]) : 0; W[7] = HasScore ? 44 : 0;
             bool nf = Fixed("name"), pf = Fixed("path");
-            double free = width - W[0] - W[3] - W[4] - W[5] - W[6];
+            double free = width - W[0] - W[3] - W[4] - W[5] - W[6] - W[7];
             if (nf) { W[1] = CW["name"]; free -= W[1]; }
             if (pf) { W[2] = CW["path"]; free -= W[2]; }
             if (!nf && !pf)
@@ -35,7 +35,7 @@ namespace SearchApp
             }
             else if (!nf) W[1] = Math.Max(60, free);
             else if (!pf) W[2] = Math.Max(60, free);
-            double x = 0; for (int i = 0; i < 7; i++) { X[i] = x; x += W[i]; }
+            double x = 0; for (int i = 0; i < 8; i++) { X[i] = x; x += W[i]; }
         }
     }
 
@@ -44,7 +44,7 @@ namespace SearchApp
     public class ResultsView : FrameworkElement
     {
         public Func<int, Hit> GetHit; public long Total; public int Sel = -1; public List<string> Terms = new List<string>();
-        public bool ShowNone; public ColModel Cols; public Theme Th; public ThumbCache Thumbs; public double Off;
+        public bool ShowNone; public ColModel Cols; public Theme Th; public ThumbCache Thumbs; public OwnerCache Owners; public double Off;
         public event Action<int, int> NeedRange;     // first, last visible (+overscan)
         public event Action<int, int> RowClick;      // index, click count
         public event Action<int, Point> RowRightClick;
@@ -171,7 +171,8 @@ namespace SearchApp
                 if (h.HasSize) { f = Plain(Dsl.HSize(h.Size), 11, Th.Dim, c.W[3] - 8, "s"); dc.DrawText(f, new Point(c.X[3], y + (g.Stride - f.Height) / 2)); }
                 if (h.Pages >= 0) { f = Plain(h.Pages.ToString(), 11, Th.Dim, c.W[4] - 8, "g"); dc.DrawText(f, new Point(c.X[4], y + (g.Stride - f.Height) / 2)); }
                 if (!string.IsNullOrEmpty(h.Mtime)) { f = Plain(Dsl.STime(h.Mtime), 11, Th.Dim, c.W[5] - 8, "d"); dc.DrawText(f, new Point(c.X[5], y + (g.Stride - f.Height) / 2)); }
-                if (score && h.HasScore) { f = Plain(h.Score.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture), 12, Th.Accent, c.W[6], "c"); dc.DrawText(f, new Point(c.X[6], y + (g.Stride - f.Height) / 2)); }
+                if (c.ShowOwner) { string ow = Owners.Get(h); if (!string.IsNullOrEmpty(ow)) { f = Plain(ow, 11, Th.Dim, c.W[6] - 8, "o"); dc.DrawText(f, new Point(c.X[6], y + (g.Stride - f.Height) / 2)); } }
+                if (score && h.HasScore) { f = Plain(h.Score.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture), 12, Th.Accent, c.W[7], "c"); dc.DrawText(f, new Point(c.X[7], y + (g.Stride - f.Height) / 2)); }
             }
         }
 
@@ -277,13 +278,13 @@ namespace SearchApp
         public ColModel Cols; public Theme Th; public string Query = ""; public double RightPad;
         public event Action<string> SortClick; public event Action WidthsChanged; public event Action Resized;
         int hot = -1, drag = -1, downCell = -1; double x0, startW, spare; bool moved; readonly TextCache tc = new TextCache();
-        static readonly string[] Labels = { "NAME", "PATH", "SIZE", "#P", "MODIFIED", "SCORE" };
+        static readonly string[] Labels = { "NAME", "PATH", "SIZE", "#P", "MODIFIED", "OWNER", "SCORE" };
         public HeaderView() { SnapsToDevicePixels = true; ClipToBounds = true; }
         public void ThemeChanged() { tc.Clear(); InvalidateVisual(); }
         public double ColW(string k) { return Cols.W[1 + Array.IndexOf(ColModel.Keys, k)]; }
 
-        int CellAt(double x) { for (int i = 1; i <= (Cols.HasScore ? 6 : 5); i++) if (x >= Cols.X[i] && x < Cols.X[i] + Cols.W[i]) return i; return -1; }
-        int GripAt(double x) { for (int i = 1; i <= 5; i++) { double r = Cols.X[i] + Cols.W[i]; if (x >= r - 6 && x <= r + 6) return i; } return -1; }
+        int CellAt(double x) { for (int i = 1; i <= 7; i++) if (Cols.W[i] > 0 && x >= Cols.X[i] && x < Cols.X[i] + Cols.W[i]) return i; return -1; }
+        int GripAt(double x) { for (int i = 1; i <= 6; i++) { if (Cols.W[i] <= 0) continue; double r = Cols.X[i] + Cols.W[i]; if (x >= r - 6 && x <= r + 6) return i; } return -1; }
 
         protected override void OnRender(DrawingContext dc)
         {
@@ -291,10 +292,10 @@ namespace SearchApp
             dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
             Cols.Layout(Math.Max(0, ActualWidth - RightPad));
             var si = Dsl.SortInfo(Query); string pc = si.Explicit ? Dsl.ColOfKey(si.Key) : null;
-            int n = Cols.HasScore ? 6 : 5;
-            for (int i = 1; i <= n; i++)
+            for (int i = 1; i <= 7; i++)
             {
-                string k = i <= 5 ? ColModel.Keys[i - 1] : "score";
+                if (Cols.W[i] <= 0) continue;
+                string k = i <= 6 ? ColModel.Keys[i - 1] : "score";
                 bool arrow = si.Explicit && i <= 5 && (pc == k || si.Keys.Skip(1).Any(x => Dsl.ColOfKey(x) == k));
                 string label = Labels[i - 1] + (arrow ? (si.Desc ? " ▼" : " ▲") : "");
                 Brush b = pc == k ? Th.Accent : (arrow ? Th.Text : Th.Dim);
@@ -303,7 +304,7 @@ namespace SearchApp
                 dc.DrawText(ft, new Point(Cols.X[i], ActualHeight - ft.Height - 2));
             }
             int g = drag >= 0 ? drag : hot;
-            if (g >= 1 && g <= 5) { double r = Cols.X[g] + Cols.W[g]; dc.DrawRoundedRectangle(Th.Accent, null, new Rect(r - 1, 2, 2, ActualHeight - 3), 1, 1); }
+            if (g >= 1 && g <= 6) { double r = Cols.X[g] + Cols.W[g]; dc.DrawRoundedRectangle(Th.Accent, null, new Rect(r - 1, 2, 2, ActualHeight - 3), 1, 1); }
         }
 
         public void RaiseSort(string k) { if (SortClick != null) SortClick(k); }

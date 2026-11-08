@@ -90,11 +90,12 @@ namespace SearchApp
             title.Children.Add(btns);
             SetRow(title, 0); Children.Add(title);
 
-            Cols = new ColModel { Thumb = Cfg.Thumb, CW = Cfg.Cw };
+            Cols = new ColModel { Thumb = Cfg.Thumb, CW = Cfg.Cw, ShowOwner = Cfg.ShowOwner };
+            Owners = new OwnerCache(Cfg, Dispatcher); Owners.Loaded += () => List.InvalidateVisual();
             Hdr = new HeaderView { Cols = Cols, Th = Th, Height = 18, Margin = new Thickness(12, 0, 12, 0) };
             SetRow(Hdr, 1); Children.Add(Hdr);
 
-            List = new ResultsView { Cols = Cols, Th = Th, Thumbs = Thumbs, GetHit = Hit };
+            List = new ResultsView { Cols = Cols, Th = Th, Thumbs = Thumbs, Owners = Owners, GetHit = Hit };
             MainGrid = new Grid { Margin = new Thickness(12, 0, 12, 0) };
             MainGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             MainGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -117,7 +118,7 @@ namespace SearchApp
         }
         public static void SetRow(UIElement e, int r) { Grid.SetRow(e, r); }
         static void SetRowSpan(UIElement e, int r) { Grid.SetRowSpan(e, r); }
-        public ColModel Cols;
+        public ColModel Cols; public OwnerCache Owners;
 
         void WireEvents()
         {

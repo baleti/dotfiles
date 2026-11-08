@@ -46,4 +46,5 @@ Started 2026-11-08 by the previous session; you take over. Read HANDOFF.md first
 - Smooth wheel scrolling and touch/pinch are not ported (not wanted).
 
 ## Server wishes (do not change the server; write requests here)
+- Owner column: the Windows app reads owners itself for files under the drive map (NTFS/SMB, `OwnerCache`). Files that live on the Linux host have no owner in the API; a `owner` field per hit in /api/query would let the column work there too (and make it sortable).
 - /api/query with /s/size is very slow on the full catalog (about 60 s). A cached size index on the server would help.

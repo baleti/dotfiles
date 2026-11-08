@@ -27,7 +27,7 @@ namespace SearchApp
             var a = args.ToList(); string outPng = Arg(a, "--shot"); if (outPng == null) return 2;
             System.Threading.SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-            var cfg = new Config { NoSave = true }; string server = Arg(a, "--server"); if (server != null) cfg.Server = server;
+            var cfg = new Config { NoSave = true }; cfg.PathMap = Config.Load().PathMap; string server = Arg(a, "--server"); if (server != null) cfg.Server = server;
             string thumb = Arg(a, "--thumb"); if (thumb != null) cfg.Thumb = double.Parse(thumb, System.Globalization.CultureInfo.InvariantCulture);
             string[] sz = Arg(a, "--size", "1300x800").Split('x'); double W = double.Parse(sz[0]), H = double.Parse(sz[1]);
             bool light = a.Contains("--light");

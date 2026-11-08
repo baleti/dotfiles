@@ -123,6 +123,8 @@ namespace SearchApp
             o.WriteLine((d1 && !d2 ? "ok   " : "FAIL ") + "dangerous ext check"); if (!(d1 && !d2)) fails++;
             var real = Config.Load(); string rm = real.MapToWindows("/mnt/share/m/PROJECTS/a/b.eml");
             o.WriteLine("     real config: server=" + real.Server + " maps=" + real.PathMap.Count + " sample=" + rm); if (real.PathMap.Count == 0) { o.WriteLine("FAIL real config has no path map"); fails++; }
+            string own = OwnerCache.Read(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            o.WriteLine((own.Length > 0 ? "ok   " : "FAIL ") + "owner of the exe: " + own); if (own.Length == 0) fails++;
             Opener.Dry = true; Opener.Shell("M:\\x.eml"); Opener.OpenWith("M:\\x.eml"); Opener.Dry = false;
             o.WriteLine("     dry log: " + string.Join(" | ", Opener.Log));
             return fails;

@@ -83,6 +83,12 @@ namespace SearchApp
                 sp.Children.Add(row);
             }
             sp.Children.Add(SHeading("This app"));
+            var omark = new CheckBoxMark(Th) { On = Cfg.ShowOwner, Margin = new Thickness(0, 1, 8, 0), VerticalAlignment = VerticalAlignment.Top };
+            var orow = new Grid { Background = Brushes.Transparent, Cursor = Cursors.Hand, Margin = new Thickness(0, 4, 0, 4) };
+            orow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); orow.ColumnDefinitions.Add(new ColumnDefinition());
+            orow.Children.Add(omark); var ot = SText("Show the owner column (Windows files only)", 12, Th.Text); Grid.SetColumn(ot, 1); orow.Children.Add(ot);
+            orow.MouseLeftButtonUp += (s, e) => { omark.On = !omark.On; omark.InvalidateVisual(); Cfg.ShowOwner = omark.On; Cols.ShowOwner = omark.On; Cfg.Save(); Hdr.InvalidateVisual(); List.InvalidateVisual(); };
+            sp.Children.Add(orow);
             var btns = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
             btns.Children.Add(new Btn(Th, "Reset column widths", () => { Cols.CW.Clear(); Cfg.Save(); Hdr.InvalidateVisual(); List.InvalidateVisual(); Flash("column widths reset", 1400); }) { Margin = new Thickness(0, 0, 8, 0) });
             btns.Children.Add(new Btn(Th, "Reset thumbnail size", () => SetThumb(16)));
