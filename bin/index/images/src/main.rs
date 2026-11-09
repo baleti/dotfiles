@@ -63,6 +63,9 @@ struct Hit {
     /// page count (local PDFs)
     #[serde(default)]
     pages: Option<u32>,
+    /// path on the Windows PC for files that live there (server-side mapping)
+    #[serde(default)]
+    winpath: Option<String>,
 }
 
 /// 1997930 -> "1,997,930"
@@ -4152,6 +4155,7 @@ impl eframe::App for App {
                             row(ui, "modified", h.mtime.as_deref().map(short_time).unwrap_or_else(|| "-".into()));
                             row(ui, "type", mime);
                             row(ui, "source", h.remote.clone());
+                            if let Some(w) = &h.winpath { row(ui, "windows", w.clone()); }
                         });
                     if !open { self.props = None; }
                 }

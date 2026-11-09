@@ -17,6 +17,7 @@ from urllib.parse import urlparse, parse_qs
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config  # noqa: E402
+import localcfg  # noqa: E402
 import search  # noqa: E402  (query engine)
 import cv2, numpy as np  # noqa: E402
 # file-name search: the in-memory name table lives in the catalog package
@@ -995,7 +996,7 @@ class H(BaseHTTPRequestHandler):
     def _do_GET(self):
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path == "/query":
-            q, view = view_options((qs.get("q", [""])[0]).strip())
+            q, view = view_options(localcfg.from_windows_text((qs.get("q", [""])[0]).strip()))
             cid, seqv = qs.get("cid", [""])[0], int(qs.get("seq", ["0"])[0] or 0)
             tag = (cid, seqv) if cid and seqv else None
             stale = note_request(cid, seqv)
@@ -1063,6 +1064,8 @@ class H(BaseHTTPRequestHandler):
                 nothumb = qs.get("nothumb", ["0"])[0] == "1"      # metadata-only window (the picker's /group): no thumbnails queued
                 for r in results:
                     r.setdefault("score", None)
+                    wp = localcfg.to_windows(r["remote"])
+                    if wp: r["winpath"] = wp
                     if nothumb:
                         r["thumb"], r["ready"] = "", True
                     elif r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):

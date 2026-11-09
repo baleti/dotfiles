@@ -178,6 +178,7 @@ class Writer:
     """Batches entries; each (path,size,mtime) is stored once and linked to every source that has it."""
     def __init__(self, db, sid):
         self.db, self.sid, self.n = db, sid, 0
+        self.t_commit = time.time()
         db.execute("CREATE TEMP TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY)")
         db.execute("DELETE FROM seen")
     def add(self, path, size, mtime, kind):
@@ -189,8 +190,11 @@ class Writer:
         self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (row[0], self.sid))
         self.db.execute("INSERT OR IGNORE INTO seen VALUES(?)", (row[0],))
         self.n += 1
-        if self.n % 50000 == 0:
+        # also by time: a walk over a slow share (ssh/SMB) can take minutes per 50000 rows, and the write lock held
+        # meanwhile made the live watchers (winwatch, hostwatch, watcher) fail with "database is locked"
+        if self.n % 50000 == 0 or time.time() - self.t_commit > 3:
             self.db.commit()
+            self.t_commit = time.time()
 
 def mount_points_under(root):
     out = set()

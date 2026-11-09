@@ -104,7 +104,7 @@ namespace SearchApp
         void ShowMenu(int i, Point at)
         {
             var h = Hit(i); if (h == null) return;
-            bool ok = h.FileOk; string win = Cfg.MapToWindows(h.Path);
+            bool ok = h.FileOk; string win = Cfg.MapToWindows(h.Path) ?? h.WinPath;
             menuItems = new List<MenuDef> {
                 new MenuDef { Label = "Open", Hint = "Enter", Act = () => OpenHit(i, false) },
                 new MenuDef { Label = "Open with…", Enabled = ok, Act = () => OpenWithHit(h) },

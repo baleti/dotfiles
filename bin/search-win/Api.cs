@@ -13,7 +13,7 @@ namespace SearchApp
 {
     public class Hit
     {
-        public string Remote, Path, Mtime, Thumb;
+        public string Remote, Path, Mtime, Thumb, WinPath;
         public double Size = -1, Score = double.NaN; public int Pages = -1;
         public bool Ready, Pending, FileOk;
         public bool HasSize { get { return Size >= 0; } }
@@ -110,7 +110,7 @@ namespace SearchApp
         {
             var d = D(o); var h = new Hit();
             h.Remote = Str(G(d, "remote")) ?? ""; h.Path = Str(G(d, "path")) ?? h.Remote; h.Mtime = Str(G(d, "mtime")); h.Thumb = Str(G(d, "thumb")) ?? "";
-            h.Size = Num(G(d, "size"), -1); h.Score = Num(G(d, "score"), double.NaN); h.Pages = (int)Num(G(d, "pages"), -1);
+            h.Size = Num(G(d, "size"), -1); h.Score = Num(G(d, "score"), double.NaN); h.Pages = (int)Num(G(d, "pages"), -1); h.WinPath = G(d, "winpath") as string;
             h.Ready = Bool(G(d, "ready")); h.Pending = Bool(G(d, "pending")); h.FileOk = Bool(G(d, "fileok"));
             return h;
         }
