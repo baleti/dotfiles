@@ -2726,7 +2726,7 @@ impl App {
             self.snip_sel.clear();
         }
         let bold = FontFamily::Name("bold".into());
-        let frame = egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(12));
+        let frame = egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(6));
         let panel = if self.settings.preview_bottom {
             egui::Panel::bottom("preview").resizable(true).default_size(220.0).size_range(90.0..=700.0)
         } else {
@@ -4172,7 +4172,7 @@ impl eframe::App for App {
         }
         egui::Frame::new()
             .fill(pal.bg)
-            .inner_margin(Margin::same(12))
+            .inner_margin(Margin::same(4))
             .show(ui, |ui| {
                 // tab strip (only with more than one tab): narrow, compact
                 if self.tabs.len() > 1 {
@@ -4202,7 +4202,7 @@ impl eframe::App for App {
                             let (rect, resp) = ui.allocate_exact_size(egui::vec2(tab_w, 17.0), egui::Sense::click());
                             let bg = if on { pal.accent.gamma_multiply(0.22) } else if resp.hovered() { pal.text.gamma_multiply(0.10) } else { pal.text.gamma_multiply(0.05) };
                             ui.painter().rect_filled(rect, 5.0, bg);
-                            ui.painter().text(egui::pos2(rect.left() + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, t, egui::FontId::monospace(11.0), if on { pal.text } else { pal.dim });
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, t, egui::FontId::monospace(11.0), if on { pal.text } else { pal.dim });
                             let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 9.0, rect.center().y), egui::vec2(14.0, 14.0));
                             let xh = resp.hovered() && ui.input(|i| i.pointer.hover_pos()).map_or(false, |p| xr.contains(p));
                             if resp.hovered() { ui.painter().text(xr.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(13.0), if xh { pal.error } else { pal.dim }); }
@@ -4222,7 +4222,7 @@ impl eframe::App for App {
                 }
                 // search row, closed off from the results by a single rule
                 let row = egui::Frame::new()
-                    .inner_margin(Margin::symmetric(4, 6))
+                    .inner_margin(Margin::symmetric(4, 3))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if self.cursor_end {

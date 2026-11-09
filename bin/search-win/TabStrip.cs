@@ -61,7 +61,7 @@ namespace SearchApp
                 dc.DrawRoundedRectangle(Ui.Alpha(on ? Th.AccentC : Th.TextC, on ? .22 : (hot == i ? .10 : .05)), null, r, 5, 5);
                 string t = Mid(Title(i), r.Width - 26);
                 var ft = Txt.Make(t, 11, on ? Th.Text : Th.Dim);
-                dc.DrawText(ft, new Point(r.X + 9, r.Y + (H - ft.Height) / 2));
+                dc.DrawText(ft, new Point(Math.Round(r.X + (r.Width - ft.WidthIncludingTrailingWhitespace) / 2), Math.Round(r.Y + (H - ft.Height) / 2)));
                 if (hot == i) { var xf = Txt.Make("\u00d7", 13, hotX ? Th.Error : Th.Dim); dc.DrawText(xf, new Point(r.Right - 14, r.Y + (H - xf.Height) / 2)); }
             }
             var p = Plus();
