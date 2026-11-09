@@ -16,7 +16,7 @@ namespace SearchApp
             Tabs.Titles.Clear(); Tabs.Titles.AddRange(tabQ); Tabs.Cur = tabCur;
             Tabs.Visibility = tabQ.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
             Tabs.InvalidateMeasure(); Tabs.InvalidateVisual();
-            TitleGrid.Margin = new Thickness(0, tabQ.Count > 1 ? 30 : 0, 0, 0);
+            TitleGrid.Margin = new Thickness(0, tabQ.Count > 1 ? 24 : 0, 0, 0);
         }
         void TabLoad(int to)
         {

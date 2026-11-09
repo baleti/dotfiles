@@ -4186,25 +4186,25 @@ impl eframe::App for App {
                             let full = if q.trim().is_empty() { "new".to_string() } else { q.clone() };
                             let font = egui::FontId::monospace(11.0);
                             let full_w = ui.painter().layout_no_wrap(full.clone(), font.clone(), pal.text).size().x;
-                            let tab_w = (full_w + 32.0).clamp(56.0, 208.0);
+                            let tab_w = (full_w + 28.0).clamp(48.0, 208.0);
                             // too long: cut the middle, "C:/ho… file.txt"
-                            let t: String = if full_w + 32.0 <= tab_w { full.clone() } else {
+                            let t: String = if full_w + 28.0 <= tab_w { full.clone() } else {
                                 let ch: Vec<char> = full.chars().collect();
                                 let mut best = "…".to_string();
                                 for n in (3..ch.len()).rev() {
                                     let head = (n + 1) / 2; let tail = n - head;
                                     let c: String = ch[..head].iter().collect::<String>() + "…" + &ch[ch.len() - tail..].iter().collect::<String>();
-                                    if ui.painter().layout_no_wrap(c.clone(), font.clone(), pal.text).size().x <= tab_w - 30.0 { best = c; break; }
+                                    if ui.painter().layout_no_wrap(c.clone(), font.clone(), pal.text).size().x <= tab_w - 26.0 { best = c; break; }
                                 }
                                 best
                             };
                             let on = i == self.tab_cur;
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(tab_w, 22.0), egui::Sense::click());
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(tab_w, 17.0), egui::Sense::click());
                             let bg = if on { pal.accent.gamma_multiply(0.22) } else if resp.hovered() { pal.text.gamma_multiply(0.10) } else { pal.text.gamma_multiply(0.05) };
-                            ui.painter().rect_filled(rect, 7.0, bg);
-                            if on { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 8.0, rect.bottom() - 2.0), egui::vec2(rect.width() - 16.0, 2.0)), 1.0, pal.accent); }
+                            ui.painter().rect_filled(rect, 5.0, bg);
+                            if on { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 6.0, rect.bottom() - 1.5), egui::vec2(rect.width() - 12.0, 1.5)), 0.75, pal.accent); }
                             ui.painter().text(egui::pos2(rect.left() + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, t, egui::FontId::monospace(11.0), if on { pal.text } else { pal.dim });
-                            let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 11.0, rect.center().y), egui::vec2(16.0, 16.0));
+                            let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 9.0, rect.center().y), egui::vec2(14.0, 14.0));
                             let xh = resp.hovered() && ui.input(|i| i.pointer.hover_pos()).map_or(false, |p| xr.contains(p));
                             if resp.hovered() { ui.painter().text(xr.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(13.0), if xh { pal.error } else { pal.dim }); }
                             if resp.clicked() {
@@ -4212,12 +4212,11 @@ impl eframe::App for App {
                             }
                             if resp.middle_clicked() { close = Some(i); }
                         }
-                        let (r, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-                        if resp.hovered() { ui.painter().rect_filled(r, 7.0, pal.text.gamma_multiply(0.10)); }
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(17.0, 17.0), egui::Sense::click());
+                        if resp.hovered() { ui.painter().rect_filled(r, 5.0, pal.text.gamma_multiply(0.10)); }
                         ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "+", egui::FontId::proportional(14.0), pal.dim);
                         if resp.clicked() { newt = true; }
                     });
-                    ui.add_space(4.0);
                     if let Some(i) = close { self.tab_close(&ctx, i); }
                     else if let Some(i) = go { self.tab_switch(&ctx, i); }
                     else if newt { self.tab_new(&ctx); }

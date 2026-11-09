@@ -89,7 +89,7 @@ namespace SearchApp
             foreach (var b in new[] { cbMin, cbMax, cbClose }) { WindowChrome.SetIsHitTestVisibleInChrome(b, true); btns.Children.Add(b); }
             title.Children.Add(btns);
             TitleGrid = title;
-            Tabs = new TabStrip(Th) { Margin = new Thickness(12, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+            Tabs = new TabStrip(Th) { Margin = new Thickness(12, 3, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
             Tabs.Visibility = Visibility.Collapsed; Tabs.Titles.Add(""); Tabs.Select = TabSwitch; Tabs.Close = TabClose; Tabs.New = TabNew;
             WindowChrome.SetIsHitTestVisibleInChrome(Tabs, true);
             SetRow(title, 0); Children.Add(title);
