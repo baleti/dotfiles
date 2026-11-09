@@ -90,7 +90,7 @@ namespace SearchApp
             title.Children.Add(btns);
             TitleGrid = title;
             Tabs = new TabStrip(Th) { Margin = new Thickness(12, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
-            Tabs.Titles.Add(""); Tabs.Select = TabSwitch; Tabs.Close = TabClose; Tabs.New = TabNew;
+            Tabs.Visibility = Visibility.Collapsed; Tabs.Titles.Add(""); Tabs.Select = TabSwitch; Tabs.Close = TabClose; Tabs.New = TabNew;
             WindowChrome.SetIsHitTestVisibleInChrome(Tabs, true);
             SetRow(title, 0); Children.Add(title);
             SetRow(Tabs, 0); Children.Add(Tabs);

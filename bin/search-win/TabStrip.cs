@@ -39,6 +39,7 @@ namespace SearchApp
         }
         protected override void OnRender(DrawingContext dc)
         {
+            if (Titles.Count < 2) return;
             for (int i = 0; i < Titles.Count; i++)
             {
                 var r = R(i); bool on = i == Cur;
