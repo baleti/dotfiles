@@ -66,8 +66,7 @@ namespace SearchApp
         // ------------------------------------------------------------ layout
         void BuildUi()
         {
-            RowDefinitions.Add(new RowDefinition { Height = new GridLength(44) });
-            RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });   // tab strip
+            RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto, MinHeight = 44 });
             RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -89,15 +88,17 @@ namespace SearchApp
             var cbClose = new CaptionButton(Th, CaptionKind.Close, () => { if (Host != null) Host.CloseWindow(); });
             foreach (var b in new[] { cbMin, cbMax, cbClose }) { WindowChrome.SetIsHitTestVisibleInChrome(b, true); btns.Children.Add(b); }
             title.Children.Add(btns);
+            TitleGrid = title;
+            Tabs = new TabStrip(Th) { Margin = new Thickness(12, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+            Tabs.Titles.Add(""); Tabs.Select = TabSwitch; Tabs.Close = TabClose; Tabs.New = TabNew;
+            WindowChrome.SetIsHitTestVisibleInChrome(Tabs, true);
             SetRow(title, 0); Children.Add(title);
+            SetRow(Tabs, 0); Children.Add(Tabs);
 
             Cols = new ColModel { Thumb = Cfg.Thumb, CW = Cfg.Cw, ShowOwner = Cfg.ShowOwner };
             Owners = new OwnerCache(Cfg, Dispatcher); Owners.Loaded += () => List.InvalidateVisual();
             Hdr = new HeaderView { Cols = Cols, Th = Th, Height = 18, Margin = new Thickness(12, 0, 12, 0) };
-            Tabs = new TabStrip(Th) { Margin = new Thickness(12, 0, 12, 0), HorizontalAlignment = HorizontalAlignment.Left };
-            Tabs.Titles.Add(""); Tabs.Select = TabSwitch; Tabs.Close = TabClose; Tabs.New = TabNew;
-            SetRow(Tabs, 1); Children.Add(Tabs);
-            SetRow(Hdr, 2); Children.Add(Hdr);
+            SetRow(Hdr, 1); Children.Add(Hdr);
 
             List = new ResultsView { Cols = Cols, Th = Th, Thumbs = Thumbs, Owners = Owners, GetHit = Hit };
             MainGrid = new Grid { Margin = new Thickness(12, 0, 12, 0) };
@@ -105,14 +106,14 @@ namespace SearchApp
             MainGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             MainGrid.Children.Add(List);
             BuildPane();
-            SetRow(MainGrid, 3); Children.Add(MainGrid);
+            SetRow(MainGrid, 2); Children.Add(MainGrid);
 
             StatusTb = new TextBlock { FontSize = 11, Margin = new Thickness(12, 3, 12, 12), MinHeight = 17, TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
-            SetRow(StatusTb, 4); Children.Add(StatusTb);
+            SetRow(StatusTb, 3); Children.Add(StatusTb);
 
             Overlay = new Canvas { IsHitTestVisible = true };
             Overlay.Background = null;
-            SetRow(Overlay, 0); SetRowSpan(Overlay, 5); Children.Add(Overlay);
+            SetRow(Overlay, 0); SetRowSpan(Overlay, 4); Children.Add(Overlay);
             Overlay.IsHitTestVisible = false;
 
             WireEvents();

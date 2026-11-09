@@ -1,18 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Windows;
+using System.Windows.Controls;
 
 namespace SearchApp
 {
     /// <summary>Search tabs: each tab keeps its query; switching restores it and searches again.</summary>
     public partial class AppRoot
     {
-        public TabStrip Tabs; readonly List<string> tabQ = new List<string> { "" }; int tabCur;
+        public TabStrip Tabs; Grid TitleGrid; readonly List<string> tabQ = new List<string> { "" }; int tabCur;
 
         void TabSync()
         {
             tabQ[tabCur] = q;
             Tabs.Titles.Clear(); Tabs.Titles.AddRange(tabQ); Tabs.Cur = tabCur;
             Tabs.InvalidateMeasure(); Tabs.InvalidateVisual();
+            TitleGrid.Margin = new Thickness(0, tabQ.Count > 1 ? 30 : 0, 0, 0);
         }
         void TabLoad(int to)
         {
