@@ -4202,7 +4202,6 @@ impl eframe::App for App {
                             let (rect, resp) = ui.allocate_exact_size(egui::vec2(tab_w, 17.0), egui::Sense::click());
                             let bg = if on { pal.accent.gamma_multiply(0.22) } else if resp.hovered() { pal.text.gamma_multiply(0.10) } else { pal.text.gamma_multiply(0.05) };
                             ui.painter().rect_filled(rect, 5.0, bg);
-                            if on { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 6.0, rect.bottom() - 1.5), egui::vec2(rect.width() - 12.0, 1.5)), 0.75, pal.accent); }
                             ui.painter().text(egui::pos2(rect.left() + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, t, egui::FontId::monospace(11.0), if on { pal.text } else { pal.dim });
                             let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 9.0, rect.center().y), egui::vec2(14.0, 14.0));
                             let xh = resp.hovered() && ui.input(|i| i.pointer.hover_pos()).map_or(false, |p| xr.contains(p));

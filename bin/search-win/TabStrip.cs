@@ -59,7 +59,6 @@ namespace SearchApp
             {
                 var r = R(i); bool on = i == Cur;
                 dc.DrawRoundedRectangle(Ui.Alpha(on ? Th.AccentC : Th.TextC, on ? .22 : (hot == i ? .10 : .05)), null, r, 5, 5);
-                if (on) dc.DrawRoundedRectangle(Th.Accent, null, new Rect(r.X + 6, r.Bottom - 1.5, r.Width - 12, 1.5), 1, 1);
                 string t = Mid(Title(i), r.Width - 26);
                 var ft = Txt.Make(t, 11, on ? Th.Text : Th.Dim);
                 dc.DrawText(ft, new Point(r.X + 9, r.Y + (H - ft.Height) / 2));
