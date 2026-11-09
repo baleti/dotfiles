@@ -4183,11 +4183,23 @@ impl eframe::App for App {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for i in 0..self.tabs.len() {
                             let q = if i == self.tab_cur { &self.query } else { &self.tabs[i] };
-                            let mut t: String = q.chars().take(14).collect();
-                            if q.chars().count() > 14 { t.push('…'); }
-                            if t.trim().is_empty() { t = "new".into(); }
+                            let full = if q.trim().is_empty() { "new".to_string() } else { q.clone() };
+                            let font = egui::FontId::monospace(11.0);
+                            let full_w = ui.painter().layout_no_wrap(full.clone(), font.clone(), pal.text).size().x;
+                            let tab_w = (full_w + 32.0).clamp(56.0, 208.0);
+                            // too long: cut the middle, "C:/ho… file.txt"
+                            let t: String = if full_w + 32.0 <= tab_w { full.clone() } else {
+                                let ch: Vec<char> = full.chars().collect();
+                                let mut best = "…".to_string();
+                                for n in (3..ch.len()).rev() {
+                                    let head = (n + 1) / 2; let tail = n - head;
+                                    let c: String = ch[..head].iter().collect::<String>() + "…" + &ch[ch.len() - tail..].iter().collect::<String>();
+                                    if ui.painter().layout_no_wrap(c.clone(), font.clone(), pal.text).size().x <= tab_w - 30.0 { best = c; break; }
+                                }
+                                best
+                            };
                             let on = i == self.tab_cur;
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(104.0, 22.0), egui::Sense::click());
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(tab_w, 22.0), egui::Sense::click());
                             let bg = if on { pal.accent.gamma_multiply(0.22) } else if resp.hovered() { pal.text.gamma_multiply(0.10) } else { pal.text.gamma_multiply(0.05) };
                             ui.painter().rect_filled(rect, 7.0, bg);
                             if on { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 8.0, rect.bottom() - 2.0), egui::vec2(rect.width() - 16.0, 2.0)), 1.0, pal.accent); }

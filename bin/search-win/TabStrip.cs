@@ -11,12 +11,27 @@ namespace SearchApp
     {
         public Theme Th; public List<string> Titles = new List<string>(); public int Cur;
         public Action<int> Select, Close; public Action New;
-        const double W = 104, H = 22, Gap = 4;
+        const double MaxW = 208, MinW = 56, H = 22, Gap = 4;
         int hot = -1; bool hotX;
         public TabStrip(Theme th) { Th = th; Height = 28; Cursor = Cursors.Arrow; Background = null; }
         Brush Background;
-        Rect R(int i) { return new Rect(i * (W + Gap), 3, W, H); }
-        Rect Plus() { return new Rect(Titles.Count * (W + Gap), 3, H, H); }
+        string Title(int i) { string t = Titles[i] ?? ""; return t.Trim().Length == 0 ? "new" : t; }
+        double TabW(int i) { return Math.Max(MinW, Math.Min(MaxW, Txt.Make(Title(i), 11, Th.Text).WidthIncludingTrailingWhitespace + 32)); }
+        double X(int i) { double x = 0; for (int k = 0; k < i; k++) x += TabW(k) + Gap; return x; }
+        Rect R(int i) { return new Rect(X(i), 3, TabW(i), H); }
+        Rect Plus() { return new Rect(X(Titles.Count), 3, H, H); }
+        /// <summary>Fits text into maxW by cutting the middle: "C:/ho\u2026 file.txt".</summary>
+        string Mid(string t, double maxW)
+        {
+            if (Txt.Make(t, 11, Th.Text).WidthIncludingTrailingWhitespace <= maxW) return t;
+            for (int n = t.Length - 1; n > 2; n--)
+            {
+                int head = (n + 1) / 2, tail = n - head;
+                string c = t.Substring(0, head) + "\u2026" + t.Substring(t.Length - tail);
+                if (Txt.Make(c, 11, Th.Text).WidthIncludingTrailingWhitespace <= maxW) return c;
+            }
+            return "\u2026";
+        }
         int At(Point p, out bool x)
         {
             x = false;
@@ -45,8 +60,8 @@ namespace SearchApp
                 var r = R(i); bool on = i == Cur;
                 dc.DrawRoundedRectangle(Ui.Alpha(on ? Th.AccentC : Th.TextC, on ? .22 : (hot == i ? .10 : .05)), null, r, 7, 7);
                 if (on) dc.DrawRoundedRectangle(Th.Accent, null, new Rect(r.X + 8, r.Bottom - 2, r.Width - 16, 2), 1, 1);
-                string t = Titles[i] ?? ""; if (t.Length > 14) t = t.Substring(0, 14) + "\u2026"; if (t.Trim().Length == 0) t = "new";
-                var ft = Txt.Make(t, 11, on ? Th.Text : Th.Dim, false, W - 30);
+                string t = Mid(Title(i), r.Width - 30);
+                var ft = Txt.Make(t, 11, on ? Th.Text : Th.Dim);
                 dc.DrawText(ft, new Point(r.X + 9, r.Y + (H - ft.Height) / 2));
                 if (hot == i) { var xf = Txt.Make("\u00d7", 13, hotX ? Th.Error : Th.Dim); dc.DrawText(xf, new Point(r.Right - 16, r.Y + (H - xf.Height) / 2)); }
             }
