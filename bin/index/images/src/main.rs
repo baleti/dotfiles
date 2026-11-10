@@ -2726,7 +2726,7 @@ impl App {
             self.snip_sel.clear();
         }
         let bold = FontFamily::Name("bold".into());
-        let frame = egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::same(6));
+        let frame = egui::Frame::new().fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).inner_margin(Margin::symmetric(8, 3));
         let panel = if self.settings.preview_bottom {
             egui::Panel::bottom("preview").resizable(true).default_size(220.0).size_range(90.0..=700.0)
         } else {
@@ -4172,7 +4172,7 @@ impl eframe::App for App {
         }
         egui::Frame::new()
             .fill(pal.bg)
-            .inner_margin(Margin::same(4))
+            .inner_margin(Margin::symmetric(6, 2))
             .show(ui, |ui| {
                 // tab strip (only with more than one tab): narrow, compact
                 if self.tabs.len() > 1 {
@@ -4222,7 +4222,7 @@ impl eframe::App for App {
                 }
                 // search row, closed off from the results by a single rule
                 let row = egui::Frame::new()
-                    .inner_margin(Margin::symmetric(4, 3))
+                    .inner_margin(Margin::symmetric(4, 2))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if self.cursor_end {
