@@ -51,6 +51,23 @@ const FONT: &str = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
 const PAGE: usize = 200;
 const GRID_ZOOM: f32 = 220.0;
 
+/// A tab's finished results (see `App::snap_save`). If the catalog changed since, the usual live refresh re-runs the
+/// query in place once the tab is shown again.
+struct TabSnap {
+    query: String,
+    req_q: String,
+    req_sort: String,
+    req_desc: bool,
+    total: usize,
+    server_total: usize,
+    pages: HashMap<usize, Vec<Hit>>,
+    stats: Option<Stats>,
+    status: String,
+    selected: usize,
+    list_off: f32,
+    ver: u64,
+}
+
 #[derive(Deserialize, Clone)]
 struct Hit {
     remote: String,
@@ -854,6 +871,8 @@ struct App {
     /// search tabs: each holds its query (the current tab's entry is only refreshed when leaving it)
     tabs: Vec<String>,
     tab_cur: usize,
+    /// per tab: its finished results, kept when leaving it so coming back needs no new search (plain queries only)
+    tab_snaps: Vec<Option<TabSnap>>,
     /// context menu: where it is shown and which hit it was opened for
     menu_at: Option<egui::Pos2>,
     menu_hit: Option<usize>,
@@ -1905,6 +1924,7 @@ impl App {
             trash_perm: false,
             tabs: vec![String::new()],
             tab_cur: 0,
+            tab_snaps: vec![None],
             menu_at: None,
             menu_hit: None,
             row_rects: HashMap::new(),
@@ -1971,9 +1991,41 @@ impl App {
         app
     }
 
-    /// Switch to another search tab (its query is restored and searched again).
+    /// Keeps the current tab's finished results (not while loading, not for /group layouts).
+    fn snap_save(&mut self) {
+        let ok = self.group.is_none() && !self.busy && !self.refreshing && self.pending.is_empty() && self.query == self.last_sent;
+        self.tab_snaps[self.tab_cur] = if ok {
+            Some(TabSnap {
+                query: self.query.clone(), req_q: self.req_q.clone(), req_sort: self.req_sort.clone(), req_desc: self.req_desc,
+                total: self.total, server_total: self.server_total, pages: self.pages.clone(), stats: self.stats.clone(),
+                status: self.status.clone(), selected: self.selected, list_off: self.list_off, ver: self.ver_applied,
+            })
+        } else { None };
+    }
+
+    /// Shows tab `i`'s kept results instead of searching again; false when there are none for its current query.
+    fn snap_restore(&mut self, i: usize) -> bool {
+        let Some(sn) = self.tab_snaps.get_mut(i).and_then(|s| s.take()) else { return false };
+        if sn.query != self.query { return false; }
+        self.seq += 1;
+        self.group = None;
+        self.gmeta_seq = 0;
+        self.gnote.clear();
+        self.req_q = sn.req_q; self.req_sort = sn.req_sort; self.req_desc = sn.req_desc;
+        self.last_sent = sn.query;
+        self.total = sn.total; self.server_total = sn.server_total; self.pages = sn.pages; self.stats = sn.stats;
+        self.status = sn.status; self.selected = sn.selected.min(sn.total.saturating_sub(1));
+        self.list_off = sn.list_off;
+        self.pending.clear(); self.busy = false; self.refreshing = false; self.missing.clear();
+        self.ver_applied = sn.ver;      // newer catalog than when the tab was left: the live refresh re-runs it in place
+        self.scroll_pending = true;
+        true
+    }
+
+    /// Switch to another search tab (its kept results are shown, else its query is searched again).
     fn tab_switch(&mut self, ctx: &egui::Context, to: usize) {
         if to >= self.tabs.len() || to == self.tab_cur { return; }
+        self.snap_save();
         self.tabs[self.tab_cur] = self.query.clone();
         self.tab_cur = to;
         self.query = self.tabs[to].clone();
@@ -1983,13 +2035,15 @@ impl App {
         self.sel_header = None;
         self.cursor_end = true;
         self.last_change = Instant::now() - Duration::from_millis(400);
-        self.send_query();
+        if !self.snap_restore(to) { self.send_query(); }
         ctx.memory_mut(|m| m.request_focus(egui::Id::new("query")));
     }
 
     fn tab_new(&mut self, ctx: &egui::Context) {
+        self.snap_save();
         self.tabs[self.tab_cur] = self.query.clone();
         self.tabs.insert(self.tab_cur + 1, String::new());
+        self.tab_snaps.insert(self.tab_cur + 1, None);
         let to = self.tab_cur + 1;
         self.tab_cur = to;
         self.query.clear();
@@ -2003,8 +2057,10 @@ impl App {
 
     fn tab_close(&mut self, ctx: &egui::Context, i: usize) {
         if self.tabs.len() < 2 || i >= self.tabs.len() { return; }
+        self.snap_save();
         self.tabs[self.tab_cur] = self.query.clone();
         self.tabs.remove(i);
+        self.tab_snaps.remove(i);
         let to = if self.tab_cur > i || self.tab_cur >= self.tabs.len() { self.tab_cur.saturating_sub(1).min(self.tabs.len() - 1) } else { self.tab_cur };
         self.query = self.tabs[to].clone();
         self.tab_cur = to;
@@ -2013,7 +2069,7 @@ impl App {
         self.selected = 0;
         self.sel_header = None;
         self.cursor_end = true;
-        self.send_query();
+        if !self.snap_restore(to) { self.send_query(); }
         ctx.memory_mut(|m| m.request_focus(egui::Id::new("query")));
     }
 
