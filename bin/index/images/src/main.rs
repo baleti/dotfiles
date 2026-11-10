@@ -4347,7 +4347,10 @@ impl eframe::App for App {
                         });
                     });
                 let y = row.response.rect.bottom() + 2.0;
-                ui.painter().hline(row.response.rect.left()..=row.response.rect.right(), y, Stroke::new(1.0, pal.border));
+                // the line under the search box is the focus cue: accent while the box has the keys, plain otherwise
+                let box_keys = !self.list_focus && !self.snip_focus && self.path_pane.is_none() && self.face_pane.is_none();
+                ui.painter().hline(row.response.rect.left()..=row.response.rect.right(), y,
+                    if box_keys { Stroke::new(2.0, pal.accent) } else { Stroke::new(1.0, pal.border) });
                 ui.add_space(4.0);
 
                 if self.hist_popup {

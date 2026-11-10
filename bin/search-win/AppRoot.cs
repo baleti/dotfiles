@@ -137,7 +137,9 @@ namespace SearchApp
             Hdr.Resized += () => List.InvalidateVisual();
             Hdr.WidthsChanged += () => { Cfg.Save(); };
             Q.UserChanged += OnQueryInput;
-            Q.Box.GotKeyboardFocus += (s, e) => listFocus = false;   // the box has the keys, whatever the list was last told
+            Q.Box.GotKeyboardFocus += (s, e) => { listFocus = false; UpdateFocusLine(); };
+            Q.Box.LostKeyboardFocus += (s, e) => UpdateFocusLine();
+   // the box has the keys, whatever the list was last told
             Q.Box.LostKeyboardFocus += (s, e) => Dispatcher.BeginInvoke(new Action(() => { if (!Q.IsFocusedBox) ClosePopups(); }), DispatcherPriority.Background);
         }
 
@@ -149,10 +151,17 @@ namespace SearchApp
             List.ThemeChanged(); Hdr.ThemeChanged(); PaneFont();
             List.InvalidateVisual();
         }
+        /// <summary>The line under the search box is the focus cue: accent and thicker while the box has the keys.</summary>
+        public void UpdateFocusLine()
+        {
+            bool on = Q != null && Q.IsFocusedBox && !listFocus;
+            TitleLine.BorderBrush = on ? Th.Accent : Th.Border;
+            TitleLine.BorderThickness = new Thickness(0, 0, 0, on ? 2 : 1);
+        }
         public void ApplyThemeAll()
         {
             Background = Th.Bg;
-            TitleLine.BorderBrush = Th.Border;
+            UpdateFocusLine();
             Q.ApplyTheme();
             List.ThemeChanged(); Hdr.ThemeChanged();
             foreach (var cb in Ui.Descendants<CaptionButton>(this)) cb.InvalidateVisual();
