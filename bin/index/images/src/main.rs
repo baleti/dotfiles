@@ -2906,6 +2906,9 @@ impl App {
         };
         let img = egui::Rect::from_min_size(rect.min, egui::vec2(t, t));
         let selected = self.in_selection(idx);
+        if !selected && resp.hovered() {
+            ui.painter().rect_filled(rect.expand(3.0), 5.0, pal.accent.gamma_multiply(0.08));   // faint hover highlight
+        }
         // large PDF cells ask for a sharp first page in the background and switch to it when ready
         let is_pdf = h.remote.to_lowercase().ends_with(".pdf") && h.remote.starts_with('/');
         // ask again at most every 2 s while the cell stays on screen; the server drops requests that stop
@@ -4671,6 +4674,8 @@ impl eframe::App for App {
                                     1.0,
                                     if foc { pal.accent } else { pal.border },
                                 );
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(rect, 6.0, pal.accent.gamma_multiply(0.08));   // faint hover highlight
                             }
                             let thumb_rect = egui::Rect::from_min_size(
                                 rect.min + egui::vec2(6.0, (row_h - thumb) / 2.0),

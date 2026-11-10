@@ -86,6 +86,13 @@ namespace SearchApp
             var g = Compute(); int row = i / g.Cols; double top = row * g.Stride, bot = top + (g.Grid ? g.CellH : g.Stride);
             if (top < Off) SetOff(top); else if (bot > Off + g.H) SetOff(bot - g.H);
         }
+        int hover = -1; Point lastPt;
+        Brush HoverBr { get { return Ui.Alpha(Th.AccentC, .08); } }
+        void SetHover(Point p)
+        {
+            lastPt = p; var g = Compute(); int i = IndexAt(p, g);
+            if (i != hover) { hover = i; InvalidateVisual(); }
+        }
         public int IndexAt(Point p, Geom g)
         {
             if (p.X >= g.W || p.Y < 0) return -1;
@@ -158,6 +165,7 @@ namespace SearchApp
             {
                 double y = Math.Round(i * g.Stride - Off); var h = GetHit(i); bool sel = i == Sel;
                 if (y + g.Stride < 0 || y > g.H) continue;
+                if (!sel && i == hover) dc.DrawRoundedRectangle(HoverBr, null, new Rect(0, y, g.W, g.Stride), 6, 6);
                 if (sel)
                 {
                     dc.DrawRoundedRectangle(Th.Sel, null, new Rect(0, y, g.W, g.Stride), 6, 6);
@@ -185,6 +193,7 @@ namespace SearchApp
                 double x = col * (g.T + Const.Gap), y = Math.Round(row * g.Stride - Off);
                 if (y + g.CellH < 0 || y > g.H) continue;
                 var h = GetHit(i); bool sel = i == Sel; var box = new Rect(x, y, g.T, g.T);
+                if (!sel && i == hover) dc.DrawRoundedRectangle(HoverBr, null, new Rect(x - 3, y - 3, g.T + 6, g.CellH + 6), 6, 6);
                 DrawThumb(dc, h, box, dpi);
                 if (sel) dc.DrawRoundedRectangle(null, Ui.P(Th.Accent, 2), new Rect(x - 3, y - 3, g.T + 6, g.T + 6), 6, 6);
                 if (h == null) continue;
@@ -223,6 +232,7 @@ namespace SearchApp
             if ((Keyboard.Modifiers & ModifierKeys.Control) != 0) { if (ZoomWheel != null) ZoomWheel(dy); e.Handled = true; return; }
             var g = Compute(); double boost = Math.Min(6, Math.Max(1, g.Stride / 60));
             SetOff(Off + (!g.Grid && boost > 1.05 ? dy * boost : dy));
+            if (IsMouseOver) SetHover(e.GetPosition(this));
             e.Handled = true;
         }
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -249,6 +259,7 @@ namespace SearchApp
                 return;
             }
             bool hot = g.Bar && p.X >= g.W; if (hot != barHot) { barHot = hot; InvalidateVisual(); }
+            SetHover(p);
             if (downIdx >= 0 && e.LeftButton == MouseButtonState.Pressed && !dragFired &&
                 (Math.Abs(p.X - downPt.X) > SystemParameters.MinimumHorizontalDragDistance || Math.Abs(p.Y - downPt.Y) > SystemParameters.MinimumVerticalDragDistance))
             {
@@ -257,7 +268,7 @@ namespace SearchApp
             }
         }
         protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e) { barDrag = false; downIdx = -1; if (IsMouseCaptured) ReleaseMouseCapture(); InvalidateVisual(); }
-        protected override void OnMouseLeave(MouseEventArgs e) { if (barHot) { barHot = false; InvalidateVisual(); } }
+        protected override void OnMouseLeave(MouseEventArgs e) { if (hover != -1) { hover = -1; InvalidateVisual(); } if (barHot) { barHot = false; InvalidateVisual(); } }
         protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
         {
             Focus(); var p = e.GetPosition(this); int i = IndexAt(p, Compute());
