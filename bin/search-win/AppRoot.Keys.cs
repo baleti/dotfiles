@@ -43,6 +43,8 @@ namespace SearchApp
                 if (k == Key.Tab) { e.Handled = true; TabNext(shift ? -1 : 1); return; }
                 if (k == Key.W && !shift) { e.Handled = true; if (TabCount > 1) TabCloseCurrent(); else if (Host != null) Host.CloseWindow(); return; }
                 if (k == Key.N) { e.Handled = true; if (Host != null) Host.NewWindow(Q.Text); return; }
+                // Ctrl+Enter: show the selected result in Explorer (as in the picker), from the query box or the list
+                if (k == Key.Enter && !shift && !HP.Open && !CP.Open) { e.Handled = true; var sh = Hit(sel); if (sh != null) ShowInFolderHit(sh); return; }
             }
             bool inQ = Q.IsFocusedBox;
             if (((ctrl && !alt && k == Key.R) || k == Key.F4) && !inQ) { e.Handled = true; FocusQuery(false); HpOpen(); return; }

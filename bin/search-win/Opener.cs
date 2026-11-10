@@ -80,9 +80,30 @@ namespace SearchApp
             if (Dry) { Log.Add("openwith " + file); return; }
             Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,OpenAs_RunDLL " + file) { UseShellExecute = false });
         }
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int SHParseDisplayName(string name, IntPtr bind, out IntPtr pidl, uint attrs, out uint outAttrs);
+        [System.Runtime.InteropServices.DllImport("shell32.dll")]
+        static extern int SHOpenFolderAndSelectItems(IntPtr pidlFolder, uint cidl, IntPtr[] apidl, uint flags);
+        [System.Runtime.InteropServices.DllImport("shell32.dll")]
+        static extern void ILFree(IntPtr pidl);
+
+        /// <summary>Opens the file's folder in Explorer with the file selected. Goes through the shell API (it brings the
+        /// window to the front, which a plain "explorer.exe /select" started from a background app often does not),
+        /// falling back to the command line.</summary>
         public static void ShowInFolder(string file)
         {
+            file = file.Replace('/', '\\');
             if (Dry) { Log.Add("explorer /select " + file); return; }
+            try
+            {
+                IntPtr pidl; uint attrs;
+                if (SHParseDisplayName(Path.GetFullPath(file), IntPtr.Zero, out pidl, 0, out attrs) == 0 && pidl != IntPtr.Zero)
+                {
+                    try { if (SHOpenFolderAndSelectItems(pidl, 0, null, 0) == 0) return; }
+                    finally { ILFree(pidl); }
+                }
+            }
+            catch { }
             Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + file + "\"") { UseShellExecute = false });
         }
 
