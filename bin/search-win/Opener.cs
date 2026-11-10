@@ -33,7 +33,33 @@ namespace SearchApp
             }
             string m = cfg.MapToWindows(h.Path);
             if (m != null && exists(m)) return new OpenPlan { Kind = OpenKind.Local, Target = m };
+            string mir = MirrorToWindows(h.Path, exists);
+            if (mir != null) return new OpenPlan { Kind = OpenKind.Local, Target = mir };
             return new OpenPlan { Kind = OpenKind.Download, Target = CopyPath(h) };
+        }
+
+        /// <summary>A backup-mirror path (/mnt/host1-backups/office/ksr/&lt;project-slug&gt;/&lt;m|q|c&gt;/&lt;rest&gt;) is a copy of a file on the
+        /// mapped drive: find the original at &lt;drive&gt;:\PROJECTS\&lt;number&gt;*\&lt;rest&gt; so it opens / shows in place instead of being downloaded.</summary>
+        public string MirrorToWindows(string serverPath, Func<string, bool> exists)
+        {
+            var mt = System.Text.RegularExpressions.Regex.Match(serverPath ?? "", @"^/mnt/host1-backups/office/ksr/([^/]+)/([a-z])/(.+)$");
+            if (!mt.Success) return null;
+            string root = null;
+            foreach (var pm in cfg.PathMap) if (pm[0] == "/mnt/ksr/" + mt.Groups[2].Value + "/") root = pm[1];
+            if (root == null) return null;
+            string slug = mt.Groups[1].Value, num = slug.Contains("-") ? slug.Substring(0, slug.IndexOf('-')) : slug;
+            if (num.Length == 0) return null;
+            string rest = mt.Groups[3].Value.Replace('/', '\\');
+            try
+            {
+                foreach (var d in Directory.GetDirectories(root + "PROJECTS", num + "*"))
+                {
+                    string cand = Path.Combine(d, rest);
+                    if (exists(cand)) return cand;
+                }
+            }
+            catch { }
+            return null;
         }
 
         public static string SafeName(string path)
