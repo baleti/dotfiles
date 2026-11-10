@@ -4339,7 +4339,9 @@ impl eframe::App for App {
                             if r.changed() {
                                 self.last_change = Instant::now();
                             }
-                            if r.clicked() { self.list_focus = false; }
+                            // any press on the box (a drag-select or double click is not always a "click") gives it the keys back,
+                            // or Left/Right would still move the result selection while the caret blinks here
+                            if r.clicked() || r.drag_started() || r.is_pointer_button_down_on() { self.list_focus = false; self.snip_focus = false; }
                             // keep focus here unless the list was focused on purpose
                             if !self.list_focus && !self.snip_focus && !r.has_focus() { r.request_focus(); }
                         });

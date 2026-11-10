@@ -137,6 +137,7 @@ namespace SearchApp
             Hdr.Resized += () => List.InvalidateVisual();
             Hdr.WidthsChanged += () => { Cfg.Save(); };
             Q.UserChanged += OnQueryInput;
+            Q.Box.GotKeyboardFocus += (s, e) => listFocus = false;   // the box has the keys, whatever the list was last told
             Q.Box.LostKeyboardFocus += (s, e) => Dispatcher.BeginInvoke(new Action(() => { if (!Q.IsFocusedBox) ClosePopups(); }), DispatcherPriority.Background);
         }
 

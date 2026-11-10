@@ -22,6 +22,12 @@ namespace SearchApp
             e.Handled = true;
         }
 
+        /// <summary>Window re-activated: unless the list was chosen, the query box gets the keyboard back.</summary>
+        public void OnActivated()
+        {
+            if (!listFocus && !SettingsOpen && !MenuOpen && !(Keyboard.FocusedElement is TextBox)) FocusQuery(false);
+        }
+
         public void OnKey(object sender, KeyEventArgs e)
         {
             Key k = e.Key == Key.System ? e.SystemKey : (e.Key == Key.ImeProcessed ? e.ImeProcessedKey : e.Key);
@@ -90,6 +96,17 @@ namespace SearchApp
                     return;
                 }
                 return;
+            }
+            // Nothing has keyboard focus although the list was not chosen (after a tab switch, a closed popup, re-activating the
+            // window...): the query box owns the keys. Take focus back and give it the caret keys instead of moving the selection.
+            if (!inQ && !listFocus && !(Keyboard.FocusedElement is TextBox))
+            {
+                FocusQuery(false);
+                if (!alt && (k == Key.Left || k == Key.Right || k == Key.Home || k == Key.End || k == Key.Back || k == Key.Delete))
+                {
+                    var ne = new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(Q.Box), e.Timestamp, k) { RoutedEvent = Keyboard.KeyDownEvent };
+                    Q.Box.RaiseEvent(ne); e.Handled = true; return;
+                }
             }
             // list focus (or nothing focused)
             if (k == Key.Tab || k == Key.Escape) { e.Handled = true; FocusQuery(false); return; }

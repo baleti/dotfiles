@@ -30,6 +30,7 @@ namespace SearchApp
             Content = Root;
             StateChanged += (s, e) => { AdjustMax(); Root.UpdateMaxIcon(); };
             PreviewKeyDown += Root.OnKey; PreviewTextInput += Root.OnTextInput;
+            Activated += (s, e) => Root.OnActivated();
             Closing += OnClosing;
             SourceInitialized += (s, e) => { var src = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle); if (src != null) src.AddHook(WndProc); };
             Loaded += async (s, e) =>
