@@ -26,9 +26,22 @@ ALIAS = {'Move column (FamilyInstance)': 'column', 'Rotate column (FamilyInstanc
          'in-place SAVE! viewport move (backup, restore)': 'backup + rollback verified',
          'kill during restore leaves original or saved state': 'kill -9 mid-save leaves no partial file'}
 _cats = {c['name'] for c in M['categories']}
+def _y(r, t):
+    if not r.get('years'):
+        ys = [y for y in (2024, 2026) if str(y) in t]
+        if ys: r['years'] = ys
 def _fix(r):
     c, i = r.get('cat', ''), r.get('item', '')
     if not c: return None
+    # shifted-argument rows: (cat 'N. X / detail', item PASS|FAIL, result=note) and (cat = item name, item = note, result PASS|FAIL)
+    if ' / ' in c and i in ('PASS', 'FAIL') and c.split(' / ')[0] in {x['name'] for x in M['categories']}:
+        r['cat'], r['item'], r['note'], r['result'] = c.split(' / ')[0], 'wall' if 'wall' in c else i, r.get('result', ''), i
+        _y(r, c + ' ' + r.get('note', ''))
+        return r if r['item'] in dict((x['name'], x['items']) for x in M['categories'])[r['cat']] else None
+    if c in ('yes/no parameter', 'string parameter') and r.get('result') in ('PASS', 'FAIL'):
+        r['cat'], r['item'], r['note'] = '4. Types and parameters', c, i
+        _y(r, i)
+        return r
     if c == '5.Families': r['cat'] = '5. Families'
     if c == '1. Move / text note': r['cat'] = '1. Move / rotate / resize'
     if c == '1. Move / viewport': r['cat'] = '1. Move / rotate / resize'
