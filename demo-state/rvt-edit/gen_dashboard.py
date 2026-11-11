@@ -16,6 +16,22 @@ rows = []
 for ln in lines:
     try: rows.append(json.loads(ln))
     except Exception: pass
+ALIAS = {'Move column (FamilyInstance)': 'column', 'Rotate column (FamilyInstance)': 'column', 'Delete column (FamilyInstance)': 'column',
+         'Rotate wall': 'wall', 'Resize wall length (end point)': 'wall', 'Rotate beam': 'beam', 'rotate family instance': 'family instance',
+         'create new family 2020': 'create new family', 'wall on Revit-saved file': 'wall',
+         'wall on Revit-saved file (in-place member layout, RVTGEN_INPLACE)': 'wall',
+         'in-place SAVE! viewport move (backup, restore)': 'backup + rollback verified',
+         'kill during restore leaves original or saved state': 'kill -9 mid-save leaves no partial file'}
+_cats = {c['name'] for c in M['categories']}
+def _fix(r):
+    c, i = r.get('cat', ''), r.get('item', '')
+    if not c or ' / ' in c or c in ('yes/no parameter', 'string parameter'): return None
+    if c == '5.Families': r['cat'] = '5. Families'
+    if c == '1. Move / text note': r['cat'] = '1. Move / rotate / resize'
+    if c == '1. Move / viewport': r['cat'] = '1. Move / rotate / resize'
+    r['item'] = ALIAS.get(i, i)
+    return r
+rows = [x for x in (_fix(r) for r in rows) if x]
 rows.sort(key=lambda r: r.get('date', ''))
 if True:
     for r in rows:
