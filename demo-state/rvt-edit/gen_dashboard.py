@@ -34,6 +34,7 @@ def _fix(r):
     if c == '1. Move / viewport': r['cat'] = '1. Move / rotate / resize'
     r['item'] = ALIAS.get(i, i)
     return r
+skipped = [r for r in rows if _fix(dict(r)) is None]
 rows = [x for x in (_fix(r) for r in rows) if x]
 rows.sort(key=lambda r: r.get('date', ''))
 if True:
@@ -105,6 +106,8 @@ out.append('<h2>Latest results</h2><ul>')
 for r in recent[-12:][::-1]:
     out.append('<li><b>%s</b> %s / %s: %s <span class="mut">%s %s</span></li>' % (e(r.get('result', '')), e(r.get('cat', '')), e(r.get('item', '')), e(r.get('note', ''))[:200], e(r.get('date', '')), e(r.get('agent', ''))))
 if not recent: out.append('<li class="mut">No results recorded yet. Agents record each test with ~/demo-state/bin/rvt-edit-record.</li>')
+out.append('</ul><h2>Skipped ledger rows (%d, malformed, not counted)</h2><ul>' % len(skipped))
+for r in skipped[-10:][::-1]: out.append('<li class="mut">%s %s | %s | %s</li>' % (e(r.get('date', '')), e(str(r.get('cat', '')))[:60], e(str(r.get('item', '')))[:60], e(r.get('agent', ''))))
 out.append('</ul><h2>Agent progress notes (rungs)</h2><ul>')
 for l in prog: out.append('<li class="mut">%s</li>' % e(l))
 if not prog: out.append('<li class="mut">none yet</li>')
