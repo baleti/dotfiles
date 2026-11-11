@@ -10,7 +10,7 @@ lp = D + '/rvt-edit/ledger.jsonl'
 import subprocess
 age = {'host3': int(time.time() - os.path.getmtime(lp)) if os.path.exists(lp) else None}
 lines = open(lp).read().splitlines() if os.path.exists(lp) else []
-for h in ('host2', 'host1'):
+for h in (() if os.environ.get('RVT_DASH_NO_SSH') else ('host2', 'host1')):
     try:
         _o = subprocess.run(['ssh', '-n', '-o', 'ConnectTimeout=8', h, 'stat -c %Y ~/demo-state/rvt-edit/ledger.jsonl; cat ~/demo-state/rvt-edit/ledger.jsonl'], capture_output=True, text=True, timeout=25).stdout.splitlines()
         age[h] = int(time.time() - int(_o[0])); lines += _o[1:]
