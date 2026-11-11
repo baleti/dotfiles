@@ -28,12 +28,12 @@ ALIAS = {'Move column (FamilyInstance)': 'column', 'Rotate column (FamilyInstanc
 _cats = {c['name'] for c in M['categories']}
 def _fix(r):
     c, i = r.get('cat', ''), r.get('item', '')
-    if not c or ' / ' in c or c in ('yes/no parameter', 'string parameter'): return None
+    if not c: return None
     if c == '5.Families': r['cat'] = '5. Families'
     if c == '1. Move / text note': r['cat'] = '1. Move / rotate / resize'
     if c == '1. Move / viewport': r['cat'] = '1. Move / rotate / resize'
     r['item'] = ALIAS.get(i, i)
-    return r
+    return r if r['cat'] in _cats else None
 skipped = [r for r in rows if _fix(dict(r)) is None]
 rows = [x for x in (_fix(r) for r in rows) if x]
 rows.sort(key=lambda r: r.get('date', ''))
