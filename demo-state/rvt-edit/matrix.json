@@ -1,0 +1,11 @@
+{"years":[2020,2021,2022,2023,2024,2025,2026],
+"categories":[
+{"name":"1. Move / rotate / resize","items":["wall","column","beam","floor","roof","ceiling","door","window","family instance","curtain wall","stair","railing","room","duct/pipe/MEP","level","grid","text note","dimension","tag"]},
+{"name":"2. Delete","items":["wall","column","beam","floor","roof","door","window","family instance","level","grid","room","annotation","view","sheet"]},
+{"name":"3. Add new element","items":["wall","column","beam","floor","roof","ceiling","hosted door","hosted window","family instance","level","grid","room","stair","railing","MEP segment","text note","dimension","tag","view","sheet","viewport","schedule"]},
+{"name":"4. Types and parameters","items":["change instance type","duplicate type","edit type geometry parameter","string parameter","number parameter","yes/no parameter","element-id parameter","shared parameter add","project parameter add","material assign","material create"]},
+{"name":"5. Families","items":["load .rfa into project","replace family","edit family extrusion","edit family sweep/blend","edit family void","edit family parameters","nested family add","nested family edit","family type table","create new family"]},
+{"name":"6. Links","items":["add Revit link","move link","reload link path","unload/remove link","add CAD (DWG) link","edit CAD link","add IFC link","add image/point cloud","link visibility/overrides","nested links"]},
+{"name":"7. Structure of file","items":["workshared file edit","worksets edit","groups edit","design options edit","phases edit","copy/paste between files","save in place (overwrite)","Save As other year","detach from central"]},
+{"name":"8. Safety (applies to every save)","items":["opens in Revit with no repair dialog","untouched elements identical","kill -9 mid-save leaves no partial file","disk-full during save safe","backup + rollback verified","audit tool zero new warnings"]}
+]}
