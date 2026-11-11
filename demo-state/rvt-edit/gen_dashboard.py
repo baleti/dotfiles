@@ -8,10 +8,13 @@ led = {}  # (cat,item,year) -> (result,date,note,agent)
 recent = []
 lp = D + '/rvt-edit/ledger.jsonl'
 import subprocess
+age = {'host3': int(time.time() - os.path.getmtime(lp)) if os.path.exists(lp) else None}
 lines = open(lp).read().splitlines() if os.path.exists(lp) else []
 for h in ('host2', 'host1'):
-    try: lines += subprocess.run(['ssh', '-n', '-o', 'ConnectTimeout=8', h, 'cat ~/demo-state/rvt-edit/ledger.jsonl'], capture_output=True, text=True, timeout=25).stdout.splitlines()
-    except Exception: pass
+    try:
+        _o = subprocess.run(['ssh', '-n', '-o', 'ConnectTimeout=8', h, 'stat -c %Y ~/demo-state/rvt-edit/ledger.jsonl; cat ~/demo-state/rvt-edit/ledger.jsonl'], capture_output=True, text=True, timeout=25).stdout.splitlines()
+        age[h] = int(time.time() - int(_o[0])); lines += _o[1:]
+    except Exception: age[h] = None
 rows = []
 for ln in lines:
     try: rows.append(json.loads(ln))
@@ -80,6 +83,8 @@ anyp = sum(1 for c in M['categories'] for i in c['items'] if any((cell(c['name']
 nit = sum(len(c['items']) for c in M['categories'])
 peryr = ', '.join('%d: %d%%' % (y, pct(sum(1 for c in M['categories'] for i in c['items'] if (cell(c['name'], i, y) or ('',))[0] == 'PASS'), nit)) for y in YEARS)
 out.append('<div class="mut" style="margin:6px 0">Items passing in at least one Revit year: <b>%d of %d (%d%%)</b>. Per year: %s. The headline above counts item x year cells, so a test on one year only moves it by 1/%d of an item.</div>' % (anyp, nit, pct(anyp, nit), peryr, len(YEARS)))
+def _a(v): return 'unreachable' if v is None else ('%dh' % (v // 3600) if v >= 3600 else '%dm' % (v // 60)) + ' ago'
+out.append('<div class="mut">Last ledger write: %s. %s</div>' % (', '.join('%s %s' % (h, _a(v)) for h, v in age.items()), 'WARNING: a ledger is unreachable, numbers may be low.' if any(v is None for v in age.values()) else ''))
 out.append('<h2>By area</h2>')
 for c, n, p, f in cats:
     out.append('<div class="cat"><div class="row"><b>%d%%</b><div style="flex:1"><div>%s</div><div class="bar"><i class="g" style="width:%d%%"></i><i class="r" style="width:%d%%"></i></div></div><span class="mut">%d/%d</span></div></div>' % (pct(p, n), e(c['name']), pct(p, n), pct(f, n), p, n))
