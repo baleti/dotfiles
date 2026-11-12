@@ -196,7 +196,7 @@ PanelWindow {
 
     // ---- query -> results (ClipboardQueryDsl.parse's bare-words-join-into-
     // one-phrase semantics, picker.rs's own pre-DSL behaviour) -----------
-    property var parsed: ClipboardQueryDsl.parse(query.text, root.fieldNames)
+    property var parsed: ClipboardQueryDsl.parse(BaseQuery.effective("notification", query.text), root.fieldNames)
     readonly property var _resultsRaw: {
         const filtered = root._entries.filter(e => ClipboardQueryDsl.matches(e, root.parsed));
         return ClipboardQueryDsl.applySort(filtered, root.parsed, root.fieldNames);
@@ -446,10 +446,11 @@ PanelWindow {
         Item {
             id: header
             width: parent.width
-            height: 34
+            height: Math.max(34, query.contentHeight + 14)   // grows with a wrapped / multi-line query
 
-            TextInput {
+            TextEdit {   // (not TextInput: Shift+Enter inserts a newline = whitespace)
                 id: query
+                wrapMode: TextEdit.Wrap
                 anchors.verticalCenter: parent.verticalCenter
                 x: 8
                 width: parent.width - 16
@@ -556,7 +557,7 @@ PanelWindow {
                     // dsl.md's Autocompletion section documents this as a
                     // second trigger key, not a replacement for Tab.
                     if (event.key === Qt.Key_Tab || (ctrl && event.key === Qt.Key_Space)) {
-                        root._triggerCompletion();
+                        if (!(event.key === Qt.Key_Tab && BaseQuery.expandNeg("notification", query))) root._triggerCompletion();   // bare "!/bq" + Tab writes the opposite of the base query
                         event.accepted = true; return; // consumed either way
                     }
                     if (event.key === Qt.Key_Escape) {
@@ -564,6 +565,8 @@ PanelWindow {
                         event.accepted = true; return;
                     }
                     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        if (event.modifiers & Qt.ShiftModifier) { query.insert(query.cursorPosition, "\n"); event.accepted = true; return; }   // Shift+Enter: newline
+                        if (BaseQuery.run("notification", query)) { event.accepted = true; return; }   // "/bq <q>" + Enter saves the base query
                         root._activateSelectedOrFirst();
                         event.accepted = true; return;
                     }

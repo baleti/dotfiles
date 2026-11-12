@@ -37,7 +37,7 @@ PanelWindow {
         return root._hoverArmed;
     }
 
-    RevitRemoteModel { id: m; query: query.text; entries: root._entries }
+    RevitRemoteModel { id: m; query: BaseQuery.effective("revit", query.text); entries: root._entries }
     readonly property var fieldNames: m.fieldNames
     readonly property var fieldDescs: m.fieldDescs
     readonly property var defaultColumns: m.defaultColumns
@@ -360,10 +360,11 @@ PanelWindow {
         Item {
             id: header
             width: parent.width
-            height: 34
+            height: Math.max(34, query.contentHeight + 14)   // grows with a wrapped / multi-line query
 
-            TextInput {
+            TextEdit {   // (not TextInput: Shift+Enter inserts a newline = whitespace)
                 id: query
+                wrapMode: TextEdit.Wrap
                 anchors.verticalCenter: parent.verticalCenter
                 x: 8
                 width: parent.width - 16
@@ -464,7 +465,7 @@ PanelWindow {
                     // dsl.md's Autocompletion section documents this as a
                     // second trigger key, not a replacement for Tab.
                     if (event.key === Qt.Key_Tab || (ctrl && event.key === Qt.Key_Space)) {
-                        root._triggerCompletion();
+                        if (!(event.key === Qt.Key_Tab && BaseQuery.expandNeg("revit", query))) root._triggerCompletion();   // bare "!/bq" + Tab writes the opposite of the base query
                         event.accepted = true; return; // consumed either way
                     }
                     if (event.key === Qt.Key_Escape) {
@@ -472,6 +473,8 @@ PanelWindow {
                         event.accepted = true; return;
                     }
                     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        if (event.modifiers & Qt.ShiftModifier) { query.insert(query.cursorPosition, "\n"); event.accepted = true; return; }   // Shift+Enter: newline
+                        if (BaseQuery.run("revit", query)) { event.accepted = true; return; }   // "/bq <q>" + Enter saves the base query
                         root._activateSelectedOrFirst();
                         event.accepted = true; return;
                     }

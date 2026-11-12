@@ -91,7 +91,7 @@ PanelWindow {
         return [];
     }
 
-    property var parsed: QueryDsl.parse(search.text)
+    property var parsed: QueryDsl.parse(BaseQuery.effective("rss", search.text))
 
     // Every field currently `/fv field:value`-scoped by the query, deduped
     // - shown as an extra line under the article title (see the article
@@ -718,7 +718,7 @@ PanelWindow {
                     Item {
                         id: searchWrap
                         width: 240
-                        height: 28
+                        height: Math.max(28, search.contentHeight + 10)   // grows with a wrapped / multi-line query
 
                         Rectangle {
                             id: searchBox
@@ -736,10 +736,11 @@ PanelWindow {
                                 font.pixelSize: Theme.fontSize - 2
                                 color: Theme.muted
                             }
-                            TextInput {
+                            TextEdit {   // (not TextInput: Shift+Enter inserts a newline = whitespace)
                                 id: search
                                 x: 26
                                 width: parent.width - 34
+                                wrapMode: TextEdit.Wrap
                                 anchors.verticalCenter: parent.verticalCenter
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSize - 1
@@ -848,14 +849,15 @@ PanelWindow {
                                             else
                                                 root.acAccept();
                                             e.accepted = true;
-                                        } else if (root._triggerCompletion()) {
-                                            e.accepted = true;
+                                        } else if (BaseQuery.expandNeg("rss", search) || root._triggerCompletion()) {
+                                            e.accepted = true;   // (bare "!/bq" + Tab writes the opposite of the base query)
                                         }
                                         // else: fall through to keyScope's
                                         // search<->list Tab toggle.
                                     } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
-                                        if (root.acOpen) root.acAccept();
-                                        else root._returnFocusToList();
+                                        if (e.modifiers & Qt.ShiftModifier) search.insert(search.cursorPosition, "\n");   // Shift+Enter: newline
+                                        else if (root.acOpen) root.acAccept();
+                                        else if (!BaseQuery.run("rss", search)) root._returnFocusToList();   // "/bq <q>" + Enter saves the base query
                                         e.accepted = true;
                                     } else if (e.key === Qt.Key_Space && !root.acOpen && (e.modifiers & Qt.ControlModifier)) {
                                         // Ctrl+Space also opens completion,
