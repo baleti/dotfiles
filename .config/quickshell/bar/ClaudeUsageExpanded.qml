@@ -513,7 +513,7 @@ Rectangle {
     property string _ftsCurrent: ""
     function _ftsTerms() {
         const out = [];
-        const all = root.bqNegated ? root.searchParsed.terms.concat(root.baseParsed.terms) : root.searchParsed.terms;
+        const all = root.baseParsed.terms.length > 0 ? root.searchParsed.terms.concat(root.baseParsed.terms) : root.searchParsed.terms;
         for (const t of all) {
             if (t.field === undefined || !t.value) continue;
             if (QueryDsl.resolvePath(t.field, root._filterTypeNames).indexOf("fts") < 0) continue;
@@ -669,6 +669,26 @@ Rectangle {
         // archived / tmux hits follow the live ones (or are all there is, in archive-only / tmux-only views)
         return root.ftsScopes ? out.concat(root.archiveRows) : out;
     }
+    // Conversations the stored base query hides (shown as the pill left of the total). 0 while a "/bq <query>"
+    // preview is in the box (the stored base query is not applied then) or when no base query is set.
+    readonly property int baseHiddenCount: {
+        root.baseParsed; root.allProcs; root.ftsHits;   // dependencies
+        const bt = root.baseParsed.terms;
+        if (bt.length === 0 || (!!root._bqMatch && !root.bqNegated)) return 0;
+        return root.allProcs.filter(p => !bt.every(t => root._searchMatches(p, t, p.account))).length;
+    }
+    // Conversations per host in the current view (after the base query and whatever is typed), for the
+    // per-host pills: host1/host2/host3 always, plus any other host that has rows (e.g. wsl). No host = this one.
+    readonly property var hostCounts: {
+        const c = ({ host1: 0, host2: 0, host3: 0 });
+        for (const r of root.searchFilteredProcs) {
+            if (r.archived || r.tmuxRow) continue;
+            const h = r.host || "host3";
+            c[h] = (c[h] || 0) + 1;
+        }
+        return c;
+    }
+    readonly property var hostPillNames: Object.keys(root.hostCounts).sort((a, b) => a.localeCompare(b))
     readonly property var searchFilteredProcs: {
         root.searchParsed; // dependency
         const terms = root.searchParsed.terms;
@@ -3221,6 +3241,26 @@ Rectangle {
             spacing: 6
             visible: root.anyProcsVisible
 
+            // number of conversations the base query filters out of this view (left of the total)
+            Rectangle {
+                visible: root.baseHiddenCount > 0
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: tallyHiddenText.implicitWidth + 16
+                implicitHeight: tallyHiddenText.implicitHeight + 6
+                radius: height / 2
+                color: Theme.bgAlpha
+                border.color: Theme.border
+                border.width: 1
+
+                Text {
+                    id: tallyHiddenText
+                    anchors.centerIn: parent
+                    text: qsTr("%1 hidden").arg(root.baseHiddenCount)
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 1
+                }
+            }
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
                 implicitWidth: tallyTotalText.implicitWidth + 16
@@ -3238,6 +3278,29 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1
                     font.bold: true
+                }
+            }
+            // one pill per host: conversations of that host in this view
+            Repeater {
+                model: root.hostPillNames
+                delegate: Rectangle {
+                    required property string modelData
+                    readonly property int n: root.hostCounts[modelData] || 0
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: hostPillText.implicitWidth + 16
+                    implicitHeight: hostPillText.implicitHeight + 6
+                    radius: height / 2
+                    color: Theme.bgAlpha
+                    border.color: Theme.border
+                    border.width: 1
+                    Text {
+                        id: hostPillText
+                        anchors.centerIn: parent
+                        text: modelData + (modelData === "host3" ? " (this host)" : "") + "  " + parent.n
+                        color: parent.n > 0 ? (modelData === "host3" ? Theme.text : Theme.cyan) : Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 1
+                    }
                 }
             }
             Item { Layout.fillWidth: true }
