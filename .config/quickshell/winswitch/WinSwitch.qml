@@ -296,6 +296,7 @@ PanelWindow {
     }
     // the bare account number: claude -> 1, claude6 -> 6 (as in the usage panel)
     function _acctNo(account) {
+        if (account === "claude-ksr") return "9"; // 9th account, matches the usage panel's acctIndex
         const d = String(account || "").replace(/\D/g, "");
         return d.length > 0 ? d : "1";
     }
@@ -792,9 +793,13 @@ PanelWindow {
     function _completionTab(direction) {
         if (acPopup.visible)
             root.acSel = (root.acSel + (direction === "prev" ? -1 : 1) + root.acItems.length) % root.acItems.length;
-        else
-            root._triggerCompletion();
+        else if (!root._triggerCompletion() && root.locked)
+            root._focusList();   // nothing to complete: Tab hands focus to the grid (query-dsl.md "Focus between search box and results")
     }
+
+    // The grid has the keyboard (locked + Tab/Down from the search box), or there is no search box at all (Alt+Tab
+    // cycling): selection shows in the accent colour. Otherwise it is faint (query-dsl.md "Focus hint").
+    readonly property bool gridAccent: !root.locked || root.listFocused
 
     function _acAccept() {
         const kind = root.acSuggestionKind;
@@ -985,6 +990,15 @@ PanelWindow {
                 height: root.locked ? 32 : 0
                 visible: root.locked
                 clip: true
+
+                // focus hint: accent underline while the search box has the keyboard, dim once the grid has it
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: root.listFocused ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.15) : Theme.cyan
+                }
 
                 Text {
                     id: prompt
@@ -1501,8 +1515,8 @@ PanelWindow {
                             anchors.fill: parent
                             anchors.margins: 4
                             radius: Theme.rounding - 4
-                            color: cellItem.isSelected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16) : "transparent"
-                            border.color: cellItem.isSelected ? Theme.cyan : "transparent"
+                            color: cellItem.isSelected ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, root.gridAccent ? 0.42 : 0.12) : "transparent"
+                            border.color: cellItem.isSelected ? (root.gridAccent ? Theme.cyan : Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.35)) : "transparent"
                             border.width: 1
 
                             Rectangle { // thumbnail frame placeholder

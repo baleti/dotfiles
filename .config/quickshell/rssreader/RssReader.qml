@@ -214,6 +214,9 @@ PanelWindow {
     // keyScope.forceActiveFocus() while `search` still holds focus just gets
     // redirected straight back into `search` -- clearing its focus first is
     // what actually lets the scope (and its own Keys.onPressed) take over.
+    // Keyboard focus is on the article list, not the search box (query-dsl.md "Focus hint"): the search
+    // border dims and the selected row switches faint -> accent.
+    readonly property bool listFocused: visible && !search.activeFocus
     function _returnFocusToList() {
         search.focus = false;
         keyScope.forceActiveFocus();
@@ -722,8 +725,8 @@ PanelWindow {
                             anchors.fill: parent
                             radius: Theme.rounding - 4
                             color: Qt.rgba(1, 1, 1, 0.06)
-                            border.width: search.activeFocus ? 1 : 0
-                            border.color: Theme.cyan
+                            border.width: 1
+                            border.color: search.activeFocus ? Theme.cyan : Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.12)
 
                             Text {
                                 x: 8
@@ -1112,7 +1115,7 @@ PanelWindow {
                         width: listView.width
                         height: articleRow.isGroup ? 28 : articleRow.extraText ? 72 : 58
                         color: articleRow.isGroup ? "transparent" : articleRow.logical === root.selected
-                            ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.16)
+                            ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, root.listFocused ? 0.42 : 0.12)   // accent with list focus, faint otherwise
                             : "transparent"
 
                         Item { // /group section header

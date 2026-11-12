@@ -1731,10 +1731,21 @@ look like (thumbnail grid, article list, schedule, plain rows):
   first Down after typing, or after cycling back to the draft, leaves the
   box. The query text is left exactly as typed.
 - **Tab** in the results returns focus to the search box (cursor at the
-  end of the query). Tab *inside* the search box is unchanged: it is
-  completion (see Autocompletion); where completion has nothing to offer
-  and the picker already had a list-focus mode (rss-reader) it falls
-  through to the same toggle.
+  end of the query). Tab *inside* the search box is completion (see
+  Autocompletion) while completion has something to offer; **where it has
+  nothing to offer, Tab moves focus to the results** (2026-11-12: every picker
+  with a separate results focus - claude-usage panel, rss-reader, alt-tab grid;
+  Ctrl+Space still opens completion anywhere).
+- **Focus hint** (2026-11-12). It must be obvious which half has the keyboard:
+  the search box's border (or underline) is the accent colour while it has focus and
+  dims once the results have it; the selected result is drawn **faint** while the
+  search box has focus (still showing which entry is selected) and in the **accent
+  colour** while the results have focus. No frame is drawn around the results area.
+  Done in: claude-usage panel, rss-reader, `WinSwitch.qml` (grid selection and the
+  search underline; selection is always accent while unlocked Alt+Tab cycling).
+  **Not yet done:** the native alt-tab (`winswitch-ui`, Rust: Tab fall-through and
+  hint), the images picker (egui) - both have a list focus - and the single-focus
+  pickers need nothing.
 - Typing a printable character while the results have focus returns to
   the search box and appends it (alt+tab). Escape keeps its usual
   meaning (close the picker); Enter acts on the selection.

@@ -646,6 +646,18 @@ Rectangle {
         }
         return false;
     }
+    // Keyboard focus is on the results list (not the search box): Up/Down move the selection. The search box
+    // border and the selection highlight key off this (query-dsl.md "Focus hint").
+    readonly property bool resultsFocused: root.expanded && !searchInput.activeFocus && !root.baseQueryOpen
+    function focusResults() {
+        root.acItems = [];
+        if (root.sortedProcs.length > 0) {
+            if (!root.selActive) root.selIndex = 0;
+            root.selActive = true;
+        }
+        searchInput.focus = false;
+        root.forceActiveFocus();
+    }
     function focusSearch() {
         // Moving focus into the search box is a mode switch away from row
         // navigation -- drop the keyboard selection state so its highlight
@@ -2193,7 +2205,8 @@ Rectangle {
             height: Math.max(22, searchInput.contentHeight + 8)   // grows with the wrapped query
             radius: 4
             color: Theme.bg
-            border.color: searchInput.activeFocus ? Theme.cyan : Theme.border
+            // focused: accent; results focused instead: dimmed, so it is obvious the query box is not taking keys
+            border.color: searchInput.activeFocus ? Theme.cyan : Qt.rgba(Theme.border.r, Theme.border.g, Theme.border.b, 0.45)
             border.width: 1
 
             TextInput {
@@ -2317,8 +2330,10 @@ Rectangle {
                                 root.acSel = (root.acSel - 1 + root.acItems.length) % root.acItems.length;
                             else
                                 root.acAccept();
-                        } else {
-                            root.triggerCompletion();
+                        } else if (!root.triggerCompletion()) {
+                            // nothing to complete here: Tab hands focus to the results (query-dsl.md "Focus
+                            // between search box and results"); Ctrl+Space still opens completion anywhere
+                            root.focusResults();
                         }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Space && !root.acOpen && (event.modifiers & Qt.ControlModifier)) {
@@ -3020,7 +3035,7 @@ Rectangle {
                     // against the keyboard one (request 2026-09-28: "moving
                     // mouse should modify it, same as up down keys").
                     color: (!procRow.isGroup && root.selActive && procRow.logical === root.selIndex)
-                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.22)
+                        ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, root.resultsFocused ? 0.45 : 0.12)   // accent when the list has focus, faint (still shows the entry) otherwise
                         : "transparent"
 
                     // Moves the selection cursor to this row on hover, same
