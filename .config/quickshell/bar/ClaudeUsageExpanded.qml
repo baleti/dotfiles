@@ -377,7 +377,7 @@ Rectangle {
       if(merge){if(!done){done=true;out.push((fs[0].keys!==null?"//"+fs[0].keys+" ":"")+fs.map(y=>y.value).join("||"))}continue}
       out.push((x.neg?"":"!")+(x.keys!==null?"//"+x.keys+" ":"")+x.value)}
      return out.join(" ")}
-    // Enter in the box: runs /base-query, true if the box held it.
+    // Enter in the box: runs /base-query (not "!/bq"), true if the box held it.
     function _runDefaultCmd() {
         const m = root._bqMatch;
         if (!m || m[1] === "!") return false;   // "!/bq" is only a view, Enter keeps its normal meaning
@@ -513,7 +513,7 @@ Rectangle {
     property string _ftsCurrent: ""
     function _ftsTerms() {
         const out = [];
-        const all = root.baseParsed.terms.length > 0 ? root.searchParsed.terms.concat(root.baseParsed.terms) : root.searchParsed.terms;
+        const all = root.baseParsed.terms.length > 0 ? root.searchParsed.terms.concat(root.baseParsed.terms) : root.searchParsed.terms;   // (the base terms feed the "hidden" count)
         for (const t of all) {
             if (t.field === undefined || !t.value) continue;
             if (QueryDsl.resolvePath(t.field, root._filterTypeNames).indexOf("fts") < 0) continue;
@@ -674,7 +674,7 @@ Rectangle {
     readonly property int baseHiddenCount: {
         root.baseParsed; root.allProcs; root.ftsHits;   // dependencies
         const bt = root.baseParsed.terms;
-        if (bt.length === 0 || (!!root._bqMatch && !root.bqNegated)) return 0;
+        if (bt.length === 0 || !!root._bqMatch) return 0;   // "/bq" and "!/bq" both switch the stored base query off
         return root.allProcs.filter(p => !bt.every(t => root._searchMatches(p, t, p.account))).length;
     }
     // ---- tally pills are filters: a click writes the matching query into the search box ----
@@ -690,25 +690,33 @@ Rectangle {
         const m = /^(\s*!?\/(?:base-query|bq))(?=\s|$)\s*([\s\S]*)$/.exec(text);
         return m ? { lead: m[1] + " ", rest: m[2] } : { lead: "", rest: text };
     }
-    // host pill: only that host's rows. Replaces any "//host x" in the box; a second click on the active host removes it.
+    // host pills are additive: clicking host3 then wsl gives "//host host3||wsl" (host3 OR wsl); clicking an
+    // active host takes just that one out again (the filter goes away with the last one).
+    function _hostsInBox(rest) {
+        const m = /(?:^|\s)\/\/host (\S+)/.exec(rest);
+        return m ? m[1].split("||").filter(x => x) : [];
+    }
     function toggleHostFilter(h) {
         const sp = root._bqLeadSplit(root.searchText);
-        const had = new RegExp("(^|\\s)//host " + h + "(?=\\s|$)").test(sp.rest);
+        const cur = root._hostsInBox(sp.rest);
+        const next = cur.indexOf(h) >= 0 ? cur.filter(x => x !== h) : cur.concat([h]);
         let rest = sp.rest.replace(/(^|\s)\/\/host \S+/g, "$1").replace(/\s+/g, " ").trim();
-        if (!had) rest = ("//host " + h + " " + rest).trim();
+        if (next.length > 0) rest = ("//host " + next.join("||") + " " + rest).trim();
         root._setBoxText(sp.lead + rest + (rest ? " " : ""));
     }
     readonly property bool hiddenFilterActive: /^\s*!\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)
-    // "hidden" pill: only the rows the base query filters out (= "!/bq" first); a second click takes it off again
+    // "hidden" pill: only the rows the base query filters out - "!/bq <opposite of the base query>" (base off, the
+    // written-out opposite runs); a second click clears the box again
     function toggleHiddenFilter() {
         if (root.hiddenFilterActive) {
-            root._setBoxText(root.searchText.replace(/^\s*!\/(?:base-query|bq)\s*/, ""));
-        } else if (!/^\s*\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)) {
-            root._setBoxText("!/bq " + root.searchText.replace(/^\s+/, ""));
+            root._setBoxText("");
+        } else {
+            const inv = root._invertBase(ClaudeUsageQueryHistory.defaultQuery.trim());
+            if (inv !== "") root._setBoxText("!/bq " + inv + " ");
         }
     }
     function hostFilterActive(h) {
-        return new RegExp("(^|\\s)//host " + h + "(?=\\s|$)").test(root.searchText);
+        return root._hostsInBox(root.searchText).indexOf(h) >= 0;
     }
     // Conversations per host in the current view (after the base query and whatever is typed), for the
     // per-host pills: host1/host2/host3 always, plus any other host that has rows (e.g. wsl). No host = this one.
@@ -725,14 +733,8 @@ Rectangle {
     readonly property var searchFilteredProcs: {
         root.searchParsed; // dependency
         const terms = root.searchParsed.terms;
-        let rows = terms.length === 0 ? root.allProcs
+        return terms.length === 0 ? root.allProcs
             : root.allProcs.filter(p => terms.every(t => root._searchMatches(p, t, p.account)));
-        if (root.bqNegated) {
-            // "!/bq": what the base query filters out (the typed rest still applies on top)
-            const bt = root.baseParsed.terms;
-            rows = rows.filter(p => !bt.every(t => root._searchMatches(p, t, p.account)));
-        }
-        return rows;
     }
     // Column-header-click sort (root.sort) falls back to a global
     // most-recent-first sort by age when nothing's been clicked, so rows
@@ -1078,12 +1080,13 @@ Rectangle {
     }
     function triggerCompletion() {
         root.acHistoryMode = false;
-        // "!/bq [rest]" + Tab: expand the "!/bq" into the opposite of the base query, written out
-        const nb = /^(\s*)!\/(?:base-query|bq)(?=\s|$)([\s\S]*)$/.exec(root.searchText);
+        // "!/bq" + Tab (nothing after it yet): write the opposite of the base query after it. "!/bq" keeps the
+        // stored base query switched off, so the written-out string is what runs and can be edited piece by piece.
+        const nb = /^(\s*!\/(?:base-query|bq))\s*$/.exec(root.searchText);
         if (nb) {
             const inv = root._invertBase(ClaudeUsageQueryHistory.defaultQuery.trim());
             if (inv !== "") {
-                const t = nb[1] + inv + " " + nb[2].trim();
+                const t = nb[1] + " " + inv;
                 root.searchText = t;
                 searchInput.text = t;
                 searchInput.cursorPosition = searchInput.text.length;

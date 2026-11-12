@@ -883,21 +883,24 @@ give; once saved it applies to everything typed afterwards.
   (`//path rvt /base-query`) it is inert like any unknown `/verb`, highlighted as
   invalid, and never offered by autocompletion; at the start of the box it is
   completed and highlighted as valid.
-- **`!/bq` - the opposite.** As the first token, `!/bq <rest>` shows the rows the
-  base query filters **out** (everything it would hide), with `<rest>` applied on
-  top like any other query. Only the base query's row filters take part; its
-  `/s` / `/g` are ignored. With no base query set the result is empty (it hides
-  nothing). It is a view only: Enter never saves anything and acts as it would
-  anywhere else (e.g. opens the selected row). **Tab on `!/bq` expands it**: the
-  `!/bq` token is replaced by the opposite of the base query written out
-  (the rest of the line is kept), so you can see, edit or save it. Terms are ANDed,
-  so the complement is "any term fails": exact when the base query is one term (its
-  `!` is flipped) or several negated terms on the same keys (they become one
-  positive alternatives term: `!//path a !//path b` -> `//path a||b`). With mixed
-  terms every term is flipped instead (`//path a !//title b` -> `!//path a //title b`),
-  which keeps them ANDed and so is only an approximation of the complement; other
-  verbs (`/s`, `/g`, `/fts ...`) are copied unchanged. Android offers the expansion
-  as its one suggestion.
+- **`!/bq` - base query off, for working with its opposite.** Like `/bq`, as the
+  first token it switches the stored base query **off** for this line: the rest of
+  the line is the whole query. The difference is that Enter never saves anything
+  (it acts as it would anywhere else, e.g. opens the selected row). Its use is
+  **Tab on a bare `!/bq`**, which writes the opposite of the base query after it:
+  `!/bq //path /src/rvt-ballet||/src/dwg-ballet||/src/rvt-core`. That string is then
+  ordinary query text - because the base query is off it actually runs, shows
+  exactly the rows the base query hides, and can be edited piece by piece (delete
+  `/src/dwg-ballet||` to also keep what matched it out of the list). Terms are
+  ANDed, so the complement is "any term fails": exact when the base query is one
+  term (its `!` is flipped) or several negated terms on the same keys (they become
+  one positive alternatives term: `!//path a !//path b` -> `//path a||b`). With
+  mixed terms every term is flipped instead (`//path a !//title b` ->
+  `!//path a //title b`), which keeps them ANDed and so is only an approximation
+  of the complement; other verbs (`/s`, `/g`, `/fts ...`) are copied unchanged.
+  With no base query set Tab does nothing. Tab on `!/bq` with text already after it
+  completes that text as usual. Android offers the written-out string as its one
+  suggestion. The "hidden" pill of the claude-usage panel writes the same line.
 - The command is not recorded in the search-box history.
 - **Base-query history.** Every non-empty base query that gets saved is remembered
   (most recent first, up to 100, per client). **Tab after `/bq `** lists them: the
