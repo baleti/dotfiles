@@ -1407,7 +1407,13 @@ impl App {
                 if self.ac.is_some() && !back {
                     self.ac_accept();
                 } else {
+                    let before = self.query.clone();
                     self.completion_tab(back);
+                    // nothing to complete: Tab hands focus to the results (query-dsl.md "Focus between search box and results")
+                    if self.ac.is_none() && self.query == before {
+                        self.list_focused = true;
+                        self.dirty = true;
+                    }
                 }
             }
             Keysym::space if self.ac.is_some() && !self.ctrl => self.ac_accept(),
@@ -1616,6 +1622,8 @@ impl App {
             if let Some(path) = pb.finish() {
                 stroke(&mut pm, &path, tf, th.text_dim, 255, 1.5);
             }
+            // focus hint: accent underline while the search box has the keyboard, dim once the grid has it
+            fill(&mut pm, &rrect(hx, hy + SEARCH_H as f32 - 1.0, card_w as f32 - 32.0, 1.0, 0.5), tf, th.primary, if self.list_focused { 40 } else { 255 });
             let size = HEADER_FONT_PX * sc;
             let (asc, lh) = metrics(&self.font, size);
             let top = (hy + (SEARCH_H as f32 - lh / sc) / 2.0) * sc;
@@ -1747,8 +1755,10 @@ impl App {
             let (rx, ry, rw, rh) = (x + 4, y + 4, cell_full_w - 8, cell_hgt - 8);
             if wi as i32 == sel {
                 let cell = rrect(rx as f32 + 0.5, ry as f32 + 0.5, rw as f32 - 1.0, rh as f32 - 1.0, 6.0);
-                fill(&mut pm, &cell, tf, th.primary, 41);
-                stroke(&mut pm, &cell, tf, th.primary, 255, 1.0);
+                // focus hint (query-dsl.md): accent while the grid has the keyboard (or there is no search box), faint while the search box has it
+                let accent = !self.locked || self.list_focused;
+                fill(&mut pm, &cell, tf, th.primary, if accent { 107 } else { 30 });
+                stroke(&mut pm, &cell, tf, th.primary, if accent { 255 } else { 90 }, 1.0);
             }
             // thumbnail frame
             let (fw, fh) = frame_size(win.w, win.h, l.cell_w, l.max_h);

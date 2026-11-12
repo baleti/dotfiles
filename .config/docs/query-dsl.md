@@ -1742,10 +1742,23 @@ look like (thumbnail grid, article list, schedule, plain rows):
   search box has focus (still showing which entry is selected) and in the **accent
   colour** while the results have focus. No frame is drawn around the results area.
   Done in: claude-usage panel, rss-reader, `WinSwitch.qml` (grid selection and the
-  search underline; selection is always accent while unlocked Alt+Tab cycling).
-  **Not yet done:** the native alt-tab (`winswitch-ui`, Rust: Tab fall-through and
-  hint), the images picker (egui) - both have a list focus - and the single-focus
-  pickers need nothing.
+  search underline; selection is always accent while unlocked Alt+Tab cycling), the
+  native alt-tab (`winswitch-ui`: Tab fall-through, faint/accent selection, search
+  underline) and the images picker (Tab fall-through; it already drew the selection
+  faint 0.08 / accent 0.30). The single-focus pickers need nothing; the claude-agents
+  web page and Android app have no separate results focus. In the claude-usage panel
+  Tab from the results back into the box and Tab again returns to the row that was
+  selected before (if it is still listed), not the first one.
+
+  **Newlines (2026-11-12).** Shift+Enter inserts a newline in the claude-usage panel's
+  query; a newline is whitespace, exactly like a space (the panel's box is a `TextEdit`,
+  `theme/DslHighlight.qml` accepts either). Other pickers still use a single-line
+  `TextInput` and do not take Shift+Enter yet.
+
+  **Tally pills (claude-usage panel).** Σ / hidden / per-host pills show a hover hint with
+  the query behind them and what a click does. "hidden" is everything the *effective*
+  query (stored base query + typed text) leaves out and updates with every keystroke;
+  clicking it writes `!/bq <opposite of the effective query>`.
 - Typing a printable character while the results have focus returns to
   the search box and appends it (alt+tab). Escape keeps its usual
   meaning (close the picker); Enter acts on the selection.

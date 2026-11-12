@@ -3526,7 +3526,8 @@ impl eframe::App for App {
         } else if (tab || ctrl_space) && !self.popup {
             let (start, cands) = completions(&self.query, &self.facets, &self.history);
             match cands.len() {
-                0 => {}
+                // nothing to complete: Tab hands focus to the results (query-dsl.md "Focus between search box and results")
+                0 => { if tab && self.total > 0 { self.list_focus = true; } }
                 1 => {
                     self.query = apply(&self.query, start, &cands[0].0);
                     self.last_change = Instant::now();
