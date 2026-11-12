@@ -344,9 +344,13 @@ Rectangle {
     // copyable dialog; "/bq <q>" (or "/bq " + nothing = clear) saves <q> as the base query and clears the box.
     // Anywhere else the token is inert.
     property bool baseQueryOpen: false
-    readonly property var _bqMatch: /^\s*\/(?:base-query|bq)(?:(\s+)([\s\S]*))?$/.exec(root.searchText)
+    // groups: 1 = "!" (negated: the rows the base query filters OUT), 2 = whitespace after the verb, 3 = the rest
+    readonly property var _bqMatch: /^\s*(!?)\/(?:base-query|bq)(?:(\s+)([\s\S]*))?$/.exec(root.searchText)
+    readonly property bool bqNegated: !!root._bqMatch && root._bqMatch[1] === "!"
+    // the base query's own row filters, parsed - for the "!/bq" complement
+    readonly property var baseParsed: QueryDsl.parse(root._rewriteFts(ClaudeUsageQueryHistory.defaultQuery.trim()))
     readonly property string effectiveText: {
-        if (root._bqMatch) return root._bqMatch[2] || "";
+        if (root._bqMatch) return root._bqMatch[3] || "";
         const d = ClaudeUsageQueryHistory.defaultQuery.trim();
         const t = root.searchText;
         return d === "" ? t : (t.trim() === "" ? d : d + " " + t);
@@ -354,15 +358,15 @@ Rectangle {
     // Enter in the box: runs /base-query, true if the box held it.
     function _runDefaultCmd() {
         const m = root._bqMatch;
-        if (!m) return false;
-        if (m[1] === undefined) {
+        if (!m || m[1] === "!") return false;   // "!/bq" is only a view, Enter keeps its normal meaning
+        if (m[2] === undefined) {
             root._setQueryTextForHistory("");
             bqInput.text = ClaudeUsageQueryHistory.defaultQuery;
             root.baseQueryOpen = true;
             bqInput.forceActiveFocus();
             bqInput.selectAll();
         } else {
-            ClaudeUsageQueryHistory.setDefault((m[2] || "").trim());
+            ClaudeUsageQueryHistory.setDefault((m[3] || "").trim());
             root._setQueryTextForHistory("");
         }
         return true;
@@ -487,7 +491,8 @@ Rectangle {
     property string _ftsCurrent: ""
     function _ftsTerms() {
         const out = [];
-        for (const t of root.searchParsed.terms) {
+        const all = root.bqNegated ? root.searchParsed.terms.concat(root.baseParsed.terms) : root.searchParsed.terms;
+        for (const t of all) {
             if (t.field === undefined || !t.value) continue;
             if (QueryDsl.resolvePath(t.field, root._filterTypeNames).indexOf("fts") < 0) continue;
             const v = String(t.value).toLowerCase();
@@ -645,9 +650,14 @@ Rectangle {
     readonly property var searchFilteredProcs: {
         root.searchParsed; // dependency
         const terms = root.searchParsed.terms;
-        if (terms.length === 0)
-            return root.allProcs;
-        return root.allProcs.filter(p => terms.every(t => root._searchMatches(p, t, p.account)));
+        let rows = terms.length === 0 ? root.allProcs
+            : root.allProcs.filter(p => terms.every(t => root._searchMatches(p, t, p.account)));
+        if (root.bqNegated) {
+            // "!/bq": what the base query filters out (the typed rest still applies on top)
+            const bt = root.baseParsed.terms;
+            rows = rows.filter(p => !bt.every(t => root._searchMatches(p, t, p.account)));
+        }
+        return rows;
     }
     // Column-header-click sort (root.sort) falls back to a global
     // most-recent-first sort by age when nothing's been clicked, so rows
@@ -797,8 +807,8 @@ Rectangle {
             const wasFirst = spans.length === 0 && /^\s*$/.test(text.slice(0, start));
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (bang === 0 && wasFirst && /^\/(base-query|bq)$/.test(tok)) {
-                    spans.push({ start: start, end: start + tok.length, valid: true });
+                if (wasFirst && /^\/(base-query|bq)$/.test(tok)) {
+                    spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (/^\/fts(\/[a-z,-]+)?$/.test(tok) || QueryDsl.canonVerb({ q: false, v: tok })) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
@@ -934,7 +944,7 @@ Rectangle {
             const prefix = t.slice(0, t.length - vm[1].length);
             const verbs = root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
             // /bq is a command, not a pipeline stage: offered only for the very first token
-            const defs = prefix.trim() !== "" ? [] : [
+            const defs = (prefix.trim() !== "" && prefix.trim() !== "!") ? [] : [
                 ["bq", "base-query", "base query: the rest of the line runs as usual; Enter saves it as the query run in front of every query (/bq alone + Enter shows the current one)"]]
                 .filter(d => d[0].indexOf(frag) >= 0 || d[1].indexOf(frag) >= 0)
                 .map(d => ({ text: prefix + "/" + d[0] + " ", label: "/" + d[0], alias: "/" + d[1], desc: d[2] }));
@@ -2050,7 +2060,7 @@ Rectangle {
         Rectangle {
             id: searchBox
             width: parent.width
-            height: 22
+            height: Math.max(22, searchInput.contentHeight + 8)   // grows with the wrapped query
             radius: 4
             color: Theme.bg
             border.color: searchInput.activeFocus ? Theme.cyan : Theme.border
@@ -2058,10 +2068,13 @@ Rectangle {
 
             TextInput {
                 id: searchInput
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.topMargin: 4
                 anchors.leftMargin: 6
                 anchors.rightMargin: 6
-                verticalAlignment: TextInput.AlignVCenter
+                wrapMode: TextInput.Wrap   // long queries wrap onto further lines instead of scrolling sideways
                 color: Theme.text
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 2
@@ -2109,7 +2122,7 @@ Rectangle {
                     text: qsTr("/ to search")
                     color: Theme.muted
                     font: searchInput.font
-                    anchors.verticalCenter: parent.verticalCenter
+                    y: 0
                 }
 
                 // Inline command-validity coloring (query-dsl.md): an
@@ -2295,7 +2308,7 @@ Rectangle {
                 return m;
             }
             width: Math.min(Math.max(360, ac.neededW), content.width)
-            height: visible ? Math.min(root.acItems.length, 7) * 24 + 8 : 0
+            height: visible ? Math.min(acList.contentHeight, 7 * 24) + 8 : 0
             radius: Theme.rounding - 4
             color: Theme.bgAlpha
             border.color: Theme.cyan
@@ -2321,33 +2334,41 @@ Rectangle {
                     required property int index
                     readonly property bool cur: index === root.acSel
                     width: acList.width
-                    height: 24
+                    height: Math.max(24, acFlow.height + 8)
                     radius: Theme.rounding - 5
                     color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
 
-                    Row {
+                    // label, (alias) and description flow onto further lines when they don't fit the width
+                    Flow {
+                        id: acFlow
                         anchors.verticalCenter: parent.verticalCenter
                         x: 10
+                        width: parent.width - 16
                         spacing: 8
 
                         Text {
                             id: acLabel
                             text: acRow.modelData.label
+                            width: Math.min(acFm2.advanceWidth(String(acRow.modelData.label || "")) + 1, acFlow.width)
+                            wrapMode: Text.WrapAnywhere
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             color: acRow.cur ? Theme.cyan : Theme.text
                         }
                         Text {
                             visible: !!acRow.modelData.alias
-                            anchors.baseline: acLabel.baseline
                             text: "(" + acRow.modelData.alias + ")"
+                            width: Math.min(acFm3.advanceWidth(text) + 1, acFlow.width)
+                            wrapMode: Text.WrapAnywhere
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             color: Theme.muted
                         }
                         Text {
-                            anchors.baseline: acLabel.baseline
+                            visible: !!acRow.modelData.desc
                             text: acRow.modelData.desc
+                            width: Math.min(acFm3.advanceWidth(text) + 1, acFlow.width)
+                            wrapMode: Text.Wrap
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             color: Theme.textDim

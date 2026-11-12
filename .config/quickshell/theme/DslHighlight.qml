@@ -30,8 +30,13 @@ Item {
         }
     }
 
+    // An input that wraps (wrapMode set) gets a wrapping overlay: spaces stay breakable
+    // (white-space: pre-wrap) so its line breaks match the input's own.
+    readonly property bool wraps: input.wrapMode !== TextInput.NoWrap
+
     function _esc(s) {
-        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/ /g, "&nbsp;");
+        const e = s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return root.wraps ? e : e.replace(/ /g, "&nbsp;");
     }
 
     readonly property string html: {
@@ -44,7 +49,8 @@ Item {
             out += "<b><font color=\"" + Theme.cyan + "\">" + _esc(t.slice(s.start, s.end)) + "</font></b>";
             pos = s.end;
         }
-        return out + _esc(t.slice(pos));
+        out += _esc(t.slice(pos));
+        return root.wraps ? "<span style=\"white-space: pre-wrap\">" + out + "</span>" : out;
     }
 
     Text {
@@ -58,6 +64,7 @@ Item {
         text: root.html
         color: Theme.text
         font: root.input.font
-        wrapMode: Text.NoWrap
+        wrapMode: root.wraps ? root.input.wrapMode : Text.NoWrap
+        width: root.wraps ? root.input.width : implicitWidth
     }
 }

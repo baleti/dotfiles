@@ -883,6 +883,12 @@ give; once saved it applies to everything typed afterwards.
   (`//path rvt /base-query`) it is inert like any unknown `/verb`, highlighted as
   invalid, and never offered by autocompletion; at the start of the box it is
   completed and highlighted as valid.
+- **`!/bq` - the opposite.** As the first token, `!/bq <rest>` shows the rows the
+  base query filters **out** (everything it would hide), with `<rest>` applied on
+  top like any other query. Only the base query's row filters take part; its
+  `/s` / `/g` are ignored. With no base query set the result is empty (it hides
+  nothing). It is a view only: Enter does not save anything, and it has no
+  history list.
 - The command is not recorded in the search-box history.
 - **Base-query history.** Every non-empty base query that gets saved is remembered
   (most recent first, up to 100, per client). **Tab after `/bq `** lists them: the
