@@ -10,7 +10,7 @@ import QtQuick
 //   spans: [{start, end, valid}] char offsets of command tokens; only valid ones are painted
 Item {
     id: root
-    required property TextInput input
+    required property Item input   // a TextInput or a TextEdit
     property var spans: []
 
     Binding { target: root.input; property: "color"; value: "transparent" }
@@ -32,7 +32,7 @@ Item {
 
     // An input that wraps (wrapMode set) gets a wrapping overlay: spaces stay breakable
     // (white-space: pre-wrap) so its line breaks match the input's own.
-    readonly property bool wraps: input.wrapMode !== TextInput.NoWrap
+    readonly property bool wraps: input.wrapMode !== 0   // 0 = NoWrap in both TextInput and TextEdit
 
     function _esc(s) {
         const e = s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

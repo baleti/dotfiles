@@ -350,9 +350,9 @@ Rectangle {
     // the base query's own row filters, parsed - for the "!/bq" complement
     readonly property var baseParsed: QueryDsl.parse(root._rewriteFts(ClaudeUsageQueryHistory.defaultQuery.trim()))
     readonly property string effectiveText: {
-        if (root._bqMatch) return root._bqMatch[3] || "";
+        if (root._bqMatch) return (root._bqMatch[3] || "").replace(/\n/g, " ");
         const d = ClaudeUsageQueryHistory.defaultQuery.trim();
-        const t = root.searchText;
+        const t = root.searchText.replace(/\n/g, " ");   // a newline is whitespace, like a space
         return d === "" ? t : (t.trim() === "" ? d : d + " " + t);
     }
     function _invertBase(q) {
@@ -652,8 +652,14 @@ Rectangle {
     function focusResults() {
         root.acItems = [];
         if (root.sortedProcs.length > 0) {
-            if (!root.selActive) root.selIndex = 0;
+            if (!root.selActive) {
+                // back on the row that was selected before (unless it is no longer in the list)
+                const k = root._lastSelKey;
+                const idx = k === "" ? -1 : root.sortedProcs.findIndex(r => root._rowKey(r) === k);
+                root.selIndex = idx >= 0 ? idx : 0;
+            }
             root.selActive = true;
+            root._ensureSelVisible();
         }
         searchInput.focus = false;
         root.forceActiveFocus();
@@ -662,11 +668,15 @@ Rectangle {
         // Moving focus into the search box is a mode switch away from row
         // navigation -- drop the keyboard selection state so its highlight
         // and the left-side thumbnail don't linger over the table.
+        // remember the selected row so Tab back into the results lands on it again (focusResults)
+        root._lastSelKey = root.selActive ? root._rowKey(root.sortedProcs[root.selIndex]) : root._lastSelKey;
         root.selActive = false;
         root.thumbKeyboardActive = false;
         searchInput.forceActiveFocus();
         searchInput.selectAll();
     }
+    property string _lastSelKey: ""
+    function _rowKey(r) { return r ? String(r.session_id || r.pane_id || r.hypr_address || r.title || "") : ""; }
 
     // ---- single merged process table across every account -------------
     // Every alive process across every account, tagged with which account
@@ -681,14 +691,13 @@ Rectangle {
         // archived / tmux hits follow the live ones (or are all there is, in archive-only / tmux-only views)
         return root.ftsScopes ? out.concat(root.archiveRows) : out;
     }
-    // Conversations the stored base query hides (the "hidden" pill); none when no base query is set.
-    readonly property var baseHiddenRows: {
-        root.baseParsed; root.allProcs; root.ftsHits;   // dependencies
-        const bt = root.baseParsed.terms;
-        if (bt.length === 0) return [];   // counts what the STORED base query hides, also while "!/bq" has it switched off (else the pill would vanish when clicked)
-        return root.allProcs.filter(p => !bt.every(t => root._searchMatches(p, t, p.account)));
+    // Conversations the EFFECTIVE query (stored base query + whatever is typed after it) leaves out: the "hidden"
+    // pill. Updates with every keystroke.
+    readonly property var hiddenRows: {
+        const keep = new Set(root.searchFilteredProcs);
+        return root.allProcs.filter(p => !keep.has(p) && !p.archived && !p.tmuxRow);
     }
-    readonly property int baseHiddenCount: root.baseHiddenRows.length
+    readonly property int baseHiddenCount: root.hiddenRows.length
     // Tally pills are coloured by the most urgent status among their conversations: busy > waiting > idle.
     function worstStatusColor(rows) {
         const rank = { busy: 4, waiting: 3, idle: 2, frozen: 1 };
@@ -701,7 +710,7 @@ Rectangle {
         return best === "" ? Theme.muted : root.statusColor(best);
     }
     readonly property color totalPillColor: root.worstStatusColor(root.allProcs)
-    readonly property color hiddenPillColor: root.worstStatusColor(root.baseHiddenRows)
+    readonly property color hiddenPillColor: root.worstStatusColor(root.hiddenRows)
     // per host, over the rows currently in view (same rows as the host counts)
     function hostPillColor(h) {
         return root.worstStatusColor(root.searchFilteredProcs.filter(r => (r.host || "host3") === h));
@@ -739,23 +748,27 @@ Rectangle {
         root._setBoxText(sp.lead + rest + (rest ? " " : ""));
     }
     readonly property bool hiddenFilterActive: /^\s*!\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)
-    // "hidden" pill: only the rows the base query filters out - "!/bq <opposite of the base query>" (base off, the
-    // written-out opposite runs). Filters already in the box are kept and the opposite is added after them, so
-    // host pill -> hidden pill reads "!/bq //host h <opposite>" while hidden -> host reads "!/bq <opposite> //host h".
-    // Clicking it again takes the opposite (and the "!/bq") out and leaves the other filters.
+    // "hidden" pill: only what the effective query (stored base query + typed text) hides - "!/bq <opposite of
+    // the effective query>" (base off, the written-out opposite runs). Clicking again clears the box.
     function toggleHiddenFilter() {
-        const inv = root._invertBase(ClaudeUsageQueryHistory.defaultQuery.trim());
-        if (inv === "") return;
-        if (root.hiddenFilterActive) {
-            let t = root.searchText.replace(/^\s*!\/(?:base-query|bq)\s*/, "");
-            const k = t.indexOf(inv);
-            if (k >= 0) t = t.slice(0, k) + t.slice(k + inv.length);
-            t = t.replace(/\s+/g, " ").trim();
-            root._setBoxText(t ? t + " " : "");
-        } else if (!/^\s*\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)) {
-            const rest = root.searchText.trim();
-            root._setBoxText("!/bq " + (rest ? rest + " " : "") + inv + " ");
+        if (root.hiddenFilterActive) { root._setBoxText(""); return; }
+        if (/^\s*\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)) return;
+        const inv = root._invertBase(root.effectiveText.replace(/\n/g, " ").trim());
+        if (inv !== "") root._setBoxText("!/bq " + inv + " ");
+    }
+    // ---- hover hints on the tally pills: the query behind each one, and what a click does ----
+    function _clip(t) { t = String(t).replace(/\s+/g, " ").trim(); return t.length > 110 ? t.slice(0, 107) + "..." : t; }
+    function pillHint(kind, h) {
+        const base = ClaudeUsageQueryHistory.defaultQuery.trim();
+        if (kind === "total")
+            return "all live conversations (no filter)\nclick: clear the query box";
+        if (kind === "hidden") {
+            const eff = root.effectiveText.replace(/\n/g, " ").trim();
+            return "hidden by the effective query:\n" + (eff ? root._clip(eff) : "(none)")
+                + (base ? "\n(/base-query: " + root._clip(base) + ")" : "")
+                + "\nclick: show only these (!/bq <opposite>); click again: clear";
         }
+        return "//host " + h + " - conversations on " + h + "\nclick: add / remove it (several hosts = OR)";
     }
     function hostFilterActive(h) {
         return root._hostsInBox(root.searchText).indexOf(h) >= 0;
@@ -2209,7 +2222,7 @@ Rectangle {
             border.color: searchInput.activeFocus ? Theme.cyan : Qt.rgba(Theme.border.r, Theme.border.g, Theme.border.b, 0.45)
             border.width: 1
 
-            TextInput {
+            TextEdit {   // (not TextInput: Shift+Enter inserts a newline, which whitespace-separates tokens like a space)
                 id: searchInput
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -2217,7 +2230,7 @@ Rectangle {
                 anchors.topMargin: 4
                 anchors.leftMargin: 6
                 anchors.rightMargin: 6
-                wrapMode: TextInput.Wrap   // long queries wrap onto further lines instead of scrolling sideways
+                wrapMode: TextEdit.Wrap   // long queries wrap onto further lines instead of scrolling sideways
                 color: Theme.text
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 2
@@ -2274,7 +2287,7 @@ Rectangle {
                 // (no per-range text styling on TextInput, and
                 // positionToRectangle stays correct under scrolling where a
                 // manual TextMetrics measurement wouldn't).
-                DslHighlight { input: searchInput; spans: searchInput.text.length ? root._commandSpans(searchInput.text) : [] }
+                DslHighlight { input: searchInput; spans: searchInput.text.length ? root._commandSpans(searchInput.text.replace(/\n/g, " ")) : [] }
 
                 // First Escape while searching closes the autocomplete
                 // popup if one's open. With no popup, one Escape both
@@ -2413,8 +2426,18 @@ Rectangle {
                         // Space/Enter when focus sits on the panel itself, so
                         // "search box focused by default" (2026-09-11) doesn't
                         // also disable Enter-to-open-selected-row.
-                        if (root._runDefaultCmd()) event.accepted = true;
-                        else root.handleKey(event);
+                        if (event.modifiers & Qt.ShiftModifier) {
+                            // Shift+Enter: newline in the query (whitespace, same as a space)
+                            searchInput.insert(searchInput.cursorPosition, "\n");
+                            event.accepted = true;
+                        } else {
+                            if (!root._runDefaultCmd()) root.handleKey(event);
+                            event.accepted = true;   // a TextEdit would otherwise insert a newline itself
+                        }
+                    } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && root.acOpen) {
+                        // popup open: Enter accepts the highlighted entry (handled by the popup code), never a newline
+                        root.acAccept();
+                        event.accepted = true;
                     }
                 }
                 // Native key-repeat here delivers a flood of RELEASE events
@@ -3340,6 +3363,10 @@ Rectangle {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onEntered: root.showHint(root.pillHint("total", ""))
+                    onPositionChanged: mouse => root.moveHint(mapToItem(root, mouse.x, mouse.y))
+                    onExited: root.hideHint()
                     onClicked: root._setBoxText("")   // everything: clear the typed query
                 }
                 Text {
@@ -3365,6 +3392,10 @@ Rectangle {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onEntered: root.showHint(root.pillHint("hidden", ""))
+                    onPositionChanged: mouse => root.moveHint(mapToItem(root, mouse.x, mouse.y))
+                    onExited: root.hideHint()
                     onClicked: root.toggleHiddenFilter()
                 }
 
@@ -3393,6 +3424,10 @@ Rectangle {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
+                        hoverEnabled: true
+                        onEntered: root.showHint(root.pillHint("host", modelData))
+                        onPositionChanged: mouse => root.moveHint(mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
                         onClicked: root.toggleHostFilter(modelData)
                     }
                     Text {
