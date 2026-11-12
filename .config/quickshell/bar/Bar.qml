@@ -1695,6 +1695,7 @@ Item {
 
         screen: root.screen
         panelWidth: root.widthFor("claudeUsage")
+        maxAreaWidth: root.panelAreaWidth
         maxPanelHeight: root.maxPanelHeight
         x: root.layoutFor("claudeUsage").right - width
         y: root.panelYFor("claudeUsage")

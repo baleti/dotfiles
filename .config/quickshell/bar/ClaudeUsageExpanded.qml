@@ -1261,7 +1261,7 @@ Rectangle {
     // than path (100), and a trailing filler after the last column
     // (path) soaks up genuine leftover space instead of stretching a
     // specific column into it.
-    property real colTitleW: colDefaults.title
+    property real colTitleW: root.titleFitW   // not via colDefaults: that would loop (titleFitW <- fixedOtherW <- colDefaults)
     property real colPidW: colDefaults.pid
     property real colTokensW: colDefaults.tokens
     // "last" itself is short, but values like "2mo 1w" aren't.
@@ -1304,9 +1304,15 @@ Rectangle {
     // fallback -- a single pathological cwd shouldn't be able to blow the
     // panel width out on its own; that's what "may be truncated later if
     // space gets more scarce" describes.
-    readonly property real pathNaturalCapW: 640   // was 300; widened 2026-11-12 so long paths are not cut off
-    readonly property real pathNaturalW: Math.max(colDefaults.path,
+    // Widest the screen lets the panel be (Bar.qml's panelAreaWidth); the table must fit in it or the path
+    // (last column) is cut off. Path gets what it needs (cap 640) after the title keeps >= titleMinW; the title
+    // then takes the rest, up to 300 (2026-11-12).
+    property real maxAreaWidth: 1800
+    readonly property real titleMinW: 120
+    readonly property real pathNaturalCapW: Math.max(100, Math.min(640, root.maxAreaWidth - 24 - root.fixedOtherW - root.titleMinW))
+    readonly property real pathNaturalW: Math.max(Math.min(colDefaults.path, root.pathNaturalCapW),
         Math.min(root.pathNaturalCapW, root.pathContentMaxW + 6))
+    readonly property real titleFitW: Math.max(root.titleMinW, Math.min(300, root.maxAreaWidth - 24 - root.fixedOtherW - root.pathNaturalW))
     property real colPathW: root.pathNaturalW
     // Width of each drag-resize handle between columns (see
     // ColumnResizeHandle.qml) -- also the RowLayout spacing everywhere a
@@ -1319,7 +1325,7 @@ Rectangle {
         root.colAcctW = root.colDefaults.acct;
         root.colHostW = root.colDefaults.host;
         root.colStatusW = root.colDefaults.status;
-        root.colTitleW = root.colDefaults.title;
+        root.colTitleW = root.titleFitW;
         root.colTokensW = root.colDefaults.tokens;
         root.colLastW = root.colDefaults.last;
         root.colTmuxSessionW = root.colDefaults.tmuxSession;
@@ -1352,11 +1358,13 @@ Rectangle {
     // without their trailing filler Item eating any slack (or, if this
     // exceeds Bar.qml's max, without something being cut off beyond what
     // that filler removal already implies).
-    readonly property real tableNaturalWidth: root.colAcctW + root.handleW + root.colHostW + root.handleW + root.colStatusW + root.handleW
-        + root.colTitleW + root.handleW + root.colTokensW + root.handleW
+    // Everything except the title and path columns (the two that flex to fit the screen, see titleFitW).
+    readonly property real fixedOtherW: root.colAcctW + root.handleW + root.colHostW + root.handleW + root.colStatusW + root.handleW
+        + root.handleW + root.colTokensW + root.handleW
         + root.colLastW + root.handleW + root.colTmuxGroupW + root.handleW
         + root.colHyprWorkspaceW + root.handleW + root.colPidW + root.handleW
-        + root.colPathW + root.scrollbarGap + root.scrollbarW
+        + root.scrollbarGap + root.scrollbarW
+    readonly property real tableNaturalWidth: root.fixedOtherW + root.colTitleW + root.colPathW
     // Same fallback width the standalone-preview default (panelWidth: 320
     // above) already used -- reused here as the floor so a near-empty
     // panel (few/no live processes) doesn't shrink below something that
