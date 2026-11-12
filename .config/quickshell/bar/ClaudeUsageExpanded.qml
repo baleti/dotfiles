@@ -932,7 +932,7 @@ Rectangle {
         const bm = bm0 ? [bm0[0], bm0[1] + " ", bm0[2] || ""] : null;
         if (bm) {
             const cur = ClaudeUsageQueryHistory.defaultQuery.trim();
-            const hits = ClaudeUsageQueryHistory.baseCandidates().filter(x => x.startsWith(bm[2].trim()))
+            const hits = ClaudeUsageQueryHistory.baseCandidates().filter(x => x.startsWith(bm[2].trim()) && x !== bm[2].trim())
                 .map(x => ({ text: bm[1] + x, label: x, alias: "", desc: x === cur ? "current" : "previous" }));
             if (hits.length > 0) return hits;
         }
@@ -993,6 +993,10 @@ Rectangle {
         root.searchText = it.text;
         searchInput.text = it.text;
         searchInput.cursorPosition = searchInput.text.length;
+        // The text change above recomputes an open popup for the new text, where the entry just accepted
+        // still matches itself - drop it, so accepting a final value (a path, a /bq entry) closes the popup
+        // while a stage that leads on ("/s/" -> field list) keeps its next candidates.
+        root.acItems = root.acItems.filter(c => c.text !== it.text);
     }
     function acAccept() {
         root._applyAcItem(root.acItems[root.acSel]);
