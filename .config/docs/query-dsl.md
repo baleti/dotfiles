@@ -854,7 +854,9 @@ hides or reorders rows, it only puts break lines (section headers) between them.
 
 ### `/base-query` (`/bq`) - a standing query
 
-*Added 2026-11-12. Implemented in: claude-usage panel (CTRL+ALT+c), the claude-agents Android app (list, archive and drawer search boxes) and the claude-agents web client. Not in any other picker yet.*
+*Added 2026-11-12. Implemented in: claude-usage panel (CTRL+ALT+c), the claude-agents Android app and web client, and (same day) the rss-reader, the clipboard / notification / revit-remote / appmenu pickers, alt-tab (`WinSwitch.qml` and the native `winswitch-ui`) and the native app launcher (`launcher-ui`). Not yet: the images picker (egui) and the fzf TUIs (window-search, claude-history, focus-picker).*
+
+**Other pickers (2026-11-12).** Each picker has its **own** base query, keyed by name (`rss`, `clipboard`, `notification`, `revit`, `appmenu`, `winswitch`, `launcher`) in `~/.cache/quickshell/base-queries.json` (`{key: {query, history[]}}`, shared by the QML pickers' `services/BaseQuery.qml` and the Rust crate `pickerdsl::base_query`, so QML and native alt-tab share the `winswitch` key). Same grammar: `/bq <q>` + Enter saves, `/bq ` clears, `/bq ...` and `!/bq ...` run the rest with the base query switched off, bare `!/bq` + Tab writes the opposite. Two differences from the claude-usage panel / claude-agents clients: bare `/bq` + Enter puts `/bq <current base query>` in the box to edit (no read-only dialog), and there is no history list on Tab yet (history is recorded). **Shift+Enter** inserts a newline (whitespace) in all of these pickers; the QML search boxes are `TextEdit`s that grow with their text, the native apps store the newline and draw it as a space.
 
 The **base query** is a stored query string that runs in front of every query,
 as if it had been typed there: with `!//path /home/user/src/rvt` stored,

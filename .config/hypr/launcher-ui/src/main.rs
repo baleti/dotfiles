@@ -84,6 +84,8 @@ enum Msg {
     Hypr(HyprInfo),
     /// a second invocation (the Super release bind): reveal the hidden capture instance, or close an open one
     Toggle,
+    /// Hyprland mapped a window (socket2 `openwindow`), address with 0x prefix
+    WindowOpened(String),
 }
 
 /// What the workspace actions need from Hyprland, fetched off the main thread at start.
@@ -139,7 +141,7 @@ fn action_match(q: &str) -> Option<(ActionKind, String)> {
     None
 }
 
-const ACTION_VERBS: [&str; 3] = ["/move-to-workspace", "/move-workspace", "/add-workspace"];
+const ACTION_VERBS: [&str; 4] = ["/move-to-workspace", "/move-to-new-workspace", "/move-workspace", "/add-workspace"];
 
 /// What to run once the surface is gone.
 enum Pending {
@@ -147,6 +149,7 @@ enum Pending {
     MoveToWorkspace(WsRow, String),
     MoveWorkspaceAfter(WsRow, i64),
     AddWorkspace(String, i64),
+    MoveToNewWorkspace(String, i64),
 }
 
 fn hypr_json(args: &[&str]) -> serde_json::Value {
@@ -193,6 +196,38 @@ fn lua_str(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Forwards every window Hyprland maps (socket2 `openwindow`) to the app while it is alive.
+fn watch_opened_windows(tx: Sender<Msg>) {
+    let sock = match (std::env::var("XDG_RUNTIME_DIR"), std::env::var("HYPRLAND_INSTANCE_SIGNATURE")) {
+        (Ok(rt), Ok(sig)) => PathBuf::from(rt).join("hypr").join(sig).join(".socket2.sock"),
+        _ => return,
+    };
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let Ok(stream) = UnixStream::connect(sock) else { return };
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            if let Some(addr) = line.strip_prefix("openwindow>>").and_then(|r| r.split(',').next()) {
+                if tx.send(Msg::WindowOpened(format!("0x{addr}"))).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+}
+
+/// The Super press starts a `--capture` instance whose keyboard grab is still held when a window spawned by
+/// the same chord maps; Hyprland then hands focus back to the previously focused window when the layer goes
+/// away, leaving the new window unfocused. Called once the layer is destroyed: focus `addr` unless it is
+/// already focused or sits on another workspace than the focused window. One hyprctl call, no polling.
+fn focus_new_window(addr: &str) {
+    let lua = format!(
+        "local t, act for _, w in ipairs(hl.get_windows({{}})) do if tostring(w.address) == {} then t = w end if w.active == true then act = w end end \
+         if t and t ~= act and not t.hidden and (not act or (t.workspace and act.workspace and t.workspace.name == act.workspace.name)) then hl.dispatch(hl.dsp.focus({{ window = t }})) end",
+        lua_str(addr)
+    );
+    let _ = Command::new("hyprctl").args(["eval", &lua]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+
 fn run_repl(lua: &str) {
     let _ = Command::new("hyprctl").args(["repl", lua]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
     // workspaces created/renamed through repl can leave Quickshell's workspace model stale
@@ -224,6 +259,18 @@ fn move_to_workspace_lua(addr: &str, row: &WsRow) -> String {
         };
         format!("{find}hl.dispatch(hl.dsp.window.move({{ workspace = {ws}, window = w }})) break end end")
     }
+}
+
+/// Same as /add-workspace (new workspace directly after the current one, shifting later ones up, same name),
+/// then the window is moved into it.
+fn move_to_new_workspace_lua(addr: &str, cur: i64) -> String {
+    let addr = addr.trim_start_matches("0x");
+    format!(
+        "{} for _, w in ipairs(hl.get_windows()) do if tostring(w.address):gsub('^0x', '') == {} then \
+         hl.dispatch(hl.dsp.window.move({{ workspace = id, window = w }})) break end end",
+        add_workspace_lua("", cur),
+        lua_str(addr)
+    )
 }
 
 fn move_workspace_after_lua(row: &WsRow, cur: i64) -> String {
@@ -318,6 +365,7 @@ fn make_schema() -> pickerdsl::Schema {
         ("categories", "freedesktop Categories= entries"),
         ("keywords", "freedesktop Keywords= entries"),
         ("move-to-workspace", "move focused window to a workspace"),
+        ("move-to-new-workspace", "move focused window to a new workspace after its own"),
         ("move-workspace", "move this workspace after another"),
         ("add-workspace", "add an empty workspace after this one"),
     ]
@@ -792,6 +840,8 @@ struct App {
     font: FontRef<'static>,
     theme: Theme,
     tx: Sender<Msg>,
+    /// window that mapped while we were the hidden capture; focused after the layer is destroyed
+    chord_window: Option<String>,
     t0: Instant,
     log: Vec<String>,
     width: u32,
@@ -893,7 +943,7 @@ impl App {
     /// Filter by the query (the DSL engine), order by /s or else AppLauncher.qml's rank (exact / prefix /
     /// substring of the first bare word), launch frecency, alphabetical; fold into /g sections.
     fn refilter(&mut self) {
-        let parsed = pickerdsl::parse(&self.schema, &self.query);
+        let parsed = pickerdsl::parse(&self.schema, &pickerdsl::base_query::effective(&pickerdsl::base_query::get("launcher"), &self.query));   // base query (query-dsl.md "/base-query") in front of the typed text
         self.action = action_match(&self.query);
         self.disp.clear();
         self.group = None;
@@ -1141,6 +1191,9 @@ impl App {
         if self.query.trim_end().ends_with("/add-workspace") {
             self.pending = Some(Pending::AddWorkspace(String::new(), self.hypr.active_ws));
             self.exit = true;
+        } else if self.query.trim_end().ends_with("/move-to-new-workspace") {
+            self.pending = Some(Pending::MoveToNewWorkspace(self.hypr.active_addr.clone(), self.hypr.active_ws));
+            self.exit = true;
         }
     }
 
@@ -1334,8 +1387,13 @@ impl App {
                 }
             }
             Keysym::Return | Keysym::KP_Enter => {
-                if popup {
+                if self.shift {
+                    self.insert("\n"); // Shift+Enter: newline (whitespace)
+                } else if popup {
                     self.ac_accept();
+                } else if let Some(t) = pickerdsl::base_query::run("launcher", &self.query) {
+                    let c = t.chars().count();
+                    self.set_query(t, c); // "/bq <q>" + Enter saves the base query
                 } else {
                     self.launch(self.selected);
                 }
@@ -1344,6 +1402,9 @@ impl App {
                 let back = ks == Keysym::ISO_Left_Tab || self.shift;
                 if popup && !back {
                     self.ac_accept();
+                } else if let Some(t) = pickerdsl::base_query::expand_neg("launcher", &self.query) {
+                    let c = t.chars().count();
+                    self.set_query(t, c); // bare "!/bq" + Tab: the opposite of the base query
                 } else if popup {
                     self.ac_move(-1, true);
                 } else {
@@ -1445,6 +1506,16 @@ impl App {
 
     fn on_msg(&mut self, m: Msg) {
         match m {
+            Msg::WindowOpened(addr) => {
+                // a window mapping while we are still the invisible capture means the Super press was a
+                // chord that spawned it (Super+space -> terminal): leave now instead of waiting out the
+                // release timer, and focus it once the keyboard grab is gone
+                if self.hidden {
+                    self.note("window opened while hidden: chord, giving up");
+                    self.chord_window = Some(addr);
+                    self.exit = true;
+                }
+            }
             Msg::Toggle => {
                 if self.hidden {
                     self.reveal();
@@ -1549,7 +1620,7 @@ impl App {
             }
         }
         spans.sort();
-        let qc: Vec<char> = self.query.chars().collect();
+        let qc: Vec<char> = self.query.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();   // a newline (Shift+Enter) is whitespace; drawn as a space
         let (mut at, mut x) = (0usize, tx);
         let seg = |pm: &mut Pixmap, from: usize, to: usize, col: Rgb, x: &mut f32| {
             if to > from {
@@ -2048,6 +2119,7 @@ fn main() {
     let pool = SlotPool::new(4 * 1024 * 1024, &shm).expect("pool");
 
     let (tx, rx) = channel::channel::<Msg>();
+    watch_opened_windows(tx.clone());
     loop_handle
         .insert_source(rx, |ev, _, app: &mut App| {
             if let ChanEvent::Msg(m) = ev {
@@ -2163,6 +2235,7 @@ fn main() {
         hover_armed: false,
         hits: vec![],
         card_rect: (0, 0, 0, 0),
+        chord_window: None,
     };
     app.note("started");
 
@@ -2182,11 +2255,17 @@ fn main() {
         other => (None, Some(other)),
     });
     let mut log = std::mem::take(&mut app.log);
+    let chord_window = app.chord_window.take();
     // destroy the layer surface and let the compositor process it before the new window maps
     drop(app);
     let _ = conn.roundtrip();
     let _ = std::fs::remove_file(pid_path());
     let _ = std::fs::remove_file(sock_path());
+    // windows launched from our own list map after this point, so they are never in `opened`
+    if let Some(addr) = &chord_window {
+        focus_new_window(addr);
+        log.push(format!("+{:7.1}ms focused {addr} (mapped during the keyboard grab)", t0.elapsed().as_secs_f64() * 1000.0));
+    }
     if let Some((Some((id, name, exec, terminal, path)), _)) = &pending {
         let cmd = if *terminal { format!("alacritty -e sh -c '{}'", exec.replace('\'', "'\\''")) } else { exec.clone() };
         let mut c = Command::new("sh");
@@ -2204,6 +2283,7 @@ fn main() {
         match action {
             Pending::MoveToWorkspace(row, addr) if !addr.is_empty() => run_repl(&move_to_workspace_lua(&addr, &row)),
             Pending::MoveWorkspaceAfter(row, cur) if cur >= 0 => run_repl(&move_workspace_after_lua(&row, cur)),
+            Pending::MoveToNewWorkspace(addr, cur) if !addr.is_empty() => run_repl(&move_to_new_workspace_lua(&addr, cur)),
             Pending::AddWorkspace(target, cur) => run_repl(&add_workspace_lua(&target, cur)),
             _ => {}
         }

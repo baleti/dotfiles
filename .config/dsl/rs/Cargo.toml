@@ -8,6 +8,7 @@ edition = "2021"
 # vectors in ../tests.json. Consumers: winswitch-ui, launcher-ui.
 
 [dependencies]
+serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"

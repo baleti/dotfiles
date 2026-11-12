@@ -2,6 +2,7 @@
 //! function here is checked against the shared vectors in `~/.config/dsl/tests.json`.
 #![allow(dead_code)]
 
+pub mod base_query;
 #[path = "../../group.rs"]
 pub mod group;
 

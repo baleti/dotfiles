@@ -762,7 +762,7 @@ impl App {
 
     /// Re-apply the query: the selection stays if it still matches, else the first result.
     fn refilter(&mut self) {
-        let parsed = pickerdsl::parse(&self.schema, &self.query);
+        let parsed = pickerdsl::parse(&self.schema, &pickerdsl::base_query::effective(&pickerdsl::base_query::get("winswitch"), &self.query));   // base query (query-dsl.md "/base-query") in front of the typed text
         let src = WinSrc(&self.windows);
         let base = pickerdsl::select_rows(&self.schema, &parsed, &src, self.windows.len());
         let raw = parsed.group_raw.clone().unwrap_or_default();
@@ -1315,8 +1315,13 @@ impl App {
                 return;
             }
             Keysym::Return | Keysym::KP_Enter => {
-                if self.ac.is_some() {
+                if self.locked && self.shift && !self.list_focused {
+                    self.insert("\n"); // Shift+Enter: newline (whitespace)
+                } else if self.ac.is_some() {
                     self.ac_accept();
+                } else if let Some(t) = pickerdsl::base_query::run("winswitch", &self.query) {
+                    let c = t.chars().count();
+                    self.set_query(t, c); // "/bq <q>" + Enter saves the base query
                 } else {
                     self.confirm();
                 }
@@ -1406,6 +1411,9 @@ impl App {
                 let back = ks == Keysym::ISO_Left_Tab || self.shift;
                 if self.ac.is_some() && !back {
                     self.ac_accept();
+                } else if let Some(t) = pickerdsl::base_query::expand_neg("winswitch", &self.query) {
+                    let c = t.chars().count();
+                    self.set_query(t, c); // bare "!/bq" + Tab: the opposite of the base query
                 } else {
                     let before = self.query.clone();
                     self.completion_tab(back);
@@ -1631,7 +1639,7 @@ impl App {
             let max_w = (card_w - 32 - 22) as f32 * sc;
             // recognised /commands in the accent colour, everything else normal
             let spans = pickerdsl::command_spans(&self.schema, &self.query);
-            let qc: Vec<char> = self.query.chars().collect();
+            let qc: Vec<char> = self.query.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();   // a newline (Shift+Enter) is whitespace; drawn as a space
             if self.select_all {
                 let w = text_width(&self.font, size, &self.query);
                 if let Some(r) = Rect::from_xywh(tx, top, w.max(2.0), lh) {
