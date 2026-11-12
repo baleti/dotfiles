@@ -888,8 +888,16 @@ give; once saved it applies to everything typed afterwards.
   top like any other query. Only the base query's row filters take part; its
   `/s` / `/g` are ignored. With no base query set the result is empty (it hides
   nothing). It is a view only: Enter never saves anything and acts as it would
-  anywhere else (e.g. opens the selected row). Tab after `!/bq ` completes from the
-  same base-query history as `/bq `, to preview what a saved query hides.
+  anywhere else (e.g. opens the selected row). **Tab on `!/bq` expands it**: the
+  `!/bq` token is replaced by the opposite of the base query written out
+  (the rest of the line is kept), so you can see, edit or save it. Terms are ANDed,
+  so the complement is "any term fails": exact when the base query is one term (its
+  `!` is flipped) or several negated terms on the same keys (they become one
+  positive alternatives term: `!//path a !//path b` -> `//path a||b`). With mixed
+  terms every term is flipped instead (`//path a !//title b` -> `!//path a //title b`),
+  which keeps them ANDed and so is only an approximation of the complement; other
+  verbs (`/s`, `/g`, `/fts ...`) are copied unchanged. Android offers the expansion
+  as its one suggestion.
 - The command is not recorded in the search-box history.
 - **Base-query history.** Every non-empty base query that gets saved is remembered
   (most recent first, up to 100, per client). **Tab after `/bq `** lists them: the

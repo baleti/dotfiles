@@ -355,6 +355,28 @@ Rectangle {
         const t = root.searchText;
         return d === "" ? t : (t.trim() === "" ? d : d + " " + t);
     }
+    function _invertBase(q) {
+     // Opposite of a base query (query-dsl.md "!/bq"): terms are ANDed, so the complement is "any term fails".
+     // Exact cases: one term (flip its !), or several negated terms on the same keys (they become one positive
+     // `//keys a||b` term). Otherwise every term is flipped (an approximation: they stay ANDed).
+     const toks=[],re=/!?"[^"]*"?|\S+/g;let m;while((m=re.exec(q))!==null)toks.push(m[0]);
+     const VERB=/^\/(fv|filter-value|ft|filter-type|at|add-type|rt|remove-type|s|sort|g|group|fts|full-text-search|bq|base-query)(\/\S*)?$/;
+     const isVerb=t=>{const u=t.replace(/^!/,"");return/^\/\/[^\s\/]*$/.test(u)||VERB.test(u)};
+     const items=[];
+     for(let i=0;i<toks.length;){
+      const t=toks[i],neg=t[0]==="!",u=neg?t.slice(1):t;let k=null,mm;
+      if((mm=/^\/\/([a-z,-]*)$/.exec(u)))k=mm[1];else if((mm=/^\/(?:fv|filter-value)\/([a-z,-]*)$/.exec(u)))k=mm[1];
+      if(k!==null&&k!==""){const nx=toks[i+1];if(nx!==undefined&&!isVerb(nx)){items.push({f:1,neg,keys:k,value:nx});i+=2;continue}items.push({o:t});i++;continue}
+      if(isVerb(t)){let tx=t;i++;if(/^\/(fts|full-text-search)/.test(u))while(i<toks.length&&!isVerb(toks[i]))tx+=" "+toks[i++];items.push({o:tx});continue}
+      items.push({f:1,neg,keys:null,value:u});i++}
+     const fs=items.filter(x=>x.f);if(!fs.length)return q.trim();
+     const merge=fs.length>1&&fs.every(x=>x.neg&&x.keys===fs[0].keys&&x.value[0]!=='"'&&x.value.indexOf('"')<0);
+     const out=[];let done=false;
+     for(const x of items){
+      if(x.o){out.push(x.o);continue}
+      if(merge){if(!done){done=true;out.push((fs[0].keys!==null?"//"+fs[0].keys+" ":"")+fs.map(y=>y.value).join("||"))}continue}
+      out.push((x.neg?"":"!")+(x.keys!==null?"//"+x.keys+" ":"")+x.value)}
+     return out.join(" ")}
     // Enter in the box: runs /base-query, true if the box held it.
     function _runDefaultCmd() {
         const m = root._bqMatch;
@@ -928,7 +950,7 @@ Rectangle {
                 .map(x => ({ text: head + x[0] + " ", label: x[0], alias: "", desc: x[1] }));
         }
         // "/bq <frag>" + Tab: the base-query history, current first, then previous ones (prefix-filtered by <frag>)
-        const bm0 = /^(\s*!?\/(?:base-query|bq))(?:\s+([\s\S]*))?$/.exec(t);
+        const bm0 = /^(\s*\/(?:base-query|bq))(?:\s+([\s\S]*))?$/.exec(t);
         const bm = bm0 ? [bm0[0], bm0[1] + " ", bm0[2] || ""] : null;
         if (bm) {
             const cur = ClaudeUsageQueryHistory.defaultQuery.trim();
@@ -1003,6 +1025,18 @@ Rectangle {
     }
     function triggerCompletion() {
         root.acHistoryMode = false;
+        // "!/bq [rest]" + Tab: expand the "!/bq" into the opposite of the base query, written out
+        const nb = /^(\s*)!\/(?:base-query|bq)(?=\s|$)([\s\S]*)$/.exec(root.searchText);
+        if (nb) {
+            const inv = root._invertBase(ClaudeUsageQueryHistory.defaultQuery.trim());
+            if (inv !== "") {
+                const t = nb[1] + inv + " " + nb[2].trim();
+                root.searchText = t;
+                searchInput.text = t;
+                searchInput.cursorPosition = searchInput.text.length;
+            }
+            return true;
+        }
         const items = root._acCandidates();
         if (items.length === 0) return false;
         if (items.length === 1) {
