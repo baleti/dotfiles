@@ -1325,7 +1325,7 @@ Rectangle {
         root.colAcctW = root.colDefaults.acct;
         root.colHostW = root.colDefaults.host;
         root.colStatusW = root.colDefaults.status;
-        root.colTitleW = root.titleFitW;
+        root.colTitleW = Qt.binding(() => root.titleFitW);   // a plain assignment would freeze the width at its value right now
         root.colTokensW = root.colDefaults.tokens;
         root.colLastW = root.colDefaults.last;
         root.colTmuxSessionW = root.colDefaults.tmuxSession;
@@ -1333,7 +1333,7 @@ Rectangle {
         root.colTmuxPaneW = root.colDefaults.tmuxPane;
         root.colHyprWorkspaceW = root.colDefaults.hyprWorkspace;
         root.colPidW = root.colDefaults.pid;
-        root.colPathW = root.pathNaturalW;
+        root.colPathW = Qt.binding(() => root.pathNaturalW);
     }
 
     // ---- dynamic panel width: shrink-to-fit between a min and a max ----
