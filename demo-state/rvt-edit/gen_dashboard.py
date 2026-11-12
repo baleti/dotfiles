@@ -120,7 +120,22 @@ out.append('<h2>Latest results</h2><ul>')
 for r in recent[-12:][::-1]:
     out.append('<li><b>%s</b> %s / %s: %s <span class="mut">%s %s</span></li>' % (e(r.get('result', '')), e(r.get('cat', '')), e(r.get('item', '')), e(r.get('note', ''))[:200], e(r.get('date', '')), e(r.get('agent', ''))))
 if not recent: out.append('<li class="mut">No results recorded yet. Agents record each test with ~/demo-state/bin/rvt-edit-record.</li>')
-out.append('</ul><h2>Skipped ledger rows (%d, malformed, not counted)</h2><ul>' % len(skipped))
+dwg = {}
+if not os.environ.get('RVT_DASH_NO_SSH'):
+    try:
+        for ln in subprocess.run(['ssh', '-n', '-o', 'ConnectTimeout=8', 'host2', 'cat ~/demo-state/savegate-matrix.tsv'], capture_output=True, text=True, timeout=40).stdout.splitlines():
+            f = ln.split('\t')
+            if len(f) > 9 and f[3].startswith('AC'):
+                d = dwg.setdefault(f[3], {'n': 0, 'last': ''}); d['n'] += 1; d[f[9]] = d.get(f[9], 0) + 1; d['last'] = max(d['last'], f[0])
+    except Exception: dwg = {}
+out.append('</ul><h2>DWG save checks (AutoCAD AUDIT matrix, host2)</h2>')
+if dwg:
+    out.append('<table><tr><th>version</th><th>rows</th><th>PASS</th><th>PASS-RELATIVE</th><th>FAIL</th><th>INCONCLUSIVE</th><th>newest</th></tr>')
+    for v in sorted(dwg):
+        d = dwg[v]; out.append('<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%s</td></tr>' % (v, d['n'], d.get('PASS', 0), d.get('PASS-RELATIVE', 0), sum(n for k, n in d.items() if k.startswith('FAIL')), d.get('INCONCLUSIVE', 0), e(d['last'])))
+    out.append('</table><div class="mut">Counts of recorded oracle rows, not percentages: rows are many edits of the same few drawings, so they do not measure coverage.</div>')
+else: out.append('<div class="mut">host2 matrix not reachable</div>')
+out.append('<h2>Skipped ledger rows (%d, malformed, not counted)</h2><ul>' % len(skipped))
 for r in skipped[-10:][::-1]: out.append('<li class="mut">%s %s | %s | %s</li>' % (e(r.get('date', '')), e(str(r.get('cat', '')))[:60], e(str(r.get('item', '')))[:60], e(r.get('agent', ''))))
 out.append('</ul><h2>Agent progress notes (rungs)</h2><ul>')
 for l in prog: out.append('<li class="mut">%s</li>' % e(l))
