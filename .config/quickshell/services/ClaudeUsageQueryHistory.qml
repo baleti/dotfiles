@@ -33,6 +33,8 @@ Singleton {
         id: defFile
         path: Quickshell.env("HOME") + "/.cache/quickshell/claude-usage-query-default.txt"
         atomicWrites: true
+        watchChanges: true   // the claude-agents daemon (web / Android clients) writes this file too
+        onFileChanged: reload()
         onLoaded: root.defaultQuery = defFile.text().replace(/\n+$/, "")
         onLoadFailed: {}  // none set yet
         onSaveFailed: err => console.warn("claude-usage-query-default: save failed:", err)
@@ -43,6 +45,8 @@ Singleton {
         id: baseHistFile
         path: Quickshell.env("HOME") + "/.cache/quickshell/claude-usage-base-query-history.json"
         atomicWrites: true
+        watchChanges: true
+        onFileChanged: reload()
         onLoaded: { try { const p = JSON.parse(baseHistFile.text()); root.baseHistory = Array.isArray(p) ? p : []; } catch (e) { root.baseHistory = []; } }
         onLoadFailed: {}
         onSaveFailed: err => console.warn("claude-usage-base-query-history: save failed:", err)

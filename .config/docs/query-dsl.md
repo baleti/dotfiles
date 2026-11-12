@@ -909,9 +909,17 @@ give; once saved it applies to everything typed afterwards.
   re-saves it (or edit first). With no prefix match Tab falls back to the normal
   completion of the rest of the line. (Android shows the list live as you type,
   like its other completion.)
-- **Stored per picker, per device** (panel: `~/.cache/quickshell/claude-usage-query-default.txt`;
-  Android: SharedPreferences `claudeagents_query_default`, shared by its three
-  search boxes; web: `localStorage["query-default"]`). Not synced between clients.
+- **One base query, kept on the server, shared by every claude-agents client.** The
+  source of truth is two files on host3 - `~/.cache/quickshell/claude-usage-query-default.txt`
+  (the query) and `~/.cache/quickshell/claude-usage-base-query-history.json` (previous
+  values, most recent first). The CTRL+ALT+c panel reads and writes them directly
+  (and re-reads them when they change); the claude-agents daemon serves them to the
+  web page and the Android app as `GET`/`POST /api/v1/base-query`
+  (`{"query": ..., "history": [...]}`; POST takes `{"query": ...}`, records the outgoing
+  value in the history and returns the new state). The web page and the app load it on
+  start (web: also on window focus) and push on save; their `localStorage` /
+  SharedPreferences copy is only an offline cache. A query saved in one client
+  therefore shows up in the others. The other pickers in this document have no base query.
 - **The base query is not shown in the box**, so an empty box can still be
   filtered; open `/base-query` to see it. A base query ending in a verb waiting for
   its argument (`//path`) takes the first typed word as that argument, exactly as
