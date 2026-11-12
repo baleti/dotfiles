@@ -1124,7 +1124,8 @@ Rectangle {
             // lands a beat after the plain "first row" default just above;
             // _selectAddressIfPresent no-ops if the panel's since closed
             // again or nothing matches (request 2026-09-27).
-            activeWindowProc.exec(["hyprctl", "-j", "activewindow"]);
+            // (disabled 2026-11-12, requested: the first row is always the preselected one;
+            // re-enable by running activeWindowProc.exec(["hyprctl", "-j", "activewindow"]) here)
         } else {
             hoverSettleTimer.stop();
         }
