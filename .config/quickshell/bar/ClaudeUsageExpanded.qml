@@ -3241,26 +3241,6 @@ Rectangle {
             spacing: 6
             visible: root.anyProcsVisible
 
-            // number of conversations the base query filters out of this view (left of the total)
-            Rectangle {
-                visible: root.baseHiddenCount > 0
-                Layout.alignment: Qt.AlignVCenter
-                implicitWidth: tallyHiddenText.implicitWidth + 16
-                implicitHeight: tallyHiddenText.implicitHeight + 6
-                radius: height / 2
-                color: Theme.bgAlpha
-                border.color: Theme.border
-                border.width: 1
-
-                Text {
-                    id: tallyHiddenText
-                    anchors.centerIn: parent
-                    text: qsTr("%1 hidden").arg(root.baseHiddenCount)
-                    color: Theme.muted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSize - 1
-                }
-            }
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
                 implicitWidth: tallyTotalText.implicitWidth + 16
@@ -3280,6 +3260,26 @@ Rectangle {
                     font.bold: true
                 }
             }
+            // number of conversations the base query filters out of this view (right of the total)
+            Rectangle {
+                visible: root.baseHiddenCount > 0
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: tallyHiddenText.implicitWidth + 16
+                implicitHeight: tallyHiddenText.implicitHeight + 6
+                radius: height / 2
+                color: Theme.bgAlpha
+                border.color: Theme.border
+                border.width: 1
+
+                Text {
+                    id: tallyHiddenText
+                    anchors.centerIn: parent
+                    text: qsTr("%1 hidden").arg(root.baseHiddenCount)
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 1
+                }
+            }
             // one pill per host: conversations of that host in this view
             Repeater {
                 model: root.hostPillNames
@@ -3296,7 +3296,7 @@ Rectangle {
                     Text {
                         id: hostPillText
                         anchors.centerIn: parent
-                        text: modelData + (modelData === "host3" ? " (this host)" : "") + "  " + parent.n
+                        text: modelData + "  " + parent.n
                         color: parent.n > 0 ? (modelData === "host3" ? Theme.text : Theme.cyan) : Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 1
