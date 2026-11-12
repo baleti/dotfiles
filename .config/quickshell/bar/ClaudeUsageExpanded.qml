@@ -677,6 +677,39 @@ Rectangle {
         if (bt.length === 0 || (!!root._bqMatch && !root.bqNegated)) return 0;
         return root.allProcs.filter(p => !bt.every(t => root._searchMatches(p, t, p.account))).length;
     }
+    // ---- tally pills are filters: a click writes the matching query into the search box ----
+    function _setBoxText(t) {
+        root.acItems = [];
+        root.searchText = t;
+        searchInput.text = t;
+        searchInput.cursorPosition = t.length;
+        searchInput.forceActiveFocus();
+    }
+    // text split into a leading "/bq" or "!/bq" command token (kept first: it only counts as the first token) and the rest
+    function _bqLeadSplit(text) {
+        const m = /^(\s*!?\/(?:base-query|bq))(?=\s|$)\s*([\s\S]*)$/.exec(text);
+        return m ? { lead: m[1] + " ", rest: m[2] } : { lead: "", rest: text };
+    }
+    // host pill: only that host's rows. Replaces any "//host x" in the box; a second click on the active host removes it.
+    function toggleHostFilter(h) {
+        const sp = root._bqLeadSplit(root.searchText);
+        const had = new RegExp("(^|\\s)//host " + h + "(?=\\s|$)").test(sp.rest);
+        let rest = sp.rest.replace(/(^|\s)\/\/host \S+/g, "$1").replace(/\s+/g, " ").trim();
+        if (!had) rest = ("//host " + h + " " + rest).trim();
+        root._setBoxText(sp.lead + rest + (rest ? " " : ""));
+    }
+    readonly property bool hiddenFilterActive: /^\s*!\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)
+    // "hidden" pill: only the rows the base query filters out (= "!/bq" first); a second click takes it off again
+    function toggleHiddenFilter() {
+        if (root.hiddenFilterActive) {
+            root._setBoxText(root.searchText.replace(/^\s*!\/(?:base-query|bq)\s*/, ""));
+        } else if (!/^\s*\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)) {
+            root._setBoxText("!/bq " + root.searchText.replace(/^\s+/, ""));
+        }
+    }
+    function hostFilterActive(h) {
+        return new RegExp("(^|\\s)//host " + h + "(?=\\s|$)").test(root.searchText);
+    }
     // Conversations per host in the current view (after the base query and whatever is typed), for the
     // per-host pills: host1/host2/host3 always, plus any other host that has rows (e.g. wsl). No host = this one.
     readonly property var hostCounts: {
@@ -3250,6 +3283,11 @@ Rectangle {
                 border.color: Theme.border
                 border.width: 1
 
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root._setBoxText("")   // everything: clear the typed query
+                }
                 Text {
                     id: tallyTotalText
                     anchors.centerIn: parent
@@ -3268,8 +3306,13 @@ Rectangle {
                 implicitHeight: tallyHiddenText.implicitHeight + 6
                 radius: height / 2
                 color: Theme.bgAlpha
-                border.color: Theme.border
+                border.color: root.hiddenFilterActive ? Theme.cyan : Theme.border
                 border.width: 1
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleHiddenFilter()
+                }
 
                 Text {
                     id: tallyHiddenText
@@ -3291,8 +3334,13 @@ Rectangle {
                     implicitHeight: hostPillText.implicitHeight + 6
                     radius: height / 2
                     color: Theme.bgAlpha
-                    border.color: Theme.border
+                    border.color: root.hostFilterActive(modelData) ? Theme.cyan : Theme.border
                     border.width: 1
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleHostFilter(modelData)
+                    }
                     Text {
                         id: hostPillText
                         anchors.centerIn: parent
