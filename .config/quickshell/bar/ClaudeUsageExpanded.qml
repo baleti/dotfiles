@@ -700,19 +700,32 @@ Rectangle {
         const sp = root._bqLeadSplit(root.searchText);
         const cur = root._hostsInBox(sp.rest);
         const next = cur.indexOf(h) >= 0 ? cur.filter(x => x !== h) : cur.concat([h]);
-        let rest = sp.rest.replace(/(^|\s)\/\/host \S+/g, "$1").replace(/\s+/g, " ").trim();
-        if (next.length > 0) rest = ("//host " + next.join("||") + " " + rest).trim();
+        const tok = next.length > 0 ? "//host " + next.join("||") : "";
+        let rest;
+        if (cur.length > 0)   // an existing host filter is edited where it stands
+            rest = sp.rest.replace(/(^|\s)\/\/host \S+/, "$1" + tok).replace(/(^|\s)\/\/host \S+/g, "$1");
+        else                  // a new one goes at the end, so the text shows the order of the clicks
+            rest = sp.rest.trim() + " " + tok;
+        rest = rest.replace(/\s+/g, " ").trim();
         root._setBoxText(sp.lead + rest + (rest ? " " : ""));
     }
     readonly property bool hiddenFilterActive: /^\s*!\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)
     // "hidden" pill: only the rows the base query filters out - "!/bq <opposite of the base query>" (base off, the
-    // written-out opposite runs); a second click clears the box again
+    // written-out opposite runs). Filters already in the box are kept and the opposite is added after them, so
+    // host pill -> hidden pill reads "!/bq //host h <opposite>" while hidden -> host reads "!/bq <opposite> //host h".
+    // Clicking it again takes the opposite (and the "!/bq") out and leaves the other filters.
     function toggleHiddenFilter() {
+        const inv = root._invertBase(ClaudeUsageQueryHistory.defaultQuery.trim());
+        if (inv === "") return;
         if (root.hiddenFilterActive) {
-            root._setBoxText("");
-        } else {
-            const inv = root._invertBase(ClaudeUsageQueryHistory.defaultQuery.trim());
-            if (inv !== "") root._setBoxText("!/bq " + inv + " ");
+            let t = root.searchText.replace(/^\s*!\/(?:base-query|bq)\s*/, "");
+            const k = t.indexOf(inv);
+            if (k >= 0) t = t.slice(0, k) + t.slice(k + inv.length);
+            t = t.replace(/\s+/g, " ").trim();
+            root._setBoxText(t ? t + " " : "");
+        } else if (!/^\s*\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)) {
+            const rest = root.searchText.trim();
+            root._setBoxText("!/bq " + (rest ? rest + " " : "") + inv + " ");
         }
     }
     function hostFilterActive(h) {
