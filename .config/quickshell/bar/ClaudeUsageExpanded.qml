@@ -928,7 +928,7 @@ Rectangle {
                 .map(x => ({ text: head + x[0] + " ", label: x[0], alias: "", desc: x[1] }));
         }
         // "/bq <frag>" + Tab: the base-query history, current first, then previous ones (prefix-filtered by <frag>)
-        const bm0 = /^(\s*\/(?:base-query|bq))(?:\s+([\s\S]*))?$/.exec(t);
+        const bm0 = /^(\s*!?\/(?:base-query|bq))(?:\s+([\s\S]*))?$/.exec(t);
         const bm = bm0 ? [bm0[0], bm0[1] + " ", bm0[2] || ""] : null;
         if (bm) {
             const cur = ClaudeUsageQueryHistory.defaultQuery.trim();

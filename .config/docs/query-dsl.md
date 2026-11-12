@@ -887,8 +887,9 @@ give; once saved it applies to everything typed afterwards.
   base query filters **out** (everything it would hide), with `<rest>` applied on
   top like any other query. Only the base query's row filters take part; its
   `/s` / `/g` are ignored. With no base query set the result is empty (it hides
-  nothing). It is a view only: Enter does not save anything, and it has no
-  history list.
+  nothing). It is a view only: Enter never saves anything and acts as it would
+  anywhere else (e.g. opens the selected row). Tab after `!/bq ` completes from the
+  same base-query history as `/bq `, to preview what a saved query hides.
 - The command is not recorded in the search-box history.
 - **Base-query history.** Every non-empty base query that gets saved is remembered
   (most recent first, up to 100, per client). **Tab after `/bq `** lists them: the
