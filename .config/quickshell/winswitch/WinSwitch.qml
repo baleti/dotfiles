@@ -155,7 +155,9 @@ PanelWindow {
     }
 
     // ---- filtering / sorting (query DSL) -----------------------------
-    readonly property var parsedQuery: WinSwitchQueryDsl.parse(root.queryText)
+    // what actually runs: the picker's base query (query-dsl.md "/base-query") written in front of the typed text
+    readonly property string effQuery: BaseQuery.effective("winswitch", root.queryText)
+    readonly property var parsedQuery: WinSwitchQueryDsl.parse(root.effQuery)
     // /fts[/claude][/live|/archive] [term]: full text over the Claude conversations.
     // /fts/live filters the window grid; /fts/archive (past conversations) and plain
     // /fts with a term (live + archived) replace the grid by a table from
@@ -410,11 +412,11 @@ PanelWindow {
         }
         return out;
     }
-    readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.queryText, root.wantWorkspaces ? WinSwitchQueryDsl.workspaceColumns : WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
+    readonly property var activeColumns: WinSwitchQueryDsl.activeColumns(root.effQuery, root.wantWorkspaces ? WinSwitchQueryDsl.workspaceColumns : WinSwitchQueryDsl.defaultColumns, root.windows, root.metas)
 
     // /group: sections folded by clicking a header (or Ctrl+G on the selected window); reset when the query changes
     property var groupCollapsed: ({})
-    readonly property var groupParsed: root.tableMode || root.queryText.length === 0 ? null
+    readonly property var groupParsed: root.tableMode || root.effQuery.length === 0 ? null
         : WinSwitchQueryDsl.parseGroup(root.parsedQuery.groupRaw, root.wantWorkspaces ? [] : WinSwitchQueryDsl.typeNames)
     readonly property var groupView: root.groupParsed
         ? { display: WinSwitchQueryDsl.groupDisplay(root._resultsRaw, root.groupParsed,
@@ -441,7 +443,7 @@ PanelWindow {
     readonly property var _resultsRaw: {
         // Reference-stable fast path: with no query, hand back `windows`
         // itself so enrichment updates don't rebuild every grid delegate.
-        if (root.queryText.length === 0)
+        if (root.effQuery.length === 0)
             return root.windows;
 
         // Workspace view: bare words match the workspace name only ("/sw 3" -> 3, 13, 23, ...).
@@ -449,7 +451,7 @@ PanelWindow {
             ? root.windows.filter(w => root.parsedQuery.filters.every(t =>
                 t.kind === "free" ? WinSwitchQueryDsl.substr(t.text, w.workspace) !== !!t.neg
                     : WinSwitchQueryDsl._termMatches(w, root.metas[w.index] || {}, t)))
-            : root.windows.filter(w => WinSwitchQueryDsl.matchesStr(w, root.metas[w.index] || {}, root.queryText));
+            : root.windows.filter(w => WinSwitchQueryDsl.matchesStr(w, root.metas[w.index] || {}, root.effQuery));
         const s = root.parsedQuery.sort;
         if (s) {
             rows = rows.slice().sort((a, b) => {
@@ -469,7 +471,7 @@ PanelWindow {
     onVisualSelectedChanged: root._revealInGroups()
     onResultsChanged: {
         // A search that filters out the selection moves it to the first match.
-        if (root.queryText.length > 0 && root.results.length > 0 && root.visualSelected < 0)
+        if (root.effQuery.length > 0 && root.results.length > 0 && root.visualSelected < 0)
             WinSwitchState.selected = root.results[0].index;
     }
 
@@ -987,7 +989,7 @@ PanelWindow {
             Item {
                 id: searchHeader
                 width: parent.width
-                height: root.locked ? 32 : 0
+                height: root.locked ? Math.max(32, searchInput.contentHeight + 12) : 0
                 visible: root.locked
                 clip: true
 
@@ -1009,8 +1011,9 @@ PanelWindow {
                     color: Theme.textDim
                 }
 
-                TextInput {
+                TextEdit {   // (not TextInput: Shift+Enter inserts a newline = whitespace)
                     id: searchInput
+                    wrapMode: TextEdit.Wrap
                     onActiveFocusChanged: if (activeFocus) root.listFocused = false
                     anchors.verticalCenter: parent.verticalCenter
                     x: 22
@@ -1083,8 +1086,9 @@ PanelWindow {
                             else root.hide();
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                            if (acPopup.visible) root._acAccept();
-                            else root.confirm(root.selected);
+                            if (event.modifiers & Qt.ShiftModifier) searchInput.insert(searchInput.cursorPosition, "\n");   // Shift+Enter: newline
+                            else if (acPopup.visible) root._acAccept();
+                            else if (!BaseQuery.run("winswitch", searchInput)) root.confirm(root.selected);   // "/bq <q>" + Enter saves the base query
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
                             // Tab confirms the highlighted suggestion
@@ -1092,7 +1096,7 @@ PanelWindow {
                             // (onLockedTab) still cycles.
                             const back = event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier);
                             if (acPopup.visible && !back) root._acAccept();
-                            else root._completionTab(back ? "prev" : "next");
+                            else if (!BaseQuery.expandNeg("winswitch", searchInput)) root._completionTab(back ? "prev" : "next");   // bare "!/bq" + Tab = opposite of the base query
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Space && !acPopup.visible && (event.modifiers & Qt.ControlModifier)) {
                             // Ctrl+Space also opens completion, same as Tab
@@ -1439,7 +1443,7 @@ PanelWindow {
                             // that matched, rather than showing all of a
                             // group's subfields regardless of relevance
                             // (query-dsl.md "Auto-shown filter fields").
-                            const groupGate = WinSwitchQueryDsl.scopedGroupFilters(root.queryText);
+                            const groupGate = WinSwitchQueryDsl.scopedGroupFilters(root.effQuery);
                             for (const f of root.activeColumns) {
                                 let v = WinSwitchQueryDsl.sortFieldValue(cellItem.modelData, cellItem.meta, f);
                                 if (f.kind === "flat" && f.name === "title" && v === "") v = cellItem.modelData.class || "";
