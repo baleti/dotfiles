@@ -2279,7 +2279,22 @@ Rectangle {
             z: 50
             x: searchBox.x
             y: searchBox.y + searchBox.height + 4
-            width: Math.min(360, content.width)
+            // as wide as the widest entry needs (long base-query history lines!), at least 360, at most the panel
+            FontMetrics { id: acFm2; font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 2 }
+            FontMetrics { id: acFm3; font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize - 3 }
+            readonly property real neededW: {
+                let m = 0;
+                const n = Math.min(root.acItems.length, 200);
+                for (let i = 0; i < n; i++) {
+                    const it = root.acItems[i];
+                    let w = 10 + acFm2.advanceWidth(String(it.label || "")) + 8 + 34;
+                    if (it.alias) w += acFm3.advanceWidth("(" + it.alias + ")") + 8;
+                    if (it.desc) w += acFm3.advanceWidth(String(it.desc)) + 8;
+                    if (w > m) m = w;
+                }
+                return m;
+            }
+            width: Math.min(Math.max(360, ac.neededW), content.width)
             height: visible ? Math.min(root.acItems.length, 7) * 24 + 8 : 0
             radius: Theme.rounding - 4
             color: Theme.bgAlpha
