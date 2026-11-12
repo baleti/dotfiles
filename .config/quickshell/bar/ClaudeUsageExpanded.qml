@@ -1360,7 +1360,7 @@ Rectangle {
     // that filler removal already implies).
     // Everything except the title and path columns (the two that flex to fit the screen, see titleFitW).
     readonly property real fixedOtherW: root.colAcctW + root.handleW + root.colHostW + root.handleW + root.colStatusW + root.handleW
-        + root.handleW + root.colTokensW + root.handleW
+        + root.handleW + root.colMsgsW + root.handleW + root.colTokensW + root.handleW   // msgs was missing here, clipping the path column by its width
         + root.colLastW + root.handleW + root.colTmuxGroupW + root.handleW
         + root.colHyprWorkspaceW + root.handleW + root.colPidW + root.handleW
         + root.scrollbarGap + root.scrollbarW
