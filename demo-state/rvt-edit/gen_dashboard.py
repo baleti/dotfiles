@@ -53,7 +53,7 @@ rows = [x for x in (_fix(r) for r in rows) if x]
 rows.sort(key=lambda r: r.get('date', ''))
 if True:
     for r in rows:
-        yrs = r.get('years') or ([r['year']] if r.get('year') else YEARS)
+        yrs = r.get('years') or ([r['year']] if r.get('year') else [2024])      # year-less rows: every recorded test ran on 2024 (2026 only when named), so credit 2024 only
         for y in yrs:
             led[(r['cat'], r['item'], int(y))] = (r['result'], r.get('date', ''), r.get('note', ''), r.get('agent', ''))
         recent.append(r)

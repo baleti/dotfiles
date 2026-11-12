@@ -13,8 +13,8 @@ rows = [{'cat': 'A', 'item': 'x', 'result': 'PASS', 'years': [2024], 'date': '1'
 open(t + '/demo-state/rvt-edit/ledger.jsonl', 'w').write('\n'.join(json.dumps(r) for r in rows) + '\n')
 subprocess.run([sys.executable, here + '/gen_dashboard.py'], env={'HOME': t, 'RVT_DASH_NO_SSH': '1', 'PATH': os.environ['PATH']}, check=True)
 h = open(t + '/share/pixel6/rvt-edit-dashboard.html').read()
-# cells: 6 total; PASS = x@2024 + z@2024 + z@2025 = 3 -> 50%; FAIL = y x2 = 2
-assert '3 of 6 checks pass, 2 fail, 1 untested' in h, re.findall(r'\d+ of \d+ checks[^<]*', h)
+# year-less rows count for 2024 only: PASS = x@2024 + z@2024 = 2 of 6 (33%); FAIL = y@2024 = 1; any-year items passing = x, z = 2 of 3
+assert '2 of 6 checks pass, 1 fail, 3 untested' in h, re.findall(r'\d+ of \d+ checks[^<]*', h)
 assert '<b>2 of 3 (67%)' in h, re.findall(r'Items passing[^<]*<b>[^<]*', h)
-assert 'big">50%' in h
+assert 'big">33%' in h
 print('ok')
