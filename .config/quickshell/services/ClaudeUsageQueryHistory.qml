@@ -26,6 +26,42 @@ Singleton {
         onSaveFailed: err => console.warn("claude-usage-query-history: save failed:", err)
     }
 
+    // Default query (query-dsl.md "/get-default, /set-default"): text run in front of every
+    // typed query. Plain text, its own file next to the history.
+    property string defaultQuery: ""
+    FileView {
+        id: defFile
+        path: Quickshell.env("HOME") + "/.cache/quickshell/claude-usage-query-default.txt"
+        atomicWrites: true
+        onLoaded: root.defaultQuery = defFile.text().replace(/\n+$/, "")
+        onLoadFailed: {}  // none set yet
+        onSaveFailed: err => console.warn("claude-usage-query-default: save failed:", err)
+    }
+    // Every non-empty base query ever set, most recent first (the Tab list after "/bq ").
+    property var baseHistory: []
+    FileView {
+        id: baseHistFile
+        path: Quickshell.env("HOME") + "/.cache/quickshell/claude-usage-base-query-history.json"
+        atomicWrites: true
+        onLoaded: { try { const p = JSON.parse(baseHistFile.text()); root.baseHistory = Array.isArray(p) ? p : []; } catch (e) { root.baseHistory = []; } }
+        onLoadFailed: {}
+        onSaveFailed: err => console.warn("claude-usage-base-query-history: save failed:", err)
+    }
+    // current first (if set), then the previous ones, no duplicates
+    function baseCandidates() {
+        const cur = root.defaultQuery.trim();
+        return (cur ? [cur] : []).concat(root.baseHistory.filter(x => x !== cur));
+    }
+    function setDefault(q) {
+        const prev = root.defaultQuery.trim();
+        root.defaultQuery = q;
+        defFile.setText(q);
+        if (q !== "" && prev !== "" && prev !== q && root.baseHistory.indexOf(prev) < 0)
+            root.baseHistory = [prev].concat(root.baseHistory);   // the outgoing one (may predate the history file)
+        if (q !== "") root.baseHistory = [q].concat(root.baseHistory.filter(x => x !== q)).slice(0, 100);
+        baseHistFile.setText(JSON.stringify(root.baseHistory));
+    }
+
     function _loadJson(txt) {
         try {
             const parsed = JSON.parse(txt);

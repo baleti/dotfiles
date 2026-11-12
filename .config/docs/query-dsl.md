@@ -852,6 +852,53 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   `~/.config/dsl/dsl.py`, `~/.config/quickshell/lib/dsl.js` and `~/.config/dsl/group.rs`, all proven by the
   `group` vectors in `tests.json`.
 
+### `/base-query` (`/bq`) - a standing query
+
+*Added 2026-11-12. Implemented in: claude-usage panel (CTRL+ALT+c), the claude-agents Android app (list, archive and drawer search boxes) and the claude-agents web client. Not in any other picker yet.*
+
+The **base query** is a stored query string that runs in front of every query,
+as if it had been typed there: with `!//path /home/user/src/rvt` stored,
+typing `foo` runs `!//path /home/user/src/rvt foo`. The stored text is ordinary
+DSL (filters, `/s`, `/g`, `/fts`...), so everything above holds for it. It
+does not change the `/fv` default: the effective query is simply
+`<base> <typed>`, and bare words in either half are still `/fv` row filters.
+
+`/base-query` is a **transparent prefix**: as the first token it behaves as if
+it were not there, the rest of the line runs live as the query and the result
+list updates with it, so you can see what a candidate base query does before
+keeping it. **Enter** then makes the rest the base query and clears the box:
+
+| Box | Enter does |
+|---|---|
+| `/bq <query>` | save `<query>` as the base query, clear the box |
+| `/bq ` (verb + whitespace, nothing after) | clear the base query |
+| `/bq` (no whitespace after) | clear the box and open a small read-only dialog showing the current base query (selectable, Copy button, Enter/Esc closes) |
+
+While the prefix is present the stored base query is **not** applied (Enter is
+about to replace it), so the list shows exactly what the new base query would
+give; once saved it applies to everything typed afterwards.
+
+- **Only the first token counts.** Recognised only as the very first token of
+  the box (leading whitespace aside, no `!`). Anywhere else
+  (`//path rvt /base-query`) it is inert like any unknown `/verb`, highlighted as
+  invalid, and never offered by autocompletion; at the start of the box it is
+  completed and highlighted as valid.
+- The command is not recorded in the search-box history.
+- **Base-query history.** Every non-empty base query that gets saved is remembered
+  (most recent first, up to 100, per client). **Tab after `/bq `** lists them: the
+  current one on top (`current`), the previous ones below (`previous`), narrowed
+  by prefix as you type the rest; accepting one puts it after `/bq ` so Enter
+  re-saves it (or edit first). With no prefix match Tab falls back to the normal
+  completion of the rest of the line. (Android shows the list live as you type,
+  like its other completion.)
+- **Stored per picker, per device** (panel: `~/.cache/quickshell/claude-usage-query-default.txt`;
+  Android: SharedPreferences `claudeagents_query_default`, shared by its three
+  search boxes; web: `localStorage["query-default"]`). Not synced between clients.
+- **The base query is not shown in the box**, so an empty box can still be
+  filtered; open `/base-query` to see it. A base query ending in a verb waiting for
+  its argument (`//path`) takes the first typed word as that argument, exactly as
+  if typed.
+
 ### Quoting
 
 `"..."` is checked first at every token position, so it is the universal

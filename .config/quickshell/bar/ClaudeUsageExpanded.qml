@@ -338,6 +338,39 @@ Rectangle {
     // do anything. Its /s, when present, override the table's own
     // column-click sort (root.sort).
     property string searchText: ""
+    // /base-query (/bq), query-dsl.md: as the FIRST token of the box it is transparent - the rest of the
+    // line runs live as the query (the stored base query is NOT applied meanwhile, since Enter replaces it).
+    // Enter: "/bq" alone (no whitespace after) shows the current base query in a read-only, selectable,
+    // copyable dialog; "/bq <q>" (or "/bq " + nothing = clear) saves <q> as the base query and clears the box.
+    // Anywhere else the token is inert.
+    property bool baseQueryOpen: false
+    readonly property var _bqMatch: /^\s*\/(?:base-query|bq)(?:(\s+)([\s\S]*))?$/.exec(root.searchText)
+    readonly property string effectiveText: {
+        if (root._bqMatch) return root._bqMatch[2] || "";
+        const d = ClaudeUsageQueryHistory.defaultQuery.trim();
+        const t = root.searchText;
+        return d === "" ? t : (t.trim() === "" ? d : d + " " + t);
+    }
+    // Enter in the box: runs /base-query, true if the box held it.
+    function _runDefaultCmd() {
+        const m = root._bqMatch;
+        if (!m) return false;
+        if (m[1] === undefined) {
+            root._setQueryTextForHistory("");
+            bqInput.text = ClaudeUsageQueryHistory.defaultQuery;
+            root.baseQueryOpen = true;
+            bqInput.forceActiveFocus();
+            bqInput.selectAll();
+        } else {
+            ClaudeUsageQueryHistory.setDefault((m[2] || "").trim());
+            root._setQueryTextForHistory("");
+        }
+        return true;
+    }
+    function _closeBaseQuery() {
+        root.baseQueryOpen = false;
+        searchInput.forceActiveFocus();
+    }
     readonly property var searchTypeNames: [
         "title", "pid", "status", "tokens", "msgs", "age", "path", "account", "host",
         "tmux-session", "tmux-window", "tmux-pane",
@@ -374,7 +407,7 @@ Rectangle {
     }
     // null (no /fts) | { live, archive, tmux }: the union of every /fts token's scopes
     readonly property var ftsScopes: {
-        const toks = root._ftsTokens(root.searchText);
+        const toks = root._ftsTokens(root.effectiveText);
         if (toks.length === 0) return null;
         const u = { live: false, archive: false, tmux: false };
         for (const t of toks) for (const k of ["live", "archive", "tmux"]) u[k] = u[k] || t.scope[k];
@@ -385,7 +418,7 @@ Rectangle {
     readonly property bool liveRowsIn: !root.ftsScopes || root.ftsScopes.live
     // the term the archive / tmux rows are fetched for ("" = newest, archive-only scope only)
     readonly property string archiveTerm: {
-        const t = root._ftsTokens(root.searchText).find(x => !x.neg && x.arg);
+        const t = root._ftsTokens(root.effectiveText).find(x => !x.neg && x.arg);
         return t ? t.arg : "";
     }
     function _rewriteFts(text) {
@@ -411,7 +444,7 @@ Rectangle {
         const want = !!sc && (sc.archive || sc.tmux) && (root.archiveMode || root.archiveTerm !== "");
         if (!want) { root.archiveRows = []; return; }
         const csv = [sc.archive ? "archive" : "", sc.tmux ? "tmux" : ""].filter(x => x).join(",");
-        const q = root._ftsTokens(root.searchText).filter(t => t.arg)
+        const q = root._ftsTokens(root.effectiveText).filter(t => t.arg)
             .map(t => (t.neg ? "!" : "") + (/\s/.test(t.arg) ? '"' + t.arg + '"' : t.arg)).join(" ");
         archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--sessions", q, "--scope", csv];
         archiveProc.running = false;
@@ -445,7 +478,7 @@ Rectangle {
         resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--resume-window", row.session_id]);
         root.picked();
     }
-    readonly property var searchParsed: QueryDsl.parse(root._rewriteFts(root.searchText))
+    readonly property var searchParsed: QueryDsl.parse(root._rewriteFts(root.effectiveText))
 
     // fts hits: lowercase term -> { sessionId: relevance % }, filled by one
     // query per distinct term (queue drained by ftsProc).
@@ -465,7 +498,7 @@ Rectangle {
     function _ftsRefresh() {
         const terms = root._ftsTerms();
         if (terms.length === 0) {
-            if (root.searchText === "") root.ftsHits = ({});
+            if (root.effectiveText === "") root.ftsHits = ({});
             return;
         }
         root._ftsQueue = terms.filter(v => root.ftsHits[v] === undefined);
@@ -722,8 +755,8 @@ Rectangle {
         "status": "busy / wait / idle",
         "tokens": "context tokens used",
         "path": "working directory",
-        "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7 / claude8",
-        "host": "host3 / host2 / host1",
+        "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7 / claude8 / claude-ksr",
+        "host": "host3 / host2 / host1 / wsl",
         "tmux-session": "tmux session id",
         "tmux-window": "tmux window id",
         "tmux-pane": "tmux pane id",
@@ -761,9 +794,12 @@ Rectangle {
             // not part of the command, so the span starts after it.
             const bang = text[i] === "!" ? 1 : 0;
             const tok = text.slice(i + bang, j);
+            const wasFirst = spans.length === 0 && /^\s*$/.test(text.slice(0, start));
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (/^\/fts(\/[a-z,-]+)?$/.test(tok) || QueryDsl.canonVerb({ q: false, v: tok })) {
+                if (bang === 0 && wasFirst && /^\/(base-query|bq)$/.test(tok)) {
+                    spans.push({ start: start, end: start + tok.length, valid: true });
+                } else if (/^\/fts(\/[a-z,-]+)?$/.test(tok) || QueryDsl.canonVerb({ q: false, v: tok })) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (!root._isVerbPrefix(tok)) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: false });
@@ -881,13 +917,28 @@ Rectangle {
                 .filter(x => x[0].indexOf(frag) >= 0)
                 .map(x => ({ text: head + x[0] + " ", label: x[0], alias: "", desc: x[1] }));
         }
+        // "/bq <frag>" + Tab: the base-query history, current first, then previous ones (prefix-filtered by <frag>)
+        const bm0 = /^(\s*\/(?:base-query|bq))(?:\s+([\s\S]*))?$/.exec(t);
+        const bm = bm0 ? [bm0[0], bm0[1] + " ", bm0[2] || ""] : null;
+        if (bm) {
+            const cur = ClaudeUsageQueryHistory.defaultQuery.trim();
+            const hits = ClaudeUsageQueryHistory.baseCandidates().filter(x => x.startsWith(bm[2].trim()))
+                .map(x => ({ text: bm[1] + x, label: x, alias: "", desc: x === cur ? "current" : "previous" }));
+            if (hits.length > 0) return hits;
+        }
         const ks = QueryDsl.keyStageCandidates(t, root.searchTypeNames, root.searchTypeDescs);
         if (ks !== null) return ks;
         const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
         if (vm) {
             const frag = vm[1].slice(1);
             const prefix = t.slice(0, t.length - vm[1].length);
-            return root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
+            const verbs = root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
+            // /bq is a command, not a pipeline stage: offered only for the very first token
+            const defs = prefix.trim() !== "" ? [] : [
+                ["bq", "base-query", "base query: the rest of the line runs as usual; Enter saves it as the query run in front of every query (/bq alone + Enter shows the current one)"]]
+                .filter(d => d[0].indexOf(frag) >= 0 || d[1].indexOf(frag) >= 0)
+                .map(d => ({ text: prefix + "/" + d[0] + " ", label: "/" + d[0], alias: "/" + d[1], desc: d[2] }));
+            return verbs.concat(defs);
         }
 
         // value stage:  "//<keys> <frag>"  /  "/fv/<keys> <frag>"
@@ -1176,7 +1227,7 @@ Rectangle {
     // hyprland "wks" column below (originally a grouped workspace+monitor
     // pair; monitor dropped 2026-09-08).
     readonly property var colDefaults: ({
-        acct: 30, host: 44, status: root.statusNaturalW, title: 400, tokens: root.tokensNaturalW, last: 44,
+        acct: 30, host: 44, status: root.statusNaturalW, title: 300, tokens: root.tokensNaturalW, last: 44,
         tmuxSession: root.tmuxSessionNaturalW, tmuxWindow: root.tmuxWindowNaturalW, tmuxPane: root.tmuxPaneNaturalW,
         hyprWorkspace: root.hyprWorkspaceNaturalW,
         pid: root.pidNaturalW, path: 100,
@@ -1253,7 +1304,7 @@ Rectangle {
     // fallback -- a single pathological cwd shouldn't be able to blow the
     // panel width out on its own; that's what "may be truncated later if
     // space gets more scarce" describes.
-    readonly property real pathNaturalCapW: 300
+    readonly property real pathNaturalCapW: 640   // was 300; widened 2026-11-12 so long paths are not cut off
     readonly property real pathNaturalW: Math.max(colDefaults.path,
         Math.min(root.pathNaturalCapW, root.pathContentMaxW + 6))
     property real colPathW: root.pathNaturalW
@@ -1522,7 +1573,16 @@ Rectangle {
             ClaudeUsageQueryHistory.record(root.searchText);
             const rcmd = "tmux select-window -t @" + row.tmux_window + "; tmux select-pane -t %" + row.tmux_pane
                 + "; exec tmux attach -t '$" + row.tmux_session + "'";
-            spawnAttachProc.exec(["alacritty", "-e", "ssh", "-t", row.host, rcmd]);
+            if (row.host === "wsl") {
+                // KSR WSL: go through a tmux client on host3 first -- one persistent host3 tmux
+                // session per remote session ("wsl-<id>"); -A re-attaches if it is already there,
+                // otherwise it is created running the ssh attach.
+                const q = "'" + rcmd.replace(/'/g, "'\\''") + "'";
+                spawnAttachProc.exec(["alacritty", "-e", "tmux", "new-session", "-A", "-s", "wsl-" + row.tmux_session,
+                    "ssh -t " + row.host + " " + q]);
+            } else {
+                spawnAttachProc.exec(["alacritty", "-e", "ssh", "-t", row.host, rcmd]);
+            }
             root.picked();
             return;
         }
@@ -2187,7 +2247,8 @@ Rectangle {
                         // Space/Enter when focus sits on the panel itself, so
                         // "search box focused by default" (2026-09-11) doesn't
                         // also disable Enter-to-open-selected-row.
-                        root.handleKey(event);
+                        if (root._runDefaultCmd()) event.accepted = true;
+                        else root.handleKey(event);
                     }
                 }
                 // Native key-repeat here delivers a flood of RELEASE events
@@ -3142,6 +3203,98 @@ Rectangle {
             color: Theme.text
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSize - 3
+        }
+    }
+    // /base-query (bare + Enter): read-only view of the base query; text is selectable, Ctrl+C / Copy copies it.
+    Rectangle {
+        id: bqDialog
+        visible: root.baseQueryOpen
+        anchors.fill: parent
+        z: 200
+        radius: Theme.rounding
+        color: Qt.rgba(0, 0, 0, 0.5)
+        MouseArea { anchors.fill: parent; onClicked: root._closeBaseQuery() }
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 24, 460)
+            height: bqCol.implicitHeight + 24
+            radius: Theme.rounding
+            color: Theme.bg
+            border.color: Theme.border
+            border.width: 1
+            MouseArea { anchors.fill: parent }
+            Column {
+                id: bqCol
+                x: 12; y: 12
+                width: parent.width - 24
+                spacing: 8
+                Text {
+                    text: "Base query"
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize
+                    font.bold: true
+                }
+                Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: bqInput.text === "" ? "(none set) Type /bq <query> and Enter to set one." : "Runs in front of every query. Change it with /bq <query> + Enter."
+                    color: Theme.textDim
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 2
+                }
+                Rectangle {
+                    width: parent.width
+                    height: bqInput.implicitHeight + 12
+                    radius: 4
+                    color: "transparent"
+                    border.color: Theme.border
+                    border.width: 1
+                    TextInput {
+                        id: bqInput
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        readOnly: true
+                        selectByMouse: true
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.cyan
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize
+                        Keys.onPressed: event => {
+                            if (event.matches(StandardKey.Copy)) {
+                                bqInput.copy();
+                                event.accepted = true;
+                            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Escape) {
+                                root._closeBaseQuery();
+                                event.accepted = true;
+                            } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+                                event.accepted = true;   // modal: Tab must not hand focus back to the box
+                            }
+                        }
+                        onActiveFocusChanged: if (!activeFocus && root.baseQueryOpen) forceActiveFocus()
+                    }
+                }
+                Row {
+                    spacing: 12
+                    layoutDirection: Qt.RightToLeft
+                    width: parent.width
+                    Text {
+                        text: "Close (Esc)"
+                        color: Theme.textDim
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 1
+                        MouseArea { anchors.fill: parent; onClicked: root._closeBaseQuery() }
+                    }
+                    Text {
+                        text: "Copy"
+                        color: Theme.cyan
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 1
+                        MouseArea { anchors.fill: parent; onClicked: { bqInput.selectAll(); bqInput.copy(); } }
+                    }
+                }
+            }
         }
     }
 }
