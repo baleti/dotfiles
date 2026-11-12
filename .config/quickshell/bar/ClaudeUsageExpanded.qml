@@ -671,11 +671,29 @@ Rectangle {
     }
     // Conversations the stored base query hides (shown as the pill left of the total). 0 while a "/bq <query>"
     // preview is in the box (the stored base query is not applied then) or when no base query is set.
-    readonly property int baseHiddenCount: {
+    readonly property var baseHiddenRows: {
         root.baseParsed; root.allProcs; root.ftsHits;   // dependencies
         const bt = root.baseParsed.terms;
-        if (bt.length === 0 || !!root._bqMatch) return 0;   // "/bq" and "!/bq" both switch the stored base query off
-        return root.allProcs.filter(p => !bt.every(t => root._searchMatches(p, t, p.account))).length;
+        if (bt.length === 0 || !!root._bqMatch) return [];   // "/bq" and "!/bq" both switch the stored base query off
+        return root.allProcs.filter(p => !bt.every(t => root._searchMatches(p, t, p.account)));
+    }
+    readonly property int baseHiddenCount: root.baseHiddenRows.length
+    // Tally pills are coloured by the most urgent status among their conversations: busy > waiting > idle.
+    function worstStatusColor(rows) {
+        const rank = { busy: 4, waiting: 3, idle: 2, frozen: 1 };
+        let best = "", br = -1;
+        for (const r of rows) {
+            if (r.archived || r.tmuxRow) continue;
+            const k = rank[r.status] === undefined ? 0 : rank[r.status];
+            if (k > br) { br = k; best = r.status; }
+        }
+        return best === "" ? Theme.muted : root.statusColor(best);
+    }
+    readonly property color totalPillColor: root.worstStatusColor(root.allProcs)
+    readonly property color hiddenPillColor: root.worstStatusColor(root.baseHiddenRows)
+    // per host, over the rows currently in view (same rows as the host counts)
+    function hostPillColor(h) {
+        return root.worstStatusColor(root.searchFilteredProcs.filter(r => (r.host || "host3") === h));
     }
     // ---- tally pills are filters: a click writes the matching query into the search box ----
     function _setBoxText(t) {
@@ -3308,7 +3326,7 @@ Rectangle {
                     id: tallyTotalText
                     anchors.centerIn: parent
                     text: qsTr("Σ %1").arg(root.totalSessionCount)
-                    color: Theme.text
+                    color: root.totalPillColor
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1
                     font.bold: true
@@ -3334,7 +3352,7 @@ Rectangle {
                     id: tallyHiddenText
                     anchors.centerIn: parent
                     text: qsTr("%1 hidden").arg(root.baseHiddenCount)
-                    color: Theme.muted
+                    color: root.hiddenPillColor
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1
                 }
@@ -3361,7 +3379,7 @@ Rectangle {
                         id: hostPillText
                         anchors.centerIn: parent
                         text: modelData + "  " + parent.n
-                        color: parent.n > 0 ? (modelData === "host3" ? Theme.text : Theme.cyan) : Theme.muted
+                        color: parent.n > 0 ? root.hostPillColor(modelData) : Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 1
                     }
