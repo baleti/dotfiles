@@ -669,12 +669,11 @@ Rectangle {
         // archived / tmux hits follow the live ones (or are all there is, in archive-only / tmux-only views)
         return root.ftsScopes ? out.concat(root.archiveRows) : out;
     }
-    // Conversations the stored base query hides (shown as the pill left of the total). 0 while a "/bq <query>"
-    // preview is in the box (the stored base query is not applied then) or when no base query is set.
+    // Conversations the stored base query hides (the "hidden" pill); none when no base query is set.
     readonly property var baseHiddenRows: {
         root.baseParsed; root.allProcs; root.ftsHits;   // dependencies
         const bt = root.baseParsed.terms;
-        if (bt.length === 0 || !!root._bqMatch) return [];   // "/bq" and "!/bq" both switch the stored base query off
+        if (bt.length === 0) return [];   // counts what the STORED base query hides, also while "!/bq" has it switched off (else the pill would vanish when clicked)
         return root.allProcs.filter(p => !bt.every(t => root._searchMatches(p, t, p.account)));
     }
     readonly property int baseHiddenCount: root.baseHiddenRows.length
@@ -753,6 +752,12 @@ Rectangle {
     // per-host pills: host1/host2/host3 always, plus any other host that has rows (e.g. wsl). No host = this one.
     readonly property var hostCounts: {
         const c = ({ host1: 0, host2: 0, host3: 0 });
+        // every host that has a conversation at all keeps its pill (count 0 when filtered away), so pills never vanish when clicked
+        for (const r of root.allProcs) {
+            if (r.archived || r.tmuxRow) continue;
+            const h0 = r.host || "host3";
+            if (c[h0] === undefined) c[h0] = 0;
+        }
         for (const r of root.searchFilteredProcs) {
             if (r.archived || r.tmuxRow) continue;
             const h = r.host || "host3";
