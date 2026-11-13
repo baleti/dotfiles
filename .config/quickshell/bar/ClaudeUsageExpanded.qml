@@ -414,7 +414,7 @@ Rectangle {
     // `claude-history --sessions`, drops the columns that only make sense for a
     // running session, and Enter/click resumes in a new terminal window.
     // An archived row is also what plain /fts appends after the live matches.
-    readonly property var _ftsTokenRe: /(^|\s)(!?)\/fts(?:\/([a-z,-]+))?(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
+    readonly property var _ftsTokenRe: /(^|\s)(!?)\/(?:fts(?:\/([a-z,-]+))?|(resume))(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
     // /fts/<keys>: keys fuzzy-resolve against the scope names (query-dsl.md Keys), so
     // live, claude-live, archive, claude and tmux all work; no keys = every scope
     readonly property var ftsScopeNames: ["claude-live", "claude-archive", "tmux"]
@@ -428,7 +428,7 @@ Rectangle {
         root._ftsTokenRe.lastIndex = 0;
         let m;
         while ((m = root._ftsTokenRe.exec(text)) !== null)
-            out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3]), arg: m[4] ? m[4].replace(/"/g, "") : "" });
+            out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3] || (m[4] ? "claude-archive" : "")), arg: m[5] ? m[5].replace(/"/g, "") : "" });
         return out;
     }
     // null (no /fts) | { live, archive, tmux }: the union of every /fts token's scopes
@@ -450,8 +450,8 @@ Rectangle {
     function _rewriteFts(text) {
         // the live rows are filtered by `/fv/fts term` (hit set from claude-history); a token whose scopes
         // exclude the live rows is dropped (archive / tmux rows come from the --sessions fetch below)
-        return text.replace(root._ftsTokenRe, (all, lead, neg, scope, arg) =>
-            !root._ftsScopeOf(scope).live ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
+        return text.replace(root._ftsTokenRe, (all, lead, neg, scope, resume, arg) =>
+            !root._ftsScopeOf(scope || (resume ? "claude-archive" : "")).live ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
     }
     property var archiveRows: []
     // sid -> { title, cwd, msgs, tokens, mtime }, kept by claude-fts-index (what supplies the msgs column of live rows)
@@ -987,7 +987,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux", "resume"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -998,6 +998,8 @@ Rectangle {
     // A deep candidate lands the via form ("/fv/tokens "), matching this
     // panel's own steering everywhere else in _acCandidates.
     function _verbStageItem(prefix, v) {
+        if (v === "resume")
+            return { text: prefix + "/resume ", label: "/resume", alias: "", desc: "previous sessions with their account; Enter restarts one in a new window" };
         if (v.startsWith("fts"))
             return { text: prefix + "/" + v + " ", label: "/" + v, alias: "",
                      desc: v === "fts" ? "full text of the running and archived Claude conversations"

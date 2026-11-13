@@ -113,6 +113,8 @@ enum ActionKind {
     Workspace,
     /// pick a Claude account and start a new tmux + claude session window
     Claude,
+    /// pick a previous Claude session and restart it (under its own account) in a new window
+    Resume,
 }
 
 /// A row of the workspace list.
@@ -132,7 +134,7 @@ struct WsRow {
 /// Typing the full verb swaps the results for the workspace list; whatever follows it filters / names.
 fn action_match(q: &str) -> Option<(ActionKind, String)> {
     let t = q.trim_start();
-    for (verb, kind) in [("/move-to-workspace", ActionKind::Window), ("/move-workspace", ActionKind::Workspace), ("/new-claude-session", ActionKind::Claude)] {
+    for (verb, kind) in [("/move-to-workspace", ActionKind::Window), ("/move-workspace", ActionKind::Workspace), ("/new-claude-session", ActionKind::Claude), ("/resume-claude-session", ActionKind::Resume)] {
         if let Some(rest) = t.strip_prefix(verb) {
             if rest.is_empty() {
                 return Some((kind, String::new()));
@@ -145,7 +147,7 @@ fn action_match(q: &str) -> Option<(ActionKind, String)> {
     None
 }
 
-const ACTION_VERBS: [&str; 5] = ["/move-to-workspace", "/move-to-new-workspace", "/move-workspace", "/add-workspace", "/new-claude-session"];
+const ACTION_VERBS: [&str; 6] = ["/move-to-workspace", "/move-to-new-workspace", "/move-workspace", "/add-workspace", "/new-claude-session", "/resume-claude-session"];
 
 /// What to run once the surface is gone.
 enum Pending {
@@ -155,6 +157,7 @@ enum Pending {
     AddWorkspace(String, i64),
     MoveToNewWorkspace(String, i64),
     NewClaude(String),
+    ResumeClaude(String),
 }
 
 fn hypr_json(args: &[&str]) -> serde_json::Value {
@@ -225,6 +228,46 @@ fn claude_rows(arg_l: &str) -> Vec<WsRow> {
             create: false,
             txt: Some((pct(&a["session_pct"]), pct(&a["weekly_pct"]))),
         });
+    }
+    out
+}
+
+/// Previous sessions for /resume-claude-session: `claude-history --sessions` (newest first), fetched once per launcher run, filtered locally.
+fn resume_rows(arg_l: &str) -> Vec<WsRow> {
+    static CACHE: std::sync::OnceLock<Vec<serde_json::Value>> = std::sync::OnceLock::new();
+    let all = CACHE.get_or_init(|| {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let out = Command::new(home.join("bin/claude-history")).args(["--sessions", "", "--scope", "archive"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        out.ok().and_then(|o| serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout).ok()).unwrap_or_default()
+    });
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    let age = |t: f64| -> String {
+        let s = (now - t).max(0.0);
+        if s < 3600.0 { format!("{}m", (s / 60.0) as i64) } else if s < 86400.0 { format!("{}h", (s / 3600.0) as i64) } else { format!("{}d", (s / 86400.0) as i64) }
+    };
+    let mut out = vec![];
+    for r in all {
+        let (title, acct, cwd) = (r["title"].as_str().unwrap_or(""), r["account"].as_str().unwrap_or(""), r["cwd"].as_str().unwrap_or(""));
+        let sid = r["session_id"].as_str().unwrap_or("");
+        if sid.is_empty() || r["kind"].as_str().unwrap_or("claude") != "claude" {
+            continue;
+        }
+        if !arg_l.is_empty() && !arg_l.split_whitespace().all(|w| format!("{title} {acct} {cwd}").to_lowercase().contains(w)) {
+            continue;
+        }
+        out.push(WsRow {
+            name: if title.is_empty() { sid.to_string() } else { title.to_string() },
+            target: sid.to_string(),
+            id: None,
+            cnt: -1,
+            mon: acct.to_string(),
+            apps: cwd.to_string(),
+            create: false,
+            txt: Some((r["msgs"].as_i64().map(|m| m.to_string()).unwrap_or_default(), age(r["mtime"].as_f64().unwrap_or(0.0)))),
+        });
+        if out.len() >= 200 {
+            break;
+        }
     }
     out
 }
@@ -1061,6 +1104,10 @@ impl App {
             self.ws_rows = claude_rows(&arg_l);
             return;
         }
+        if kind == ActionKind::Resume {
+            self.ws_rows = resume_rows(&arg_l);
+            return;
+        }
         let mut list: Vec<&HWorkspace> = self
             .hypr
             .workspaces
@@ -1131,6 +1178,7 @@ impl App {
                     ActionKind::Window => Pending::MoveToWorkspace(row, self.hypr.active_addr.clone()),
                     ActionKind::Workspace => Pending::MoveWorkspaceAfter(row, self.hypr.active_ws),
                     ActionKind::Claude => Pending::NewClaude(row.target),
+                    ActionKind::Resume => Pending::ResumeClaude(row.target),
                 });
             }
         } else if self.results.get(pos).is_some() {
@@ -1742,7 +1790,9 @@ impl App {
                 let (hasc, hlh) = metrics(&self.font, 10.0 * sc);
                 let hb = ((cy + HEADER_H + 4) as f32 + (WS_HEAD_H as f32 - hlh / sc) / 2.0) * sc + hasc;
                 let mut x = (cx + 12) as f32;
-                let titles = if matches!(self.action, Some((ActionKind::Claude, _))) {
+                let titles = if matches!(self.action, Some((ActionKind::Resume, _))) {
+                    [("session", name_w, false), ("msgs", WS_COL_ID, true), ("age", WS_COL_WIN, true), ("account", WS_COL_MON, false), ("directory", WS_COL_APPS, false)]
+                } else if matches!(self.action, Some((ActionKind::Claude, _))) {
                     [("account", name_w, false), ("5h", WS_COL_ID, true), ("week", WS_COL_WIN, true), ("5h resets", WS_COL_MON, false), ("week resets / live sessions", WS_COL_APPS, false)]
                 } else {
                     [("workspace", name_w, false), ("id", WS_COL_ID, true), ("windows", WS_COL_WIN, true), ("monitor", WS_COL_MON, false), ("apps", WS_COL_APPS, false)]
@@ -2332,6 +2382,10 @@ fn main() {
             Pending::MoveWorkspaceAfter(row, cur) if cur >= 0 => run_repl(&move_workspace_after_lua(&row, cur)),
             Pending::MoveToNewWorkspace(addr, cur) if !addr.is_empty() => run_repl(&move_to_new_workspace_lua(&addr, cur)),
             Pending::AddWorkspace(target, cur) => run_repl(&add_workspace_lua(&target, cur)),
+            Pending::ResumeClaude(sid) => {
+                let bin = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("bin/claude-history");
+                let _ = Command::new(bin).arg("--resume-window").arg(&sid).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn();
+            }
             Pending::NewClaude(account) => {
                 let bin = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("bin/new-claude-session");
                 let _ = Command::new(bin).arg(&account).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn();
