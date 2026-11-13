@@ -1,0 +1,9 @@
+#!/bin/sh
+# new-claude-session <account>: new tmux session running claude under that account (~/.<account>), in a new alacritty window
+acct="${1:?account}"
+case "$acct" in claude) dir="$HOME/.claude";; *) dir="$HOME/.$acct";; esac
+[ -d "$dir" ] || { echo "no such account dir $dir" >&2; exit 1; }
+sid=$(cat /proc/sys/kernel/random/uuid)
+name="rss-agent-$(date +%Y%m%d-%H%M%S)-$(printf %04x $((RANDOM)))"
+tmux new-session -d -s "$name" -c "$HOME" -e "CLAUDE_CONFIG_DIR=$dir" -- "$HOME/.local/bin/claude" --dangerously-skip-permissions --session-id "$sid" || exit 1
+exec alacritty --title "$name" -e tmux attach-session -t "$name"

@@ -111,6 +111,8 @@ enum ActionKind {
     Window,
     /// move the current workspace after another
     Workspace,
+    /// pick a Claude account and start a new tmux + claude session window
+    Claude,
 }
 
 /// A row of the workspace list.
@@ -123,12 +125,14 @@ struct WsRow {
     mon: String,
     apps: String,
     create: bool,
+    /// overrides the id / windows columns (the Claude account list shows usage there)
+    txt: Option<(String, String)>,
 }
 
 /// Typing the full verb swaps the results for the workspace list; whatever follows it filters / names.
 fn action_match(q: &str) -> Option<(ActionKind, String)> {
     let t = q.trim_start();
-    for (verb, kind) in [("/move-to-workspace", ActionKind::Window), ("/move-workspace", ActionKind::Workspace)] {
+    for (verb, kind) in [("/move-to-workspace", ActionKind::Window), ("/move-workspace", ActionKind::Workspace), ("/new-claude-session", ActionKind::Claude)] {
         if let Some(rest) = t.strip_prefix(verb) {
             if rest.is_empty() {
                 return Some((kind, String::new()));
@@ -141,7 +145,7 @@ fn action_match(q: &str) -> Option<(ActionKind, String)> {
     None
 }
 
-const ACTION_VERBS: [&str; 4] = ["/move-to-workspace", "/move-to-new-workspace", "/move-workspace", "/add-workspace"];
+const ACTION_VERBS: [&str; 5] = ["/move-to-workspace", "/move-to-new-workspace", "/move-workspace", "/add-workspace", "/new-claude-session"];
 
 /// What to run once the surface is gone.
 enum Pending {
@@ -150,6 +154,7 @@ enum Pending {
     MoveWorkspaceAfter(WsRow, i64),
     AddWorkspace(String, i64),
     MoveToNewWorkspace(String, i64),
+    NewClaude(String),
 }
 
 fn hypr_json(args: &[&str]) -> serde_json::Value {
@@ -190,6 +195,38 @@ fn fetch_hypr() -> HyprInfo {
         .collect();
     let aw = hypr_json(&["activewindow"]);
     HyprInfo { workspaces, active_addr: aw["address"].as_str().unwrap_or("").to_string(), active_ws: aw["workspace"]["id"].as_i64().unwrap_or(-1) }
+}
+
+/// Accounts for /new-claude-session, from the claude-usage daemon's state.json (usage + live sessions).
+fn claude_rows(arg_l: &str) -> Vec<WsRow> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let v: serde_json::Value = std::fs::read_to_string(home.join(".cache/claude-usage/state.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null);
+    let pct = |x: &serde_json::Value| x.as_f64().map(|p| format!("{}%", p.round() as i64)).unwrap_or_else(|| "?".into());
+    let reset = |x: &serde_json::Value, long: bool| -> String {
+        let Some(t) = x.as_str() else { return String::new() };
+        let Ok(out) = Command::new("date").arg(if long { "+%a %H:%M" } else { "+%H:%M" }).arg("-d").arg(t).output() else { return String::new() };
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let mut out = vec![];
+    for a in v["accounts"].as_array().into_iter().flatten() {
+        let name = a["account"].as_str().unwrap_or("");
+        if name.is_empty() || (!arg_l.is_empty() && !name.to_lowercase().contains(arg_l)) {
+            continue;
+        }
+        let live = v["sessions"][name].as_array().map(|s| s.len()).unwrap_or(0);
+        let wk = reset(&a["weekly_resets_at"], true);
+        out.push(WsRow {
+            name: name.to_string(),
+            target: name.to_string(),
+            id: None,
+            cnt: -1,
+            mon: reset(&a["session_resets_at"], false),
+            apps: format!("{}{}live: {live}", wk, if wk.is_empty() { "" } else { "  " }),
+            create: false,
+            txt: Some((pct(&a["session_pct"]), pct(&a["weekly_pct"]))),
+        });
+    }
+    out
 }
 
 fn lua_str(s: &str) -> String {
@@ -1020,6 +1057,10 @@ impl App {
 
     fn build_ws_rows(&mut self, kind: ActionKind, arg: &str) {
         let arg_l = arg.to_lowercase();
+        if kind == ActionKind::Claude {
+            self.ws_rows = claude_rows(&arg_l);
+            return;
+        }
         let mut list: Vec<&HWorkspace> = self
             .hypr
             .workspaces
@@ -1036,11 +1077,11 @@ impl App {
             if n == arg_l {
                 exact = true;
             }
-            let row = WsRow { name: w.name.clone(), target: w.name.clone(), id: Some(w.id), cnt: w.windows as i64, mon: w.monitor.clone(), apps: w.classes.join(", "), create: false };
+            let row = WsRow { name: w.name.clone(), target: w.name.clone(), id: Some(w.id), cnt: w.windows as i64, mon: w.monitor.clone(), apps: w.classes.join(", "), create: false, txt: None };
             if n == arg_l { out.insert(0, row) } else { out.push(row) }
         }
         if !arg.is_empty() && !exact && kind == ActionKind::Window {
-            out.push(WsRow { name: format!("+ new workspace \"{arg}\""), target: arg.to_string(), id: None, cnt: -1, mon: String::new(), apps: "created after the current workspace".into(), create: true });
+            out.push(WsRow { name: format!("+ new workspace \"{arg}\""), target: arg.to_string(), id: None, cnt: -1, mon: String::new(), apps: "created after the current workspace".into(), create: true, txt: None });
         }
         self.ws_rows = out;
     }
@@ -1089,6 +1130,7 @@ impl App {
                 self.pending = Some(match kind {
                     ActionKind::Window => Pending::MoveToWorkspace(row, self.hypr.active_addr.clone()),
                     ActionKind::Workspace => Pending::MoveWorkspaceAfter(row, self.hypr.active_ws),
+                    ActionKind::Claude => Pending::NewClaude(row.target),
                 });
             }
         } else if self.results.get(pos).is_some() {
@@ -1700,7 +1742,12 @@ impl App {
                 let (hasc, hlh) = metrics(&self.font, 10.0 * sc);
                 let hb = ((cy + HEADER_H + 4) as f32 + (WS_HEAD_H as f32 - hlh / sc) / 2.0) * sc + hasc;
                 let mut x = (cx + 12) as f32;
-                for (t, w, right) in [("workspace", name_w, false), ("id", WS_COL_ID, true), ("windows", WS_COL_WIN, true), ("monitor", WS_COL_MON, false), ("apps", WS_COL_APPS, false)] {
+                let titles = if matches!(self.action, Some((ActionKind::Claude, _))) {
+                    [("account", name_w, false), ("5h", WS_COL_ID, true), ("week", WS_COL_WIN, true), ("5h resets", WS_COL_MON, false), ("week resets / live sessions", WS_COL_APPS, false)]
+                } else {
+                    [("workspace", name_w, false), ("id", WS_COL_ID, true), ("windows", WS_COL_WIN, true), ("monitor", WS_COL_MON, false), ("apps", WS_COL_APPS, false)]
+                };
+                for (t, w, right) in titles {
                     let tw = text_width(&self.font, 10.0 * sc, t) / sc;
                     draw_text(&mut pm, &self.font, 10.0 * sc, (x + if right { (w - tw).max(0.0) } else { 0.0 }) * sc, hb, dim, t, w * sc);
                     x += w + 10.0;
@@ -1729,8 +1776,8 @@ impl App {
                         let mut x = (cx + 12) as f32;
                         let cols = [
                             (r.name.clone(), name_w, false, true),
-                            (if r.create { String::new() } else { r.id.map(|v| v.to_string()).unwrap_or_default() }, WS_COL_ID, true, false),
-                            (if r.cnt < 0 { String::new() } else { r.cnt.to_string() }, WS_COL_WIN, true, false),
+                            (match &r.txt { Some((a, _)) => a.clone(), None => if r.create { String::new() } else { r.id.map(|v| v.to_string()).unwrap_or_default() } }, WS_COL_ID, true, false),
+                            (match &r.txt { Some((_, b)) => b.clone(), None => if r.cnt < 0 { String::new() } else { r.cnt.to_string() } }, WS_COL_WIN, true, false),
                             (r.mon.clone(), WS_COL_MON, false, false),
                             (r.apps.clone(), WS_COL_APPS, false, false),
                         ];
@@ -2285,6 +2332,10 @@ fn main() {
             Pending::MoveWorkspaceAfter(row, cur) if cur >= 0 => run_repl(&move_workspace_after_lua(&row, cur)),
             Pending::MoveToNewWorkspace(addr, cur) if !addr.is_empty() => run_repl(&move_to_new_workspace_lua(&addr, cur)),
             Pending::AddWorkspace(target, cur) => run_repl(&add_workspace_lua(&target, cur)),
+            Pending::NewClaude(account) => {
+                let bin = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("bin/new-claude-session");
+                let _ = Command::new(bin).arg(&account).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn();
+            }
             _ => {}
         }
         log.push(format!("+{:7.1}ms workspace action done", t0.elapsed().as_secs_f64() * 1000.0));
@@ -2342,7 +2393,7 @@ mod tests {
 
     #[test]
     fn lua_builders_embed_user_text_safely() {
-        let row = WsRow { name: "x".into(), target: "a\"b".into(), id: None, cnt: -1, mon: String::new(), apps: String::new(), create: true };
+        let row = WsRow { name: "x".into(), target: "a\"b".into(), id: None, cnt: -1, mon: String::new(), apps: String::new(), create: true, txt: None };
         let lua = move_to_workspace_lua("0xabc", &row);
         assert!(lua.contains("name = \"a\\\"b\"") && lua.contains("== \"abc\""), "{lua}");
         assert!(!lua.contains('\n'));
