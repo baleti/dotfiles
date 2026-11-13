@@ -8,8 +8,6 @@ map f feedkeys agg
 map <F3> search forward
 map <S-F3> search backward
 
-# map n navigate next
-map p navigate previous
 map <Right> navigate next
 map <Left> navigate previous
 map <Up> navigate previous
@@ -24,8 +22,8 @@ map <M-z> focus_inputbar ":exec /home/user1/.config/zathura/open-zathura.sh $FIL
 
 map b toggle_statusbar
 
-# n/p and </> page navigation (search next/prev stay on F3 / S-F3, N is unchanged)
-map n navigate next
+# </> page navigation; p is unbound, n is zathura default (search next)
+unmap p
 map > navigate next
 map < navigate previous
 
@@ -36,7 +34,6 @@ map [fullscreen] w adjust_window best-fit
 map [fullscreen] f feedkeys agg
 map [fullscreen] <F3> search forward
 map [fullscreen] <S-F3> search backward
-map [fullscreen] p navigate previous
 map [fullscreen] <Right> navigate next
 map [fullscreen] <Left> navigate previous
 map [fullscreen] <Up> navigate previous
@@ -48,6 +45,6 @@ map [fullscreen] <M-e> focus_inputbar ":exec evince $FILE"
 map [fullscreen] <M-a> focus_inputbar ":exec /home/user1/.config/zathura/open-alacritty.sh $FILE"
 map [fullscreen] <M-z> focus_inputbar ":exec /home/user1/.config/zathura/open-zathura.sh $FILE"
 map [fullscreen] b toggle_statusbar
-map [fullscreen] n navigate next
 map [fullscreen] > navigate next
 map [fullscreen] < navigate previous
+unmap [fullscreen] p
