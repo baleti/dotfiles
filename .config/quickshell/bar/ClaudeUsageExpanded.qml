@@ -416,19 +416,19 @@ Rectangle {
     // An archived row is also what plain /fts appends after the live matches.
     readonly property var _ftsTokenRe: /(^|\s)(!?)\/(?:fts(?:\/([a-z,-]+))?|(resume))(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
     // /fts/<keys>: keys fuzzy-resolve against the scope names (query-dsl.md Keys), so
-    // live, claude-live, archive, claude and tmux all work; no keys = every scope
-    readonly property var ftsScopeNames: ["claude-live", "claude-archive", "tmux"]
+    // live and archive (fuzzy-resolved); no keys = both
+    readonly property var ftsScopeNames: ["live", "archive"]
     function _ftsScopeOf(keys) {
-        if (!keys) return { live: true, archive: true, tmux: true };
+        if (!keys) return { live: true, archive: true, tmux: false };
         const r = QueryDsl.resolvePath(keys, root.ftsScopeNames);
-        return { live: r.indexOf("claude-live") >= 0, archive: r.indexOf("claude-archive") >= 0, tmux: r.indexOf("tmux") >= 0 };
+        return { live: r.indexOf("live") >= 0, archive: r.indexOf("archive") >= 0, tmux: false };
     }
     function _ftsTokens(text) {
         const out = [];
         root._ftsTokenRe.lastIndex = 0;
         let m;
         while ((m = root._ftsTokenRe.exec(text)) !== null)
-            out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3] || (m[4] ? "claude-archive" : "")), arg: m[5] ? m[5].replace(/"/g, "") : "" });
+            out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3] || (m[4] ? "archive" : "")), arg: m[5] ? m[5].replace(/"/g, "") : "" });
         return out;
     }
     // null (no /fts) | { live, archive, tmux }: the union of every /fts token's scopes
@@ -451,7 +451,7 @@ Rectangle {
         // the live rows are filtered by `/fv/fts term` (hit set from claude-history); a token whose scopes
         // exclude the live rows is dropped (archive / tmux rows come from the --sessions fetch below)
         return text.replace(root._ftsTokenRe, (all, lead, neg, scope, resume, arg) =>
-            !root._ftsScopeOf(scope || (resume ? "claude-archive" : "")).live ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
+            !root._ftsScopeOf(scope || (resume ? "archive" : "")).live ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
     }
     property var archiveRows: []
     // sid -> { title, cwd, msgs, tokens, mtime }, kept by claude-fts-index (what supplies the msgs column of live rows)
@@ -987,7 +987,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux", "resume"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/live", "fts/archive", "resume"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -1003,9 +1003,7 @@ Rectangle {
         if (v.startsWith("fts"))
             return { text: prefix + "/" + v + " ", label: "/" + v, alias: "",
                      desc: v === "fts" ? "full text of the running and archived Claude conversations"
-                         : v === "fts/tmux" ? "full text of tmux scrollback (panes without a Claude session)"
-                         : v === "fts/claude" ? "full text, running and archived conversations"
-                         : v === "fts/claude-live" ? "full text, running conversations only"
+                         : v === "fts/live" ? "full text, running conversations only"
                          : "full text, past conversations only; Enter resumes one in a new window" };
         const slash = v.indexOf("/");
         if (slash < 0) {
@@ -1063,7 +1061,7 @@ Rectangle {
         if (fm) {
             const frag = fm[1].slice(fm[1].lastIndexOf(",") + 1);
             const head = t.slice(0, t.length - frag.length);
-            return [["tmux", "tmux scrollback (all panes without a Claude session)"], ["claude", "running and archived conversations"], ["claude-live", "running conversations only"], ["claude-archive", "past conversations only; Enter resumes one in a new window"]]
+            return [["live", "running conversations only"], ["archive", "past conversations only; Enter resumes one in a new window"]]
                 .filter(x => x[0].indexOf(frag) >= 0)
                 .map(x => ({ text: head + x[0] + " ", label: x[0], alias: "", desc: x[1] }));
         }
