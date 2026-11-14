@@ -615,7 +615,7 @@ Rectangle {
         // exact seconds as "<n>s": QueryDsl.compareFieldValues reads it as an age (direction inverted: /s/age = newest first)
         case "age": return [Math.max(0, Math.floor((Date.now() - (row.updated_at_ms || 0)) / 1000)) + "s"];
         case "path": return [root.shortCwd(row.cwd)];
-        case "account": return [account];
+        case "account": return [account, String(root.acctIndex(account))];   // the name, or its number as in the account pills
         case "host": return [row.host || "host3"];
         case "tmux-session": return [row.tmux_session || ""];
         case "tmux-window": return [row.tmux_window || ""];
@@ -703,7 +703,7 @@ Rectangle {
     // pill. Updates with every keystroke.
     readonly property var hiddenRows: {
         const keep = new Set(root.searchFilteredProcs);
-        return root.allProcs.filter(p => !keep.has(p) && !p.archived && !p.tmuxRow);
+        return root.allProcs.filter(p => !keep.has(p) && !p.tmuxRow);
     }
     readonly property int baseHiddenCount: root.hiddenRows.length
     // Tally pills are coloured by the most urgent status among their conversations: busy > waiting > idle.
@@ -738,23 +738,28 @@ Rectangle {
     }
     // host pills are additive: clicking host3 then wsl gives "//host host3||wsl" (host3 OR wsl); clicking an
     // active host takes just that one out again (the filter goes away with the last one).
-    function _hostsInBox(rest) {
-        const m = /(?:^|\s)\/\/host (\S+)/.exec(rest);
+    function _fieldInBox(field, rest) {
+        const m = new RegExp("(?:^|\\s)\\/\\/" + field + " (\\S+)").exec(rest);
         return m ? m[1].split("||").filter(x => x) : [];
     }
-    function toggleHostFilter(h) {
+    function _hostsInBox(rest) { return root._fieldInBox("host", rest); }
+    function toggleFieldFilter(field, h) {
         const sp = root._bqLeadSplit(root.searchText);
-        const cur = root._hostsInBox(sp.rest);
+        const cur = root._fieldInBox(field, sp.rest);
         const next = cur.indexOf(h) >= 0 ? cur.filter(x => x !== h) : cur.concat([h]);
-        const tok = next.length > 0 ? "//host " + next.join("||") : "";
+        const tok = next.length > 0 ? "//" + field + " " + next.join("||") : "";
+        const re1 = new RegExp("(^|\\s)\\/\\/" + field + " \\S+"), reAll = new RegExp("(^|\\s)\\/\\/" + field + " \\S+", "g");
         let rest;
-        if (cur.length > 0)   // an existing host filter is edited where it stands
-            rest = sp.rest.replace(/(^|\s)\/\/host \S+/, "$1" + tok).replace(/(^|\s)\/\/host \S+/g, "$1");
+        if (cur.length > 0)   // an existing filter is edited where it stands
+            rest = sp.rest.replace(re1, "$1" + tok).replace(reAll, "$1");
         else                  // a new one goes at the end, so the text shows the order of the clicks
             rest = sp.rest.trim() + " " + tok;
         rest = rest.replace(/\s+/g, " ").trim();
         root._setBoxText(sp.lead + rest + (rest ? " " : ""));
     }
+    function toggleHostFilter(h) { root.toggleFieldFilter("host", h); }
+    function toggleAccountFilter(i) { root.toggleFieldFilter("account", String(i)); }
+    function accountFilterActive(i) { return root._fieldInBox("account", root.searchText).indexOf(String(i)) >= 0; }
     readonly property bool hiddenFilterActive: /^\s*!\/(?:base-query|bq)(?=\s|$)/.test(root.searchText)
     // "hidden" pill: only what the effective query (stored base query + typed text) hides - "!/bq <opposite of
     // the effective query>" (base off, the written-out opposite runs). Clicking again clears the box.
@@ -776,6 +781,10 @@ Rectangle {
                 + (base ? "\n(/base-query: " + root._clip(base) + ")" : "")
                 + "\nclick: show only these (!/bq <opposite>); click again: clear";
         }
+        if (kind === "account") {
+            const a = ClaudeUsageSvc.accounts[parseInt(h) - 1];
+            return "//account " + h + " - conversations of account " + h + (a ? " (" + a.account + ")" : "") + "\nclick: add / remove it (several accounts = OR)";
+        }
         return "//host " + h + " - conversations on " + h + "\nclick: add / remove it (several hosts = OR)";
     }
     function hostFilterActive(h) {
@@ -787,17 +796,33 @@ Rectangle {
         const c = ({ host1: 0, host2: 0, host3: 0 });
         // every host that has a conversation at all keeps its pill (count 0 when filtered away), so pills never vanish when clicked
         for (const r of root.allProcs) {
-            if (r.archived || r.tmuxRow) continue;
+            if (r.tmuxRow) continue;
             const h0 = r.host || "host3";
             if (c[h0] === undefined) c[h0] = 0;
         }
         for (const r of root.searchFilteredProcs) {
-            if (r.archived || r.tmuxRow) continue;
+            if (r.tmuxRow) continue;
             const h = r.host || "host3";
             c[h] = (c[h] || 0) + 1;
         }
         return c;
     }
+    // per account (by number), over the rows in view - archived rows of a /resume view included
+    readonly property var accountCounts: {
+        const c = ({});
+        for (const r of root.searchFilteredProcs) {
+            if (r.tmuxRow) continue;
+            const i = root.acctIndex(r.account);
+            c[i] = (c[i] || 0) + 1;
+        }
+        return c;
+    }
+    function accountPillColor(i) {
+        return root.worstStatusColor(root.searchFilteredProcs.filter(r => root.acctIndex(r.account) === i));
+    }
+    // the total pill: every live session; with an archive scope (/resume, /fts, /fts/archive) every row of that scope
+    readonly property int totalPillCount: root.ftsScopes && root.ftsScopes.archive
+        ? root.allProcs.filter(r => !r.tmuxRow).length : root.totalSessionCount
     readonly property var hostPillNames: Object.keys(root.hostCounts).sort((a, b) => a.localeCompare(b))
     readonly property var searchFilteredProcs: {
         root.searchParsed; // dependency
@@ -1370,7 +1395,7 @@ Rectangle {
     readonly property int groupHeaderH: 45
     // The per-account session-tally pill row below the table (request
     // 2026-09-05: "add total tally...", boxed into pills 2026-09-05).
-    readonly property int tallyLineH: 26
+    readonly property int tallyLineH: 52   // two pill rows: totals + hosts, accounts
     // Search box Rectangle (22px) + the one extra `content` Column
     // spacing gap (10px) it added between the mode-line and the table
     // below it -- wasn't part of the fixedOverhead estimate when that box
@@ -3358,7 +3383,7 @@ Rectangle {
         RowLayout {
             width: content.width
             spacing: 6
-            visible: root.anyProcsVisible
+            visible: root.anyProcsVisible || !!root.ftsScopes
 
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
@@ -3381,7 +3406,7 @@ Rectangle {
                 Text {
                     id: tallyTotalText
                     anchors.centerIn: parent
-                    text: qsTr("Σ %1").arg(root.totalSessionCount)
+                    text: qsTr("Σ %1").arg(root.totalPillCount)
                     color: root.totalPillColor
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1
@@ -3444,6 +3469,54 @@ Rectangle {
                         anchors.centerIn: parent
                         text: modelData + "  " + parent.n
                         color: parent.n > 0 ? root.hostPillColor(modelData) : Theme.muted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSize - 1
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // accounts: one pill per account, labelled with its number only; a click adds / removes "//account <n>"
+        // (several = OR, "//account 1||3"), like the host pills
+        RowLayout {
+            width: content.width
+            spacing: 6
+            visible: root.anyProcsVisible || !!root.ftsScopes
+            Text {
+                Layout.alignment: Qt.AlignVCenter
+                text: qsTr("accounts")
+                color: Theme.muted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSize - 1
+            }
+            Repeater {
+                model: ClaudeUsageSvc.accounts.length
+                delegate: Rectangle {
+                    required property int index
+                    readonly property int num: index + 1
+                    readonly property int n: root.accountCounts[num] || 0
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: acctTallyText.implicitWidth + 16
+                    implicitHeight: acctTallyText.implicitHeight + 6
+                    radius: height / 2
+                    color: Theme.bgAlpha
+                    border.color: root.accountFilterActive(num) ? Theme.cyan : Theme.border
+                    border.width: 1
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        hoverEnabled: true
+                        onEntered: root.showHint(root.pillHint("account", String(num)))
+                        onPositionChanged: mouse => root.moveHint(mapToItem(root, mouse.x, mouse.y))
+                        onExited: root.hideHint()
+                        onClicked: root.toggleAccountFilter(num)
+                    }
+                    Text {
+                        id: acctTallyText
+                        anchors.centerIn: parent
+                        text: num + "  " + parent.n
+                        color: parent.n > 0 ? root.accountPillColor(num) : Theme.muted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSize - 1
                     }
