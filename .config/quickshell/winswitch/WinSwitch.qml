@@ -550,6 +550,13 @@ PanelWindow {
         WinSwitchState.selected = m[bestMi].index;
         WinSwitchQueryHistory.record(root.queryText);
     }
+    // PageUp/PageDown: one screenful (the grid's rows, or the resume table's visible rows) less one
+    function _pageMove(dir) {
+        if (root.tableMode) { root._resumeMove(dir * Math.max(1, Math.floor(resumeList.height / root.resumeRowH) - 1)); return; }
+        const r = Math.max(1, root.rows - 1);
+        if (root.groupModel) { for (let i = 0; i < r; i++) root._advanceGroupRow(dir * root.cols); }
+        else root._advanceRow(dir * root.cols * r);
+    }
     function _advanceRow(delta) {
         if (root.tableMode) { root._resumeMove(delta < 0 ? -1 : 1); return; }
         if (root.groupModel) { root._advanceGroupRow(delta); return; }
@@ -1170,6 +1177,10 @@ PanelWindow {
                         } else if (!acPopup.visible && event.key === Qt.Key_H && (event.modifiers & Qt.ControlModifier)) {
                             if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("prev"));
                             event.accepted = true;
+                        } else if ((event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp) && !acPopup.visible) {
+                            const dir = event.key === Qt.Key_PageDown ? 1 : -1;
+                            if (!event.isAutoRepeat) root._startNavRepeat(() => root._pageMove(dir));
+                            event.accepted = true;
                         } else if (event.key === Qt.Key_PageDown && acPopup.visible) {
                             if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + Math.max(1, Math.floor(acList.height / 24))); });
                             event.accepted = true;
@@ -1728,6 +1739,10 @@ PanelWindow {
                 event.accepted = true;
             } else if (event.key === Qt.Key_Left || (event.key === Qt.Key_H && (event.modifiers & Qt.ControlModifier))) {
                 if (!event.isAutoRepeat) root._startNavRepeat(() => root._advance("prev"));
+                event.accepted = true;
+            } else if (event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp) {
+                const dir = event.key === Qt.Key_PageDown ? 1 : -1;
+                if (!event.isAutoRepeat) root._startNavRepeat(() => root._pageMove(dir));
                 event.accepted = true;
             } else if (event.key === Qt.Key_Down || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) {
                 if (!event.isAutoRepeat) root._startNavRepeat(() => root._advanceRow(root.cols));

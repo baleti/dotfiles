@@ -174,6 +174,10 @@ PanelWindow {
                         root.launch(root.selected);
                     } else if (event.key === Qt.Key_Down || (ctrl && event.key === Qt.Key_J) || event.key === Qt.Key_Tab) {
                         if (root.results.length > 0) root.selected = Math.min(root.results.length - 1, root.selected + 1);
+                    } else if (event.key === Qt.Key_PageDown) {
+                        if (root.results.length > 0) root.selected = Math.min(root.results.length - 1, root.selected + 10);
+                    } else if (event.key === Qt.Key_PageUp) {
+                        root.selected = Math.max(0, root.selected - 10);
                     } else if (event.key === Qt.Key_Up || (ctrl && event.key === Qt.Key_K) || event.key === Qt.Key_Backtab) {
                         root.selected = Math.max(0, root.selected - 1);
                     } else {

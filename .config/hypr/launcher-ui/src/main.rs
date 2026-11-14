@@ -1521,6 +1521,12 @@ impl App {
             Keysym::Page_Up if popup => self.ac_move(-(self.ac_rows() as i32), false),
             Keysym::Down if popup => self.ac_move(1, false),
             Keysym::Up if popup => self.ac_move(-1, false),
+            Keysym::Page_Down | Keysym::Page_Up => {
+                // one screenful of results less one, as the keyboard walk (like Down)
+                let p = (self.vis_rows() as i32 - 1).max(1);
+                self.nav(if ks == Keysym::Page_Down { p } else { -p });
+                self.walked = true;
+            }
             Keysym::Down => self.down_key(),
             Keysym::Up => self.up_key(),
             Keysym::Right | Keysym::End if self.cursor == n && !self.ghost().is_empty() && !self.shift => {

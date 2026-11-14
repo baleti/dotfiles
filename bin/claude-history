@@ -962,8 +962,8 @@ def effective_query(text):
     m = BQ_CMD.match(text)
     if m:
         t = m.group(3) or ""
-    elif DBQ_CMD.match(text):
-        t = ""
+    elif (dq := re.match(r"^\s*/(?:dbq|disable-base-query)(?:\s+([\s\S]*))?$", text)):
+        t = dq.group(1) or ""   # /dbq [rest]: base query off, the rest runs
     else:
         base = bq_get()
         t = text if not base else (base if not text.strip() else base + " " + text)

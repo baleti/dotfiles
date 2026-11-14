@@ -1384,6 +1384,8 @@ impl App {
                 Keysym::ISO_Left_Tab => self.advance(-1),
                 Keysym::Right => self.advance(1),
                 Keysym::Left => self.advance(-1),
+                Keysym::Page_Down if self.layout.is_some() => self.advance_row((self.card_dims().1 - 1).max(1)),
+                Keysym::Page_Up if self.layout.is_some() => self.advance_row(-(self.card_dims().1 - 1).max(1)),
                 Keysym::Down => self.advance_row(1),
                 Keysym::Up => self.advance_row(-1),
                 _ => {
@@ -1429,6 +1431,8 @@ impl App {
             Keysym::Page_Up if self.ac.is_some() => self.ac_move(-(self.ac_rows() as i32), false),
             Keysym::Up if self.ac.is_some() => self.ac_move(-1, false),
             Keysym::Down if self.ac.is_some() => self.ac_move(1, false),
+            Keysym::Page_Down if self.layout.is_some() => self.advance_row((self.card_dims().1 - 1).max(1)),
+            Keysym::Page_Up if self.layout.is_some() => self.advance_row(-(self.card_dims().1 - 1).max(1)),
             Keysym::Up => self.history_prev(),
             Keysym::Down if self.hist_idx >= 0 => self.history_next(),
             Keysym::Down => {

@@ -66,6 +66,9 @@ pub fn effective(base: &str, text: &str) -> String {
     if let Some((_, _, rest)) = parse_cmd(text) {
         return flat(&rest);
     }
+    if let Some(rest) = strip_disable(text) {
+        return flat(&rest); // `/dbq [rest]`: base query off, the rest runs
+    }
     let t = flat(text);
     let b = base.trim();
     if b.is_empty() {
@@ -75,6 +78,16 @@ pub fn effective(base: &str, text: &str) -> String {
     } else {
         format!("{} {}", b, t)
     }
+}
+
+/// The rest of the line when it starts with `/dbq` or `/disable-base-query` (as its own token).
+fn strip_disable(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    let after = t.strip_prefix("/disable-base-query").or_else(|| t.strip_prefix("/dbq"))?;
+    if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(after.trim_start().to_string())
 }
 
 /// `/dbq` or `/disable-base-query` (nothing after it): Enter clears the stored base query.
@@ -240,6 +253,9 @@ mod tests {
         assert_eq!(effective("!//path x", "foo"), "!//path x foo");
         assert_eq!(effective("!//path x", "/bq foo"), "foo");
         assert_eq!(effective("", "foo"), "foo");
+        assert_eq!(effective("!//path x", "/dbq"), "");
+        assert_eq!(effective("!//path x", "/dbq foo"), "foo");
+        assert_eq!(effective("!//path x", "/dbqx"), "!//path x /dbqx");
         assert!(is_disable_cmd(" /dbq ") && is_disable_cmd("/disable-base-query") && !is_disable_cmd("/dbq x") && !is_disable_cmd("/bq"));
     }
 }

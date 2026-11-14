@@ -53,8 +53,9 @@ Singleton {
     // what actually runs: the base query written in front of the typed text; under /bq or !/bq only the rest
     function effective(key, text) {
         const m = root.match(text);
-        const t = (m ? m.rest : text).replace(/\n/g, " ");
-        if (m) return t;
+        const dq = /^\s*\/(?:dbq|disable-base-query)(?:\s+([\s\S]*))?$/.exec(text);   // /dbq [rest]: base query off, the rest runs
+        const t = (m ? m.rest : (dq ? (dq[1] || "") : text)).replace(/\n/g, " ");
+        if (m || dq) return t;
         const b = root.get(key);
         return b === "" ? t : (t.trim() === "" ? b : b + " " + t);
     }

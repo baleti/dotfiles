@@ -351,6 +351,8 @@ Rectangle {
     readonly property var baseParsed: QueryDsl.parse(root._rewriteFts(ClaudeUsageQueryHistory.defaultQuery.trim()))
     readonly property string effectiveText: {
         if (root._bqMatch) return (root._bqMatch[3] || "").replace(/\n/g, " ");
+        const dq = /^\s*\/(?:dbq|disable-base-query)(?:\s+([\s\S]*))?$/.exec(root.searchText);   // /dbq [rest]: base query off
+        if (dq) return (dq[1] || "").replace(/\n/g, " ");
         const d = ClaudeUsageQueryHistory.defaultQuery.trim();
         const t = root.searchText.replace(/\n/g, " ");   // a newline is whitespace, like a space
         return d === "" ? t : (t.trim() === "" ? d : d + " " + t);
@@ -1925,6 +1927,16 @@ Rectangle {
                 ClaudeUsageQueryHistory.record(root.searchText);
             });
             event.accepted = true;
+        } else if (event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp) {
+            // a page = the rows the viewport shows, less one
+            const page = Math.max(1, Math.floor(rowsFlick.height / (root.rowH + 1)) - 1);
+            const d = event.key === Qt.Key_PageDown ? page : -page;
+            if (!event.isAutoRepeat) root._startNavRepeat(() => {
+                root.selIndex = root.selActive ? Math.max(0, Math.min(root.sortedProcs.length - 1, root.selIndex + d)) : (d > 0 ? Math.min(root.sortedProcs.length - 1, d - 1) : 0);
+                root.selActive = true;
+                root._syncKeyboardThumb();
+            });
+            event.accepted = true;
         } else if (event.key === Qt.Key_Home) {
             root.selIndex = 0;
             root.selActive = true;
@@ -2443,6 +2455,9 @@ Rectangle {
                         event.accepted = true;
                     } else if (event.key === Qt.Key_PageUp && root.acOpen) {
                         if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.max(0, root.acSel - 7); });
+                        event.accepted = true;
+                    } else if ((event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp) && !root.acOpen) {
+                        root.handleKey(event);   // search box keeps focus; the selection moves a page
                         event.accepted = true;
                     } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !root.acOpen) {
                         // TextInput would otherwise just swallow Return/Enter
