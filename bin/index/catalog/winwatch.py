@@ -95,6 +95,15 @@ class WinWatch(hostwatch.HostWatch):
 
     def session(self, first):
         p = subprocess.Popen(["ssh", "-T", HOST, "python3", "-c", REMOTE_Q, shlex.quote(self.pos["f"]), str(self.pos["o"])], stdout=subprocess.PIPE, bufsize=0)
+        try:
+            return self._follow(p, first)
+        finally:      # any exception (e.g. sqlite database is locked) used to skip the kill below and leaked one ssh + remote python per failed session
+            try: p.kill()
+            except Exception: pass
+            try: p.wait(timeout=10)
+            except Exception: pass
+
+    def _follow(self, p, first):
         log("following the Windows change file from", self.pos["f"] or "(newest)", self.pos["o"])
         buf, pending, last_flush, last_seen, newpos = b"", [], time.time(), time.time(), None
         while True:
