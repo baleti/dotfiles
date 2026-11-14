@@ -27,7 +27,7 @@ REPOS = {
  '3dm-ballet': dict(src='src/3dm-ballet', recurse=True, bin_ext={'.3dm'}),
 }
 ALT_SRC = {'dwg-ballet': 'dwg-ballet'}   # host2 location of the dwg-ballet worktree
-NAMES_OK = {'LICENSE', 'LICENSES', 'NOTICE', 'LICENSE-OpenSKP.txt'}
+NAMES_OK = {'skp-ballet', '3dm-ballet', 'LICENSE', 'LICENSES', 'NOTICE', 'LICENSE-OpenSKP.txt'}
 # infra scrub (substitute, never drop: keeps code valid)
 INFRA_SUB = [(re.compile(r'/home/user1?/'), '~/'), (re.compile(r'/home/user1?\b'), '~'), (re.compile(r'\bhost[123]\b', re.I), 'remote-host'), (re.compile(r'\bai1\b'), 'gpu-host'), (re.compile(r'\bWSL\b'), 'Windows Subsystem for Linux'), (re.compile(r'\bmonier\b', re.I), 'example'), (re.compile(r'layout constants taken from', re.I), 'layout constants also published in'), (re.compile(r'baleti3266@gmail\.com'), 'baleti@users.noreply.github.com')]
 LINE_DROP2 = re.compile(r'(KSR|Queenwood|ksra|wireguard|rclone|\bVPN\b|/mnt/host1|ssh -|10\.(?:10|176|0)\.\d+\.\d+)', re.I)
