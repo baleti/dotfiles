@@ -3438,7 +3438,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 1
                 }
             }
-            // past (closed) conversations: click switches the view to the archive (/fts/archive), click again clears it
+            // past (closed) conversations: click switches the view to the archive (/resume), click again clears it
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
                 implicitWidth: tallyArchivedText.implicitWidth + 16
@@ -3450,7 +3450,7 @@ Rectangle {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root._setBoxText(root.archiveMode ? "" : "/fts/archive ")
+                    onClicked: root._setBoxText(root.archiveMode ? "" : "/resume ")
                 }
                 Text {
                     id: tallyArchivedText
