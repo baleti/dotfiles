@@ -775,12 +775,8 @@ Rectangle {
         const base = ClaudeUsageQueryHistory.defaultQuery.trim();
         if (kind === "total")
             return "all live conversations (no filter)\nclick: clear the query box";
-        if (kind === "hidden") {
-            const eff = root.effectiveText.replace(/\n/g, " ").trim();
-            return "hidden by the effective query:\n" + (eff ? root._clip(eff) : "(none)")
-                + (base ? "\n(/base-query: " + root._clip(base) + ")" : "")
-                + "\nclick: show only these (!/bq <opposite>); click again: clear";
-        }
+        if (kind === "hidden")
+            return "hidden by /base-query";
         if (kind === "account") {
             const a = ClaudeUsageSvc.accounts[parseInt(h) - 1];
             return "//account " + h + " - conversations of account " + h + (a ? " (" + a.account + ")" : "") + "\nclick: add / remove it (several accounts = OR)";
@@ -3398,9 +3394,6 @@ Rectangle {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     hoverEnabled: true
-                    onEntered: root.showHint(root.pillHint("total", ""))
-                    onPositionChanged: mouse => root.moveHint(mapToItem(root, mouse.x, mouse.y))
-                    onExited: root.hideHint()
                     onClicked: root._setBoxText("")   // everything: clear the typed query
                 }
                 Text {
@@ -3459,9 +3452,6 @@ Rectangle {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         hoverEnabled: true
-                        onEntered: root.showHint(root.pillHint("host", modelData))
-                        onPositionChanged: mouse => root.moveHint(mapToItem(root, mouse.x, mouse.y))
-                        onExited: root.hideHint()
                         onClicked: root.toggleHostFilter(modelData)
                     }
                     Text {
@@ -3507,9 +3497,6 @@ Rectangle {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         hoverEnabled: true
-                        onEntered: root.showHint(root.pillHint("account", String(num)))
-                        onPositionChanged: mouse => root.moveHint(mapToItem(root, mouse.x, mouse.y))
-                        onExited: root.hideHint()
                         onClicked: root.toggleAccountFilter(num)
                     }
                     Text {
