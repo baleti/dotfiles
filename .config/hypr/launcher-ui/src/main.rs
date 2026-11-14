@@ -236,12 +236,24 @@ fn claude_rows(arg_l: &str) -> Vec<WsRow> {
 fn resume_rows(arg_l: &str) -> Vec<WsRow> {
     // same source as /resume in the ctrl+alt+c panel: the typed term is a full-text query (best first; empty = newest), cached per term
     static CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<serde_json::Value>>>> = std::sync::Mutex::new(None);
-    // `/fts <words>` is accepted as an explicit full-text marker (the term is full text either way): drop the verb, keep the words
-    let t = arg_l.trim();
-    let term = match t.strip_prefix("/full-text-search").or_else(|| t.strip_prefix("/fts")) {
-        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) || rest.starts_with('/') => rest.trim_start_matches(|c: char| !c.is_whitespace()).trim().to_string(),
-        _ => t.to_string(),
-    };
+    // the full DSL applies: `/fts words` (or bare words) is the full-text query sent to claude-history, the other
+    // verbs (/s /fv //title x /rv ...) run locally over the rows
+    let mut sc = pickerdsl::Schema::new(&["title", "account", "cwd", "msgs", "age"], vec![pickerdsl::VerbDef { short: "fts", long: "full-text-search", kind: pickerdsl::VerbKind::App { takes_arg: true }, max_parts: 2, desc: "search inside the conversations" }]);
+    sc.exact_types = vec!["msgs".to_string()];
+    let mut parsed = pickerdsl::parse(&sc, arg_l);
+    let mut words: Vec<String> = vec![];
+    for t in &parsed.terms {
+        if let pickerdsl::Term::Free { text, neg: false, .. } = t {
+            words.push(text.clone());
+        }
+    }
+    for c in &parsed.apps {
+        if let (true, false, Some(a)) = (c.verb == "fts", c.neg, &c.arg) {
+            words.push(a.clone());
+        }
+    }
+    parsed.terms.retain(|t| !matches!(t, pickerdsl::Term::Free { .. })); // already matched by the full-text search
+    let term = words.join(" ");
     let all = {
         let mut g = CACHE.lock().unwrap();
         g.get_or_insert_with(Default::default)
@@ -259,12 +271,14 @@ fn resume_rows(arg_l: &str) -> Vec<WsRow> {
         if s < 3600.0 { format!("{}m", (s / 60.0) as i64) } else if s < 86400.0 { format!("{}h", (s / 3600.0) as i64) } else { format!("{}d", (s / 86400.0) as i64) }
     };
     let mut out = vec![];
+    let mut metas: Vec<[String; 5]> = vec![];
     for r in &all {
         let (title, acct, cwd) = (r["title"].as_str().unwrap_or(""), r["account"].as_str().unwrap_or(""), r["cwd"].as_str().unwrap_or(""));
         let sid = r["session_id"].as_str().unwrap_or("");
         if sid.is_empty() || r["kind"].as_str().unwrap_or("claude") != "claude" {
             continue;
         }
+        metas.push([title.to_string(), acct.to_string(), cwd.to_string(), r["msgs"].as_i64().unwrap_or(0).to_string(), ((now - r["mtime"].as_f64().unwrap_or(0.0)).max(0.0) as i64).to_string()]);
         out.push(WsRow {
             name: if title.is_empty() { sid.to_string() } else { title.to_string() },
             target: sid.to_string(),
@@ -275,11 +289,24 @@ fn resume_rows(arg_l: &str) -> Vec<WsRow> {
             create: false,
             txt: Some((r["msgs"].as_i64().map(|m| m.to_string()).unwrap_or_default(), age(r["mtime"].as_f64().unwrap_or(0.0)))),
         });
-        if out.len() >= 200 {
-            break;
+    }
+    struct ResSrc(Vec<[String; 5]>);
+    impl pickerdsl::Source for ResSrc {
+        fn value(&self, row: usize, ty: &str) -> String {
+            self.values(row, ty).into_iter().next().unwrap_or_default()
+        }
+        fn values(&self, row: usize, ty: &str) -> Vec<String> {
+            let i = match ty { "title" => 0, "account" => 1, "cwd" => 2, "msgs" => 3, "age" => 4, _ => return vec![] };
+            vec![self.0[row][i].clone()]
+        }
+        fn haystack(&self, row: usize) -> String {
+            self.0[row].join(" ")
         }
     }
-    out
+    let src = ResSrc(metas);
+    let order = pickerdsl::select_rows(&sc, &parsed, &src, out.len());
+    let mut slots: Vec<Option<WsRow>> = out.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).take(200).collect()
 }
 
 fn lua_str(s: &str) -> String {
@@ -969,7 +996,7 @@ struct App {
     hypr: HyprInfo,
     query: String,
     cursor: usize, // in chars
-    sel_all: bool, // Ctrl+A: whole query selected
+    anchor: Option<usize>, // selection = anchor..cursor (Ctrl+A, Shift+arrows, Ctrl+Shift+arrows)
     results: Vec<usize>,
     selected: usize,
     scroll: usize,
@@ -1342,6 +1369,7 @@ impl App {
     fn set_query(&mut self, q: String, cursor: usize) {
         self.query = q;
         self.cursor = cursor.min(self.qlen());
+        self.anchor = None;
         self.selected = 0;
         self.scroll = 0;
         if !self.recalling {
@@ -1356,12 +1384,69 @@ impl App {
         }
     }
 
+    /// The selected span in chars, if any.
+    fn sel_range(&self) -> Option<(usize, usize)> {
+        let a = self.anchor?.min(self.qlen());
+        let c = self.cursor.min(self.qlen());
+        if a == c { None } else { Some((a.min(c), a.max(c))) }
+    }
+
     fn insert(&mut self, t: &str) {
-        let at = self.byte_at(self.cursor);
+        let (from, to) = self.sel_range().unwrap_or((self.cursor, self.cursor));
+        let (a, b) = (self.byte_at(from), self.byte_at(to));
         let mut q = self.query.clone();
-        q.insert_str(at, t);
-        let c = self.cursor + t.chars().count();
-        self.set_query(q, c);
+        q.replace_range(a..b, t);
+        self.set_query(q, from + t.chars().count());
+    }
+
+    /// Left / Right / Home / End; Ctrl = by word, Shift = extend the selection.
+    fn move_cursor(&mut self, ks: Keysym) {
+        let chars: Vec<char> = self.query.chars().collect();
+        let n = chars.len();
+        let sel = self.sel_range();
+        let cur = self.cursor.min(n);
+        let target = match ks {
+            Keysym::Left if self.ctrl => {
+                let mut i = cur;
+                while i > 0 && chars[i - 1].is_whitespace() {
+                    i -= 1;
+                }
+                while i > 0 && !chars[i - 1].is_whitespace() {
+                    i -= 1;
+                }
+                i
+            }
+            Keysym::Right if self.ctrl => {
+                let mut i = cur;
+                while i < n && chars[i].is_whitespace() {
+                    i += 1;
+                }
+                while i < n && !chars[i].is_whitespace() {
+                    i += 1;
+                }
+                i
+            }
+            Keysym::Left => match sel {
+                Some((a, _)) if !self.shift => a,
+                _ => cur.saturating_sub(1),
+            },
+            Keysym::Right => match sel {
+                Some((_, b)) if !self.shift => b,
+                _ => (cur + 1).min(n),
+            },
+            Keysym::Home => 0,
+            _ => n,
+        };
+        if self.shift {
+            self.anchor.get_or_insert(cur);
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = target;
+        if self.anchor == Some(target) {
+            self.anchor = None;
+        }
+        self.dirty = true;
     }
 
     fn delete_range(&mut self, from: usize, to: usize) {
@@ -1454,30 +1539,6 @@ impl App {
         let ks = ev.keysym;
         let n = self.qlen();
         let popup = self.ac.is_some();
-        if std::mem::take(&mut self.sel_all) && n > 0 {
-            let typed = ev.utf8.as_deref().filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
-            match ks {
-                Keysym::BackSpace | Keysym::Delete => {
-                    self.set_query(String::new(), 0);
-                    return;
-                }
-                Keysym::Left | Keysym::Home => {
-                    self.cursor = 0;
-                    self.dirty = true;
-                    return;
-                }
-                Keysym::Right | Keysym::End => {
-                    self.cursor = n;
-                    self.dirty = true;
-                    return;
-                }
-                _ if !self.ctrl && typed.is_some() => {
-                    self.set_query(typed.unwrap_or_default().to_string(), typed.map_or(0, |t| t.chars().count()));
-                    return;
-                }
-                _ => self.dirty = true,
-            }
-        }
         match ks {
             Keysym::Escape => {
                 if popup {
@@ -1539,26 +1600,15 @@ impl App {
             }
             Keysym::Down => self.down_key(),
             Keysym::Up => self.up_key(),
-            Keysym::Right | Keysym::End if self.cursor == n && !self.ghost().is_empty() && !self.shift => {
+            Keysym::Right | Keysym::End if self.cursor == n && !self.ghost().is_empty() && !self.shift && !self.ctrl => {
                 let q = format!("{}{}", self.query, self.ghost());
                 let c = q.chars().count();
                 self.set_query(q, c);
             }
-            Keysym::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
-                self.dirty = true;
-            }
-            Keysym::Right => {
-                self.cursor = (self.cursor + 1).min(n);
-                self.dirty = true;
-            }
-            Keysym::Home => {
-                self.cursor = 0;
-                self.dirty = true;
-            }
-            Keysym::End => {
-                self.cursor = n;
-                self.dirty = true;
+            Keysym::Left | Keysym::Right | Keysym::Home | Keysym::End => self.move_cursor(ks),
+            Keysym::BackSpace | Keysym::Delete if self.sel_range().is_some() => {
+                let (a, b) = self.sel_range().unwrap_or_default();
+                self.delete_range(a, b);
             }
             Keysym::BackSpace => self.delete_range(self.cursor.saturating_sub(1), self.cursor),
             Keysym::Delete => self.delete_range(self.cursor, (self.cursor + 1).min(n)),
@@ -1575,7 +1625,7 @@ impl App {
                 }
                 Keysym::r => self.open_history(),
                 Keysym::a => {
-                    self.sel_all = n > 0;
+                    self.anchor = if n > 0 { Some(0) } else { None };
                     self.cursor = n;
                     self.dirty = true;
                 }
@@ -1746,9 +1796,10 @@ impl App {
             at = b.max(at);
         }
         seg(&mut pm, at, qc.len(), th.text, &mut x);
-        if self.sel_all {
-            let w = text_width(&self.font, size, &self.query).min(max_w);
-            if let Some(r) = Rect::from_xywh(tx, top, w, lh) {
+        if let Some((sa, sb)) = self.sel_range() {
+            let pre = |k: usize| text_width(&self.font, size, &self.query.chars().take(k).collect::<String>()).min(max_w);
+            let (x0, x1) = (pre(sa), pre(sb));
+            if let Some(r) = Rect::from_xywh(tx + x0, top, x1 - x0, lh) {
                 pm.fill_rect(r, &paint(th.primary, 70), Transform::identity(), None);
             }
         }
@@ -2329,7 +2380,7 @@ fn main() {
         walked: false,
         query: String::new(),
         cursor: 0,
-        sel_all: false,
+        anchor: None,
         results: vec![],
         selected: 0,
         scroll: 0,
