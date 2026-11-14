@@ -1498,10 +1498,9 @@ impl App {
                 } else if popup {
                     self.ac_move(-1, true);
                 } else if let (false, Some((ActionKind::Claude, _)), Some(row)) = (back, &self.action, self.ws_rows.get(self.selected)) {
-                    // account list: Tab accepts the selected account into the query, like completion elsewhere
-                    let t = format!("/new-claude-session {}", row.name);
-                    let c = t.chars().count();
-                    self.set_query(t, c);
+                    // account list: Tab accepts the selected account, same as Enter
+                    let _ = row;
+                    self.launch(self.selected);
                 } else {
                     self.trigger_completion();
                 }
