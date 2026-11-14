@@ -29,7 +29,7 @@ REPOS = {
 ALT_SRC = {'dwg-ballet': 'dwg-ballet'}   # host2 location of the dwg-ballet worktree
 NAMES_OK = {'LICENSE', 'LICENSES', 'NOTICE', 'LICENSE-OpenSKP.txt'}
 # infra scrub (substitute, never drop: keeps code valid)
-INFRA_SUB = [(re.compile(r'/home/user1?/'), '~/'), (re.compile(r'/home/user1?\b'), '~'), (re.compile(r'\bhost[123]\b', re.I), 'remote-host'), (re.compile(r'\bai1\b'), 'gpu-host'), (re.compile(r'baleti3266@gmail\.com'), 'baleti@users.noreply.github.com')]
+INFRA_SUB = [(re.compile(r'/home/user1?/'), '~/'), (re.compile(r'/home/user1?\b'), '~'), (re.compile(r'\bhost[123]\b', re.I), 'remote-host'), (re.compile(r'\bai1\b'), 'gpu-host'), (re.compile(r'\bmonier\b', re.I), 'example'), (re.compile(r'layout constants taken from', re.I), 'layout constants also published in'), (re.compile(r'baleti3266@gmail\.com'), 'baleti@users.noreply.github.com')]
 LINE_DROP2 = re.compile(r'(KSR|Queenwood|ksra|wireguard|rclone|\bVPN\b|/mnt/host1|ssh -|10\.(?:10|176|0)\.\d+\.\d+)', re.I)
 LINE_DROP = re.compile(r'(HWO|Chetwoods|BimRv|wine|run_oda|parse_oda|_oda|oda_|WinDev2407Eval|192\.168\.|/\.ssh/|recoll)', re.I)
 FORBID = re.compile(r'(KSR|Queenwood|ksra|25066|\bhost[123]\b|/home/user1?\b|HWO|Chetwoods|bm3|backups/office|hwo-project|rabat|montgomery|coronation|monier|sherwood|/mnt/host1|gho_[A-Za-z0-9]{10}|ghp_[A-Za-z0-9]{10}|BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{12}|dan94kra|@gmail\.com|password\s*[=:]\s*\S+|Teigha|OpenDesign|/home/user1/\.ssh|WinDev2407Eval|192\.168\.)', re.I)
