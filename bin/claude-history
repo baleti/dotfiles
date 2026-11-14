@@ -2262,9 +2262,9 @@ def fts_snippets(sid, text, limit=6, ctx=90):
     return out
 
 
-def session_rows(text, scope="archive", limit=300):
+def session_rows(text, scope="archive", limit=None):
     """Conversations (and tmux scrollback panes) for the table views: the ones matching `text` best
-    first, or the newest when `text` is empty. `scope` is a comma list of live / archive / tmux ("all" =
+    first, or the newest when `text` is empty (no cap unless `limit`: the panel's table is virtual). `scope` is a comma list of live / archive / tmux ("all" =
     live,archive). Claude rows come from the indexer's meta.json; whether one is running is decided here,
     at query time, from the sessions registry - the index itself doesn't know. Each row carries `live`."""
     wanted = set()
@@ -2293,7 +2293,7 @@ def session_rows(text, scope="archive", limit=300):
                          "account": account_name(prof), "profile": prof or "", "score": score,
                          "live": sid in live, "status": (live_map.get(sid) or {}).get("status", "")})
     if "tmux" in wanted:
-        rows += tmux_rows(text, limit)
+        rows += tmux_rows(text, limit or 300)
     if text.strip():
         rows.sort(key=lambda r: -r["score"])
     return rows[:limit]

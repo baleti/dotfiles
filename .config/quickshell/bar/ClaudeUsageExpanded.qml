@@ -1830,22 +1830,17 @@ Rectangle {
     }
 
     // ---- keyboard row navigation --------------------------------------
-    // The delegate Rectangle for the current selIndex. The Repeater
-    // builds every row up front (not virtualised like a ListView), so
-    // itemAt is always populated for an in-range index.
+    // The delegate Rectangle for the current selIndex, or null while it is outside the rows the (virtual)
+    // list has built - _ensureSelVisible() scrolls it in first.
     function _selDelegate() {
         return (root.selIndex >= 0 && root.selIndex < root.sortedProcs.length)
-            ? rowsRepeater.itemAt(root._modelIdx(root.selIndex)) : null;
+            ? rowsFlick.itemAtIndex(root._modelIdx(root.selIndex)) : null;
     }
     // Scroll the selected row fully into the fixed-height viewport.
     function _ensureSelVisible() {
-        const item = root._selDelegate();
-        if (!item)
+        if (root.selIndex < 0 || root.selIndex >= root.sortedProcs.length)
             return;
-        if (item.y < rowsFlick.contentY)
-            rowsFlick.contentY = item.y;
-        else if (item.y + item.height > rowsFlick.contentY + rowsFlick.height)
-            rowsFlick.contentY = item.y + item.height - rowsFlick.height;
+        rowsFlick.positionViewAtIndex(root._modelIdx(root.selIndex), ListView.Contain);
     }
     // Point the left-side thumbnail at the current keyboard selection:
     // capture that row's window (if it maps to one) and pin the popup's
@@ -3020,12 +3015,15 @@ Rectangle {
             clip: true
             visible: root.anyProcsVisible
 
-            Flickable {
+            // A ListView (virtual table): only the rows in (and just around) the viewport have delegates, so
+            // thousands of /resume rows cost no more to show than twenty. Variable row heights (/group headers).
+            ListView {
                 id: rowsFlick
                 anchors.fill: parent
                 anchors.rightMargin: root.scrollbarGap + root.scrollbarW
-                contentWidth: width
-                contentHeight: rowsColumn.height
+                spacing: 1
+                cacheBuffer: 400
+                model: root.groupModel ? root.groupModel.model : root.sortedProcs
                 boundsBehavior: Flickable.StopAtBounds
                 flickableDirection: Flickable.VerticalFlick
 
@@ -3046,14 +3044,6 @@ Rectangle {
                     }
                 }
 
-                Column {
-                    id: rowsColumn
-                    width: rowsFlick.width
-                    spacing: 1
-
-            Repeater {
-                id: rowsRepeater
-                model: root.groupModel ? root.groupModel.model : root.sortedProcs
 
                 // Wrapping Rectangle purely for the hover highlight -- the
                 // row content is the RowLayout inside it. Uses a
@@ -3077,7 +3067,7 @@ Rectangle {
                     // position in root.sortedProcs (a /group header has none, and is never selected)
                     readonly property int logical: root.groupModel ? root.groupModel.vOf[procRow.index] : procRow.index
                     readonly property bool isGroup: !!modelData.grp
-                    width: rowsColumn.width
+                    width: rowsFlick.width
                     implicitHeight: procRow.isGroup ? 26 : procRowLayout.implicitHeight
                     height: implicitHeight
                     radius: 3
@@ -3314,8 +3304,6 @@ Rectangle {
                         Item { Layout.fillWidth: true }
                     }
                 }
-            }
-            } // end rowsColumn
             } // end rowsFlick
 
             // Scrollbar track + thumb, right edge of the viewport --
