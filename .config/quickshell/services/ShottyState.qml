@@ -530,6 +530,7 @@ QtObject {
     // singleton doesn't have); Ctrl+S / the toolbar's save button just ask
     // for it to open, pre-filled with defaultSavePath().
     signal requestSaveDialog()
+    property bool pickerOpen: false
 
     // Default location/name for the save-as dialog -- same convention
     // hyprshot already used (XDG_PICTURES_DIR, falling back to $HOME).

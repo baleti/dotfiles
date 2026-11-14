@@ -107,8 +107,8 @@ PanelWindow {
     implicitHeight: root.screen ? root.screen.height : 1080
     color: "transparent"
     visible: root.open
-    WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: root.open ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+    WlrLayershell.layer: ShottyState.pickerOpen ? WlrLayer.Background : WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: root.open && !ShottyState.pickerOpen ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
     WlrLayershell.namespace: "quickshell-shotty"
     exclusionMode: ExclusionMode.Ignore
 

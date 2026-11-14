@@ -177,25 +177,27 @@ ShellRoot {
         }
     }
 
-    // shotty's save-as dialog. Lives here (not in ShottyState, a plain
-    // QtObject singleton with no window context) because FileDialog needs
-    // one. Qt's own native/portal-backed dialog -- this system runs both
-    // xdg-desktop-portal-gtk and xdg-desktop-portal-hyprland (no -kde
-    // despite QT_QPA_PLATFORMTHEME=kde), so whichever of those backs the
-    // FileChooser portal is what actually renders; Qt falls back to its
-    // own built-in QtQuick.Dialogs implementation if neither does.
-    FileDialog {
-        id: shottySaveDialog
-        title: "Save screenshot"
-        fileMode: FileDialog.SaveFile
-        nameFilters: ["PNG image (*.png)"]
-        onAccepted: ShottyState.saveToFile(selectedFile.toString())
+    // shotty's save-as picker: the xdg-desktop-portal FileChooser (system
+    // default picker) via shotty/save-picker.py. Qt's FileDialog was
+    // silent here (kde platform theme + no widget context). While it is
+    // open the Overlay-layer shotty panels drop to Background
+    // (ShottyState.pickerOpen) so the picker window is visible.
+    Process {
+        id: shottySavePicker
+        stdout: StdioCollector { id: shottyPickOut }
+        onExited: (code) => {
+            ShottyState.pickerOpen = false;
+            const path = shottyPickOut.text.trim();
+            if (code === 0 && path) ShottyState.saveToFile(`file://${path}`);
+        }
     }
     Connections {
         target: ShottyState
         function onRequestSaveDialog() {
-            shottySaveDialog.currentFile = `file://${ShottyState.defaultSavePath()}`;
-            shottySaveDialog.open();
+            if (shottySavePicker.running) return;
+            ShottyState.pickerOpen = true;
+            shottySavePicker.command = ["python3", Quickshell.shellPath("shotty/save-picker.py"), ShottyState.defaultSavePath()];
+            shottySavePicker.running = true;
         }
     }
 
