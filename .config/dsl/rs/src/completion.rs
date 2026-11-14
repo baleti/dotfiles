@@ -138,7 +138,14 @@ fn value_suggestions(src: &dyn Source, rows: usize, ty: &str, fragment: &str) ->
 
 pub fn candidates(schema: &Schema, comp: &Completion, src: &dyn Source, rows: usize) -> Vec<String> {
     match comp.kind {
-        CompKind::Verb => verb_stage_universe(schema).into_iter().filter(|v| substr(&comp.fragment, v, false)).collect(),
+        CompKind::Verb => {
+            // prefix matches first (stable, so universe order is kept within each group), then other substring matches
+            let frag = comp.fragment.to_lowercase();
+            let (mut pre, rest): (Vec<String>, Vec<String>) =
+                verb_stage_universe(schema).into_iter().filter(|v| substr(&comp.fragment, v, false)).partition(|v| v.to_lowercase().starts_with(&frag));
+            pre.extend(rest);
+            pre
+        }
         CompKind::TypePath => {
             let verb = comp.verb.as_deref().unwrap_or("");
             if let Some((_, keys)) = schema.app_keys.iter().find(|(v, _)| v == verb) {
