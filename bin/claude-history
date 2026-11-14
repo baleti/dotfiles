@@ -907,6 +907,143 @@ HEADER_LIVE = (f'{"ACCT":<{W_ACCT}}  {"STATUS":<{W_STATUS}}  {"TITLE":<{W_TITLE}
 HEADER_ARCHIVE = (f'{"ACCT":<{W_ACCT}}  {"TITLE":<{W_TITLE}}  {"MSGS":>{W_MSGS}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  PATH')
 
 
+# --- base query (/bq, /dbq) and /resume (query-dsl.md "/base-query"). The stored base query is the ctrl+alt+c
+# panel's own (same two files, which the claude-agents web / Android clients also write), so every client of
+# the Claude session list shares one base query. ---------------------------------------------------------
+BQ_DEFAULT_PATH = os.path.expanduser("~/.cache/quickshell/claude-usage-query-default.txt")
+BQ_HISTORY_PATH = os.path.expanduser("~/.cache/quickshell/claude-usage-base-query-history.json")
+BQ_CMD = re.compile(r"^\s*(!?)/(?:base-query|bq)(?:(\s+)([\s\S]*))?$")      # 1 "!", 2 whitespace after the verb, 3 rest
+DBQ_CMD = re.compile(r"^\s*/(?:dbq|disable-base-query)\s*$")
+RESUME_TOK = re.compile(r"(^|\s)(!?)/resume(?=\s|$)")                         # /resume [term] == /fts/archive [term]
+
+
+def _atomic_write(path, text):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def bq_get():
+    try:
+        with open(BQ_DEFAULT_PATH) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def bq_history():
+    try:
+        with open(BQ_HISTORY_PATH) as f:
+            h = json.load(f)
+        return [x for x in h if isinstance(x, str)] if isinstance(h, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def bq_set(q):
+    """Store `q` as the base query ("" clears it); the outgoing one goes into the history."""
+    prev, hist = bq_get(), bq_history()
+    if q and prev and prev != q and prev not in hist:
+        hist.insert(0, prev)
+    if q:
+        hist = ([q] + [x for x in hist if x != q])[:100]
+    _atomic_write(BQ_DEFAULT_PATH, q)
+    _atomic_write(BQ_HISTORY_PATH, json.dumps(hist))
+
+
+def effective_query(text):
+    """What actually runs: the base query written in front of the typed text; `/bq ...` and `!/bq ...` run only
+    the rest (base switched off), so does a typed `/dbq`; `/resume` is `/fts/archive`."""
+    m = BQ_CMD.match(text)
+    if m:
+        t = m.group(3) or ""
+    elif DBQ_CMD.match(text):
+        t = ""
+    else:
+        base = bq_get()
+        t = text if not base else (base if not text.strip() else base + " " + text)
+    return RESUME_TOK.sub(lambda m: m.group(1) + m.group(2) + "/fts/archive", t.replace("\n", " "))
+
+
+def enter_action(text):
+    """Enter in the search box, as the fzf action to run: `/bq <q>` saves the base query, `/dbq` clears it, bare
+    `/bq` puts `/bq <current>` in the box to edit; anything else (and `!/bq ...`) is a normal accept."""
+    if DBQ_CMD.match(text):
+        bq_set("")
+        return "clear-query"
+    m = BQ_CMD.match(text)
+    if not m or m.group(1):
+        return "accept"
+    if m.group(2) is None:
+        return "change-query:/bq " + bq_get()
+    bq_set(m.group(3).strip())
+    return "clear-query"
+
+
+def _bq_tokens(q):
+    return re.findall(r'!?"[^"]*"?|\S+', q)
+
+
+_BQ_VERB = re.compile(r"^/(fv|filter-value|ft|filter-type|at|add-type|rt|remove-type|s|sort|g|group|fts|full-text-search|bq|base-query|dbq|disable-base-query|resume)(/\S*)?$")
+
+
+def _bq_is_verb(t):
+    u = t.lstrip("!")
+    return bool(re.match(r"^//[^\s/]*$", u) or _BQ_VERB.match(u))
+
+
+def invert_base(q):
+    """The opposite of a base query, written out. Terms are ANDed, so the complement is "any term fails": exact for
+    one term (flip its `!`) and for several negated terms on the same keys (one positive `//keys a||b` term);
+    otherwise every term is flipped (an approximation, they stay ANDed). Other verbs are copied unchanged."""
+    toks, items, i = _bq_tokens(q), [], 0
+    while i < len(toks):
+        t = toks[i]
+        neg = t.startswith("!")
+        u = t[1:] if neg else t
+        mm = re.match(r"^//([a-z,-]*)$", u) or re.match(r"^/(?:fv|filter-value)/([a-z,-]*)$", u)
+        if mm and mm.group(1):
+            if i + 1 < len(toks) and not _bq_is_verb(toks[i + 1]):
+                items.append(("f", neg, mm.group(1), toks[i + 1]))
+                i += 2
+                continue
+            items.append(("o", t))
+            i += 1
+            continue
+        if _bq_is_verb(t):
+            tx = t
+            i += 1
+            if re.match(r"^/(fts|full-text-search)", u):
+                while i < len(toks) and not _bq_is_verb(toks[i]):
+                    tx += " " + toks[i]
+                    i += 1
+            items.append(("o", tx))
+            continue
+        items.append(("f", neg, None, u))
+        i += 1
+    fs = [x for x in items if x[0] == "f"]
+    if not fs:
+        return q.strip()
+    merge = len(fs) > 1 and all(x[1] and x[2] == fs[0][2] and '"' not in x[3] for x in fs)
+    out, done = [], False
+    for x in items:
+        if x[0] == "o":
+            out.append(x[1])
+            continue
+        if merge:
+            if not done:
+                done = True
+                out.append((f"//{fs[0][2]} " if fs[0][2] is not None else "") + "||".join(y[3] for y in fs))
+            continue
+        out.append(("" if x[1] else "!") + (f"//{x[2]} " if x[2] is not None else "") + x[3])
+    return " ".join(out)
+
+
 def search(snap, query):
     """The fzf result lines ("session_id<TAB>label") for `query`. Default
     view: the running sessions, in the usage panel's columns. `/fts word`
@@ -915,7 +1052,7 @@ def search(snap, query):
     ones (own, shorter columns). Bare words, "phrases" and !neg are substring
     filters over the row's own values. Called on every keystroke by the
     picker's socket server."""
-    q = parse_query(query)
+    q = parse_query(effective_query(query))
     scope = fts_scope(q)
 
     words = list(q.terms)
@@ -1033,6 +1170,17 @@ def complete_query(query, snap):
     frag, prev, _ = _completion_context(query)
     none = {"query": query, "prefix": "", "suffix": "", "candidates": []}
 
+    # "!/bq" + Tab: the opposite of the base query written after it
+    if re.match(r"^\s*!/(?:base-query|bq)\s*$", query):
+        inv = invert_base(bq_get())
+        return {"query": query, "prefix": "", "suffix": "", "candidates": ["!/bq " + inv]} if inv else none
+    # "/bq <frag>" + Tab: the base-query history, current first, then the previous ones
+    bm = re.match(r"^(\s*/(?:base-query|bq)\s+)([\s\S]*)$", query)
+    if bm:
+        cur, f0 = bq_get(), bm.group(2).strip()
+        cands = [x for x in ([cur] if cur else []) + [h for h in bq_history() if h != cur] if x.startswith(f0) and x != f0]
+        return {"query": query, "prefix": bm.group(1), "suffix": "", "candidates": cands} if cands else none
+
     if frag.startswith("/"):
         rest = frag[1:]
         if "/" in rest:
@@ -1058,7 +1206,8 @@ def complete_query(query, snap):
         # it can scope to ("Verb-stage depth", query-dsl.md): one Tab from
         # bare "/" already reaches the full flat "/fv/field" list.
         rest_lower = rest.lower()
-        candidates = [v for v in ("fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux") if rest_lower in v]
+        first_token = query.strip() == frag   # /bq and /dbq are commands: only as the very first token
+        candidates = [v for v in ("fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux", "resume") + (("bq", "dbq") if first_token else ()) if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
@@ -1083,6 +1232,7 @@ PREVIEW_CONTEXT_TURNS = 2  # turns of leading context kept above a jumped-to mat
 
 
 def preview(session_id, query, snap):
+    query = effective_query(query)
     if session_id.startswith("tmux:"):
         q = parse_query(query)
         words = " ".join(w.strip('"') for w in q.fts)
@@ -1271,7 +1421,7 @@ def find_session_profile(session_id):
 
 
 ACCOUNT_NAMES = {".claude2": "claude2", ".claude3": "claude3", ".claude4": "claude4", ".claude5": "claude5",
-                 ".claude6": "claude6", ".claude7": "claude7", ".claude8": "claude8"}
+                 ".claude6": "claude6", ".claude7": "claude7", ".claude8": "claude8", ".claude-ksr": "claude-ksr"}
 
 
 def account_name(profile):
@@ -1739,6 +1889,8 @@ def make_handler(state):
                 # bytes at all - a lone "\n" would be one blank list item
             elif mode == "preview":
                 out = preview(args[0], args[1] if len(args) > 1 else "", snap)
+            elif mode == "enter":
+                out = enter_action(args[0] if args else "")
             elif mode == "complete":
                 out = json.dumps(complete_query(args[0] if args else "", snap))
             elif mode == "history":
@@ -1906,8 +2058,8 @@ def drive():
         # FZF_LINES, so the preview never drops below half regardless of
         # match count, and grows past half on its own the fewer results
         # there are to list
-        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts/"*arch*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
-        'case "$FZF_QUERY" in *"/fts"*) ;; *) echo "change-header($hdr)+hide-preview"; exit;; esac; '
+        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts/"*arch*|*"/resume"*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
+        'case "$FZF_QUERY" in *"/fts"*|*"/resume"*) ;; *) echo "change-header($hdr)+hide-preview"; exit;; esac; '
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
         'half=$((FZF_LINES / 2)); '
@@ -1942,6 +2094,8 @@ def drive():
         # triggered on terminal size change specifically - same
         # transform, just a second trigger for it.
         "--bind", f"resize:transform:{resize_on_result}",
+        # Enter: `/bq <q>` saves the base query, `/dbq` clears it (enter_action); otherwise a normal accept
+        "--bind", f"enter:transform:{client} enter {{q}}",
         "--bind", "ctrl-left:backward-word",
         "--bind", "ctrl-right:forward-word",
         # Search-box history (query-dsl.md): Up/Down cycle submitted

@@ -68,3 +68,7 @@ The tool caches parsed transcript state for speed; see
 bumped on any key *rename* in the cache schema, not just new indexing
 logic, since a rename alone won't trip a naive "is the shape still valid"
 check.
+
+## Base query, `/dbq` and `/resume` (2026-11-14)
+
+The picker has the same standing-query commands as the ctrl+alt+c panel, and shares its stored base query (`~/.cache/quickshell/claude-usage-query-default.txt` plus `claude-usage-base-query-history.json`), so setting it in either place sets it in both. `/bq <q>` + Enter saves `<q>` to run in front of every query; bare `/bq` + Enter puts `/bq <current>` in the box to edit; `/bq ...` and `!/bq ...` run the rest with the base query off; bare `!/bq` + Tab writes the opposite; `/bq ` + Tab lists the history. `/dbq` (`/disable-base-query`) + Enter clears it. `/resume [words]` is `/fts/archive [words]`: the past sessions with their account, Enter restarts one in a new tmux window. Enter is bound to a `transform` that asks the picker's socket server (`enter` mode, `enter_action()` in `bin/claude-history`) whether the box holds one of these commands before accepting.

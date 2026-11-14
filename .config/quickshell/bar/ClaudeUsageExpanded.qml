@@ -469,10 +469,13 @@ Rectangle {
     }
     onArchiveTermChanged: root._archiveRefresh()
     onFtsScopesChanged: root._archiveRefresh()
+    onArchiveModeChanged: root._archiveRefresh()
     function _archiveRefresh() {
         // archive-only lists even without a term; otherwise archived / tmux hits need a real term
         const sc = root.ftsScopes;
-        const want = !!sc && (sc.archive || sc.tmux) && (root.archiveMode || root.archiveTerm !== "");
+        // archive-only computed from sc itself: this runs from onFtsScopesChanged, where the archiveMode binding may not have updated yet
+        const only = !!sc && sc.archive && !sc.live && !sc.tmux;
+        const want = !!sc && (sc.archive || sc.tmux) && (only || root.archiveTerm !== "");
         if (!want) { root.archiveRows = []; return; }
         const csv = [sc.archive ? "archive" : "", sc.tmux ? "tmux" : ""].filter(x => x).join(",");
         const q = root._ftsTokens(root.effectiveText).filter(t => t.arg)
@@ -950,7 +953,7 @@ Rectangle {
             const wasFirst = spans.length === 0 && /^\s*$/.test(text.slice(0, start));
             i = j;
             if (tok.length > 1 && tok[0] === "/") {
-                if (wasFirst && /^\/(base-query|bq)$/.test(tok)) {
+                if (wasFirst && /^\/(base-query|bq|disable-base-query|dbq)$/.test(tok)) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
                 } else if (/^\/fts(\/[a-z,-]+)?$/.test(tok) || QueryDsl.canonVerb({ q: false, v: tok })) {
                     spans.push({ start: start + bang, end: start + bang + tok.length, valid: true });
@@ -1088,7 +1091,8 @@ Rectangle {
             const verbs = root._verbStageUniverse().filter(v => v.indexOf(frag) >= 0).map(v => root._verbStageItem(prefix, v));
             // /bq is a command, not a pipeline stage: offered only for the very first token
             const defs = (prefix.trim() !== "" && prefix.trim() !== "!") ? [] : [
-                ["bq", "base-query", "base query: the rest of the line runs as usual; Enter saves it as the query run in front of every query (/bq alone + Enter shows the current one)"]]
+                ["bq", "base-query", "base query: the rest of the line runs as usual; Enter saves it as the query run in front of every query (/bq alone + Enter shows the current one)"],
+                ["dbq", "disable-base-query", "disable base query: Enter clears the stored base query, nothing is run in front of queries any more"]]
                 .filter(d => d[0].indexOf(frag) >= 0 || d[1].indexOf(frag) >= 0)
                 .map(d => ({ text: prefix + "/" + d[0] + " ", label: "/" + d[0], alias: "/" + d[1], desc: d[2] }));
             return verbs.concat(defs);
