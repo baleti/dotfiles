@@ -236,7 +236,12 @@ fn claude_rows(arg_l: &str) -> Vec<WsRow> {
 fn resume_rows(arg_l: &str) -> Vec<WsRow> {
     // same source as /resume in the ctrl+alt+c panel: the typed term is a full-text query (best first; empty = newest), cached per term
     static CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<serde_json::Value>>>> = std::sync::Mutex::new(None);
-    let term = arg_l.trim().to_string();
+    // `/fts <words>` is accepted as an explicit full-text marker (the term is full text either way): drop the verb, keep the words
+    let t = arg_l.trim();
+    let term = match t.strip_prefix("/full-text-search").or_else(|| t.strip_prefix("/fts")) {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) || rest.starts_with('/') => rest.trim_start_matches(|c: char| !c.is_whitespace()).trim().to_string(),
+        _ => t.to_string(),
+    };
     let all = {
         let mut g = CACHE.lock().unwrap();
         g.get_or_insert_with(Default::default)
