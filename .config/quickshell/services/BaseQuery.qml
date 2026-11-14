@@ -10,6 +10,7 @@ import Quickshell.Io
 //
 // Typed forms (first token of the box only):
 //   /bq <q> + Enter   save <q> as this picker's base query, clear the box  ("/bq " alone clears it)
+//   /dbq + Enter      (/disable-base-query) clear this picker's base query, clear the box
 //   /bq + Enter       box becomes "/bq <current base query>" to edit
 //   /bq ...           transparent: the rest runs as the query, the stored base query is switched off
 //   !/bq ...          the same, but Enter never saves; Tab on a bare "!/bq" writes the opposite of the base query
@@ -59,6 +60,10 @@ Singleton {
     }
     // Enter: true if the box held a saving /bq command (and it was handled)
     function run(key, input) {
+        if (/^\s*\/(?:dbq|disable-base-query)\s*$/.test(input.text)) {
+            root.set(key, ""); input.text = ""; input.cursorPosition = 0;
+            return true;
+        }
         const m = root.match(input.text);
         if (!m || m.neg) return false;
         if (!m.ws) { input.text = "/bq " + root.get(key); }

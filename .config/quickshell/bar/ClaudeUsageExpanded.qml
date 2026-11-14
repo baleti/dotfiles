@@ -379,6 +379,11 @@ Rectangle {
      return out.join(" ")}
     // Enter in the box: runs /base-query (not "!/bq"), true if the box held it.
     function _runDefaultCmd() {
+        if (/^\s*\/(?:dbq|disable-base-query)\s*$/.test(root.searchText)) {   // /dbq: clear the base query
+            ClaudeUsageQueryHistory.setDefault("");
+            root._setQueryTextForHistory("");
+            return true;
+        }
         const m = root._bqMatch;
         if (!m || m[1] === "!") return false;   // "!/bq" is only a view, Enter keeps its normal meaning
         if (m[2] === undefined) {

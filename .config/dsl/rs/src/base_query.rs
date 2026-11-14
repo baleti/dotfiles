@@ -77,8 +77,17 @@ pub fn effective(base: &str, text: &str) -> String {
     }
 }
 
-/// Enter on a `/bq` command: bare -> `Some("/bq <current>")` for the box; `/bq <q>` -> saves, `Some("")`. `None` if not (saving) `/bq`.
+/// `/dbq` or `/disable-base-query` (nothing after it): Enter clears the stored base query.
+pub fn is_disable_cmd(text: &str) -> bool {
+    matches!(text.trim(), "/dbq" | "/disable-base-query")
+}
+
+/// Enter on a `/bq` or `/dbq` command: `/dbq` -> clears the base query, `Some("")`; bare `/bq` -> `Some("/bq <current>")` for the box; `/bq <q>` -> saves, `Some("")`. `None` if not (saving) `/bq`.
 pub fn run(key: &str, text: &str) -> Option<String> {
+    if is_disable_cmd(text) {
+        set(key, "");
+        return Some(String::new());
+    }
     let (neg, ws, rest) = parse_cmd(text)?;
     if neg {
         return None;
@@ -231,5 +240,6 @@ mod tests {
         assert_eq!(effective("!//path x", "foo"), "!//path x foo");
         assert_eq!(effective("!//path x", "/bq foo"), "foo");
         assert_eq!(effective("", "foo"), "foo");
+        assert!(is_disable_cmd(" /dbq ") && is_disable_cmd("/disable-base-query") && !is_disable_cmd("/dbq x") && !is_disable_cmd("/bq"));
     }
 }
