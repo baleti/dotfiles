@@ -2434,7 +2434,7 @@ Rectangle {
                         // same trade the other QML pickers make); row
                         // navigation moves to Ctrl+J/Ctrl+K below instead.
                         if (root.acHistIndex >= 0) root._historyNext();
-                        else { searchInput.focus = false; root.forceActiveFocus(); } // query-dsl.md "Focus between search box and results"
+                        else { searchInput.focus = false; root.forceActiveFocus(); root.selIndex = 0; root.selActive = true; root._ensureSelVisible(); root._syncKeyboardThumb(); } // first entry, not wherever the pointer rests; query-dsl.md "Focus between search box and results"
                         event.accepted = true;
                     } else if (event.key === Qt.Key_Up) {
                         root._historyPrev();
@@ -2443,7 +2443,7 @@ Rectangle {
                         if (root.acOpen) {
                             if (!event.isAutoRepeat) root._startNavRepeat(() => { root.acSel = Math.min(root.acItems.length - 1, root.acSel + 1); });
                         } else if (root.acHistIndex >= 0) root._historyNext(); // Ctrl+J == Down (query-dsl.md "Search-box history")
-                        else { searchInput.focus = false; root.forceActiveFocus(); }
+                        else { searchInput.focus = false; root.forceActiveFocus(); root.selIndex = 0; root.selActive = true; root._ensureSelVisible(); root._syncKeyboardThumb(); }
                         event.accepted = true;
                     } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
                         if (root.acOpen) {
