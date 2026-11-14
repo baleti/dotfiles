@@ -92,6 +92,7 @@ Rectangle {
     // move the mouse").
     property bool mouseMovedSinceOpen: false
     property bool _hoverSettled: false
+    property point _selPtrPos: Qt.point(-1, -1)
     property point _hoverRefPos: Qt.point(0, 0)
     readonly property int hoverSettleMs: 200
 
@@ -101,6 +102,7 @@ Rectangle {
         repeat: false
         onTriggered: {
             root._hoverRefPos = Qt.point(mouseArea.mouseX, mouseArea.mouseY);
+            root._selPtrPos = root._hoverRefPos;
             root._hoverSettled = true;
         }
     }
@@ -1307,6 +1309,7 @@ Rectangle {
         root.thumbReady = false;
         root.mouseMovedSinceOpen = false;
         root._hoverSettled = false;
+        root._selPtrPos = Qt.point(-1, -1);
         // no completion / Ctrl+R history popup survives a close: each open starts clean
         root.acHistoryMode = false;
         root.acItems = [];
@@ -3122,12 +3125,24 @@ Rectangle {
                     // cell's own child MouseArea.
                     HoverHandler {
                         id: procRowHover
-                        onHoveredChanged: {
+                        // Select only when the POINTER moved, judged by its
+                        // position in panel coordinates. When the list shifts
+                        // under a still cursor (new error row, results
+                        // arriving) hover re-targets a different row but the
+                        // panel-space pointer position is unchanged, so no
+                        // selection change.
+                        function trySelect() {
                             if (!hovered || !root.mouseMovedSinceOpen || procRow.isGroup)
                                 return;
+                            const p = procRow.mapToItem(root, point.position.x, point.position.y);
+                            if (Math.abs(p.x - root._selPtrPos.x) < 0.5 && Math.abs(p.y - root._selPtrPos.y) < 0.5)
+                                return;
+                            root._selPtrPos = Qt.point(p.x, p.y);
                             root.selIndex = procRow.logical;
                             root.selActive = true;
                         }
+                        onHoveredChanged: trySelect()
+                        onPointChanged: trySelect()
                     }
 
                     // Click anywhere on the row focuses that session's
