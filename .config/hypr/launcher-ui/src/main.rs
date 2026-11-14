@@ -234,25 +234,30 @@ fn claude_rows(arg_l: &str) -> Vec<WsRow> {
 
 /// Previous sessions for /resume-claude-session: `claude-history --sessions` (newest first), fetched once per launcher run, filtered locally.
 fn resume_rows(arg_l: &str) -> Vec<WsRow> {
-    static CACHE: std::sync::OnceLock<Vec<serde_json::Value>> = std::sync::OnceLock::new();
-    let all = CACHE.get_or_init(|| {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        let out = Command::new(home.join("bin/claude-history")).args(["--sessions", "", "--scope", "archive"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
-        out.ok().and_then(|o| serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout).ok()).unwrap_or_default()
-    });
+    // same source as /resume in the ctrl+alt+c panel: the typed term is a full-text query (best first; empty = newest), cached per term
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<serde_json::Value>>>> = std::sync::Mutex::new(None);
+    let term = arg_l.trim().to_string();
+    let all = {
+        let mut g = CACHE.lock().unwrap();
+        g.get_or_insert_with(Default::default)
+            .entry(term.clone())
+            .or_insert_with(|| {
+                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+                let out = Command::new(home.join("bin/claude-history")).args(["--sessions", &term, "--scope", "archive"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+                out.ok().and_then(|o| serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout).ok()).unwrap_or_default()
+            })
+            .clone()
+    };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let age = |t: f64| -> String {
         let s = (now - t).max(0.0);
         if s < 3600.0 { format!("{}m", (s / 60.0) as i64) } else if s < 86400.0 { format!("{}h", (s / 3600.0) as i64) } else { format!("{}d", (s / 86400.0) as i64) }
     };
     let mut out = vec![];
-    for r in all {
+    for r in &all {
         let (title, acct, cwd) = (r["title"].as_str().unwrap_or(""), r["account"].as_str().unwrap_or(""), r["cwd"].as_str().unwrap_or(""));
         let sid = r["session_id"].as_str().unwrap_or("");
         if sid.is_empty() || r["kind"].as_str().unwrap_or("claude") != "claude" {
-            continue;
-        }
-        if !arg_l.is_empty() && !arg_l.split_whitespace().all(|w| format!("{title} {acct} {cwd}").to_lowercase().contains(w)) {
             continue;
         }
         out.push(WsRow {
