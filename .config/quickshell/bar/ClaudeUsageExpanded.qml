@@ -3438,6 +3438,29 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 1
                 }
             }
+            // past (closed) conversations: click switches the view to the archive (/fts/archive), click again clears it
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: tallyArchivedText.implicitWidth + 16
+                implicitHeight: tallyArchivedText.implicitHeight + 6
+                radius: height / 2
+                color: Theme.bgAlpha
+                border.color: root.archiveMode ? Theme.cyan : Theme.border
+                border.width: 1
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root._setBoxText(root.archiveMode ? "" : "/fts/archive ")
+                }
+                Text {
+                    id: tallyArchivedText
+                    anchors.centerIn: parent
+                    text: qsTr("archived")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 1
+                }
+            }
             // one pill per host: conversations of that host in this view
             Repeater {
                 model: root.hostPillNames
