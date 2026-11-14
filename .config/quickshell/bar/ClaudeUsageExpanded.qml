@@ -508,6 +508,16 @@ Rectangle {
             }
         }
     }
+    // number of past conversations, for the "archived" pill (cheap: ~0.1s), refreshed whenever the panel opens
+    property int archivedCount: 0
+    Process {
+        id: archivedCountProc
+        command: [Quickshell.env("HOME") + "/bin/claude-history", "--sessions", "", "--scope", "archive"]
+        stdout: StdioCollector {
+            onStreamFinished: { try { root.archivedCount = JSON.parse(text).length; } catch (e) {} }
+        }
+    }
+    Connections { target: root; function onExpandedChanged() { if (root.expanded) { archivedCountProc.running = false; archivedCountProc.running = true; } } }
     Process { id: resumeProc }
     function resumeRow(row) {
         ClaudeUsageQueryHistory.record(root.searchText);
@@ -3455,7 +3465,7 @@ Rectangle {
                 Text {
                     id: tallyArchivedText
                     anchors.centerIn: parent
-                    text: qsTr("archived")
+                    text: qsTr("archived %1").arg(root.archivedCount)
                     color: Theme.muted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 1
