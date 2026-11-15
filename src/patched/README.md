@@ -12,6 +12,9 @@ Programs we patch live here as git checkouts, built into pacman packages (`<name
 - Status/logs: `~/.local/state/patched/<name>.{status,build.log,agent.log}`.
   Status is one of `installed | ready:<pkg> | uptodate | conflict | build-failed | dirty-checkout | fetch-failed`.
 
+## Browser extensions
+`bin/patched-xpi` (called at the end of `patched-update`) keeps Mozilla-signed extensions in `/usr/lib/librewolf/browser/extensions` current via the AMO API (sha256 + id + signature-file checks, no downgrades, no building). Add slugs to `SLUGS`. Replaces the AUR `browserpass-librewolf`, whose pinned AMO file id was stale.
+
 ## Adding another program
 1. `git clone <upstream> ~/src/patched/<name>` and `git checkout -b local <release tag>`; commit patches there
    (rebase on new tags, never merge).

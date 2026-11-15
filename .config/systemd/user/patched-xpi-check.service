@@ -1,0 +1,9 @@
+[Unit]
+Description=Email if a managed browser extension has been behind AMO for too long
+
+[Service]
+Type=oneshot
+ExecStart=%h/src/patched/bin/patched-xpi --check
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+TimeoutStartSec=5min
+Nice=10

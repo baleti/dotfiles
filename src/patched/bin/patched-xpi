@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Keeps Mozilla-signed browser extensions current in LibreWolf's system extensions dir, independent
+# of the browser running. Called at the end of patched-update (needs the sudo lease). Source of truth
+# is the AMO API; nothing is built, only the Mozilla-signed .xpi is installed.
+# Modes:  (none)      install/update (needs sudo); emails on failure
+#         --check     no sudo: email if the installed extension has been behind AMO for > STALE_DAYS (daily timer)
+#         --test-alert  send a test email
+# Email goes through ~/.config/claude-email/mail using the account named in ~/.config/patched/alert-account
+# (local file, not in git: no address lives in this public repo). No file = no email.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/patched-lib.sh"
+MODE=${1:-install}
+STALE_DAYS=14
+LOG=$(mktemp "${TMPDIR:-/tmp}/patched-xpi-log.XXXXXX"); trap 'rm -f "$LOG"' EXIT
+say() { echo "$*"; echo "$*" >>"$LOG"; }
+err() { echo "$*" >&2; echo "$*" >>"$LOG"; }
+
+alert() {  # alert <key> <subject> <body> [min-hours-between-repeats]
+  local key=$1 subj=$2 body=$3 hours=${4:-24} acct stamp="$STATE/xpi-alert-$1.sent" mail=$HOME/.config/claude-email/mail
+  command -v notify-send >/dev/null && notify-send -a patched "$subj" "$body" 2>/dev/null || true
+  acct=$(cat "$HOME/.config/patched/alert-account" 2>/dev/null) || return 0
+  if [ -f "$stamp" ] && [ -z "$(find "$stamp" -mmin +$((hours * 60)) 2>/dev/null)" ]; then return 0; fi  # rate limit
+  local to; to=$("$mail" accounts 2>/dev/null | awk -v a="$acct" '$1==a {print $2}')
+  [ -n "$to" ] || { err "alert: account '$acct' not found"; return 1; }
+  "$mail" --account "$acct" send --to "$to" --subject "[patched-xpi] $subj" \
+    --body "$body"$'\n\n'"host: $(hostname)  time: $(date -Is)" >/dev/null \
+    && touch "$stamp" || err "alert: sending mail failed"
+}
+
+EXT_DIR=/usr/lib/librewolf/browser/extensions
+HOST_DIR=/usr/lib/librewolf/native-messaging-hosts
+# "<AMO slug>"; add more slugs here
+SLUGS=(browserpass-ce)
+# native-messaging host json (from the official `browserpass` package) linked next to the extension
+HOST_JSON=/usr/lib/browserpass/hosts/firefox/com.github.browserpass.native.json
+
+ver_of() {  # ver_of <xpi> -> manifest version (empty on failure)
+  python3 -I - "$1" <<'PY' 2>/dev/null
+import json, sys, zipfile
+print(json.loads(zipfile.ZipFile(sys.argv[1]).read("manifest.json"))["version"])
+PY
+}
+
+if [ "$MODE" = --test-alert ]; then
+  rm -f "$STATE/xpi-alert-test.sent"; alert test "test alert" "patched-xpi alert path works."; exit $?
+fi
+
+rc=0
+for slug in "${SLUGS[@]}"; do
+  meta=$(curl -fsS --max-time 30 -A 'patched-xpi/1.0' "https://addons.mozilla.org/api/v5/addons/addon/$slug/") \
+    || { err "$slug: AMO API unreachable, skipping"; rc=1; continue; }
+  # prints: guid version url sha256 status
+  read -r guid ver url hash status < <(python3 -I -c '
+import json, sys
+d = json.load(sys.stdin); c = d["current_version"]; f = c["file"]
+print(d["guid"], c["version"], f["url"], f["hash"].removeprefix("sha256:"), f["status"])' <<<"$meta") \
+    || { err "$slug: unexpected API response"; rc=1; continue; }
+  [ "$status" = public ] || { err "$slug: file status '$status', skipping"; rc=1; continue; }
+  case $url in https://addons.mozilla.org/*) ;; *) err "$slug: unexpected download host $url"; rc=1; continue ;; esac
+
+  target=$EXT_DIR/$guid.xpi
+  cur=$(ver_of "$target")
+
+  if [ "$MODE" = --check ]; then   # staleness watchdog: no sudo, no download
+    behind="$STATE/xpi-$slug.behind"
+    if [ "$cur" = "$ver" ]; then rm -f "$behind"; say "$slug: up to date ($ver)"; continue; fi
+    [ -f "$behind" ] || date +%s >"$behind"
+    days=$(( ($(date +%s) - $(cat "$behind")) / 86400 ))
+    say "$slug: installed '${cur:-none}', AMO $ver, behind for ${days}d"
+    [ "$days" -ge "$STALE_DAYS" ] && alert "stale-$slug" "$slug is $days days behind AMO" \
+      "Installed: ${cur:-none}. Current on AMO: $ver. Run: paru; ~/src/patched/bin/patched-update" 168
+    continue
+  fi
+  if [ "$cur" = "$ver" ] && [ "$(sha256sum "$target" | cut -d' ' -f1)" = "$hash" ]; then
+    say "$slug: $ver already installed"
+  else
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/patched-xpi.XXXXXX")
+    if curl -fsS --max-time 120 -A 'patched-xpi/1.0' -o "$tmp/x.xpi" "$url" \
+       && [ "$(sha256sum "$tmp/x.xpi" | cut -d' ' -f1)" = "$hash" ] \
+       && [ "$(ver_of "$tmp/x.xpi")" = "$ver" ] \
+       && python3 -I - "$tmp/x.xpi" "$guid" <<'PY'
+import json, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1]); n = z.namelist()
+m = json.loads(z.read("manifest.json"))
+gid = m.get("browser_specific_settings", m.get("applications", {})).get("gecko", {}).get("id")
+sys.exit(0 if gid == sys.argv[2] and any(x.startswith("META-INF/") and x.endswith((".rsa", ".sig")) for x in n) else 1)
+PY
+    then
+      # never downgrade
+      if [ -n "$cur" ] && [ "$(printf '%s\n%s\n' "$cur" "$ver" | sort -V | tail -1)" != "$ver" ]; then
+        err "$slug: AMO has $ver, older than installed $cur, leaving it"
+      else
+        say "$slug: installing ${cur:-new} -> $ver"
+        sudo install -Dm644 "$tmp/x.xpi" "$target" || { err "$slug: install failed"; rc=1; }
+      fi
+    else
+      err "$slug: download/verification failed (hash, id or signature check), NOT installing"; rc=1
+    fi
+    rm -rf "$tmp"
+  fi
+
+  if [ "$slug" = browserpass-ce ] && [ -e "$HOST_JSON" ] && [ ! -L "$HOST_DIR/$(basename "$HOST_JSON")" ]; then
+    sudo install -dm755 "$HOST_DIR" && sudo ln -sf "$HOST_JSON" "$HOST_DIR/"
+  fi
+  printf '%s %s\n' "$ver" "$hash" >"$STATE/xpi-$slug.last"
+done
+if [ "$rc" -ne 0 ] && [ "$MODE" != --check ]; then
+  alert failed "update failed" "patched-xpi finished with errors; the installed extension was left as it was.
+
+$(cat "$LOG")"
+fi
+exit $rc

@@ -32,3 +32,6 @@ for f in $(registry_files); do
     echo "$NAME: install failed" >&2
   fi
 done
+
+# Mozilla-signed browser extensions (LibreWolf need not be running)
+"$(dirname "$(readlink -f "$0")")/patched-xpi" || echo "patched-xpi: see messages above" >&2
