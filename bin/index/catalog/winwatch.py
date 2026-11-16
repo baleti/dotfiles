@@ -83,6 +83,7 @@ class WinWatch(hostwatch.HostWatch):
         self.db.commit()
         self.last_rescan = 0.0
         self.applied = 0
+        self.switched = ""
         try:
             self.pos = json.load(open(STATE))
         except (OSError, ValueError):
@@ -92,6 +93,15 @@ class WinWatch(hostwatch.HostWatch):
         tmp = STATE + ".tmp"
         json.dump(self.pos, open(tmp, "w"))
         os.replace(tmp, STATE)
+
+    def catch_up(self, why):
+        """Changes made while the PC's watcher was not running are unknown (FileSystemWatcher keeps no journal, unlike the
+        NTFS USN journal that voidtools Everything reads). Re-walk the small profile folders now (seconds) and the big
+        drives through the rate-limited full walk."""
+        log(f"{why}: catching up")
+        subprocess.Popen(["nice", "-n", "10", os.path.expanduser("~/.local/bin/catalog-wsl-walk"), "Users/"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.rescan(why)
 
     def session(self, first):
         p = subprocess.Popen(["ssh", "-T", HOST, "python3", "-c", REMOTE_Q, shlex.quote(self.pos["f"]), str(self.pos["o"])], stdout=subprocess.PIPE, bufsize=0)
@@ -129,6 +139,9 @@ class WinWatch(hostwatch.HostWatch):
                             self.rescan("Windows reported lost events")
                         elif "op" in ev:
                             pending.append(ev)
+                        if self.pos["f"] and o["f"] != self.pos["f"] and self.switched != o["f"]:
+                            self.switched = o["f"]
+                            self.catch_up("the PC's watcher started a new change file (it had been stopped or the PC restarted)")
                         newpos = {"f": o["f"], "o": o["o"]}
             if now - last_seen > 90:
                 log("no data (not even heartbeats) for 90 s, reconnecting")

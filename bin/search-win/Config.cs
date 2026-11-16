@@ -77,7 +77,20 @@ namespace SearchApp
                 if (!double.IsNaN(Window.x)) { w["x"] = Window.x; w["y"] = Window.y; }
                 w["w"] = Window.w; w["h"] = Window.h; w["max"] = Window.max;
                 d["window"] = w;
-                d["lastQuery"] = LastQuery; d["showOwner"] = ShowOwner; d["watch"] = Watch.Select(x => (object)x).ToArray();
+                // "watch" belongs to the background watcher and is only ever edited by hand: an app instance that loaded an
+                // older/empty config must not write its stale copy back (that silently turned the live updates off, 2026-11-16).
+                var keepWatch = Watch;
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        var disk = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+                        object dv;
+                        if (disk != null && disk.TryGetValue("watch", out dv) && dv is object[]) keepWatch = ((object[])dv).Select(x => Convert.ToString(x)).ToList();
+                    }
+                }
+                catch { }
+                d["lastQuery"] = LastQuery; d["showOwner"] = ShowOwner; d["watch"] = keepWatch.Select(x => (object)x).ToArray();
                 d["dangerousExt"] = DangerousExt.Select(x => (object)x).ToArray();
                 string tmp = path + ".tmp";
                 File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d));
