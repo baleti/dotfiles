@@ -337,7 +337,9 @@ namespace SearchApp
                 {
                     bool first = ver < 0; ver = j.Ver;
                     if (first) verSeen = j.Ver;
-                    else if (j.Ver != verSeen && !busy && (DateTime.UtcNow - lastInput).TotalMilliseconds > 1500 && (DateTime.UtcNow - lastRefresh).TotalMilliseconds > 2000) RefreshInPlace();
+                    // /fts and /chroma read content indexes, which the name catalog's ver counter says nothing about: never auto-refresh them
+                    // (each refresh re-ran Recoll over every index). Other queries refresh at most every 30 s, as ver can tick several times a second.
+                    else if (j.Ver != verSeen && !busy && !System.Text.RegularExpressions.Regex.IsMatch(sent ?? "", @"(^|\s)/(fts|chroma)\b") && (DateTime.UtcNow - lastInput).TotalMilliseconds > 1500 && (DateTime.UtcNow - lastRefresh).TotalMilliseconds > 30000) RefreshInPlace();
                 }
             }
             catch { }
