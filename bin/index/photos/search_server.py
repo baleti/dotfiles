@@ -106,10 +106,72 @@ class FtsError(Exception):
 class FtsCancelled(Exception):
     pass
 
-def _recoll_index(conf, terms, cap, cancel=None):
+_dir_names = {}          # conf -> (xapiandb stamp, [(lowercased folder name, folder name)]) read from the index's own folder terms
+_dir_names_lock = threading.Lock()
+PUSH_MAX_DIRS = 400      # a word that is part of more folder names than this is not worth narrowing by
+
+def _index_dir_names(conf):
+    """Every folder name Recoll has indexed (its XP terms: one per path component), as (lowercase, exact) pairs.
+    Read with xapian-delve (~1.5 s for the 39 GB index) and kept until the index changes."""
+    db = os.path.join(conf, "xapiandb")
+    try:
+        stamp = os.stat(db).st_mtime_ns
+    except OSError:
+        return None
+    with _dir_names_lock:
+        hit = _dir_names.get(conf)
+        if hit and hit[0] == stamp:
+            return hit[1]
+    try:
+        out = subprocess.run(["xapian-delve", "-1", "-A", "XP", db], capture_output=True, text=True, timeout=120, errors="replace").stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names = [(n.lower(), n) for n in (l[2:] for l in out.splitlines()[1:] if l.startswith("XP")) if n]
+    with _dir_names_lock:
+        _dir_names[conf] = (stamp, names)
+    return names
+
+def push_words(before):
+    """Plain words of the name filter written before /fts that must occur in a file's full path (the same ones make_prefilter
+    applies, minus anything but letters and digits)."""
+    from filesearch import split_mime_all, split_tags, split_neg_terms
+    if not before.strip():
+        return ()
+    _, _, rest = split_mime_all(before)
+    _, rest = split_path_tags(rest)
+    _, rest = split_tags(rest)
+    pos, _ = split_neg_terms(rest)
+    return tuple(dict.fromkeys(w for w in pos if re.fullmatch(r"[a-z0-9]{3,}", w)))
+
+def narrowed_query(conf, terms, words):
+    """The Recoll query `terms` restricted, for each word, to files whose path holds it: a folder name containing the word
+    (dir:) or a file name containing it (filename:*word*). A superset of the files the path filter keeps; the filter
+    still runs afterwards, so this only saves Recoll from fetching hundreds of thousands of records nobody wants.
+    None when no word could be narrowed (too many folders hold it, or the folder list is unavailable)."""
+    names = _index_dir_names(conf) if words else None
+    if not names:
+        return None
+    clauses = []
+    for w in words:
+        dirs = [n for low, n in names if w in low]
+        if len(dirs) > PUSH_MAX_DIRS or any('"' in d or "\\" in d for d in dirs):
+            continue
+        clauses.append("(" + " OR ".join([f'dir:"{d}"' for d in dirs] + [f"filename:*{w}*"]) + ")")
+    return f"({terms}) " + " ".join(clauses) if clauses else None
+
+def _recoll_index(conf, terms, cap, cancel=None, words=()):
     # "--": a query that starts with -term must not be read as a recollq option; -F gives base64 fields on one line.
     # Output goes to a temp file and the process is polled, so a request the client has already typed past (cancel() true)
     # kills it instead of letting every keystroke's 14 recollq runs pile up.
+    narrowed = narrowed_query(conf, terms, words)
+    if narrowed:
+        try:
+            return _recoll_run(conf, narrowed, cap, cancel, tolerant=True)
+        except FtsError:
+            pass                    # Recoll refused the narrowed form (e.g. too many file names match a word): ask the plain way
+    return _recoll_run(conf, terms, cap, cancel)
+
+def _recoll_run(conf, terms, cap, cancel=None, tolerant=False):
     import tempfile
     with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
         proc = subprocess.Popen(["recollq", "-c", conf, "-n", f"0-{cap}", "-F", "url fbytes mtime", "--", terms], stdout=out, stderr=err)
@@ -126,7 +188,8 @@ def _recoll_index(conf, terms, cap, cancel=None):
     class r:            # what the parsing below reads
         pass
     r.stdout, r.stderr = stdout, stderr
-    bad = [l for l in (r.stdout + r.stderr).splitlines() if "interpretation failed" in l or "syntax error" in l]
+    bad = [l for l in (r.stdout + r.stderr).splitlines() if "interpretation failed" in l or "syntax error" in l
+           or (tolerant and ("Query setup failed" in l or "toNativeQuery" in l))]
     if bad:
         raise FtsError("Recoll could not read the search words (" + bad[0].split("failed:")[-1].strip() + ")")
     rows = []
@@ -143,7 +206,7 @@ def _recoll_index(conf, terms, cap, cancel=None):
                          int(size) if size.isdigit() else None, int(mtime) if mtime.isdigit() and int(mtime) > 0 else None))
     return rows
 
-def fts_matches(terms, confs, cap=FTS_CAP, cancel=None):
+def fts_matches(terms, confs, cap=FTS_CAP, cancel=None, words=()):
     """Paths whose contents match a Recoll query, from the given content indexes, with sizes and mtimes, in relevance order.
     Raises FtsError when Recoll cannot parse the words."""
     def stamp(c):       # a rebuilt index (the user-dirs one, from Settings > Indexing) must not be answered from the cache
@@ -151,13 +214,13 @@ def fts_matches(terms, confs, cap=FTS_CAP, cancel=None):
             return os.stat(os.path.join(c, "xapiandb")).st_mtime_ns
         except OSError:
             return 0
-    key = (terms, tuple(confs), tuple(stamp(c) for c in confs), cap)
+    key = (terms, tuple(confs), tuple(stamp(c) for c in confs), cap, words)
     with _fts_lock:
         if key in _fts_cache:
             return _fts_cache[key]
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=min(16, max(1, len(confs)))) as ex:
-        per_index = list(ex.map(lambda c: _recoll_index(c, terms, cap, cancel), confs))      # index order kept: it is the relevance tie-break
+        per_index = list(ex.map(lambda c: _recoll_index(c, terms, cap, cancel, words), confs))      # index order kept: it is the relevance tie-break
     rows, seen = [], set()
     for found in per_index:
         for path, size, mtime in found:
@@ -303,7 +366,7 @@ def fts_query(text, sort, desc, offset, limit, via=None, before="", explicit=Fal
     if not any(not t.startswith("-") for t in filesearch.tokens(terms)):
         return [], 0, "/fts needs at least one word that must occur (a search of only -words would list every other file)", None
     try:
-        pool = fts_matches(terms.strip(), confs, cancel=cancel)
+        pool = fts_matches(terms.strip(), confs, cancel=cancel, words=push_words(before))
     except FtsError as e:
         return [], 0, str(e), None
     except FtsCancelled:
