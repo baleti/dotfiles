@@ -835,11 +835,46 @@ def make_pdf_thumb(remote, dst):
                     "-scale-to", "256", "-singlefile", remote, base],
                    capture_output=True, timeout=120)
 
+# Revit files: the preview Revit saved in the file, else (families) a render from rvt-ballet / rvt-sheets (rfathumb/rfathumb.py)
+REVIT_EXT = (".rfa", ".rvt", ".rte", ".rft")
+RFATHUMB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rfathumb", "rfathumb.py")
+RFATHUMB_PY = os.path.expanduser(os.environ.get("RFATHUMB_PY", "~/.local/share/rfathumb/venv/bin/python"))
+_revit_slots = threading.BoundedSemaphore(2)          # a family render converts the file (CPU + ~200 MB): at most two at a time
+
+def make_revit_thumb(remote, dst):
+    path = remote if remote.startswith("/") else None
+    if path is None and remote.startswith(config.REMOTE):
+        cand = os.path.join(os.path.expanduser(config.CFG["mount_root"]), remote[len(config.REMOTE):])
+        path = cand if os.path.exists(cand) else None
+    ok = False
+    if path:
+        os.makedirs(THUMBS, exist_ok=True)
+        with _revit_slots:
+            try:
+                r = subprocess.run(["nice", "-n", "15", RFATHUMB_PY if os.path.exists(RFATHUMB_PY) else sys.executable, RFATHUMB, path, dst, "256"],
+                                   capture_output=True, text=True, timeout=420)
+                ok = r.returncode == 0 and os.path.exists(dst)
+                if not ok and r.returncode not in (0, 2): print("rfathumb failed", remote, r.stderr[-400:], file=sys.stderr, flush=True)
+            except subprocess.TimeoutExpired:
+                print("rfathumb timeout", remote, file=sys.stderr, flush=True)
+    if not ok:                                  # nothing drawable: the type icon, so the page stops waiting for this file
+        icon = icon_for(remote)
+        if icon:
+            img = cv2.imread(icon, cv2.IMREAD_UNCHANGED)
+            if img is not None:
+                if img.ndim == 3 and img.shape[2] == 4:
+                    a = img[:, :, 3:4].astype(np.float32) / 255.0
+                    img = (img[:, :, :3] * a + 255 * (1 - a)).astype(np.uint8)
+                os.makedirs(THUMBS, exist_ok=True); cv2.imwrite(dst, img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
 def make_thumb(remote):
     dst = thumb_path(remote)
     if os.path.exists(dst): return
     if remote.lower().endswith(".pdf") and remote.startswith("/"):
         make_pdf_thumb(remote, dst)
+        return
+    if remote.lower().endswith(REVIT_EXT):
+        make_revit_thumb(remote, dst)
         return
     if remote.startswith("/"):                 # local file from the file-name index
         data = open(remote, "rb").read()
@@ -1131,7 +1166,7 @@ class H(BaseHTTPRequestHandler):
                     if wp: r["winpath"] = wp
                     if nothumb:
                         r["thumb"], r["ready"] = "", True
-                    elif r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf"):
+                    elif r["remote"].lower().endswith(IMAGE_EXT) or r["remote"].lower().endswith(".pdf") or r["remote"].lower().endswith(REVIT_EXT):
                         r["thumb"] = thumb_path(r["remote"])
                         r["ready"] = enqueue(r["remote"], tag)
                     else:
