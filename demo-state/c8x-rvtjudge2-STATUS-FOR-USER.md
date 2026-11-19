@@ -17,3 +17,18 @@ See c8x-rvtjudge2-DECISIONS.md (flaky 2021 dashboard rows, mullion first-open ru
 
 ## Where things are
 Report REPORT-c8x-rvtjudge2-b3-b4.md; judge fix rvt-ballet 81d925d (twin required), 0e01ee9 (twin evidence knob), host2 only, nothing pushed.
+
+## Update 2026-11-17 (c8x-rvtjudge3)
+- Pre-guard MEP rotate outputs (HVAC 2024, 3 links 4/3/6): all PASS the judge, but 1 of 3 differs from Revit's own rotate (a duct system value we leave stale). The guard stays.
+- 2021 mark PASS; 2021 move FAIL: a curtain-wall mullion changes on the first open of the output (not the writer layout: the same-layout Mark edit passes). Unrecorded; needs your decision whether "second open equals control" may count.
+- 2022/2023 mark PASS (differences are Revit-derived and equal the Revit-made twin). 2026 in-place-saved Mark PASS (22 MB Autodesk sample).
+- Rotate: 2020 PASS (recorded, new matrix item "family instance rotate"); 2022/2023 FAIL = the known piping-system Volume 0 defect, caught by the judge (permanent regression files).
+- 2025: product refuses by policy (writable years 2024, 2026). 2026 workshared files refused in place by the gate.
+- Infrastructure: lane2 wedged twice (Revit never ready); judge1 now has a lane-hold watchdog (exit 3 INFRA, lane marked degraded). Lane2 needs a restart by the lane owner.
+
+## Update 2 2026-11-17 late (c8x-rvtjudge3)
+Judge (Revit VM, lane3) results on Autodesk samples, product or research writer outputs:
+- PASS: 2024 and 2026 in-place Mark edits of every shape tried (400/2000/4096 chars, unicode, CRLF, spaces, markup chars, last element, 3 chained saves); 2020-2023 Mark/move/rotate(2020) and unicode Mark; 2024 x2 and 2026 x1 product in-place DELETES of connected HVAC terminals (judge twin now covers delete; Revit recomputes the MEP system, our file has no stale values).
+- FAIL (kept): 2021 move/rotate/some marks = mullion 574523 first-open flap, which also happens on UNEDITED byte copies (1 of 3): Revit/sample noise, not the writer; 2022/2023 rotate of the MEP-connected 731025 = known Volume 0 defect (judge catches it); 1-byte flip of an output passes the Revit judge (semantic layer only: the byte layer is the product gate).
+- Offline safety, 2024/2026 (host2): kill -9 during save (58 kills, never a partial file), restore byte-identical (3-save chains, original stays pinned after 25 saves), damaged/truncated/zero/text inputs refused (CLI and server), stale source refused (content hash), concurrent saves serialised, disk full and backup-full refused before replacing, odd paths and 251-char names fine, read-only file refused by the server (the research CLI overwrites and chmods 644: sev 3), raw gate is element-granular (move amount and same-element params caught only by the product read-back).
+- Needs your decision (NEEDS-FROM-ORCHESTRATOR.md): judge rules 49 (identical-copy noise floor) and 51 (Serious-Error reopen). lane2 needs a restart.

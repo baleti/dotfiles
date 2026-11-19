@@ -100,6 +100,76 @@ peryr = ', '.join('%d: %d%%' % (y, pct(sum(1 for c in M['categories'] for i in c
 out.append('<div class="mut" style="margin:6px 0">Items passing in at least one Revit year: <b>%d of %d (%d%%)</b>. Per year: %s. The headline above counts item x year cells, so a test on one year only moves it by 1/%d of an item.</div>' % (anyp, nit, pct(anyp, nit), peryr, len(YEARS)))
 def _a(v): return 'unreachable' if v is None else ('%dh' % (v // 3600) if v >= 3600 else '%dm' % (v // 60)) + ' ago'
 out.append('<div class="mut">Last ledger write: %s. %s</div>' % (', '.join('%s %s' % (h, _a(v)) for h, v in age.items()), 'WARNING: a ledger is unreachable, numbers may be low.' if any(v is None for v in age.values()) else ''))
+
+# ---- cold-query goal (no index, read the file directly, < 1 s) ----
+CQ = json.load(open(D + '/rvt-edit/coldq.json'))
+cql = {}
+cqp = D + '/rvt-edit/coldq.jsonl'
+if os.path.exists(cqp):
+    for ln in open(cqp, errors='replace'):
+        try: r = json.loads(ln)
+        except Exception: continue
+        cql[(r.get('item'), r.get('tier'))] = r
+cq_tot = sum(len(g['items']) for g in CQ['groups']) * len(CQ['tiers'])
+cq_ok = sum(1 for g in CQ['groups'] for i in g['items'] for t in CQ['tiers'] if cql.get((i, t), {}).get('result') == 'PASS')
+cq_any = sum(1 for g in CQ['groups'] for i in g['items'] if any(cql.get((i, t), {}).get('result') == 'PASS' for t in CQ['tiers']))
+cq_n = sum(len(g['items']) for g in CQ['groups'])
+cq_ok5 = sum(1 for g in CQ['groups'] for i in g['items'] for t in CQ['tiers'] if cql.get((i, t), {}).get('result') in ('PASS', 'PASS5'))
+cq_any5 = sum(1 for g in CQ['groups'] for i in g['items'] if any(cql.get((i, t), {}).get('result') in ('PASS', 'PASS5') for t in CQ['tiers']))
+cq_part = sum(1 for g in CQ['groups'] for i in g['items'] for t in CQ['tiers'] if cql.get((i, t), {}).get('result') == 'PARTIAL')
+cq = ['<h1 style="margin-top:34px">Instant queries on .rvt files, cold: progress to 100%%</h1><div class="mut">Goal: FilteredElementCollector-style and SQL-style queries answered by reading the file directly, with NO index built first, in under 1 second, so agents can answer questions about real ~1 GB project files. %s</div>' % e(CQ['rule'])]
+cq.append('<div class="row" style="margin-top:12px"><div style="flex:1"><div class="mut"><b>(a) Correct and under 5 s</b> (first target, cold, equals the oracle)</div><div class="row"><div class="big">%d%%</div><div style="flex:1"><div class="bar"><i class="g" style="width:%d%%"></i></div><div class="mut">%d of %d cells (query x file size). Queries with this at any size: %d of %d. A further %d cells are under 5 s but only partly verified (PARTIAL).</div></div></div></div><div style="flex:1"><div class="mut"><b>(b) Correct and under 1 s</b> (final goal)</div><div class="row"><div class="big">%d%%</div><div style="flex:1"><div class="bar"><i class="g" style="width:%d%%"></i></div><div class="mut">%d of %d cells. Queries with a PASS at any size: %d of %d. Best measured is 1.6 s; the floor is inflating the segments (about 6 s CPU) plus candidate scan (about 8 s CPU). Baseline 2026-11-14: 0%%, an 8 minute full scan on a 940 MB file.</div></div></div></div></div><div class="mut">Evidence level: timings are on the 984 MB file; correctness is verified against Revit API dumps of 9 Autodesk samples 2020-2026 and the Revit sheet export (412 of 412); the real 984 MB file itself has no Revit oracle yet except sheets.</div>' % (pct(cq_ok5, cq_tot), pct(cq_ok5, cq_tot), cq_ok5, cq_tot, cq_any5, cq_n, cq_part, pct(cq_ok, cq_tot), pct(cq_ok, cq_tot), cq_ok, cq_tot, cq_any, cq_n))
+for g in CQ['groups']:
+    gp = sum(1 for i in g['items'] for t in CQ['tiers'] if cql.get((i, t), {}).get('result') in ('PASS', 'PASS5')); gn = len(g['items']) * len(CQ['tiers'])
+    cq.append('<details><summary>%s: %d%% under 5 s (%d/%d)</summary><table><tr><th>query</th>%s</tr>' % (e(g['name']), pct(gp, gn), gp, gn, ''.join('<th>%s</th>' % e(t) for t in CQ['tiers'])))
+    for i in g['items']:
+        row = ''
+        for t in CQ['tiers']:
+            r = cql.get((i, t))
+            if not r: row += '<td class="n" title="untested">-</td>'
+            else:
+                ok = r.get('result') == 'PASS'
+                if r.get('result') in ('PASS5', 'PARTIAL'):
+                    row += '<td class="%s" title="%s">%s %ss</td>' % ('p' if r['result'] == 'PASS5' else 'n', e(r.get('date', '') + ' ' + r.get('agent', '') + ' ' + r.get('note', '')), e(r['result']), e(str(r.get('sec', ''))))
+                    continue
+                row += '<td class="%s" title="%s">%s %ss</td>' % ('p' if ok else 'f', e(r.get('date', '') + ' ' + r.get('agent', '') + ' ' + r.get('note', '')), e(r.get('result', '')), e(str(r.get('sec', ''))))
+        cq.append('<tr><td>%s</td>%s</tr>' % (e(i), row))
+    cq.append('</table></details>')
+
+ms = {}
+mp = D + '/rvt-edit/coldq-milestones.json'
+if os.path.exists(mp):
+    try: ms = json.load(open(mp))
+    except Exception: ms = {}
+cq.append('<h2>Milestones (plan: demo-state/PRIORITY-RVT-COLDQUERY.md)</h2><table><tr><th>milestone</th><th>status</th><th>measured</th></tr>' + ''.join('<tr><td>%s %s</td><td class="%s">%s</td><td>%s</td></tr>' % (e(m[0]), e(m[1]), 'p' if ms.get(m[0], {}).get('status') == 'DONE' else 'n', e(ms.get(m[0], {}).get('status', 'TODO')), e(ms.get(m[0], {}).get('measured', ''))) for m in CQ.get('milestones', [])) + '</table><div class="mut">Agents update rvt-edit/coldq-milestones.json: {"M1": {"status": "DONE|IN PROGRESS", "measured": "..."}}</div>')
+cq_prog = []
+if os.path.exists(pp):
+    for ln in open(pp, errors='replace'):
+        if re.search(r'RVTOFFSET|RVTCAT|COLDQ', ln): cq_prog.append(ln.strip()[:300])
+cq.append('<h2>Cold-query work notes</h2><ul>' + ''.join('<li class="mut">%s</li>' % e(l) for l in cq_prog[-8:][::-1]) + ('' if cq_prog else '<li class="mut">none yet</li>') + '</ul>')
+out.append('\n'.join(cq))
+
+# ---- sheet PDF export fidelity (visually identical to Revit) ----
+spj = json.load(open(D + '/rvt-edit/sheetpdf.json')); spl = {}
+if os.path.exists(D + '/rvt-edit/sheetpdf.jsonl'):
+    for ln in open(D + '/rvt-edit/sheetpdf.jsonl', errors='replace'):
+        try: r = json.loads(ln)
+        except Exception: continue
+        spl[r.get('sheet')] = r
+sp = ['<h1 style="margin-top:34px">Sheet PDF export: visually identical to Revit, progress to 100%%</h1><div class="mut">%s</div>' % e(spj['rule'])]
+sc = {s: (min(spl[s]['P'], spl[s]['R']) if s in spl and spl[s].get('P') is not None and spl[s].get('R') is not None else None) for s in spj['sheets']}
+meas = [v for v in sc.values() if v is not None]
+npass = sum(1 for v in meas if v >= 0.99)
+mean = sum(meas) / len(meas) if meas else 0
+sp.append('<div class="row" style="margin-top:12px"><div class="big">%d%%</div><div style="flex:1"><div class="bar"><i class="g" style="width:%d%%"></i></div><div class="mut">%d of %d sheets identical. Mean closeness (min of ink precision and recall) over the %d sheets that have a Revit PDF to compare: %.0f%%. %d sheets are UNMEASURED (no Revit PDF yet). Open: whole set takes about 100 s setup + 8 min; the PDFs were never compared by eye.</div></div></div>' % (pct(npass, len(spj['sheets'])), pct(npass, len(spj['sheets'])), npass, len(spj['sheets']), len(meas), mean * 100, len(spj['sheets']) - len(meas)))
+sp.append('<table><tr><th>sheet</th><th>ink precision</th><th>ink recall</th><th>closeness</th><th>words in common</th><th>status</th></tr>')
+for s in spj['sheets']:
+    r = spl.get(s)
+    if r is None or sc[s] is None: sp.append('<tr><td>%s</td><td colspan="4" class="n">unmeasured (no Revit PDF to compare)</td><td class="n">UNMEASURED</td></tr>' % e(s)); continue
+    ok = sc[s] >= 0.99 and r.get('w') is not None and r.get('w') == r.get('wr')
+    sp.append('<tr><td>%s</td><td>%.2f</td><td>%.2f</td><td>%.0f%%</td><td>%s</td><td class="%s" title="%s">%s</td></tr>' % (e(s), r['P'], r['R'], sc[s] * 100, ('%d / %d' % (r['w'], r['wr'])) if r.get('w') is not None else '-', 'p' if ok else 'f', e(r.get('date', '') + ' ' + r.get('note', '')), 'IDENTICAL' if ok else 'DIFFERS'))
+sp.append('</table><div class="mut">Recorded with ~/demo-state/bin/sheetpdf-record. Numbers marked old metric used a looser 1.3 mm tolerance; re-measure with the strict rule above.</div>')
+out.append('\n'.join(sp))
 out.append('<h2>By area</h2>')
 for c, n, p, f in cats:
     out.append('<div class="cat"><div class="row"><b>%d%%</b><div style="flex:1"><div>%s</div><div class="bar"><i class="g" style="width:%d%%"></i><i class="r" style="width:%d%%"></i></div></div><span class="mut">%d/%d</span></div></div>' % (pct(p, n), e(c['name']), pct(p, n), pct(f, n), p, n))

@@ -22,6 +22,18 @@ class Ext(unittest.TestCase):
         c, r = self.s.post('/api/save', EDIT); self.assertIn(c, (200, 409), r)
         self.assertTrue(valid_dwg(self.f))
 
+    def test_replaced_by_symlink_to_other_drawing(self):
+        """the path now points (symlink) to a DIFFERENT valid drawing: SAVE! must refuse and neither the link nor the drawing behind it may change"""
+        other = self.e.drawing('other.dwg', year='2013'); ho = sha(other)
+        os.remove(self.f); os.symlink(other, self.f)
+        c, r = self.s.post('/api/save', EDIT); self.assertEqual(c, 409, r); self.assertTrue(clear(r['error']), r['error'])
+        self.assertTrue(os.path.islink(self.f)); self.assertEqual(sha(other), ho)
+
+    def test_replaced_by_other_year_drawing(self):
+        """renamed over by a different drawing (other version, other size) after open"""
+        alt = self.e.drawing('alt.dwg', year='2010'); ha = sha(alt); os.replace(alt, self.f)
+        c, r = self.s.post('/api/save', EDIT); self.assertEqual(c, 409, r); self.assertTrue(clear(r['error']), r['error']); self.assertEqual(sha(self.f), ha)
+
     def test_deleted_after_open(self):
         os.unlink(self.f)
         c, r = self.s.post('/api/save', EDIT); self.assertIn(c, (400, 404, 409, 500), r); self.assertTrue(r.get('error'), r)

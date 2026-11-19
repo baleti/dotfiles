@@ -315,13 +315,17 @@ class Doc:
         if d['entmode'] == 2: bh = self.model_space()
         elif d['entmode'] == 1: bh = self.paper_space()
         else: bh = d['owner']
-        self._unlink(bh, h)
+        for r in list(d.get('reactors') or []):      # decode every reactor first: an undecodable one (e.g. ACDBASSOCGEOMDEPENDENCY, type 523) would be left pointing at the erased entity (AUDIT +1 error each) -> refuse, nothing changes
+            if r != h and self.exists(r): self.get(r)
+        hit = []                            # decode every hatch FIRST: an undecodable one raises NotImplementedError and the document must still be untouched then (atomic erase)
         for hh in self.by_type(78):         # an associative hatch must not keep pointing at the erased boundary object (AUDIT: 'Boundary Undefined'): as in AutoCAD it becomes non-associative
             hd = self.get(hh)
-            if hd.get('assoc') and any(h in (p.get('boundary') or []) for p in hd['paths']):
-                hd['assoc'] = 0
-                for p in hd['paths']: p['boundary'] = []; p['nboundary'] = 0
-                self.put(hd); self.assoc_dropped.add(hh)
+            if hd.get('assoc') and any(h in (p.get('boundary') or []) for p in hd['paths']): hit.append((hh, hd))
+        self._unlink(bh, h)
+        for hh, hd in hit:
+            hd['assoc'] = 0
+            for p in hd['paths']: p['boundary'] = []; p['nboundary'] = 0
+            self.put(hd); self.assoc_dropped.add(hh)
         self.delete(h)
 
     # ---- convenience constructors

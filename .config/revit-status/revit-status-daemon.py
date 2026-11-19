@@ -327,7 +327,8 @@ def main():
             sh.gpu = gpu
         sh.publish()
         if failures:
-            sh.wait(lambda tier: interval, started)
+            # backoff only spares an unreachable host while nobody looks: with the panel open (watched) retry every few seconds, so a stale 10 min backoff never pins the 'last known view' banner
+            sh.wait(lambda tier: 5 if tier == "watched" else interval, started)
         else:
             sh.wait(lambda tier: {"locked": INTERVAL_LOCKED, "watched": INTERVAL_WATCHED, "active": INTERVAL_ACTIVE, "idle": INTERVAL_IDLE}[tier], started)
 

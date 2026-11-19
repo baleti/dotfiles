@@ -16,7 +16,7 @@ import json, os, re, subprocess, sys, time, glob, secrets
 from pathlib import Path
 
 HOME = Path.home()
-PROFILES = [".claude", ".claude2", ".claude3", ".claude4", ".claude5", ".claude6", ".claude7", ".claude8"]
+PROFILES = [".claude", ".claude2", ".claude3", ".claude4", ".claude5", ".claude6", ".claude7", ".claude8", ".claude-ksr"]
 CLAUDE = HOME / ".local/bin/claude"
 WAIT = int(os.environ.get("VERIFY_WAIT", "60"))
 

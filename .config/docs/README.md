@@ -30,6 +30,8 @@ version-controlled here and is out of scope for this doc set.
 | [google-cloud-oauth.md](google-cloud-oauth.md) | Setting up a Google OAuth client for personal Google API access: Testing vs Production, what actually gates Publish, and hosting the required Branding pages on a Cloudflare Worker with no local binaries |
 | [redact-video-ocr.md](redact-video-ocr.md) | `bin/redact-video-ocr`, an OCR-driven tool that blurs sensitive on-screen text out of a screen-recording video automatically instead of by manual frame review |
 | [bluetooth-headphones.md](bluetooth-headphones.md) | `mod+b` / `mod+ctrl+b`: handing one pair of headphones between host3 and the Android phone, including how the Companion app lends out Wireless debugging so host3 can use adb's `shell` privileges for the Bluetooth connect/disconnect |
+| [windows-vm-idle-cpu.md](windows-vm-idle-cpu.md) | The offline Windows VMs on host2 burning a core while idle: `defragsvc` (ScheduledDefrag) root cause, measurements, which images are fixed and which are still pending |
+
 
 ## Architecture at a glance
 

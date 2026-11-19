@@ -23,3 +23,7 @@ See ~/demo-state/perf-syspath.patch.txt (ready-to-apply one-line edits) in NEEDS
 2026-10-30 (c8-perf): also merge dwgscene.py + dwgballet/flat.py guard (corrupt ELLIPSE/ARC angles hang) from host2 ~/dwg-ballet-perf last commit.
 
 2026-10-30 (c8-perf): host2 ~/dwg-ballet-perf commit 1cc8329 adds hatch_loops (2.8x on _hatch) + the 1e6 rad angle guard; files: dwgscene_fast_src/src/lib.rs, dwgscene_fast_src/tests/hatch_parity.py, dwgballet/flat.py, dwgscene.py, rebuilt dwgscene_fast.abi3.so; already copied into ~/dwg-ballet-staged.
+- c8x-codexlab: /tmp tmpfs 16G reached 100% at ~01:50 (other sessions' scratchpads under /tmp/claude-1000 total ~6 GB, plus /tmp/pytest-of-user1 which I cleared); worth a cleanup by owners
+
+## 2026-11-17 c8x-rvtjudge3: in-place save of a 1 GB .rvt is unusable (blocker for the 1 GB goal)
+segedit --in-place of one Mark on the synthetic 1.0 GB ip1g.rvt (c9x-fastedit/big): not finished after 41 min, RSS 7 -> 9 GB (killed by me; file untouched). A 22 MB file takes 2 s via segedit / ~130 s via the product server. Probable cause: full-file scans (occurrences / verify) and whole-partition decode for one string edit. Needs a locator-based edit path (pages of the one partition only) plus streaming verify; see also the cold-query locator work.

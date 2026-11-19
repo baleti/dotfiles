@@ -6,8 +6,8 @@ equivalent) only.
 Security model:
   - socket bound to the tunnel interface IP only, never 0.0.0.0
   - peer IP must be in ALLOWED_SUBNET
-  - X-Claude-Agents-Token header must match the on-disk token (constant-time)
-  - any Origin header -> reject (no browser caller has legitimate business)
+  - NO token auth (removed 2026-11-07): any peer on the WireGuard subnet may connect
+  - an Origin header that is not this host -> reject (cross-site protection)
   - no CORS headers, ever
   - naive per-IP rate limit on mutating endpoints
   - token itself is never logged
@@ -71,13 +71,39 @@ BIND_IP = _env_or_fatal("CLAUDE_AGENTS_BIND_IP")
 PORT = int(os.environ.get("CLAUDE_AGENTS_PORT", "8790"))
 ALLOWED_SUBNET = ipaddress.ip_network(_env_or_fatal("CLAUDE_AGENTS_ALLOWED_SUBNET"))
 
-ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3", "claude4": HOME / ".claude4", "claude5": HOME / ".claude5", "claude6": HOME / ".claude6", "claude7": HOME / ".claude7", "claude8": HOME / ".claude8"}
+ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3", "claude4": HOME / ".claude4", "claude5": HOME / ".claude5", "claude6": HOME / ".claude6", "claude7": HOME / ".claude7", "claude8": HOME / ".claude8", "claude-ksr": HOME / ".claude-ksr"}
 # Accounts 2-7 symlink projects/ to ~/.claude/projects; any with their own
 # real directory, so every distinct one is read (primary first).
 PROJECTS_DIRS = []
 for _d in [PROJECTS_DIR] + [d / "projects" for d in ACCOUNT_DIRS.values()]:
     if _d.is_dir() and _d.resolve() not in [x.resolve() for x in PROJECTS_DIRS]:
         PROJECTS_DIRS.append(_d)
+
+WEB_DIR = Path(__file__).resolve().parent / "web"
+USAGE_STATE_FILE = HOME / ".cache" / "claude-usage" / "state.json"
+WEB_STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
+              "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json")}
+# The shared picker-query engine (the same file the quickshell panels import), served to the web page so its search
+# box parses exactly the DSL of the Ctrl+Alt+C panel. See _serve_dsl.
+DSL_JS = HOME / ".config" / "quickshell" / "lib" / "dsl.js"
+CLAUDE_HISTORY = HOME / "bin" / "claude-history"
+_fts_cache = {}      # query -> (time, {session_id: score}); `/fts` answers from claude-history are reused for a minute
+CLAUDE_INDEX_META = HOME / ".cache" / "indexes" / "claude" / "meta.json"   # sid -> {title, cwd, msgs, tokens, mtime}, kept by claude-fts-index
+_claude_meta_cache = {"mtime": None, "value": {}}
+
+
+def _claude_index_meta():
+    """The desktop index's per-conversation metadata, re-read only when the file changes; {} if it is missing or broken."""
+    try:
+        m = CLAUDE_INDEX_META.stat().st_mtime
+    except OSError:
+        return {}
+    if m != _claude_meta_cache["mtime"]:
+        try:
+            _claude_meta_cache.update(mtime=m, value=json.loads(CLAUDE_INDEX_META.read_text()))
+        except (OSError, ValueError):
+            return {}
+    return _claude_meta_cache["value"]
 
 CLAUDE_PROC_RE = re.compile(r'(^|/)claude(\s|$)')
 
@@ -817,6 +843,10 @@ def deliver_text_to_conversation(session_id, text, msg_id, ip, log_prefix="send"
             replay["replayed"] = True
             return replay
 
+    pend = PENDING_SPAWNS.get(session_id)
+    if pend is not None:
+        pend.wait(60)   # session still booting (background spawn): hold the message until the TUI is ready
+
     live = get_live_sessions().get(session_id)
     if live:
         ok = send_to_pane(live["pane"], text)
@@ -1023,7 +1053,12 @@ def _maybe_open_display_window(tmux_session):
         log(f"WARN tmux session={tmux_session} could not open display window: {e}")
 
 
-def spawn_session(dir_key, initial_text):
+# session_id -> Event set once a background-started session has its first message typed in (or gave up).
+# deliver_text_to_conversation waits on it, so a message sent while the TUI is still booting is not lost.
+PENDING_SPAWNS = {}
+
+
+def spawn_session(dir_key, initial_text, background=False):
     """Starts a brand-new tmux+claude session with a caller-known session id,
     primes it with the first message, and waits until the transcript file
     exists so the caller's very next /stream call is guaranteed to find it.
@@ -1055,11 +1090,35 @@ def spawn_session(dir_key, initial_text):
 
     _maybe_open_display_window(tmux_session)
 
+    if background:
+        # Return the id as soon as the tmux session exists; booting the TUI, priming the first message and waiting for
+        # the transcript continue here in a thread. The client opens the chat straight away and its poll picks the
+        # transcript up when it appears.
+        ev = threading.Event()
+        PENDING_SPAWNS[session_id] = ev
+
+        def _finish():
+            try:
+                spawn_session_finish(session_id, tmux_session, initial_text)
+            except Exception as e:
+                log(f"spawn: background finish for {session_id} failed: {e}")
+            finally:
+                ev.set()
+                PENDING_SPAWNS.pop(session_id, None)
+        threading.Thread(target=_finish, daemon=True, name=f"spawn-{session_id[:8]}").start()
+        return session_id, None
+    return spawn_session_finish(session_id, tmux_session, initial_text)
+
+
+def spawn_session_finish(session_id, tmux_session, initial_text):
     # The TUI needs a moment to finish drawing before it can accept
     # keystrokes - same fixed-delay approach send_to_pane's callers already
     # rely on elsewhere in this file, there being no readiness signal to
     # poll for that doesn't itself risk racing the first real prompt.
-    time.sleep(2)
+    if initial_text:
+        wait_for_prompt_ready(f"{tmux_session}:0.0", timeout=30)
+    else:
+        time.sleep(2)
 
     if not initial_text:
         # Empty session: nothing to prime, and Claude Code writes no
@@ -1131,6 +1190,78 @@ def _resume_lock_for(session_id):
     with _resume_locks_guard:
         return _resume_locks[session_id]
 
+_MENU_OPT_RE = re.compile(r"^\s*[❯>]?\s*(\d+)\.\s+(.*\S)")
+# (screen substring, option-label regex to choose or None for plain Enter)
+_STARTUP_PROMPTS = [
+    ("Resume this conversation?", r"^resume$"),                           # stale/huge-conversation usage warning
+    ("How would you like to continue", r"full session|as-is|original"),   # large-session resume chooser
+    ("Resume from summary", r"full session|as-is|original"),
+    ("trust the files in this folder", r"^yes"),
+    ("Do you trust", r"^yes"),
+    ("Bypass Permissions mode", r"yes, i accept|^yes"),
+    ("Press Enter to continue", None),
+    ("Press enter to continue", None),
+]
+
+
+def wait_for_prompt_ready(pane_target, timeout=60.0):
+    """Polls a freshly launched claude pane until its normal input box is
+    showing, auto-answering known startup dialogs on the way (resume
+    chooser, folder trust, bypass-permissions warning, "press Enter").
+    Replaces a blind sleep: text typed into one of those dialogs is lost or
+    answers it wrongly. Returns True when ready, False on timeout (callers
+    then fall back to sending anyway, i.e. the old behaviour)."""
+    deadline = time.time() + timeout
+    stable = 0
+    handled = {}
+    while time.time() < deadline:
+        # Only the bottom of the pane: a dismissed dialog can linger in scrollback.
+        screen = "\n".join(_pane_text(pane_target).rstrip("\n").split("\n")[-14:])
+        low = screen.lower()
+        dialog = None
+        for marker, pick in _STARTUP_PROMPTS:
+            if marker.lower() in low:
+                dialog = (marker, pick)
+                break
+        menu = any(_MENU_OPT_RE.match(l) and l.strip()[:1] in ("❯", ">") for l in screen.split("\n"))
+        if dialog or menu or "Esc to cancel" in screen or "Enter to confirm" in screen:
+            stable = 0
+            key = dialog[0] if dialog else "menu"
+            if dialog is None:
+                # Unknown dialog: never guess an answer, just keep waiting.
+                if not handled.get(key):
+                    handled[key] = 1
+                    log(f"wait_for_prompt_ready({pane_target}): unknown dialog on screen, not answering")
+            elif handled.get(key, 0) < 3:   # don't hammer a dialog we can't dismiss
+                handled[key] = handled.get(key, 0) + 1
+                pick = dialog[1]
+                try:
+                    num = None
+                    if pick:
+                        for l in screen.split("\n"):
+                            m = _MENU_OPT_RE.match(l)
+                            if m and re.search(pick, m.group(2), re.I):
+                                num = m.group(1)
+                                break
+                    log(f"startup prompt on {pane_target}: {key!r} -> {num or 'Enter'}")
+                    if num:
+                        _tmux_keys(pane_target, num)
+                        time.sleep(0.3)
+                    _tmux_keys(pane_target, "Enter")
+                except Exception as e:
+                    log(f"wait_for_prompt_ready({pane_target}): answering {key!r} failed: {e}")
+            time.sleep(1.0)
+            continue
+        if _pane_input_box_text(pane_target) is not None:
+            stable += 1
+            if stable >= 2:       # input box seen on two consecutive polls: TUI done drawing/replaying
+                return True
+        else:
+            stable = 0
+        time.sleep(0.5)
+    log(f"wait_for_prompt_ready({pane_target}): timed out after {timeout}s")
+    return False
+
 
 def resume_session(session_id, initial_text):
     """Relaunches a closed (no live tmux pane) conversation via `claude
@@ -1191,13 +1322,58 @@ def resume_session(session_id, initial_text):
         # for anything but a short conversation.
         if initial_text is None:
             return session_id, None
-        time.sleep(4)
+        wait_for_prompt_ready(f"{tmux_session}:0.0")
 
         if not send_to_pane(f"{tmux_session}:0.0", initial_text):
             log(f"resume: initial send to {tmux_session} failed for {session_id}")
             return None, "session resumed but initial message failed to send"
 
         return session_id, None
+
+_SHELL_NAMES = {"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "nu"}
+
+
+def exit_session(session_id):
+    """Types /exit into the conversation's live pane and returns as soon as
+    it is sent; a background thread then waits (a long conversation can take
+    a minute to quit) and closes the shell the pane was left in -- a
+    hand-started `claude` sits in a shell that would otherwise hang around
+    forever; daemon-spawned panes have no shell and vanish on their own.
+    Returns (ok, error)."""
+    live = get_live_sessions().get(session_id)
+    if not live:
+        return True, None   # already exited: nothing to do, caller still closes its window
+    pane = live["pane"]
+    if not send_to_pane(pane, "/exit"):
+        return False, "failed to send /exit"
+    threading.Thread(target=_close_shell_after_exit, args=(session_id, pane), daemon=True, name="ExitSession").start()
+    return True, None
+
+
+def _close_shell_after_exit(session_id, pane):
+    def cur_cmd():
+        try:
+            r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}"],
+                               capture_output=True, text=True, timeout=5)
+            return r.stdout.strip() if r.returncode == 0 else None   # None: pane gone
+        except Exception:
+            return None
+
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        cmd = cur_cmd()
+        if cmd is None:
+            return                     # pane (and its tmux session) closed itself
+        if cmd in _SHELL_NAMES:
+            try:
+                _tmux_keys(pane, "C-u")
+                _tmux_keys(pane, "exit", "Enter")
+                log(f"exit_session: {session_id} exited, shell in {pane} closed")
+            except Exception as e:
+                log(f"exit_session({pane}): closing shell failed: {e}")
+            return
+        time.sleep(0.5)
+    log(f"exit_session: {session_id} still running in {pane} 120s after /exit, leaving it")
 
 
 _restore_lock = threading.Lock()
@@ -2064,10 +2240,26 @@ def conversation_meta(path, history_titles=None):
     return meta
 
 
+def _empty_live_meta(session_id, live_info):
+    """Row for a live session that has no transcript yet (just spawned, no
+    first message): Claude Code writes no jsonl until the first message, so
+    without this the list omits it and the phone's sync deletes the row."""
+    dir_key = live_info.get("dir_key")
+    info = next((v for v in ACCOUNT_MAP.values() if v["dir_key"] == dir_key), None)
+    return {
+        "id": session_id, "title": "New conversation", "mtime": time.time(),
+        "line_count": 0, "tokens": None, "context_pct": None,
+        "account": dir_key or "unknown",
+        "account_label": info["label"] if info else (dir_key or "unknown"),
+        "live": {"pane": live_info["pane"], "confidence": live_info["confidence"], "status": live_info.get("status")},
+    }
+
+
 def list_conversations(account_filter=None):
     live = get_live_sessions()
     history_titles = load_history_titles()
     out = []
+    seen_ids = set()
     for proj_dir in [d for root in PROJECTS_DIRS for d in root.iterdir() if d.is_dir()]:
         for f in proj_dir.glob("*.jsonl"):
             try:
@@ -2081,8 +2273,9 @@ def list_conversations(account_filter=None):
             # pane. Not real conversations, just noise; skip them outright
             # rather than showing an empty "(untitled)" row that goes
             # nowhere useful if tapped.
-            if meta.pop("real_messages", 0) == 0:
+            if meta.pop("real_messages", 0) == 0 and meta["id"] not in live:
                 continue
+            seen_ids.add(meta["id"])
             live_info = live.get(meta["id"])
             if live_info:
                 meta["live"] = {"pane": live_info["pane"], "confidence": live_info["confidence"], "status": live_info.get("status")}
@@ -2093,6 +2286,17 @@ def list_conversations(account_filter=None):
             if account_filter and meta["account"] != account_filter:
                 continue
             out.append(meta)
+    for sid, li in live.items():
+        if sid not in seen_ids and li.get("confidence") == "exact" and re.fullmatch(r"[0-9a-fA-F-]{36}", sid) \
+                and not PROJECTS_DIR_glob_by_id(sid):
+            m = _empty_live_meta(sid, li)
+            if not account_filter or m["account"] == account_filter:
+                out.append(m)
+    cm = _claude_index_meta()
+    for m in out:            # message count and working directory, from the desktop's claude-fts-index (what the Ctrl+Alt+C panel shows)
+        x = cm.get(m["id"])
+        if x:
+            m["msgs"], m["cwd"] = x.get("msgs"), x.get("cwd")
     out.sort(key=lambda m: m["mtime"], reverse=True)
     return out
 
@@ -2252,14 +2456,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log(f"deny: source {ip} not in {ALLOWED_SUBNET}")
             self._reject(403, "forbidden")
             return False
-        if self.headers.get("Origin") is not None:
-            log(f"deny: Origin header present from {ip}")
+        # No token/cookie: the WireGuard subnet check above is the only auth, by
+        # the owner's decision (2026-11-07). The Origin check below is not auth,
+        # it stops a web page open in a WG-connected browser from driving this
+        # API cross-site (browsers always send Origin on cross-origin POSTs).
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != f"http://{self.headers.get('Host', '')}":
+            log(f"deny: foreign Origin {origin!r} from {ip}")
             self._reject(403, "forbidden")
-            return False
-        token = self.headers.get("X-Claude-Agents-Token", "")
-        if not hmac.compare_digest(token, TOKEN):
-            log(f"deny: bad token from {ip}")
-            self._reject(401, "unauthorized")
             return False
         if rate_limited(ip, bucket, limit):
             log(f"deny: rate limited {ip} ({bucket})")
@@ -2267,7 +2471,74 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return False
         return True
 
+    def _serve_static(self, path):
+        ent = WEB_STATIC.get(path)
+        if not ent:
+            return False
+        try:
+            body = (WEB_DIR / ent[0]).read_bytes()
+        except OSError:
+            return False
+        self.send_response(200)
+        self.send_header("Content-Type", ent[1])
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    def _serve_dsl(self):
+        """GET /dsl.js: the shared DSL engine (`.pragma library` QML JS) wrapped so it exposes one global, window.DSL,
+        and adds nothing else to the page. Read from the desktop's file on every request, so the web search never lags
+        behind the panels' grammar."""
+        try:
+            src = DSL_JS.read_text()
+        except OSError:
+            return False
+        lines = src.split("\n")
+        if lines and lines[0].startswith(".pragma"):
+            lines[0] = "//"
+        body = ("window.DSL=(function(){\n" + "\n".join(lines) +
+                "\nreturn {makeSchema:makeSchema,parseQuery:parseQuery,selectRows:selectRows,termMatches:termMatches,"
+                "resolveNames:resolveNames,resolveSortKeys:resolveSortKeys,substr:substr,tokenize:tokenize};})();\n").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    def _fts_hits(self, q):
+        """session_id -> score for a full-text query over the Claude conversations (Recoll, via claude-history --fts)."""
+        now = time.time()
+        hit = _fts_cache.get(q)
+        if hit and now - hit[0] < 60:
+            return hit[1]
+        r = subprocess.run([str(CLAUDE_HISTORY), "--fts", q], capture_output=True, text=True, timeout=30)
+        out = {}
+        for line in r.stdout.splitlines():
+            sid, _, score = line.partition("\t")
+            if sid:
+                try:
+                    out[sid] = float(score)
+                except ValueError:
+                    out[sid] = 0.0
+        if len(_fts_cache) > 200:
+            _fts_cache.clear()
+        _fts_cache[q] = (now, out)
+        return out
+
     def do_GET(self):
+        if urllib.parse.urlsplit(self.path).path in WEB_STATIC and self._serve_static(urllib.parse.urlsplit(self.path).path):
+            return
+        if urllib.parse.urlsplit(self.path).path == "/dsl.js" and self._serve_dsl():
+            return
         if not self._security_check():
             return
         parsed = urllib.parse.urlsplit(self.path)
@@ -2278,6 +2549,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/v1/accounts":
             out = [{"dir_key": v["dir_key"], "label": v["label"], "email": v["email"]} for v in ACCOUNT_MAP.values()]
             return self._ok(out)
+
+        if path == "/api/v1/usage":
+            try:
+                d = json.loads(USAGE_STATE_FILE.read_text())
+            except Exception:
+                return self._ok({"accounts": [], "codex": None, "updated_at": None})
+            return self._ok({"accounts": d.get("accounts", []), "codex": d.get("codex"), "updated_at": d.get("updated_at"),
+                             "sessions": {k: [{x: v.get(x) for x in ("title", "status", "session_id", "context_tokens", "cwd")} for v in vs] for k, vs in (d.get("sessions") or {}).items()}})
+
+        if path == "/api/v1/fts":
+            q = ((qs.get("q") or [""])[0]).strip()[:200]
+            if not q:
+                return self._ok({"q": "", "hits": {}})
+            try:
+                return self._ok({"q": q, "hits": self._fts_hits(q)})
+            except Exception as e:
+                log(f"fts failed for {q!r}: {e}")
+                return self._ok({"q": q, "hits": {}, "error": "full-text search unavailable"})
 
         if path == "/api/v1/conversations":
             account = (qs.get("account") or [None])[0]
@@ -2422,7 +2711,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._reject(400, "bad text")
             text = text.strip()[:20000]
 
-            session_id, err = spawn_session(account, text)
+            session_id, err = spawn_session(account, text, background=bool(body.get("async")))
             if err:
                 log(f"spawn: failed for {ip}: {err}")
                 return self._reject(500, err)
@@ -2432,10 +2721,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # the new conversation immediately instead of waiting out a
             # full list sync.
             try:
-                meta = dict(conversation_meta(PROJECTS_DIR_glob_by_id(session_id)))
-                meta.pop("real_messages", None)
                 live = get_live_sessions().get(session_id)
-                meta["live"] = {"pane": live["pane"], "confidence": live["confidence"], "status": live.get("status")} if live else None
+                jp = PROJECTS_DIR_glob_by_id(session_id)
+                meta = dict(conversation_meta(jp)) if jp else _empty_live_meta(
+                    session_id, live or {"dir_key": account, "pane": "", "confidence": "exact"})
+                meta.pop("real_messages", None)
+                if live or jp:
+                    meta["live"] = {"pane": live["pane"], "confidence": live["confidence"], "status": live.get("status")} if live else None
+                # else: just spawned, live scan hasn't seen it yet -- keep the placeholder live marker
+                if not jp and account in ACCOUNT_DIRS:
+                    meta["account"] = account
+                    meta["account_label"] = _empty_live_meta(session_id, {"dir_key": account, "pane": "", "confidence": "exact"})["account_label"]
                 if meta.get("account") == "unknown":
                     meta["account"] = account
                 out["conversation"] = meta
@@ -2478,6 +2774,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._reject(400, "bad answers")
                 ok, err = answer_question(live["pane"], pending, answers)
             log(f"answer: {session_id} via {live['pane']} from {ip}: {'ok' if ok else err}")
+            if not ok:
+                return self._reject(409, err or "failed")
+            return self._ok({"ok": True})
+
+        m = re.match(r"^/api/v1/conversations/([0-9a-fA-F-]{36})/exit$", path)
+        if m:
+            if rate_limited(ip, "spawn", limit=5, window=60):
+                return self._reject(429, "rate limited")
+            ok, err = exit_session(m.group(1))
+            log(f"exit: {m.group(1)} from {ip}: {'ok' if ok else err}")
             if not ok:
                 return self._reject(409, err or "failed")
             return self._ok({"ok": True})

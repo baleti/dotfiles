@@ -4,3 +4,4 @@
 3. Item "rotate family instance" is not in matrix.json category 1 (ledger has older rows for it). Rotate 2020 passes 2 of 2 in b3 but is unrecorded. Add item or RVT_EDIT_FORCE?
 4. "number parameter" stays FAIL (SEV-1 stale derived geometry). My set_num 2020-2023 passes edit a view Detail Level only; not recorded so as not to hide the SEV-1.
 5. judge1 now requires a twin for the transient rule (rvt-ballet 81d925d).
+- 2026-11-17 c3 update: 3 byte-identical copies of 2021 original judged with no edit: 1 of 3 FAILs on the same mullion 574523 => the 2021 mullion flap is Revit/sample noise, NOT the writer (b21). Decision needed: allow judge1 noise floor by byte-identical copy (item 49).

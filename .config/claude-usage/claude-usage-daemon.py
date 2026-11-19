@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Polls Anthropic's account-usage endpoint for this machine's Claude Code
-accounts (~/.claude, ~/.claude2, ~/.claude3, ~/.claude4, ~/.claude5, ~/.claude6, ~/.claude7, ~/.claude8) and writes one combined
+accounts (~/.claude, ~/.claude2, ~/.claude3, ~/.claude4, ~/.claude5, ~/.claude6, ~/.claude7, ~/.claude8, ~/.claude-ksr) and writes one combined
 snapshot for the quickshell bar to read.
 
 This is the same endpoint the `claude` CLI itself calls for `/usage` --
@@ -88,6 +88,7 @@ ACCOUNTS = [
     ("claude6", Path.home() / ".claude6"),
     ("claude7", Path.home() / ".claude7"),
     ("claude8", Path.home() / ".claude8"),
+    ("claude-ksr", Path.home() / ".claude-ksr"),
 ]
 
 STATE_DIR = Path.home() / ".cache" / "claude-usage"
@@ -696,7 +697,7 @@ def hyprland_windows_by_tmux_session(procs: dict = None) -> dict:
 
 
 LOCAL_HOST = "host3"
-REMOTE_HOSTS = ("host2", "host1")
+REMOTE_HOSTS = ("host2", "host1", "wsl")
 REMOTE_REFRESH_S = 15
 _remote_lock = threading.Lock()
 _remote_rows: dict = {}   # host -> rows from its last successful poll

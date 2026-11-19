@@ -124,6 +124,10 @@ class Watcher:
             self.rescan = True
             return
         path, kinds, isdir = ev["p"], ev["e"], bool(ev["d"])
+        try:
+            path.encode()                       # non-UTF-8 names (surrogates) cannot go in sqlite: a failing batch is retried forever
+        except UnicodeError:
+            return
         if self.excluded(path):
             return
         self.events += 1
@@ -239,12 +243,12 @@ class Watcher:
                             self.scan(path, store)
                         else:
                             store.delprefix(path)
-                    except OSError as e:
+                    except (OSError, UnicodeError) as e:
                         log("skipped", kind, path, repr(e))
                 for p in due:
                     try:
                         store.put_path(p)
-                    except OSError as e:
+                    except (OSError, UnicodeError) as e:
                         log("skipped", p, repr(e))
                 db.commit()
                 self.t["db"] += time.time() - t_a

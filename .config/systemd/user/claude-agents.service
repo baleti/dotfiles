@@ -9,7 +9,7 @@ Type=simple
 # refuses to start without both. See ../README.md.
 Environment=CLAUDE_AGENTS_BIND_IP=10.10.0.2
 Environment=CLAUDE_AGENTS_ALLOWED_SUBNET=10.10.0.0/24
-ExecStart=%h/.config/claude-agents/claude-agents-daemon.py
+ExecStart=%h/src/claudeagents-android/server/claude-agents-daemon.py
 Restart=always
 RestartSec=10
 Nice=5

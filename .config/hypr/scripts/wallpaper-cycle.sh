@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Steps to the next/previous image in ~/wallpapers (sorted, wrapping),
-# based on wherever set-wallpaper.sh last recorded as the source. No
-# current record (nothing ever set, or the file's no longer there) just
-# starts from the first one.
+# next: switches to a random image in ~/wallpapers (never the current one,
+# which set-wallpaper.sh records as the source). prev: goes back through
+# the last 50 images next replaced (random one if there is no history).
 #
 # ~/wallpapers, not ~/pictures -- see wallpaper-rotate.sh for why.
 #
@@ -27,21 +26,32 @@ fi
 current=""
 [ -f "$source_file" ] && current=$(cat "$source_file")
 
-index=-1
-for i in "${!candidates[@]}"; do
-    if [ "${candidates[$i]}" = "$current" ]; then
-        index=$i
-        break
-    fi
-done
-
+# next = random image (never the current one); prev = step back through
+# the history of what next picked, so the two still feel like a pair.
+history_file="$HOME/.local/state/quickshell/wallpaper-history"
 n=${#candidates[@]}
-if [ "$index" -eq -1 ]; then
-    next_index=0
-elif [ "$1" = "next" ]; then
-    next_index=$(( (index + 1) % n ))
+
+if [ "$1" = "next" ]; then
+    pick="$current"
+    if [ "$n" -gt 1 ]; then
+        while [ "$pick" = "$current" ]; do
+            pick="${candidates[RANDOM % n]}"
+        done
+    else
+        pick="${candidates[0]}"
+    fi
+    if [ -n "$current" ]; then
+        echo "$current" >> "$history_file"
+        tail -n 50 "$history_file" > "$history_file.tmp" && mv "$history_file.tmp" "$history_file"
+    fi
 else
-    next_index=$(( (index - 1 + n) % n ))
+    pick=""
+    while [ -s "$history_file" ] && [ -z "$pick" ]; do
+        last=$(tail -n 1 "$history_file")
+        sed -i '$d' "$history_file"
+        [ -f "$last" ] && pick="$last"
+    done
+    [ -n "$pick" ] || pick="${candidates[RANDOM % n]}"
 fi
 
-~/.config/hypr/scripts/set-wallpaper.sh "${candidates[$next_index]}"
+~/.config/hypr/scripts/set-wallpaper.sh "$pick"

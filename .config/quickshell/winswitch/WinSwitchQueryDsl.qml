@@ -348,10 +348,11 @@ QtObject {
             }
         }
         if (top.ftsTokens) {
-            // Scope: one spelled scope wins, plain or mixed = both. live -> the window grid is
-            // filtered by the fts term; archive / both -> the table view (WinSwitch.qml).
-            const scopes = { live: false, archive: false, tmux: false };
-            for (const t of top.ftsTokens) for (const k of ["live", "archive", "tmux"]) scopes[k] = scopes[k] || t.scope[k];
+            // Scope: the intersection of every token's scope (left to right, a later /fts only searches what
+            // an earlier scoped /fts selected). live -> the window grid is filtered by the fts term;
+            // archive / both -> the table view (WinSwitch.qml).
+            const scopes = { live: true, archive: true, tmux: true };
+            for (const t of top.ftsTokens) for (const k of ["live", "archive", "tmux"]) scopes[k] = scopes[k] && t.scope[k];
             top.fts = { scopes, liveOnly: scopes.live && !scopes.archive && !scopes.tmux,
                         terms: top.ftsTokens.filter(t => !t.neg && t.term).map(t => t.term),
                         negTerms: top.ftsTokens.filter(t => t.neg && t.term).map(t => t.term) };

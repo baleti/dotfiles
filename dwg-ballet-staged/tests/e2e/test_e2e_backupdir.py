@@ -36,7 +36,7 @@ class BackupDir(unittest.TestCase):
     def test_backup_dir_deleted_between_saves(self):
         c, r = self.s.post('/api/save', EDIT); self.assertEqual(c, 200, r); h1 = sha(self.f)
         shutil.rmtree(self.sg, ignore_errors=True)
-        c, r = self.s.post('/api/save', EDIT); self.assertIn(c, (200, 409), r)
+        c, r = self.s.post('/api/save', {'layers': {'A-WALL': {'off': True}, 'A-DOOR': {'off': True}}}); self.assertIn(c, (200, 409), r)   # a different edit: an identical one is a noop (no backup by design)
         self.assertTrue(valid_dwg(self.f))
         if c == 200: self.assertTrue(self.s.get('/api/backups')[1], 'saved but no backup exists')
 

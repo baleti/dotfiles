@@ -26,7 +26,7 @@ class Env:
         if overwrite: json.dump({'allow_overwrite': True}, open(self.cfg, 'w'))
         if gate: json.dump({'dwg': {'*': 'open'}}, open(self.gatef, 'w'))
         self.env = dict(os.environ, DWG_BALLET_CONFIG=self.cfg, DWG_BALLET_BACKUPS=self.bak, SAVEGATE_GATE=self.gatef,
-                        SAVEGATE_CACHE=os.path.join(self.dir, 'sgcache'), SAVEGATE_JOURNAL=os.path.join(self.dir, 'journal'),
+                        SAVEGATE_CACHE=os.path.join(self.dir, 'sgcache'), SAVEGATE_JOURNAL=os.path.join(self.dir, 'journal'), DWG_BALLET_JOURNAL=os.path.join(self.dir, 'dwgjournal'),
                         XDG_CACHE_HOME=os.path.join(self.dir, 'xdgcache'), PYTHONDONTWRITEBYTECODE='1')
         self.procs = []
 

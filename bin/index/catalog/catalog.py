@@ -297,6 +297,10 @@ def build_local(db, roots):
                     continue
                 if e.name in anywhere or user_ex(p, e.name):
                     continue
+                try:
+                    p.encode()                  # non-UTF-8 names cannot go in sqlite and used to abort the whole walk
+                except UnicodeError:
+                    continue
                 if p.startswith(HOME + "/") and os.path.relpath(p, HOME) in excl:
                     continue
                 try:
@@ -330,21 +334,27 @@ def build_local(db, roots):
 
 # Run on the host that holds the files (python3 -c over ssh): prints "kind size mtime path" lines.
 REMOTE_WALK = r"""
-import os, sys
+import os, sys, time
 stack = [sys.argv[1]]
 while stack:
     d = stack.pop()
-    try:
-        it = os.scandir(d)
-    except OSError:
+    it = None
+    for attempt in range(4):
+        try:
+            it = os.scandir(d); break
+        except OSError as x:
+            err = x; time.sleep(1 + attempt * 2)
+    if it is None:
         if d == sys.argv[1]: print("FAIL"); sys.exit(1)
-        continue
+        print("SKIPPED %s: %s" % (d, err), file=sys.stderr); continue
     with it:
         for e in it:
             try:
                 st = e.stat(follow_symlinks=False)
             except OSError:
-                continue
+                try: st = os.lstat(e.path)
+                except OSError as x:
+                    print("SKIPPED %s: %s" % (e.path, x), file=sys.stderr); continue
             if e.is_dir(follow_symlinks=False):
                 print("dir", "", int(st.st_mtime), e.path, sep="\t"); stack.append(e.path)
             elif e.is_symlink():

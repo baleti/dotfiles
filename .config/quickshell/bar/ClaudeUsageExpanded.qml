@@ -440,12 +440,13 @@ Rectangle {
             out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3] || (m[4] ? "archive" : "")), arg: m[5] ? m[5].replace(/"/g, "") : "" });
         return out;
     }
-    // null (no /fts) | { live, archive, tmux }: the union of every /fts token's scopes
+    // null (no /fts) | { live, archive, tmux }: the intersection of every /fts token's scopes. Tokens compose left
+    // to right as a pipeline: a later /fts only searches what an earlier /resume or /fts/<scope> selected.
     readonly property var ftsScopes: {
         const toks = root._ftsTokens(root.effectiveText);
         if (toks.length === 0) return null;
-        const u = { live: false, archive: false, tmux: false };
-        for (const t of toks) for (const k of ["live", "archive", "tmux"]) u[k] = u[k] || t.scope[k];
+        const u = { live: true, archive: true, tmux: true };
+        for (const t of toks) for (const k of ["live", "archive", "tmux"]) u[k] = u[k] && t.scope[k];
         return u;
     }
     // archive-only: the short columns (no status / tmux / workspace / pid)

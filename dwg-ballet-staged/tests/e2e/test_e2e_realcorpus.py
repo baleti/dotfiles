@@ -4,7 +4,7 @@ Only aggregate numbers and short ids are printed."""
 import os, sys, glob, hashlib, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import *
-CORPUS = os.environ.get('E2E_CORPUS'); MAXN = int(os.environ.get('E2E_N', '12')); MAXMB = float(os.environ.get('E2E_MAXMB', '3'))
+CORPUS = os.environ.get('E2E_CORPUS'); MAXN = int(os.environ.get('E2E_N', '12')); MAXMB = float(os.environ.get('E2E_MAXMB', '3')); KEEP = os.environ.get('E2E_KEEP')      # KEEP=dir: copy each SAVE!d output there (local disk only) for the AutoCAD AUDIT
 
 
 @unittest.skipUnless(CORPUS, 'set E2E_CORPUS')
@@ -29,6 +29,7 @@ class Real(unittest.TestCase):
                         if sha(f) != h0: bad.append((i, ver, 'refused but changed'))
                         continue
                     if not valid_dwg(f): bad.append((i, ver, 'invalid after save'))
+                    if KEEP: os.makedirs(KEEP, exist_ok=True); open(os.path.join(KEEP, 'e2e_%s_%d.dwg' % (ver, i)), 'wb').write(open(f, 'rb').read()); open(os.path.join(KEEP, 'manifest.tsv'), 'a').write('e2e_%s_%d.dwg\t%s\t%s\n' % (ver, i, h0[:12], src))      # local only: which corpus file each output came from
                     b = r.get('backup')
                     if not (b and os.path.isfile(b) and sha(b) == h0): bad.append((i, ver, 'backup not identical'))
                     c2, _ = s.post('/api/restore', {'n': 0})

@@ -102,3 +102,20 @@ hl.window_rule({
     tile        = true,
     no_max_size = true, -- SDL announces fixed min==max size hints at map, which makes Hyprland float it
 })
+
+-- Rhino (Wine) command-line autocomplete list: a floating, untitled XWayland
+-- window of class rhino.exe that Hyprland focused as soon as it mapped, so every
+-- key after the first letters was typed into the popup instead of the command
+-- line. no_initial_focus (not no_focus) keeps it clickable but stops the grab.
+-- Real Rhino dialogs have titles, so they are unaffected.
+hl.window_rule({
+    name  = "rhino-completion-popup-no-initial-focus",
+    match = {
+        class    = "^rhino\\.exe$",
+        title    = "^$",
+        xwayland = true,
+        float    = true,
+    },
+
+    no_initial_focus = true,
+})
