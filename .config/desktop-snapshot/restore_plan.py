@@ -564,6 +564,16 @@ def index_claude_by_session_window(tmux_state):
                         "cwd": pane["cwd"],
                         **pane["claude"],
                     })
+                elif pane.get("current_command") == "claude":
+                    # Older snapshots missed claude run via a wrapper (grandchild
+                    # of the pane shell): no session_id/account recorded, so fall
+                    # back to scrollback archaeology (needs --pane-contents).
+                    idx.setdefault((sess["name"], win["index"]), []).append({
+                        "pane_index": pane["pane_index"],
+                        "cwd": pane["cwd"],
+                        "account": None, "config_dir": None,
+                        "session_id": None, "claude_cwd": None,
+                    })
     return idx
 
 
@@ -759,6 +769,46 @@ def resolve_resume_uuid(pane_contents_dir, session, window_index, pane_index, ex
     return None
 
 
+def owner_config_dir_for_session(uuid, cwd):
+    """Config dir of the account that originally owned a session, read from
+    the transcript's bridge-session ownerAccountUuid (same trick as
+    claude-agents-daemon.owner_account_uuid_of_jsonl) mapped through each
+    account's .claude.json oauthAccount.accountUuid. Used when the snapshot
+    recorded no account (claude run via a wrapper; see snapshot.py)."""
+    proj_name = cwd.replace("/", "-") if cwd else "-home-user1"
+    owner = None
+    for d in CLAUDE_DIRS:
+        jf = d / "projects" / proj_name / f"{uuid}.jsonl"
+        if not jf.exists():
+            continue
+        try:
+            with open(jf, errors="ignore") as f:
+                for i, line in enumerate(f):
+                    if i >= 8:
+                        break
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if rec.get("type") == "bridge-session" and rec.get("ownerAccountUuid"):
+                        owner = rec["ownerAccountUuid"]
+                        break
+        except OSError:
+            pass
+        if owner:
+            break
+    if not owner:
+        return None
+    for d in CLAUDE_DIRS:
+        try:
+            oa = json.loads((d / ".claude.json").read_text()).get("oauthAccount") or {}
+        except (OSError, ValueError):
+            continue
+        if oa.get("accountUuid") == owner:
+            return str(d)
+    return None
+
+
 def transcript_exists(config_dir, session_id, cwd):
     """Does <config_dir or ~/.claude>/projects/<cwd-slug>/<session_id>.jsonl
     actually exist on disk? snapshot.py captures session_id straight from
@@ -898,6 +948,12 @@ def inject_resume(sess, window_index, pane_index, config_dir, account, session_i
         uuid = resolve_resume_uuid(get_pane_dir(), sess, window_index, pane_index, exclude_jsonl, cwd=cwd)
     else:
         uuid = None
+    if uuid and not config_dir:
+        config_dir = owner_config_dir_for_session(uuid, cwd)
+        if config_dir:
+            account = account_for_config_dir(config_dir)
+            if account == "claude":
+                config_dir = None  # default account: no prefix needed
     if uuid:
         # Every account's project store for a given cwd is the same inode
         # (see resolve_resume_uuid's docstring), so the uuid search can't

@@ -209,10 +209,27 @@ def claude_self_reported(claude_pid, cfg_dir):
 def resolve_claude_account(pane_pid, children, pid_info):
     """Mirrors claude-account-window-rename-hook.sh's resolution exactly,
     but reuses the single global ps sweep instead of spawning pgrep."""
-    claude_pid = next(
-        (c for c in children.get(pane_pid, []) if pid_info.get(c, {}).get("comm") == "claude"),
-        None,
-    )
+    # Direct child first (the normal case); otherwise breadth-first through
+    # descendants. Panes launched via a wrapper (rss-agent-* sessions: shell
+    # -> script -> claude) have claude as a grandchild, and the direct-child
+    # only check recorded `claude: None` for ~35 live conversations, so
+    # restore never resumed them (found 2026-11-20).
+    claude_pid = None
+    frontier, seen = [pane_pid], set()
+    while frontier and claude_pid is None and len(seen) < 200:
+        nxt = []
+        for parent in frontier:
+            for c in children.get(parent, []):
+                if c in seen:
+                    continue
+                seen.add(c)
+                if pid_info.get(c, {}).get("comm") == "claude":
+                    claude_pid = c
+                    break
+                nxt.append(c)
+            if claude_pid is not None:
+                break
+        frontier = nxt
     if claude_pid is None:
         return None
     cfg_dir = read_proc_environ(claude_pid).get("CLAUDE_CONFIG_DIR", "")
@@ -358,7 +375,7 @@ def get_hyprland_state(children, pid_info, tmux_clients):
     # separate workspaces[] list from hyprctl - stamp it onto each client
     # too so anything consuming per-session data (restore_plan.py's
     # session->workspace map, say) has it without a manual join.
-    tiled_layout_by_ws = {w["id"]: w.get("tiledLayout") for w in workspaces}
+    tiled_layout_by_ws = {w["id"]: w.get("tiledLayout") for w in workspaces if "id" in w}
     by_workspace = {}
     for entry in clients:
         ws_id = (entry.get("workspace") or {}).get("id")
