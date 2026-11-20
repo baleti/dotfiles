@@ -583,14 +583,16 @@ QtObject {
             cmd += ` && wl-copy --type image/png < '${outPath}'`;
         }
 
+        console.log(`shotty: composite cmd: ${cmd}`);
         root._compositeProc.command = ["bash", "-c", cmd];
         root._compositeProc.running = true;
     }
 
     property Process _compositeProc: Process {
+        stderr: StdioCollector { id: compositeErr }
         onExited: (exitCode, exitStatus) => {
             if (exitCode !== 0) {
-                console.log(`shotty: composite/${root._commitMode === "file" ? "save" : "copy"} failed, exit ${exitCode}`);
+                console.log(`shotty: composite/${root._commitMode === "file" ? "save" : "copy"} failed, exit ${exitCode}: ${compositeErr.text}`);
             } else if (root._commitMode === "file") {
                 console.log(`shotty: saved to ${root._commitPath}`);
                 root._notifyProc.command = ["notify-send", "-a", "shotty", "Screenshot saved", root._commitPath];

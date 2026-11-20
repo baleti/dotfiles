@@ -155,11 +155,11 @@ hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }), { descr
 -- workspace the bar hides.) Past the first one: no-op.
 local function step_workspace_id(delta, create)
     local cur = hl.get_active_workspace()
-    if not cur then return nil end
+    if not cur or not cur.id then return nil end
     local monitor_id = cur.monitor and cur.monitor.id
     local here, names, max_id = {}, {}, 0
     for _, w in ipairs(hl.get_workspaces()) do
-        if w.id > 0 then
+        if w.id and w.id > 0 then
             names[w.name] = true
             if w.id > max_id then max_id = w.id end
             if w.monitor and w.monitor.id == monitor_id then table.insert(here, w.id) end
