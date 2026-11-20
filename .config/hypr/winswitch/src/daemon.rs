@@ -295,6 +295,9 @@ pub fn run() {
 
     let mut habit = Habit::load();
     let mut pace = Pace { batch: 1, clean: 0, stall_mult: 1.0, hold_secs: 10 };
+    // Failsafe: workers that hit the 15 s kill deadline several times in a row mean the daemon's
+    // session state is stale (seen 2026-11-20: every capture hung until restarted). Exit so systemd restarts it.
+    let mut hung_in_a_row = 0u32;
     let mut urgent: VecDeque<(String, Instant)> = VecDeque::new();
     let mut focused: Option<String> = None;
     let mut ring: u64 = 0;
@@ -468,6 +471,7 @@ pub fn run() {
             .stderr(Stdio::null())
             .spawn();
         let mut worst = 0.0f64;
+        let mut hung = false;
         if let Ok(mut child) = child {
             loop {
                 match child.try_wait() {
@@ -475,6 +479,7 @@ pub fn run() {
                     _ => break,
                 }
                 if t0.elapsed() > Duration::from_secs(15) {
+                    hung = true;
                     let _ = child.kill();
                     let _ = child.wait();
                     break;
@@ -504,6 +509,15 @@ pub fn run() {
         ));
         write_status(idle_secs, intensity, expected, load, &pace, interval);
         last_attempt = Instant::now();
+        if hung {
+            hung_in_a_row += 1;
+            if hung_in_a_row >= 4 {
+                log("4 capture workers in a row hit the kill deadline: exiting so systemd restarts the daemon");
+                std::process::exit(1);
+            }
+        } else {
+            hung_in_a_row = 0;
+        }
     }
 }
 
