@@ -20,11 +20,13 @@ monitors = {m["id"]: m for m in hyprctl("monitors") or []}
 focused = next((m["activeWorkspace"]["id"] for m in monitors.values() if m["focused"]), None)
 by_ws = {}
 for c in sorted(clients, key=lambda c: c["focusHistoryID"]):
+    if "id" not in c["workspace"]:  # special/scratchpad workspaces carry no id
+        continue
     by_ws.setdefault(c["workspace"]["id"], []).append(c)
 
 rows = []
-for w in sorted(hyprctl("workspaces") or [], key=lambda w: w["id"]):
-    if w["id"] < 0:
+for w in sorted((w for w in hyprctl("workspaces") or [] if "id" in w), key=lambda w: w["id"]):
+    if w.get("id", -1) < 0:
         continue
     cs = by_ws.get(w["id"], [])
     mon = monitors.get(w.get("monitorID"), {})
