@@ -129,13 +129,25 @@ CLAUDE_DIR = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")
 PROJECTS_GLOB = os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl")  # (message text only)
 
 
+def _claude_profiles():
+    """~/.claude* profile dirs. NOT glob("~/.claude*/projects"): a wildcard
+    in a non-final component makes glob is_dir() every entry of $HOME, which
+    stats the rclone FUSE mounts there (1-15s, the "slow to start" bug)."""
+    home = os.path.expanduser("~")
+    try:
+        names = sorted(n for n in os.listdir(home) if n.startswith(".claude"))
+    except OSError:
+        return []
+    return [os.path.join(home, n) for n in names]
+
+
 def project_files():
     """Every transcript of every ~/.claude* profile, each distinct projects/
     directory once (most profiles symlink to ~/.claude/projects, so a plain
     union of globs would list every file seven times). One corpus for all
     profiles = one index/cache and the same results from any pane."""
     seen, files = set(), []
-    for d in sorted(glob.glob(os.path.expanduser("~/.claude*/projects"))):
+    for d in sorted((p for d0 in _claude_profiles() for p in [os.path.join(d0, "projects")] if os.path.isdir(p))):
         real = os.path.realpath(d)
         if real in seen:
             continue
@@ -145,7 +157,14 @@ def project_files():
 # every CLAUDE_CONFIG_DIR-like directory keeps its own live-session
 # registry (see module docstring) - bounded to ~/.claude* (a handful of
 # dirs), never an unbounded $HOME scan
-SESSIONS_GLOB = os.path.expanduser("~/.claude*/sessions/*.json")
+class _SessionsGlob:
+    """Stands in for the old SESSIONS_GLOB string; see _claude_profiles."""
+    def __iter__(self):
+        for d in _claude_profiles():
+            yield from glob.glob(os.path.join(glob.escape(d), "sessions", "*.json"))
+
+
+SESSIONS_GLOB = _SessionsGlob()
 
 MAX_MSG_CHARS = 20000  # cap one message's indexed/stored text - same guard
 # window-search's CAPTURE_LINES is, against one pasted file dump or huge
@@ -746,7 +765,7 @@ def get_live_sessions():
     tmux field tmux(1) accepts a bare %pane_id as a fully-qualified target,
     so nothing else about the window/session needs resolving."""
     live = {}
-    for jf in glob.glob(SESSIONS_GLOB):
+    for jf in SESSIONS_GLOB:
         try:
             with open(jf) as f:
                 d = json.load(f)
@@ -1383,7 +1402,7 @@ def find_session_profile(session_id):
     file-history/<id> are per-profile real dirs, newest mtime wins (a
     session can be resumed under a different account). A live session's
     registry (sessions/<pid>.json) is authoritative if present."""
-    for jf in glob.glob(SESSIONS_GLOB):
+    for jf in SESSIONS_GLOB:
         try:
             with open(jf) as f:
                 if json.load(f).get("sessionId") == session_id:

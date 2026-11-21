@@ -71,7 +71,7 @@ BIND_IP = _env_or_fatal("CLAUDE_AGENTS_BIND_IP")
 PORT = int(os.environ.get("CLAUDE_AGENTS_PORT", "8790"))
 ALLOWED_SUBNET = ipaddress.ip_network(_env_or_fatal("CLAUDE_AGENTS_ALLOWED_SUBNET"))
 
-ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3", "claude4": HOME / ".claude4", "claude5": HOME / ".claude5", "claude6": HOME / ".claude6", "claude7": HOME / ".claude7", "claude8": HOME / ".claude8", "claude-ksr": HOME / ".claude-ksr"}
+ACCOUNT_DIRS = {"claude": HOME / ".claude", "claude2": HOME / ".claude2", "claude3": HOME / ".claude3", "claude4": HOME / ".claude4", "claude5": HOME / ".claude5", "claude6": HOME / ".claude6", "claude7": HOME / ".claude7", "claude-ksr": HOME / ".claude-ksr"}
 # Accounts 2-7 symlink projects/ to ~/.claude/projects; any with their own
 # real directory, so every distinct one is read (primary first).
 PROJECTS_DIRS = []
@@ -275,11 +275,15 @@ def cwd_to_project_dir(cwd, dir_key=None):
 
 
 def owner_account_uuid_of_jsonl(path):
+    # The bridge-session line is NOT always near the top: a resumed session
+    # gets it appended later (line ~290 in a real one), so scanning only the
+    # first lines made those conversations show account "unknown". Read the
+    # whole file but only json-parse lines that contain the marker.
     try:
         with open(path, "r", errors="ignore") as f:
-            for i, line in enumerate(f):
-                if i >= 8:
-                    break
+            for line in f:
+                if '"bridge-session"' not in line or "ownerAccountUuid" not in line:
+                    continue
                 try:
                     d = json.loads(line)
                 except Exception:
@@ -288,6 +292,29 @@ def owner_account_uuid_of_jsonl(path):
                     return d["ownerAccountUuid"]
     except Exception:
         pass
+    return None
+
+
+def account_dir_key_of_session(session_id):
+    """Fallback when a transcript carries no bridge-session owner: the profile
+    whose .claude.json lists it as a project's lastSessionId (newest wins),
+    else one that has a session-env/<id> dir. None if nothing matches."""
+    best = None
+    for key, d in ACCOUNT_DIRS.items():
+        try:
+            cj = d / ".claude.json"
+            mt = cj.stat().st_mtime
+            projs = json.loads(cj.read_text()).get("projects") or {}
+            if any((v or {}).get("lastSessionId") == session_id for v in projs.values()):
+                if best is None or mt > best[0]:
+                    best = (mt, key)
+        except Exception:
+            continue
+    if best:
+        return best[1]
+    for key, d in ACCOUNT_DIRS.items():
+        if (d / "session-env" / session_id).exists():
+            return key
     return None
 
 
@@ -2215,6 +2242,9 @@ def conversation_meta(path, history_titles=None):
         return cached[2]
     owner_uuid = owner_account_uuid_of_jsonl(path)
     account_info = ACCOUNT_MAP.get(owner_uuid) if owner_uuid else None
+    if not account_info:
+        fk = account_dir_key_of_session(path.stem)
+        account_info = next((v for v in ACCOUNT_MAP.values() if v["dir_key"] == fk), None) if fk else None
     if history_titles is None:
         history_titles = load_history_titles()
     line_count, last_message_epoch, context_tokens, real_messages, ai_title = scan_transcript_stats(path)
