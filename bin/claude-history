@@ -2257,16 +2257,20 @@ def drive():
 FTS_CONF = os.path.expanduser("~/.cache/indexes/claude/recoll")
 
 
-def fts_terms(text):
+def fts_terms(text, star=True):
     """This DSL's words as a Recoll query: `!word` -> `-word` (same mapping as
     the search server's /fts for every other content index)."""
     # a bare "-" (e.g. in a pasted title "12345 - Project - ...") is punctuation, not a negation: Recoll
     # would read it as NOT-next-word, so drop standalone dashes
+    try:
+        words = shlex.split(text.replace("\n", " "), posix=False)
+    except ValueError:      # an unbalanced quote: treat the quote marks as plain characters
+        words = shlex.split(text.replace("\n", " ").replace('"', " "), posix=False)
     toks = ["-" + t[1:] if t.startswith("!") and len(t) > 1 else t
-            for t in shlex.split(text.replace("\n", " "), posix=False)
+            for t in words
             if t.strip("-\u2013\u2014") or t == "!"]
     # live typing: the last bare word is still being typed, so it matches as a prefix
-    if toks and toks[-1].isalnum():
+    if star and toks and toks[-1].isalnum():
         toks[-1] += "*"
     return " ".join(toks)
 
@@ -2282,21 +2286,57 @@ def _norm(t):
     return " ".join(t.casefold().split())
 
 
+def _phrase_terms(ph):
+    """A quoted phrase as Recoll words. Recoll only narrows the candidates; the real phrase test is the substring
+    check on the document text afterwards, so only words Recoll tokenises predictably are sent: whitespace-separated
+    chunks, with edge punctuation stripped, that are purely letters (3+; digits, symbols, emoji, `1.87`, `I'll`,
+    `<a>/b` are left to the substring check). Every word exact except the LAST, a prefix (live typing, `outlook conv`).
+    A wildcard on a short or interior word (`na*`) would expand past Recoll's term limit and fail the whole query."""
+    chunks = ph.split()
+    out = []
+    for k, c in enumerate(chunks):
+        core = re.sub(r"^\W+|\W+$", "", c)
+        if re.fullmatch(r"[^\W\d_]{3,}", core):
+            out.append(core + "*" if k == len(chunks) - 1 else core)
+    return out
+
+
 def fts_search(text, conf=None):
     """[(session_id, relevance %)] best first, from the Recoll index of Claude
     conversations (~/.cache/indexes/claude, kept by claude-fts-index). The one
     full-text engine behind alt-tab's and the usage panel's /fts and
     this tool's own --fts.
 
-    A "quoted phrase" is a plain case-insensitive SUBSTRING of the text, spaces
-    included, so "outlook conv" matches "Outlook conversation": Recoll can only
-    match whole words in a phrase, so it is asked for the phrase's words as
-    prefixes (outlook* conv*) and the hits are then verified against the
-    document text itself (negated phrases stay Recoll's exact whole-word ones)."""
-    phrases = [_norm(m) for m in _QUOTED.findall(text)]
-    q = _QUOTED.sub(lambda m: " ".join(w + "*" for w in m.group(1).split() if w.strip("-\u2013\u2014")), text) if phrases else text
-    terms = fts_terms(q)
+    A "quoted phrase" is a plain case-insensitive SUBSTRING of the text, spaces and punctuation included, so
+    "outlook conv" matches "Outlook conversation": Recoll can only match whole words, so it is asked for the
+    phrase's words (_phrase_terms) and the hits are then verified against the document text itself; a phrase with
+    no searchable word at all (an emoji) is found by scanning the documents. An unclosed quote (still being
+    typed) counts as a phrase running to the end. A negated phrase stays Recoll's exact one."""
+    if text.count('"') % 2:
+        text += '"'
+    phrases, neg_ph = [], []
+    for m in _QUOTED.finditer(text):
+        (neg_ph if text[max(0, m.start() - 1):m.start()] == "!" else phrases).append(m.group(1))
+    def sub(m):
+        ws = _phrase_terms(m.group(1))
+        if text[max(0, m.start() - 1):m.start()] == "!":   # `!"a b"` -> Recoll `-"a b"` (the `!` before it is dropped below)
+            return '"' + " ".join(w.rstrip("*") for w in ws) + '"'
+        return " ".join(ws)
+    q = _QUOTED.sub(sub, text) if (phrases or neg_ph) else text
+    q = re.sub(r'!(?=")', "-", q)
+    phrases = [_norm(p) for p in phrases]
+    terms = fts_terms(q, star=not (phrases or neg_ph))
     if not terms.strip():
+        if phrases and conf is None:    # nothing Recoll can search (an emoji): scan the session texts
+            hits = []
+            for fn in os.listdir(os.path.dirname(FTS_CONF) + "/sessions"):
+                try:
+                    with open(os.path.join(os.path.dirname(FTS_CONF), "sessions", fn), errors="replace") as f:
+                        if all(ph in _norm(f.read()) for ph in phrases):
+                            hits.append((fn[:-4], 0.0))
+                except OSError:
+                    pass
+            return hits
         return []
     r = subprocess.run(["recollq", "-c", conf or FTS_CONF, "-n", "0-5000", "-F", "url relevancyrating", "--", terms],
                        capture_output=True, text=True)
