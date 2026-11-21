@@ -675,7 +675,7 @@ def build_session_workspace_map(hypr_state, tmux_state=None):
     owned it - confirmed as a real bug, not a snapshot gap). A post-crash
     snapshot has none of this - pass in an old one, not latest.json, once
     trouble starts."""
-    ws_by_id = {w["id"]: w for w in hypr_state.get("workspaces", [])}
+    ws_by_id = {w["id"]: w for w in hypr_state.get("workspaces", []) if "id" in w}
     claude_idx = index_claude_by_session_window(tmux_state or {})
     mapping = {}
     for c in hypr_state.get("clients", []):
@@ -998,8 +998,19 @@ def _capture_pane(target):
         return ""
 
 
+# Newer claude gate for old/large sessions ("This conversation has been
+# inactive for 1d 6h and is 438.9k tokens long ... 1. Resume / 2. Start a new
+# conversation"). Option 1 (Resume) is preselected, so plain Enter picks it.
+# Matched on the question plus both labels so it only fires on this prompt.
+RESUME_THIS_PROMPT_MARKERS = ("Resume this conversation?", "Start a new conversation")
+
+
 def _showing_full_resume_prompt(text):
     return all(m in text for m in FULL_RESUME_PROMPT_MARKERS)
+
+
+def _showing_resume_this_prompt(text):
+    return all(m in text for m in RESUME_THIS_PROMPT_MARKERS)
 
 
 def confirm_full_session_resume(claude_idx, live):
@@ -1024,7 +1035,18 @@ def confirm_full_session_resume(claude_idx, live):
         for target in targets:
             if target in handled:
                 continue
-            if not _showing_full_resume_prompt(_capture_pane(target)):
+            pane_text = _capture_pane(target)
+            if _showing_resume_this_prompt(pane_text):
+                try:
+                    subprocess.run(["tmux", "send-keys", "-t", target, "Enter"],
+                                    timeout=RESUME_SUBPROCESS_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    print(f"  {target}: send-keys timed out on 'Resume this conversation?'",
+                          file=sys.stderr)
+                handled.add(target)
+                print(f"  {target}: selected 'Resume' on 'Resume this conversation?'")
+                continue
+            if not _showing_full_resume_prompt(pane_text):
                 continue
             try:
                 # Down moves the selection 1 -> 2, Enter confirms. Two sends

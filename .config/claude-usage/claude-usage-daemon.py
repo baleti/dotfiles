@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Polls Anthropic's account-usage endpoint for this machine's Claude Code
-accounts (~/.claude, ~/.claude2, ~/.claude3, ~/.claude4, ~/.claude5, ~/.claude6, ~/.claude7, ~/.claude8, ~/.claude-ksr) and writes one combined
+accounts (~/.claude, ~/.claude2, ~/.claude3, ~/.claude4, ~/.claude5, ~/.claude6, ~/.claude7, ~/.claude-ksr) and writes one combined
 snapshot for the quickshell bar to read.
 
 This is the same endpoint the `claude` CLI itself calls for `/usage` --
@@ -87,7 +87,6 @@ ACCOUNTS = [
     ("claude5", Path.home() / ".claude5"),
     ("claude6", Path.home() / ".claude6"),
     ("claude7", Path.home() / ".claude7"),
-    ("claude8", Path.home() / ".claude8"),
     ("claude-ksr", Path.home() / ".claude-ksr"),
 ]
 
@@ -1185,6 +1184,10 @@ def fetch_codex() -> dict:
     }
 
 
+# Set by SIGUSR1 (panel "retry" button): re-poll now, ignoring backoff.
+_refresh_now = threading.Event()
+
+
 def fetch_loop() -> None:
     next_fetch = 0.0
     backoff_until = 0.0
@@ -1197,6 +1200,12 @@ def fetch_loop() -> None:
     mode, interval = "idle", INTERVAL_IDLE
 
     while True:
+        if _refresh_now.is_set():
+            _refresh_now.clear()
+            backoff_until = next_fetch = 0.0
+            acct_backoff_until.clear()
+            acct_429.clear()
+            log("manual refresh requested")
         now = time.time()
 
         if now < backoff_until:
@@ -1280,6 +1289,7 @@ def main() -> None:
     # behavior the old Stop hook had (nothing to resume mid-turn either).
     prev_status: dict[int, str] = {}
 
+    signal.signal(signal.SIGUSR1, lambda *_: _refresh_now.set())
     inotify_fd, watched = setup_inotify()
     if inotify_fd >= 0 and watched == 0:
         log("no sessions/ dirs to watch yet, falling back to polling")

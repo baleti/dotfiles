@@ -74,7 +74,14 @@ QtObject {
     property var _expectedNames: []
     property var _pieces: ({}) // screen.name -> {path, gx, gy, w, h, dpr}
 
+    // The per-screen grab (Shotty.qml) saves into this dir long before the
+    // composite step's own mkdir runs; after a reboot it doesn't exist yet,
+    // so the first commit's piece file was never written (magick: unable to open).
+    property Process _mkdirProc: Process { command: ["mkdir", "-p", `${Quickshell.env("XDG_RUNTIME_DIR")}/shotty`] }
+
     function open(): void {
+        root._mkdirProc.running = false;
+        root._mkdirProc.running = true;
         root.openedAt = Date.now();
         root.phase = "selecting";
         root.active = true;
