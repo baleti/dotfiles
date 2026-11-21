@@ -56,6 +56,23 @@ fn replay(schema: &Schema, context: &[Tok]) -> Option<String> {
     open
 }
 
+/// A token that could be the keys of a bare closed-vocabulary verb: not quoted, not negated, not `/`-led.
+fn keys_shaped(tok: &Tok) -> bool {
+    !tok.lead_quote && !tok.neg && !tok.text.starts_with('/')
+}
+
+/// The canonical verb of a bare (no keys yet) `/ft` `/at` `/rt` `/s` `/g` token: those take their keys as the next token.
+fn closed_verb(schema: &Schema, tok: &Tok) -> Option<String> {
+    if tok.lead_quote || tok.neg {
+        return None;
+    }
+    let c = schema.tok_verb(tok)?;
+    if c.bad || c.keys.is_some() {
+        return None;
+    }
+    matches!(schema.kind_of(&c.verb)?, VerbKind::FilterType | VerbKind::AddType | VerbKind::RemoveType | VerbKind::Sort | VerbKind::Group).then_some(c.verb)
+}
+
 pub fn all_paths(schema: &Schema) -> Vec<String> {
     schema.types.iter().filter(|t| !schema.hidden_types.contains(t)).cloned().collect()
 }
@@ -97,6 +114,24 @@ pub fn completion_context(schema: &Schema, query: &str) -> Option<Completion> {
         }
         return None;
     }
+    // new-form keys / direction tokens (2026-11-21): `/at <keys>`, `/s <keys> <dir>`
+    if let Some(verb) = context.last().and_then(|t| closed_verb(schema, t)) {
+        if frag.contains('/') {
+            return None; // a `/g` part (`path/pf/2`), not a key
+        }
+        let comma = frag.rfind(',');
+        let key_frag = comma.map_or(frag.as_str(), |c| &frag[c + 1..]);
+        let via_start = start + comma.map_or(0, |c| chars(&frag[..c + 1]));
+        if verb == "ft" && comma.is_none() && path_suggestions(schema, key_frag).is_empty() {
+            return Some(Completion::new(CompKind::BareValue, via_start, key_frag));
+        }
+        let mut c = Completion::new(CompKind::TypePath, via_start, key_frag);
+        c.verb = Some(verb);
+        return Some(c);
+    }
+    if context.len() >= 2 && closed_verb(schema, &context[context.len() - 2]).as_deref() == Some("s") && keys_shaped(&context[context.len() - 1]) {
+        return Some(Completion::new(CompKind::SortDirection, start, &frag));
+    }
     let keys = replay(schema, context)?;
     let mut c = Completion::new(CompKind::BareValue, start, &frag);
     c.fields = Some(schema.resolve_keys(&keys));
@@ -115,8 +150,10 @@ pub fn verb_stage_universe(schema: &Schema) -> Vec<String> {
     let paths = all_paths(schema);
     for v in schema.verbs.iter().filter(offered) {
         if matches!(v.kind, VerbKind::FilterValue | VerbKind::FilterType | VerbKind::AddType | VerbKind::RemoveType | VerbKind::Sort | VerbKind::Group) {
+            // open-ended verbs (/fv) keep the slash; closed-vocabulary ones take their keys as the next token (`at workspace`)
+            let sep = if v.kind == VerbKind::FilterValue { '/' } else { ' ' };
             for p in &paths {
-                out.push(format!("{}/{}", v.short, p));
+                out.push(format!("{}{}{}", v.short, sep, p));
             }
         }
     }
@@ -196,7 +233,7 @@ pub fn row_info(schema: &Schema, kind: CompKind, item: &str) -> (String, String,
     let desc_of = |name: &str| schema.type_descs.iter().find(|(n, _)| n == name).map(|(_, d)| d.clone());
     match kind {
         CompKind::Verb => {
-            let (verb, path) = match item.split_once('/') {
+            let (verb, path) = match item.split_once(|c| c == '/' || c == ' ') {
                 Some((v, p)) => (v, Some(p)),
                 None => (item, None),
             };
@@ -267,6 +304,21 @@ mod tests {
         let c = completion_context(&s, "/s/title/a").unwrap();
         assert_eq!(c.kind, CompKind::SortDirection);
         assert_eq!(candidates(&s, &c, &Rows(vec![]), 0), vec!["asc"]);
+        // new form: keys are the next token
+        let c = completion_context(&s, "/at wo").unwrap();
+        assert_eq!((c.kind, c.start, c.fragment.as_str(), c.verb.as_deref()), (CompKind::TypePath, 4, "wo", Some("at")));
+        assert_eq!(accept("/at wo", &c, "workspace"), "/at workspace");
+        let c = completion_context(&s, "x /s title,wo").unwrap();
+        assert_eq!((c.start, c.fragment.as_str()), (11, "wo"));
+        let c = completion_context(&s, "/rt ").unwrap();
+        assert_eq!((c.kind, c.start, c.fragment.as_str()), (CompKind::TypePath, 4, ""));
+        let c = completion_context(&s, "/s title a").unwrap();
+        assert_eq!((c.kind, c.start), (CompKind::SortDirection, 9));
+        assert_eq!(candidates(&s, &c, &Rows(vec![]), 0), vec!["asc"]);
+        assert_eq!(accept("/s title a", &c, "asc"), "/s title asc ");
+        assert_eq!(completion_context(&s, "/s title ").unwrap().kind, CompKind::SortDirection);
+        assert_eq!(completion_context(&s, "!/at wo"), None);
+        assert_eq!(completion_context(&s, "/at pid wo"), None);
         assert_eq!(completion_context(&s, "\"/f"), None);
         assert_eq!(completion_context(&s, ""), None);
     }
@@ -276,7 +328,9 @@ mod tests {
         let s = schema();
         let c = completion_context(&s, "/wo").unwrap();
         let cand = candidates(&s, &c, &Rows(vec![]), 0);
-        assert!(cand.contains(&"fv/workspace".to_string()) && !cand.contains(&"fv".to_string()));
+        assert!(cand.contains(&"fv/workspace".to_string()) && cand.contains(&"at workspace".to_string()) && !cand.contains(&"fv".to_string()));
+        assert_eq!(accept("/wo", &c, "at workspace"), "/at workspace ");
+        assert_eq!(row_info(&s, CompKind::Verb, "at workspace").0, "/at workspace");
         let rows = Rows(vec![["Brave", "2"], ["Alacritty", "1"], ["Brave dev", "2"]]);
         let c = completion_context(&s, "/fv/title br").unwrap();
         assert_eq!(c.kind, CompKind::BareValue);

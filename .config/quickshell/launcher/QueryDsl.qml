@@ -29,8 +29,8 @@ QtObject {
         "/ft": { long: "/filter-type",  desc: "show only the matching columns" },
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
-        "/s":  { long: "/sort",         desc: "order rows by the keys, /s/key,key/desc" },
-        "/g":  { long: "/group",        desc: "fold rows into sections, /g/key[/bucket][/dir]" }
+        "/s":  { long: "/sort",         desc: "order rows by the keys, /s key,key desc" },
+        "/g":  { long: "/group",        desc: "fold rows into sections, /g key[/bucket][/dir]" }
     })
 
     // Every accepted verb spelling, WITHOUT the leading "/" (query.rs's
@@ -125,6 +125,9 @@ QtObject {
 
     function _dirOf(tok) { return D.parseDirection(tok) || "asc"; }
 
+    // Is toks[k] the space-separated keys of a bare /ft /at /rt /s /g: not quoted, not `!`-negated, not "/"-led.
+    function _takeKeys(toks, k) { return k < toks.length && !toks[k].q && !toks[k].neg && toks[k].v.length > 0 && toks[k].v[0] !== "/"; }
+
     // Parse into { terms:[{field,value,quoted}|{text,quoted}], sort:{fields,dir}|null,
     // cols:[{op,path}] }. Incomplete trailing tokens are dropped
     // (never flash to zero on a valid partial keystroke). `field` / `path` are
@@ -148,6 +151,18 @@ QtObject {
             const verbNeg = !!toks[k].neg;
             k++;
             const verb = tv.verb;
+            // closed-vocabulary verbs take their keys as the NEXT token (2026-11-21): `/at uuid,acct`,
+            // `/s age desc`, `/g dm/week`; the `/verb/keys` slash form is the legacy spelling
+            let spaced = false;
+            if (tv.via === null && !tv.bad && verb !== "/fv" && root._takeKeys(toks, k)) {
+                tv.via = toks[k].v;
+                spaced = true;
+                k++;
+                if (verb === "/s" && root._takeKeys(toks, k) && D.parseDirection(toks[k].v) !== null) {
+                    tv.dir = toks[k].v;
+                    k++;
+                }
+            }
             // keyless or malformed: inert, takes no argument ("/fv foo" is just "foo")
             if (tv.via === null || tv.bad) continue;
             const via = tv.via.toLowerCase();
@@ -173,7 +188,7 @@ QtObject {
                     R.sort = { fields: keys, dir: tv.dir ? root._dirOf(tv.dir) : "desc" };
             } else if (verb === "/g") {
                 // the whole token goes to D.parseGroup (the picker resolves it against its own types); last wins
-                R.groupRaw = toks[k - 1].v;
+                R.groupRaw = spaced ? toks[k - 2].v + "/" + tv.via : toks[k - 1].v;
             } else if (via.replace(/,/g, "").length > 0) {
                 const op = verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove");
                 R.cols.push({ op: op, path: via });
@@ -187,12 +202,41 @@ QtObject {
     // duplicates dropped. null when any key names nothing (the whole /s is inert).
     function resolveSortKeys(keys, known) { return D.resolveSortKeys(keys, known); }
 
-    // Completion for the key and direction stages of `/verb/keys[/dir]`
-    // (shared by every consumer's _acCandidates). Returns the popup rows, or
+    // Completion for the key and direction stages of `/verb keys [dir]` (new form, 2026-11-21) and the legacy
+    // `/verb/keys[/dir]` (shared by every consumer's _acCandidates). Returns the popup rows, or
     // null when `t` doesn't end inside one of those parts. Accepting a key
     // replaces just the fragment after the last comma and keeps the typed
     // verb spelling (`//` or `/fv/`).
     function keyStageCandidates(t, names, descs) {
+        // NEW form (2026-11-21): the closed-vocabulary verbs take their keys / direction as the NEXT token.
+        // `/s keys <dir>` -> direction; `/s|/g keys...` -> "/g path/pf/2" parts; `/ft|/at|/rt|/s|/g <keys>` -> keys.
+        const ndm = t.match(/(?:^|\s)\/(?:s|sort)\s+[^\s\/!"']+\s+([a-z]*)$/);
+        if (ndm) {
+            const frag = ndm[1];
+            const head = t.slice(0, t.length - frag.length);
+            return [["asc", "ascending"], ["desc", "descending"]]
+                .filter(d => d[1].indexOf(frag) === 0)
+                .map(d => ({ text: head + d[0] + " ", label: d[0], alias: d[1], desc: "sort direction" }));
+        }
+        const ngm = t.match(/(?:^|\s)\/(?:g|group)\s+[^\s\/!"']+((?:\/[^\s\/]+)*)\/([a-z0-9-]*)$/);
+        if (ngm) {
+            const frag = ngm[2].toLowerCase();
+            const used = ngm[1].split("/");
+            const head = t.slice(0, t.length - frag.length);
+            return [["pf", "parent folder, then /2 /3 for higher ones"], ["day", "by day"], ["week", "by week"],
+                    ["month", "by month"], ["year", "by year"], ["asc", "ascending"], ["desc", "descending"]]
+                .filter(d => d[0].indexOf(frag) === 0 && used.indexOf(d[0]) < 0)
+                .map(d => ({ text: head + d[0] + " ", label: d[0], alias: "", desc: d[1] }));
+        }
+        const nkm = t.match(/(?:^|\s)\/(?:ft|filter-type|at|add-type|rt|remove-type|s|sort|g|group) ([^\s\/!"']*)$/);
+        if (nkm) {
+            const frag = nkm[1].slice(nkm[1].lastIndexOf(",") + 1).toLowerCase();
+            const head = t.slice(0, t.length - frag.length);
+            // no trailing space: a "," (more keys) or, for /s, a direction can still follow
+            return names.filter(n => n.toLowerCase().indexOf(frag) >= 0).map(n => ({
+                text: head + n, label: n, alias: "", desc: (descs && descs[n]) || ""
+            }));
+        }
         const dm = t.match(/(?:^|\s|!)\/(?:s|sort)\/[^\s\/]+\/([a-z]*)$/);
         if (dm) {
             const frag = dm[1];

@@ -29,6 +29,12 @@ SYNTAX = """QUERY LANGUAGE (identical to the mod+1 picker)
   //ext .pdf         exact extension (repeat to OR)      //mime K    kind: image pdf text code document audio video archive ebook (K may be partial: imag, doc, d)
   //size >5M <200K   file size (K M G T)                //dm 2024-06   modified in that month;  //dm >2015-06  after;  //dm <2020  before
   !//tag value       negates a tag, e.g.  !//ext .tmp
+  //ATTR value      document-system attributes (Union Square items etc.): ANY other //word filters the attribute of that name,
+                     tag = substring of the attribute name, value = case-insensitive substring:  //owner ruben  (who FILED it),
+                     //own anna (also owner-id, owner-org), //status locked, //revision C4, //category "contract admin",
+                     //project queenwood, //keywords ...; a||b ORs values; !//owner ruben negates.  Only rows that carry attributes
+                     match (plain files on disk have none, so also add //path unionsquare or //ext .eml when counting).
+                     e.g.  search -l '25066 //owner annalise //dm >2026-11-01'     Attributes of the sync can lag the files.
 
 VERBS (anywhere in the query)
 
@@ -39,9 +45,9 @@ VERBS (anywhere in the query)
                      The first use starts the worker (about 30 s); the total is what the nearest chunks cover, not every file.
   /clip words        photos matching what they show      /face name   photos showing a registered person
                      (--score shows the match score; --snippets prints the matching passages for /fts and /chroma)
-  /s/FIELD[,FIELD][/asc|/desc]   sort by name, path, size, date-modified, extension, depth, pages (chain with commas, e.g. /s/size,name; descending unless /asc)
-  /g/KEY[,KEY][/BUCKET][/asc|/desc]   fold the results into sections (printed as '## label  [n]' lines; --json adds a "group" array): KEY is a /s field or pf (parent folder);
-                                 BUCKET is pf (+ /N for the Nth parent folder), day, week, month or year; e.g. /g/dm/week, /g/pf/2, /g/pf,dm/month
+  /s FIELD[,FIELD] [asc|desc]    sort by name, path, size, date-modified, extension, depth, pages (chain with commas, e.g. /s size,name; descending unless asc; legacy /s/size/asc)
+  /g KEY[,KEY][/BUCKET][/asc|/desc]   fold the results into sections (printed as '## label  [n]' lines; --json adds a "group" array): KEY is a /s field or pf (parent folder);
+                                 BUCKET is pf (+ /N for the Nth parent folder), day, week, month or year; e.g. /g dm/week, /g pf/2, /g pf,dm/month (legacy /g/dm/week)
   /dotfiles  !/dotfiles                                  only paths with a dot component / leave them out (hidden by default via the picker's Default exclude)
   /show-backup  /hide-backup  (add -restic or -btrfs)    restic backups and btrfs snapshots (hidden by default)
   /show-fts-rvt  /hide-fts-rvt                           content searches (/fts, /chroma) include Revit files (rvt rfa rte rft); on by default
@@ -98,7 +104,7 @@ def sort_direction(tok):
 
 def parse_sort(q):
     """(query without /s, sort keys, descending?, explicit?). One token per
-    command, `/s/key[,key...][/dir]` (query-dsl.md "Grammar"); each /s adds
+    command, `/s key[,key...] [dir]` or the legacy glued `/s/key[,key...][/dir]` (query-dsl.md "Grammar"); each /s adds
     keys, a key that resolves to nothing makes that /s inert, a keyless /s too."""
     toks, rest, keys, desc, explicit, i = tokenize(q), [], [], None, False, 0
     while i < len(toks):
@@ -116,7 +122,14 @@ def parse_sort(q):
             rest.append(t)
             continue
         if chain == "":
-            continue                                       # keyless: inert
+            # `/s keys [dir]`: the keys are the next token, a direction the one after it (2026-11-21; the glued
+            # `/s/keys/dir` form is the legacy spelling). A keys token is not quoted, `!`-negated or `/`-led.
+            if i < len(toks) and toks[i][0] not in '!"\'/':
+                chain = "/" + toks[i]; i += 1
+                if i < len(toks) and toks[i][0] not in '!"\'/' and dsl.parse_direction(toks[i]):
+                    chain += "/" + toks[i]; i += 1
+            else:
+                continue                                   # keyless: inert
         if not chain.startswith("/"):
             rest.append(t)
             continue

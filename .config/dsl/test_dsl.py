@@ -102,6 +102,20 @@ for q in _QS:
     check(f'focus-picker scoped {q!r}', sorted(str(t) for _, t, _ in f[1]),
           sorted(t[2].lower() for t in es["terms"] if t[0] == "scoped" and t[2]))
 
+# ---- keys token (2026-11-21): consumer completion + base-query inversion understand `/at keys`, `/s keys dir` ----
+check("claude-history invert keeps /at keys + /s keys dir", _ch.invert_base("/at uuid //title foo /s age desc /g path"), "/at uuid !//title foo /s age desc /g path")
+check("claude-history invert keeps legacy glued verbs", _ch.invert_base("/at/uuid foo"), "/at/uuid !foo")
+check("claude-history invert flips a word after /s keys", _ch.invert_base("/s age foo"), "/s age !foo")
+def _cc(q): return _ch.complete_query(q, None)
+check("claude-history keys stage after bare /at", _cc("/at uu")["candidates"], ["uuid"])
+check("claude-history keys stage lists every type after `/at `", len(_cc("/at ")["candidates"]) > 5, True)
+check("claude-history direction stage after /s keys", _cc("/s age d")["candidates"], ["desc"])
+check("claude-history verb stage offers the closed verbs", "at" in _cc("/a")["candidates"] and "at uuid" in _cc("/uu")["candidates"], True)
+check("focus-picker keys stage after bare /at", _fp.completion_stage("/at ssh-h"), ("/at ", "", ["ssh-host"]))
+check("focus-picker direction stage after /s keys", _fp.completion_stage("/s age d"), ("/s age ", " ", ["desc"]))
+check("focus-picker legacy slash stage unchanged", _fp.completion_stage("/s/age/d"), ("/s/age/", " ", ["desc"]))
+check("focus-picker /at keys is parsed", _fp.parse_query("/at ssh-host")[2], _fp.parse_query("/at/ssh-host")[2])
+
 # ---- composability: /g is a view over the rows the filters kept (rows -> filter -> sort -> group) --------
 import itertools, random
 _rows = [{"name": n, "path": p, "size": str(s), "date-modified": d, "pages": "", "extension": n.rsplit(".", 1)[-1], "depth": str(p.count("/"))}

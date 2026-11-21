@@ -409,6 +409,16 @@ function groupVisible(layout, collapsed) {
     return out;
 }
 
+// Closed-vocabulary verbs take their keys as the NEXT whitespace token (2026-11-21): `/at uuid,acct`,
+// `/s age,msgs desc`, `/g dm/week`; the `/verb/keys` slash form stays as the legacy spelling. A keys token
+// is not quoted, not `!`-negated and does not start with `/`; the `/s` direction is the token after the keys
+// only when it is exactly a word parseDirection accepts.
+var KEYS_TOKEN_KINDS = ["ft", "at", "rt", "s", "g"];
+function takeKeys(toks, i) {
+    return i < toks.length && !toks[i].leadQuote && !toks[i].neg && toks[i].text.charAt(0) !== "/";
+}
+function takeDirection(toks, i) { return takeKeys(toks, i) && parseDirection(toks[i].text) !== null; }
+
 function _ownsNext(tok) {
     var t = tok.replace(/^!+/, "");
     if (t.indexOf("//") === 0 && t.length > 2) return true;
@@ -430,6 +440,9 @@ function extractGroup(tokens, known, aliases, ownsNext) {
         }
         var bare = t.split("/");
         if (bare.length >= 2 && bare[0] === "" && GROUP_VERBS.indexOf(bare[1]) >= 0 && t.charAt(0) !== "!") {
+            if (bare.length === 2 && i < tokens.length && tokens[i].length > 0 && tokens[i].charAt(0) !== "/" && tokens[i].charAt(0) !== "!") {
+                t += "/" + tokens[i++];   // `/g dm/week`: keys are the next token (slash form = legacy)
+            }
             var p = parseGroup(t, known, aliases);
             if (p) parsed = p;
             continue;
@@ -550,6 +563,13 @@ function parseQuery(schema, query) {
             top.apps.push({ verb: cmd.verb, keys: cmd.keys, arg: arg, neg: tok.neg });
             continue;
         }
+        var spaced = false;
+        if (cmd.keys === null && !cmd.bad && KEYS_TOKEN_KINDS.indexOf(kind) >= 0 && takeKeys(toks, i)) {
+            cmd = { verb: cmd.verb, keys: toks[i].text, dir: cmd.dir, bad: false };   // `/at uuid,acct`: keys are the next token
+            spaced = true;
+            i++;
+            if (kind === "s" && takeDirection(toks, i)) cmd.dir = toks[i++].text;     // `/s age desc`
+        }
         if (cmd.keys === null || cmd.bad) continue;
         var via = cmd.keys.toLowerCase();
         var typed = via.replace(/,/g, "").length > 0;
@@ -564,7 +584,7 @@ function parseQuery(schema, query) {
         } else if (kind === "ft" || kind === "at" || kind === "rt") {
             if (typed) r.colOps.push({ op: kind, keys: via });
         } else if (kind === "g") {
-            r.groupRaw = tok.text;
+            r.groupRaw = spaced ? tok.text + "/" + cmd.keys : tok.text;
         } else if (kind === "s") {
             var d = "desc";
             if (cmd.dir !== null) {

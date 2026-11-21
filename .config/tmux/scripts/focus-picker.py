@@ -41,9 +41,12 @@ many rows as it has matches, the preview gets the rest.
 
 Query DSL (parse_query) - the one command grammar shared with winswitch and
 the other pickers (see ~/.config/docs/query-dsl.md, "Grammar"). The base list
-is MRU-ordered; /s is opt-in on top of that. A command is one token,
-`/verb/keys[/dir]`; keys are a comma list of fuzzy type names (the name that
-equals a key wins, else every name containing it, unioned).
+is MRU-ordered; /s is opt-in on top of that. /fv and //keys take their keys
+glued on (`/fv/keys value`, the value after it is open-ended); the closed-
+vocabulary verbs /ft /at /rt /s take their keys as the NEXT token (2026-11-21):
+`/at ssh-host`, `/s age desc` (the glued `/at/ssh-host` form is the legacy
+spelling, still accepted). Keys are a comma list of fuzzy type names (the name
+that equals a key wins, else every name containing it, unioned).
 
   foo bar              every bare word must appear (case-insensitive
                        substring) somewhere in the pane's searchable text -
@@ -54,14 +57,14 @@ equals a key wins, else every name containing it, unioned).
   /fv/tmux-session word  tmux-window / tmux-title; see FILTER_FIELDS).
                        //se word reaches tmux-session; //tmux word all three;
                        //tmux-title,tmux-window word two of them (OR).
-  /at/ssh-host         add a tracked column to the display; /at/ssh adds
-  /add-type/ssh-host   every ssh-* column.
-  /rt/ssh              remove matching columns (mirror of /at).
-  /ft/ssh-host         narrow the displayed extra columns to matches.
-  /s/tmux-title/desc   order the list by tmux-session / tmux-window /
-  /sort/...            tmux-title / age; several keys are comma-separated
-                       (/s/tmux-session,age), the optional last part is the
-                       direction (asc|desc, any prefix of ascending/descending).
+  /at ssh-host         add a tracked column to the display; /at ssh adds
+  /add-type ssh-host   every ssh-* column.
+  /rt ssh              remove matching columns (mirror of /at).
+  /ft ssh-host         narrow the displayed extra columns to matches.
+  /s tmux-title desc   order the list by tmux-session / tmux-window /
+  /sort ...            tmux-title / age; several keys are comma-separated
+                       (/s tmux-session,age), an optional direction token
+                       may follow (asc|desc, any prefix of ascending/descending).
 
 Verb names are exact-matched (short or long form); everything else -
 type names and directions are substring containment. "..."
@@ -510,6 +513,12 @@ def _apply_col(verb, keys, active_cols, seen_cols):
         seen_cols.intersection_update(keep)
 
 
+def _takes_keys(toks, negs, i):
+    """Is toks[i] the space-separated keys of a bare /ft /at /rt /s /g: exists, not quoted, not `!`-negated,
+    not `/`-led (a command or `//keys` tag)."""
+    return i < len(toks) and not toks[i][2] and toks[i][0] not in negs and not toks[i][1].startswith("/")
+
+
 def parse_query(query):
     """-> (bare_terms, field_terms, active_cols, sort, fts) - fts: [(word, negated)] of `/fts[/tmux] word`.
 
@@ -531,6 +540,8 @@ def parse_query(query):
         i += 1
         if not lead_quote and text.startswith("/"):
             if text[1:].split("/")[0] in ("g", "group") and not text[1:].startswith("/"):
+                if "/" not in text[1:] and _takes_keys(toks, negs, i):
+                    i += 1    # `/g keys` (new form): the keys token belongs to the inert /g, not a search word
                 continue  # /g (/group): inert here - an fzf list cannot fold into sections (query-dsl.md "/group")
             cmd = split_cmd(text)
             if cmd is not None:
@@ -546,6 +557,14 @@ def parse_query(query):
                     if words and (not keys or not keys.replace(",", "") or resolve_keys(keys, FTS_SCOPES)):
                         fts.append((" ".join(words), verb_neg))
                     continue
+                if keys is None and not bad and verb in ("ft", "at", "rt", "s") and _takes_keys(toks, negs, i):
+                    # closed-vocabulary verbs take their keys as the NEXT token (2026-11-21): `/at pid`, `/s age desc`;
+                    # the `/verb/keys` slash form stays as the legacy spelling
+                    keys = toks[i][1]
+                    i += 1
+                    if verb == "s" and _takes_keys(toks, negs, i) and parse_direction(toks[i][1]) is not None:
+                        dirp = toks[i][1]
+                        i += 1
                 if keys is None or bad:
                     continue  # keyless / malformed: inert, takes no argument
                 typed = bool(keys.replace(",", ""))
@@ -590,25 +609,56 @@ def verb_stage_universe():
     }
     out = list(VERB_SHORTS)
     for v in VERB_SHORTS:
-        out.extend(f"{v}/{p}" for p in paths[v])
+        # open-ended verbs keep the slash (`fv/title`, `fts/tmux`); closed-vocabulary ones take keys as the next token (`at pid`)
+        out.extend(f"{v}/{p}" if v in ("fv", "fts") else f"{v} {p}" for p in paths[v])
     return out
+
+
+def _bare_verb(tok):
+    """The closed-vocabulary verb (ft/at/rt/s) of a bare `/verb` token (nothing after it), else None."""
+    if tok[2] or not tok[1].startswith("/"):
+        return None
+    c = split_cmd(tok[1])
+    return c[0] if c and c[0] in ("ft", "at", "rt", "s") and c[1] is None and not c[3] else None
+
+
+def _spaced_stage(toks, prefix, frag_text):
+    """Completion of the NEW-form keys / direction tokens (2026-11-21), `toks[-1]` being the fragment being typed
+    (empty after a trailing space): keys after a bare `/ft` `/at` `/rt` `/s`, a `/s` direction after its keys.
+    -> (prefix, suffix, candidates) like completion_stage."""
+    if len(toks) >= 2 and _bare_verb(toks[-2]):
+        verb = _bare_verb(toks[-2])
+        names = list(SORT_KEYS) if verb == "s" else list(COLUMN_FLAT)
+        comma = frag_text.rfind(",")
+        frag = frag_text[comma + 1:]
+        cands = [nm for nm in names if frag.lower() in nm and nm != frag]
+        return (prefix + frag_text[:comma + 1], "", cands) if cands else ("", "", [])
+    if len(toks) >= 3 and _bare_verb(toks[-3]) == "s" and not toks[-2][2] and not toks[-2][1].startswith("/"):
+        cands = [d for d, full in (("asc", "ascending"), ("desc", "descending")) if full.startswith(frag_text.lower()) and d != frag_text]
+        return (prefix, " ", cands) if cands else ("", "", [])
+    return "", "", []
 
 
 def completion_stage(query):
     """The candidates for the query's trailing token - a partial verb (or
     verb/key), a key fragment after a `/verb/` or a comma, or a direction
-    after `/s/keys/` - as (prefix, suffix, candidates). The finished query for
+    after `/s keys` - as (prefix, suffix, candidates). The finished query for
     a chosen candidate is prefix + candidate + suffix; empty candidates means
     nothing to complete here. Trailing token only - editing happens at the
     end. complete()'s own only caller."""
-    if not query or query[-1].isspace():
+    if not query:
         return "", "", []
     toks = tokenize(query)
     if not toks:
         return "", "", []
+    if query[-1].isspace():
+        # `/at ` + Tab: the keys of a bare closed-vocabulary verb; `/s age ` + Tab: its direction
+        return _spaced_stage(toks + [(len(query), "", False)], query, "")
     start, text, lead_quote = toks[-1]
-    if lead_quote or not text.startswith("/"):
+    if lead_quote:
         return "", "", []
+    if not text.startswith("/"):
+        return _spaced_stage(toks, query[:start], text)
     prefix = query[:start]
     parts = text[1:].split("/")
     if len(parts) == 1:

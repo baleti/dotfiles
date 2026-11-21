@@ -49,7 +49,7 @@ QtObject {
         "/at": { long: "/add-type",     desc: "add the matching columns" },
         "/rt": { long: "/remove-type",  desc: "drop the matching columns" },
         "/s":  { long: "/sort",         desc: "order windows by one field, optional asc / desc" },
-        "/g":  { long: "/group",        desc: "fold windows into sections, /g/key[/bucket][/dir]" },
+        "/g":  { long: "/group",        desc: "fold windows into sections, /g key[/bucket][/dir]" },
         "/fts": { long: "", desc: "full text of the running and archived Claude conversations" },
         "/sw": { long: "/switch-workspace", desc: "show workspaces instead of windows; pick one to switch to it" }
     })
@@ -78,7 +78,8 @@ QtObject {
         const deep = [];
         for (const v of ["fv", "ft", "at", "rt", "s", "g"])
             for (const p of root.allPaths())
-                deep.push(v + "/" + p);
+                // /fv takes an open-ended value so its key stays slash-glued; the closed-vocabulary verbs take keys as the next token
+                deep.push(v === "fv" ? v + "/" + p : v + " " + p);
         return bareVerbs.concat(["fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux"], deep);
     }
     // One-line description of a type path, for the type-path autocomplete
@@ -268,6 +269,9 @@ QtObject {
         return { kind: "free", text: arg, exact: !!quoted };
     }
 
+    // Is toks[i] the space-separated keys of a bare /ft /at /rt /s /g: not quoted, not `!`-negated, not "/"-led.
+    function _takeKeys(toks, i) { return i < toks.length && !toks[i].leadQuote && !toks[i].neg && toks[i].text.length > 0 && toks[i].text[0] !== "/"; }
+
     // -> { filters: [...], colOps: [{op,path,isVia}], sort: {fields,dir}|null, reverse }
     function parse(query) {
         const toks = root.tokenize(query);
@@ -308,6 +312,18 @@ QtObject {
                 if (!tv.bad && tv.via === null) top.switchWorkspace = true;
                 continue;
             }
+            // closed-vocabulary verbs take their keys as the NEXT token (2026-11-21): `/at uuid,acct`,
+            // `/s age desc`, `/g dm/week`; the `/verb/keys` slash form is the legacy spelling
+            let spaced = false;
+            if (tv.via === null && !tv.bad && verb !== "/fv" && root._takeKeys(toks, i)) {
+                tv.via = toks[i].text;
+                spaced = true;
+                i++;
+                if (verb === "/s" && root._takeKeys(toks, i) && root.parseDirection(toks[i].text) !== null) {
+                    tv.dir = toks[i].text;
+                    i++;
+                }
+            }
             // keyless or malformed: inert, takes no argument ("/fv foo" is just "foo")
             if (tv.via === null || tv.bad) continue;
             const via = tv.via.toLowerCase();
@@ -331,7 +347,7 @@ QtObject {
                     R.colOps.push({ op: verb === "/ft" ? "filter" : (verb === "/at" ? "add" : "remove"), path: via, isVia: true });
             } else if (verb === "/g") {
                 // the whole token goes to D.parseGroup (resolved against the window types); the last one wins
-                R.groupRaw = tok.text;
+                R.groupRaw = spaced ? tok.text + "/" + tv.via : tok.text;
             } else if (verb === "/s") {
                 if (tv.dir !== null && root.parseDirection(tv.dir) === null) continue;
                 const keys = via.split(",").filter(x => x.length > 0);
@@ -603,6 +619,26 @@ QtObject {
                 return { kind: "sortDirection", start: start + frag.length - parts[2].length, field: null, fragment: parts[2] };
             return null;
         }
+
+        // NEW-form keys / direction tokens (2026-11-21): `/at <keys>`, `/s <keys> <dir>`
+        const closedVerb = tk => {
+            if (tk.leadQuote || tk.neg) return null;
+            const tv = root.tokVerb(tk);
+            return (tv !== null && !tv.bad && tv.via === null && ["/ft", "/at", "/rt", "/s", "/g"].indexOf(tv.verb) >= 0) ? tv.verb : null;
+        };
+        const lastTok = context.length > 0 ? context[context.length - 1] : null;
+        const verbBefore = lastTok !== null ? closedVerb(lastTok) : null;
+        if (verbBefore !== null) {
+            if (frag.indexOf("/") >= 0) return null;   // a /g part (path/pf/2), not a key
+            const comma = frag.lastIndexOf(",");
+            const keyFrag = frag.slice(comma + 1);
+            const viaStart = start + comma + 1;
+            if (verbBefore === "/ft" && comma < 0 && root.pathSuggestions(keyFrag).length === 0)
+                return { kind: "bareValue", start: viaStart, field: null, fragment: keyFrag };
+            return { kind: "typePath", start: viaStart, verb: verbBefore, fragment: keyFrag, via: true };
+        }
+        if (context.length >= 2 && closedVerb(context[context.length - 2]) === "/s" && root._takeKeys(context, context.length - 1))
+            return { kind: "sortDirection", start: start, field: null, fragment: frag };
 
         const open = root._replay(context);
         if (open === null) return null;

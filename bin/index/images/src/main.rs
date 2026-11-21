@@ -205,8 +205,18 @@ fn tokenize(q: &str) -> Vec<String> {
 fn query_terms(q: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip_value = false;
+    // bare `/s` / `/g`: the keys token (and a `/s` direction word after it) are not words to look for either (2026-11-21):
+    // 2 = expecting the keys of /s, 1 = the keys of /g, 3 = an optional /s direction word
+    let mut keys_state = 0u8;
     for tok in tokenize(q) {
         let tok = tok.as_str();
+        let keys_tok = !skip_value && !tok.is_empty() && !tok.starts_with(|c| c == '!' || c == '"' || c == '/');
+        let consumed = match keys_state {
+            1 | 2 if keys_tok => { keys_state = if keys_state == 2 { 3 } else { 0 }; true }
+            3 if keys_tok && sort_direction(tok).is_some() => { keys_state = 0; true }
+            _ => { keys_state = 0; false }
+        };
+        if consumed { continue; }
         if tok == "/fts" || tok == "/full-text-search" || tok == "/chroma" || tok == "/semantic"
             || tok.starts_with("/show-") || tok.starts_with("/hide-") { continue; }
         // a negated term ("!word", "!//tag value") is something the results must NOT have: nothing to highlight
@@ -218,6 +228,8 @@ fn query_terms(q: &str) -> Vec<String> {
         if ["/s/", "/sort/", "/g/", "/group/"].iter().any(|p| tok.starts_with(p)) { continue; }
         if tok == "/clip" || tok == "/face" || tok.starts_with("//") { skip_value = true; continue; }
         if skip_value { skip_value = false; continue; }
+        if matches!(tok, "/s" | "/sort") { keys_state = 2; continue; }
+        if matches!(tok, "/g" | "/group") { keys_state = 1; continue; }
         let t = tok.replace('"', "").to_ascii_lowercase();
         // an unquoted `a||b` is two alternatives (query-dsl.md "Alternatives"): highlight each
         if !tok.starts_with('"') && t.contains("||") {
@@ -1021,10 +1033,10 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
             ("/chroma ", "files whose text is closest in meaning (semantic): /chroma clash tolerances for BIM"),
             ("/clip ", "photos matching what they show (CLIP text): /clip brick"),
             ("/face ", "photos showing a registered person: /face daniel"),
-            ("/s/", "(/sort) order the results by a field, e.g. /s/size/desc"),
-            ("/sort/", "(/s) order the results by a field, e.g. /sort/size/desc"),
-            ("/g/", "(/group) fold the results into sections, e.g. /g/dm/week or /g/pf/2"),
-            ("/group/", "(/g) fold the results into sections, e.g. /group/dm/week"),
+            ("/s ", "(/sort) order the results by a field, e.g. /s size desc"),
+            ("/sort ", "(/s) order the results by a field, e.g. /sort size desc"),
+            ("/g ", "(/group) fold the results into sections, e.g. /g dm/week or /g pf/2"),
+            ("/group ", "(/g) fold the results into sections, e.g. /group dm/week"),
             ("/dotfiles ", "only paths with a dot component (!/dotfiles leaves them out; hidden by default via Default exclude)"),
             ("/show-backup ", "include restic backups and btrfs snapshots (this search only)"),
             ("/hide-backup ", "leave out restic backups and btrfs snapshots"),
@@ -1044,16 +1056,37 @@ fn completions(q: &str, facets: &FacetsReply, history: &[String]) -> (usize, Vec
         // (once the fragment holds a second slash the /s/ and /g/ branches below own the list)
         if !frag[1..].contains('/') {
         for (name, _) in SORT_FIELDS.iter() {
-            let v = format!("/s/{name}");
+            let v = format!("/s {name}");
             if v.starts_with(frag) { out.push((v, "(/sort) sort field".to_string())); }
         }
         for name in GROUP_TYPES.iter().copied().chain(["pf"]) {
-            let v = format!("/g/{name}");
+            let v = format!("/g {name}");
             if v.starts_with(frag) { out.push((v, "(/group) group by".to_string())); }
         }
         }
     }
-    if let Some(chain) = frag.strip_prefix("/group/").or_else(|| frag.strip_prefix("/g/")) {
+    // new form (2026-11-21): `/s <keys> [dir]` and `/g <keys>[/part...]` take their keys as the next token. The word(s)
+    // before the fragment decide the stage: keys after a bare `/s`, a direction after `/s <keys>`, group keys after a bare `/g`.
+    let words: Vec<&str> = q[..start].split_whitespace().collect();
+    let w1 = words.last().copied().unwrap_or("");
+    let w2 = if words.len() >= 2 { words[words.len() - 2] } else { "" };
+    let spaced_g = !frag.starts_with('/') && (w1 == "/g" || w1 == "/group");
+    if !frag.starts_with('/') && (w1 == "/s" || w1 == "/sort") {
+        let comma = frag.rfind(',').map(|c| c + 1).unwrap_or(0);
+        let f = frag[comma..].to_lowercase();
+        for (name, _) in SORT_FIELDS.iter() {
+            if name.contains(f.as_str()) { out.push((format!("{}{name}", &frag[..comma]), "sort field".to_string())); }
+        }
+        return (start, out);
+    }
+    if !frag.starts_with('/') && (w2 == "/s" || w2 == "/sort") && !w1.starts_with(|c| c == '/' || c == '!' || c == '"') {
+        let d = frag.to_lowercase();
+        for (word, full) in [("asc", "ascending"), ("desc", "descending")] {
+            if full.starts_with(d.as_str()) { out.push((format!("{word} "), "sort direction".to_string())); }
+        }
+        return (start, out);
+    }
+    if let Some(chain) = frag.strip_prefix("/group/").or_else(|| frag.strip_prefix("/g/")).or_else(|| if spaced_g { Some(frag) } else { None }) {
         // `/g/<keys>[/<bucket|level|dir>...]`: a type after the last comma, or the next trailing part
         let head = &frag[..frag.len() - chain.len()];
         if let Some((keys, tail)) = chain.split_once('/') {
@@ -1268,8 +1301,8 @@ fn sort_direction(tok: &str) -> Option<bool> {
 }
 
 /// Splits `/s` and `/sort` commands out of the query. Returns the rest (what the server
-/// sees) and the requested order. A command is one token, `/s/key[,key...][/dir]`
-/// (query-dsl.md "Grammar"): comma-separated keys, optional direction as the third part.
+/// sees) and the requested order. A command is `/s key[,key...] [dir]` (keys token, optional direction token;
+/// query-dsl.md "Grammar", 2026-11-21) or the legacy glued token `/s/key[,key...][/dir]`: comma-separated keys, optional direction.
 /// Each `/s` adds keys (`/s/a /s/b` == `/s/a,b`: a, then b on ties); a key that resolves to
 /// nothing makes that whole `/s` inert. One direction for every key. A keyless `/s` is inert.
 fn parse_sort(q: &str) -> (String, SortSpec) {
@@ -1290,7 +1323,17 @@ fn parse_sort(q: &str) -> (String, SortSpec) {
             continue;
         }
         let chain = if let Some(c) = t.strip_prefix("/sort") { c } else if let Some(c) = t.strip_prefix("/s") { c } else { rest.push(t); continue };
-        let parts: Vec<&str> = if chain.is_empty() { Vec::new() } else if let Some(c) = chain.strip_prefix('/') { c.split('/').collect() } else { rest.push(t); continue };
+        // `/s keys [dir]` (2026-11-21): a bare `/s` takes the next token as its keys (not quoted, `!`-negated or `/`-led) and, after
+        // that, a token that is exactly a direction word as the direction. The glued `/s/keys[/dir]` below is the legacy spelling.
+        let keys_tok = |x: &str| !x.is_empty() && !x.starts_with(|c| c == '!' || c == '"' || c == '/');
+        let parts: Vec<&str> = if chain.is_empty() {
+            if i < toks.len() && keys_tok(toks[i]) {
+                let mut v = vec![toks[i]];
+                i += 1;
+                if i < toks.len() && keys_tok(toks[i]) && sort_direction(toks[i]).is_some() { v.push(toks[i]); i += 1; }
+                v
+            } else { Vec::new() }
+        } else if let Some(c) = chain.strip_prefix('/') { c.split('/').collect() } else { rest.push(t); continue };
         if parts.is_empty() || parts.len() > 2 { continue; } // keyless or malformed: inert, takes no argument
         let segs: Vec<Vec<&str>> = parts[0].split(',').filter(|k| !k.is_empty()).map(resolve_sort_fields).collect();
         let dir = match parts.get(1) {
@@ -2740,7 +2783,7 @@ impl App {
         self.open_hit(self.selected);
     }
 
-    /// Clicking a header writes `/s/<field>` into the query (replacing any /s there):
+    /// Clicking a header writes `/s <field>` into the query (replacing any /s there):
     /// the same primary column flips the direction, another column sorts ascending.
     fn set_sort(&mut self, key: &str) {
         let (rest, cur) = parse_sort(&self.query);
@@ -2749,7 +2792,7 @@ impl App {
         let field = SORT_FIELDS.iter().find(|f| f.1 == key).map(|f| f.0).unwrap_or(key);
         let mut q = rest;
         if !q.is_empty() { q.push(' '); }
-        q.push_str(&format!("/s/{field}{}", if desc { "" } else { "/asc" }));
+        q.push_str(&format!("/s {field}{}", if desc { "" } else { " asc" }));
         self.query = q;
         self.send_query();
         self.save_sort();
@@ -4799,21 +4842,29 @@ mod sort_tests {
     fn p(q: &str) -> (String, String, bool) { let (r, s) = parse_sort(q); (r, s.keys.join(","), s.desc) }
     #[test]
     fn grammar() {
+        // keys token + optional direction token (2026-11-21); descending is the default direction
         assert_eq!(p("cat"), ("cat".into(), "date".into(), true));
         assert_eq!(p("cat /s size desc"), ("cat".into(), "size".into(), true));
-        assert_eq!(p("/s date-modified /s size"), ("".into(), "date,size".into(), false));
-        assert_eq!(p("/sort/dm/size de x"), ("x".into(), "date,size".into(), true));
-        assert_eq!(p("/s name blender"), ("blender".into(), "name".into(), false));
+        assert_eq!(p("cat /s size asc"), ("cat".into(), "size".into(), false));
+        assert_eq!(p("/s date-modified /s size"), ("".into(), "date,size".into(), true));
+        assert_eq!(p("/sort dm,size de x"), ("x".into(), "date,size".into(), true));
+        assert_eq!(p("/s name blender"), ("blender".into(), "name".into(), true));
+        assert_eq!(p("/s name asc blender"), ("blender".into(), "name".into(), false));
         assert_eq!(p("/s nonsense //name a"), ("//name a".into(), "date".into(), true));
-        assert_eq!(p("/s size \"a  /s name\" b"), ("\"a  /s name\" b".into(), "size".into(), false));
+        assert_eq!(p("/s size \"a  /s name\" b"), ("\"a  /s name\" b".into(), "size".into(), true));
+        assert_eq!(p("/s size \"asc\""), ("\"asc\"".into(), "size".into(), true));
+        assert_eq!(p("/s \"size\""), ("\"size\"".into(), "date".into(), true));
+        assert_eq!(p("/s !size"), ("!size".into(), "date".into(), true));
+        assert_eq!(p("/s"), ("".into(), "date".into(), true));
         assert_eq!(p("!//path /etc"), ("!//path /etc".into(), "date".into(), true));
-        assert_eq!(p("!//path /sort /s size"), ("!//path /sort".into(), "size".into(), false));
+        assert_eq!(p("!//path /sort /s size"), ("!//path /sort".into(), "size".into(), true));
         assert_eq!(p("//path /etc"), ("//path /etc".into(), "date".into(), true));
         assert_eq!(p("//path / /sort dm asc"), ("//path /".into(), "date".into(), false));
-        assert_eq!(p("//path /sort /s size"), ("//path /sort".into(), "size".into(), false));
-        assert_eq!(p("/s desc name"), ("".into(), "name".into(), true));
-        assert_eq!(p("/s/size desc x"), ("x".into(), "size".into(), true));
-        assert_eq!(p("/s d"), ("".into(), "date".into(), true)); // ambiguous (date-modified, depth) -> inert
+        assert_eq!(p("//path /sort /s size"), ("//path /sort".into(), "size".into(), true));
+        // legacy glued spelling still works, and its direction is positional (a following word is a plain word)
+        assert_eq!(p("/s/size desc x"), ("desc x".into(), "size".into(), true));
+        assert_eq!(p("/s/size/asc x"), ("x".into(), "size".into(), false));
+        assert_eq!(p("/sort/dm/asc"), ("".into(), "date".into(), false));
     }
 }
 
@@ -5059,5 +5110,18 @@ mod dsl_conformance {
             let got = sort_direction(c["word"].as_str().unwrap()).map(|d| if d { "desc" } else { "asc" });
             assert_eq!(got, c["expect"].as_str(), "word {}", c["word"]);
         }
+    }
+}
+
+#[cfg(test)]
+mod keys_token_tests {
+    use super::query_terms;
+    #[test]
+    fn view_commands_keys_are_not_words() {
+        // 2026-11-21: the keys (and a /s direction) after a bare /s or /g are not words to highlight
+        assert_eq!(query_terms("brick /s size desc /g dm/week foo"), vec!["brick", "foo"]);
+        assert_eq!(query_terms("/s size reddit"), vec!["reddit"]);
+        assert_eq!(query_terms("/s/size /g/dm bar"), vec!["bar"]);
+        assert_eq!(query_terms("//path /s x"), vec!["x"]); // the //path value is `/s`; `x` is a word
     }
 }

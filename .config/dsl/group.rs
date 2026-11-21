@@ -359,7 +359,15 @@ pub fn extract_group(tokens: &[String], known: &[&str], aliases: &[(&str, &str)]
         }
         let bare: Vec<&str> = t.split('/').collect();
         if bare.len() >= 2 && bare[0].is_empty() && (bare[1] == "g" || bare[1] == "group") && !t.starts_with('!') {
-            if let Some(p) = parse_group(t, known, aliases) { parsed = Some(p); }
+            // `/g dm/week`: a bare `/g` takes the next token (not `/`- or `!`-led) as its keys; the slash form is legacy
+            let joined;
+            let mut text: &str = t;
+            if bare.len() == 2 && i < tokens.len() && !tokens[i].is_empty() && !tokens[i].starts_with('/') && !tokens[i].starts_with('!') {
+                joined = format!("{}/{}", t, tokens[i]);
+                text = &joined;
+                i += 1;
+            }
+            if let Some(p) = parse_group(text, known, aliases) { parsed = Some(p); }
             continue;
         }
         rest.push(t.clone());

@@ -2323,7 +2323,7 @@ mod dsl_engine {
     #[test]
     fn only_unported_features_hand_off() {
         let sc = make_schema();
-        for q in ["/fv/title foo", "brave /s/title", "/rt/workspace", "/at/tmux", "/g/workspace", "!brave", "\"/etc\"", "/", "/f"] {
+        for q in ["/fv/title foo", "brave /s/title", "/rt/workspace", "/at/tmux", "/g/workspace", "/rt workspace", "/at tmux", "/g workspace", "/s title asc", "!brave", "\"/etc\"", "/", "/f"] {
             assert!(!needs_qs(&sc, q), "{q}");
         }
         for q in ["/fts/claude-live foo", "/sw"] {

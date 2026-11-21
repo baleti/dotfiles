@@ -720,7 +720,7 @@ PanelWindow {
             // path glued on after a "/" -- show the verb's long form as the
             // alias and the path's own description, same roles each already
             // plays at the plain verb / typePath stages, just combined.
-            const slash = item.indexOf("/");
+            const slash = item.search(/[\/ ]/);
             if (slash >= 0) {
                 const verbPart = item.slice(0, slash), pathPart = item.slice(slash + 1);
                 const info = WinSwitchQueryDsl.verbInfo["/" + verbPart] || { long: "", desc: "" };

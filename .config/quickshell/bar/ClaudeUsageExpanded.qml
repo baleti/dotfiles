@@ -371,7 +371,12 @@ Rectangle {
       const t=toks[i],neg=t[0]==="!",u=neg?t.slice(1):t;let k=null,mm;
       if((mm=/^\/\/([a-z,-]*)$/.exec(u)))k=mm[1];else if((mm=/^\/(?:fv|filter-value)\/([a-z,-]*)$/.exec(u)))k=mm[1];
       if(k!==null&&k!==""){const nx=toks[i+1];if(nx!==undefined&&!isVerb(nx)){items.push({f:1,neg,keys:k,value:nx});i+=2;continue}items.push({o:t});i++;continue}
-      if(isVerb(t)){let tx=t;i++;if(/^\/(fts|full-text-search)/.test(u))while(i<toks.length&&!isVerb(toks[i]))tx+=" "+toks[i++];items.push({o:tx});continue}
+      if(isVerb(t)){let tx=t;i++;
+       if(/^\/(ft|filter-type|at|add-type|rt|remove-type|s|sort|g|group)$/.test(u)){   // closed-vocabulary verbs: keys are the next token (+ a bare direction for /s), copied unchanged
+        const kt=x=>x!==undefined&&x!==""&&!/^[!"'\/]/.test(x),isDir=x=>x!==""&&("ascending".startsWith(x.toLowerCase())||"descending".startsWith(x.toLowerCase()));
+        if(kt(toks[i])){tx+=" "+toks[i++];if(/^\/(s|sort)$/.test(u)&&kt(toks[i])&&isDir(toks[i]))tx+=" "+toks[i++]}}
+       else if(/^\/(fts|full-text-search)/.test(u))while(i<toks.length&&!isVerb(toks[i]))tx+=" "+toks[i++];
+       items.push({o:tx});continue}
       items.push({f:1,neg,keys:null,value:u});i++}
      const fs=items.filter(x=>x.f);if(!fs.length)return q.trim();
      const merge=fs.length>1&&fs.every(x=>x.neg&&x.keys===fs[0].keys&&x.value[0]!=='"'&&x.value.indexOf('"')<0);
@@ -522,6 +527,10 @@ Rectangle {
     }
     Connections { target: root; function onExpandedChanged() { if (root.expanded) { archivedCountProc.running = false; archivedCountProc.running = true; } } }
     Process { id: resumeProc }
+    Process { id: usageRetryProc }
+    function retryUsageFetch() {
+        usageRetryProc.exec(["systemctl", "--user", "kill", "--kill-whom=main", "-s", "USR1", "claude-usage.service"]);
+    }
     function resumeRow(row) {
         ClaudeUsageQueryHistory.record(root.searchText);
         resumeProc.exec([Quickshell.env("HOME") + "/bin/claude-history", "--resume-window", row.session_id]);
@@ -947,7 +956,7 @@ Rectangle {
         "status": "busy / wait / idle",
         "tokens": "context tokens used",
         "path": "working directory",
-        "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7 / claude8 / claude-ksr",
+        "account": "claude / claude2 / claude3 / claude4 / claude5 / claude6 / claude7 / claude-ksr",
         "host": "host3 / host2 / host1 / wsl",
         "tmux-session": "tmux session id",
         "tmux-window": "tmux window id",
@@ -1055,6 +1064,10 @@ Rectangle {
                      alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
         }
         const verb = v.slice(0, slash), name = v.slice(slash + 1);
+        // /s (closed vocabulary) takes its keys as the next token: "/s name" (no trailing space: "," or a direction can follow)
+        if (verb === "s")
+            return { text: `${prefix}/s ${name}`, label: "/s " + name,
+                     alias: QueryDsl.verbInfo["/s"].long, desc: root.searchTypeDescs[name] || "" };
         return { text: `${prefix}/${verb}/${name}` + (verb === "fv" ? " " : ""), label: "/" + v,
                  alias: QueryDsl.verbInfo["/" + verb].long, desc: root.searchTypeDescs[name] || "" };
     }
@@ -1178,7 +1191,7 @@ Rectangle {
         searchInput.cursorPosition = searchInput.text.length;
         // The text change above recomputes an open popup for the new text, where the entry just accepted
         // still matches itself - drop it, so accepting a final value (a path, a /bq entry) closes the popup
-        // while a stage that leads on ("/s/" -> field list) keeps its next candidates.
+        // while a stage that leads on ("/s " -> field list) keeps its next candidates.
         root.acItems = root.acItems.filter(c => c.text !== it.text);
     }
     function acAccept() {
@@ -2256,6 +2269,22 @@ Rectangle {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSize - 2
                 elide: Text.ElideRight
+                rightPadding: retryLabel.width + 8
+
+                Text {
+                    id: retryLabel
+                    anchors.right: parent.right
+                    text: qsTr("[retry]")
+                    color: retryMa.containsMouse ? Theme.cyan : Theme.fg
+                    font: parent.font
+                    MouseArea {
+                        id: retryMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.retryUsageFetch()
+                    }
+                }
             }
         }
 

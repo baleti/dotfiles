@@ -171,6 +171,17 @@ impl Dir {
     }
 }
 
+/// Is `toks[i]` the space-separated keys of a bare `/ft` `/at` `/rt` `/s` `/g` (2026-11-21)? The next token,
+/// when it exists, is not quoted, not `!`-negated and does not start with `/`.
+pub fn take_keys(toks: &[Tok], i: usize) -> bool {
+    i < toks.len() && !toks[i].lead_quote && !toks[i].neg && !toks[i].text.starts_with('/')
+}
+
+/// Is `toks[i]` the direction of `/s keys dir`: a keys-shaped token that is exactly a word `parse_direction` accepts.
+pub fn take_direction(toks: &[Tok], i: usize) -> bool {
+    take_keys(toks, i) && parse_direction(&toks[i].text).is_some()
+}
+
 /// Any non-empty prefix of ascending / descending.
 pub fn parse_direction(word: &str) -> Option<Dir> {
     let t = word.to_lowercase();

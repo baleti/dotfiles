@@ -315,6 +315,10 @@ PanelWindow {
                      alias: QueryDsl.verbInfo["/" + v].long, desc: QueryDsl.verbInfo["/" + v].desc };
         }
         const verb = v.slice(0, slash), name = v.slice(slash + 1);
+        // /s (closed vocabulary) takes its keys as the next token: "/s name" (no trailing space: "," or a direction can follow)
+        if (verb === "s")
+            return { text: `${prefix}/s ${name}`, label: "/s " + name,
+                     alias: QueryDsl.verbInfo["/s"].long, desc: root.typeDescs[name] || "" };
         return { text: `${prefix}/${verb}/${name} `, label: "/" + v,
                  alias: QueryDsl.verbInfo["/" + verb].long, desc: root.typeDescs[name] || "" };
     }

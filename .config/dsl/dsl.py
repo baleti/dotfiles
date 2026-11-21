@@ -101,6 +101,21 @@ def tokenize(query):
     return out
 
 
+KEYS_TOKEN_KINDS = ("ft", "at", "rt", "s", "g")   # closed-vocabulary verbs: keys are the next token (2026-11-21)
+
+
+def take_keys(toks, i):
+    """Is toks[i] the space-separated keys of a bare `/ft` `/at` `/rt` `/s` `/g`? The next token, if it exists, is
+    not quoted, not `!`-negated and does not start with `/` (a command, a `//keys` tag). toks: tokenize() output."""
+    return i < len(toks) and not toks[i][1] and not toks[i][3] and not toks[i][0].startswith("/")
+
+
+def take_direction(toks, i):
+    """Is toks[i] the direction of `/s keys dir`? Only a token that is exactly a word parse_direction accepts
+    (any prefix of ascending / descending) and that take_keys would also accept."""
+    return take_keys(toks, i) and parse_direction(toks[i][0]) is not None
+
+
 def split_raw(query):
     """Whitespace split that keeps quotes in the tokens (`name:"a b"` stays one token, quotes included;
     an unterminated quote runs to the end) - what the images picker's and the search command's own
@@ -467,7 +482,8 @@ def _owns_next(tok):
 def extract_group(tokens, known, aliases=None, owns_next=_owns_next):
     """The pipeline hook: pull the /g command out of a token list. -> (remaining tokens, parsed or None).
     Position-independent like /s (the last valid /g wins); a token owned as another command's value is
-    never read as /g; an inert /g is dropped and takes no argument. Everything else - the filters and
+    never read as /g; an inert /g is dropped and takes no argument. A bare `/g` / `/group` takes the next
+    token (not starting with `/` or `!`) as its keys: `/g dm/week` == `/g/dm/week` (the slash form is legacy). Everything else - the filters and
     sorts that decide WHICH rows exist and in what order - passes through untouched, so grouping always
     works on the filtered result (rows -> filter -> sort -> group)."""
     rest, parsed, i = [], None, 0
@@ -482,6 +498,9 @@ def extract_group(tokens, known, aliases=None, owns_next=_owns_next):
             continue
         bare = t.split("/")
         if len(bare) >= 2 and bare[0] == "" and bare[1] in GROUP_VERBS and not t.startswith("!"):
+            if len(bare) == 2 and i < len(tokens) and tokens[i] and not tokens[i].startswith(("/", "!")):
+                t += "/" + tokens[i]      # `/g dm/week`: the keys are the next token (the slash form is the legacy spelling)
+                i += 1
             p = parse_group(t, known, aliases)
             if p:
                 parsed = p
@@ -587,6 +606,13 @@ def parse(schema, query):
         kind = schema.kinds.get(verb)
         if kind is None:
             continue
+        spaced = False
+        if keys is None and not bad and kind in KEYS_TOKEN_KINDS and take_keys(toks, i):
+            keys, spaced = toks[i][0], True        # `/at uuid,acct`: the keys are the next token (legacy `/at/uuid,acct` still parses)
+            i += 1
+            if kind == "s" and take_direction(toks, i):
+                dir_ = toks[i][0]                  # `/s age desc`: a following token that is exactly a direction word
+                i += 1
         if kind.startswith("app"):
             if bad:
                 continue
@@ -595,7 +621,10 @@ def parse(schema, query):
             # so `/fts red key` is one two-word query, not `/fts red` plus a row filter `key`
             words = []
             while kind == "app:arg" and i < len(toks) and not schema.starts_command(toks[i]):
-                words.append(("!" if toks[i][3] else "") + toks[i][0].replace('"', ""))
+                w = toks[i][0].replace('"', "")
+                if toks[i][2] and " " in w:     # a "quoted phrase" stays quoted: it is matched as one phrase, not split into words
+                    w = '"' + w + '"'
+                words.append(("!" if toks[i][3] else "") + w)
                 i += 1
             if words:
                 arg = " ".join(words)
@@ -616,7 +645,7 @@ def parse(schema, query):
             if typed:
                 r["col_ops"].append((kind, via))
         elif kind == "g":
-            r["group_raw"] = tok[0]
+            r["group_raw"] = tok[0] + "/" + keys if spaced else tok[0]
         elif kind == "s":
             d = "desc"
             if dir_ is not None:

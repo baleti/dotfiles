@@ -394,7 +394,7 @@ fn move_workspace_after_lua(row: &WsRow, cur: i64) -> String {
     let id = row.id.unwrap_or(0);
     format!(
         "local cur = hl.get_workspace({cur}) local name = cur and cur.name or '' \
-         local used = {{}} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true end \
+         local used = {{}} for _, x in ipairs(hl.get_workspaces()) do if x.id then used[x.id] = true end end \
          local id = {id} + 1 while used[id] and id ~= {cur} do id = id + 1 end \
          if id == {cur} then return end \
          for _, w in ipairs(hl.get_windows()) do if w.workspace.id == {cur} then hl.dispatch(hl.dsp.window.move({{ workspace = id, window = w, follow = false }})) end end \
@@ -406,7 +406,7 @@ fn move_workspace_after_lua(row: &WsRow, cur: i64) -> String {
 fn add_workspace_lua(target: &str, cur: i64) -> String {
     format!(
         "local cur = hl.get_workspace({cur}) \
-         local used, names = {{}}, {{}} for _, x in ipairs(hl.get_workspaces()) do used[x.id] = true names[tostring(x.name)] = true end \
+         local used, names = {{}}, {{}} for _, x in ipairs(hl.get_workspaces()) do if x.id then used[x.id] = true names[tostring(x.name)] = true end end \
          local name = {} \
          if name == '' then local base = cur and tonumber(cur.name) or 0 \
          local n = math.floor(base) + 1 while names[tostring(n)] or used[n] do n = n + 1 end name = tostring(n) end \
@@ -414,10 +414,10 @@ fn add_workspace_lua(target: &str, cur: i64) -> String {
          local anchor = cur and cur.id or 0 \
          local id = anchor + 1 \
          if used[id] then local k = id while used[k + 1] do k = k + 1 end local ok = true \
-         local by = {{}} for _, w in ipairs(hl.get_windows()) do local wid = w.workspace.id \
-         if wid >= id and wid <= k then if w.group then ok = false end by[wid] = by[wid] or {{}} table.insert(by[wid], w) end end \
-         for _, m in ipairs(hl.get_monitors()) do local a = m.active_workspace if a and a.id >= id and a.id <= k and not m.focused then ok = false end end \
-         if ok then local nm = {{}} for _, x in ipairs(hl.get_workspaces()) do nm[x.id] = x.name end \
+         local by = {{}} for _, w in ipairs(hl.get_windows()) do local wid = w.workspace and w.workspace.id \
+         if wid and wid >= id and wid <= k then if w.group then ok = false end by[wid] = by[wid] or {{}} table.insert(by[wid], w) end end \
+         for _, m in ipairs(hl.get_monitors()) do local a = m.active_workspace if a and a.id and a.id >= id and a.id <= k and not m.focused then ok = false end end \
+         if ok then local nm = {{}} for _, x in ipairs(hl.get_workspaces()) do if x.id then nm[x.id] = x.name end end \
          for i = k, id, -1 do if by[i] then for _, w in ipairs(by[i]) do hl.dispatch(hl.dsp.window.move({{ workspace = i + 1, window = w, follow = false }})) end \
          hl.dispatch(hl.dsp.workspace.rename({{ workspace = i + 1, name = nm[i] }})) end end \
          else while used[id] do id = id + 1 end end end \
@@ -2542,6 +2542,8 @@ mod tests {
         assert_eq!(rows("!//cat graphics"), vec![1]);
         assert_eq!(rows("/s/name/asc //cat graphics"), vec![0, 2]);
         assert_eq!(rows("/ft/name blender"), vec![0]); // column verbs are inert here
+        assert_eq!(rows("/s name asc //cat graphics"), vec![0, 2]); // keys / direction as the next tokens (2026-11-21)
+        assert_eq!(rows("/ft name blender"), vec![0]); // `name` is the /ft keys, `blender` the filter
     }
 
     #[test]

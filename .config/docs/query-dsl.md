@@ -30,6 +30,21 @@ fixes, and `~/.config/dsl/tests.json` checks them.
 > to the Quickshell grid, which also serves the mod+Tab group
 > picker).
 
+> **Keys token (2026-11-21).** Slash chaining (`/verb/key`) is justified only
+> where the argument is open-ended: `/fv/title outlook` pivots the verb
+> against a type, and the value after it can be any string. Verbs whose
+> argument comes from a **defined set of names** - the column verbs `/ft`
+> `/at` `/rt`, `/sort` and `/group` - no longer need the extra slash: their
+> **keys are the next whitespace-separated token**, comma separated, so
+> `/at uuid,acct` replaces `/at/uuid,acct`, `/ft title,age` replaces
+> `/ft/title,age`, `/s age,msgs desc` replaces `/s/age,msgs/desc`, and
+> `/g dm/week` replaces `/g/dm/week`. The old glued spellings stay accepted
+> everywhere as a **legacy alias** (saved base queries, history and muscle
+> memory keep working); this document shows the new spelling as canonical.
+> The exact rules are in [Grammar](#grammar) ("The keys token"). `/fts`
+> keeps its `/fts/scope` slash: its words after the verb are open-ended, so a
+> scope word could not be told from a search word.
+
 **Rust reference implementation (2026-10-23).** `~/.config/dsl/rs` (crate
 `pickerdsl`) is the most complete implementation of this document: the
 primitives of `dsl.py`, a schema-driven engine (parse a query into row filters,
@@ -48,7 +63,8 @@ language: `~/.config/quickshell/lib/dsl.js` (every QML consumer - launcher,
 rss-reader, claude-usage, winswitch, the clipboard family - imports it) and
 `~/.config/dsl/dsl.py` (claude-history, focus-picker, window-search, the
 `search` command). They hold key resolution (exact name wins, else substring,
-comma list, alphabetical sort-key expansion), the `/verb/keys[/dir]` splitter,
+comma list, alphabetical sort-key expansion), the `/verb/keys[/dir]` splitter
+(plus, since 2026-11-21, the keys-token rule: `take_keys` / `take_direction`),
 direction words, the tokenizer (quotes, `!`), quoted-term matching and the sort comparator. What stays per
 picker is what depends on its data: the type registry, row values, tokenizer
 quirks, completion presentation, and the images picker's Rust and the Android
@@ -56,7 +72,7 @@ app's Kotlin ports (neither can import them). **Engine and whole-query vectors (
 (`Schema`, `parse`, `select_rows`, `active_columns`), `dsl.js` (`makeSchema`,
 `parseQuery`, `selectRows`, `activeColumns`) and the Rust `pickerdsl` crate hold the
 same parse -> filter -> sort -> columns engine, proven identical by the `pipeline`
-section of `tests.json` (45 queries: ids in order, columns, app verbs like `/fts`, `/g`).
+section of `tests.json` (96 queries: ids in order, columns, app verbs like `/fts`, `/g`; since 2026-11-21 they cover both the keys-token forms and, as legacy vectors, the glued ones).
 claude-history and window-search parse through the Python engine (their old regex
 parsers are gone; unresolvable `//keys` now narrow to nothing like everywhere else).
 focus-picker keeps its own parser and, with the launcher/clipboard QML parsers, is held to
@@ -86,7 +102,7 @@ add a new consumer, add its row here too.
 | app-launcher | mod+Super_l | `~/.config/quickshell/launcher/` (`QueryDsl.qml` + `AppLauncher.qml`) | freedesktop `.desktop` apps, launch-frecency ordered (QML) |
 | rss-reader | Alt+Shift+R | `~/.config/quickshell/rssreader/RssReader.qml` (imports the launcher's `QueryDsl.qml`) | rssd's fetched articles, title/feed/tag/body |
 | claude-usage | `/` (panel open, CTRL+ALT+c) | `~/.config/quickshell/bar/ClaudeUsageExpanded.qml` (imports the launcher's `QueryDsl.qml`) | active Claude Code processes across all 3 accounts, title/pid/status/tokens/path/account plus `tmux-*`/`hypr-*` fields |
-| claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt` still parsed for correct arity, inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone): it completes the keys, direction and value stages of the one syntax as they are typed |
+| claude-agents (Android) | search box, conversation list | `~/src/claudeagents-android/src/dev/local/claudeagents/QueryDsl.kt` | live (currently-running) host3 Claude Code conversations synced to the phone; flat `title`/`account`/`tokens`/`age` fields, no groups. Only `/fv`, `/s` do anything (no dynamic columns, same as app-launcher); `/ft`/`/at`/`/rt`/`/g` still parsed for correct arity (their keys token included, 2026-11-21), inert. Autocompletion is live-as-you-type rather than Tab-gated (no physical Tab key on a phone): it completes the keys, direction and value stages of the one syntax as they are typed |
 | images (photo search) | mod+Super_l → "Search files" (launcher entry) | `~/bin/index/images/` (egui Rust window; query engine = `~/bin/index/photos/search_server.py`, user service `images-search`, 127.0.0.1:8765) | photos by content (CLIP) and by person (faces); opens on newest photos, live as you type |
 
 **app-launcher action commands.** Besides the five verbs, the launcher has
@@ -148,8 +164,8 @@ over the Chroma indexes (`/chroma/<index>` for one; it does not cover the corpus
 name filter in front and the same `//` tags. `/fts` lists every matching file (no cap per index; a file reachable from two roots is listed once). Its words are Recoll
 query language, so `masonry -support` excludes and a leading `-term` works; the DSL's own `!word` is accepted as the same
 thing (`masonry !support`). All the `//` tags work on `/fts` and `/chroma` results, `//dm` included (the date comes from
-the index). Order is relevance (best first) unless a sort is explicit: `/s/size`, `/s/date`, `/s/name`, `/s/path`,
-`/s/extension`, `/s/depth` (stackable) all apply to `/fts`/`/chroma`; with no `/s` the column sort is not applied.
+the index). Order is relevance (best first) unless a sort is explicit: `/s size`, `/s date`, `/s name`, `/s path`,
+`/s extension`, `/s depth` (stackable) all apply to `/fts`/`/chroma`; with no `/s` the column sort is not applied.
 One content verb per query: `/fts` with `/chroma`, or either with `/clip` or `/face`, is reported as an error, as are
 an unknown index and a verb with no words. For `/chroma` with any filter (before the verb or a `//` tag) the nearest 2,000
 chunks per index are searched instead of 400, and when fewer than 20 files survive the filters it looks up to 16,000 deep
@@ -188,23 +204,24 @@ the pickers above: Up/Down or `Ctrl+j`/`Ctrl+k` move, `PgUp`/`PgDn` page,
 `Home`/`End` jump, `Enter` opens, `Esc` closes.
 
 **Ordering (`/s`, `/sort`).** The one place this picker uses the verb
-grammar: `/s/<field>[,<field>...][/asc|/desc]`, one token, behaves as in
+grammar: `/s <field>[,<field>...] [asc|desc]` (keys token, optional direction
+token; the glued `/s/<field>/asc` is the legacy spelling), behaves as in
 `/sort` below, with these differences. Fields: `name`, `path`,
 `size`, `date-modified` (alias `dm`, `date`) - the four columns - plus
 `extension`, `depth` (number of path components), which have no column, and
 `pages` (page count of local PDFs: the `#P` column; the first 5000 matches are
 counted and ordered, non-PDFs come last in both directions).
 Names resolve like keys (exact, else unique substring; an ambiguous
-or unknown one such as `/s/d` makes that `/s` inert). **Repeated `/s`
-commands stack instead of replacing**, in order: `/s/date-modified /s/size`
-(or `/s/date-modified,size`) sorts by date modified and, among rows with
+or unknown one such as `/s d` makes that `/s` inert). **Repeated `/s`
+commands stack instead of replacing**, in order: `/s date-modified /s size`
+(or `/s date-modified,size`) sorts by date modified and, among rows with
 the same date, by size; ties on every key fall back to path order. One
 direction applies to every key (the last one given). Timestamps and sizes
 are real numbers, so `ascending` is oldest/smallest first (no age-style
 inversion); the default direction is descending (newest/largest first), as is
 the order with no `/s`. **Clicking a column
-header edits the query**: it replaces any `/s` with `/s/<column>` (a second
-click on the same column appends `/asc`, a third goes back), so the box always shows what the
+header edits the query**: it replaces any `/s` with `/s <column>` (a second
+click on the same column appends `asc`, a third goes back), so the box always shows what the
 list is sorted by and the arrow follows the first key. Photo (`//clip`,
 `//face`) results keep their score order. Sorting is done server-side
 (`filesearch.NameTable.query`, `sort=date,size`).
@@ -280,46 +297,108 @@ explicit pipe character, whitespace between tokens is the pipe.
 ## Grammar
 
 *Reworked 2026-10-22: one syntax, built from slashes and commas only (no
-dots, no `path:value`, no space-separated paths or directions).*
+dots, no `path:value`). Refined 2026-11-21: slashes only where the argument
+is open-ended; the closed-vocabulary verbs take their keys as the next token
+(see "The keys token" below).*
 
 The search box text is split on whitespace into tokens (a `"..."`-quoted
 run stays one token, interior whitespace intact - see Quoting). Each
 token is either:
 
 ```
-/verb/keys[/dir] arg   a command: verb exact-matched, keys = what it acts on (see Keys)
+/fv/keys arg           /filter-value: keys glued on with a slash, the value token follows (open-ended)
 //keys arg             the verb left empty: shorthand for /fv/keys arg (see Default verb)
+/at keys               a closed-vocabulary verb (/ft /at /rt /s /g): its keys are the NEXT token
+/s keys [dir]          ... /s may take a direction token after the keys
+/fts[/scope] words     an app verb: optional scope glued on, then free words (open-ended)
 "phrase"               quoted literal - never a command, always row-filter text
 bareword               anything else - an implicit /filter-value argument
 !<any of the above>    negated: a leading ! inverts a row filter (see Negation)
 ```
 
-The command token has up to three `/`-separated parts, and **each part's role
-is fixed by its position**, which is what keeps the grammar free of
-guessing: part 1 the verb, part 2 the **keys**, part 3 (only `/sort`) the
-**direction**.
+A verb is exact-matched, then **each argument's role is fixed by its
+position**, which is what keeps the grammar free of guessing: the **keys** of
+`/fv` sit in the verb token's second part (`/fv/keys`); the keys of a
+closed-vocabulary verb are the next token; `/sort`'s direction is the token
+after its keys.
+
+#### The keys token (2026-11-21)
+
+`/ft`, `/at`, `/rt`, `/sort` and `/group` take their keys from a **defined set
+of names** (the picker's types), so they do not need the slash that `/fv`
+needs to pivot against a type before an open-ended value. The rules:
+
+1. A **bare** closed-vocabulary verb (`/at`, `/filter-type`, `/s`, `/group`,
+   ... with nothing glued on) takes the **next token as its keys** when that
+   token exists and is a *keys token*: not quoted (`"..."` is always a
+   literal), not `!`-negated, and **not starting with `/`** (so a following
+   command, a `//keys` tag or a path never becomes keys). The keys are the
+   usual comma list (`/at uuid,acct`) and resolve exactly like the glued form.
+2. A closed verb with **no following keys token** behaves as the bare verb
+   always did: inert, takes nothing (`/at` alone, `/at /rt pid`, `/s "x"`).
+3. **`/sort` direction.** After the keys, the next token is taken as the
+   direction **only if it is exactly a word `parse_direction` already
+   accepts** (`asc` / `desc` or any non-empty prefix of `ascending` /
+   `descending`: `a`, `de`, ...). Any other token is not consumed and
+   resumes as an ordinary term: `/s age asc` sorts ascending, `/s age
+   reddit` sorts and filters on `reddit`. (A bare `a` or `d` after the keys
+   is therefore a direction, never a search word; quote it - `"a"` - to
+   search for it.) The default direction is still descending.
+4. **`/group`** is a closed set of types too, so it follows the same rule;
+   its trailing parts (`pf`, a level, `week`, `collapse`, `s/key` ...) stay
+   slash-glued **to the keys token**: `/g dm/week`, `/g path/pf/2`,
+   `/g path/pf/1/s/size`. The keys token is the whole of what the legacy form
+   had after `/g/`.
+5. **Negation** is as before and applies to the verb: `!/at uuid` parses,
+   consumes its keys token and changes nothing (negation only means something
+   on a row filter). A `!`-negated token after a closed verb is *not* its
+   keys (`/at !pid` is an inert `/at` plus the negated word `!pid`).
+6. **Legacy alias.** The glued forms `/at/uuid,acct`, `/ft/title,age`,
+   `/rt/tkns,path`, `/s/age,msgs/desc`, `/g/dm/week` (and the long spellings)
+   remain accepted by every implementation with the same meaning. A glued
+   token never consumes the next token as keys, and `/s/age desc` is *not*
+   the new form (the `desc` is an ordinary word there): mixing the two
+   spellings is not a thing.
+7. **Argument spans.** An app verb's words (`/fts red key`) and `/fv`'s
+   value token stop at the next token that starts a command, so
+   `/fts foo /at uuid` is a full-text search for `foo` followed by an
+   `/at` taking `uuid`. A keys token never starts with `/`, so the span
+   logic (`starts_command`) needs no change: it cannot swallow a keys token
+   (a `/at` is a command start, `uuid` is not) and a keys token cannot be
+   mistaken for a command.
+8. **`/fts` stays glued.** `/fts[/scope] words` keeps the slash for its scope:
+   the verb's own argument is an open run of free words, so `/fts archive foo`
+   could not tell the scope `archive` from a search word. (Scopes are a
+   closed set in principle; making them a token would need a marker word, and
+   that is left as a follow-up. The same goes for the images picker's
+   `/fts/<index>` and `/chroma/<index>`.)
 
 | Token | Reads as |
 |---|---|
 | `/fv/title rvt` or `//title rvt` | rows whose `title` contains `rvt` |
 | `//p rvt` | rows where `pid` OR `path` (any key containing `p`) contains `rvt` |
 | `//title,path rvt` | rows where `title` OR `path` contains `rvt` |
-| `/s/title` | sort by `title`, **descending** (the default direction) |
-| `/s/title,status/asc` | sort by `title`, ties by `status`, ascending |
-| `/ft/tmux`, `/at/claude-title`, `/rt/pid` | column verbs, same key list |
+| `/s title` | sort by `title`, **descending** (the default direction) |
+| `/s title,status asc` | sort by `title`, ties by `status`, ascending |
+| `/ft tmux`, `/at claude-title`, `/rt pid` | column verbs, same key list |
+| `/g dm/week` | group by `dm`, bucketed by week |
+| `/s/title`, `/at/uuid`, `/g/dm/week` | the legacy glued spellings of the above (still accepted) |
 | `/fts/claude-live word` | an app verb (e.g. winswitch's full text) with its own key list |
 
 **App verbs with a text argument (`/fts`) take every word up to the next `/verb`** (`/fts red key` searches both words; `!word` excludes; use `//field value` for a row filter after it). A command's argument is the single value token that follows it (`/fv`
-only; `/ft /at /rt /s` take none - their keys sit in the token itself), up
+only; `/ft /at /rt /s /g` take a keys token, and `/s` optionally a direction
+token, both described above - never a value), up
 to the next `/verb`, end of input, or a token that is itself a command. A
 token past a verb's arity is not absorbed: it resumes as an ordinary token,
 which, being a plain token with no verb, is a bare `/filter-value`. **`/fv`
 is the fallback** - every token left over becomes a row filter, never
-silently dropped. `/s/name blender` is therefore *two* things: sort by
-`name`, and filter to `blender`.
+silently dropped. `/s name blender` is therefore *two* things: sort by
+`name`, and filter to `blender` (`blender` is not a direction word).
 
-A command **without keys** (`/fv`, `/s`, `/ft` alone) is inert: it takes no
-argument, so `/fv foo` is just the bare word `foo`. A malformed token (too
+A command **without keys** (`/fv` alone, or a closed verb with no keys token
+after it: `/s` at the end of the query, `/ft /at pid`) is inert: `/fv foo` is
+just the bare word `foo` (`/fv` never takes a space-separated key; only the
+closed-vocabulary verbs do). A malformed token (too
 many parts, a direction on a verb that has none, an unknown verb) is inert
 too and never an error - "half-typed stays a no-op" is the rule everywhere.
 
@@ -327,12 +406,12 @@ too and never an error - "half-typed stays a no-op" is the rule everywhere.
 
 | Short | Long | Axis | Takes | Effect |
 |---|---|---|---|---|
-| `/fv` | `/filter-value` | rows | keys + 1 value | keep rows whose value matches; drop the rest |
-| `/ft` | `/filter-type` | columns | keys | keep only the columns whose *name* matches; hide the rest |
-| `/at` | `/add-type` | columns | keys | add the columns whose name matches into view |
-| `/rt` | `/remove-type` | columns | keys | drop the columns whose name matches from view |
-| `/s` | `/sort` | order | keys + optional `/dir` | order rows by the key fields |
-| `/g` | `/group` | view | keys + optional bucket / level / `/dir` | fold the rows into collapsible sections |
+| `/fv` | `/filter-value` | rows | `/keys` (glued) + 1 value | keep rows whose value matches; drop the rest |
+| `/ft` | `/filter-type` | columns | keys token | keep only the columns whose *name* matches; hide the rest |
+| `/at` | `/add-type` | columns | keys token | add the columns whose name matches into view |
+| `/rt` | `/remove-type` | columns | keys token | drop the columns whose name matches from view |
+| `/s` | `/sort` | order | keys token + optional direction token | order rows by the key fields |
+| `/g` | `/group` | view | keys token (+ glued bucket / level / dir parts) | fold the rows into collapsible sections |
 
 **Verb names are exact-matched** against exactly these five short and five
 long forms (plus the empty spelling `//`, see Default verb) - nothing else,
@@ -345,7 +424,8 @@ of a verb mean exactly the same thing; autocomplete offers the short forms.
 
 ### Keys
 
-Part 2 of a command is a **comma-separated list of keys**. A key names one or
+The keys of a command (part 2 of `/fv/keys`, or the keys token of `/at keys`)
+are a **comma-separated list of keys**. A key names one or
 more types (a type = any one field that can be filtered on or shown as a
 column). Resolution, per key:
 
@@ -358,15 +438,15 @@ column). Resolution, per key:
 A key that resolves to nothing contributes nothing. A key list that resolves
 to nothing makes its command inert (for a filter: "narrows to nothing", an
 honest empty result; for a column verb: a silent no-op). Empty keys (`//a,,b`,
-a trailing comma) are skipped, and an entirely empty key list (`//`, `/fv/`)
-is "nothing typed yet": inert, never "matches everything".
+a trailing comma) are skipped, and an entirely empty key list (`//`, `/fv/`,
+a lone `,`) is "nothing typed yet": inert, never "matches everything".
 
 **Type names are flat.** A family of related types shares a name prefix with
 a hyphen: `tmux-session`, `tmux-window`, `tmux-pane`, `claude-title`,
 `claude-live`, `claude-archive`, `hypr-workspace`. There are no groups, no
 dotted subfields and no `*`: because keys are substring-matched, `//tmux`
 already reaches every `tmux-*` type, `//tmux-win` just the window one, and
-`/at/claude` adds every `claude-*` column. Each picker owns its vocabulary
+`/at claude` adds every `claude-*` column. Each picker owns its vocabulary
 (only the grammar is shared). Exact-name-wins keeps a short name from being
 swallowed by its own family: `//title` is the plain `title`, not also
 `tmux-title` and `claude-title` (type `//tit` or `//-title` to mean them all).
@@ -376,17 +456,17 @@ swallowed by its own family: `//title` is the plain `title`, not also
 `/ft`, `/at` and `/rt` only choose which columns are shown and never touch
 rows, so there is nothing for exact-name-wins to protect: for them every key
 is a plain case-insensitive **substring union** (rule 2 alone, then rule 3).
-`/at/phone` adds `phone` *and* `mobile-phone` *and* `phone-extension`, where
+`/at phone` adds `phone` *and* `mobile-phone` *and* `phone-extension`, where
 `//phone` (a row filter) would still mean only the type named `phone`. A
-family that must not be swallowed is spelled out (`/at/mobile-phone`).
+family that must not be swallowed is spelled out (`/at mobile-phone`).
 Implementation status: pickers that existed before this date still apply
 rule 1 to their column verbs; the attribute-rich pickers below use the
 substring union from the start.
 
 **`/sort` expands a fuzzy key into every type it reaches, alphabetically**
-(2026-10-22; before, an ambiguous key made the sort inert): `/s/pa` is
-`/s/pages,path`, `/s/tmux` is `/s/tmux-session,tmux-title,tmux-window`. The exact
-name still wins alone (`/s/path` is just `path`), a type already in the chain
+(2026-10-22; before, an ambiguous key made the sort inert): `/s pa` is
+`/s pages,path`, `/s tmux` is `/s tmux-session,tmux-title,tmux-window`. The exact
+name still wins alone (`/s path` is just `path`), a type already in the chain
 is not repeated, and a key that names nothing makes the whole `/s` inert. To
 sort by one type only, name it.
 
@@ -401,7 +481,7 @@ still introduces the keys, to `/fv`.
 ```
 
 This is the *only* default the grammar has: `//` always means `/fv/`, never
-`/ft/` or `/s/`. A lone `/` followed by a word is an unrecognised verb, and a
+`/ft` or `/s`. A lone `/` followed by a word is an unrecognised verb, and a
 `/verb/keys` token whose verb *is* named is unaffected. Everything that holds
 for `/fv/keys` holds for `//keys` unchanged - it is a spelling resolved at
 tokenizing time: arity (one value token), no-op while the value is pending,
@@ -443,7 +523,7 @@ Filters which rows survive. Two forms:
   operand are one of the two shapes that comparator recognises - plain
   integers (`//chars >500`) or age buckets (`//age >3h`, meaning "older
   than 3h" - the operator compares the raw stored age, larger is further
-  in the past, no direction-trap inversion the way `/s/age/asc` needs);
+  in the past, no direction-trap inversion the way `/s age asc` needs);
   anything else (a non-numeric field, or an operand that isn't) never
   matches, rather than falling back to `>4` as literal substring text.
   No `=` operator - plain substring already covers loose equality.
@@ -595,18 +675,19 @@ client's highlighter (`query_terms`).
 ### `/filter-type` (`/ft`), `/add-type` (`/at`), `/remove-type` (`/rt`)
 
 Change which columns are shown. **Never filter rows** - orthogonal by
-construction. All three take a key list in their token (`/ft/title,pid`) and
+construction. All three take a key list as the **next token** (`/ft title,pid`;
+the glued `/ft/title,pid` is the legacy spelling, see "The keys token") and
 are processed **left to right** against one running ordered set that starts at
 the picker's default columns:
 
-- **`/ft/keys`** - intersect: keep only the currently-shown columns whose
+- **`/ft keys`** - intersect: keep only the currently-shown columns whose
   name matches the keys, drop the others. "Filter down to these."
-- **`/at/keys`** - union: add every matching column that isn't already
+- **`/at keys`** - union: add every matching column that isn't already
   shown, at the end.
-- **`/rt/keys`** - subtract: remove every matching column.
+- **`/rt keys`** - subtract: remove every matching column.
 
-Order is significant: `/ft/claude /at/workspace` shows the claude
-types plus `workspace`; `/at/workspace /ft/claude` shows only claude
+Order is significant: `/ft claude /at workspace` shows the claude
+types plus `workspace`; `/at workspace /ft claude` shows only claude
 types (the `/ft` drops the `workspace` the `/at` just added). Adding
 a column that is already shown, or removing/filtering one that is not, is
 a silent no-op.
@@ -652,12 +733,24 @@ Defaults per picker:
   after `/at command`. Fields: `command` (display name), `class`, `input`, `output`, `target`, `instance` (target, Revit year, pid), `year`,
   `pid`, `state` (`idle`, or `dialog: <title>` while a modal dialog holds that Revit up). Free text is display name + class + target + year only;
   `input` is deliberately left out so `any` does not match every command that needs a selection (`//input any` does). `pid` sorts numerically.
-- **fzf pickers**: focus-picker renders columns and honours all three
-  verbs; window-search / claude-history render a single ranked line and
-  ignore column verbs (inert, not an error).
+- **fzf pickers**: focus-picker and **claude-history** (tmux prefix+C-c) render
+  columns and honour all three verbs; window-search renders a single ranked
+  line and ignores column verbs (inert, not an error).
+  - *claude-history columns* (the types, in default order): `account status
+    title msgs tokens age tmux-session tmux-window tmux-pane hypr-workspace pid
+    path`; the `/fts/archive` view defaults to `account title msgs tokens age
+    path`. One more type, **`uuid`** (the session id), is hidden until
+    `/at uuid`, e.g. `/at uuid` or `/resume "outlook conversation" /at uuid`
+    (`/resume` is `/fts/archive`); it is also a
+    `//uuid` filter key and a `/s uuid` sort key. `/ft title,age` shows just
+    those, `/rt pid` drops one; a `/ft` that matches nothing falls back to the
+    defaults. The header row follows the query (the picker asks its server for it
+    on every result). *Added 2026-11-21.* Tab completion offers `/fv/<field>`, the
+    closed verbs (`/at`, `/ft`, `/rt`, `/s`) and their keys / direction tokens
+    (`/at ` + Tab lists the types, `/s age ` + Tab `asc` / `desc`; 2026-11-21).
 
-A family prefix as a column key (`/at/claude`) means every type under it, each
-its own column; `/at/claude-title` is just the one.
+A family prefix as a column key (`/at claude`) means every type under it, each
+its own column; `/at claude-title` is just the one.
 
 #### Attribute-rich rows: types discovered from the data
 
@@ -671,25 +764,29 @@ the data**, and the grammar above needs nothing new:
   handful of cheap columns; the other attributes are stored with the row and
   are **hidden until `/at`'d** (or until a `/fv` filter on them auto-shows
   them, exactly like any other hidden type).
-- **`/at/key[,key...]` adds attribute columns by substring**, in the order
-  typed, after the default columns: `/at/owner,revision,phone`. Because
-  column verbs use the substring union (see Keys), `/at/phone` also brings
-  `mobile-phone`, and `/at/owner` brings `owner`, `owner-org` and
+- **`/at key[,key...]` adds attribute columns by substring**, in the order
+  typed, after the default columns: `/at owner,revision,phone`. Because
+  column verbs use the substring union (see Keys), `/at phone` also brings
+  `mobile-phone`, and `/at owner` brings `owner`, `owner-org` and
   `owner-initials` - the hyphen family convention does the grouping, so
   naming attributes with a shared prefix (`owner-org`, not `organisation of
   owner`) is what makes them easy to add together.
-- **`/ft` and `/rt` work on the same set** (`/ft/owner,revision` shows only
-  those; `/rt/owner-initials` drops one), so a view can be built up or pared
+- **`/ft` and `/rt` work on the same set** (`/ft owner,revision` shows only
+  those; `/rt owner-initials` drops one), so a view can be built up or pared
   down by any chain of the three verbs, processed left to right.
+- **The `search` CLI and mod+1 picker take these as plain tags** (`search -l '25066 //owner ruben //dm >2026-11-09'`;
+  `search --syntax` lists it): any `//word` that is not a built-in tag (`name path size dm mime ext pages`) filters the
+  attribute whose name contains it. `//owner` = who filed the item in the document system, not the file-system owner.
+  Only rows that carry attributes match, and the catalog's attributes can lag the synced files.
 - **Row filters and sorting use the same names**: `//owner smith`,
-  `/s/revision`, `/g/owner-org`. A type that exists on only some rows is blank
+  `/s revision`, `/g owner-org`. A type that exists on only some rows is blank
   on the rest; a filter on it simply does not match those rows (honest empty
   cells, never an error).
 - **Names are normalised to the flat form**: lower case, words joined by
   hyphens, families by a shared prefix; values are strings (numbers and dates
   sort by their own rule where the picker declares one, otherwise as text).
 - **The vocabulary completes like any other**: Tab at the key stage offers the
-  attribute names present in the current result set, so `/at/` shows what can
+  attribute names present in the current result set, so `/at ` + Tab shows what can
   be added for exactly these rows. Different row sources may bring different
   attributes; the list is the union over what is on screen.
 - **Paths may be URLs.** A row that has no file on disk (an entry in a
@@ -702,19 +799,24 @@ the data**, and the grammar above needs nothing new:
 
 Reorder the survivors; never filter or hide.
 
-- **`/s/key1[,key2,...][/dir]`** - order rows by `key1`; rows that tie on it
+- **`/s key1[,key2,...] [dir]`** - order rows by `key1`; rows that tie on it
   are broken by `key2`, and so on for however many comma-separated keys are
-  chained. Each key resolves like any key (exact name wins, else every type
+  chained. The keys are the **next token** (2026-11-21; the glued
+  `/s/key1,key2/dir` is the legacy spelling). Each key resolves like any key
+  (exact name wins, else every type
   containing it) and a fuzzy key **expands into all its types in alphabetical
-  order** (`/s/pa` = `/s/pages,path`); a key that resolves to nothing makes the
-  *whole* `/s` inert, not just that key. `/s/tokens` alone is the plain
+  order** (`/s pa` = `/s pages,path`); a key that resolves to nothing makes the
+  *whole* `/s` inert, not just that key. `/s tokens` alone is the plain
   single-key sort.
-- **`/dir`**, the optional third part: `asc` / `desc` (or any non-empty
-  prefix of `ascending` / `descending`: `a`, `de`, ...). It is taken by
-  **position**, so it can never be confused with a key or a following word:
-  `/s/title,status/desc blender` sorts and then filters on `blender`. No `/dir`
+- **`dir`**, the optional token after the keys: `asc` / `desc` (or any non-empty
+  prefix of `ascending` / `descending`: `a`, `de`, ...). It is consumed **only
+  when it is exactly such a word** (the shared `parse_direction` rule), so it
+  can never swallow a real search word: `/s title,status desc blender` sorts and
+  then filters on `blender`, `/s title blender` sorts by `title` and filters on
+  `blender`. (The legacy glued form takes the direction by position instead:
+  `/s/title,status/desc`.) No direction
   means **descending** (2026-10-22; was ascending): biggest / newest / last first,
-  and `/asc` asks for the other way. One direction applies to every key in the chain - there is
+  and `asc` asks for the other way. One direction applies to every key in the chain - there is
   no per-key direction; to run one key the other way, give it its own second
   `/s` and rely on the last-wins replacement. Only the **last** `/s` in a
   query takes effect (replace, not stack) - except in the images picker,
@@ -723,15 +825,20 @@ Reorder the survivors; never filter or hide.
   recency, winswitch focus-history, BM25 score). Honoured by winswitch,
   focus-picker, clipboard-picker and notification-picker (2026-09-28). In the
   BM25 pickers (claude-history, window-search) relevance stays the order until
-  an explicit, resolvable `/s` overrides it (2026-10-26: `/fts reddit /s/age`).
-- The old space forms (`/s name desc`, `/sort name`) are gone: the verb takes
-  its keys and direction from its own token only.
+  an explicit, resolvable `/s` overrides it (2026-10-26: `/fts reddit /s age`).
+- **History of the spelling.** Until 2026-10-22 the keys and direction were
+  space-separated tokens (`/s name desc`); that was replaced by the glued
+  `/s/name/desc` so that no token could be mistaken for a key. 2026-11-21 brings
+  the space form back **for closed-vocabulary verbs only**, with the rules of
+  "The keys token" (a keys token cannot be `/`-led, quoted or negated, and the
+  direction token must be exactly a direction word), which are what made the old
+  space form ambiguous; the glued spelling stays as the legacy alias.
 
 **Sort indicators.** Wherever a picker marks the sort in its column headers, the
-header of every column named by the typed `/s/key1,key2,.../dir` is marked: the
+header of every column named by the typed `/s key1,key2,... dir` is marked: the
 first key (the primary) with the direction arrow `▲`/`▼` as before, every further
 key (a tie-breaker, **secondary**) with the same arrow in a different colour -
-so `/s/dm,size/desc` shows `MODIFIED ▼` as the primary and `SIZE ▼` in the
+so `/s dm,size desc` shows `MODIFIED ▼` as the primary and `SIZE ▼` in the
 second colour. A click-sorted header (no typed `/s`) is always primary.
 Implemented in the images picker (accent colour primary, text colour secondary),
 the claude-usage panel (muted primary, accent secondary; its header click and the
@@ -741,7 +848,7 @@ notification, app-launcher, rss-reader, claude-history) have nothing to mark.
 
 Multi-key chaining dates from 2026-09-02 (then `/sort/tokens/title`, with `/`
 between keys; the comma replaced the slash 2026-10-22 so `/` can mean "next
-part").
+part"; the keys moved to their own token 2026-11-21).
 
 **Sort comparison, precisely.** Every type is stored and matched as a
 string, but plain lexicographic comparison is wrong for two shapes the
@@ -769,7 +876,7 @@ values being compared:
   `type`).
 
 **The direction trap.** `age`'s stored value is an *age* (seconds ago) -
-smaller means more recent. `/s/age/desc` means "newest first"
+smaller means more recent. `/s age desc` means "newest first"
 in the ordinary calendar sense, which is *ascending by age in seconds*.
 So for age-shaped values the requested direction is inverted before it
 reaches the numeric comparison: `ascending` (oldest first,
@@ -782,7 +889,9 @@ literally. The trap is specific to "time since" values.
 *Added 2026-10-23.* Folds the rows into collapsible sections. A **view transform**: it never filters,
 hides or reorders rows, it only puts break lines (section headers) between them.
 
-- **`/g/key1[,key2,...][/part...]`** - one section per distinct value of `key1`; a second key nests a
+- **`/g key1[,key2,...][/part...]`** - the keys token (2026-11-21; glued legacy form `/g/key1,...`), with the
+  trailing parts glued onto it by slashes, so `/g dm/week` is the whole command.
+  One section per distinct value of `key1`; a second key nests a
   sub-section inside each, and so on, outer first. Keys resolve like `/sort` keys (exact name wins, a fuzzy
   key expands to every type it reaches, alphabetically); a key that names nothing makes the whole `/g`
   inert. Only the **last** valid `/g` in a query takes effect.
@@ -791,36 +900,36 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   the command inert.
 - **Buckets** (exact words). A bucket applies to the keys it fits; one that fits no key makes `/g` inert.
   - `pf` / `parent-folder` (path types): the folder holding the entry; **level** picks the ancestor:
-    `/g/path/pf/1` (the default) is the immediate parent, `/g/path/pf/2` the one above it. `pf` and
-    `parent-folder` also work as a *key* standing for the path type: `/g/pf`, `/g/pf/2`, `/g/pf,dm/month`.
+    `/g path/pf/1` (the default) is the immediate parent, `/g path/pf/2` the one above it. `pf` and
+    `parent-folder` also work as a *key* standing for the path type: `/g pf`, `/g pf/2`, `/g pf,dm/month`.
     The level means nothing without `pf` (inert).
-  - `day` | `week` | `month` | `year` (date types): `/g/dm/week`. Labels read `Today`, `Yesterday`,
+  - `day` | `week` | `month` | `year` (date types): `/g dm/week`. Labels read `Today`, `Yesterday`,
     `This week`, `Last week`, `This month`, `This year`, else a date (`2026-10-14`, `Week of 2026-10-12`,
     `September 2026`). Weeks start on Monday.
   - No bucket: the default of the key's family, picked from its *name* - date types (`date`, `modified`,
     `created`, `time`, `dm`...) group by `day`; `size` by order of magnitude (`< 1 KB`, `1 - 10 KB` ... `10 GB or
     more`); `age` (`5m`, `3h`) into `Last hour` / `Last day` / `Last week` / `Last month` / `Older`; path types
-    by `pf` (level 1) - so `/g/path` is `/g/path/pf/1`; anything else by the exact value. A type whose name contains `path` holds the entry's full path, its own name included.
+    by `pf` (level 1) - so `/g path` is `/g path/pf/1`; anything else by the exact value. A type whose name contains `path` holds the entry's full path, its own name included.
 - **Order.** With no direction typed, groups appear in the order their rows already have: the active `/s`,
-  or the picker's default (newest first in mod+1, i.e. `/s/dm/desc`), so a group sits where its first row
+  or the picker's default (newest first in mod+1, i.e. `/s dm desc`), so a group sits where its first row
   is. Exception, mod+1 only: `pf` (parent-folder) groups are folders, so they are ordered by the folder's own
   date modified (newest first; `asc` reverses), asked of the server's `POST /mtimes`; a folder the catalog
-  has no date for falls back to its newest file. `/g/key/asc` or `/g/key/desc` instead sorts the groups by their key (newest day / biggest size /
+  has no date for falls back to its newest file. `/g key/asc` or `/g key/desc` instead sorts the groups by their key (newest day / biggest size /
   newest age bucket first for `desc`; text values Z-A for `desc`). The `(none)` group (empty or
   unparseable value) is always last. Rows inside a group keep the order the rest of the query gives them,
-  so `/g/dm/week /s/size` is "per week, biggest first".
+  so `/g dm/week /s size` is "per week, biggest first".
 - **Sorting the sections themselves.** A trailing `s/key[/dir]` (or `sort/key[/dir]`) part, once, orders the
   groups by an aggregate of `key` over all the rows in each (nested ones included), at every level; it replaces
-  the key / folder-date ordering, and `(none)` stays last. `/g/path/pf/1/s/size` is "folders, biggest total first"
-  (`/s/size/asc` the other way; direction defaults to descending, like `/s`). The aggregate follows the key's kind:
+  the key / folder-date ordering, and `(none)` stays last. `/g path/pf/1/s/size` is "folders, biggest total first"
+  (`/s/size/asc` the other way, glued to the group token; direction defaults to descending, like `/s`). The aggregate follows the key's kind:
   `size` is the total bytes, a date type the newest value, `count` (always accepted) the number of rows, an
   all-integer type (`pages`) the sum, anything else its smallest value. A direction typed *before* the `s` part
   still belongs to the group key and is ignored while a section sort is present. This is separate from
-  `/s/size`, which orders the **rows inside** the sections: `/g/path/pf/1/s/size /s/size/desc` does both. The
+  `/s size`, which orders the **rows inside** the sections: `/g path/pf/1/s/size /s size desc` does both. The
   parse result carries `sort: {name, dir}` (absent when not typed). A bare `s`, an unknown key or a second `s`
   part makes the `/g` inert.
 - **Pipeline.** Like `/s`, a `/g` token is position-independent, and it always acts on the **result of the
-  filters**: `/fv/name .rvt /g/dm/week` and `/g/dm/week /fv/name .rvt` both group only the `.rvt` rows,
+  filters**: `/fv/name .rvt /g dm/week` and `/g dm/week /fv/name .rvt` both group only the `.rvt` rows,
   counts are of surviving rows, and a group with no surviving rows does not exist. Order of the stages is
   fixed - rows -> filter -> sort -> group - whatever order they are typed in. A value token owned by `//key`
   or `/fv/key` is never read as a `/g`. A column verb (`/ft /at /rt`) cannot hide the grouped key's *section*:
@@ -829,7 +938,7 @@ hides or reorders rows, it only puts break lines (section headers) between them.
   fold key (mod+1: `Ctrl+G`, rebindable) on the selected row's section. State is held in memory per group
   id and reset when the query changes. A collapsed header keeps its count; the folded rows leave the
   sequence, so keyboard navigation skips them. Up / Down in a grouped grid keep the column and cross into
-  the neighbouring section. A trailing `collapse` part (`/g/extension/collapse`, `/g/dm/week/collapse`, any
+  the neighbouring section. A trailing `collapse` part (`/g extension/collapse`, `/g dm/week/collapse`, any
   position among the trailing parts, once) starts every section folded; clicking a header or the fold key
   then opens just that one. In the shared cores it is `collapse: true` on the parse result (absent when not
   typed); the QML pickers keep it as the `"*"` default in their fold map (`groupInitial` / `groupToggle` in
@@ -901,7 +1010,7 @@ give; once saved it applies to everything typed afterwards.
   one positive alternatives term: `!//path a !//path b` -> `//path a||b`). With
   mixed terms every term is flipped instead (`//path a !//title b` ->
   `!//path a //title b`), which keeps them ANDed and so is only an approximation
-  of the complement; other verbs (`/s`, `/g`, `/fts ...`) are copied unchanged.
+  of the complement; other verbs (`/s keys [dir]`, `/g keys`, `/at keys`, `/fts ...`, with their keys token and `/s` direction token) are copied unchanged.
   With no base query set Tab does nothing. Tab on `!/bq` with text already after it
   completes that text as usual. Android offers the written-out string as its one
   suggestion. The "hidden" pill of the claude-usage panel writes the same line.
@@ -999,15 +1108,19 @@ Android app.
 
 > **2026-10-22 rework - current stages.** Completion follows the single
 > syntax of Grammar: (1) *verb stage*: `/` + Tab lists the five verbs, the
-> app verbs, and every `verb/key` combination (Verb-stage depth); `//` + Tab
-> is the key stage of `/fv/`. (2) *key stage*, after `/verb/` and again after
-> each `,`: the type names, narrowed by the fragment after the last comma
-> (accepting replaces just that fragment and keeps the typed verb spelling,
-> `//` or `/fv/`). (3) *direction stage*, `/s/keys/` + Tab: `asc` / `desc`.
-> (4) *value stage*, after a resolved `//keys `: live values of the resolved
-> types. There are no colon (`path:value`) or space-path (`/s name `) stages
-> any more; where older text below describes them, read the keys-in-the-token
-> equivalent.
+> app verbs, and every `verb/key` (`/fv`) or `verb key` (the closed verbs)
+> combination (Verb-stage depth); `//` + Tab is the key stage of `/fv/`.
+> (2) *key stage*, after `/fv/` and again after each `,`: the type names,
+> narrowed by the fragment after the last comma (accepting replaces just that
+> fragment and keeps the typed verb spelling, `//` or `/fv/`). **Since
+> 2026-11-21 the same stage also runs on the keys token of a bare closed
+> verb**: `/at ` + Tab, `/s ag` + Tab, `/ft title,` + Tab (accepting replaces
+> the fragment after the last comma; the legacy `/at/frag` form completes as it
+> always did). (3) *direction stage*, `/s keys ` + Tab (legacy `/s/keys/` + Tab):
+> `asc` / `desc`. (4) *value stage*, after a resolved `//keys `: live values of
+> the resolved types. There are no colon (`path:value`) stages any more; where
+> older text below describes a slash-key stage for `/s /ft /at /rt /g`, read
+> the keys-token equivalent.
 
 
 **The popup is Tab-triggered to open, never shown just from typing.**
@@ -1085,15 +1198,21 @@ pickers spawn a nested fzf instead. Stages:
 
 1. **Verb** (`/frag`, nothing after it yet): candidates are every short
    verb form whose name contains `frag` as a substring (`/f` -> `/fv`,
-   `/ft`; `/` alone -> all of them), plus every `verb/key` combination
-   (see Verb-stage depth). Accepting a bare verb inserts `/verb/` (the keys
-   part follows); accepting a deep candidate lands the whole command.
-2. **Keys** (`/verb/frag`, `//frag`, and again after each `,`): candidates are
-   the type names containing `frag`. Accepting one replaces just that
-   fragment and keeps the typed spelling (`//` or `/fv/`); after `/fv` /
+   `/ft`; `/` alone -> all of them), plus every `verb/key` / `verb key`
+   combination (see Verb-stage depth). Accepting a bare verb inserts `/verb `
+   (for the closed verbs the space is the separator before their keys token;
+   `/fv` and `//` continue with the glued key, `/fv/`); accepting a deep
+   candidate lands the whole command.
+2. **Keys** (`/fv/frag`, `//frag`, **the token after a bare `/ft` `/at` `/rt`
+   `/s` `/g`**, and again after each `,`): candidates are
+   the type names containing `frag` (an empty `frag`, right after
+   `/at `, lists them all). Accepting one replaces just that
+   fragment and keeps the typed spelling (`//`, `/fv/` or the separate keys
+   token); after `/fv` /
    `//` a trailing space is added (the value follows), after the other
-   verbs nothing is (a `,` or `/dir` can follow).
-3. **Direction** (`/s/keys/frag`): candidates are `asc` / `desc`.
+   verbs nothing is (a `,` or the direction token can follow).
+3. **Direction** (`/s keys frag`, legacy `/s/keys/frag`): candidates are
+   `asc` / `desc`. Right after the keys token and a space the list is both.
 4. **Filter value** (`//keys frag`, keys resolving to one type): every
    distinct non-empty value that type has across the current entries right
    now, substring-narrowed by `frag`, deduplicated and sorted. This is the
@@ -1111,20 +1230,22 @@ against it.
 
 The Verb stage (stage 1, above) does not stop at the bare verbs: its candidate
 list is every verb **plus every key-taking verb crossed with every type name it
-can take**, rendered as the complete `verb/key` string (`fv/workspace`,
-`s/tmux-session`, `at/claude-title`, ...; the app verbs add their own, e.g.
-alt-tab's `fts/claude`, `fts/claude-live`, `fts/claude-archive`, `fts/tmux`). A
+can take**, rendered as the complete command text: `fv/workspace` (glued: the
+value follows) but, for the closed verbs, `s tmux-session`, `at claude-title`
+(a space: the keys are the next token; the glued `at/claude-title` is the
+legacy spelling). The app verbs add their own, e.g.
+alt-tab's `fts/claude`, `fts/claude-live`, `fts/claude-archive`, `fts/tmux`. A
 fragment of the *type*, not just the verb, is therefore enough to reach a
-whole command: `/wo` + Tab reaches `/fv/workspace`, `/ft/workspace`,
-`/at/workspace`, `/rt/workspace` and `/s/workspace`, and `/cla` + Tab reaches
+whole command: `/wo` + Tab reaches `/fv/workspace`, `/ft workspace`,
+`/at workspace`, `/rt workspace` and `/s workspace`, and `/cla` + Tab reaches
 every verb crossed with each `claude-*` type, narrowed by typing more
 (`/claude-t` keeps the types containing `t`).
 
 Matching is the one rule everywhere: `substr(fragment, candidate_text)` against
-the *complete* `verb/key` string, so a fragment of either half reaches the same
+the *complete* `verb/key` / `verb key` string, so a fragment of either half reaches the same
 row. Accepting one inserts its full text and nothing else: `/fv/workspace ` (a
-trailing space, the value follows) or `/s/workspace` (no space: a `,` or `/dir`
-can follow) - exactly what the same command parses to when typed by hand, so
+trailing space, the value follows) or `/s workspace` (no trailing space, or one
+that the next keystroke simply ignores: a `,` or a direction can follow) - exactly what the same command parses to when typed by hand, so
 this adds completion candidates and changes nothing about the grammar. An
 empty fragment lists the whole vocabulary (`/` + Tab).
 
@@ -1139,7 +1260,7 @@ claude-history (nested fzf) in `completion_stage`/`complete_query`;
 window-search has no completion at all.
 
 **Row anatomy for a deep candidate** (extends Suggestion row anatomy, below):
-label is the full `/verb/key` string; alias is the verb's own `/long-form`
+label is the full `/verb/key` (or `/verb key`) string; alias is the verb's own `/long-form`
 (`/filter-value` for an `/fv/...` row), as for a plain verb candidate;
 description is the *type's* one-liner (`typeDescs`: "the Hyprland workspace"
 for `workspace`), not the verb's - the type is the newer, less-obvious half
@@ -1258,7 +1379,7 @@ winswitch:
 - **Labelling.** A family type's line renders as `sub: value` (`title: ovh proposal
   draft`) rather than a bare value; the reader cannot otherwise tell which type
   they are looking at. This applies to every such line, including one added with
-  `/at/claude`.
+  `/at claude`.
 - **Per-row gating.** A type reached through a *multi-type* scoped filter is shown
   only on rows where it is the one that matched; a type shown for any other
   reason (`/at`, a key naming exactly one type) is always shown once it has a
@@ -1310,7 +1431,7 @@ quickshell launcher reads them from `QueryDsl.qml`'s `verbInfo`):
 | `/ft` | `/filter-type` | show only the matching columns |
 | `/at` | `/add-type` | add the matching columns |
 | `/rt` | `/remove-type` | drop the matching columns |
-| `/s` | `/sort` | order rows by one field, optional asc / desc |
+| `/s` | `/sort` | order rows by the keys, `/s key,key` then optionally `asc` or `desc` |
 
 Shared popup UI: `Tab` triggers completion when nothing's open yet (see
 above - unique candidate applies directly, 2+ opens the popup). Once the
@@ -1419,11 +1540,9 @@ different mechanism and hasn't been built.
 something for it. The app launcher shows no columns, so it offers `/fv`,
 `/s` only - `/ft`/`/at`/`/rt` are still *parsed* (shared grammar)
 but inert, so they're left out of the popup rather than suggested and
-then ignored. claude-history only acts on `/fv` at all (see its own
-header), so its Tab-completion only ever offers that - the verb stage
-lists `fv`/`filter-value` and nothing else, and only via paths get
-completed (`/fv/field value`, steering towards that spelling specifically
-even though the older colon spelling is gone).
+then ignored. claude-history acts on `/fv`, `/s` and (since 2026-11-21) the column verbs, and its Tab-completion offers `/fv/<field>`, the closed
+verbs `/ft` `/at` `/rt` `/s` (bare and crossed with its types: `/at uuid`) and their keys / direction tokens (`/at ` + Tab,
+`/s age ` + Tab); only via paths (`/fv/field value`) get their value completed.
 Its completion UI can't be an in-layout popup the GTK pickers' way (fzf
 has one list, not a widget tree) - a unique candidate completes directly,
 the same way shell tab-completion does with no ambiguity to show; an
@@ -1843,18 +1962,18 @@ predictable, and at these corpus sizes the looseness bought nothing.
   DSL is additive, never a wall a casual user has to learn first.
 - **`/filter-value` is the universal fallback, not just the no-syntax
   default.** Every verb has a fixed arity (max tokens it consumes,
-  `/sort`'s direction slot additionally conditional on resolving); a
+  `/sort`'s direction token additionally conditional on being exactly a direction word); a
   token beyond what the *preceding* verb actually needed is never
   swallowed into that command just because no new `/verb` intervened -
   it resumes as an ordinary token and, if nothing else claims it, becomes
-  its own `/fv` term. `/s/name blender` sorts by `name` and filters to
+  its own `/fv` term. `/s name blender` sorts by `name` and filters to
   `blender`, rather than losing `blender` as a discarded sort-direction
   argument.
 - **Verbs are a closed, exact-matched vocabulary.** This is the point of
   the redesign - a command can never be confused for a type name.
 - **No real regex anywhere.** Every match is substring containment (or,
   in the BM25 pickers, prefix-expansion); the only `*` is `/ft`'s value-pattern
-  glob (`/ft/64*`), a hand-parsed pattern, not a wildcard engine.
+  glob (`/ft 64*`, legacy `/ft/64*`), a hand-parsed pattern, not a wildcard engine.
 - **The three axes are orthogonal.** Row filters (`/fv`, bare text) never
   change columns; column verbs (`/ft`, `/at`, `/rt`) never change which
   rows survive; order verbs (`/sort`) never change either.
@@ -1923,8 +2042,11 @@ else substring, comma list unioned):
 
 So `live`, `archive`, `claude-live`, `arch`, `tmux` all work (any key that reaches
 exactly one scope name); a key set that reaches both - or `/fts/live,archive`
-- is plain `/fts`. Writing both `/fts/live` and `/fts/archive` is plain `/fts`
-too. The same spellings are used everywhere (picker, panel, alt-tab). The
+- is plain `/fts`. Several `/fts` terms (and `/resume`, the web page's and panel's alias of
+`/fts/archive`) compose **left to right as a pipeline**: their scopes
+intersect, so a later `/fts` only searches what an earlier scoped one
+selected (`/resume ksr /fts option 5` stays archive-only; `/fts/live a
+/fts/archive b` matches nothing). The same spellings are used everywhere (picker, panel, alt-tab). The
 verb is still exact (`/fts`); only its keys are fuzzy.
 
 Per implementation:

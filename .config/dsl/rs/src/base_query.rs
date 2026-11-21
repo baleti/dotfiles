@@ -194,7 +194,21 @@ pub fn invert(q: &str) -> String {
         if is_verb(t) {
             let mut tx = t.clone();
             i += 1;
-            if u.starts_with("/fts") || u.starts_with("/full-text-search") {
+            // closed-vocabulary verbs: the keys are the next token (query-dsl.md "Keys token", 2026-11-21), and `/s` may be
+            // followed by a bare direction word - copied unchanged, never flipped as a search word
+            let keys_tok = |t: &str| !t.is_empty() && !t.starts_with(|c| c == '!' || c == '"' || c == '\'' || c == '/');
+            if matches!(u, "/ft" | "/filter-type" | "/at" | "/add-type" | "/rt" | "/remove-type" | "/s" | "/sort" | "/g" | "/group") {
+                if i < toks.len() && keys_tok(&toks[i]) {
+                    tx.push(' ');
+                    tx.push_str(&toks[i]);
+                    i += 1;
+                    if matches!(u, "/s" | "/sort") && i < toks.len() && keys_tok(&toks[i]) && crate::parse_direction(&toks[i]).is_some() {
+                        tx.push(' ');
+                        tx.push_str(&toks[i]);
+                        i += 1;
+                    }
+                }
+            } else if u.starts_with("/fts") || u.starts_with("/full-text-search") {
                 while i < toks.len() && !is_verb(&toks[i]) {
                     tx.push(' ');
                     tx.push_str(&toks[i]);
@@ -242,6 +256,8 @@ mod tests {
         assert_eq!(invert("!//path /src/a"), "//path /src/a");
         assert_eq!(invert("//path a !//title b"), "!//path a //title b");
         assert_eq!(invert("foo !bar"), "!foo bar");
+        assert_eq!(invert("/at uuid //title foo /s age desc /g path"), "/at uuid !//title foo /s age desc /g path");
+        assert_eq!(invert("/ft title foo"), "/ft title !foo");
         assert_eq!(invert("!foo !bar"), "foo||bar");
         assert_eq!(invert("//title x /fts hello world //path y"), "!//title x /fts hello world !//path y");
     }

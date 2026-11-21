@@ -685,12 +685,12 @@
         {
           "query": "/s size",
           "expect": [
-            "size",
+            "",
             [
-              "date"
+              "size"
             ],
             true,
-            false
+            true
           ]
         },
         {
@@ -757,6 +757,196 @@
             ],
             true,
             false
+          ]
+        },
+        {
+          "query": "foo /s size",
+          "expect": [
+            "foo",
+            [
+              "size"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "foo /s size asc",
+          "expect": [
+            "foo",
+            [
+              "size"
+            ],
+            false,
+            true
+          ]
+        },
+        {
+          "query": "/s size,name asc bar",
+          "expect": [
+            "bar",
+            [
+              "size",
+              "name"
+            ],
+            false,
+            true
+          ]
+        },
+        {
+          "query": "/s pa",
+          "expect": [
+            "",
+            [
+              "pages",
+              "path"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "/s dm d",
+          "expect": [
+            "",
+            [
+              "date"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "/s size /s name",
+          "expect": [
+            "",
+            [
+              "size",
+              "name"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "/s size reddit",
+          "expect": [
+            "reddit",
+            [
+              "size"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "/s size asc reddit",
+          "expect": [
+            "reddit",
+            [
+              "size"
+            ],
+            false,
+            true
+          ]
+        },
+        {
+          "query": "/s zz x",
+          "expect": [
+            "x",
+            [
+              "date"
+            ],
+            true,
+            false
+          ]
+        },
+        {
+          "query": "/s size zz x",
+          "expect": [
+            "zz x",
+            [
+              "size"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "/sort size a",
+          "expect": [
+            "",
+            [
+              "size"
+            ],
+            false,
+            true
+          ]
+        },
+        {
+          "query": "/sort size",
+          "expect": [
+            "",
+            [
+              "size"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "//path /s size",
+          "expect": [
+            "//path /s size",
+            [
+              "date"
+            ],
+            true,
+            false
+          ]
+        },
+        {
+          "query": "/s \"size\"",
+          "expect": [
+            "\"size\"",
+            [
+              "date"
+            ],
+            true,
+            false
+          ]
+        },
+        {
+          "query": "/s !size",
+          "expect": [
+            "!size",
+            [
+              "date"
+            ],
+            true,
+            false
+          ]
+        },
+        {
+          "query": "/s size \"asc\"",
+          "expect": [
+            "\"asc\"",
+            [
+              "size"
+            ],
+            true,
+            true
+          ]
+        },
+        {
+          "query": "/s name blender",
+          "expect": [
+            "blender",
+            [
+              "name"
+            ],
+            true,
+            true
           ]
         }
       ]
@@ -3322,6 +3512,139 @@
             "dir": null
           }
         ]
+      },
+      {
+        "tokens": [
+          "rvt",
+          "/g",
+          "dm/week",
+          "/s",
+          "size"
+        ],
+        "expect": [
+          [
+            "rvt",
+            "/s",
+            "size"
+          ],
+          {
+            "specs": [
+              {
+                "name": "date-modified",
+                "bucket": "week",
+                "level": 1
+              }
+            ],
+            "dir": null
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "/g",
+          "zzz",
+          "rvt"
+        ],
+        "expect": [
+          [
+            "rvt"
+          ],
+          null
+        ]
+      },
+      {
+        "tokens": [
+          "/g",
+          "/s/size"
+        ],
+        "expect": [
+          [
+            "/s/size"
+          ],
+          null
+        ]
+      },
+      {
+        "tokens": [
+          "/group",
+          "dm/week"
+        ],
+        "expect": [
+          [],
+          {
+            "specs": [
+              {
+                "name": "date-modified",
+                "bucket": "week",
+                "level": 1
+              }
+            ],
+            "dir": null
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "/g",
+          "!x"
+        ],
+        "expect": [
+          [
+            "!x"
+          ],
+          null
+        ]
+      },
+      {
+        "tokens": [
+          "/fv/path",
+          "/g",
+          "dm"
+        ],
+        "expect": [
+          [
+            "/fv/path",
+            "/g",
+            "dm"
+          ],
+          null
+        ]
+      },
+      {
+        "tokens": [
+          "/g",
+          "dm",
+          "/g",
+          "path/pf/2"
+        ],
+        "expect": [
+          [],
+          {
+            "specs": [
+              {
+                "name": "path",
+                "bucket": "pf",
+                "level": 2
+              }
+            ],
+            "dir": null
+          }
+        ]
+      },
+      {
+        "tokens": [
+          "!/g",
+          "dm",
+          "x"
+        ],
+        "expect": [
+          [
+            "!/g",
+            "dm",
+            "x"
+          ],
+          null
+        ]
       }
     ]
   },
@@ -3384,7 +3707,56 @@
    {"query": "/rt/status", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
    {"query": "/ft/title /at/tokens //pid 3", "ids": ["e"], "cols": ["title", "tokens", "pid"], "apps": [], "group": null},
    {"query": "/g/status idle", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status"},
-   {"query": "idle /g/status /s/pid", "ids": ["c", "a", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status"}
+   {"query": "idle /g/status /s/pid", "ids": ["c", "a", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status"},
+   {"query": "/ft title", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/ft title,age", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/filter-type title", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/at pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status", "pid"], "apps": [], "group": null},
+   {"query": "/add-type pid,tokens", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status", "pid", "tokens"], "apps": [], "group": null},
+   {"query": "/rt status", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/remove-type status", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/ft title /at tokens //pid 3", "ids": ["e"], "cols": ["title", "tokens", "pid"], "apps": [], "group": null},
+   {"query": "/at", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/at /rt status", "ids": ["a", "b", "c", "d", "e"], "cols": ["title"], "apps": [], "group": null},
+   {"query": "/at \"pid\"", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/at !pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "!/at pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "!/ft title", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/at pid /rt title", "ids": ["a", "b", "c", "d", "e"], "cols": ["status", "pid"], "apps": [], "group": null},
+   {"query": "/ft", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/ft zzz", "ids": ["a", "b", "c", "d", "e"], "cols": [], "apps": [], "group": null},
+   {"query": "/s pid", "ids": ["c", "a", "d", "b", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid asc", "ids": ["e", "b", "d", "a", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid a", "ids": ["e", "b", "d", "a", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid d", "ids": ["c", "a", "d", "b", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid desc", "ids": ["c", "a", "d", "b", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s status,pid asc", "ids": ["b", "e", "a", "c", "d"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid reddit", "ids": ["c", "a", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid asc reddit", "ids": ["e", "a", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s nothing", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid /s title asc", "ids": ["d", "b", "a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s/pid asc", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/sort pid asc", "ids": ["e", "b", "d", "a", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid x", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid \"asc\"", "ids": [], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s pid !asc", "ids": ["c", "a", "d", "b", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/s", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "reddit /s age", "ids": ["c", "e", "a"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "reddit /s age asc", "ids": ["a", "e", "c"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/fts reddit /s age", "ids": ["c", "d", "e", "b", "a"], "cols": ["title", "status"], "apps": [["fts", null, "reddit", false]], "group": null},
+   {"query": "/fts reddit /at pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status", "pid"], "apps": [["fts", null, "reddit", false]], "group": null},
+   {"query": "/fts/live reddit /s pid asc", "ids": ["e", "b", "d", "a", "c"], "cols": ["title", "status"], "apps": [["fts", "live", "reddit", false]], "group": null},
+   {"query": "/g status idle", "ids": ["a", "c", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status"},
+   {"query": "idle /g status /s pid", "ids": ["c", "a", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status"},
+   {"query": "/group status", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": "/group/status"},
+   {"query": "/g", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/g /s pid", "ids": ["c", "a", "d", "b", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/g status/s/pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": "/g/status/s/pid"},
+   {"query": "!/g status", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status"], "apps": [], "group": null},
+   {"query": "/fv/title phone /at pid", "ids": ["b"], "cols": ["title", "status", "pid"], "apps": [], "group": null},
+   {"query": "/fv/title /at pid", "ids": ["a", "b", "c", "d", "e"], "cols": ["title", "status", "pid"], "apps": [], "group": null},
+   {"query": "//pid 3 /at tokens", "ids": ["e"], "cols": ["title", "status", "tokens", "pid"], "apps": [], "group": null},
+   {"query": "/at pid //pid 3", "ids": ["e"], "cols": ["title", "status", "pid"], "apps": [], "group": null}
   ]
  }
 }

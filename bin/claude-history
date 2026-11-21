@@ -220,8 +220,8 @@ def tokenize(text):
 # substring); an unresolvable key list (`/fv/qqq foo`, or still being typed)
 # degrades to a plain bare-word search over the literal text instead of
 # being dropped. The colon form (`/fv field:word`) is gone. The other
-# shared-grammar verbs (/ft, /at, /rt, /s) are recognised but inert
-# here: fixed columns. /s[/keys[/dir]] orders the rows (same keys as the usage panel; /s/age = newest first). Full text is `/fts word` (Recoll),
+# column verbs /ft /at /rt choose the columns (COLUMNS; `uuid` = session id is hidden until `/at uuid`).
+# /s keys [dir] orders the rows (same keys as the usage panel; `/s age` = newest first; legacy `/s/keys[/dir]`). Full text is `/fts word` (Recoll),
 # only live ones `/fts/live`, only past ones `/fts/archive`.
 #
 #   path     session's working directory
@@ -241,7 +241,7 @@ def tokenize(text):
 # the usage panel's type names (ClaudeUsageExpanded searchTypeNames) so //keys and /s/keys mean the same in both;
 # body is the full-text pseudo-type (Recoll), never a sort key
 SORT_FIELDS = ["title", "pid", "status", "tokens", "msgs", "age", "path", "account",
-               "tmux-session", "tmux-window", "tmux-pane", "hypr-workspace"]
+               "tmux-session", "tmux-window", "tmux-pane", "hypr-workspace", "uuid"]
 FIELD_NAMES = SORT_FIELDS + ["body"]
 FILTER_FIELDS = {"path", "tmux-session", "tmux-window", "tmux-pane", "age"}
 _OLD_FILTER_KEY = {"tmux-session": "session", "tmux-window": "window", "tmux-pane": "pane", "age": "time"}
@@ -280,7 +280,7 @@ def _sort_val(r, field):
     v = {"account": _acct_no(r["account"]), "status": STATUS_LABELS.get(r.get("status") or "", r.get("status") or ""),
          "title": r["title"], "msgs": r.get("msgs"), "tokens": r.get("tokens"), "path": r["cwd"],
          "tmux-session": r.get("sess"), "tmux-window": r.get("win"), "tmux-pane": r.get("pane"),
-         "hypr-workspace": r.get("wks"), "pid": r.get("pid")}.get(field)
+         "hypr-workspace": r.get("wks"), "pid": r.get("pid"), "uuid": r.get("sid")}.get(field)
     return "" if v is None else str(v)
 
 
@@ -906,24 +906,54 @@ def _row_text(r):
                      r.get("win", ""), r.get("pane", "")]).lower()
 
 
-def _fmt_live(r):
-    return "  ".join([
-        f'{_acct_no(r["account"]):<{W_ACCT}}', f'{STATUS_LABELS.get(r.get("status", ""), r.get("status", "")):<{W_STATUS}}',
-        f'{_clip(r["title"], W_TITLE):<{W_TITLE}}', f'{r["msgs"]!s:>{W_MSGS}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
-        f'{_age(r["mtime"]):>{W_AGE}}', f'{r.get("sess", ""):<{W_TMUX}}', f'{r.get("win", ""):<{W_TMUX}}',
-        f'{r.get("pane", ""):<{W_TMUX}}', f'{r.get("wks", ""):<{W_WKS}}', f'{r.get("pid", "")!s:<{W_PID}}', shorten(r["cwd"])])
+# column type -> (header, width, align, value); the types are the /ft /at /rt keys (same names as //keys and /s)
+COLUMNS = {
+    "account": ("ACCT", W_ACCT, "<", lambda r: _acct_no(r["account"])),
+    "status": ("STATUS", W_STATUS, "<", lambda r: STATUS_LABELS.get(r.get("status", ""), r.get("status", "")) if r.get("status") else "archive"),
+    "title": ("TITLE", W_TITLE, "<", lambda r: _clip(r["title"], W_TITLE)),
+    "msgs": ("MSGS", W_MSGS, ">", lambda r: str(r.get("msgs") or "")),
+    "tokens": ("TKNS", W_TKNS, ">", lambda r: _tkns(r.get("tokens"))),
+    "age": ("AGE", W_AGE, ">", lambda r: _age(r["mtime"])),
+    "tmux-session": ("SESS", W_TMUX, "<", lambda r: str(r.get("sess", ""))),
+    "tmux-window": ("WIN", W_TMUX, "<", lambda r: str(r.get("win", ""))),
+    "tmux-pane": ("PANE", W_TMUX, "<", lambda r: str(r.get("pane", ""))),
+    "hypr-workspace": ("WKS", W_WKS, "<", lambda r: str(r.get("wks", ""))),
+    "pid": ("PID", W_PID, "<", lambda r: str(r.get("pid", ""))),
+    "path": ("PATH", 0, "<", lambda r: shorten(r["cwd"])),
+    "uuid": ("UUID", 36, "<", lambda r: r["sid"]),     # the session id; hidden until `/at uuid`
+}
+LIVE_COLS = ["account", "status", "title", "msgs", "tokens", "age", "tmux-session", "tmux-window", "tmux-pane",
+             "hypr-workspace", "pid", "path"]
+ARCHIVE_COLS = ["account", "title", "msgs", "tokens", "age", "path"]   # what only a running session has is dropped
 
 
-def _fmt_archive(r):
-    return "  ".join([
-        f'{_acct_no(r["account"]):<{W_ACCT}}', f'{_clip(r["title"], W_TITLE):<{W_TITLE}}',
-        f'{r["msgs"]:>{W_MSGS}}', f'{_tkns(r["tokens"]):>{W_TKNS}}',
-        f'{_age(r["mtime"]):>{W_AGE}}', shorten(r["cwd"])])
+def columns_for(query):
+    """The columns to show for a typed query: the view's default set (live, or the shorter /fts/archive one),
+    then /ft /at /rt applied in order (query-dsl.md "/filter-type"). A /ft that leaves nothing shows the defaults."""
+    eq = effective_query(query)
+    defaults = ARCHIVE_COLS if fts_scope(parse_query(eq)) == {"archive"} else LIVE_COLS
+    cols = [c for c in dsl.active_columns(SCHEMA, dsl.parse(SCHEMA, eq), defaults, []) if c in COLUMNS]
+    return cols or list(defaults)
 
 
-HEADER_LIVE = (f'{"ACCT":<{W_ACCT}}  {"STATUS":<{W_STATUS}}  {"TITLE":<{W_TITLE}}  {"MSGS":>{W_MSGS}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  '
-               f'{"SESS":<{W_TMUX}}  {"WIN":<{W_TMUX}}  {"PANE":<{W_TMUX}}  {"WKS":<{W_WKS}}  {"PID":<{W_PID}}  PATH')
-HEADER_ARCHIVE = (f'{"ACCT":<{W_ACCT}}  {"TITLE":<{W_TITLE}}  {"MSGS":>{W_MSGS}}  {"TKNS":>{W_TKNS}}  {"AGE":>{W_AGE}}  PATH')
+def _fmt_cols(r, cols):
+    out = []
+    for c in cols:
+        _, w, al, get = COLUMNS[c]
+        v = get(r)
+        out.append(v if not w else f"{v:{al}{w}}")
+    return "  ".join(out)
+
+
+def header_for(query):
+    out = []
+    for c in columns_for(query):
+        h, w, al, _ = COLUMNS[c]
+        out.append(h if not w else f"{h:{al}{w}}")
+    return "  ".join(out)
+
+
+HEADER_LIVE = "  ".join(COLUMNS[c][0] if not COLUMNS[c][1] else f"{COLUMNS[c][0]:{COLUMNS[c][2]}{COLUMNS[c][1]}}" for c in LIVE_COLS)
 
 
 # --- base query (/bq, /dbq) and /resume (query-dsl.md "/base-query"). The stored base query is the ctrl+alt+c
@@ -1011,6 +1041,11 @@ def _bq_tokens(q):
 _BQ_VERB = re.compile(r"^/(fv|filter-value|ft|filter-type|at|add-type|rt|remove-type|s|sort|g|group|fts|full-text-search|bq|base-query|dbq|disable-base-query|resume)(/\S*)?$")
 
 
+def _bq_keys_token(t):
+    """A keys token of a bare /ft /at /rt /s /g: not negated, not quoted, not a command."""
+    return bool(t) and t[0] not in '!"\'/'
+
+
 def _bq_is_verb(t):
     u = t.lstrip("!")
     return bool(re.match(r"^//[^\s/]*$", u) or _BQ_VERB.match(u))
@@ -1037,7 +1072,16 @@ def invert_base(q):
         if _bq_is_verb(t):
             tx = t
             i += 1
-            if re.match(r"^/(fts|full-text-search)", u):
+            if re.match(r"^/(ft|filter-type|at|add-type|rt|remove-type|s|sort|g|group)$", u):
+                # closed-vocabulary verbs: the keys are the next token (query-dsl.md "Keys token", 2026-11-21), and /s may be
+                # followed by a bare direction word - copied unchanged, never flipped as a search word
+                if i < len(toks) and _bq_keys_token(toks[i]):
+                    tx += " " + toks[i]
+                    i += 1
+                    if re.match(r"^/(s|sort)$", u) and i < len(toks) and _bq_keys_token(toks[i]) and dsl.parse_direction(toks[i]):
+                        tx += " " + toks[i]
+                        i += 1
+            elif re.match(r"^/(fts|full-text-search)", u):
                 while i < len(toks) and not _bq_is_verb(toks[i]):
                     tx += " " + toks[i]
                     i += 1
@@ -1091,7 +1135,7 @@ def search(snap, query):
     arch_on = scope is not None and "archive" in scope
     tmux_on = scope is not None and "tmux" in scope
     archive_only = scope == {"archive"}
-    fmt = _fmt_archive if archive_only else _fmt_live
+    cols = columns_for(query)
     base = []
     if live_on:
         base = live_rows()
@@ -1125,12 +1169,12 @@ def search(snap, query):
                 "status": STATUS_LABELS.get(status, status) if status else "archive",
                 "account": _acct_no(r["account"]), "msgs": str(r.get("msgs") or ""), "tokens": str(r.get("tokens") or ""),
                 "pid": str(r.get("pid") or ""), "tmux-session": r.get("sess", ""), "tmux-window": r.get("win", ""),
-                "tmux-pane": r.get("pane", ""), "hypr-workspace": r.get("wks", "")}
+                "tmux-pane": r.get("pane", ""), "hypr-workspace": r.get("wks", ""), "uuid": r["sid"]}
         # //keys value, !//keys value: the term must (not) appear in one of the resolved types
         if not all(any(dsl.substr(term, str(vals.get(f, ""))) for f in fields if f in vals) != neg
                    for fields, term, neg in other):
             continue
-        out.append(f'{r["sid"]}\t{fmt(r)}')
+        out.append(f'{r["sid"]}\t{_fmt_cols(r, cols)}')
     return out
 
 
@@ -1183,9 +1227,10 @@ def complete_query(query, snap):
     interactive picker works even though it's launched *from inside* the
     outer fzf; the client is what's running on that terminal, this server
     thread isn't). Stages (query-dsl.md "Autocompletion"): verb (`/` ->
-    fts, fts/claude-live, fts/claude-archive and every fv/field), key
-    (`/fv/<frag>` / `//<frag>`, after the last comma) and `/fts/<scope>`,
-    and the value after `/fv/keys `."""
+    fts, fts/claude-live, fts/claude-archive, every fv/field and every
+    `at field`), key (`/fv/<frag>` / `//<frag>`, or the token after a bare
+    `/ft` `/at` `/rt` `/s`, after the last comma), the `/s <keys> <dir>`
+    direction, `/fts/<scope>`, and the value after `/fv/keys `."""
     frag, prev, _ = _completion_context(query)
     none = {"query": query, "prefix": "", "suffix": "", "candidates": []}
 
@@ -1199,6 +1244,18 @@ def complete_query(query, snap):
         cur, f0 = bq_get(), bm.group(2).strip()
         cands = [x for x in ([cur] if cur else []) + [h for h in bq_history() if h != cur] if x.startswith(f0) and x != f0]
         return {"query": query, "prefix": bm.group(1), "suffix": "", "candidates": cands} if cands else none
+
+    # new-form keys / direction tokens (2026-11-21): `/at <keys>`, `/s <keys> <dir>` - the closed-vocabulary verbs
+    # take their keys as the next token, so the stage is decided by the token(s) before the fragment
+    if not frag.startswith("/"):
+        before = query.split() if query == "" or query[-1].isspace() else query.split()[:-1]
+        if before and re.fullmatch(r"/(?:ft|filter-type|at|add-type|rt|remove-type|s|sort)", before[-1]):
+            key_frag = frag[frag.rfind(",") + 1:]
+            cands = [f for f in SORT_FIELDS if key_frag.lower() in f and f != key_frag]
+            return {"query": query, "prefix": query[: len(query) - len(key_frag)], "suffix": "", "candidates": cands} if cands else none
+        if len(before) >= 2 and re.fullmatch(r"/(?:s|sort)", before[-2]) and before[-1][:1] not in ("/", "!", '"', "'"):
+            cands = [d for d, full in (("asc", "ascending"), ("desc", "descending")) if full.startswith(frag.lower()) and d != frag]
+            return {"query": query, "prefix": query[: len(query) - len(frag)], "suffix": " ", "candidates": cands} if cands else none
 
     if frag.startswith("/"):
         rest = frag[1:]
@@ -1227,7 +1284,10 @@ def complete_query(query, snap):
         rest_lower = rest.lower()
         first_token = query.strip() == frag   # /bq and /dbq are commands: only as the very first token
         candidates = [v for v in ("fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux", "resume") + (("bq", "dbq") if first_token else ()) if rest_lower in v]
+        candidates += [v for v in ("ft", "at", "rt", "s") if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
+        # closed-vocabulary verbs: keys are the next token, so the deep candidate is `at uuid` (not `at/uuid`)
+        candidates += [f"{v} {f}" for v in ("ft", "at", "rt", "s") for f in SORT_FIELDS if rest_lower in f"{v} {f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
                     "suffix": " ", "candidates": candidates}
@@ -1906,6 +1966,8 @@ def make_handler(state):
                 rows = search(snap, args[0] if args else "") if snap else []
                 out = "\n".join(rows) + "\n" if rows else ""  # no rows: no
                 # bytes at all - a lone "\n" would be one blank list item
+            elif mode == "header":
+                out = header_for(args[0] if args else "")
             elif mode == "preview":
                 out = preview(args[0], args[1] if len(args) > 1 else "", snap)
             elif mode == "enter":
@@ -2077,7 +2139,7 @@ def drive():
         # FZF_LINES, so the preview never drops below half regardless of
         # match count, and grows past half on its own the fewer results
         # there are to list
-        f'hdr={shlex.quote(HEADER_LIVE)}; case "$FZF_QUERY" in *"/fts/"*arch*|*"/resume"*) hdr={shlex.quote(HEADER_ARCHIVE)};; esac; '
+        f'hdr=$({client} header "$FZF_QUERY"); '
         'case "$FZF_QUERY" in *"/fts"*|*"/resume"*) ;; *) echo "change-header($hdr)+hide-preview"; exit;; esac; '
         'c=$FZF_MATCH_COUNT; list_rows=$((c + 4)); '
         '[ "$list_rows" -lt 4 ] && list_rows=4; '
@@ -2200,12 +2262,27 @@ TMUX_ROOT = os.path.expanduser("~/.cache/indexes/tmux")
 TMUX_CONF = os.path.join(TMUX_ROOT, "recoll")
 
 
+_QUOTED = re.compile(r'(?<![-\w])"([^"]+)"')
+
+
+def _norm(t):
+    return " ".join(t.casefold().split())
+
+
 def fts_search(text, conf=None):
     """[(session_id, relevance %)] best first, from the Recoll index of Claude
     conversations (~/.cache/indexes/claude, kept by claude-fts-index). The one
     full-text engine behind alt-tab's and the usage panel's /fts and
-    this tool's own --fts."""
-    terms = fts_terms(text)
+    this tool's own --fts.
+
+    A "quoted phrase" is a plain case-insensitive SUBSTRING of the text, spaces
+    included, so "outlook conv" matches "Outlook conversation": Recoll can only
+    match whole words in a phrase, so it is asked for the phrase's words as
+    prefixes (outlook* conv*) and the hits are then verified against the
+    document text itself (negated phrases stay Recoll's exact whole-word ones)."""
+    phrases = [_norm(m) for m in _QUOTED.findall(text)]
+    q = _QUOTED.sub(lambda m: " ".join(w + "*" for w in m.group(1).split()), text) if phrases else text
+    terms = fts_terms(q)
     if not terms.strip():
         return []
     r = subprocess.run(["recollq", "-c", conf or FTS_CONF, "-n", "0-5000", "-F", "url relevancyrating", "--", terms],
@@ -2219,6 +2296,14 @@ def fts_search(text, conf=None):
             url, rating = (base64.b64decode(p).decode("utf-8", "replace") for p in parts)
         except ValueError:
             continue
+        if phrases:
+            try:
+                with open(url[7:] if url.startswith("file://") else url, errors="replace") as f:
+                    body = _norm(f.read())
+            except OSError:
+                continue
+            if not all(ph in body for ph in phrases):
+                continue
         out.append((os.path.basename(url)[:-4], float(rating.rstrip("%") or 0)))
     return out
 

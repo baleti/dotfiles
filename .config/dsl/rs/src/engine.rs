@@ -34,8 +34,8 @@ pub fn core_verbs() -> Vec<VerbDef> {
         v("ft", "filter-type", FilterType, 2, "show only the matching columns"),
         v("at", "add-type", AddType, 2, "add the matching columns"),
         v("rt", "remove-type", RemoveType, 2, "drop the matching columns"),
-        v("s", "sort", Sort, 3, "order rows by one field, optional asc / desc"),
-        v("g", "group", Group, 4, "fold rows into sections, /g/key[/bucket][/dir]"),
+        v("s", "sort", Sort, 3, "order rows by the keys, /s key,key [asc|desc]"),
+        v("g", "group", Group, 4, "fold rows into sections, /g key[/bucket][/dir]"),
     ]
 }
 
@@ -204,6 +204,18 @@ pub fn parse(schema: &Schema, query: &str) -> Parsed {
             top.apps.push(AppCmd { verb: cmd.verb, keys: cmd.keys, arg, neg: tok.neg });
             continue;
         }
+        // closed-vocabulary verbs take their keys as the next token (2026-11-21): `/at uuid,acct`, `/s age desc`
+        let mut cmd = cmd;
+        let mut spaced = false;
+        if cmd.keys.is_none() && !cmd.bad && matches!(kind, VerbKind::FilterType | VerbKind::AddType | VerbKind::RemoveType | VerbKind::Sort | VerbKind::Group) && take_keys(&toks, i) {
+            cmd.keys = Some(toks[i].text.clone());
+            spaced = true;
+            i += 1;
+            if kind == VerbKind::Sort && take_direction(&toks, i) {
+                cmd.dir = Some(toks[i].text.clone());
+                i += 1;
+            }
+        }
         // keyless or malformed: inert, takes no argument ("/fv foo" is just "foo")
         let Some(via) = cmd.keys.clone().filter(|_| !cmd.bad) else { continue };
         let via = via.to_lowercase();
@@ -232,7 +244,7 @@ pub fn parse(schema: &Schema, query: &str) -> Parsed {
                     r.col_ops.push(ColOp { op, keys: via });
                 }
             }
-            VerbKind::Group => r.group_raw = Some(tok.text.clone()),
+            VerbKind::Group => r.group_raw = Some(if spaced { format!("{}/{}", tok.text, cmd.keys.clone().unwrap_or_default()) } else { tok.text.clone() }),
             VerbKind::Sort => {
                 let dir = match &cmd.dir {
                     Some(d) => match parse_direction(d) {

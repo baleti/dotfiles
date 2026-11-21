@@ -62,8 +62,8 @@ QtObject {
         "ft": { alias: "/filter-type",  desc: "show only the matching columns" },
         "at": { alias: "/add-type",     desc: "add the matching columns" },
         "rt": { alias: "/remove-type",  desc: "drop the matching columns" },
-        "s":  { alias: "/sort",         desc: "order rows by one field, optional asc / desc" },
-        "g":  { alias: "/group",        desc: "fold rows into sections, /g/key[/bucket][/dir]" }
+        "s":  { alias: "/sort",         desc: "order rows by the keys, /s key,key [asc|desc]" },
+        "g":  { alias: "/group",        desc: "fold rows into sections, /g key[/bucket][/dir]" }
     })
 
     // Case-insensitive substring containment; empty needle always matches
@@ -214,6 +214,9 @@ QtObject {
         return d === "asc" ? "ascending" : (d === "desc" ? "descending" : null);
     }
 
+    // Is toks[i] the space-separated keys of a bare /ft /at /rt /s /g: not quoted, not `!`-negated, not "/"-led.
+    function _takeKeys(toks, i) { return i < toks.length && !toks[i].leadQuote && !toks[i].neg && toks[i].text.length > 0 && toks[i].text[0] !== "/"; }
+
     function parse(text, fieldNames) {
         const toks = root.tokenize(text);
         const fieldTerms = [];
@@ -241,6 +244,18 @@ QtObject {
                 continue;
             }
             i++;
+            // closed-vocabulary verbs take their keys as the NEXT token (2026-11-21): `/at uuid,acct`,
+            // `/s age desc`, `/g dm/week`; the `/verb/keys` slash form is the legacy spelling
+            let spaced = false;
+            if (tv.via === null && !tv.bad && tv.verb !== "fv" && root._takeKeys(toks, i)) {
+                tv.via = toks[i].text;
+                spaced = true;
+                i++;
+                if (tv.verb === "s" && root._takeKeys(toks, i) && D.parseDirection(toks[i].text) !== null) {
+                    tv.dir = toks[i].text;
+                    i++;
+                }
+            }
             // keyless or malformed: inert, takes no argument ("/fv foo" is just "foo")
             if (tv.via === null || tv.bad) continue;
             const via = tv.via.toLowerCase();
@@ -260,7 +275,7 @@ QtObject {
                 }
             } else if (tv.verb === "g") {
                 // the whole token goes to D.parseGroup (resolved against the picker's field names); the last one wins
-                groupRaw = tok.text;
+                groupRaw = spaced ? tok.text + "/" + tv.via : tok.text;
             } else if (tv.verb === "ft" || tv.verb === "at" || tv.verb === "rt") {
                 if (keysTyped) columnOps.push({ verb: tv.verb, path: via });
             } else if (tv.verb === "s" && keysTyped) {
@@ -491,6 +506,21 @@ QtObject {
             return null;
         }
 
+        // NEW-form keys / direction tokens (2026-11-21): `/at <keys>`, `/s <keys> <dir>`
+        const closedVerb = tk => {
+            if (tk.leadQuote || tk.neg) return null;
+            const tv = root.tokVerb(tk);
+            return (tv !== null && !tv.bad && tv.via === null && tv.verb !== "fv") ? tv.verb : null;
+        };
+        const lastTok = context.length > 0 ? context[context.length - 1] : null;
+        const verbBefore = lastTok !== null ? closedVerb(lastTok) : null;
+        if (verbBefore !== null) {
+            const comma = frag.lastIndexOf(",");
+            return { kind: "field", start: start + comma + 1, frag: frag.slice(comma + 1), verb: verbBefore };
+        }
+        if (context.length >= 2 && closedVerb(context[context.length - 2]) === "s" && root._takeKeys(context, context.length - 1))
+            return { kind: "dir", start: start, frag: frag };
+
         const open = root._replay(context);
         if (open === null) return null; // fresh phrase text
         const resolved = root.resolveFields(open.args[0], fieldNames);
@@ -506,8 +536,9 @@ QtObject {
     // group-aware consumer like winswitch draws deep candidates from).
     function verbStageUniverse(fieldNames) {
         const out = ["fv", "ft", "at", "rt", "s"];
+        // /fv takes an open-ended value so its key stays slash-glued; the closed-vocabulary verbs take keys as the next token
         for (const v of ["fv", "ft", "at", "rt", "s"])
-            for (const f of fieldNames) out.push(v + "/" + f);
+            for (const f of fieldNames) out.push(v === "fv" ? v + "/" + f : v + " " + f);
         return out;
     }
 
@@ -539,7 +570,7 @@ QtObject {
     // row. `fieldDescs` is {name: one-liner}.
     function suggestRow(kind, item, fieldDescs) {
         if (kind === "verb") {
-            const slash = item.indexOf("/");
+            const slash = item.search(/[\/ ]/);
             if (slash >= 0) {
                 const v = item.slice(0, slash), f = item.slice(slash + 1);
                 return { label: "/" + item, alias: (root.verbInfo[v] || {}).alias || "", desc: fieldDescs[f] || "" };
@@ -559,8 +590,8 @@ QtObject {
         const prefix = text.slice(0, ctx.start);
         switch (ctx.kind) {
         case "verb":
-            // chosen is "verb" or "verb/key": lands "/ft " or "/fv/key " alike
-            return prefix + "/" + chosen + (chosen.indexOf("/") >= 0 && chosen.slice(0, chosen.indexOf("/")) !== "fv" ? "" : " ");
+            // chosen is "verb", "fv/key" or "at key": lands "/ft ", "/fv/key " or "/at key " alike
+            return prefix + "/" + chosen + " ";
         case "field":
             // /fv takes a value next; the other verbs end at their keys
             // (a "," or "/dir" can still follow)
