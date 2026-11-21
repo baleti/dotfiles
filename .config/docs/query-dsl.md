@@ -2024,46 +2024,42 @@ highlighted entry's conversation around the searched words, from
 `claude-history --snippets SESSION QUERY`) only while a full-text term is in
 the query.
 
-#### /fts - live and archived conversations (2026-10-22)
+#### /fts and /resume - live and archived conversations (2026-11-21)
 
 The index holds every conversation; which ones are *running* is decided at
-query time (sessions registry), not stored in it. `/fts` is an app verb whose
-**keys** name the scope: the scope names are `claude-live`, `claude-archive`
-and `tmux` (scrollback, below), resolved like any other keys (exact name wins,
-else substring, comma list unioned):
+query time (sessions registry), not stored in it. There are **no scope keys**
+(`/fts/claude`, `/fts/claude-live`, `/fts/claude-archive`, `/fts/live`,
+`/fts/archive`, `/fts/tmux` are gone): scope is function composition.
 
-| Spelling | Searches | Rows |
-|---|---|---|
-| `/fts word` | running, archived AND tmux scrollback (no keys = every scope) | live rows first-class, archived and tmux ones appended (best match first) |
-| `/fts/claude word` | the same (`claude` reaches both scope names) | |
-| `/fts/live word` (= `/fts/claude-live`) | running only | live rows |
-| `/fts/archive [word]` (= `/fts/claude-archive`) | past only (running ones excluded); without a word, newest first | table: acct, title, msgs, tkns, age, path |
-| `/fts/tmux word` | tmux scrollback only | one row per matching pane (status `tmux`) |
+| Query | Searches |
+|---|---|
+| `/fts words` | the running conversations (the default: commands operate on live sessions) |
+| `/resume` | the past conversations, newest first (table: acct, title, msgs, tkns, age, path) |
+| `/resume /fts words`, `/fts words /resume` | the past conversations matching the words |
+| `/+resume words` (or `/fts words /+resume`) | running AND past conversations together (live rows first, then archived) |
 
-So `live`, `archive`, `claude-live`, `arch`, `tmux` all work (any key that reaches
-exactly one scope name); a key set that reaches both - or `/fts/live,archive`
-- is plain `/fts`. Several `/fts` terms (and `/resume`, the web page's and panel's alias of
-`/fts/archive`) compose **left to right as a pipeline**: their scopes
-intersect, so a later `/fts` only searches what an earlier scoped one
-selected (`/resume ksr /fts option 5` stays archive-only; `/fts/live a
-/fts/archive b` matches nothing). The same spellings are used everywhere (picker, panel, alt-tab). The
-verb is still exact (`/fts`); only its keys are fuzzy.
+**The `/+` prefix adds to the current view instead of replacing it.** A plain
+view verb *replaces* what is shown: the default view is the running sessions,
+and `/resume` swaps it for the archived ones. The same verb written `/+verb`
+*extends* the current view with that verb's rows: `/+resume` keeps the running
+sessions on screen and adds the archived ones to them. So `/verb` = "show this
+instead", `/+verb` = "show this as well". Today only `/+resume` exists; the
+prefix is the general spelling for any future view verb that can be added to
+the view rather than switch it.
+
+`/resume` anywhere in the query selects the archive only, so order does not matter; `/+resume` adds the archive to the live sessions (with both, `/resume` wins).
+Inside double quotes it is literal text: `/fts "/resume"` searches for the
+string. A leftover `/fts/<keys>` is inert (matches nothing). tmux-scrollback
+search is no longer reachable from `/fts` (the index and `tmux_rows` remain).
+Implemented in the tmux picker and the usage panel; alt-tab (`WinSwitch*.qml`,
+native `winswitch-ui`) and the Android/web clients still use the old scope keys.
 
 Per implementation:
 
-- **prefix+C-c**: default (no `/fts`) lists the running sessions in the panel's
-  columns (`ACCT STATUS TITLE MSGS TKNS AGE SESS WIN PANE WKS PID PATH`), Enter
-  jumps to the pane. `/fts word` adds archived hits to the same table (their
-  live-only cells blank; Enter resumes them in a new tmux window under their
-  own account). `/fts/archive` swaps to the shorter archive columns.
-- **ctrl+alt+c panel**: same: `/fts word` appends archived rows after the live
-  matches; `/fts/archive` drops the columns that only exist for a running
-  session (status, tmux sess/win/pane, workspace, pid). Enter/click on an
-  archived row resumes it.
-- **alt-tab**: `/fts/live word` keeps the window grid, filtered; `/fts/archive`
-  and plain `/fts word` replace the grid by a table (live rows marked `●`; Enter
-  focuses the window, on an archived row resumes it). The table keeps the grid's
-  height.
+- **prefix+C-c** and **ctrl+alt+c panel**: default lists the running sessions;
+  `/resume` swaps to the shorter archive columns (the panel also drops the
+  columns that only exist for a running session). Enter on a past row resumes
+  it in a new tmux window / terminal under its own account.
 
 Resuming (`claude-history --resume-window` for the panel and alt-tab: a new tmux
 session in the session's cwd, labelled with the account, attached in a new

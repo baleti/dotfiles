@@ -3,11 +3,10 @@
 to the conversation full-text index.
 
 Default view: the running sessions in the ctrl+alt+c usage panel's columns
-(Enter jumps to the pane). `/fts word` searches the text of live AND archived
-conversations together (live rows keep their columns, archived ones leave the
-live-only cells blank; Enter resumes an archived one in a new tmux window under
-its own account); `/fts/live` and `/fts/archive` restrict it to one side
-(`/fts/archive` also switches to the shorter past-session columns). Full text is the Recoll index kept by
+(Enter jumps to the pane). `/fts word` searches the text of the running
+conversations; add `/resume` (anywhere in the query) and it searches only the past
+ones instead, with the shorter past-session columns (Enter resumes one in a new tmux
+window under its own account). Full text is the Recoll index kept by
 claude-fts-index (see fts_search); `--fts`, `--sessions`, `--snippets` and
 `--resume-window` are the entry points alt-tab and the usage panel call.
 
@@ -222,7 +221,7 @@ def tokenize(text):
 # being dropped. The colon form (`/fv field:word`) is gone. The other
 # column verbs /ft /at /rt choose the columns (COLUMNS; `uuid` = session id is hidden until `/at uuid`).
 # /s keys [dir] orders the rows (same keys as the usage panel; `/s age` = newest first; legacy `/s/keys[/dir]`). Full text is `/fts word` (Recoll),
-# only live ones `/fts/live`, only past ones `/fts/archive`.
+# only the live sessions by default, the past ones with `/resume` (anywhere in the query).
 #
 #   path     session's working directory
 #   tmux     session:window.pane, if currently live and reachable here
@@ -253,24 +252,33 @@ SCHEMA = dsl.Schema(FIELD_NAMES, [("fts", "", True)])
 Query = namedtuple("Query", "terms phrases neg_terms neg_phrases soft field_terms neg_field_terms fts neg_fts fts_scopes sort")
 
 
-FTS_SCOPE_NAMES = ["claude-live", "claude-archive", "tmux"]
-_SCOPE_KEY = {"claude-live": "live", "claude-archive": "archive", "tmux": "tmux"}
+
+
+RESUME_KEY = "resume"   # internal: effective_query writes `/resume` as `/fts/resume`
+RESUME_ALL_KEY = "resume-all"   # ... and `/+resume` as `/fts/resume-all` (live AND archived)
 
 
 def fts_scope_of(keys):
-    """`/fts/<keys>` -> set of scopes {"live", "archive", "tmux"}: the keys fuzzy-resolve (exact name wins,
-    else substring, comma list unioned) against claude-live / claude-archive / tmux; no keys = all three."""
+    """One /fts token's scope: plain `/fts` = the live (running) sessions, `/resume` (internally `/fts/resume`) =
+    the archived ones. There are no other scopes: any other `/fts/<keys>` is inert (matches nothing)."""
     if not keys:
-        return {"live", "archive", "tmux"}
-    hit = dsl.resolve_names(keys, FTS_SCOPE_NAMES)
-    return {_SCOPE_KEY[n] for n in hit}
+        return {"live"}
+    if keys == RESUME_ALL_KEY:
+        return {"live", "archive"}
+    return {"archive"} if keys == RESUME_KEY else set()
 
 
 def fts_scope(q):
-    """None (no /fts), else the union of every /fts token's scope set."""
+    """None (no /fts), else {"live"}, {"archive"} or both: `/resume` anywhere in the query selects the archive only,
+    whatever its position (`/resume /fts x` == `/fts x /resume`); `/+resume` adds the archive to the live sessions;
+    without either everything runs on the live sessions."""
     if not q.fts_scopes:
         return None
-    return set().union(*q.fts_scopes)
+    if any(not sc for sc in q.fts_scopes):
+        return set()
+    if any(sc == {"archive"} for sc in q.fts_scopes):
+        return {"archive"}
+    return {"live", "archive"} if any("archive" in sc for sc in q.fts_scopes) else {"live"}
 
 
 def _sort_val(r, field):
@@ -964,6 +972,7 @@ BQ_HISTORY_PATH = os.path.expanduser("~/.cache/quickshell/claude-usage-base-quer
 BQ_CMD = re.compile(r"^\s*(!?)/(?:base-query|bq)(?:(\s+)([\s\S]*))?$")      # 1 "!", 2 whitespace after the verb, 3 rest
 DBQ_CMD = re.compile(r"^\s*/(?:dbq|disable-base-query)\s*$")
 RESUME_TOK = re.compile(r"(^|\s)(!?)/resume(?=\s|$)")                         # /resume [term] == /fts/archive [term]
+_QUOTED_OR_RESUME = re.compile(r'"[^"]*"|(^|\s)(!?)/(\+?)resume(?=\s|$)')   # a quoted span is consumed whole, so a /resume inside it is never seen
 
 
 def _atomic_write(path, text):
@@ -1007,7 +1016,7 @@ def bq_set(q):
 
 def effective_query(text):
     """What actually runs: the base query written in front of the typed text; `/bq ...` and `!/bq ...` run only
-    the rest (base switched off), so does a typed `/dbq`; `/resume` is `/fts/archive`."""
+    the rest (base switched off), so does a typed `/dbq`; `/resume` is `/fts/resume` internally."""
     m = BQ_CMD.match(text)
     if m:
         t = m.group(3) or ""
@@ -1016,7 +1025,9 @@ def effective_query(text):
     else:
         base = bq_get()
         t = text if not base else (base if not text.strip() else base + " " + text)
-    return RESUME_TOK.sub(lambda m: m.group(1) + m.group(2) + "/fts/archive", t.replace("\n", " "))
+    # "quoted" spans are literal text: /fts "/resume" and "a /resume b" search for the string, not the command
+    return _QUOTED_OR_RESUME.sub(lambda m: m.group(0) if m.group(1) is None and m.group(0)[0] == '"'
+                                 else m.group(1) + m.group(2) + "/fts/" + (RESUME_ALL_KEY if m.group(3) else RESUME_KEY), t.replace("\n", " "))
 
 
 def enter_action(text):
@@ -1266,10 +1277,7 @@ def complete_query(query, snap):
             comma = keys.rfind(",")
             key_frag = keys[comma + 1:]
             prefix = query[: len(query) - len(key_frag)]
-            if name == "fts":   # /fts/<scope names>
-                scopes = [x for x in ("claude", "claude-live", "claude-archive", "tmux") if key_frag.lower() in x]
-                if scopes:
-                    return {"query": query, "prefix": prefix, "suffix": " ", "candidates": scopes}
+            if name == "fts":   # /fts takes no scope keys: /resume picks the archive
                 return none
             if name in ("fv", "filter-value", ""):
                 # a complete name wins over its fuzzy siblings in the *typed* key, but for
@@ -1283,7 +1291,7 @@ def complete_query(query, snap):
         # bare "/" already reaches the full flat "/fv/field" list.
         rest_lower = rest.lower()
         first_token = query.strip() == frag   # /bq and /dbq are commands: only as the very first token
-        candidates = [v for v in ("fts", "fts/claude", "fts/claude-live", "fts/claude-archive", "fts/tmux", "resume") + (("bq", "dbq") if first_token else ()) if rest_lower in v]
+        candidates = [v for v in ("fts", "resume", "+resume") + (("bq", "dbq") if first_token else ()) if rest_lower in v]
         candidates += [v for v in ("ft", "at", "rt", "s") if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         # closed-vocabulary verbs: keys are the next token, so the deep candidate is `at uuid` (not `at/uuid`)
@@ -1328,9 +1336,11 @@ def preview(session_id, query, snap):
     out = []
 
     q = parse_query(query)
-    fts_text = " ".join(q.fts).replace('"', " ")
+    # a "quoted phrase" is highlighted (and jumped to) only as that whole phrase; its words are NOT also
+    # highlighted loosely (`U-value` -> prefix `u` would light up "updated"), only the unquoted words are
+    fts_text = _QUOTED.sub(" ", " ".join(q.fts)).replace('"', " ")
     qset = set(tokenize(fts_text)) | {tok for _, term in q.field_terms for tok in tokenize(term)}
-    rxs = [phrase_re(p, prefix=True) for p in q.fts if p.startswith('"')]
+    rxs = [phrase_re(m, prefix=True) for p in q.fts for m in _QUOTED.findall(p)]
 
     live_map = get_live_sessions()
     live = live_map.get(session_id)
@@ -2250,8 +2260,11 @@ FTS_CONF = os.path.expanduser("~/.cache/indexes/claude/recoll")
 def fts_terms(text):
     """This DSL's words as a Recoll query: `!word` -> `-word` (same mapping as
     the search server's /fts for every other content index)."""
+    # a bare "-" (e.g. in a pasted title "12345 - Project - ...") is punctuation, not a negation: Recoll
+    # would read it as NOT-next-word, so drop standalone dashes
     toks = ["-" + t[1:] if t.startswith("!") and len(t) > 1 else t
-            for t in shlex.split(text.replace("\n", " "), posix=False)]
+            for t in shlex.split(text.replace("\n", " "), posix=False)
+            if t.strip("-\u2013\u2014") or t == "!"]
     # live typing: the last bare word is still being typed, so it matches as a prefix
     if toks and toks[-1].isalnum():
         toks[-1] += "*"
@@ -2281,7 +2294,7 @@ def fts_search(text, conf=None):
     prefixes (outlook* conv*) and the hits are then verified against the
     document text itself (negated phrases stay Recoll's exact whole-word ones)."""
     phrases = [_norm(m) for m in _QUOTED.findall(text)]
-    q = _QUOTED.sub(lambda m: " ".join(w + "*" for w in m.group(1).split()), text) if phrases else text
+    q = _QUOTED.sub(lambda m: " ".join(w + "*" for w in m.group(1).split() if w.strip("-\u2013\u2014")), text) if phrases else text
     terms = fts_terms(q)
     if not terms.strip():
         return []
@@ -2348,11 +2361,15 @@ def fts_snippets(sid, text, limit=6, ctx=90):
         body = open(path, errors="replace").read()
     except OSError:
         return []
-    words = [w.strip("*") for w in re.findall(r"[^\s\"!]+", text) if not w.startswith("-")]
+    # a "quoted phrase" is located as that whole phrase (whitespace-flexible), never as its separate words
+    phrases = [m.strip() for m in _QUOTED.findall(text) if m.strip()]
+    loose = _QUOTED.sub(" ", text)
+    words = [w.strip("*") for w in re.findall(r"[^\s\"!]+", loose) if not w.startswith("-")]
     words = [w for w in words if w]
-    if not words:
+    if not words and not phrases:
         return []
-    rx = re.compile("|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)), re.I)
+    alts = [r"\s+".join(re.escape(x) for x in ph.split()) for ph in phrases] + [re.escape(w) for w in words]
+    rx = re.compile("|".join(sorted(alts, key=len, reverse=True)), re.I)
     out, last_end = [], -1
     for m in rx.finditer(body):
         if m.start() < last_end:

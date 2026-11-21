@@ -419,30 +419,33 @@ Rectangle {
     // `/fts term` is rewritten to /fv/fts, so "fts" must resolve as a filter
     // path - but it is a verb, not a type: kept out of completion and /s.
     readonly property var _filterTypeNames: root.searchTypeNames.concat(["fts"])
-    // "/fts[/live|/archive] [term]": full-text search of the Claude conversations
+    // "/fts [term]": full-text search of the Claude conversations
     // (Recoll via `claude-history`, the same engine as alt-tab and the tmux
-    // picker). Plain /fts covers running AND archived conversations, /fts/live
-    // only the running ones, /fts/archive only past ones. For the live rows it
+    // picker). Plain /fts covers the running conversations; /resume anywhere in
+    // the query makes it the past ones only. For the live rows it
     // is sugar for "/fv/fts term", rewritten before the shared parser sees it.
     // /fts/archive switches the panel to archive rows from
     // `claude-history --sessions`, drops the columns that only make sense for a
     // running session, and Enter/click resumes in a new terminal window.
     // An archived row is also what plain /fts appends after the live matches.
-    readonly property var _ftsTokenRe: /(^|\s)(!?)\/(?:fts(?:\/([a-z,-]+))?|(resume))(?=\s|$)(?:\s+("[^"]*"|(?!\/)\S+))?/g
-    // /fts/<keys>: keys fuzzy-resolve against the scope names (query-dsl.md Keys), so
-    // live and archive (fuzzy-resolved); no keys = both
-    readonly property var ftsScopeNames: ["live", "archive"]
-    function _ftsScopeOf(keys) {
-        if (!keys) return { live: true, archive: true, tmux: false };
-        const r = QueryDsl.resolvePath(keys, root.ftsScopeNames);
-        return { live: r.indexOf("live") >= 0, archive: r.indexOf("archive") >= 0, tmux: false };
+    readonly property var _ftsTokenRe: /(^|\s)(!?)\/(?:fts(?:\/([a-z,-]+))?|(\+?resume))(?=\s|$)((?:\s+(?:"[^"]*"|(?!\/)\S+))*)/g
+    // No scope keys: plain /fts searches the running conversations, /resume (anywhere in the query) switches the
+    // whole query to the archived ones. A `/fts/<keys>` token is inert (nothing matches).
+    // the words of one /fts argument run (every word up to the next /verb, query-dsl.md "Argument spans"): a
+    // "quoted phrase" stays one word, a bare dash is punctuation (a pasted "12345 - Project - ..." title)
+    function _ftsWords(run) {
+        const w = [], re = /"[^"]*"|\S+/g;
+        let m;
+        while ((m = re.exec(run || "")) !== null)
+            if (!/^[-\u2013\u2014]+$/.test(m[0])) w.push(m[0]);
+        return w;
     }
     function _ftsTokens(text) {
         const out = [];
         root._ftsTokenRe.lastIndex = 0;
         let m;
         while ((m = root._ftsTokenRe.exec(text)) !== null)
-            out.push({ neg: m[2] === "!", scope: root._ftsScopeOf(m[3] || (m[4] ? "archive" : "")), arg: m[5] ? m[5].replace(/"/g, "") : "" });
+            out.push({ neg: m[2] === "!", resume: m[4] === "resume", both: m[4] === "+resume", keys: m[3] || "", words: root._ftsWords(m[5]) });
         return out;
     }
     // null (no /fts) | { live, archive, tmux }: the intersection of every /fts token's scopes. Tokens compose left
@@ -450,23 +453,27 @@ Rectangle {
     readonly property var ftsScopes: {
         const toks = root._ftsTokens(root.effectiveText);
         if (toks.length === 0) return null;
-        const u = { live: true, archive: true, tmux: true };
-        for (const t of toks) for (const k of ["live", "archive", "tmux"]) u[k] = u[k] && t.scope[k];
-        return u;
+        if (toks.some(t => t.keys)) return { live: false, archive: false, tmux: false };
+        const r = toks.some(t => t.resume), b = toks.some(t => t.both);
+        return { live: !r, archive: r || b, tmux: false };
     }
     // archive-only: the short columns (no status / tmux / workspace / pid)
     readonly property bool archiveMode: !!root.ftsScopes && root.ftsScopes.archive && !root.ftsScopes.live && !root.ftsScopes.tmux
     readonly property bool liveRowsIn: !root.ftsScopes || root.ftsScopes.live
     // the term the archive / tmux rows are fetched for ("" = newest, archive-only scope only)
     readonly property string archiveTerm: {
-        const t = root._ftsTokens(root.effectiveText).find(x => !x.neg && x.arg);
-        return t ? t.arg : "";
+        const t = root._ftsTokens(root.effectiveText).find(x => !x.neg && x.words.length);
+        return t ? t.words.join(" ").replace(/"/g, "") : "";
     }
     function _rewriteFts(text) {
         // the live rows are filtered by `/fv/fts term` (hit set from claude-history); a token whose scopes
         // exclude the live rows is dropped (archive / tmux rows come from the --sessions fetch below)
-        return text.replace(root._ftsTokenRe, (all, lead, neg, scope, resume, arg) =>
-            !root._ftsScopeOf(scope || (resume ? "archive" : "")).live ? lead : (arg ? lead + neg + "/fv/fts " + arg : lead));
+        const hasResume = root._ftsTokens(text).some(t => t.resume);   // /+resume keeps the live rows: its words still filter them
+        return text.replace(root._ftsTokenRe, (all, lead, neg, scope, resume, run) => {
+            const ws = root._ftsWords(run);
+            return (hasResume || scope) ? lead
+                : (ws.length ? lead + ws.map(w => neg + "/fv/fts " + w).join(" ") : lead);
+        });
     }
     property var archiveRows: []
     // sid -> { title, cwd, msgs, tokens, mtime }, kept by claude-fts-index (what supplies the msgs column of live rows)
@@ -488,8 +495,8 @@ Rectangle {
         const want = !!sc && (sc.archive || sc.tmux) && (only || root.archiveTerm !== "");
         if (!want) { root.archiveRows = []; return; }
         const csv = [sc.archive ? "archive" : "", sc.tmux ? "tmux" : ""].filter(x => x).join(",");
-        const q = root._ftsTokens(root.effectiveText).filter(t => t.arg)
-            .map(t => (t.neg ? "!" : "") + (/\s/.test(t.arg) ? '"' + t.arg + '"' : t.arg)).join(" ");
+        const q = root._ftsTokens(root.effectiveText).filter(t => t.words.length)
+            .map(t => t.words.map(w => (t.neg ? "!" : "") + w).join(" ")).join(" ");
         archiveProc.command = [Quickshell.env("HOME") + "/bin/claude-history", "--sessions", q, "--scope", csv];
         archiveProc.running = false;
         archiveProc.running = true;
@@ -1040,7 +1047,7 @@ Rectangle {
     // command. See query-dsl.md's
     // "Verb-stage depth".
     function _verbStageUniverse() {
-        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "fts/live", "fts/archive", "resume"]);
+        const bare = root._acVerbs.map(v => v.slice(1)).concat(["fts", "resume", "+resume"]);
         const deep = [];
         for (const v of ["fv", "s"])
             for (const n of root.searchTypeNames)
@@ -1051,13 +1058,13 @@ Rectangle {
     // A deep candidate lands the via form ("/fv/tokens "), matching this
     // panel's own steering everywhere else in _acCandidates.
     function _verbStageItem(prefix, v) {
+        if (v === "+resume")
+            return { text: prefix + "/+resume ", label: "/+resume", alias: "", desc: "running AND previous sessions together" };
         if (v === "resume")
             return { text: prefix + "/resume ", label: "/resume", alias: "", desc: "previous sessions with their account; Enter restarts one in a new window" };
-        if (v.startsWith("fts"))
-            return { text: prefix + "/" + v + " ", label: "/" + v, alias: "",
-                     desc: v === "fts" ? "full text of the running and archived Claude conversations"
-                         : v === "fts/live" ? "full text, running conversations only"
-                         : "full text, past conversations only; Enter resumes one in a new window" };
+        if (v === "fts")
+            return { text: prefix + "/fts ", label: "/fts", alias: "",
+                     desc: "full text of the running Claude conversations (add /resume for the past ones)" };
         const slash = v.indexOf("/");
         if (slash < 0) {
             return { text: prefix + "/" + v + " ", label: "/" + v,
