@@ -29,6 +29,7 @@ local function is_rdp(win)
     return win and (win.class == "xfreerdp" or win.class == "com.freerdp.client.sdl3")
 end
 
+local CHORD = "CTRL + ALT + SHIFT + g" -- no-Pause-key alternative, see bottom
 local STATE_FILE = os.getenv("HOME") .. "/.local/state/rdp-guard-enabled"
 
 local function guard_enabled()
@@ -63,6 +64,10 @@ hl.define_submap("rdp-guard", function()
         set_guard_enabled(false)
         hl.dispatch(hl.dsp.submap("reset"))
     end, { release = true, description = "Release the RDP key-passthrough guard" })
+    hl.bind(CHORD, function()
+        set_guard_enabled(false)
+        hl.dispatch(hl.dsp.submap("reset"))
+    end, { description = "Release the RDP key-passthrough guard (no-Pause chord)" })
 end)
 
 hl.on("window.active", function(win)
@@ -87,3 +92,15 @@ hl.bind("Pause", function()
     end
 end, { release = true, description = "Re-arm the RDP key-passthrough guard (xfreerdp only)" })
 
+-- Keyboards without a Pause/Break key: Ctrl+Alt+Shift+G does the same job.
+-- Checked unused elsewhere in the config (only ALT+CTRL+SHIFT+m is taken).
+-- Inside the guard submap it releases; outside, while an RDP window is
+-- focused, it re-arms (a no-op on any other window).
+
+hl.bind(CHORD, function()
+    local win = hl.get_active_window()
+    if win and is_rdp(win) then
+        set_guard_enabled(true)
+        hl.dispatch(hl.dsp.submap("rdp-guard"))
+    end
+end, { description = "Re-arm the RDP key-passthrough guard (xfreerdp only, no-Pause chord)" })
