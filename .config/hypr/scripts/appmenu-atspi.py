@@ -174,7 +174,7 @@ def provider_request(pid, req, timeout=1.5):
     """Apps that cannot expose an AT-SPI menu bar (AccessKit's Linux backend waits for the bus property
     ScreenReaderEnabled, which at-spi2-core 2.62 no longer has, so egui apps never register) can serve their menu on a
     unix socket named after their process id: $XDG_RUNTIME_DIR/appmenu/<pid>.sock, one JSON line per request:
-    {"cmd":"menu"} -> {"title","items":[{"id","label","checked"}]} and {"cmd":"activate","id":..} -> {"ok":true}."""
+    {"cmd":"menu"} -> {"title","items":[{"id","label","checked","path"?,"shortcut"?}]} and {"cmd":"activate","id":..} -> {"ok":true}."""
     path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "appmenu", f"{pid}.sock")
     if not os.path.exists(path):
         return None
@@ -267,7 +267,10 @@ def collect_provider(pid):
     entries = []
     for item in menu["items"]:
         c = item.get("checked")
-        entries.append({"parts": [title, item["label"]], "path": f"{title} › {item['label']}", "app": title, "shortcut": "",
+        # optional "path": ["File", "Save As..."] = the item's own menu path; without it the title is prepended (original
+        # behaviour). Providers that already send a full path (Rhino) therefore do not get "<title> › " in front of every row.
+        parts = item.get("path") or [title, item["label"]]
+        entries.append({"parts": parts, "path": " › ".join(parts), "app": title, "shortcut": item.get("shortcut") or "",
                         "state": "checked" if c else ("unchecked" if c is False else ""), "src": "provider",
                         "provider_id": item["id"]})
     unique_ids(entries)
