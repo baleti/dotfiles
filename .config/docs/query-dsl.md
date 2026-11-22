@@ -747,7 +747,9 @@ Defaults per picker:
     defaults. The header row follows the query (the picker asks its server for it
     on every result). *Added 2026-11-21.* Tab completion offers `/fv/<field>`, the
     closed verbs (`/at`, `/ft`, `/rt`, `/s`) and their keys / direction tokens
-    (`/at ` + Tab lists the types, `/s age ` + Tab `asc` / `desc`; 2026-11-21).
+    (`/s age ` + Tab `asc` / `desc`), and per the rule in "Completion offers
+    what the verb can still do" below, `/at ` + Tab lists only the types not
+    shown yet (2026-11-21).
 
 A family prefix as a column key (`/at claude`) means every type under it, each
 its own column; `/at claude-title` is just the one.
@@ -774,9 +776,16 @@ the data**, and the grammar above needs nothing new:
 - **`/ft` and `/rt` work on the same set** (`/ft owner,revision` shows only
   those; `/rt owner-initials` drops one), so a view can be built up or pared
   down by any chain of the three verbs, processed left to right.
+- **mod+1 file search: `/at` `/rt` `/ft` (2026-11-22).** The search server resolves the column verbs (`take_column_ops` /
+  `resolve_columns` in `photos/search_server.py`): the running column set starts at `name path size pages date`, `/at keys`
+  appends every matching column (substring, built-ins and every document attribute: `/at owner,project`), `/rt keys` removes,
+  `/ft keys` intersects, left to right. The reply carries `columns` and, per hit, `attrs` for the attribute columns; the egui
+  app, the Windows app (`search-win`) and the web page just draw them (all three draw added columns; web and the Windows
+  app also hide built-in columns removed with `/rt` or `/ft`, the egui app always keeps the five built-in ones). Tab completes the verbs and, after `/at`, the column names (`/facets` `columns`).
+  File-server files carry `owner` (NTFS account name, `~/bin/index/ownerwalk`), Union Square files the full name.
 - **The `search` CLI and mod+1 picker take these as plain tags** (`search -l '25066 //owner ruben //dm >2026-11-09'`;
   `search --syntax` lists it): any `//word` that is not a built-in tag (`name path size dm mime ext pages`) filters the
-  attribute whose name contains it. `//owner` = who filed the item in the document system, not the file-system owner.
+  attribute whose name contains it. `//owner` = who filed the item in the document system (full name) or, for file-server files, the NTFS owner account.
   Only rows that carry attributes match, and the catalog's attributes can lag the synced files.
 - **Row filters and sorting use the same names**: `//owner smith`,
   `/s revision`, `/g owner-org`. A type that exists on only some rows is blank
@@ -794,6 +803,47 @@ the data**, and the grammar above needs nothing new:
   is the display name and whose earlier segments name the container reads
   like a path, so name/path filters, sorting and grouping by path keep
   working unchanged.
+
+
+#### Completion offers what the verb can still do (2026-11-21)
+
+Tab after a closed-set verb lists only the types the verb can still act on,
+computed from the columns the query *before the cursor* leaves shown:
+
+- `/at ` + Tab: only the types **not shown yet** (so in a picker whose default
+  view already shows everything, a hidden type such as claude-history's `uuid`
+  is the only candidate).
+- `/rt ` + Tab: only the types that **are shown**.
+- `/ft ` and `/s ` + Tab: every type (a filter or sort key need not be shown).
+- Types already typed earlier in the same comma list are not offered again
+  (`/at uuid,` + Tab offers nothing more once only `uuid` was hidden).
+- The deep verb-stage candidates (`at uuid`, `rt pid`) follow the same rule.
+- The view counts: after `/resume` (the shorter past-session columns) `/at `
+  offers `pid status tmux-* hypr-workspace uuid`, and an earlier verb counts
+  (`/at uuid /rt ` offers `uuid` too, since it was just added).
+
+*Design decisions recorded with this change (all 2026-11-21):*
+
+- **A type can be hidden by default** and appear only through `/at` (claude-history's
+  `uuid`, the session id). It still works as a `//uuid` filter key and a `/s uuid` sort key
+  whether or not its column is shown.
+- **Quoted text is a substring.** `"outlook conv"` matches "Outlook conversation"
+  (spaces included, case-insensitive); an unquoted word is a plain word. Recoll can
+  only match whole words, so a quoted phrase asks it for the words as prefixes and the
+  hits are verified against the document text. Matching from the middle of a word
+  (`"tlook conv"`) is not supported by that route.
+- **The fzf-native completion popup is compact:** about 55% of the width (right
+  margin 45%, fzf caps margins at 49%), height fitted to the entries up to 80% of the
+  screen, no match counter.
+- **Column verbs are implemented in two pickers:** claude-history (prefix+Ctrl+C) and
+  the claude-usage panel (Ctrl+Alt+C, `ClaudeUsageExpanded.qml`, 2026-11-21). In the
+  panel `shownTypes` is the default column set (every column but `uuid`) run through
+  the typed `/ft /at /rt`; each header, resize handle and row cell is visible only while
+  its type is shown (`root.colOn(type)`), so `/rt account` hides the acct column and
+  `/at uuid` adds the session-id column. Panel completion follows the same rule as
+  claude-history (`/at ` only hidden types, `/rt ` only shown ones). The panel width follows the shown
+  columns (`fixedOtherW` / `tableNaturalWidth` count only shown ones): `/at uuid` widens it (title
+  shrinks toward its minimum first, then the panel grows up to Bar.qml's ceiling), `/rt` narrows it.
 
 ### `/sort` (`/s`)
 

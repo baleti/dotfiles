@@ -1224,6 +1224,18 @@ def _value_candidates(fields, fragment, snap, live_map, targets):
     return sorted(seen)
 
 
+def _completable_types(verb, before_text):
+    """The types worth offering after a closed-set verb, given the query typed before it: `/at` only the columns
+    NOT shown yet, `/rt` only the ones that are, `/ft` and `/s` every type (query-dsl.md "Completion offers
+    what the verb can still do")."""
+    verb = verb.lstrip("/")
+    allnames = [f for f in SORT_FIELDS if f in COLUMNS]
+    if verb in ("at", "add-type", "rt", "remove-type"):
+        shown = set(columns_for(before_text))
+        return [f for f in allnames if (f not in shown) == (verb in ("at", "add-type"))]
+    return list(SORT_FIELDS) if verb in ("s", "sort") else allnames
+
+
 def complete_query(query, snap):
     """The one Tab completion available at the end of `query`, as
     {"query", "prefix", "suffix", "candidates"}: the completed query is
@@ -1262,7 +1274,10 @@ def complete_query(query, snap):
         before = query.split() if query == "" or query[-1].isspace() else query.split()[:-1]
         if before and re.fullmatch(r"/(?:ft|filter-type|at|add-type|rt|remove-type|s|sort)", before[-1]):
             key_frag = frag[frag.rfind(",") + 1:]
-            cands = [f for f in SORT_FIELDS if key_frag.lower() in f and f != key_frag]
+            verb = before[-1]
+            typed = {k for k in frag[: frag.rfind(",") + 1].split(",") if k}   # already in this comma list
+            cands = [f for f in _completable_types(verb, query[: len(query) - len(frag)])
+                     if key_frag.lower() in f and f != key_frag and f not in typed]
             return {"query": query, "prefix": query[: len(query) - len(key_frag)], "suffix": "", "candidates": cands} if cands else none
         if len(before) >= 2 and re.fullmatch(r"/(?:s|sort)", before[-2]) and before[-1][:1] not in ("/", "!", '"', "'"):
             cands = [d for d, full in (("asc", "ascending"), ("desc", "descending")) if full.startswith(frag.lower()) and d != frag]
@@ -1295,7 +1310,8 @@ def complete_query(query, snap):
         candidates += [v for v in ("ft", "at", "rt", "s") if rest_lower in v]
         candidates += [f"fv/{f}" for f in FIELD_NAMES if f != "body" and rest_lower in f"fv/{f}"]
         # closed-vocabulary verbs: keys are the next token, so the deep candidate is `at uuid` (not `at/uuid`)
-        candidates += [f"{v} {f}" for v in ("ft", "at", "rt", "s") for f in SORT_FIELDS if rest_lower in f"{v} {f}"]
+        head = query[: len(query) - len(frag)]
+        candidates += [f"{v} {f}" for v in ("ft", "at", "rt", "s") for f in _completable_types(v, head) if rest_lower in f"{v} {f}"]
         if candidates:
             return {"query": query, "prefix": query[: len(query) - len(frag)] + "/",
                     "suffix": " ", "candidates": candidates}
@@ -1781,7 +1797,7 @@ r=json.loads(b);q=r["query"];c=r["candidates"]
 if mode=="complete":
     if len(c)==1:q=r["prefix"]+c[0]+r["suffix"]
     elif c:
-        p=subprocess.run(["fzf","--height=100%","--layout=reverse","--border=rounded","--prompt=complete> ","--bind","ctrl-space:put( )","--bind","tab:accept"],input="\n".join(c),capture_output=True,text=True)
+        p=subprocess.run(["fzf","--height=~80%","--min-height=4","--margin=0,45%,0,0","--layout=reverse","--border=rounded","--info=hidden","--prompt=complete> ","--bind","ctrl-space:put( )","--bind","tab:accept"],input="\n".join(c),capture_output=True,text=True)
         if p.stdout.strip():q=r["prefix"]+p.stdout.strip()+r["suffix"]
 else:
     # history: always opens, even with zero candidates - zsh's own ctrl-r

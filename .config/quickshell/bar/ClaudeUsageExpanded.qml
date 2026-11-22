@@ -414,8 +414,25 @@ Rectangle {
     readonly property var searchTypeNames: [
         "title", "pid", "status", "tokens", "msgs", "age", "path", "account", "host",
         "tmux-session", "tmux-window", "tmux-pane",
-        "hypr-workspace", "hypr-monitor", "hypr-window",
+        "hypr-workspace", "hypr-monitor", "hypr-window", "uuid",
     ]
+    // Columns the table can show, in layout order; every one but `uuid` is shown by default. /ft /at /rt change
+    // the shown set (query-dsl.md "/filter-type"): `uuid` (the session id) appears only through /at.
+    readonly property var columnTypes: ["account", "host", "status", "title", "msgs", "tokens", "age",
+        "tmux-session", "tmux-window", "tmux-pane", "hypr-workspace", "pid", "path", "uuid"]
+    function shownTypesFor(cols) {
+        let c = root.columnTypes.filter(t => t !== "uuid");
+        for (const o of (cols || [])) {
+            const f = QueryDsl.resolvePath(o.path, root.columnTypes);
+            if (o.op === "filter") { if (f.length > 0) c = c.filter(t => f.indexOf(t) >= 0); }
+            else if (o.op === "add") { for (const t of f) if (c.indexOf(t) < 0) c.push(t); }
+            else c = c.filter(t => f.indexOf(t) < 0);
+        }
+        return c.length > 0 ? c : root.columnTypes.filter(t => t !== "uuid");
+    }
+    readonly property var shownTypes: root.shownTypesFor(root.searchParsed.cols)
+    function colOn(t) { return root.shownTypes.indexOf(t) >= 0; }
+    readonly property bool tmuxAnyOn: colOn("tmux-session") || colOn("tmux-window") || colOn("tmux-pane")
     // `/fts term` is rewritten to /fv/fts, so "fts" must resolve as a filter
     // path - but it is a verb, not a type: kept out of completion and /s.
     readonly property var _filterTypeNames: root.searchTypeNames.concat(["fts"])
@@ -654,6 +671,7 @@ Rectangle {
         case "hypr-workspace": return [row.hypr_workspace || ""];
         case "hypr-monitor": return [row.hypr_monitor || ""];
         case "hypr-window": return [row.hypr_address || ""];
+        case "uuid": return [row.session_id || ""];
         }
         return [];
     }
@@ -971,6 +989,7 @@ Rectangle {
         "hypr-workspace": "hyprland workspace",
         "hypr-monitor": "hyprland monitor",
         "hypr-window": "hyprland window address",
+        "uuid": "session id (a column only via /at uuid)",
         "fts": "full text of the Claude conversation (periodically indexed); /fts term",
     })
     readonly property var _acVerbs: ["/fv", "/s"]
@@ -1138,6 +1157,19 @@ Rectangle {
                 .map(x => ({ text: bm[1] + x, label: x, alias: "", desc: x === cur ? "current" : "previous" }));
             if (hits.length > 0) return hits;
         }
+        // `/at ` offers only the columns not shown yet, `/rt ` only the shown ones, `/ft ` every column type
+        // (query-dsl.md "Completion offers what the verb can still do"); types already in the comma list are skipped
+        const cvm = t.match(/(?:^|\s)\/(ft|filter-type|at|add-type|rt|remove-type) ([^\s\/!"']*)$/);
+        if (cvm) {
+            const shown = root.shownTypesFor(QueryDsl.parse(t.slice(0, t.length - cvm[0].length)).cols);
+            const typed = cvm[2].split(",").slice(0, -1);
+            const adding = cvm[1] === "at" || cvm[1] === "add-type";
+            const removing = cvm[1] === "rt" || cvm[1] === "remove-type";
+            const names = root.columnTypes.filter(n => typed.indexOf(n) < 0
+                && (adding ? shown.indexOf(n) < 0 : (removing ? shown.indexOf(n) >= 0 : true)));
+            const kc = QueryDsl.keyStageCandidates(t, names, root.searchTypeDescs);
+            if (kc !== null) return kc;
+        }
         const ks = QueryDsl.keyStageCandidates(t, root.searchTypeNames, root.searchTypeDescs);
         if (ks !== null) return ks;
         const vm = t.match(/(?:^|\s|!)(\/[a-z-]*)$/);
@@ -1180,7 +1212,7 @@ Rectangle {
         if (acItems.length === 0) { root.acVerbMulti = false; root.acArgMulti = false; }
     }
     // Keep the highlighted row in view as arrow keys move acSel past
-    // the popup's fixed 7-row window -- acList is the ListView defined
+    // the popup's 14-row window -- acList is the ListView defined
     // below, in the same component so its id is visible here.
     onAcSelChanged: acList.positionViewAtIndex(acSel, ListView.Contain)
 
@@ -1494,6 +1526,7 @@ Rectangle {
     // specific column into it.
     property real colTitleW: root.titleFitW   // not via colDefaults: that would loop (titleFitW <- fixedOtherW <- colDefaults)
     property real colPidW: colDefaults.pid
+    property real colUuidW: 290   // session id, 36 chars; shown only via /at uuid
     property real colTokensW: colDefaults.tokens
     // "last" itself is short, but values like "2mo 1w" aren't.
     property real colLastW: colDefaults.last
@@ -1590,12 +1623,16 @@ Rectangle {
     // exceeds Bar.qml's max, without something being cut off beyond what
     // that filler removal already implies).
     // Everything except the title and path columns (the two that flex to fit the screen, see titleFitW).
-    readonly property real fixedOtherW: root.colAcctW + root.handleW + root.colHostW + root.handleW + root.colStatusW + root.handleW
-        + root.handleW + root.colMsgsW + root.handleW + root.colTokensW + root.handleW   // msgs was missing here, clipping the path column by its width
-        + root.colLastW + root.handleW + root.colTmuxGroupW + root.handleW
-        + root.colHyprWorkspaceW + root.handleW + root.colPidW + root.handleW
+    // Only the columns currently shown count (/rt hides, /at adds - the panel resizes with them, see colOn).
+    function _cw(type, w) { return root.colOn(type) ? w + root.handleW : 0; }
+    readonly property real fixedOtherW: root._cw("account", root.colAcctW) + root._cw("host", root.colHostW) + root._cw("status", root.colStatusW)
+        + root._cw("msgs", root.colMsgsW) + root._cw("tokens", root.colTokensW)   // msgs was missing here, clipping the path column by its width
+        + root._cw("age", root.colLastW)
+        + (root.tmuxAnyOn ? root._cw("tmux-session", root.colTmuxSessionW) + root._cw("tmux-window", root.colTmuxWindowW) + root._cw("tmux-pane", root.colTmuxPaneW) : 0)
+        + root._cw("hypr-workspace", root.colHyprWorkspaceW) + root._cw("pid", root.colPidW)
+        + root._cw("uuid", root.colUuidW)
         + root.scrollbarGap + root.scrollbarW
-    readonly property real tableNaturalWidth: root.fixedOtherW + root.colTitleW + root.colPathW
+    readonly property real tableNaturalWidth: root.fixedOtherW + (root.colOn("title") ? root.colTitleW + root.handleW : 0) + (root.colOn("path") ? root.colPathW : 0)
     // Same fallback width the standalone-preview default (panelWidth: 320
     // above) already used -- reused here as the floor so a near-empty
     // panel (few/no live processes) doesn't shrink below something that
@@ -2566,7 +2603,7 @@ Rectangle {
                 return m;
             }
             width: Math.min(Math.max(360, ac.neededW), content.width)
-            height: visible ? Math.min(acList.contentHeight, 7 * 24) + 8 : 0
+            height: visible ? Math.min(acList.contentHeight, 14 * 20) + 8 : 0
             radius: Theme.rounding - 4
             color: Theme.bgAlpha
             border.color: Theme.cyan
@@ -2574,7 +2611,7 @@ Rectangle {
             clip: true
 
             // ListView instead of a plain Column+Repeater so entries past
-            // the 7-row window are reachable -- wheel-scrollable, and
+            // the 14-row window are reachable -- wheel-scrollable, and
             // Up/Down (root.onAcSelChanged above) keeps the selection in
             // view via positionViewAtIndex.
             ListView {
@@ -2592,7 +2629,7 @@ Rectangle {
                     required property int index
                     readonly property bool cur: index === root.acSel
                     width: acList.width
-                    height: Math.max(24, acFlow.height + 8)
+                    height: Math.max(20, acFlow.height + 4)
                     radius: Theme.rounding - 5
                     color: cur ? Qt.rgba(Theme.cyan.r, Theme.cyan.g, Theme.cyan.b, 0.18) : "transparent"
 
@@ -2643,7 +2680,7 @@ Rectangle {
 
             // Hand-rolled vertical scrollbar (no QtQuick.Controls anywhere
             // in this project, see bar/CalendarExpanded.qml's identical
-            // pattern) - visible only once acItems overflows the 7-row
+            // pattern) - visible only once acItems overflows the 14-row
             // window, thumb size/position proportional to how much of the
             // list is in view.
             Rectangle {
@@ -2728,20 +2765,20 @@ Rectangle {
                 width: content.width
                 spacing: 0
 
-                Item { Layout.preferredWidth: root.colAcctW }
-                Item { Layout.preferredWidth: root.handleW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colHostW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colStatusW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colTitleW }
-                Item { Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colMsgsW }
-                Item { Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colTokensW }
-                Item { Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colLastW }
-                Item { Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("account"); Layout.preferredWidth: root.colAcctW }
+                Item { visible: root.colOn("account"); Layout.preferredWidth: root.handleW }
+                Item { visible: (!root.archiveMode) && root.colOn("host"); Layout.preferredWidth: root.colHostW }
+                Item { visible: (!root.archiveMode) && root.colOn("host"); Layout.preferredWidth: root.handleW }
+                Item { visible: (!root.archiveMode) && root.colOn("status"); Layout.preferredWidth: root.colStatusW }
+                Item { visible: (!root.archiveMode) && root.colOn("status"); Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("title"); Layout.preferredWidth: root.colTitleW }
+                Item { visible: root.colOn("title"); Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("msgs"); Layout.preferredWidth: root.colMsgsW }
+                Item { visible: root.colOn("msgs"); Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("tokens"); Layout.preferredWidth: root.colTokensW }
+                Item { visible: root.colOn("tokens"); Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("age"); Layout.preferredWidth: root.colLastW }
+                Item { visible: root.colOn("age"); Layout.preferredWidth: root.handleW }
                 Text {
                     text: qsTr("tmux")
                     color: Theme.muted
@@ -2749,7 +2786,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     horizontalAlignment: Text.AlignHCenter
                     Layout.preferredWidth: root.colTmuxGroupW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.tmuxAnyOn
                     Rectangle {
                         anchors.left: parent.left
                         anchors.right: parent.right
@@ -2758,12 +2795,14 @@ Rectangle {
                         color: Theme.border
                     }
                 }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colHyprWorkspaceW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.colPidW }
-                Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
-                Item { Layout.preferredWidth: root.colPathW }
+                Item { visible: (!root.archiveMode) && root.colOn("tmux-pane"); Layout.preferredWidth: root.handleW }
+                Item { visible: (!root.archiveMode) && root.colOn("hypr-workspace"); Layout.preferredWidth: root.colHyprWorkspaceW }
+                Item { visible: (!root.archiveMode) && root.colOn("hypr-workspace"); Layout.preferredWidth: root.handleW }
+                Item { visible: (!root.archiveMode) && root.colOn("pid"); Layout.preferredWidth: root.colPidW }
+                Item { visible: (!root.archiveMode) && root.colOn("pid"); Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("path"); Layout.preferredWidth: root.colPathW }
+                Item { visible: root.colOn("uuid"); Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("uuid"); Layout.preferredWidth: root.colUuidW }
                 Item { Layout.fillWidth: true }
             }
 
@@ -2784,6 +2823,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colAcctW
+                    visible: root.colOn("account")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2794,6 +2834,7 @@ Rectangle {
                     Layout.preferredWidth: root.handleW
                     Layout.fillHeight: true
                     targetWidth: root.colAcctW
+                    visible: root.colOn("account")
                     onWidthChangeRequested: w => root.colAcctW = w
                 }
                 Text {
@@ -2803,7 +2844,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colHostW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("host")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2812,7 +2853,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("host")
                     Layout.fillHeight: true
                     targetWidth: root.colHostW
                     onWidthChangeRequested: w => root.colHostW = w
@@ -2823,7 +2864,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colStatusW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("status")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2832,7 +2873,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("status")
                     Layout.fillHeight: true
                     targetWidth: root.colStatusW
                     onWidthChangeRequested: w => root.colStatusW = w
@@ -2844,6 +2885,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTitleW
+                    visible: root.colOn("title")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2854,6 +2896,7 @@ Rectangle {
                     Layout.preferredWidth: root.handleW
                     Layout.fillHeight: true
                     targetWidth: root.colTitleW
+                    visible: root.colOn("title")
                     onWidthChangeRequested: w => root.colTitleW = w
                 }
                 Text {
@@ -2864,6 +2907,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     horizontalAlignment: Text.AlignRight
                     Layout.preferredWidth: root.colMsgsW
+                    visible: root.colOn("msgs")
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2875,7 +2919,7 @@ Rectangle {
                         onExited: root.hideHint()
                     }
                 }
-                Item { Layout.preferredWidth: root.handleW }
+                Item { visible: root.colOn("msgs"); Layout.preferredWidth: root.handleW }
                 Text {
                     id: tokensHeader
                     text: qsTr("tkns") + root.sortArrow("tokens")
@@ -2883,6 +2927,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colTokensW
+                    visible: root.colOn("tokens")
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2900,6 +2945,7 @@ Rectangle {
                     Layout.preferredWidth: root.handleW
                     Layout.fillHeight: true
                     targetWidth: root.colTokensW
+                    visible: root.colOn("tokens")
                     onWidthChangeRequested: w => root.colTokensW = w
                 }
                 Text {
@@ -2909,6 +2955,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     horizontalAlignment: Text.AlignRight
                     Layout.preferredWidth: root.colLastW
+                    visible: root.colOn("age")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2919,6 +2966,7 @@ Rectangle {
                     Layout.preferredWidth: root.handleW
                     Layout.fillHeight: true
                     targetWidth: root.colLastW
+                    visible: root.colOn("age")
                     onWidthChangeRequested: w => root.colLastW = w
                 }
                 Text {
@@ -2929,7 +2977,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxSessionW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("tmux-session")
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2945,7 +2993,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("tmux-session")
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxSessionW
                     onWidthChangeRequested: w => root.colTmuxSessionW = w
@@ -2958,7 +3006,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxWindowW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("tmux-window")
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -2974,7 +3022,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("tmux-window")
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxWindowW
                     onWidthChangeRequested: w => root.colTmuxWindowW = w
@@ -2986,7 +3034,7 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colTmuxPaneW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("tmux-pane")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -2995,7 +3043,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("tmux-pane")
                     Layout.fillHeight: true
                     targetWidth: root.colTmuxPaneW
                     onWidthChangeRequested: w => root.colTmuxPaneW = w
@@ -3007,7 +3055,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colHyprWorkspaceW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("hypr-workspace")
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
@@ -3023,7 +3071,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("hypr-workspace")
                     Layout.fillHeight: true
                     targetWidth: root.colHyprWorkspaceW
                     onWidthChangeRequested: w => root.colHyprWorkspaceW = w
@@ -3034,7 +3082,7 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSize - 3
                     Layout.preferredWidth: root.colPidW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("pid")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -3043,7 +3091,7 @@ Rectangle {
                 }
                 ColumnResizeHandle {
                     Layout.preferredWidth: root.handleW
-                    visible: !root.archiveMode
+                    visible: (!root.archiveMode) && root.colOn("pid")
                     Layout.fillHeight: true
                     targetWidth: root.colPidW
                     onWidthChangeRequested: w => root.colPidW = w
@@ -3055,11 +3103,21 @@ Rectangle {
                     font.pixelSize: Theme.fontSize - 3
                     elide: Text.ElideRight
                     Layout.preferredWidth: root.colPathW
+                    visible: root.colOn("path")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.toggleSort("path")
                     }
+                }
+                Item { visible: root.colOn("uuid"); Layout.preferredWidth: root.handleW }
+                Text {
+                    text: qsTr("uuid")
+                    color: Theme.muted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSize - 3
+                    Layout.preferredWidth: root.colUuidW
+                    visible: root.colOn("uuid")
                 }
                 Item { Layout.fillWidth: true }
             }
@@ -3231,6 +3289,7 @@ Rectangle {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colAcctW
+                            visible: root.colOn("account")
                             MouseArea {
                                 anchors.fill: parent
                                 hoverEnabled: true
@@ -3247,7 +3306,7 @@ Rectangle {
                                 onClicked: root.focusHyprWindow(procRow.modelData)
                             }
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: root.colOn("account"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.host || "host3"
                             color: modelData.remote ? Theme.cyan : Theme.muted
@@ -3255,18 +3314,18 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 3
                             elide: Text.ElideRight
                             Layout.preferredWidth: root.colHostW
-                            visible: !root.archiveMode
+                            visible: (!root.archiveMode) && root.colOn("host")
                         }
-                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: (!root.archiveMode) && root.colOn("host"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.rowStatusLabel(modelData)
                             color: root.rowStatusColor(modelData)
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colStatusW
-                            visible: !root.archiveMode
+                            visible: (!root.archiveMode) && root.colOn("status")
                         }
-                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: (!root.archiveMode) && root.colOn("status"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.title || "--"
                             color: Theme.text
@@ -3274,8 +3333,9 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 2
                             elide: Text.ElideRight
                             Layout.preferredWidth: root.colTitleW
+                            visible: root.colOn("title")
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: root.colOn("title"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: String(modelData.msgs || "")
                             color: Theme.muted
@@ -3283,16 +3343,18 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 3
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: root.colMsgsW
+                            visible: root.colOn("msgs")
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: root.colOn("msgs"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.fmtTokens(modelData.context_tokens)
                             color: root.tokenColor(modelData.context_tokens)
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colTokensW
+                            visible: root.colOn("tokens")
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: root.colOn("tokens"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.tick >= 0 ? root.fmtAgoMs(modelData.updated_at_ms) : ""
                             color: Theme.muted
@@ -3300,35 +3362,36 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 3
                             horizontalAlignment: Text.AlignRight
                             Layout.preferredWidth: root.colLastW
+                            visible: root.colOn("age")
                         }
-                        Item { Layout.preferredWidth: root.handleW }
+                        Item { visible: root.colOn("age"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_session || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxSessionW
-                            visible: !root.archiveMode
+                            visible: (!root.archiveMode) && root.colOn("tmux-session")
                         }
-                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: (!root.archiveMode) && root.colOn("tmux-session"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_window || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxWindowW
-                            visible: !root.archiveMode
+                            visible: (!root.archiveMode) && root.colOn("tmux-window")
                         }
-                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: (!root.archiveMode) && root.colOn("tmux-window"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: modelData.tmux_pane || ""
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 3
                             Layout.preferredWidth: root.colTmuxPaneW
-                            visible: !root.archiveMode
+                            visible: (!root.archiveMode) && root.colOn("tmux-pane")
                         }
-                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: (!root.archiveMode) && root.colOn("tmux-pane"); Layout.preferredWidth: root.handleW }
                         // hyprland cell: which real window is showing this
                         // session, if any (see root.startThumbCapture's own
                         // comment for why it's address-keyed rather than
@@ -3342,7 +3405,7 @@ Rectangle {
                         Item {
                             id: hyprCell
                             Layout.preferredWidth: root.colHyprWorkspaceW
-                            visible: !root.archiveMode
+                            visible: (!root.archiveMode) && root.colOn("hypr-workspace")
                             Layout.fillHeight: true
 
                             Text {
@@ -3360,16 +3423,16 @@ Rectangle {
                                 font.pixelSize: Theme.fontSize - 3
                             }
                         }
-                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: (!root.archiveMode) && root.colOn("hypr-workspace"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: String(modelData.pid)
                             color: Theme.muted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSize - 2
                             Layout.preferredWidth: root.colPidW
-                            visible: !root.archiveMode
+                            visible: (!root.archiveMode) && root.colOn("pid")
                         }
-                        Item { visible: !root.archiveMode; Layout.preferredWidth: root.handleW }
+                        Item { visible: (!root.archiveMode) && root.colOn("pid"); Layout.preferredWidth: root.handleW }
                         Text {
                             text: root.shortCwd(modelData.cwd)
                             color: Theme.muted
@@ -3377,6 +3440,17 @@ Rectangle {
                             font.pixelSize: Theme.fontSize - 3
                             elide: Text.ElideRight
                             Layout.preferredWidth: root.colPathW
+                            visible: root.colOn("path")
+                        }
+                        Item { visible: root.colOn("uuid"); Layout.preferredWidth: root.handleW }
+                        Text {
+                            text: modelData.session_id || ""
+                            color: Theme.muted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSize - 3
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: root.colUuidW
+                            visible: root.colOn("uuid")
                         }
                         Item { Layout.fillWidth: true }
                     }
