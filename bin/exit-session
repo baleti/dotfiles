@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# exit-session: close THIS agent's own claude + the shell of its tmux pane.
+# Run as the LAST action of a task, e.g. when told "exit after you finish".
+# Usage: exit-session [delay_seconds=6]
+# Safe by design: acts only on $TMUX_PANE (own pane), never kills by name,
+# never uses kill-pane/kill-session; types /exit then `exit` like the Claude
+# Agents app. Detached, so the calling turn can end first. Mirrors
+# exit_session() in ~/src/claudeagents-android/server/claude-agents-daemon.py.
+set -u
+pane="${TMUX_PANE:-}"
+delay="${1:-6}"
+[ -n "$pane" ] || { echo "exit-session: not in tmux (no \$TMUX_PANE); just end your turn" >&2; exit 1; }
+tmux display -p -t "$pane" '#{pane_id}' >/dev/null 2>&1 || { echo "exit-session: pane $pane not found" >&2; exit 1; }
+log=~/.cache/exit-session.log; mkdir -p ~/.cache
+setsid nohup bash -c '
+  pane=$1; delay=$2; log=$3
+  shells=" bash zsh sh fish dash ksh tcsh nu "
+  sleep "$delay"
+  tmux send-keys -t "$pane" C-u 2>/dev/null; tmux send-keys -t "$pane" "/exit" Enter 2>/dev/null
+  end=$((SECONDS+120))
+  while [ $SECONDS -lt $end ]; do
+    cmd=$(tmux display -p -t "$pane" "#{pane_current_command}" 2>/dev/null) || { echo "$(date -Is) $pane closed itself" >>"$log"; exit 0; }
+    case "$shells" in *" $cmd "*)
+      tmux send-keys -t "$pane" C-u; tmux send-keys -t "$pane" "exit" Enter
+      echo "$(date -Is) $pane claude exited, shell closed" >>"$log"; exit 0;; esac
+    sleep 0.5
+  done
+  echo "$(date -Is) $pane still running 120s after /exit, left alone" >>"$log"
+' _ "$pane" "$delay" "$log" >/dev/null 2>&1 &
+echo "exit-session: will /exit claude and close shell in pane $pane in ${delay}s (log: $log). End your turn now."
