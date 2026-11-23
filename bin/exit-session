@@ -1,21 +1,40 @@
 #!/usr/bin/env bash
 # exit-session: close THIS agent's own claude + the shell of its tmux pane.
 # Run as the LAST action of a task, e.g. when told "exit after you finish".
-# Usage: exit-session [delay_seconds=6]
+# Usage: exit-session [delay_seconds=15]  (delay only used when the Stop hook is not installed)
 # Safe by design: acts only on $TMUX_PANE (own pane), never kills by name,
 # never uses kill-pane/kill-session; types /exit then `exit` like the Claude
 # Agents app. Detached, so the calling turn can end first. Mirrors
 # exit_session() in ~/src/claudeagents-android/server/claude-agents-daemon.py.
 set -u
 pane="${TMUX_PANE:-}"
-delay="${1:-6}"
+delay="${1:-15}"
 [ -n "$pane" ] || { echo "exit-session: not in tmux (no \$TMUX_PANE); just end your turn" >&2; exit 1; }
 tmux display -p -t "$pane" '#{pane_id}' >/dev/null 2>&1 || { echo "exit-session: pane $pane not found" >&2; exit 1; }
-log=~/.cache/exit-session.log; mkdir -p ~/.cache
+log=~/.cache/exit-session.log; mkdir -p ~/.cache ~/.cache/claude-idle
+# Prefer the real signal: Stop hook (claude-idle-mark) touches a per-pane marker when the
+# turn ends. Only usable if the hook is installed in this profile; else fall back to sleep.
+# Find the config dir of the claude actually running in this pane (its env may differ from ours).
+cdir=""
+spid=$(tmux display -p -t "$pane" '#{pane_pid}' 2>/dev/null)
+for pid in $(pgrep -P "${spid:-0}" 2>/dev/null) ${spid:-}; do
+  c=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -1)
+  [ -n "$c" ] && { cdir=$c; break; }
+done
+cfg="${cdir:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/settings.json"
+mode=sleep; grep -q claude-idle-mark "$cfg" 2>/dev/null && mode=hook
+ref=$(mktemp ~/.cache/claude-idle/ref.XXXXXX)
 setsid nohup bash -c '
-  pane=$1; delay=$2; log=$3
+  pane=$1; delay=$2; log=$3; mode=$4; ref=$5
   shells=" bash zsh sh fish dash ksh tcsh nu "
-  sleep "$delay"
+  if [ "$mode" = hook ]; then
+    m=~/.cache/claude-idle/$pane; t=$((SECONDS+60))
+    while [ ! "$m" -nt "$ref" ] && [ $SECONDS -lt $t ]; do sleep 0.2; done
+    sleep 0.5
+  else
+    sleep "$delay"
+  fi
+  rm -f "$ref"
   tmux send-keys -t "$pane" C-u 2>/dev/null; tmux send-keys -t "$pane" "/exit" Enter 2>/dev/null
   end=$((SECONDS+120))
   while [ $SECONDS -lt $end ]; do
@@ -26,5 +45,5 @@ setsid nohup bash -c '
     sleep 0.5
   done
   echo "$(date -Is) $pane still running 120s after /exit, left alone" >>"$log"
-' _ "$pane" "$delay" "$log" >/dev/null 2>&1 &
-echo "exit-session: will /exit claude and close shell in pane $pane in ${delay}s (log: $log). End your turn now."
+' _ "$pane" "$delay" "$log" "$mode" "$ref" >/dev/null 2>&1 &
+echo "exit-session: will /exit claude and close shell in pane $pane after turn end ($mode mode; fallback ${delay}s) (log: $log). End your turn now."

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stop hook: mark this tmux pane's claude as idle (turn finished). Used by exit-session.
+[ -n "${TMUX_PANE:-}" ] || exit 0
+d=~/.cache/claude-idle; mkdir -p "$d"
+touch "$d/$TMUX_PANE"
+exit 0
