@@ -177,24 +177,30 @@ class SourceStore:
 class Writer:
     """Batches entries; each (path,size,mtime) is stored once and linked to every source that has it."""
     def __init__(self, db, sid):
-        self.db, self.sid, self.n = db, sid, 0
+        self.db, self.sid, self.n, self.buf = db, sid, 0, []
         self.t_commit = time.time()
         db.execute("CREATE TEMP TABLE IF NOT EXISTS seen(id INTEGER PRIMARY KEY)")
         db.execute("DELETE FROM seen")
     def add(self, path, size, mtime, kind):
-        name = path.rsplit("/", 1)[-1]
-        row = self.db.execute(
-            "INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(path,size,mtime) DO UPDATE SET kind=excluded.kind RETURNING id",
-            (path, name, size, mtime, kind)).fetchone()
-        self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (row[0], self.sid))
-        self.db.execute("INSERT OR IGNORE INTO seen VALUES(?)", (row[0],))
+        # rows are buffered and written in one short transaction: a walk over a slow share (ssh/SMB) stalls between
+        # rows, and a transaction left open across a stall held the writer lock for minutes, so the live watchers
+        # (winwatch, hostwatch, watcher) failed with "database is locked" and the search results went stale
+        self.buf.append((path, path.rsplit("/", 1)[-1], size, mtime, kind))
         self.n += 1
-        # also by time: a walk over a slow share (ssh/SMB) can take minutes per 50000 rows, and the write lock held
-        # meanwhile made the live watchers (winwatch, hostwatch, watcher) fail with "database is locked"
-        if self.n % 50000 == 0 or time.time() - self.t_commit > 3:
-            self.db.commit()
-            self.t_commit = time.time()
+        if len(self.buf) >= 5000 or time.time() - self.t_commit > 3:
+            self.flush()
+
+    def flush(self):
+        for path, name, size, mtime, kind in self.buf:
+            row = self.db.execute(
+                "INSERT INTO entries(path,name,size,mtime,kind) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(path,size,mtime) DO UPDATE SET kind=excluded.kind RETURNING id",
+                (path, name, size, mtime, kind)).fetchone()
+            self.db.execute("INSERT OR IGNORE INTO entry_sources VALUES(?,?)", (row[0], self.sid))
+            self.db.execute("INSERT OR IGNORE INTO seen VALUES(?)", (row[0],))
+        self.buf = []
+        self.db.commit()
+        self.t_commit = time.time()
 
 def mount_points_under(root):
     out = set()
@@ -348,19 +354,22 @@ while stack:
         if d == sys.argv[1]: print("FAIL"); sys.exit(1)
         print("SKIPPED %s: %s" % (d, err), file=sys.stderr); continue
     with it:
-        for e in it:
-            try:
-                st = e.stat(follow_symlinks=False)
-            except OSError:
-                try: st = os.lstat(e.path)
-                except OSError as x:
-                    print("SKIPPED %s: %s" % (e.path, x), file=sys.stderr); continue
-            if e.is_dir(follow_symlinks=False):
-                print("dir", "", int(st.st_mtime), e.path, sep="\t"); stack.append(e.path)
-            elif e.is_symlink():
-                print("link", 0, int(st.st_mtime), e.path, sep="\t")
-            else:
-                print("file", st.st_size, int(st.st_mtime), e.path, sep="\t")
+        try:
+            for e in it:
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    try: st = os.lstat(e.path)
+                    except OSError as x:
+                        print("SKIPPED %s: %s" % (e.path, x), file=sys.stderr); continue
+                if e.is_dir(follow_symlinks=False):
+                    print("dir", "", int(st.st_mtime), e.path, sep="\t"); stack.append(e.path)
+                elif e.is_symlink():
+                    print("link", 0, int(st.st_mtime), e.path, sep="\t")
+                else:
+                    print("file", st.st_size, int(st.st_mtime), e.path, sep="\t")
+        except OSError as x:      # an I/O error while listing one folder (seen on drvfs) must not kill the whole walk
+            print("SKIPPED %s: %s" % (d, x), file=sys.stderr)
 """
 
 def build_extra(db):
@@ -383,7 +392,7 @@ def build_extra(db):
             kind, size, mtime, path = parts
             w.add(root + path[len(rroot):], int(size) if size != "" else None, int(mtime), kind)
         failed = failed or p.wait() != 0
-        db.commit()
+        w.flush()
         if not failed:
             sweep(db, sid)
         print(f"extra {root}: {w.n} rows, {time.time()-t0:.1f}s{' FAILED, kept old rows' if failed else ''}", file=sys.stderr)
@@ -494,6 +503,7 @@ def build_rclone(db):
             ts = rclone_ts(e.get("ModTime", ""))
             w.add(f"{mount}/{e['Path']}", int(e.get("Size", 0)), ts, "file")
             files.append((e.get("ID"), e["Path"].rpartition("/")[0]))
+        w.flush()
         if info:
             db.execute("DELETE FROM drive_dirs")
             db.executemany("INSERT OR REPLACE INTO drive_dirs VALUES(?,?)", ((fid, p) for p, fid in dirs.items() if fid and p))
