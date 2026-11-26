@@ -1,49 +1,56 @@
 #!/usr/bin/env bash
 # exit-session: close THIS agent's own claude + the shell of its tmux pane.
 # Run as the LAST action of a task, e.g. when told "exit after you finish".
-# Usage: exit-session [delay_seconds=15]  (delay only used when the Stop hook is not installed)
+# Usage: exit-session [max_wait_seconds=120]  (longest wait for the current turn to end)
 # Safe by design: acts only on $TMUX_PANE (own pane), never kills by name,
 # never uses kill-pane/kill-session; types /exit then `exit` like the Claude
 # Agents app. Detached, so the calling turn can end first. Mirrors
 # exit_session() in ~/src/claudeagents-android/server/claude-agents-daemon.py.
 set -u
+usage="usage: exit-session [max_wait_seconds]  -- closes this agent's claude and its tmux pane"
+case "${1:-}" in
+  -h|--help) echo "$usage"; exit 0;;
+esac
+if [ $# -gt 1 ] || { [ $# -eq 1 ] && ! [[ $1 =~ ^[0-9]+$ ]]; }; then echo "$usage" >&2; exit 2; fi
+wait_max="${1:-120}"
 pane="${TMUX_PANE:-}"
-delay="${1:-15}"
+sid="${CLAUDE_CODE_SESSION_ID:-}"
 [ -n "$pane" ] || { echo "exit-session: not in tmux (no \$TMUX_PANE); just end your turn" >&2; exit 1; }
-tmux display -p -t "$pane" '#{pane_id}' >/dev/null 2>&1 || { echo "exit-session: pane $pane not found" >&2; exit 1; }
-log=~/.cache/exit-session.log; mkdir -p ~/.cache ~/.cache/claude-idle
-# Prefer the real signal: Stop hook (claude-idle-mark) touches a per-pane marker when the
-# turn ends. Only usable if the hook is installed in this profile; else fall back to sleep.
-# Find the config dir of the claude actually running in this pane (its env may differ from ours).
-cdir=""
-spid=$(tmux display -p -t "$pane" '#{pane_pid}' 2>/dev/null)
-for pid in $(pgrep -P "${spid:-0}" 2>/dev/null) ${spid:-}; do
-  c=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -1)
-  [ -n "$c" ] && { cdir=$c; break; }
-done
-cfg="${cdir:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/settings.json"
-mode=sleep; grep -q claude-idle-mark "$cfg" 2>/dev/null && mode=hook
-ref=$(mktemp ~/.cache/claude-idle/ref.XXXXXX)
+# tmux display-message succeeds for missing panes, so check the pane list instead
+tmux list-panes -a -F '#{pane_id}' | grep -qxF -- "$pane" || { echo "exit-session: pane $pane not found" >&2; exit 1; }
+log=~/.cache/exit-session.log; mkdir -p ~/.cache
+# Claude Code's own registry entry for this session carries busy/idle status.
+reg=""
+[ -n "$sid" ] && reg=$(grep -lF "\"sessionId\":\"$sid\"" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/sessions/*.json 2>/dev/null | head -1)
 setsid nohup bash -c '
-  pane=$1; delay=$2; log=$3; mode=$4; ref=$5
+  pane=$1; wait_max=$2; log=$3; reg=$4; sid=$5
   shells=" bash zsh sh fish dash ksh tcsh nu "
-  if [ "$mode" = hook ]; then
-    m=~/.cache/claude-idle/$pane; t=$((SECONDS+60))
-    while [ ! "$m" -nt "$ref" ] && [ $SECONDS -lt $t ]; do sleep 0.2; done
-    sleep 0.5
+  alive() { tmux list-panes -a -F "#{pane_id}" 2>/dev/null | grep -qxF -- "$pane"; }
+  say() { echo "$(date -Is) $pane $*" >>"$log"; }
+  if [ -n "$reg" ]; then
+    end=$((SECONDS+wait_max))
+    until grep -qE "\"status\":\"(idle|shell)\"" "$reg" 2>/dev/null; do
+      [ -e "$reg" ] || break
+      [ $SECONDS -lt $end ] || { say "turn not over after ${wait_max}s, sending /exit anyway"; break; }
+      sleep 0.5
+    done
+    sleep 1
   else
-    sleep "$delay"
+    sleep 15
   fi
-  rm -f "$ref"
-  tmux send-keys -t "$pane" C-u 2>/dev/null; tmux send-keys -t "$pane" "/exit" Enter 2>/dev/null
+  alive || { say "already closed"; exit 0; }
+  # tells the Claude Agents daemon/web that this session was closed on purpose
+  [ -n "$sid" ] && { mkdir -p ~/.cache/claude-agents/exited; touch ~/.cache/claude-agents/exited/"$sid"; }
+  tmux send-keys -t "$pane" C-u; tmux send-keys -t "$pane" -l "/exit"; sleep 0.3; tmux send-keys -t "$pane" Enter
   end=$((SECONDS+120))
   while [ $SECONDS -lt $end ]; do
-    cmd=$(tmux display -p -t "$pane" "#{pane_current_command}" 2>/dev/null) || { echo "$(date -Is) $pane closed itself" >>"$log"; exit 0; }
-    case "$shells" in *" $cmd "*)
+    alive || { say "closed itself"; exit 0; }
+    cmd=$(tmux display -p -t "$pane" "#{pane_current_command}" 2>/dev/null)
+    case "$shells" in *" ${cmd:-none} "*)
       tmux send-keys -t "$pane" C-u; tmux send-keys -t "$pane" "exit" Enter
-      echo "$(date -Is) $pane claude exited, shell closed" >>"$log"; exit 0;; esac
+      say "claude exited, shell closed"; exit 0;; esac
     sleep 0.5
   done
-  echo "$(date -Is) $pane still running 120s after /exit, left alone" >>"$log"
-' _ "$pane" "$delay" "$log" "$mode" "$ref" >/dev/null 2>&1 &
-echo "exit-session: will /exit claude and close shell in pane $pane after turn end ($mode mode; fallback ${delay}s) (log: $log). End your turn now."
+  say "still running 120s after /exit, left alone"
+' _ "$pane" "$wait_max" "$log" "$reg" "$sid" >/dev/null 2>&1 &
+echo "exit-session: will /exit claude and close pane $pane once this turn ends (log: $log). End your turn now."
